@@ -51,6 +51,10 @@ pub enum Cmd {
     VolumeDown,
     #[cfg(feature = "audio")]
     MuteToggle,
+    /// Step the console **audio** output stage to the next modelled revision (VA0-VA2 → VA3-VA6 → raw → …)
+    /// and remember the choice in `player.conf` (owner ruling d-20 `remember-choice`).
+    #[cfg(feature = "audio")]
+    CycleConsoleFilter,
 }
 
 /// Palette group headers, in display order (spec §4: group by subsystem).
@@ -305,6 +309,14 @@ pub fn registry() -> Vec<CommandInfo> {
             Group::Settings,
             Some(Key::M),
         ));
+        // `F` for filter: free of every other binding (the game uses arrows/A/S/D/Enter; the frontend's
+        // letters are W, C, M, O) and, like M, a letter the palette only sees as text while it is open.
+        reg.push(CommandInfo::new(
+            Cmd::CycleConsoleFilter,
+            "Audio filter: VA0-VA2 / VA3-VA6 / raw",
+            Group::Settings,
+            Some(Key::F),
+        ));
     }
     reg
 }
@@ -340,6 +352,7 @@ pub fn key_name(k: Key) -> &'static str {
         Key::F7 => "F7",
         Key::W => "W",
         Key::C => "C",
+        Key::F => "F",
         Key::M => "M",
         Key::O => "O",
         Key::Key0 => "0",

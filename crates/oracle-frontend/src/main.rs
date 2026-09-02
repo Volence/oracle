@@ -43,7 +43,8 @@
 //! | 0 – 9             | select save-state slot directly |
 //! | `-` / `=`         | output volume down / up (audio builds; repeats while held) |
 //! | M                 | mute toggle (audio builds; remembers the volume level) |
-//! | F3                | toggle the on-screen status line (slot strip, volume, bus, audio filter, aspect, frame) |
+//! | F                 | cycle the console audio output stage VA0-VA2 → VA3-VA6 → raw (audio builds; remembered in `player.conf`, see Settings) |
+//! | F3                | toggle the on-screen status line (slot strip, volume, bus, audio filter, aspect, `DRAWS n` draw tally) |
 //! | Left mouse click  | watch what is under the clicked pixel — plane tile, **sprite**, or backdrop |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via, PC symbolised) + drop count |
 //! | C                 | clear the watch (stop recording write hits) |
@@ -73,8 +74,8 @@
 //! Five read-only overlays ([`lens`]), rebuilt from live machine state every frame and drawn over
 //! the picture but beneath the palette and the toasts: a **watch ticker** along the bottom (the
 //! newest hits plus the armed and dropped counts, read non-destructively so switching a lens on can
-//! never delete a socket client's evidence); a **CPU chip** top-right (PC as a symbol, SR, frame
-//! counter), which `cpu_regs` expands into the full D0-D7/A0-A7 block one font scale smaller; a
+//! never delete a socket client's evidence); a **CPU chip** top-right (PC as a symbol, SR, the
+//! `DRAWS` tally), which `cpu_regs` expands into the full D0-D7/A0-A7 block one font scale smaller; a
 //! **CRAM strip** top-left (the 64 live palette entries, 4x16); **sprite outlines** around the
 //! sprites the hardware actually link-walks, not the 80 raw attribute-table slots, most of which
 //! hold whatever was last written there; and a **hover callout** naming what is under the cursor.
@@ -95,14 +96,24 @@
 //!
 //! ## Settings
 //!
-//! Seven values persist between runs in a flat `key = value` file at
+//! Nine values persist between runs in a flat `key = value` file at
 //! `$XDG_CONFIG_HOME/oracle/player.conf` (falling back to `$HOME/.config/oracle/player.conf`; a system
 //! with neither variable set runs fine and simply does not persist): `volume`, `muted`,
-//! `aspect`, `scale`, `status_line`, `deadzone` and `lenses` — see [`config`]. **A CLI flag beats the
-//! file**, which beats the built-in default, so `--scale 4` is a one-run override and never rewrites what
-//! is stored. Changing the volume, the mute toggle, the F3 status line or any lens saves automatically:
-//! the write is debounced by two seconds (a held volume ramp is one write, not ten) and flushed again on
-//! quit if anything is still outstanding. A session that changed nothing writes nothing.
+//! `aspect`, `scale`, `status_line`, `deadzone`, `lenses`, `symbol_watch` and `console_filter` — see
+//! [`config`]. **A CLI flag beats the file**, which beats the built-in default, so `--scale 4` is a one-run
+//! override and never rewrites what is stored. Changing the volume, the mute toggle, the F3 status line,
+//! the audio filter or any lens saves automatically: the write is debounced by two seconds (a held volume
+//! ramp is one write, not ten) and flushed again on quit if anything is still outstanding. A session that
+//! changed nothing writes nothing.
+//!
+//! `console_filter` is the console **audio** output stage (`va0` = Model 1 VA0-VA2, `va3` = VA3-VA6 /
+//! Model 2, `off` = the raw chip mix), chosen with `F` or the palette's "Audio filter" row and remembered
+//! from then on (owner ruling d-20 `remember-choice`, empyrean `4e8e865b`: the default stays the hardware
+//! filter, and the listener's own pick persists the way volume does). Precedence at startup is
+//! `ORACLE_CONSOLE_FILTER` (a one-run override, never written to the file) over the file over the built-in
+//! VA0-VA2, and the `audio: console output stage = …` startup line names which of the three it took. An
+//! unrecognised `ORACLE_CONSOLE_FILTER` value is warned about and ignored, so the remembered choice — not
+//! the built-in — still applies.
 //!
 //! A file that is structurally corrupt is renamed to `.bak` and defaults load in its place — the evidence
 //! is kept, nothing crashes, and the toast on screen says which. A value out of range costs only that key
@@ -461,6 +472,31 @@ fn notify_err(ov: &mut Overlay, msg: impl AsRef<str> + Into<String>) {
     ov.push(msg, ERROR);
 }
 
+/// The toast for "I could not read `what`, at `path`, because `reason`" — **reason first, path last.**
+///
+/// A toast is cut from the right when it does not fit (`overlay::fit_marked`), and a filesystem path is the
+/// part of the message with unbounded length. With the path first, `open ROM: cannot read
+/// /home/…/LOCKED (Permission denied…)` lost `Permission denied` at the player's smallest picture and read
+/// as a complete sentence — F-TOAST-TRUNCATES. The reason is the one part that answers the question; the
+/// path the person mostly already knows, because they just picked it.
+fn cannot_read_toast(what: &str, e: &std::io::Error, path: impl std::fmt::Display) -> String {
+    format!("{what}: {} — cannot read {path}", io_reason(e))
+}
+
+/// An `io::Error`'s text without the ` (os error N)` tail the standard library appends to OS errors.
+///
+/// The player's smallest picture (320x224 at 1x) holds 47 glyphs of toast; `open ROM: No such file or
+/// directory (os error 2) — ` is 51, so with the tail on, the floor cut the reason before the path even
+/// started. The number is the one part of the message a person cannot act on — `No such file or directory`
+/// is the answer, `2` is its index — so it is the part that goes. Errors without the tail are untouched.
+fn io_reason(e: &std::io::Error) -> String {
+    let s = e.to_string();
+    match s.rfind(" (os error ") {
+        Some(i) if s.ends_with(')') => s[..i].to_string(),
+        _ => s,
+    }
+}
+
 /// Which save-state slots currently have a file on disk. Probed only when it can have changed (a save, a
 /// load, a slot change), never per frame — this is the only thing the slot strip cannot know for itself.
 fn probe_slots(rom_path: &str) -> [bool; save_state::SLOT_COUNT] {
@@ -486,35 +522,70 @@ fn probe_slots(rom_path: &str) -> [bool; save_state::SLOT_COUNT] {
 /// than refusing to browse.
 ///
 /// An unreadable directory says so and **leaves the previous listing up**. An empty pick list and a folder
-/// that could not be read are the same picture on screen, and only one of them means "no games here".
+/// that could not be read are the same picture on screen, and only one of them means "no games here". The
+/// picker has already closed by the time a descent is dispatched (Enter closes the palette before its
+/// command runs), so "leaves up" here means *re-opens on the retained listing* — `browser` is not touched
+/// and is not re-scanned, so a folder that has just become unreadable cannot take the listing down with it
+/// (F-ROMOPEN-C-DOC: `docs/2026-08-28-rom-open.md` §5(c), which this function promised and did not do).
+/// With no previous listing to fall back to — the first open, from a running image whose own folder cannot
+/// be read — there is only the toast.
 fn open_rom_picker(
     dir: &std::path::Path,
     current: &str,
-    browser: &mut Vec<rom_browser::Entry>,
+    browser: &mut RomBrowser,
     palette: &mut palette::Palette,
     reg: &[commands::CommandInfo],
     ov: &mut Overlay,
 ) {
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let entries = match rom_browser::scan(&dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            notify_err(ov, format!("open ROM: cannot read {} ({e})", dir.display()));
-            return;
+    match rom_browser::scan(&dir) {
+        Ok(entries) => {
+            browser.dir = Some(dir);
+            browser.entries = entries;
         }
+        Err(e) => {
+            notify_err(ov, cannot_read_toast("open ROM", &e, dir.display()));
+            if browser.dir.is_none() {
+                return;
+            }
+        }
+    }
+    show_rom_picker(browser, current, palette, reg);
+}
+
+/// The "Open ROM..." browser: the folder the palette's pick list describes and the listing it was built from.
+/// `RomEntry(n)` indexes `entries`, so the two fields are written together and never separately.
+#[derive(Default)]
+struct RomBrowser {
+    /// The folder `entries` lists — `None` until the first successful scan.
+    dir: Option<std::path::PathBuf>,
+    entries: Vec<rom_browser::Entry>,
+}
+
+/// Put `browser`'s listing up as the palette's pick list, marking the image in the machine. Builds rows from
+/// the retained listing only — the folder is not read again — so it is the same call for a fresh scan and
+/// for restoring the previous listing after a failed descent.
+fn show_rom_picker(
+    browser: &RomBrowser,
+    current: &str,
+    palette: &mut palette::Palette,
+    reg: &[commands::CommandInfo],
+) {
+    let Some(dir) = browser.dir.as_deref() else {
+        return;
     };
     let current = std::fs::canonicalize(current).ok();
-    let items: Vec<(String, commands::Cmd)> = entries
+    // Label and marker travel separately so the picker filters on the name alone (F-PICKER-FILTER-MARKER).
+    let items: Vec<palette::PickerItem> = browser
+        .entries
         .iter()
         .enumerate()
-        .map(|(i, e)| {
-            (
-                rom_browser::picker_label(e, current.as_deref()),
-                commands::Cmd::RomEntry(i),
-            )
+        .map(|(i, e)| palette::PickerItem {
+            label: e.label.clone(),
+            marker: rom_browser::picker_marker(e, current.as_deref()),
+            cmd: commands::Cmd::RomEntry(i),
         })
         .collect();
-    *browser = entries;
     palette.open_picker(format!("OPEN ROM - {}", dir.display()), items, reg);
 }
 
@@ -810,9 +881,162 @@ fn flush_pending_srm(
 /// live [`AudioState`]. Thin wrapper over [`build_audio`] with the host's real device; factored so the
 /// no-device branch is deterministically unit-testable (design §3.1, §7 Test 7).
 #[cfg(feature = "audio")]
-fn start_audio() -> Option<AudioState> {
+fn start_audio(remembered: Option<oracle_core::synth::ConsoleModel>) -> Option<AudioState> {
     use cpal::traits::HostTrait;
-    build_audio(cpal::default_host().default_output_device())
+    build_audio(cpal::default_host().default_output_device(), remembered)
+}
+
+/// The console output stage the player uses when nothing chose one. The PLAYER models a console, and every
+/// real board has an output stage — so unfiltered is the one setting that matches no hardware at all, and it
+/// is the wrong default here. VA0-VA2 was picked by ear against VA3-VA6 and the raw output (2026-08-15). This
+/// is deliberately a frontend-only default: `AudioSink::new` stays `Unfiltered`, so library users, tests and
+/// offline renders keep their bit-identical output and nothing shifts underneath them.
+#[cfg(feature = "audio")]
+const PLAYER_DEFAULT_FILTER: oracle_core::synth::ConsoleModel =
+    oracle_core::synth::ConsoleModel::Model1Va0Va2;
+
+/// Where the console output stage in use came from — printed at startup so a listener can tell an override
+/// they forgot about from a choice they made from the built-in.
+#[cfg(feature = "audio")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FilterSource {
+    /// `ORACLE_CONSOLE_FILTER` in this process's environment: one run only, never written to the file.
+    Env,
+    /// `console_filter` in `player.conf`: the listener's remembered choice (d-20 `remember-choice`).
+    Conf,
+    /// Neither said anything: [`PLAYER_DEFAULT_FILTER`].
+    Default,
+}
+
+#[cfg(feature = "audio")]
+impl FilterSource {
+    /// The provenance as the startup line spells it.
+    fn describe(self) -> &'static str {
+        match self {
+            FilterSource::Env => "from ORACLE_CONSOLE_FILTER",
+            FilterSource::Conf => "remembered in player.conf",
+            FilterSource::Default => "default",
+        }
+    }
+}
+
+/// The outcome of [`resolve_console_filter`].
+#[cfg(feature = "audio")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ResolvedFilter {
+    model: oracle_core::synth::ConsoleModel,
+    source: FilterSource,
+    /// `true` when `ORACLE_CONSOLE_FILTER` was set to something `from_name` does not know. The caller warns
+    /// with the offending value; the resolution has already fallen through to the next source, so a typo
+    /// in the override costs the override and not the remembered choice.
+    env_rejected: bool,
+}
+
+/// **Precedence, as one pure function:** `ORACLE_CONSOLE_FILTER` beats `player.conf` beats the built-in.
+///
+/// `env` is the variable's value if set (any spelling `ConsoleModel::from_name` takes: `va0`, `va3`, `off`,
+/// `raw`, the long `model1-…` names); `conf` is the remembered choice already mapped from its file spelling.
+/// An unknown `env` value is *rejected and skipped* rather than replacing the answer with the built-in:
+/// before d-20 there was no remembered choice to protect, so falling to the default was the only option; now
+/// it would silently discard the listener's pick on a typo.
+#[cfg(feature = "audio")]
+fn resolve_console_filter(
+    env: Option<&str>,
+    conf: Option<oracle_core::synth::ConsoleModel>,
+) -> ResolvedFilter {
+    let mut env_rejected = false;
+    if let Some(name) = env {
+        match oracle_core::synth::ConsoleModel::from_name(name) {
+            Some(model) => {
+                return ResolvedFilter {
+                    model,
+                    source: FilterSource::Env,
+                    env_rejected,
+                }
+            }
+            None => env_rejected = true,
+        }
+    }
+    match conf {
+        Some(model) => ResolvedFilter {
+            model,
+            source: FilterSource::Conf,
+            env_rejected,
+        },
+        None => ResolvedFilter {
+            model: PLAYER_DEFAULT_FILTER,
+            source: FilterSource::Default,
+            env_rejected,
+        },
+    }
+}
+
+/// The `player.conf` spelling of a console model — the inverse of `ConsoleModel::from_name` restricted to
+/// [`config::CONSOLE_FILTER_VALUES`]. Matched exhaustively so a new revision in the core stops the build here
+/// rather than being remembered under a spelling the file does not accept.
+#[cfg(feature = "audio")]
+fn conf_spelling(model: oracle_core::synth::ConsoleModel) -> &'static str {
+    use oracle_core::synth::ConsoleModel;
+    match model {
+        ConsoleModel::Model1Va0Va2 => "va0",
+        ConsoleModel::Model1Va3Va6 => "va3",
+        ConsoleModel::Unfiltered => "off",
+    }
+}
+
+/// The remembered `console_filter`, mapped from its file spelling; `None` when nothing was chosen. The file
+/// side only ever stores a [`config::CONSOLE_FILTER_VALUES`] spelling and `from_name` knows all three, so
+/// the `and_then` cannot lose a value (`the_file_spellings_and_the_core_models_are_the_same_three` pins it).
+#[cfg(feature = "audio")]
+fn remembered_console_filter(cfg: &config::Config) -> Option<oracle_core::synth::ConsoleModel> {
+    cfg.console_filter
+        .and_then(oracle_core::synth::ConsoleModel::from_name)
+}
+
+/// The revision after `model` in [`ConsoleModel::ALL`](oracle_core::synth::ConsoleModel::ALL), wrapping —
+/// the order the palette row's title spells out.
+#[cfg(feature = "audio")]
+fn next_console_model(model: oracle_core::synth::ConsoleModel) -> oracle_core::synth::ConsoleModel {
+    let all = oracle_core::synth::ConsoleModel::ALL;
+    let i = all
+        .iter()
+        .position(|m| *m == model)
+        .expect("every ConsoleModel is in ConsoleModel::ALL");
+    all[(i + 1) % all.len()]
+}
+
+/// What a console model does to the sound, for the startup line and the cycle toast: the cutoff is the
+/// whole reason anyone asks about this line — a 3.4 kHz one-pole is audible as dullness, and a reader
+/// chasing that should not have to know which RC values a VA0 board shipped with to find it (2026-08-29).
+#[cfg(feature = "audio")]
+fn filter_effect(model: oracle_core::synth::ConsoleModel) -> String {
+    match model.cutoff_hz() {
+        Some(hz) => format!("low-pass {} Hz", hz.round()),
+        None => "no filter — the raw chip mix".to_string(),
+    }
+}
+
+/// The startup line naming the console output stage in use **and where it came from**, so a listener can tell
+/// an override they forgot about from a choice they made from the built-in.
+#[cfg(feature = "audio")]
+fn console_stage_line(model: oracle_core::synth::ConsoleModel, source: FilterSource) -> String {
+    format!(
+        "audio: console output stage = {} ({}) — {}; F cycles it (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides for one run",
+        model.name(),
+        filter_effect(model),
+        source.describe()
+    )
+}
+
+/// The toast for a cycled filter: the status-line label, what it does, and that it is now remembered.
+/// Kept short enough to fit a toast whole at the 320x224 floor (`the_filter_toast_fits_a_toast_whole`).
+#[cfg(feature = "audio")]
+fn filter_toast(model: oracle_core::synth::ConsoleModel) -> String {
+    let effect = match model.cutoff_hz() {
+        Some(hz) => format!("low-pass {} Hz", hz.round()),
+        None => "no low-pass".to_string(),
+    };
+    format!("audio: {}, {effect} — remembered", filter_label(model))
 }
 
 /// Build the cpal output stream for `device` (design §3). Returns `None` — **run video-only** — on ANY
@@ -820,11 +1044,17 @@ fn start_audio() -> Option<AudioState> {
 /// warning; it **never panics**. This is the graceful path for a headless, `/dev/snd`-less environment: pass
 /// `None` and it cleanly reports "no device" and disables audio.
 ///
+/// `remembered` is the `console_filter` choice from `player.conf`, if any; see [`resolve_console_filter`]
+/// for how it ranks against `ORACLE_CONSOLE_FILTER` and the built-in.
+///
 /// The stream's callback is [`audio::fill_output`]: it pops the ring's consumer into the device buffer,
 /// zero-filling any underrun tail (design §2.5), handles the device channel count (stereo copy / mono
 /// average / wide-device first-two-lanes, design §3.3), and honours the shared save-state flush flag.
 #[cfg(feature = "audio")]
-fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
+fn build_audio(
+    device: Option<cpal::Device>,
+    remembered: Option<oracle_core::synth::ConsoleModel>,
+) -> Option<AudioState> {
     use cpal::traits::{DeviceTrait, StreamTrait};
 
     let Some(device) = device else {
@@ -855,41 +1085,25 @@ fn build_audio(device: Option<cpal::Device>) -> Option<AudioState> {
     let config: cpal::StreamConfig = default_cfg.config();
 
     // The console's analog output stage (SY-6b). Which RC corner is "correct" is revision-dependent, so
-    // the core deliberately defaults to `Unfiltered` rather than baking a number in; this lets the
-    // listener pick one without a rebuild. Accepts the same spellings as `ConsoleModel::from_name`
-    // ("va0", "va3", "off"). An unrecognised value is named and ignored rather than silently falling
-    // back, since a typo would otherwise present as "the filter does nothing".
-    let console_model = match std::env::var("ORACLE_CONSOLE_FILTER") {
-        Ok(name) => match oracle_core::synth::ConsoleModel::from_name(&name) {
-            Some(m) => m,
-            None => {
-                eprintln!(
-                    "audio: ORACLE_CONSOLE_FILTER={name:?} is not a known console revision \
-                     (try va0, va3, or off) — using the default"
-                );
-                oracle_core::synth::ConsoleModel::default()
-            }
-        },
-        // The PLAYER models a console, and every real board has an output stage — so unfiltered is the
-        // one setting that matches no hardware at all, and it is the wrong default here. VA0-VA2 was
-        // picked by ear against VA3-VA6 and the raw output (2026-08-15). This is deliberately a
-        // frontend-only default: `AudioSink::new` stays `Unfiltered`, so library users, tests and
-        // offline renders keep their bit-identical output and nothing shifts underneath them.
-        Err(_) => oracle_core::synth::ConsoleModel::Model1Va0Va2,
-    };
+    // the core deliberately defaults to `Unfiltered` rather than baking a number in; the player ranks the
+    // one-run override, the remembered choice and its own built-in in `resolve_console_filter`. An
+    // unrecognised override is named and skipped rather than silently falling back, since a typo would
+    // otherwise present as "the filter does nothing" — and, since d-20, would discard the remembered pick.
+    let env = std::env::var("ORACLE_CONSOLE_FILTER").ok();
+    let resolved = resolve_console_filter(env.as_deref(), remembered);
+    if resolved.env_rejected {
+        eprintln!(
+            "audio: ORACLE_CONSOLE_FILTER={:?} is not a known console revision (try va0, va3, or off) — \
+             ignoring it; {}",
+            env.unwrap_or_default(),
+            resolved.source.describe()
+        );
+    }
+    let console_model = resolved.model;
     let sink = oracle_core::synth::AudioSink::with_console_model(sample_rate, console_model);
-    // Named *with what it does to the sound*, not just with its identity. The revision name alone is the
-    // thing that got read as a video setting on the status line, and the cutoff is the whole reason anyone
-    // asks about this line: a 3.4 kHz one-pole is audible as dullness, and a reader who is chasing that
-    // should not have to know which RC values a VA0 board shipped with to find it (2026-08-29).
-    println!(
-        "audio: console output stage = {} ({}) — set ORACLE_CONSOLE_FILTER=off|va0|va3 to change",
-        console_model.name(),
-        match console_model.cutoff_hz() {
-            Some(hz) => format!("low-pass {} Hz", hz.round()),
-            None => "no filter — the raw chip mix".to_string(),
-        }
-    );
+    // Named *with what it does to the sound* and *where the choice came from*, not just with its identity.
+    // The revision name alone is the thing that got read as a video setting on the status line.
+    println!("{}", console_stage_line(console_model, resolved.source));
     let (mut prod, mut cons) = audio::make_ring(sample_rate);
     // Queue a reservoir of silence *before* the stream is allowed to pop anything, so the first callbacks
     // have something to play while the first emulated frame is still being computed, and the feedback loop
@@ -1126,7 +1340,7 @@ fn main() {
     // panic (the default in a headless, /dev/snd-less environment). When present, its persistent AudioSink is
     // advanced one frame per iteration below and drained→pushed into the ring the cpal callback consumes.
     #[cfg(feature = "audio")]
-    let mut audio = start_audio();
+    let mut audio = start_audio(remembered_console_filter(&cfg));
 
     // The presented framebuffer and its native width. Both are *retained*: a frame that produced no capture
     // (paused, or a run that ended mid-frame) re-presents the last good one rather than a blank. Seeded with
@@ -1144,7 +1358,12 @@ fn main() {
     let mut screen: Vec<u32> = Vec::new();
     let mut xmap: Vec<usize> = Vec::new();
     let mut paused = false;
-    let mut frame: u64 = 0;
+    // How many frames this window has DRAWN since its last reset or ROM swap: the loop's own iterations
+    // plus the ones a bus client drives, untouched by a save-state load. Shown as `DRAWS n` on the status
+    // line, the title bar and the CPU chip — a tally, deliberately not the bus's clock-derived `frame`,
+    // which freezes at a pause and so says nothing about whether this window is still alive (ledger L-08:
+    // relabel the readout, do NOT sync the counter).
+    let mut draws: u64 = 0;
 
     // On-screen notifications, status line and the paused banner. Everything the loop `println!`s is also
     // pushed here (see `notify`), because the window is where the user is looking.
@@ -1156,7 +1375,7 @@ fn main() {
     // `RomEntry(n)` payload indexes *this*, so the two are rebuilt together and never separately.
     // `pending_rom` is how a dispatch arm asks for a cartridge swap: the work happens in one shared block
     // after the dispatch loop, so F5 and the browser cannot drift apart.
-    let mut browser: Vec<rom_browser::Entry> = Vec::new();
+    let mut browser = RomBrowser::default();
     let mut pending_rom: Option<String> = None;
 
     // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
@@ -1574,7 +1793,7 @@ fn main() {
                     // The watch (if armed) stays armed on the same VRAM range; hits recorded before the load
                     // remain in the log — `C` clears them.
                     println!(
-                        "state: loaded slot {state_slot} from {} (frame counter continues at {frame})",
+                        "state: loaded slot {state_slot} from {} (draw tally continues at {draws})",
                         state_path.display()
                     );
                     ov.push(format!("LOADED SLOT {state_slot}"), ACCENT);
@@ -1593,7 +1812,7 @@ fn main() {
                         sram_save_countdown = Some(SRAM_AUTOSAVE_DEBOUNCE_FRAMES);
                     }
                     sys.reset();
-                    frame = 0; // the machine's own clock restarts, so the displayed counter follows it
+                    draws = 0; // the machine's own clock restarts, so the displayed tally follows it
                     cap.clear(); // the line stream restarts from the reset vector — drop the pre-reset frame
                     #[cfg(feature = "audio")]
                     resync_audio(audio.as_mut());
@@ -1621,7 +1840,7 @@ fn main() {
                 // The payload indexes the listing built when the picker was opened. Read the row out and
                 // drop the borrow before anything below can rebuild `browser` under it.
                 commands::Cmd::RomEntry(n) => {
-                    match browser.get(n).map(|e| (e.kind, e.path.clone())) {
+                    match browser.entries.get(n).map(|e| (e.kind, e.path.clone())) {
                         Some((rom_browser::EntryKind::Rom, path)) => {
                             pending_rom = Some(path.to_string_lossy().into_owned());
                         }
@@ -1667,6 +1886,27 @@ fn main() {
                     cfg.muted = muted;
                     config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
                 }
+                // --- The console output stage (d-20 `remember-choice`): step to the next modelled revision,
+                // apply it to the live sink, and remember it the way the volume is remembered. The sink is
+                // the one source of truth for "which model now" — `resync_sink` preserves it across a
+                // timeline jump — so nothing here keeps a second copy that could drift. With no output
+                // device there is nothing to hear the change by, so the choice is refused rather than
+                // recorded blind: a setting nobody could evaluate is not a choice. ---
+                #[cfg(feature = "audio")]
+                commands::Cmd::CycleConsoleFilter => match audio.as_mut() {
+                    Some(a) => {
+                        let next = next_console_model(a.sink.console_model());
+                        a.sink.set_console_model(next);
+                        a.filter = filter_label(next);
+                        notify(&mut ov, INFO, filter_toast(next));
+                        cfg.console_filter = Some(conf_spelling(next));
+                        config_save_countdown = Some(CONFIG_AUTOSAVE_DEBOUNCE_FRAMES);
+                    }
+                    None => notify_err(
+                        &mut ov,
+                        "audio filter: no output device this run — nothing to hear it by, so the setting was left alone",
+                    ),
+                },
             }
         }
         // --- The cartridge swap: one sequence, two entry points (F5, and "Open ROM..."). ---
@@ -1686,10 +1926,13 @@ fn main() {
                 let bytes = match std::fs::read(&target) {
                     Ok(bytes) => bytes,
                     Err(e) => {
+                        // Reason first, paths last: two paths and a reason will not all fit a toast, and
+                        // the reason is the part that says what to do (F-TOAST-TRUNCATES).
                         notify_err(
                             &mut ov,
                             format!(
-                                "{what}: cannot read ROM {target} ({e}) — still running {rom_path}"
+                                "{}; still running {rom_path}",
+                                cannot_read_toast(what, &e, format!("ROM {target}"))
                             ),
                         );
                         break 'swap;
@@ -1771,7 +2014,7 @@ fn main() {
                 for p in problems {
                     notify_err(&mut ov, p);
                 }
-                frame = 0;
+                draws = 0;
                 cap.clear(); // a different cartridge draws a different frame — drop the old one
                 #[cfg(feature = "audio")]
                 resync_audio(audio.as_mut());
@@ -1930,7 +2173,7 @@ fn main() {
             if let Some(addr) = bus::break_observed(brk) {
                 bus.record_break(addr);
             }
-            frame += 1;
+            draws += 1;
 
             // Take the frame the run just completed, width and all — an H32↔H40 switch rides along in the
             // capture's own per-line log, so nothing here re-queries the VDP. A run that completed no frame
@@ -1976,7 +2219,7 @@ fn main() {
             // A client advanced (or rewound) the machine behind the loop's back. That is the same class of
             // event as a save-state load, and it needs the same two repairs: audio belongs to a timeline
             // that has moved, and the capture is holding lines from before the jump.
-            frame += pumped.frames_advanced;
+            draws += pumped.frames_advanced;
             cap.clear();
             #[cfg(feature = "audio")]
             resync_audio(audio.as_mut());
@@ -2106,10 +2349,11 @@ fn main() {
             }
             None => &buf,
         };
+        // The same `DRAWS n` tally the status line and the CPU chip carry, spelled to match them.
         let title = if paused {
-            format!("Oracle — frame {frame} [PAUSED]")
+            format!("Oracle — draws {draws} [PAUSED]")
         } else {
-            format!("Oracle — frame {frame}")
+            format!("Oracle — draws {draws}")
         };
         window.set_title(&title);
 
@@ -2181,7 +2425,7 @@ fn main() {
                     sys: &sys,
                     wp,
                     symbols: symbols.as_ref(),
-                    frame,
+                    draws,
                     paused,
                     hover: hover_at,
                     profiler: lens::profile::View {
@@ -2207,7 +2451,7 @@ fn main() {
         palette.draw(&mut screen, win_w, win_h, present_view, &reg);
         let status = Status {
             paused,
-            frame,
+            draws,
             slot: state_slot,
             occupied: slots_on_disk,
             volume: vol,
@@ -2326,7 +2570,7 @@ mod tests {
 
             // The width half, at the geometry the player runs at — the whole reason the label is short.
             let st = Status {
-                frame: 1234,
+                draws: 1234,
                 volume: Some((7, 10, false)),
                 filter: Some(label),
                 aether: false,
@@ -2340,13 +2584,222 @@ mod tests {
                 let margin = (2 * Overlay::font_scale(win_h)).max(4);
                 let avail = (win_h * 4 / 3).saturating_sub(2 * margin);
                 let text_avail = status_text_avail(avail, px).expect("the slot strip fits");
-                assert_eq!(
-                    fit(&full, text_avail, px),
-                    full,
-                    "{model:?} as {label:?} does not fit a {win_h}px-tall picture"
+                let rendered = fit(&full, text_avail, px);
+                // **What is under test is the LABEL's width, not the line's.** The audio field is fourth of
+                // six and the draw tally is last, so at 896 — where `status_font_scale` steps 2→3 and the
+                // budget dips to 51 glyphs (measured in
+                // `the_whole_status_line_survives_at_the_sizes_the_player_actually_uses`) — it is the
+                // tally that is cut and never this label. Asserting the whole line here would make this
+                // test fail for a reason that has nothing to do with the revision names.
+                assert!(
+                    rendered.contains(&format!("AUDIO {label}")),
+                    "{model:?} as {label:?} does not fit a {win_h}px-tall picture: {rendered:?}"
                 );
+                if win_h != 896 {
+                    assert_eq!(
+                        rendered, full,
+                        "{model:?} as {label:?}: every size but the 896 dip shows the whole line"
+                    );
+                }
             }
         }
+    }
+
+    /// **The reason survives the cut** (F-TOAST-TRUNCATES). The unreadable-folder toast, composed with a real
+    /// `io::Error` and a path long enough not to fit the player's smallest picture, is asserted **whole** as it
+    /// is rendered at the real toast width: `open ROM: <reason> — cannot read /…` cut with the mark, the
+    /// reason intact. The expected string is arithmetic on the overlay's own constants (`font_scale`,
+    /// margin, `toast_text_avail`, `fit`'s cost model), not a transcription.
+    #[test]
+    fn the_unreadable_folder_toast_keeps_its_reason_when_cut_at_the_real_toast_width() {
+        use overlay::{Overlay, Status, TRUNCATION_MARK};
+        use present::Rect;
+
+        // A real error from a real failed read, so the reason text is the OS's and not this test's.
+        let dir = std::path::PathBuf::from(
+            "/nonexistent-for-this-test/a/deliberately/long/path/to/a/folder/of/games/LOCKED",
+        );
+        let e = rom_browser::scan(&dir).expect_err("scanning a path that does not exist fails");
+        let reason = io_reason(&e);
+        assert!(
+            !reason.is_empty(),
+            "COULD NOT MEASURE: the io::Error has no text"
+        );
+        // The OS error's numeric tail is dropped and nothing else is: the reason is the error's own text.
+        assert!(
+            e.to_string().starts_with(&reason) && !reason.contains("(os error"),
+            "io_reason({e:?}) = {reason:?}"
+        );
+        let text = cannot_read_toast("open ROM", &e, dir.display());
+
+        // Reason before path: the property this parcel exists for.
+        assert_eq!(
+            text,
+            format!("open ROM: {reason} — cannot read {}", dir.display()),
+            "the reason must come before the path"
+        );
+
+        // The real toast width at the floor: the same geometry `Overlay::draw` derives.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 224 * 4 / 3,
+            h: 224,
+        };
+        let px = Overlay::font_scale(area.h);
+        let margin = (2 * px).max(4);
+        let avail = Overlay::toast_text_avail(area, px, margin);
+        let capacity = 1 + (avail - 5 * px) / (font::ADVANCE * px);
+        let n = text.chars().count();
+        assert!(
+            n > capacity,
+            "COULD NOT MEASURE: the {n}-glyph toast fits the {capacity}-glyph floor, nothing is cut"
+        );
+        let expected: String = text
+            .chars()
+            .take(capacity - 1)
+            .chain(std::iter::once(TRUNCATION_MARK))
+            .collect();
+        assert!(
+            expected.starts_with(&format!("open ROM: {reason} — ")),
+            "COULD NOT MEASURE: the reason itself does not fit {capacity} glyphs: {expected:?}"
+        );
+
+        let mut ov = Overlay::new();
+        notify_err(&mut ov, text.clone());
+        let v = ov.text_surfaces(area, &Status::default());
+        let toast = v
+            .iter()
+            .find(|s| s.kind == screen_text::Kind::Toast)
+            .expect("the toast reached the glass");
+        assert_eq!(toast.text, text);
+        assert_eq!(
+            toast.rendered, expected,
+            "the whole rendered toast at the floor"
+        );
+        assert!(
+            toast.unrenderable.is_empty(),
+            "hollow boxes in the toast: {:?}",
+            toast.unrenderable
+        );
+    }
+
+    /// **A descent into an unreadable folder leaves the previous listing up** — `docs/2026-08-28-rom-open.md`
+    /// §5(c), which the code promised in its own doc comment and did not do (F-ROMOPEN-C-DOC).
+    ///
+    /// The whole state machine, driven as the dispatch loop drives it: a real folder is opened (palette up,
+    /// pick list = its rows), then a descent into a folder that cannot be read. Afterwards the palette must
+    /// still be open on the *same* rows, `browser` must be untouched (so every `RomEntry(n)` still means the
+    /// row it meant), and the failure must have been said. The rows are compared whole against the first
+    /// listing's, not counted — a re-scan of some other folder that happened to have the same number of
+    /// entries would count the same.
+    #[test]
+    fn a_failed_descent_puts_the_previous_listing_back_up_and_says_why() {
+        let reg = commands::registry();
+        let mut palette = palette::Palette::new();
+        let mut ov = Overlay::new();
+        let mut browser = RomBrowser::default();
+
+        // A folder of our own, with a ROM in it so the listing is not just `../`.
+        let dir = std::env::temp_dir().join(format!(
+            "oracle-failed-descent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rom = dir.join("s4.bin");
+        std::fs::write(&rom, [0u8; 4]).unwrap();
+        let current = rom.to_string_lossy().into_owned();
+
+        open_rom_picker(&dir, &current, &mut browser, &mut palette, &reg, &mut ov);
+        assert!(
+            palette.is_open(),
+            "COULD NOT MEASURE: the first open did not put the picker up"
+        );
+        let first = palette.picker().expect("a picker is up").items.clone();
+        assert!(
+            first.iter().any(|it| it.label == "s4.bin"),
+            "COULD NOT MEASURE: the listing does not show the ROM: {first:?}"
+        );
+        let first_entries: Vec<(rom_browser::EntryKind, std::path::PathBuf)> = browser
+            .entries
+            .iter()
+            .map(|e| (e.kind, e.path.clone()))
+            .collect();
+        let first_dir = browser.dir.clone();
+        assert_eq!(ov.toasts().count(), 0, "a clean open says nothing");
+
+        // The user picks a row that has since become unreadable. Enter closed the palette before dispatch.
+        palette.close();
+        let missing = dir.join("gone");
+        let expected_toast = {
+            let e = rom_browser::scan(&missing).expect_err("the folder does not exist");
+            cannot_read_toast(
+                "open ROM",
+                &e,
+                std::fs::canonicalize(&missing)
+                    .unwrap_or_else(|_| missing.clone())
+                    .display(),
+            )
+        };
+        open_rom_picker(
+            &missing,
+            &current,
+            &mut browser,
+            &mut palette,
+            &reg,
+            &mut ov,
+        );
+
+        assert!(
+            palette.is_open(),
+            "the palette must come back up, not stay closed"
+        );
+        let after = palette
+            .picker()
+            .expect("the previous pick list is up")
+            .items
+            .clone();
+        assert_eq!(
+            after, first,
+            "the pick list must be the previous listing, row for row"
+        );
+        assert_eq!(
+            palette.picker().unwrap().title,
+            format!("OPEN ROM - {}", first_dir.as_ref().unwrap().display()),
+            "the title still names the folder that is listed"
+        );
+        let entries_now: Vec<(rom_browser::EntryKind, std::path::PathBuf)> = browser
+            .entries
+            .iter()
+            .map(|e| (e.kind, e.path.clone()))
+            .collect();
+        assert_eq!(
+            entries_now, first_entries,
+            "`browser` must not be rebuilt by a failed scan"
+        );
+        assert_eq!(
+            browser.dir, first_dir,
+            "the browser still describes the readable folder"
+        );
+        let toasts: Vec<&str> = ov.toasts().map(|t| t.text.as_str()).collect();
+        assert_eq!(
+            toasts,
+            vec![expected_toast.as_str()],
+            "the failure is said, once, whole"
+        );
+
+        // With no previous listing at all there is nothing to put back: only the toast, palette closed.
+        let mut palette = palette::Palette::new();
+        let mut ov = Overlay::new();
+        let mut fresh = RomBrowser::default();
+        open_rom_picker(&missing, &current, &mut fresh, &mut palette, &reg, &mut ov);
+        assert!(!palette.is_open(), "nothing to show, so nothing is shown");
+        assert!(fresh.dir.is_none() && fresh.entries.is_empty());
+        assert_eq!(ov.toasts().count(), 1, "but the failure is still said");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The masked picture is the core's masked render, dot for dot** — and it is a *different* picture
@@ -2582,6 +3035,255 @@ mod tests {
         draw_crosshair(&mut buf, width, 0, 0);
     }
 
+    /// **Precedence, over every combination there is** (d-20 `remember-choice`): the one-run override beats
+    /// the remembered choice beats the built-in, and each answer carries which of the three it came from.
+    ///
+    /// The remembered leg is the one the ruling added, and it is the one with a trap: before it existed, an
+    /// unparseable `ORACLE_CONSOLE_FILTER` could fall to the built-in without losing anything, because there
+    /// was nothing else to lose. Now it would silently discard the listener's own pick — so a rejected
+    /// override falls to the *next source*, not to the default, and says it rejected something.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_override_beats_the_remembered_choice_beats_the_built_in() {
+        use oracle_core::synth::ConsoleModel;
+        // Every (env, conf) combination, with the two non-default models chosen so that no cell can pass by
+        // accidentally agreeing with PLAYER_DEFAULT_FILTER.
+        let env_pick = ConsoleModel::Unfiltered;
+        let conf_pick = ConsoleModel::Model1Va3Va6;
+        assert_ne!(env_pick, PLAYER_DEFAULT_FILTER);
+        assert_ne!(conf_pick, PLAYER_DEFAULT_FILTER);
+        assert_ne!(env_pick, conf_pick);
+        let env_name = conf_spelling(env_pick); // a spelling `from_name` takes, so the leg is real
+
+        for (env, conf, want_model, want_source, want_rejected) in [
+            (
+                None,
+                None,
+                PLAYER_DEFAULT_FILTER,
+                FilterSource::Default,
+                false,
+            ),
+            (None, Some(conf_pick), conf_pick, FilterSource::Conf, false),
+            (Some(env_name), None, env_pick, FilterSource::Env, false),
+            (
+                Some(env_name),
+                Some(conf_pick),
+                env_pick,
+                FilterSource::Env,
+                false,
+            ),
+            // A typo in the override: the remembered choice survives it, and so does the built-in.
+            (
+                Some("va9"),
+                Some(conf_pick),
+                conf_pick,
+                FilterSource::Conf,
+                true,
+            ),
+            (
+                Some("va9"),
+                None,
+                PLAYER_DEFAULT_FILTER,
+                FilterSource::Default,
+                true,
+            ),
+        ] {
+            assert_eq!(
+                resolve_console_filter(env, conf),
+                ResolvedFilter {
+                    model: want_model,
+                    source: want_source,
+                    env_rejected: want_rejected,
+                },
+                "env {env:?}, conf {conf:?}"
+            );
+        }
+    }
+
+    /// The startup line **says where the setting came from**, in whole, for each of the three sources — the
+    /// reason the provenance exists at all is that "the sound is dull" is otherwise undiagnosable from an
+    /// override the listener set months ago. Whole-string, because a `contains` would pass on a line that
+    /// named the revision and dropped the provenance, which is precisely the regression to catch.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_startup_line_names_the_revision_and_where_the_choice_came_from() {
+        use oracle_core::synth::ConsoleModel;
+        assert_eq!(
+            console_stage_line(ConsoleModel::Model1Va0Va2, FilterSource::Default),
+            "audio: console output stage = model1-va0-va2 (low-pass 3386 Hz) — default; F cycles it \
+             (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides for one run"
+        );
+        assert_eq!(
+            console_stage_line(ConsoleModel::Model1Va3Va6, FilterSource::Conf),
+            "audio: console output stage = model1-va3-va6 (low-pass 2842 Hz) — remembered in player.conf; \
+             F cycles it (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides for one run"
+        );
+        assert_eq!(
+            console_stage_line(ConsoleModel::Unfiltered, FilterSource::Env),
+            "audio: console output stage = unfiltered (no filter — the raw chip mix) — from \
+             ORACLE_CONSOLE_FILTER; F cycles it (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides \
+             for one run"
+        );
+        // The control: the three provenances are three different words, so no two lines can alias.
+        let described: Vec<&str> = [FilterSource::Env, FilterSource::Conf, FilterSource::Default]
+            .iter()
+            .map(|s| s.describe())
+            .collect();
+        let mut uniq = described.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), described.len(), "provenances must not alias");
+    }
+
+    /// **The file's three spellings and the core's three models are the same three**, in both directions —
+    /// the mapping this feature rests on, and the one that would rot silently if a fourth revision were added
+    /// to `ConsoleModel::ALL` without a file spelling (the choice would be remembered as something the file
+    /// refuses on the next launch).
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_file_spellings_and_the_core_models_are_the_same_three() {
+        use oracle_core::synth::ConsoleModel;
+        let mut spelled: Vec<&str> = ConsoleModel::ALL
+            .iter()
+            .map(|m| conf_spelling(*m))
+            .collect();
+        let mut accepted: Vec<&str> = config::CONSOLE_FILTER_VALUES.to_vec();
+        spelled.sort_unstable();
+        accepted.sort_unstable();
+        assert_eq!(
+            spelled, accepted,
+            "every model has a file spelling and vice versa"
+        );
+        for m in ConsoleModel::ALL {
+            let spelling = conf_spelling(m);
+            assert_eq!(
+                config::console_filter_value(spelling),
+                Some(spelling),
+                "{m:?}: the file accepts what we would write for it"
+            );
+            assert_eq!(
+                ConsoleModel::from_name(spelling),
+                Some(m),
+                "{m:?}: the spelling maps back to the same model"
+            );
+            // And the round trip a launch actually performs: conf value → model.
+            let cfg = config::Config {
+                console_filter: Some(spelling),
+                ..config::Config::default()
+            };
+            assert_eq!(remembered_console_filter(&cfg), Some(m));
+        }
+        assert_eq!(
+            remembered_console_filter(&config::Config::default()),
+            None,
+            "nothing chosen stays nothing chosen"
+        );
+    }
+
+    /// The cycle visits **every** revision and returns to where it started — a stepper that skipped one, or
+    /// one that stopped at the end, would leave a setting unreachable from the key the palette advertises.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn cycling_the_filter_visits_every_revision_and_wraps() {
+        use oracle_core::synth::ConsoleModel;
+        let start = PLAYER_DEFAULT_FILTER;
+        let mut seen = vec![start];
+        let mut m = start;
+        for _ in 0..ConsoleModel::ALL.len() - 1 {
+            m = next_console_model(m);
+            assert!(!seen.contains(&m), "{m:?} visited twice before the wrap");
+            seen.push(m);
+        }
+        assert_eq!(
+            seen.len(),
+            ConsoleModel::ALL.len(),
+            "every revision reachable"
+        );
+        assert_eq!(
+            next_console_model(m),
+            start,
+            "the last step wraps to where it started"
+        );
+    }
+
+    /// **The change is legible where it happens**: the toast fits a toast *whole* at the smallest window the
+    /// player runs at, so a listener never reads a cut sentence about the setting they just changed. The
+    /// budget comes from the overlay's own arithmetic, not a transcribed number.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_filter_toast_fits_a_toast_whole_at_the_native_floor() {
+        use oracle_core::synth::ConsoleModel;
+        // The 320x224 native picture, the floor below which the player cannot go.
+        let area = present::Rect {
+            x: 0,
+            y: 0,
+            w: MAX_WIDTH,
+            h: HEIGHT,
+        };
+        let px = overlay::Overlay::font_scale(area.h);
+        let margin = (2 * px).max(4);
+        let avail = overlay::Overlay::toast_text_avail(area, px, margin);
+        for m in ConsoleModel::ALL {
+            let toast = filter_toast(m);
+            assert_eq!(
+                overlay::fit_marked(&toast, avail, px).as_ref(),
+                toast.as_str(),
+                "{m:?}: the toast is cut at {avail}px ({} glyphs fit)",
+                1 + (avail - 5 * px) / (font::ADVANCE * px)
+            );
+            // It names the same label the status line shows, so the two readouts cannot disagree.
+            assert!(
+                toast.contains(filter_label(m)),
+                "{m:?}: the toast must name the status line's label: {toast:?}"
+            );
+        }
+    }
+
+    /// **The one-run override is never written back to the file.** `ORACLE_CONSOLE_FILTER` is read in exactly
+    /// one place, and the remembered value is assigned in exactly one place — from the *sink's* model, which
+    /// is what the listener actually hears — so an override cannot become a remembered choice by way of a
+    /// well-meaning "save what we resolved". Asserted against the source because the alternative is running
+    /// the whole `main` loop with a device attached, which no test here can do; the two counts below are what
+    /// a wiring mistake would move.
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_env_override_is_never_written_back_to_the_config() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("main.rs is readable from its own test");
+        // Production region only: the tests below deliberately mention both names.
+        let prod = &src[..src
+            .find("\n#[cfg(test)]")
+            .expect("main.rs has a test module")];
+        assert_eq!(
+            prod.matches("ORACLE_CONSOLE_FILTER\").ok()").count(),
+            1,
+            "the override is read in exactly one place (build_audio)"
+        );
+        let writes: Vec<&str> = prod
+            .lines()
+            .filter(|l| l.contains("cfg.console_filter ="))
+            .collect();
+        assert_eq!(
+            writes.len(),
+            1,
+            "the remembered choice is assigned in exactly one place: {writes:?}"
+        );
+        assert!(
+            writes[0].contains("conf_spelling("),
+            "what is remembered is spelled from a ConsoleModel, not from the environment: {:?}",
+            writes[0]
+        );
+        // The control: the phrase this searches for is really in the file (a renamed field would otherwise
+        // make the assertion above vacuously true at 0 — which the count catches — and this catches the
+        // inverse, a search string that never matched anything in the first place).
+        assert!(
+            prod.contains("resolve_console_filter(env.as_deref(), remembered)"),
+            "the startup resolution is wired through the pure precedence function"
+        );
+    }
+
     /// Design §7 Test 7 — the no-device fallback. `build_audio(None)` is the graceful path taken in a
     /// headless, /dev/snd-less environment: it must return `None` (audio disabled → video-only) and **never
     /// panic**. Injecting `None` makes this deterministic regardless of whether the host running the tests
@@ -2590,7 +3292,7 @@ mod tests {
     #[test]
     fn build_audio_without_device_is_video_only_not_a_panic() {
         assert!(
-            build_audio(None).is_none(),
+            build_audio(None, None).is_none(),
             "no output device must disable audio (video-only), never panic"
         );
     }
@@ -3169,7 +3871,7 @@ mod tests {
                 view,
                 &Status {
                     paused: name == "after-tv-wide",
-                    frame: 4211,
+                    draws: 4211,
                     slot: 3,
                     occupied,
                     volume: Some((7, 10, false)),
@@ -3310,6 +4012,6 @@ mod tests {
     #[cfg(feature = "audio")]
     #[test]
     fn start_audio_never_panics() {
-        let _ = start_audio();
+        let _ = start_audio(None);
     }
 }

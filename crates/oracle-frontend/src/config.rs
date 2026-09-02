@@ -47,6 +47,16 @@ pub struct Config {
     /// tool's feature, and a hardcoded array here would go stale the day that tool renames one, with
     /// nothing in this repo's gates to notice.
     pub symbol_watches: Vec<crate::symbol_watch::WatchSpec>,
+    /// The console **audio** output stage the listener chose, as one of [`CONSOLE_FILTER_VALUES`] — or
+    /// `None` when nothing has been chosen yet, so the player can say "default" rather than pretend a
+    /// fresh file remembered something (owner ruling d-20 `remember-choice`, empyrean `4e8e865b`: the
+    /// default stays the hardware filter, and the setting persists between runs the way volume does).
+    ///
+    /// A spelling rather than the core's `ConsoleModel`, for the same reason `volume` is a plain number:
+    /// this file must round-trip untouched in a build without the `audio` feature, and that build has no
+    /// `ConsoleModel` to name. The audio build maps the spelling through `ConsoleModel::from_name`, and a
+    /// test there pins the mapping total in both directions.
+    pub console_filter: Option<&'static str>,
     /// Keys this build does not recognise, kept verbatim and written back out (F-CONFIG-UNKNOWN-KEYS).
     /// Order is file order, so a save is a fixed point rather than a reshuffle. This is what makes
     /// "warn and continue" honest: without it, an older build reading a newer build's file warns
@@ -57,7 +67,7 @@ pub struct Config {
 /// Every key [`serialize`] emits and [`parse`] understands. Its one production use is filtering
 /// [`Config::unknown`] on the way out, so a remnant can never shadow a real key; `known_keys_are_
 /// all_parsed_and_all_emitted` is what stops it drifting from `parse`'s match arms.
-pub const KNOWN_KEYS: [&str; 8] = [
+pub const KNOWN_KEYS: [&str; 9] = [
     "volume",
     "muted",
     "aspect",
@@ -66,7 +76,21 @@ pub const KNOWN_KEYS: [&str; 8] = [
     "deadzone",
     "lenses",
     "symbol_watch",
+    "console_filter",
 ];
+
+/// The spellings `console_filter` accepts and writes, in the order the player cycles them: Model 1
+/// VA0-VA2, Model 1 VA3-VA6 / Model 2, and no output stage at all. They are the short aliases
+/// `ConsoleModel::from_name` already understands (`ORACLE_CONSOLE_FILTER` takes the same three), kept
+/// here as plain text so a no-audio build can still carry the value through a load-save cycle.
+pub const CONSOLE_FILTER_VALUES: [&str; 3] = ["va0", "va3", "off"];
+
+/// The canonical spelling for a `console_filter` value, or `None` for anything outside
+/// [`CONSOLE_FILTER_VALUES`]. Exact match on purpose: the file is written by this program, and a hand
+/// edit that misses gets a warning naming all three rather than a guess.
+pub fn console_filter_value(s: &str) -> Option<&'static str> {
+    CONSOLE_FILTER_VALUES.iter().copied().find(|v| *v == s)
+}
 
 /// How many unrecognised names a collapsed warning lists before it gives up and says "…".
 const UNKNOWN_PREVIEW: usize = 3;
@@ -112,6 +136,8 @@ impl Default for Config {
             // Nothing watched until someone asks. A watch is a debugging aid for a specific build, not a
             // default anyone would want inherited.
             symbol_watches: Vec::new(),
+            // Nothing chosen: the audio build applies its own default and says so.
+            console_filter: None,
             unknown: Vec::new(),
         }
     }
@@ -195,6 +221,17 @@ pub fn parse(text: &str) -> Result<Parsed, usize> {
                 Ok(None) => {}
                 Err(why) => warnings.push(format!("config: ignored {key} ({why})")),
             },
+            // Blank is how the key round-trips before anyone has chosen; it means "not chosen", not "off".
+            "console_filter" => match value {
+                "" => c.console_filter = None,
+                v => match console_filter_value(v) {
+                    Some(canon) => c.console_filter = Some(canon),
+                    None => warnings.push(format!(
+                        "config: ignored {key} (want {}, got `{value}`)",
+                        CONSOLE_FILTER_VALUES.join("|")
+                    )),
+                },
+            },
             _ => c.unknown.push((key.to_string(), value.to_string())),
         }
     }
@@ -249,6 +286,9 @@ pub fn serialize(c: &Config) -> String {
             );
         }
     }
+    // Same blank-value convention: the key is always present so it can be discovered, and blank means
+    // "nothing chosen yet" so the audio build keeps saying "default" until the listener picks.
+    let _ = writeln!(out, "console_filter = {}", c.console_filter.unwrap_or(""));
     for (k, v) in c
         .unknown
         .iter()
@@ -366,6 +406,7 @@ mod tests {
                 symbol: "Debug_Scene_Index".to_string(),
                 labels: vec!["Fire BG".to_string(), "Haze".to_string()],
             }],
+            console_filter: Some("va3"),
             unknown: vec![("kept".to_string(), "value".to_string())],
         };
         let p = parse(&serialize(&c)).expect("own output must parse");
@@ -429,7 +470,7 @@ mod tests {
         // "Verbatim **and last**": every known key is written before the remnant, so a stale
         // unknown line can never sit above — and therefore never be overridden by — a real one.
         let last_known = out
-            .find("lenses = ")
+            .find("console_filter = ")
             .expect("the last known key is emitted");
         assert!(
             out.find("lens_from_2027 = ").expect("remnant emitted") > last_known,
@@ -708,9 +749,58 @@ mod tests {
             "deadzone",
             "lenses",
             "symbol_watch",
+            "console_filter",
         ] {
             assert!(s.contains(key), "serialize dropped `{key}`");
         }
+    }
+
+    /// d-20 `remember-choice`: the chosen output stage comes back exactly as written, every accepted
+    /// spelling round-trips, a blank means "nothing chosen" (never "off"), and an unknown spelling warns
+    /// naming all three and leaves the choice unmade. The accepted set is read from
+    /// [`CONSOLE_FILTER_VALUES`] rather than restated, so this cannot agree with a stale copy of it.
+    #[test]
+    fn the_console_filter_round_trips_and_a_bad_spelling_is_named_not_guessed() {
+        for v in CONSOLE_FILTER_VALUES {
+            let c = Config {
+                console_filter: Some(v),
+                ..Config::default()
+            };
+            let out = serialize(&c);
+            assert!(
+                out.contains(&format!("\nconsole_filter = {v}\n")),
+                "{v}: written as its own line: {out:?}"
+            );
+            let p = parse(&out).expect("own output parses");
+            assert_eq!(p.config.console_filter, Some(v), "{v}: remembered");
+            assert!(p.warnings.is_empty(), "{v}: no warning: {:?}", p.warnings);
+        }
+        let blank = parse("console_filter = \n").expect("blank is not corruption");
+        assert_eq!(blank.config.console_filter, None, "blank is 'not chosen'");
+        assert!(blank.warnings.is_empty(), "{:?}", blank.warnings);
+
+        let bad =
+            parse("console_filter = va7\nvolume = 4\n").expect("a bad value is not corruption");
+        assert_eq!(
+            bad.config.console_filter, None,
+            "unknown leaves the choice unmade"
+        );
+        assert_eq!(bad.config.volume, 4, "the rest of the file still loads");
+        assert_eq!(
+            bad.warnings,
+            vec!["config: ignored console_filter (want va0|va3|off, got `va7`)".to_string()],
+            "the warning names every accepted spelling and the offender"
+        );
+        // The control: the spelling set the warning names is the one the parser accepts — a fourth value
+        // added to one and not the other shows up here as a mismatch.
+        assert_eq!(
+            CONSOLE_FILTER_VALUES.join("|"),
+            "va0|va3|off",
+            "the accepted spellings (update the warning text assertion above with them)"
+        );
+        // Case and aliases are not guessed at: `ORACLE_CONSOLE_FILTER` may take `raw`, the file does not.
+        assert_eq!(console_filter_value("VA0"), None);
+        assert_eq!(console_filter_value("raw"), None);
     }
 
     #[test]
