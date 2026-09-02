@@ -1062,6 +1062,120 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
     rom
 }
 
+// ===================================================================================================
+// The stop-precision fixture (contract §8 item 24, §11.31)
+// ===================================================================================================
+
+/// Where [`build_stop_precision`]'s `STORE` instruction writes the tick counter. Outside every other
+/// fixture's stirred range and never read by the ROM.
+pub const SP_STORE_ADDR: u32 = 0x00FF_8000;
+
+/// `main` — masks interrupts, then falls into the loop. Executed once.
+pub const SP_MAIN: u32 = 0x0000_0200;
+/// The loop head, `moveq #0, D0`. **`D0.w` is 7 here and 0 one instruction later**, which is the whole
+/// discriminator this fixture exists to provide.
+pub const SP_LOOP: u32 = 0x0000_0204;
+/// **The probe instruction**: `addq.w #1, D0`, whose *only* observable effect is `D0 += 1`, taking `D0.w`
+/// from `0` (pre-trigger) to `1` (post-trigger). Item 24's "an instruction with a single observable
+/// register effect" is this address.
+pub const SP_PROBE: u32 = 0x0000_0206;
+/// `addq.w #1, D1` — the tick. `D1` is the loop's iteration counter and the value `STORE` publishes.
+pub const SP_TICK: u32 = 0x0000_020C;
+/// **The store instruction**: `move.w D1, ($00FF8000).L`. The access a watchpoint arms on, and the one
+/// whose commit is observable *in memory* rather than in a register: before it, `mem16[SP_STORE_ADDR]`
+/// is `D1.w - 1`; after it, `D1.w`.
+pub const SP_STORE: u32 = 0x0000_020E;
+/// `bra.s SP_LOOP`. The one instruction in the loop with no observable effect at all — see
+/// [`SP_BOUNDARIES`] for what that costs.
+pub const SP_BRANCH: u32 = 0x0000_0214;
+
+/// The `D0.w` value the probe reads (`addq.w #1, D0` has not executed).
+pub const SP_PROBE_PRE_D0: u16 = 0;
+/// The `D0.w` value the probe leaves (`addq.w #1, D0` has fully committed).
+pub const SP_PROBE_POST_D0: u16 = 1;
+
+/// **Every instruction boundary in [`build_stop_precision`]'s loop, and the machine state that
+/// characterises "the instruction at this PC has NOT executed".**
+///
+/// Rows are `(pc, d0_low_word, mem16_minus_d1_low_word)`, all derived from the encodings written by the
+/// builder below and from nothing else. A stop that reports `pc` while the machine's `D0`/`D1`/memory do
+/// not satisfy that row's pair is a stop whose reported PC does not describe the machine — which is
+/// exactly the failure `stopPrecision` exists to make visible.
+///
+/// **What this table cannot separate, said plainly rather than left to be discovered.** `bra.s` has no
+/// observable effect, so [`SP_BRANCH`] and [`SP_LOOP`] — which are adjacent, the branch's target being
+/// the head — carry the *same* pair `(7, 0)`. A stop misreported by exactly one instruction across that
+/// edge is invisible here. Every other adjacent pair in the loop differs, and the reasons whose precision
+/// turns on a triggering address ([`SP_PROBE`] for a PC-armed stop, [`SP_STORE`] for an access-armed one)
+/// are checked by their own pre/post discriminator rather than by this table.
+pub const SP_BOUNDARIES: &[(u32, u16, i32)] = &[
+    (SP_LOOP, 7, 0),     // moveq  #0, D0   — D0 still holds the previous pass's 7
+    (SP_PROBE, 0, 0),    // addq.w #1, D0   — THE probe: pre-trigger D0 is 0
+    (0x0000_0208, 1, 0), // addq.w #2, D0
+    (0x0000_020A, 3, 0), // addq.w #4, D0
+    (SP_TICK, 7, 0),     // addq.w #1, D1   — D1 not yet ticked, so mem == D1
+    (SP_STORE, 7, -1),   // move.w D1, mem  — D1 ticked, the store not yet committed
+    (SP_BRANCH, 7, 0),   // bra.s  SP_LOOP  — the store committed, mem == D1 again
+];
+
+/// Build the **stop-precision fixture ROM** — a deterministic loop whose every instruction boundary has a
+/// distinguishable machine state, built for contract §8 item 24.
+///
+/// ```text
+/// $000200 main:  move.w #$2700, SR        ; supervisor, T=0, interrupts MASKED
+/// $000204 loop:  moveq  #0, D0            ; D0 <- 0
+/// $000206        addq.w #1, D0            ; D0 <- 1     [PROBE]  single observable register effect
+/// $000208        addq.w #2, D0            ; D0 <- 3
+/// $00020A        addq.w #4, D0            ; D0 <- 7
+/// $00020C        addq.w #1, D1            ; D1 += 1     [TICK]
+/// $00020E        move.w D1, ($00FF8000).L ; mem <- D1   [STORE]  the access a watch arms on
+/// $000214        bra.s  loop
+/// ```
+///
+/// **Why interrupts are masked** (`#$2700`, where [`build`] uses `#$2000`): a VInt taken mid-loop would
+/// park the PC in a handler this fixture has no vector for, and every assertion below is of the form
+/// "the machine is at one of seven known boundaries". A fixture whose PC can leave the table would make a
+/// *measurement* failure indistinguishable from a *scheduling* one.
+///
+/// **Why `D0` and not memory for the probe.** Item 24 asks for "a single observable register effect", and
+/// `addq.w #1, D0` is the smallest instruction that has exactly one: no memory traffic, no flags a client
+/// can read, one register, one increment. `D1`/memory carry the *second* probe, for the access-armed
+/// stop, where the observable commit is the write itself.
+#[doc(hidden)]
+pub fn build_stop_precision() -> Vec<u8> {
+    let mut rom = vec![0u8; ROM_LEN];
+    put_long(&mut rom, 0x0, INITIAL_SSP);
+    put_long(&mut rom, 0x4, SP_MAIN);
+
+    put_word(&mut rom, SP_MAIN, 0x46FC); // move.w #imm, SR
+    put_word(&mut rom, SP_MAIN + 2, 0x2700); //   #$2700 — supervisor, interrupts masked
+
+    put_word(&mut rom, SP_LOOP, 0x7000); // moveq  #0, D0
+    put_word(&mut rom, SP_PROBE, 0x5240); // addq.w #1, D0   [PROBE]
+    put_word(&mut rom, 0x208, 0x5440); // addq.w #2, D0
+    put_word(&mut rom, 0x20A, 0x5840); // addq.w #4, D0
+    put_word(&mut rom, SP_TICK, 0x5241); // addq.w #1, D1   [TICK]
+    put_word(&mut rom, SP_STORE, 0x33C1); // move.w D1, (xxx).L  [STORE]
+    put_long(&mut rom, SP_STORE + 2, SP_STORE_ADDR);
+    put_word(
+        &mut rom,
+        SP_BRANCH,
+        0x6000 | u16::from(short_disp(SP_LOOP, SP_BRANCH)),
+    );
+
+    // The table above is an expectation about the bytes written just now; assert the two agree rather
+    // than trusting a comment. An edit that moves an instruction and forgets a row fails HERE, loudly,
+    // instead of turning an item-24 assertion into a claim about a different program.
+    debug_assert!(
+        SP_BOUNDARIES.iter().all(|(pc, _, _)| {
+            let at = *pc as usize;
+            at + 1 < rom.len() && !(rom[at] == 0 && rom[at + 1] == 0)
+        }),
+        "every SP_BOUNDARIES row must name an address this builder actually encoded"
+    );
+    rom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,6 +1211,85 @@ mod tests {
         assert_eq!(rd_word(&rom, 0x218), 0x6000, "bra.w");
         assert_eq!(rd_word(&rom, 0x288), 0x4E72, "stop");
         assert_eq!(rd_word(&rom, 0x2A8), 0x4E73, "rte");
+    }
+
+    #[test]
+    fn stop_precision_fixture_encodes_the_instructions_its_table_describes() {
+        let rom = build_stop_precision();
+        assert_eq!(rd_long(&rom, 0x0), INITIAL_SSP, "reset SSP");
+        assert_eq!(rd_long(&rom, 0x4), SP_MAIN, "reset PC");
+        assert_eq!(rd_word(&rom, SP_MAIN as usize), 0x46FC, "move.w #imm,SR");
+        assert_eq!(
+            rd_word(&rom, SP_MAIN as usize + 2),
+            0x2700,
+            "interrupts MASKED — the PC must not be able to leave the loop"
+        );
+        assert_eq!(rd_word(&rom, SP_LOOP as usize), 0x7000, "moveq #0,D0");
+        assert_eq!(rd_word(&rom, SP_PROBE as usize), 0x5240, "addq.w #1,D0");
+        assert_eq!(rd_word(&rom, 0x208), 0x5440, "addq.w #2,D0");
+        assert_eq!(rd_word(&rom, 0x20A), 0x5840, "addq.w #4,D0");
+        assert_eq!(rd_word(&rom, SP_TICK as usize), 0x5241, "addq.w #1,D1");
+        assert_eq!(
+            rd_word(&rom, SP_STORE as usize),
+            0x33C1,
+            "move.w D1,(xxx).L"
+        );
+        assert_eq!(rd_long(&rom, SP_STORE as usize + 2), SP_STORE_ADDR);
+        assert_eq!(rd_word(&rom, SP_BRANCH as usize) >> 8, 0x60, "bra.s");
+    }
+
+    /// **The item-24 fixture's own ground truth, measured on the real CPU with no server in the way.**
+    ///
+    /// Drives [`build_stop_precision`] one instruction at a time and asserts that at *every* boundary the
+    /// machine satisfies the [`SP_BOUNDARIES`] row for the PC it is actually at. That is what licenses the
+    /// Aether-side item-24 test to read a reported PC and a register file and conclude something about the
+    /// relationship between them: the table is not an assumption there, it is proven here.
+    #[test]
+    fn stop_precision_fixture_matches_its_boundary_table_on_the_real_cpu() {
+        use crate::system::System;
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(build_stop_precision());
+        sys.reset();
+
+        // Settle: the first pass through `main` and one whole loop, so `D0`/`D1`/memory are in the steady
+        // state the table describes rather than in their power-on values.
+        for _ in 0..16 {
+            sys.step_instruction();
+        }
+
+        let table: std::collections::HashMap<u32, (u16, i32)> = SP_BOUNDARIES
+            .iter()
+            .map(|(pc, d0, delta)| (*pc, (*d0, *delta)))
+            .collect();
+
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..64 {
+            let pc = sys.cpu_regs().pc;
+            let (want_d0, want_delta) = *table.get(&pc).unwrap_or_else(|| {
+                panic!(
+                    "step {i}: the fixture left its loop — PC {pc:#010X} is in no SP_BOUNDARIES row. \
+                     Interrupts are masked, so this means the ROM changed and the table did not."
+                )
+            });
+            let regs = sys.cpu_regs();
+            let d0 = regs.d[0] as u16;
+            let d1 = regs.d[1] as u16;
+            let at = (SP_STORE_ADDR & 0xFFFF) as usize;
+            let mem = ((sys.ram()[at] as u16) << 8) | sys.ram()[at + 1] as u16;
+            assert_eq!(d0, want_d0, "step {i} at {pc:#010X}: D0.w");
+            assert_eq!(
+                mem.wrapping_sub(d1) as i16 as i32,
+                want_delta,
+                "step {i} at {pc:#010X}: mem16[{SP_STORE_ADDR:#X}] - D1.w (mem={mem:#06X} D1={d1:#06X})"
+            );
+            seen.insert(pc);
+            sys.step_instruction();
+        }
+        assert_eq!(
+            seen.len(),
+            SP_BOUNDARIES.len(),
+            "64 steps must visit every boundary in the table; visited {seen:#X?}"
+        );
     }
 
     /// Zeroed registers — the power-on state before the reset recipe populates SSP/PC/prefetch.
