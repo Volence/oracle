@@ -100,7 +100,11 @@ pub struct Chip {
     pub paused: bool,
 }
 
-/// Compact three lines — `PC`, `SR`, frame — or eleven when `expanded` adds the register file.
+/// Compact three lines — `PC`, `SR`, the draw tally — or eleven when `expanded` adds the register file.
+///
+/// The tally is the window's `DRAWS n` (see [`crate::overlay::Status::draws`]): how many frames this window
+/// has drawn, not where the machine is. Spelled the same here as on the status line so that the two
+/// readouts cannot be read as different numbers.
 ///
 /// The PC is symbolised through the same `resolve_within(_, MAX_SYMBOL_DISPLACEMENT)` the watch
 /// log and the ticker use, and falls back to raw hex: a name 4 KiB past its symbol would be
@@ -113,7 +117,7 @@ pub struct Chip {
 pub fn model(
     regs: &Registers,
     symbols: Option<&SymbolTable>,
-    frame: u64,
+    draws: u64,
     paused: bool,
     expanded: bool,
 ) -> Chip {
@@ -129,7 +133,7 @@ pub fn model(
             if regs.supervisor() { "S" } else { "U" },
             regs.int_mask()
         ),
-        format!("F {frame}"),
+        format!("DRAWS {draws}"),
     ];
     if expanded {
         // Two registers to a line: sixteen single-register rows would be taller than the picture
@@ -368,7 +372,10 @@ mod tests {
         assert_eq!(c.lines.len(), COMPACT_LINES, "compact is three lines");
         assert_eq!(c.lines[0], "PC $001234");
         assert_eq!(c.lines[1], "SR $2700 S7", "supervisor, mask 7");
-        assert_eq!(c.lines[2], "F 42", "the frame counter is shown");
+        assert_eq!(
+            c.lines[2], "DRAWS 42",
+            "the draw tally is shown, labelled as a tally (L-08)"
+        );
         assert!(!c.paused);
     }
 

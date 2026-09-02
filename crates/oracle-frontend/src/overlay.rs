@@ -91,7 +91,12 @@ impl Toast {
 #[derive(Clone, Debug, Default)]
 pub struct Status {
     pub paused: bool,
-    pub frame: u64,
+    /// **How many frames this window has drawn** since its last reset or ROM swap — a tally, not a
+    /// position. It counts the run loop's own iterations and the ones a bus client drives, and a
+    /// save-state load leaves it alone; the bus's `frame` is derived from the emulated clock and answers a
+    /// different question. It therefore renders as `DRAWS n`, never as `F n`, so that a reader cannot join
+    /// it to `frameToken` (ledger L-08: relabel the status line, do NOT sync the counter).
+    pub draws: u64,
     /// The selected save-state slot.
     pub slot: usize,
     /// Which slots have a file on disk. Re-probed only when it can have changed (a save, a load, a slot
@@ -443,7 +448,7 @@ impl Overlay {
         })
     }
 
-    /// The persistent status line (F3): slot strip, volume, filter, aspect, native size, frame counter.
+    /// The persistent status line (F3): slot strip, volume, filter, aspect, native size, draw tally.
     fn draw_status_line(
         &self,
         c: &mut font::Canvas,
@@ -642,8 +647,11 @@ fn fade(color: u32, alpha: u8) -> u32 {
 /// **Field order is truncation order.** [`fit`] cuts this from the right and says nothing about what it
 /// removed, so the sequence below is a priority list rather than a layout: the two fields that answer *"is
 /// this window lying to me"* — whether the bus is up, and which output stage is colouring the sound — come
-/// before the three that merely describe the picture (aspect, native size, frame counter), because those
+/// before the three that merely describe the picture (aspect, native size, draw tally), because those
 /// three are re-derivable by looking at the window and the first two are not.
+///
+/// The tally's label is `DRAWS`, chosen so that it cannot be read as the bus's `frame` (ledger L-08): it
+/// counts what this window has drawn, and says nothing about where the machine is.
 pub fn status_text(st: &Status) -> String {
     let mut s = String::new();
     if let Some((v, max, muted)) = st.volume {
@@ -662,8 +670,8 @@ pub fn status_text(st: &Status) -> String {
         s.push_str(&format!("AUDIO {f} "));
     }
     s.push_str(&format!(
-        "{} {}X{} F{}",
-        st.aspect, st.native.0, st.native.1, st.frame
+        "{} {}X{} DRAWS {}",
+        st.aspect, st.native.0, st.native.1, st.draws
     ));
     s
 }
@@ -880,7 +888,7 @@ mod tests {
     fn status() -> Status {
         Status {
             paused: false,
-            frame: 1234,
+            draws: 1234,
             slot: 3,
             occupied: [false; SLOT_COUNT],
             volume: Some((7, 10, false)),
@@ -1127,7 +1135,7 @@ mod tests {
     #[test]
     fn the_status_text_reports_the_steerable_state() {
         let s = status_text(&status());
-        for want in ["VOL 7/10", "VA0-VA2", "4:3", "320X224", "F1234"] {
+        for want in ["VOL 7/10", "VA0-VA2", "4:3", "320X224", "DRAWS 1234"] {
             assert!(s.contains(want), "status line {s:?} is missing {want:?}");
         }
         let mut muted = status();
@@ -1141,6 +1149,37 @@ mod tests {
         silent.filter = None;
         let q = status_text(&silent);
         assert!(!q.contains("VOL") && !q.contains("MUTE"));
+    }
+
+    /// **The draw tally is labelled as a tally, and nothing on the line can be read as a frame position.**
+    ///
+    /// Ledger L-08 (`docs/2026-08-22-unadjudicated-decision-ledger.md`) ruled the old `F1234` a RELABEL,
+    /// not a sync: the number is what this window has drawn since its last reset or ROM swap — local runs
+    /// and bus-driven ones alike, carried unchanged across a save-state load — and never the bus's
+    /// clock-derived `frame`, so a reader joining the two was reading a machine coordinate off a liveness
+    /// signal. The whole string is asserted because the surface is fixed-width: a fragment check would stay
+    /// green if the old label survived somewhere else on the line.
+    #[test]
+    fn the_draw_tally_is_labelled_as_a_tally_and_never_as_a_frame() {
+        let s = status_text(&status());
+        assert_eq!(
+            s, "VOL 7/10 AETHER OFF AUDIO VA0-VA2 4:3 320X224 DRAWS 1234",
+            "the fixture's fields, in truncation order, ending in the draw tally"
+        );
+        // The control: no word on the line is the old `F<digits>` spelling, and none says FRAME.
+        let frame_like: Vec<&str> = s
+            .split_whitespace()
+            .filter(|w| {
+                w.eq_ignore_ascii_case("frame")
+                    || (w.len() > 1
+                        && w.starts_with('F')
+                        && w[1..].chars().all(|c| c.is_ascii_digit()))
+            })
+            .collect();
+        assert!(
+            frame_like.is_empty(),
+            "these words read as a frame position: {frame_like:?} in {s:?}"
+        );
     }
 
     /// **The audio revision never appears without the word that says it is audio.** The bare `MODEL1-VA0-VA2`
@@ -1192,24 +1231,24 @@ mod tests {
         let full = status_text(&st);
         let px = 1;
         let widest = font::text_width(&full) * px + 8;
-        let mut ever_cut_the_frame_while_keeping_the_bus = false;
+        let mut ever_cut_the_tally_while_keeping_the_bus = false;
         for avail in 0..=widest {
             let line = fit(&full, avail, px);
-            if line.contains("F1234") {
+            if line.contains("DRAWS 1234") {
                 assert!(
                     line.contains("AETHER OFF") && line.contains("AUDIO VA0-VA2"),
-                    "at {avail}px the frame counter survived but an honesty field did not: {line:?}"
+                    "at {avail}px the draw tally survived but an honesty field did not: {line:?}"
                 );
             }
-            if line.contains("AETHER OFF") && !line.contains("F1234") {
-                ever_cut_the_frame_while_keeping_the_bus = true;
+            if line.contains("AETHER OFF") && !line.contains("DRAWS 1234") {
+                ever_cut_the_tally_while_keeping_the_bus = true;
             }
         }
         // Without this the test above is vacuous: it would also pass if the line never truncated at all, or
         // if every field always appeared together. This is the case the ordering exists to produce.
         assert!(
-            ever_cut_the_frame_while_keeping_the_bus,
-            "no width drops the frame counter while keeping the bus state — the ordering buys nothing"
+            ever_cut_the_tally_while_keeping_the_bus,
+            "no width drops the draw tally while keeping the bus state — the ordering buys nothing"
         );
     }
 
@@ -1237,15 +1276,51 @@ mod tests {
                 .unwrap_or_else(|| panic!("the slot strip should fit at {win_h}"));
             fit(&full, text_avail, px).to_string()
         };
-        // A 2x window and everything above it: the entire line, frame counter included. Note 448 — before
-        // this change even a 4x window lost `F1234` and cut the resolution to `320X2`.
-        for win_h in [448usize, 672, 896, 1080, 1440] {
+        // A 2x window and everything above it: the entire line, draw tally included. Note 448 — before
+        // the status line dropped a font step even a 4x window lost the tally and cut the resolution to
+        // `320X2`.
+        for win_h in [448usize, 672, 1080, 1440] {
             assert_eq!(
                 rendered(win_h),
                 full,
                 "a {win_h}px-tall picture should show the whole status line"
             );
         }
+        // **896 is a dip, not a slope, and it is stated rather than asserted away.** `status_font_scale`
+        // steps from 2 to 3 at exactly 896 while the picture grows only 4:3 — so the budget in *glyphs*
+        // falls from 59 (at 672) to 51 there before climbing again, and 51 is one glyph short of the
+        // 56-glyph line the `DRAWS` label produces. The five cut glyphs are the tally's, which is what the
+        // field order exists to arrange; both honesty fields survive.
+        //
+        // The row this replaces claimed the whole line survived here, and that claim was true only of a
+        // FOUR-digit fixture: the control below shows the old `F` label breaking the same row at six
+        // digits, which every session reaches in about seventeen minutes. It was a property of the test
+        // data, not of the player.
+        let dip = rendered(896);
+        assert_eq!(
+            dip, "VOL 7/10 AETHER OFF AUDIO VA0-VA2 4:3 320X224 DRAWS",
+            "at 896 the tally's digits are what the 51-glyph budget cuts"
+        );
+        assert!(
+            dip.contains("AETHER OFF") && dip.contains("AUDIO VA0-VA2"),
+            "the honesty fields outlive the tally at the dip: {dip:?}"
+        );
+        let six_digits = {
+            let mut st = status();
+            st.draws = 123_456;
+            let full = status_text(&st);
+            let px = Overlay::status_font_scale(896);
+            let margin = (2 * Overlay::font_scale(896)).max(4);
+            let avail = (896 * 4 / 3usize).saturating_sub(2 * margin);
+            let text_avail = status_text_avail(avail, px).expect("the slot strip fits at 896");
+            (font::text_width(&full) * px > text_avail, full.len())
+        };
+        assert!(
+            six_digits.0,
+            "the control: even a five-glyph field overflows 896 at six digits ({} chars) — the row this \
+             replaced was pinning the fixture's digit count, not the player's behaviour",
+            six_digits.1 - 5
+        );
         // **The floor, asserted rather than hidden.** At the native 224px height there is no step left to
         // drop, so the line still truncates — and this row states exactly how far it gets, so that a future
         // change which makes it *worse* fails here instead of passing quietly.
@@ -1255,7 +1330,7 @@ mod tests {
             "even at the floor the two honesty fields survive, being ordered first: {smallest:?}"
         );
         assert!(
-            !smallest.contains("F1234"),
+            !smallest.contains("DRAWS 1234"),
             "if the floor now fits the whole line, this test's premise has changed — re-measure it \
              rather than deleting the row: {smallest:?}"
         );
@@ -1864,7 +1939,7 @@ mod tests {
         let mut o = Overlay::new();
         o.status_line = true;
 
-        for h in [448usize, 672, 896] {
+        for h in [448usize, 672, 1080] {
             let v = o.text_surfaces(whole(h * 4 / 3, h), &st);
             let s = only(&v, crate::screen_text::Kind::StatusLine);
             assert_eq!(
@@ -1877,6 +1952,24 @@ mod tests {
                  regressed and this is where it is visible"
             );
         }
+
+        // **896 is the budget's dip** — `status_font_scale` steps 2→3 there while the picture grows only
+        // 4:3, so the line's budget in glyphs falls to 51 before climbing again (see
+        // `the_whole_status_line_survives_at_the_sizes_the_player_actually_uses`, which measures it). The
+        // readout's job is the same here as anywhere: report the prefix that reached the glass, and say
+        // that it is a prefix. Asserted whole, because "it truncated" is not the claim — *how far it got*
+        // is, and a change that cut one field more would otherwise pass here.
+        let v = o.text_surfaces(whole(896 * 4 / 3, 896), &st);
+        let s = only(&v, crate::screen_text::Kind::StatusLine);
+        assert_eq!(s.text, full, "896: the source is still the whole line");
+        assert_eq!(
+            s.rendered, "VOL 7/10 AETHER OFF AUDIO VA0-VA2 4:3 320X224 DRAWS",
+            "896: the tally's digits are what the 51-glyph budget cuts"
+        );
+        assert!(
+            full.starts_with(&s.rendered) && s.rendered.len() < full.len(),
+            "896: what is reported must be a strict prefix of what was composed"
+        );
 
         // The floor. The line does not fit here, and the readout must say so rather than reporting the
         // message as though it were on screen.

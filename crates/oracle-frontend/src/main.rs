@@ -44,7 +44,7 @@
 //! | `-` / `=`         | output volume down / up (audio builds; repeats while held) |
 //! | M                 | mute toggle (audio builds; remembers the volume level) |
 //! | F                 | cycle the console audio output stage VA0-VA2 → VA3-VA6 → raw (audio builds; remembered in `player.conf`, see Settings) |
-//! | F3                | toggle the on-screen status line (slot strip, volume, bus, audio filter, aspect, frame) |
+//! | F3                | toggle the on-screen status line (slot strip, volume, bus, audio filter, aspect, `DRAWS n` draw tally) |
 //! | Left mouse click  | watch what is under the clicked pixel — plane tile, **sprite**, or backdrop |
 //! | W                 | dump recorded watch hits (seq/frame/pc/addr/old→new/via, PC symbolised) + drop count |
 //! | C                 | clear the watch (stop recording write hits) |
@@ -74,8 +74,8 @@
 //! Five read-only overlays ([`lens`]), rebuilt from live machine state every frame and drawn over
 //! the picture but beneath the palette and the toasts: a **watch ticker** along the bottom (the
 //! newest hits plus the armed and dropped counts, read non-destructively so switching a lens on can
-//! never delete a socket client's evidence); a **CPU chip** top-right (PC as a symbol, SR, frame
-//! counter), which `cpu_regs` expands into the full D0-D7/A0-A7 block one font scale smaller; a
+//! never delete a socket client's evidence); a **CPU chip** top-right (PC as a symbol, SR, the
+//! `DRAWS` tally), which `cpu_regs` expands into the full D0-D7/A0-A7 block one font scale smaller; a
 //! **CRAM strip** top-left (the 64 live palette entries, 4x16); **sprite outlines** around the
 //! sprites the hardware actually link-walks, not the 80 raw attribute-table slots, most of which
 //! hold whatever was last written there; and a **hover callout** naming what is under the cursor.
@@ -1358,7 +1358,12 @@ fn main() {
     let mut screen: Vec<u32> = Vec::new();
     let mut xmap: Vec<usize> = Vec::new();
     let mut paused = false;
-    let mut frame: u64 = 0;
+    // How many frames this window has DRAWN since its last reset or ROM swap: the loop's own iterations
+    // plus the ones a bus client drives, untouched by a save-state load. Shown as `DRAWS n` on the status
+    // line, the title bar and the CPU chip — a tally, deliberately not the bus's clock-derived `frame`,
+    // which freezes at a pause and so says nothing about whether this window is still alive (ledger L-08:
+    // relabel the readout, do NOT sync the counter).
+    let mut draws: u64 = 0;
 
     // On-screen notifications, status line and the paused banner. Everything the loop `println!`s is also
     // pushed here (see `notify`), because the window is where the user is looking.
@@ -1788,7 +1793,7 @@ fn main() {
                     // The watch (if armed) stays armed on the same VRAM range; hits recorded before the load
                     // remain in the log — `C` clears them.
                     println!(
-                        "state: loaded slot {state_slot} from {} (frame counter continues at {frame})",
+                        "state: loaded slot {state_slot} from {} (draw tally continues at {draws})",
                         state_path.display()
                     );
                     ov.push(format!("LOADED SLOT {state_slot}"), ACCENT);
@@ -1807,7 +1812,7 @@ fn main() {
                         sram_save_countdown = Some(SRAM_AUTOSAVE_DEBOUNCE_FRAMES);
                     }
                     sys.reset();
-                    frame = 0; // the machine's own clock restarts, so the displayed counter follows it
+                    draws = 0; // the machine's own clock restarts, so the displayed tally follows it
                     cap.clear(); // the line stream restarts from the reset vector — drop the pre-reset frame
                     #[cfg(feature = "audio")]
                     resync_audio(audio.as_mut());
@@ -2009,7 +2014,7 @@ fn main() {
                 for p in problems {
                     notify_err(&mut ov, p);
                 }
-                frame = 0;
+                draws = 0;
                 cap.clear(); // a different cartridge draws a different frame — drop the old one
                 #[cfg(feature = "audio")]
                 resync_audio(audio.as_mut());
@@ -2168,7 +2173,7 @@ fn main() {
             if let Some(addr) = bus::break_observed(brk) {
                 bus.record_break(addr);
             }
-            frame += 1;
+            draws += 1;
 
             // Take the frame the run just completed, width and all — an H32↔H40 switch rides along in the
             // capture's own per-line log, so nothing here re-queries the VDP. A run that completed no frame
@@ -2214,7 +2219,7 @@ fn main() {
             // A client advanced (or rewound) the machine behind the loop's back. That is the same class of
             // event as a save-state load, and it needs the same two repairs: audio belongs to a timeline
             // that has moved, and the capture is holding lines from before the jump.
-            frame += pumped.frames_advanced;
+            draws += pumped.frames_advanced;
             cap.clear();
             #[cfg(feature = "audio")]
             resync_audio(audio.as_mut());
@@ -2344,10 +2349,11 @@ fn main() {
             }
             None => &buf,
         };
+        // The same `DRAWS n` tally the status line and the CPU chip carry, spelled to match them.
         let title = if paused {
-            format!("Oracle — frame {frame} [PAUSED]")
+            format!("Oracle — draws {draws} [PAUSED]")
         } else {
-            format!("Oracle — frame {frame}")
+            format!("Oracle — draws {draws}")
         };
         window.set_title(&title);
 
@@ -2419,7 +2425,7 @@ fn main() {
                     sys: &sys,
                     wp,
                     symbols: symbols.as_ref(),
-                    frame,
+                    draws,
                     paused,
                     hover: hover_at,
                     profiler: lens::profile::View {
@@ -2445,7 +2451,7 @@ fn main() {
         palette.draw(&mut screen, win_w, win_h, present_view, &reg);
         let status = Status {
             paused,
-            frame,
+            draws,
             slot: state_slot,
             occupied: slots_on_disk,
             volume: vol,
@@ -2564,7 +2570,7 @@ mod tests {
 
             // The width half, at the geometry the player runs at — the whole reason the label is short.
             let st = Status {
-                frame: 1234,
+                draws: 1234,
                 volume: Some((7, 10, false)),
                 filter: Some(label),
                 aether: false,
@@ -2578,11 +2584,23 @@ mod tests {
                 let margin = (2 * Overlay::font_scale(win_h)).max(4);
                 let avail = (win_h * 4 / 3).saturating_sub(2 * margin);
                 let text_avail = status_text_avail(avail, px).expect("the slot strip fits");
-                assert_eq!(
-                    fit(&full, text_avail, px),
-                    full,
-                    "{model:?} as {label:?} does not fit a {win_h}px-tall picture"
+                let rendered = fit(&full, text_avail, px);
+                // **What is under test is the LABEL's width, not the line's.** The audio field is fourth of
+                // six and the draw tally is last, so at 896 — where `status_font_scale` steps 2→3 and the
+                // budget dips to 51 glyphs (measured in
+                // `the_whole_status_line_survives_at_the_sizes_the_player_actually_uses`) — it is the
+                // tally that is cut and never this label. Asserting the whole line here would make this
+                // test fail for a reason that has nothing to do with the revision names.
+                assert!(
+                    rendered.contains(&format!("AUDIO {label}")),
+                    "{model:?} as {label:?} does not fit a {win_h}px-tall picture: {rendered:?}"
                 );
+                if win_h != 896 {
+                    assert_eq!(
+                        rendered, full,
+                        "{model:?} as {label:?}: every size but the 896 dip shows the whole line"
+                    );
+                }
             }
         }
     }
@@ -3853,7 +3871,7 @@ mod tests {
                 view,
                 &Status {
                     paused: name == "after-tv-wide",
-                    frame: 4211,
+                    draws: 4211,
                     slot: 3,
                     occupied,
                     volume: Some((7, 10, false)),

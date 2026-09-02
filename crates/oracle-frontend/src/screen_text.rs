@@ -102,7 +102,7 @@ impl Surface {
     ///
     /// `unrenderable` is empty by construction and that is the honest answer, not a shortcut: the title bar
     /// is painted by the desktop with the desktop's font, so this build's 5×7 table says nothing about what
-    /// a reader sees there. Running `has_glyph` over it would report the em dash in `Oracle — frame N` as a
+    /// a reader sees there. Running `has_glyph` over it would report the em dash in `Oracle — draws N` as a
     /// hollow box, which is a claim about the wrong font.
     ///
     /// `rendered` equals `text` for the same reason: whatever elision the window manager applies to a title
@@ -223,12 +223,12 @@ mod tests {
     /// Running the font's predicate over a string the font never sees would report a defect that does not
     /// exist — a claim about the wrong font, and a wrong answer is worse than no answer here.
     ///
-    /// **Re-measured 2026-09-01.** The em dash in `Oracle — frame N` used to be the character with no 5×7
+    /// **Re-measured 2026-09-01.** The em dash in `Oracle — draws N` used to be the character with no 5×7
     /// glyph that made the point; it has one now (F-FONT-EMDASH), so the title carries a character the
     /// overlay font still cannot draw — the desktop's font can — and the premise is asserted on that one.
     #[test]
     fn the_title_bar_is_not_measured_against_a_font_that_never_draws_it() {
-        let title = "Oracle \u{2192} frame 12720 [PAUSED]";
+        let title = "Oracle \u{2192} draws 12720 [PAUSED]";
         assert!(
             !font::has_glyph('\u{2192}'),
             "premise: the overlay font has no arrow, which is exactly why this row exists"
@@ -477,7 +477,7 @@ mod tests {
             native: (320, 224),
             ..Status::default()
         };
-        let v = snapshot("Oracle \u{2014} frame 7", &ov, area, &st);
+        let v = snapshot("Oracle \u{2014} draws 7", &ov, area, &st);
 
         let kinds: Vec<Kind> = v.iter().map(|s| s.kind).collect();
         assert_eq!(
@@ -485,6 +485,6 @@ mod tests {
             vec![Kind::TitleBar, Kind::StatusLine, Kind::Toast],
             "back to front: the title bar, the status line, then the toasts"
         );
-        assert_eq!(v[0].text, "Oracle \u{2014} frame 7");
+        assert_eq!(v[0].text, "Oracle \u{2014} draws 7");
     }
 }

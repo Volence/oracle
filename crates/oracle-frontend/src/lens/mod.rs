@@ -154,10 +154,10 @@ pub struct FrameCtx<'a> {
     pub sys: &'a System,
     pub wp: &'a Watchpoints,
     pub symbols: Option<&'a SymbolTable>,
-    /// The run loop's own frame counter — the one the title bar and the status line already show.
-    /// `System` has no `frame()`, and inventing a second count that could disagree with the
+    /// The run loop's own draw tally (`DRAWS n`) — the one the title bar and the status line already
+    /// show. `System` has no `frame()`, and inventing a second count that could disagree with the
     /// window title would make the chip worse than useless while stepping.
-    pub frame: u64,
+    pub draws: u64,
     /// The run loop's `paused`, likewise authoritative for the UI: `System` has no `is_paused()`
     /// because pausing is a frontend idea, not a machine one.
     pub paused: bool,
@@ -273,7 +273,7 @@ pub fn models(set: LensSet, cx: &FrameCtx<'_>) -> Models {
             cpu::model(
                 cx.sys.cpu_regs(),
                 cx.symbols,
-                cx.frame,
+                cx.draws,
                 cx.paused,
                 set.is_on(LensId::CpuRegs),
             )
@@ -629,7 +629,7 @@ mod tests {
             sys,
             wp,
             symbols: None,
-            frame: 0,
+            draws: 0,
             paused,
             hover: None,
             profiler: profile::View {
@@ -1502,7 +1502,7 @@ mod tests {
                     sys: &sys,
                     wp: &wp,
                     symbols: Some(&symbols),
-                    frame: 7,
+                    draws: 7,
                     paused: false,
                     hover: None,
                     profiler: profile::View {
@@ -1608,7 +1608,7 @@ mod tests {
         }
         let st = crate::overlay::Status {
             paused,
-            frame: 1234,
+            draws: 1234,
             slot: 3,
             occupied: [false; crate::save_state::SLOT_COUNT],
             volume: Some((7, 10, false)),
@@ -1625,7 +1625,7 @@ mod tests {
                     sys,
                     wp: &wp,
                     symbols: None,
-                    frame: 1234,
+                    draws: 1234,
                     paused,
                     hover,
                     profiler: profile::View {
