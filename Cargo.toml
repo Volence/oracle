@@ -6,6 +6,14 @@ members = [
     "crates/oracle-frontend",
     "crates/oracle-replay",
 ]
+# THROWAWAY MEASUREMENT SPIKE — deliberately NOT a member.
+#
+# `crates/oracle-panels-spike` prices an egui/egui_dock/wgpu player rebuild. It is excluded rather than added
+# to `members` so that (a) egui/eframe/wgpu and their ~250 transitive crates never enter *this* workspace's
+# `Cargo.lock`, (b) `cargo test --workspace` neither builds nor runs it, and (c) `cargo tree -p oracle-core`
+# / `-p oracle-frontend` are provably unchanged. It path-depends on `oracle-core` (which is fine across an
+# exclusion boundary) and carries its own lock file.
+exclude = ["crates/oracle-panels-spike"]
 
 [workspace.package]
 edition = "2021"

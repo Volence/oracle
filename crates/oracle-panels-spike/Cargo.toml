@@ -1,0 +1,28 @@
+[package]
+name = "oracle-panels-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "THROWAWAY. Measures the frame loop under egui + egui_dock + wgpu, to price a player rebuild on that toolkit. Not part of the workspace; delete once the pricing is banked."
+
+# Its OWN workspace root. The root `Cargo.toml`'s `exclude` covers a build run from the repo root, but this
+# tree is also checked out as a git worktree UNDER `oracle/.claude/worktrees/`, where cargo walks past the
+# worktree's own root manifest and finds the parent checkout's. This empty table settles it either way: the
+# spike is its own workspace, with its own `Cargo.lock`, wherever it is built from.
+[workspace]
+
+[dependencies]
+# The emulation core, with the native synth on so the audio path is the real one.
+oracle-core = { path = "../oracle-core", features = ["synth"] }
+
+# The toolkit under test. These must NEVER appear in `oracle-core` or `oracle-frontend`; that is the whole
+# reason this crate is excluded from the workspace (see the root `Cargo.toml`).
+eframe = "0.36"
+egui = "0.36"
+egui_dock = "0.21"
+
+# The SAME audio substrate the player uses: `src/audio.rs` here is `#[path]`-included from
+# `crates/oracle-frontend/src/audio.rs`, byte for byte, so it needs exactly its two dependencies at exactly
+# the player's versions.
+ringbuf = "0.4"
+cpal = "0.15"
