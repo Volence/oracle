@@ -2218,6 +2218,9 @@ words. **One cross-lane question gets one card.** A second card does not add inf
 answer the same thing twice and lets the two answers diverge. *(`d-7-restated-3` is the companion card
 — how many quiet chains before review — provisionally ruled N=5.)*
 
+**Board row id: `SCHEMA-DRIFT-NIGHTLY`** — this section is that row's detail, per `LANE_STATUS.md`
+rule 7 (a title states the state; the history lives here and the row points at it by id).
+
 **The shape to build, when it is picked up:** a runner with `AETHER_CONTRACT_REPO` set, **non-blocking**,
 reporting *"contract advanced past pinned blob"*. Note it needs **no new capability** — the hermetic
 gate already grew exactly that env-var path as step 2 (`schema_conformance.rs`), so the nightly is a
@@ -2236,6 +2239,12 @@ and therefore not talkable-into-agreeing** — our vendored
 `crates/oracle-aether/tests/contract/bus-protocol.schema.json` is `125d17f03ac33872…` at our `HEAD`,
 and `git rev-parse 82982b7:contract/schema/bus-protocol.schema.json` in empyrean returns **the same
 blob id**. Byte identity by construction, checked in both trees, neither read from a working file.
+
+**Board row id: `ATTR-RGB-LATCH`** — detail lives in `docs/2026-08-30-rgb-live-resolve.md`
+(aeon's colour finding: reproduced 55/55, closed as a server change; what remains is a contract change
+so the reply says which moment its colour is for and names `emulator/scanlines` as the caller's path).
+Anchored here 2026-09-02 because the row's own title carried the only copy, and `LANE_STATUS.md` rule 7
+requires the row to point at its detail by id.
 
 ⚑ **AND THE SCOPE OF WHAT THE HUB CAN HAND US, ESTABLISHED 2026-09-02 BY THE HUB RETRACTING ITS OWN
 GO — bank this, it will recur.** At 10:40Z the hub cleared `LIVE-TREE-RESIDUE` "under the owner's
