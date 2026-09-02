@@ -1,5 +1,5 @@
 {
-  "focus": "The new debug window runs half again faster than it needs to on your machine; waiting on whether it LOOKED right to you.",
+  "focus": "Starting the debug-window rebuild; re-measuring the speed number I withdrew, on a quiet machine.",
   "inFlight": [
     {
       "what": "Closing the last tests and tools that read aeon's live folder instead of a frozen copy",
@@ -92,7 +92,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": "your verdict on the window that just ran: did it look as smooth as the normal player, or did you see hitching? The speed is measured and good - 93 frames a second where 60 is needed - but whether it LOOKS right is the part only you can answer, and a bad answer is more useful to me than a good one.",
+  "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-02T21:18:50Z"
+  "updatedAt": "2026-09-02T21:21:31Z"
 }
