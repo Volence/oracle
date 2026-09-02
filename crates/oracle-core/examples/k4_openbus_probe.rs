@@ -325,37 +325,61 @@ fn main() {
     //    frozen copy; `s4.soundtest.bin` has no frozen counterpart at all (it is absent from sigil's
     //    chain-attested goldens) and `demo.bin` we chose not to add to the freeze for one survey row,
     //    so both stay live and say so on the row rather than passing as pinned.
-    // Built through `rom_source` rather than spelled out, so `LIVE_AEON_DIR` is the one place the live
-    // tree is named and the row marker below cannot drift from the paths it is judging.
+    //    The two unfrozen Aeon rows no longer carry a home literal into another lane's working tree
+    //    (`empyrean` `contract/SUITE_PATHS.md` at `38f6df4`). They are resolved through
+    //    `rom_source::unfrozen`, which consults `ORACLE_AEON_DIR` / `AEON_DIR` / `EMPYREAN_SUITE_ROOT`
+    //    and otherwise refuses — so with no such variable set the two rows print their refusal and are
+    //    absent from the table, rather than silently describing whatever a walked-to directory held.
+    //    The commercial dumps below stay as user-disk literals on purpose: those are the operator's own
+    //    files and a dumped cartridge does not change, which is the opposite of a peer's build tree.
     let frozen_s4 = rom_source::frozen("s4.bin");
-    let live_soundtest = rom_source::live_aeon("s4.soundtest.bin");
-    let live_demo = rom_source::live_aeon("demo.bin");
-    let games: [(&str, &str, bool); 11] = [
-        ("s2rev01", "/home/volence/sonic_hacks/AP Backups/Awesome Project/s2rev01.bin", false),
-        ("sonic3k", "/home/volence/sonic_hacks/skdisasm/sonic3k.bin", false),
-        ("aeon-s4", &frozen_s4, true),
-        ("aeon-s4-soundtest", &live_soundtest, false),
-        ("aeon-demo", &live_demo, false),
-        ("thunderforce4", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Thunder Force IV (U).bin", false),
-        ("gunstar", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Gunstar Heroes (USA).md", false),
-        ("batman-robin", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Adventures of Batman & Robin, The (USA).md", false),
-        ("alien-soldier", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Alien Soldier (Europe).md", false),
-        ("vectorman", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Vectorman (USA, Europe).md", false),
-        ("ristar", "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Ristar (USA, Europe) (August 1994).md", false),
+    // `true` in the last column marks a row whose bytes are an Aeon build product read from OUTSIDE the
+    // freeze — the one case where the row itself can go stale under us, so it is marked in the row
+    // rather than only in a comment. It rides the row's own construction, so it cannot drift from the
+    // path it judges.
+    let mut games: Vec<(String, String, bool, bool)> = vec![
+        (
+            "s2rev01".into(),
+            "/home/volence/sonic_hacks/AP Backups/Awesome Project/s2rev01.bin".into(),
+            false,
+            false,
+        ),
+        (
+            "sonic3k".into(),
+            "/home/volence/sonic_hacks/skdisasm/sonic3k.bin".into(),
+            false,
+            false,
+        ),
+        ("aeon-s4".into(), frozen_s4, true, false),
     ];
-    for (name, path, pinned) in games {
-        match std::fs::read(path) {
+    for (row, artifact) in [
+        ("aeon-s4-soundtest", "s4.soundtest.bin"),
+        ("aeon-demo", "demo.bin"),
+    ] {
+        match rom_source::unfrozen(artifact) {
+            Ok(path) => games.push((row.to_string(), path, false, true)),
+            Err(why) => eprintln!("SKIP row `{row}`: {why}"),
+        }
+    }
+    games.extend([
+        ("thunderforce4".into(), "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Thunder Force IV (U).bin".into(), false, false),
+        ("gunstar".into(), "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Gunstar Heroes (USA).md".into(), false, false),
+        ("batman-robin".into(), "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Adventures of Batman & Robin, The (USA).md".into(), false, false),
+        ("alien-soldier".into(), "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Alien Soldier (Europe).md".into(), false, false),
+        ("vectorman".into(), "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Vectorman (USA, Europe).md".into(), false, false),
+        ("ristar".into(), "/home/volence/sonic_hacks/The Adventures of Batman and Robin/Ristar (USA, Europe) (August 1994).md".into(), false, false),
+    ]);
+    for (name, path, pinned, unfrozen_aeon) in games {
+        match std::fs::read(&path) {
             Ok(rom) => {
-                // An Aeon build product read from outside the freeze is the one case where the row
-                // itself can go stale under us, so mark it in the row rather than only in a comment.
-                let mark = if pinned || !path.starts_with(rom_source::LIVE_AEON_DIR) {
-                    String::new()
+                let mark = if unfrozen_aeon && !pinned {
+                    " [UNFROZEN aeon build, not reproducible from this repo]"
                 } else {
-                    " [LIVE aeon tree, NOT frozen]".to_string()
+                    ""
                 };
                 let (p, ran) = probe(rom, 900, None);
                 println!("{}", p.row(&format!("{name} ({ran}/900f){mark}")));
-                eprint!("{}", p.ww_detail_lines(name));
+                eprint!("{}", p.ww_detail_lines(&name));
             }
             Err(_) => eprintln!("SKIP: {path} not on this disk"),
         }
