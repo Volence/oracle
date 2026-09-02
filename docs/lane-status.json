@@ -1,18 +1,40 @@
 {
-  "focus": "Both things you were owed tonight are done: the engine team's measurement, and the self-check that no longer lies.",
+  "focus": "Booted and read in. Nothing running. Holding for your go - this morning's three short answers are still open.",
   "inFlight": [],
-  "blockedOnOwner": [
-    {
-      "what": "the dull sound: keep the hardware-accurate filter, default it off, or let the player remember your choice. A taste call, so it is yours rather than mine \u2014 ten seconds to hear it both ways",
-      "since": "2026-08-29",
-      "id": "d-20"
-    }
-  ],
-  "nextBoundary": "Now - merged, verified on the merged tree, pushed, nothing running.",
+  "blockedOnOwner": [],
+  "nextBoundary": "Now - nothing dispatched, nothing half-applied, everything pushed except my own status file.",
   "queue": [
     {
-      "id": "F-CROSSCHECK-BLIND",
-      "title": "DONE - L-09 + L-10 both shipped and merged (58b8ed6, 4f6bca5). The gap check now verifies rows SURVIVED and names each missing one; building its falsifier honestly exposed a second, worse hole (a stray brace in the source silently deleted a whole command's parameters with every signal reporting clean) which is also fixed, by removing the shared weak point rather than alarming on it. 73 tests green, table byte-identical, confirmed firsthand that the old checks would have passed the same defect silently. One residual booked unruled: F-ACCEPT-TABLE-RAWSTRING (gap real, dangerous shape UNPROVEN after 4 probes).",
+      "id": "RESUME-STOP-RACE-FIX",
+      "title": "A timing hole on the debugger connection: a tool told to carry on can have the answer about where the game stopped thrown away, then wait until it gives up. I promised aurora this would be fixed before they write the first breakpoint tool.",
+      "state": "next",
+      "size": "S",
+      "blockedBy": null
+    },
+    {
+      "id": "BOOT-READ-SPLIT",
+      "title": "My own notes file is three times the new suite size limit and two thirds of it is finished history. Splitting it is one command plus my judgement on where to cut - no helper agent. Question (2) below is this row.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "your word - it is my own housekeeping, which the hub cannot authorise for me"
+    },
+    {
+      "id": "LIVE-TREE-RESIDUE",
+      "title": "Three of our tests still read another team's live folder instead of a frozen copy, so their rebuild can turn us red for no reason. The worst one closed this morning; the shape to build to is now ratified suite-wide.",
+      "state": "open",
+      "size": "M",
+      "blockedBy": "your word - question (1) below"
+    },
+    {
+      "id": "SCHEMA-DRIFT-NIGHTLY",
+      "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null
+    },
+    {
+      "id": "ATTR-RGB-LATCH",
+      "title": "aeon's colour finding: reproduced on all 55 rows and closed as a server change. What is left is a rules change - the reply should say which moment its colour is for. Needs a change request filed with the hub.",
       "state": "open",
       "size": "S",
       "blockedBy": null,
@@ -20,106 +42,43 @@
     },
     {
       "id": "README-LEGACY-WARNING",
-      "title": "Rewrite the README line you asked for on the 22nd so it carries what we found today - the debugging surface reaches a server that validates nothing - rather than the vaguer 'this is legacy'.",
+      "title": "Rewrite the README line you asked for on the 22nd so it carries what we found since - the debugging surface reaches a server that validates nothing - rather than the vaguer 'this is legacy'.",
       "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
     },
     {
-      "id": "REPLAY-NET-BLIND-3",
-      "title": "NEW ASK from the engine team, scoped and in dependency order: run the two skipped playthrough tests somewhere (~9s in release, NOT the default suite at ~83s); make it visible when our frozen copy of their game falls behind theirs; and have the suite name which version it tested so a green cannot be misread. Item 1 alone is NOT enough - two blindfolds stack and removing either leaves the other. HOW TO SEE THE SECOND ONE: come at the fixture pin from the DATA side (sweep the recorded chains), never from the test file - from the test side the tests look correctly configured and the fixtures look correctly frozen, and nothing connects them. Their agent only found it because it was sweeping chains for another reason.",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": null
-    },
-    {
-      "id": "FRAME-LABEL",
-      "title": "RULED: the player's status line should stop printing a number that looks like the machine's frame position but is really a count of how many times the window has drawn. Relabel rather than change it. Wording open; rides whichever parcel next touches the status line.",
+      "id": "F-ACCEPT-TABLE-RAWSTRING",
+      "title": "Residual from the acceptance-table hardening: the gap in how the table reads raw strings is real, but four probes could not produce a dangerous case from it. Either prove the shape or close it as theoretical.",
       "state": "open",
       "size": "S",
-      "blockedBy": null,
-      "project": null
-    },
-    {
-      "id": "PLAYER-POLISH",
-      "title": "Four small defects in your own player window, all registered with anchors: it has no glyph for a backtick or an em dash so its own toasts show hollow boxes at you; an error toast cuts off the reason and keeps only the path; the ROM picker's filter matches the [loaded] decoration so the open ROM survives filters that should hide it; and one doc promises behaviour the code does not do. Each is cheap and named.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": null
-    },
-    {
-      "id": "LIVE-OBJECTS-CARD",
-      "title": "Select-and-inspect is BUILT and merged (emulator/object_at, \u00a711.26/CR-F): a click answers which layer, where in the level, and which object slot drew it \u2014 with the five outcomes kept distinct. Spawn half still waits on aeon's mailbox shape and is out of scope.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "LIVE-OBJECTS"
-    },
-    {
-      "id": "ATTR-RGB-LATCH",
-      "title": "aeon's colour finding: REPRODUCED (55 of 55 rows) and CLOSED as a server change \u2014 the contract says in terms that this row must resolve from live state and MUST NOT read the drawn picture, and names emulator/scanlines as the path a caller should use, which is what aeon had already found. I built the fix, it worked, and I reverted it. What is left is a rules change: the reply should SAY which moment its colour is for, and point at the path. Needs a CR (this row declares no caveat).",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
-      "id": "OVERLAY-STATE",
-      "title": "SERVES (56 methods advertised, verified by spawning the binary and calling it). SCOPE CORRECTED by aeon: it reads the emulator's own chrome, NOT game pixels, so it does NOT end their eyeball requests - this row previously claimed it would. Open: never run against a real window; waits until the owner is away.",
-      "state": "open",
-      "size": "M",
       "blockedBy": null
     },
     {
       "id": "ACCEPT-16",
-      "title": "Down to EIGHT unserved: the Z80 pair is built (CR-B adjudicated) and closes L-02. The remaining eight are still correctly waiting \u2014 three sound-capture ones whose consumer asked us not to pre-build, two needing a piece of the emulator deliberately not compiled in, one the consumer does not want, and two parked because serving them would advertise a capability that does nothing.",
+      "title": "Eight advertised-but-unserved debugger methods, all correctly waiting: three whose consumer asked us not to pre-build, two needing a part of the emulator not compiled in, one the consumer does not want, two parked as no-ops.",
       "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
     },
     {
-      "id": "CR-STOPPREC",
-      "title": "CR-E filed with the hub \u2014 stopPrecision, awaiting adjudication; nothing here is blocked on it",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null
-    },
-    {
-      "id": "AUDIO-DULL",
-      "title": "The dull sound. The player hard-defaults to a 3.4kHz roll-off (the core does not) and the F3 line now says so in words. A/B it with no rebuild: ORACLE_CONSOLE_FILTER=off. Still your ruling, not my judgement",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null
-    },
-    {
       "id": "WIKI-SPIKE",
-      "title": "The wiki-emulator spike you approved, on Opus, with the report-the-wall condition",
+      "title": "The wiki-emulator spike you approved, on Opus, with the report-the-wall condition.",
       "state": "open",
       "size": "L",
       "blockedBy": null
     },
     {
-      "id": "PIN-STALE-186",
-      "title": "FOUND BY THE A/B, not predicted: our own frozen fixtures/aeon pin (chain 186) is stale at checkpoints 18-26 - the same set aeon dated to fde35b2f at chain 181 - and the_standing_fixture_runs_green FAILS today but is #[ignore]d, so the default suite is green over it. The repair is already known byte-for-byte (chain 189 carries it). This is REPLAY-NET-BLIND-3 arriving as a measurement; fold it into that row's work rather than repinning blind.",
-      "state": "next",
-      "size": "S",
-      "blockedBy": null,
-      "project": null
-    },
-    {
-      "id": "RESTAMP-AB",
-      "title": "DONE + SENT (oracle e12845f). No moved set: chain 189 was already re-recorded, so the A/B as booked could not be taken and aeon's falsifier was NOT tested - reported to them as a null result, not as agreement. Bonus: our runner independently derived the exact 9 payloads their freeze contains.",
-      "state": "open",
+      "id": "OVERLAY-STATE",
+      "title": "Serves 56 methods, verified by spawning the binary. Scope corrected by aeon: it reads the emulator's own chrome, not game pixels, so it does not end their eyeball requests. Left: never run against a real window.",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null,
-      "project": null
+      "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": null,
+  "awaiting": "your go, and three short answers still open from this morning. (1) The live-folder cleanup: start it or leave it? (2) My own notes file is 293 KB against a new 100 KB suite limit, two thirds of it finished history - it needs NO helper agent, just one command and my judgement on where to cut. Say go and it is quick. (3) Worth answering once instead of every time: do you want me applying suite file-size rules to my own files without asking? My proposal for first pick is neither of those - it is the small debugger timing fix I promised aurora before they build their first breakpoint tool. The sound question is closed: you chose to have the player remember your setting, and that is what it does. Still open whenever: say if the corner counter should read shorter than DRAWS.",
   "atBoundary": true,
-  "updatedAt": "2026-08-30T09:53:12Z"
+  "updatedAt": "2026-09-02T17:32:18Z"
 }
