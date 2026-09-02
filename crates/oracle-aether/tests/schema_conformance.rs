@@ -642,8 +642,8 @@ fn positive_control_a_conformant_message_is_accepted() {
         .expect("a conformant reply must pass");
     check_incoming(
         &json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-            "reason":"runFrames","pc":"0x00012A4C","frames":1,"deadlineReached":true,
-            "frame":1,"mclk":896040,"running":false}}),
+            "reason":"runFrames","pc":"0x00012A4C","stopPrecision":"exact","frames":1,
+            "deadlineReached":true,"frame":1,"mclk":896040,"running":false}}),
         None,
     )
     .expect("a conformant event must pass");
@@ -779,12 +779,12 @@ fn control_a_watchpoint_stop_that_does_not_name_its_watch_is_rejected() {
     // Unlike CR-9's `buttons`/`port`, this rule HAS a discriminator in the event, so the schema enforces
     // both halves of it: a `watchpoint` stop must name its watch, and no other stop may.
     let missing = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"watchpoint","pc":"0x000002A0","deadlineReached":false,
+        "reason":"watchpoint","pc":"0x000002A0","stopPrecision":"afterCommit","deadlineReached":false,
         "frame":1,"mclk":896040,"running":false}});
     rejects(&missing, None, "watch");
 
     let spurious = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"runFrames","pc":"0x000002A0","frames":1,"deadlineReached":true,"watch":"w0",
+        "reason":"runFrames","pc":"0x000002A0","stopPrecision":"exact","frames":1,"deadlineReached":true,"watch":"w0",
         "frame":1,"mclk":896040,"running":false}});
     rejects(&spurious, None, "watch");
 }
@@ -800,12 +800,12 @@ fn control_buttons_without_port_is_rejected_and_that_is_all_the_schema_can_do() 
     // schema as enforcing more than it does. Its behavioural half is
     // `watchpoints::press_stops_carry_buttons_and_port_and_run_frames_does_not`.
     let half = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"runFrames","pc":"0x000002A0","frames":2,"deadlineReached":true,
+        "reason":"runFrames","pc":"0x000002A0","stopPrecision":"exact","frames":2,"deadlineReached":true,
         "buttons":["start"],"frame":2,"mclk":1792080,"running":false}});
     rejects(&half, None, "port");
 
     let fabricated = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"runFrames","pc":"0x000002A0","frames":2,"deadlineReached":true,
+        "reason":"runFrames","pc":"0x000002A0","stopPrecision":"exact","frames":2,"deadlineReached":true,
         "buttons":["start"],"port":0,"frame":2,"mclk":1792080,"running":false}});
     check_incoming(&fabricated, None).expect(
         "a run_frames stop wearing buttons/port is SCHEMA-VALID — the event carries no method \
@@ -817,7 +817,7 @@ fn control_buttons_without_port_is_rejected_and_that_is_all_the_schema_can_do() 
 fn control_a_stopped_event_with_an_unknown_reason_is_rejected() {
     // §3's reason enum is closed. A server may not widen it unilaterally (§8).
     let line = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"frameAdvance","pc":"0x00012A4C","frame":1,"mclk":896040,"running":false}});
+        "reason":"frameAdvance","pc":"0x00012A4C","stopPrecision":"exact","frame":1,"mclk":896040,"running":false}});
     rejects(&line, None, "reason");
 }
 
@@ -883,7 +883,7 @@ fn the_schema_cannot_express_section_8_item_13_and_this_test_proves_it() {
     // backstop they did not have before — which is good news, and means this test should be deleted and
     // the doc updated.
     let mislabelled = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
-        "reason":"step","pc":"0x00012A4C","frames":8,"deadlineReached":true,
+        "reason":"step","pc":"0x00012A4C","stopPrecision":"exact","frames":8,"deadlineReached":true,
         "frame":8,"mclk":7168320,"running":false}});
     assert!(
         check_incoming(&mislabelled, None).is_ok(),

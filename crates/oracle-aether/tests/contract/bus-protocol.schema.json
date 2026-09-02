@@ -657,6 +657,14 @@
           }
         }
       ]
+    },
+    "stopPrecision": {
+      "enum": [
+        "exact",
+        "afterCommit",
+        "approximate"
+      ],
+      "description": "The relationship between a reported stop `pc` and the condition that halted the machine (protocol.md §2.1, §11.31). Totally ordered, strongest first: `exact` (the instruction at pc has not executed and, where the stop had a triggering address, pc IS it) > `afterCommit` (the instruction immediately before pc caused the stop and has fully committed; read state as post-trigger) > `approximate` (the server promises nothing about which side of the trigger pc is on, or by how much). One $def referenced from the handshake map and the stopped event, because a copied enum is a drift source."
     }
   },
   "anyMessage": {
@@ -989,6 +997,38 @@
               }
             },
             "description": "REQUIRED (protocol.md §2.1, D16). What the `frame` in every stamp MEANS. A top-level key rather than a capability flag: it is not something a server may or may not support, it is what that server's stamps are expressed in. The numbers are normative, not just the label ('ntsc' alone does not say 262 lines or 263), and a server MUST derive them from the same constants its own frame arithmetic uses."
+          },
+          "stopPrecision": {
+            "type": "object",
+            "minProperties": 1,
+            "properties": {
+              "breakpoint": {
+                "$ref": "#/$defs/stopPrecision"
+              },
+              "watchpoint": {
+                "$ref": "#/$defs/stopPrecision"
+              },
+              "step": {
+                "$ref": "#/$defs/stopPrecision"
+              },
+              "runTo": {
+                "$ref": "#/$defs/stopPrecision"
+              },
+              "runToScanline": {
+                "$ref": "#/$defs/stopPrecision"
+              },
+              "runFrames": {
+                "$ref": "#/$defs/stopPrecision"
+              },
+              "pause": {
+                "$ref": "#/$defs/stopPrecision"
+              },
+              "entry": {
+                "$ref": "#/$defs/stopPrecision"
+              }
+            },
+            "additionalProperties": false,
+            "description": "protocol.md §2.1 (§11.31, CR-E): one entry per `emulator/stopped` reason this server can emit, no more and no fewer, each the WEAKEST precision it may emit for that reason. OPTIONAL, and its absence is meaningful: a server that omits it serves the pre-amendment shape and does NOT answer the question. A client MUST NOT read absence as `exact`. Every event value must be at least as strong as the entry here (the binding rule), which relates two messages and is therefore held by §8 item 24, not by this fragment."
           }
         }
       }
@@ -1061,7 +1101,8 @@
         ],
         "required": [
           "reason",
-          "pc"
+          "pc",
+          "stopPrecision"
         ],
         "properties": {
           "reason": {
@@ -1135,6 +1176,10 @@
               }
             ],
             "description": "The breakpoint that halted the machine. REQUIRED when `reason` is 'breakpoint', absent otherwise (protocol.md §6's breakpoint prose, §11.21). An opaque handle (D9 category 4) — the same one emulator/breakpoint_add issued — so a halt names its cause instead of leaving a client to guess which armed breakpoint fired. Names exactly ONE: when several enabled breakpoints share the firing address the machine halts once and this is the EARLIEST-ADDED enabled one, while EVERY enabled breakpoint at that address increments its `hits`. Additive: a server serving the pre-amendment address surface emits no handle, and a client tells the two apart by emulator/breakpoint_set_enabled's presence in the handshake `methods` list."
+          },
+          "stopPrecision": {
+            "$ref": "#/$defs/stopPrecision",
+            "description": "REQUIRED on every stopped event, for every reason (protocol.md §3, §11.31): the event always carries a pc, so it always has a precision. Reasons with no triggering address (pause, entry, runFrames) report `exact`. Must be at least as strong as the handshake declaration for this reason. A pre-amendment (legacy) server emits none and is not validated by this fragment for this event: frozen, not conformed (§11.21's disposition)."
           }
         },
         "dependentRequired": {
