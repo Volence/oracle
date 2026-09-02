@@ -235,6 +235,35 @@ used: FIPS 180-1's `SHA-1("abc")`, git's empty blob, and `git hash-object` on a 
 | id | what | why it is not closed here |
 |---|---|---|
 | `F-STOPPREC-HOSTED-HALT` | The player window's breakpoint halt (`Host::pump` → `halt_on_breakpoint`) is not reachable from a socket client, so its precision is inferred from sharing one function with the measured path rather than measured. | Needs a host-side test, like `host.rs`'s existing `the_bus_and_the_panel_read_one_instrument`. Bounded; not in this parcel. |
-| `F-RESUME-STOP-RACE` | `ok("emulator/resume")` + `next_stopped` is latently flaky in `tests/breakpoints.rs` and `tests/watchpoints.rs` for the reason in §5. Not observed failing there — their fixtures take longer to reach the breakpoint — but the mechanism is identical. | Out of this parcel's scope; the fix is to lift `resume_and_wait_for_stop` into `tests/common`. |
+| `F-RESUME-STOP-RACE` | ~~`ok("emulator/resume")` + `next_stopped` is latently flaky in `tests/breakpoints.rs` and `tests/watchpoints.rs` for the reason in §5. Not observed failing there — their fixtures take longer to reach the breakpoint — but the mechanism is identical.~~ **CLOSED 2026-09-02. The named exposure did not exist — see §7.1.** The helper is lifted; the enumeration found the racy shape at exactly one site repo-wide, the one this parcel had already fixed. | Helper lifted to `tests/common/mod.rs`. The mechanism is real and was reproduced (7 failures in 12 trials); the *exposure* claim about the two other files was wrong on both counts. |
 | **Upstream-drift alarm** | Step 2 runs only when `$AETHER_CONTRACT_REPO` is set, so no default run notices the contract moving. | A deliberate trade (§6). If the lane wants the alarm back it belongs in a runner or a nightly that sets the variable, never in a walk. |
 | `LIVE-TREE-RESIDUE` | `crates/oracle-core/examples/common/rom_source.rs:44` (`LIVE_AEON_DIR`) and `tools/aeon_pin_report.py:145` are the same shape in this repo. | **Explicitly out of scope** for this parcel per the hub. Nothing here makes them worse. |
+
+### 7.1 `F-RESUME-STOP-RACE` closed — and the register was wrong about where it was live
+
+The helper now lives in `tests/common/mod.rs`, semantics unmoved, and `stop_precision.rs` imports it.
+That part was as registered. **The exposure was not**, and both halves of the claim failed:
+
+* **`tests/watchpoints.rs` contains no `emulator/resume` at all** — zero occurrences, not one guarded
+  by a fixture that is merely slow. It drives every halt with `run_frames` and `press`, which
+  `emit_stopped` *inside* the handler; the event therefore always precedes the reply, and its
+  read-both-then-decide loops (`:613`, `:661`) are ordering-independent by construction. The
+  registered claim appears to have been carried over from the file's *shape* — it does read `stopped`
+  events in a hand-rolled loop — rather than from a `resume`.
+* **`tests/breakpoints.rs` has nine `emulator/resume` sites and none of them can race.** Its `armed()`
+  helper handshakes with `events: false`, so the connection that resumes is **never sent an
+  `emulator/stopped` at all** — there is no event for `Client::ok` to discard. Every wait in the file
+  is `emulator/wait_for_break`, a request/reply whose answer is produced by the halt. The file's one
+  event consumer, `next_stopped(&mut events)` at `:323`, is a **second** connection that never sends
+  `resume`; it blocks on the event with no reply to be reordered against.
+
+A repo-wide enumeration (every `emulator/resume` in `crates/`, cross-checked against which
+connections handshake `events: true` and which then read the event) found the racy shape at **exactly
+one call site — `stop_precision.rs:501`**, which this parcel had already fixed. Nothing was left
+un-fixed. The lift is still worth having: it is now the one home a future `resume`-then-wait inherits.
+
+**The mechanism itself is entirely real, and was reproduced rather than argued.** Reverting the lifted
+helper's body to the naive spelling on disk and running the file 12 times: **7 failed**, each a 20 s
+`WouldBlock` read timeout inside `Client::recv`, in `measured_breakpoint_precision` (5) and
+`the_reasons_this_server_emits_are_the_seven_it_names` (3). Restored from the committed baseline and
+run 20 times: **0 failed**. That doubles as the proof the runner executes the lifted copy.
