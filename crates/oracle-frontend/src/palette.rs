@@ -35,11 +35,51 @@ pub enum Row {
     Item(usize),
 }
 
+/// One row of a [`Picker`]: what it is called, an optional annotation drawn after the name, and what
+/// choosing it runs.
+///
+/// **The marker is not part of the label** (F-PICKER-FILTER-MARKER). The ROM browser annotates the image
+/// in the machine with `[loaded]`, and when that was baked into the label string the filter matched against
+/// it too: typing `lod` kept `s4.bin   [loaded]` on the list while hiding every other row, because `l`,
+/// `o`, `d` is a subsequence of the annotation and of nothing the user typed about. Filtering sees `label`
+/// only; the marker is composed back in by [`display`](PickerItem::display) at paint time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickerItem {
+    /// The name the filter matches and the row is read by.
+    pub label: String,
+    /// An annotation painted after the label, e.g. `rom_browser::LOADED_MARKER`. Never filtered on.
+    pub marker: Option<&'static str>,
+    /// What choosing the row runs.
+    pub cmd: Cmd,
+}
+
+impl PickerItem {
+    /// The row as painted: the label, then the marker if any, with no separator of its own — the marker
+    /// carries whatever spacing it wants (`"   [loaded]"`).
+    pub fn display(&self) -> std::borrow::Cow<'_, str> {
+        match self.marker {
+            None => std::borrow::Cow::Borrowed(&self.label),
+            Some(m) => std::borrow::Cow::Owned(format!("{}{m}", self.label)),
+        }
+    }
+}
+
+/// The unannotated row every picker but the ROM browser builds.
+impl From<(String, Cmd)> for PickerItem {
+    fn from((label, cmd): (String, Cmd)) -> Self {
+        PickerItem {
+            label,
+            marker: None,
+            cmd,
+        }
+    }
+}
+
 /// A secondary pick list ("Select save slot..."), opened by the main loop with concrete items.
 pub struct Picker {
     pub title: String,
-    /// (label, command to run when chosen)
-    pub items: Vec<(String, Cmd)>,
+    /// The rows, in list order.
+    pub items: Vec<PickerItem>,
     /// Selection as an index into [`Picker::visible`], never into `items` — the two differ the moment
     /// anything is typed, and indexing `items` with it would run a row the user cannot see.
     pub sel: usize,
@@ -55,11 +95,13 @@ impl Picker {
     /// dozens of rows, the panel paints only what fits, and until this existed the only way to reach a
     /// row was to arrow to it — including rows below the fold, which meant arrowing blind. Typed keys
     /// were swallowed outright (`Char(_) => {}`), so the surface looked like a search box and was not one.
+    ///
+    /// Matches the row's `label` alone, never its marker — see [`PickerItem`].
     pub fn visible(&self) -> Vec<usize> {
         self.items
             .iter()
             .enumerate()
-            .filter(|(_, (label, _))| commands::subseq_match(&self.query, label))
+            .filter(|(_, item)| commands::subseq_match(&self.query, &item.label))
             .map(|(i, _)| i)
             .collect()
     }
@@ -114,11 +156,15 @@ impl Palette {
     /// Open a secondary pick list (the main loop builds the items — occupancy etc. lives there).
     /// Clears the query too, mirroring `open()`: otherwise Esc-ing back out of the picker would
     /// reveal the main list still filtered by whatever the user had typed before opening it.
-    pub fn open_picker(&mut self, title: String, items: Vec<(String, Cmd)>, reg: &[CommandInfo]) {
+    pub fn open_picker<I>(&mut self, title: String, items: I, reg: &[CommandInfo])
+    where
+        I: IntoIterator,
+        I::Item: Into<PickerItem>,
+    {
         self.query.clear();
         self.picker = Some(Picker {
             title,
-            items,
+            items: items.into_iter().map(Into::into).collect(),
             sel: 0,
             query: String::new(),
         });
@@ -199,7 +245,7 @@ impl Palette {
                         .visible()
                         .get(pk.sel)
                         .and_then(|&i| pk.items.get(i))
-                        .map(|(_, cmd)| *cmd)
+                        .map(|item| item.cmd)
                     {
                         self.close();
                         return PaletteAction::Run(cmd);
@@ -344,8 +390,8 @@ impl Palette {
                 if vi == pk.sel {
                     draw_selected_bar(&mut canvas, text_x, y, inner_w, line_h);
                 }
-                let label = &pk.items[item].0;
-                canvas.text(text_x, y, px, INFO, overlay::fit(label, inner_w, px));
+                let row = pk.items[item].display();
+                canvas.text(text_x, y, px, INFO, overlay::fit(&row, inner_w, px));
                 y += line_h as i32;
             }
             return;

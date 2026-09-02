@@ -103,19 +103,39 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<Entry>> {
     Ok(out)
 }
 
-/// The string the picker shows for `entry`, marking the image that is loaded right now.
+/// The annotation the picker paints after the image that is loaded right now. Carries its own spacing.
+pub const LOADED_MARKER: &str = "   [loaded]";
+
+/// [`LOADED_MARKER`] when `entry` is the image in the machine, else `None`.
 ///
-/// The marker is the whole reason this is a function rather than `entry.label`: the picker lists the folder
-/// the running game came from, so the running game is almost always on screen, and a list where it looks like
-/// every other row invites re-loading it — which resets the machine and drops the frame. Comparison is by
-/// path, so a same-named ROM in another folder is correctly *not* marked.
-pub fn picker_label(entry: &Entry, current: Option<&Path>) -> String {
+/// The marker is the whole reason this exists: the picker lists the folder the running game came from, so
+/// the running game is almost always on screen, and a list where it looks like every other row invites
+/// re-loading it — which resets the machine and drops the frame. Comparison is by path, so a same-named ROM
+/// in another folder is correctly *not* marked.
+///
+/// Returned **separately from the label** rather than appended to it (F-PICKER-FILTER-MARKER): the picker
+/// filters on the label, and a marker baked into the label let `lod` keep the loaded ROM on a list that had
+/// hidden everything else. The picker composes the two back together only when it paints.
+pub fn picker_marker(entry: &Entry, current: Option<&Path>) -> Option<&'static str> {
     match current {
-        Some(cur) if entry.kind == EntryKind::Rom && cur == entry.path => {
-            format!("{}   [loaded]", entry.label)
-        }
-        _ => entry.label.clone(),
+        Some(cur) if entry.kind == EntryKind::Rom && cur == entry.path => Some(LOADED_MARKER),
+        _ => None,
     }
+}
+
+/// The string the picker shows for `entry`: its label, then [`picker_marker`] when there is one.
+///
+/// Test-only since the marker was split out: production hands the picker the two parts and
+/// `palette::PickerItem::display` composes them at paint time. This stays as the spelling the pre-existing
+/// rows below assert verbatim, and `the_loaded_marker_is_painted_but_not_filtered_on` asserts `display`
+/// agrees with it — so the two compositions cannot drift apart unnoticed.
+#[cfg(test)]
+pub fn picker_label(entry: &Entry, current: Option<&Path>) -> String {
+    format!(
+        "{}{}",
+        entry.label,
+        picker_marker(entry, current).unwrap_or("")
+    )
 }
 
 #[cfg(test)]
@@ -252,5 +272,92 @@ mod tests {
             "a navigation row was marked as the loaded cartridge: {dirs:?}"
         );
         let _ = other;
+    }
+
+    /// **The `[loaded]` marker is painted but never filtered on** (F-PICKER-FILTER-MARKER) — the seam
+    /// between this module and the picker, exercised end to end: a real listing, rows built the way
+    /// `open_rom_picker` builds them, the picker's own `visible()` with a filter typed against the marker.
+    ///
+    /// The filter is derived from the marker itself — its letters in order, minus any that also occur in
+    /// the loaded ROM's label — so it is a subsequence of `label + marker` and of nothing in `label`. With
+    /// the marker baked into the label (the defect), the loaded row survived a filter every other row
+    /// failed; now no row matches, which is what a person who typed those letters asked for.
+    #[test]
+    fn the_loaded_marker_is_painted_but_not_filtered_on() {
+        use crate::palette::{Picker, PickerItem};
+        let t = Tmp::new("marker");
+        let loaded = t.file("s4.bin");
+        t.file("s4other.bin");
+        let entries = scan(&t.0).unwrap();
+        let cur = std::fs::canonicalize(&loaded).ok();
+        let items: Vec<PickerItem> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| PickerItem {
+                label: e.label.clone(),
+                marker: picker_marker(e, cur.as_deref()),
+                cmd: crate::commands::Cmd::RomEntry(i),
+            })
+            .collect();
+        let marked: Vec<&PickerItem> = items.iter().filter(|it| it.marker.is_some()).collect();
+        assert_eq!(
+            marked.len(),
+            1,
+            "COULD NOT MEASURE: exactly one row must carry the marker, got {marked:?}"
+        );
+        let loaded_item = marked[0];
+        assert_eq!(loaded_item.label, "s4.bin");
+        // The painted row is the same spelling `picker_label` gives — one composition, two doors.
+        let loaded_entry = entries.iter().find(|e| e.label == "s4.bin").unwrap();
+        assert_eq!(
+            loaded_item.display(),
+            picker_label(loaded_entry, cur.as_deref()),
+            "PickerItem::display and picker_label disagree on the painted row"
+        );
+        assert_eq!(loaded_item.display(), "s4.bin   [loaded]");
+
+        // A filter spelled from the marker alone.
+        let query: String = LOADED_MARKER
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic() && !loaded_item.label.contains(*c))
+            .collect();
+        assert!(
+            query.len() >= 2 && crate::commands::subseq_match(&query, &loaded_item.display()),
+            "COULD NOT MEASURE: {query:?} is not a subsequence of the painted row {:?}",
+            loaded_item.display()
+        );
+        assert!(
+            !crate::commands::subseq_match(&query, &loaded_item.label),
+            "COULD NOT MEASURE: {query:?} matches the bare label too, so the test cannot tell"
+        );
+
+        let pk = Picker {
+            title: "OPEN ROM".into(),
+            items,
+            sel: 0,
+            query,
+        };
+        let visible: Vec<&str> = pk
+            .visible()
+            .into_iter()
+            .map(|i| pk.items[i].label.as_str())
+            .collect();
+        assert_eq!(
+            visible,
+            Vec::<&str>::new(),
+            "the loaded ROM survived a filter that only matches its marker"
+        );
+        // And a filter against the labels still finds them, marked and unmarked alike — filtering is not
+        // simply broken, and the marker does not cost the loaded row its own name.
+        let pk = Picker {
+            query: "s4".into(),
+            ..pk
+        };
+        let visible: Vec<&str> = pk
+            .visible()
+            .into_iter()
+            .map(|i| pk.items[i].label.as_str())
+            .collect();
+        assert_eq!(visible, vec!["s4.bin", "s4other.bin"]);
     }
 }

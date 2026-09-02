@@ -529,14 +529,14 @@ fn open_rom_picker(
         }
     };
     let current = std::fs::canonicalize(current).ok();
-    let items: Vec<(String, commands::Cmd)> = entries
+    // Label and marker travel separately so the picker filters on the name alone (F-PICKER-FILTER-MARKER).
+    let items: Vec<palette::PickerItem> = entries
         .iter()
         .enumerate()
-        .map(|(i, e)| {
-            (
-                rom_browser::picker_label(e, current.as_deref()),
-                commands::Cmd::RomEntry(i),
-            )
+        .map(|(i, e)| palette::PickerItem {
+            label: e.label.clone(),
+            marker: rom_browser::picker_marker(e, current.as_deref()),
+            cmd: commands::Cmd::RomEntry(i),
         })
         .collect();
     *browser = entries;
