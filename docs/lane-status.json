@@ -29,7 +29,8 @@
       "title": "You want oracle-old's window back: tabs, and dragging debug panels to whichever side you like. Designed and sized, not started - the player draws on a bare framebuffer, so the docking, tabs and remembered layout are all hand-built. Waiting on which shape you want.",
       "state": "blocked",
       "size": "L",
-      "blockedBy": "you - d-25, the look call is yours"
+      "blockedBy": "you - d-25, the look call is yours",
+      "project": "ORACLE-DEBUG-UI"
     },
     {
       "id": "LIVE-TREE-RESIDUE",
@@ -86,5 +87,5 @@
   ],
   "awaiting": "one new question (d-25): which shape of dockable debug panels you want in the player window. It is a look call, it is yours, and I have not started. Still yours whenever: the live-folder cleanup, and whether the corner counter should read shorter than DRAWS.",
   "atBoundary": true,
-  "updatedAt": "2026-09-02T18:32:24Z"
+  "updatedAt": "2026-09-02T18:41:03Z"
 }
