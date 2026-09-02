@@ -3,10 +3,13 @@
 #
 # The harness ROM (harness.asm) is a clean-room instrument authored for this
 # differential; see README.md. It reuses the aeon suite's native `asl`/`p2bin`
-# (no Wine) — override TOOLS if your layout differs.
+# (no Wine); name it with TOOLS, AEON_DIR or EMPYREAN_SUITE_ROOT — see
+# aeon_tools.sh for why there is no default.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-TOOLS="${TOOLS:-$HERE/../../../aeon/tools}"
+# shellcheck source=aeon_tools.sh
+. "$HERE/aeon_tools.sh"
+TOOLS="$(resolve_aeon_tools)"
 
 "$TOOLS/asl" -cpu 68000 -q -A -L -U \
     -olist "$HERE/harness.lst" -o "$HERE/harness.p" "$HERE/harness.asm"
