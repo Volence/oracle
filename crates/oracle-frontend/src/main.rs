@@ -511,26 +511,62 @@ fn probe_slots(rom_path: &str) -> [bool; save_state::SLOT_COUNT] {
 /// than refusing to browse.
 ///
 /// An unreadable directory says so and **leaves the previous listing up**. An empty pick list and a folder
-/// that could not be read are the same picture on screen, and only one of them means "no games here".
+/// that could not be read are the same picture on screen, and only one of them means "no games here". The
+/// picker has already closed by the time a descent is dispatched (Enter closes the palette before its
+/// command runs), so "leaves up" here means *re-opens on the retained listing* — `browser` is not touched
+/// and is not re-scanned, so a folder that has just become unreadable cannot take the listing down with it
+/// (F-ROMOPEN-C-DOC: `docs/2026-08-28-rom-open.md` §5(c), which this function promised and did not do).
+/// With no previous listing to fall back to — the first open, from a running image whose own folder cannot
+/// be read — there is only the toast.
 fn open_rom_picker(
     dir: &std::path::Path,
     current: &str,
-    browser: &mut Vec<rom_browser::Entry>,
+    browser: &mut RomBrowser,
     palette: &mut palette::Palette,
     reg: &[commands::CommandInfo],
     ov: &mut Overlay,
 ) {
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let entries = match rom_browser::scan(&dir) {
-        Ok(entries) => entries,
+    match rom_browser::scan(&dir) {
+        Ok(entries) => {
+            browser.dir = Some(dir);
+            browser.entries = entries;
+        }
         Err(e) => {
             notify_err(ov, cannot_read_toast("open ROM", &e, dir.display()));
-            return;
+            if browser.dir.is_none() {
+                return;
+            }
         }
+    }
+    show_rom_picker(browser, current, palette, reg);
+}
+
+/// The "Open ROM..." browser: the folder the palette's pick list describes and the listing it was built from.
+/// `RomEntry(n)` indexes `entries`, so the two fields are written together and never separately.
+#[derive(Default)]
+struct RomBrowser {
+    /// The folder `entries` lists — `None` until the first successful scan.
+    dir: Option<std::path::PathBuf>,
+    entries: Vec<rom_browser::Entry>,
+}
+
+/// Put `browser`'s listing up as the palette's pick list, marking the image in the machine. Builds rows from
+/// the retained listing only — the folder is not read again — so it is the same call for a fresh scan and
+/// for restoring the previous listing after a failed descent.
+fn show_rom_picker(
+    browser: &RomBrowser,
+    current: &str,
+    palette: &mut palette::Palette,
+    reg: &[commands::CommandInfo],
+) {
+    let Some(dir) = browser.dir.as_deref() else {
+        return;
     };
     let current = std::fs::canonicalize(current).ok();
     // Label and marker travel separately so the picker filters on the name alone (F-PICKER-FILTER-MARKER).
-    let items: Vec<palette::PickerItem> = entries
+    let items: Vec<palette::PickerItem> = browser
+        .entries
         .iter()
         .enumerate()
         .map(|(i, e)| palette::PickerItem {
@@ -539,7 +575,6 @@ fn open_rom_picker(
             cmd: commands::Cmd::RomEntry(i),
         })
         .collect();
-    *browser = entries;
     palette.open_picker(format!("OPEN ROM - {}", dir.display()), items, reg);
 }
 
@@ -1181,7 +1216,7 @@ fn main() {
     // `RomEntry(n)` payload indexes *this*, so the two are rebuilt together and never separately.
     // `pending_rom` is how a dispatch arm asks for a cartridge swap: the work happens in one shared block
     // after the dispatch loop, so F5 and the browser cannot drift apart.
-    let mut browser: Vec<rom_browser::Entry> = Vec::new();
+    let mut browser = RomBrowser::default();
     let mut pending_rom: Option<String> = None;
 
     // The per-scanline pixel path (`F-SCANLINE-CAPTURE`). Attached to **every** run below so the window shows
@@ -1646,7 +1681,7 @@ fn main() {
                 // The payload indexes the listing built when the picker was opened. Read the row out and
                 // drop the borrow before anything below can rebuild `browser` under it.
                 commands::Cmd::RomEntry(n) => {
-                    match browser.get(n).map(|e| (e.kind, e.path.clone())) {
+                    match browser.entries.get(n).map(|e| (e.kind, e.path.clone())) {
                         Some((rom_browser::EntryKind::Rom, path)) => {
                             pending_rom = Some(path.to_string_lossy().into_owned());
                         }
@@ -2454,6 +2489,124 @@ mod tests {
             "hollow boxes in the toast: {:?}",
             toast.unrenderable
         );
+    }
+
+    /// **A descent into an unreadable folder leaves the previous listing up** — `docs/2026-08-28-rom-open.md`
+    /// §5(c), which the code promised in its own doc comment and did not do (F-ROMOPEN-C-DOC).
+    ///
+    /// The whole state machine, driven as the dispatch loop drives it: a real folder is opened (palette up,
+    /// pick list = its rows), then a descent into a folder that cannot be read. Afterwards the palette must
+    /// still be open on the *same* rows, `browser` must be untouched (so every `RomEntry(n)` still means the
+    /// row it meant), and the failure must have been said. The rows are compared whole against the first
+    /// listing's, not counted — a re-scan of some other folder that happened to have the same number of
+    /// entries would count the same.
+    #[test]
+    fn a_failed_descent_puts_the_previous_listing_back_up_and_says_why() {
+        let reg = commands::registry();
+        let mut palette = palette::Palette::new();
+        let mut ov = Overlay::new();
+        let mut browser = RomBrowser::default();
+
+        // A folder of our own, with a ROM in it so the listing is not just `../`.
+        let dir = std::env::temp_dir().join(format!(
+            "oracle-failed-descent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rom = dir.join("s4.bin");
+        std::fs::write(&rom, [0u8; 4]).unwrap();
+        let current = rom.to_string_lossy().into_owned();
+
+        open_rom_picker(&dir, &current, &mut browser, &mut palette, &reg, &mut ov);
+        assert!(
+            palette.is_open(),
+            "COULD NOT MEASURE: the first open did not put the picker up"
+        );
+        let first = palette.picker().expect("a picker is up").items.clone();
+        assert!(
+            first.iter().any(|it| it.label == "s4.bin"),
+            "COULD NOT MEASURE: the listing does not show the ROM: {first:?}"
+        );
+        let first_entries: Vec<(rom_browser::EntryKind, std::path::PathBuf)> = browser
+            .entries
+            .iter()
+            .map(|e| (e.kind, e.path.clone()))
+            .collect();
+        let first_dir = browser.dir.clone();
+        assert_eq!(ov.toasts().count(), 0, "a clean open says nothing");
+
+        // The user picks a row that has since become unreadable. Enter closed the palette before dispatch.
+        palette.close();
+        let missing = dir.join("gone");
+        let expected_toast = {
+            let e = rom_browser::scan(&missing).expect_err("the folder does not exist");
+            cannot_read_toast(
+                "open ROM",
+                &e,
+                std::fs::canonicalize(&missing)
+                    .unwrap_or_else(|_| missing.clone())
+                    .display(),
+            )
+        };
+        open_rom_picker(
+            &missing,
+            &current,
+            &mut browser,
+            &mut palette,
+            &reg,
+            &mut ov,
+        );
+
+        assert!(
+            palette.is_open(),
+            "the palette must come back up, not stay closed"
+        );
+        let after = palette
+            .picker()
+            .expect("the previous pick list is up")
+            .items
+            .clone();
+        assert_eq!(
+            after, first,
+            "the pick list must be the previous listing, row for row"
+        );
+        assert_eq!(
+            palette.picker().unwrap().title,
+            format!("OPEN ROM - {}", first_dir.as_ref().unwrap().display()),
+            "the title still names the folder that is listed"
+        );
+        let entries_now: Vec<(rom_browser::EntryKind, std::path::PathBuf)> = browser
+            .entries
+            .iter()
+            .map(|e| (e.kind, e.path.clone()))
+            .collect();
+        assert_eq!(
+            entries_now, first_entries,
+            "`browser` must not be rebuilt by a failed scan"
+        );
+        assert_eq!(
+            browser.dir, first_dir,
+            "the browser still describes the readable folder"
+        );
+        let toasts: Vec<&str> = ov.toasts().map(|t| t.text.as_str()).collect();
+        assert_eq!(
+            toasts,
+            vec![expected_toast.as_str()],
+            "the failure is said, once, whole"
+        );
+
+        // With no previous listing at all there is nothing to put back: only the toast, palette closed.
+        let mut palette = palette::Palette::new();
+        let mut ov = Overlay::new();
+        let mut fresh = RomBrowser::default();
+        open_rom_picker(&missing, &current, &mut fresh, &mut palette, &reg, &mut ov);
+        assert!(!palette.is_open(), "nothing to show, so nothing is shown");
+        assert!(fresh.dir.is_none() && fresh.entries.is_empty());
+        assert_eq!(ov.toasts().count(), 1, "but the failure is still said");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The masked picture is the core's masked render, dot for dot** — and it is a *different* picture

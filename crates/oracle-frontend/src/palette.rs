@@ -139,6 +139,13 @@ impl Palette {
     pub fn is_open(&self) -> bool {
         self.open
     }
+    /// The pick list currently up, if any — for tests that need to read the rows the main loop put there
+    /// (the ROM browser's failed-descent test). Production code never reads the picker back; it only opens
+    /// it, feeds it keys and acts on what Enter returns.
+    #[cfg(test)]
+    pub fn picker(&self) -> Option<&Picker> {
+        self.picker.as_ref()
+    }
     /// Opens the palette on the full grouped list, selection landing on the first `Item` row
     /// (the invariant "sel is always on an Item row" holds from this call onward, not just
     /// after the first key).
