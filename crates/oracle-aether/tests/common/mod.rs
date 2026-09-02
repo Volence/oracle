@@ -40,6 +40,56 @@ pub fn sweep_params(method: &str) -> Value {
     }
 }
 
+/// **`resume`, then the halt it runs into — read as one operation, because the two race.**
+///
+/// This lives here, and not beside its one current caller, because the race it closes is a property of
+/// *this client* rather than of any one test: [`Client::ok`] reads through to a reply and **discards**
+/// every event it passes, so any test that resumes a machine and then waits for the halt on the **same
+/// connection** has the same bug waiting for it. One home, so the next such test inherits the fix instead
+/// of rediscovering it.
+///
+/// A breakpoint on a tight fixture loop fires within microseconds of the resume, and the `stopped` event
+/// is broadcast from the engine thread while the `resume` reply is written by the connection thread.
+/// Either can reach the socket first — and unlike the bounded run-control methods (`run_frames`,
+/// `run_to`, `run_to_scanline`, `step`), which call `emit_stopped` *inside* the handler and therefore
+/// always put the event ahead of their reply, `emulator/resume` returns the instant it flips the free-run
+/// flag and the halt is enqueued later by whichever thread gets there first. So the obvious spelling —
+/// `ok("emulator/resume")` then a loop reading for the event — throws the halt away roughly half the time
+/// and then blocks to the socket read timeout waiting for it. Measured at trial 4 of 8, after three clean
+/// passes; a single-shot test would have called it green.
+///
+/// So both lines are read before either is acted on. This is a property of the *harness*, not of the
+/// server: the wire carried both messages in a legitimate order.
+///
+/// `id` is written by the caller rather than drawn from [`Client`]'s own counter because the request is
+/// hand-framed; use a value well clear of the sequential ids [`Client::call`] hands out.
+pub fn resume_and_wait_for_stop(c: &mut Client, id: i64) -> Value {
+    c.send_raw(
+        &json!({"jsonrpc":"2.0","id":id,"method":"emulator/resume","params":{}}).to_string(),
+    );
+    let mut stopped = None;
+    let mut replied = false;
+    loop {
+        let line = c.recv();
+        if line["method"] == json!("emulator/stopped") {
+            stopped = Some(line["params"].clone());
+        }
+        if line["id"] == json!(id) {
+            assert!(
+                line.get("error").is_none(),
+                "resume failed: {}",
+                line["error"]
+            );
+            replied = true;
+        }
+        if replied {
+            if let Some(p) = stopped.take() {
+                return p;
+            }
+        }
+    }
+}
+
 /// A unique socket path per test. `AF_UNIX` paths are capped near 108 bytes, so this stays short.
 pub fn temp_socket(tag: &str) -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::SeqCst);
