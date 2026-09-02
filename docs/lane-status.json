@@ -1,36 +1,41 @@
 {
-  "focus": "Booted and read in. Nothing running. Holding for your go - this morning's three short answers are still open.",
-  "inFlight": [],
-  "blockedOnOwner": [],
-  "nextBoundary": "Now - nothing dispatched, nothing half-applied, everything pushed except my own status file.",
+  "focus": "Split my notes file to the suite limit - nothing lost - and dispatched the debugger fix I owe aurora.",
+  "inFlight": [
+    {
+      "what": "The resume/stop timing fix promised to aurora, plus a per-site audit of which waits are actually racy",
+      "where": "branch worktree-agent-ad98cb49b8b7b3617",
+      "agent": true
+    }
+  ],
+  "blockedOnOwner": [
+    {
+      "id": "d-23",
+      "what": "The split got my notes file from 298 KB to 153 KB with nothing lost, but the limit is 100 KB. What is left is house rules wrapped in the stories that earned them, and the suite rule says cutting those is your call.",
+      "since": "2026-09-02"
+    }
+  ],
+  "nextBoundary": "When the debugger fix reports back and is landed; the split is already committed and pushed.",
   "queue": [
     {
       "id": "RESUME-STOP-RACE-FIX",
       "title": "A timing hole on the debugger connection: a tool told to carry on can have the answer about where the game stopped thrown away, then wait until it gives up. I promised aurora this would be fixed before they write the first breakpoint tool.",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null
     },
     {
-      "id": "BOOT-READ-SPLIT",
-      "title": "My own notes file is three times the new suite size limit and two thirds of it is finished history. Splitting it is one command plus my judgement on where to cut - no helper agent. Question (2) below is this row.",
-      "state": "open",
+      "id": "SCHEMA-DRIFT-NIGHTLY",
+      "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
+      "state": "next",
       "size": "S",
-      "blockedBy": "your word - it is my own housekeeping, which the hub cannot authorise for me"
+      "blockedBy": null
     },
     {
       "id": "LIVE-TREE-RESIDUE",
       "title": "Three of our tests still read another team's live folder instead of a frozen copy, so their rebuild can turn us red for no reason. The worst one closed this morning; the shape to build to is now ratified suite-wide.",
       "state": "open",
       "size": "M",
-      "blockedBy": "your word - question (1) below"
-    },
-    {
-      "id": "SCHEMA-DRIFT-NIGHTLY",
-      "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null
+      "blockedBy": "you - the hub put it on your list, since it touches your aeon folder"
     },
     {
       "id": "ATTR-RGB-LATCH",
@@ -78,7 +83,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": "your go, and three short answers still open from this morning. (1) The live-folder cleanup: start it or leave it? (2) My own notes file is 293 KB against a new 100 KB suite limit, two thirds of it finished history - it needs NO helper agent, just one command and my judgement on where to cut. Say go and it is quick. (3) Worth answering once instead of every time: do you want me applying suite file-size rules to my own files without asking? My proposal for first pick is neither of those - it is the small debugger timing fix I promised aurora before they build their first breakpoint tool. The sound question is closed: you chose to have the player remember your setting, and that is what it does. Still open whenever: say if the corner counter should read shorter than DRAWS.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-02T17:32:18Z"
+  "awaiting": "one new question (d-23) and two older ones. The new one: my notes file is down from 298 KB to 153 KB with nothing lost, but the limit is 100 KB and what is left is house rules wrapped in the stories that earned them - the suite rule says cutting those is yours, so I stopped. Still yours: the live-folder cleanup, which the hub has put on your list because it touches your aeon folder, and whether the corner counter should read shorter than DRAWS. The sound question is closed - you chose to have the player remember your setting, and that is what it does.",
+  "atBoundary": false,
+  "updatedAt": "2026-09-02T17:53:45Z"
 }
