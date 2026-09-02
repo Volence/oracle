@@ -135,29 +135,44 @@ mod tests {
     /// player was *given*; neither can show that the glass has a hollow box where one of them should be,
     /// because [`crate::overlay::fit`] truncates and never transliterates.
     ///
-    /// The literal here is the player's own first toast (`main.rs`: `PRESS ` FOR COMMANDS`), so this is a
-    /// live defect rather than a constructed one — and it is asserted **against `font::has_glyph`**, the
-    /// drawing path's own predicate, rather than against a hand-written list of characters the table lacks.
-    /// A guard that restates its own input is the failure `font.rs`'s existing glyph test already has.
+    /// **Re-measured 2026-09-01 (F-FONT-BACKTICK).** This row was written against the player's own first
+    /// toast, `PRESS ` FOR COMMANDS`, when the backtick had no glyph — a live defect. The glyph has since
+    /// been added, so the live literal is now the *positive* half below, and the mechanism is exercised with
+    /// a character the frontend has no message for (an arrow, U+2192). It is still asserted **against
+    /// `font::has_glyph`**, the drawing path's own predicate, rather than against a hand-written list of
+    /// characters the table lacks: a guard that restates its own input is the failure `font.rs`'s existing
+    /// glyph test already has.
     #[test]
     fn a_character_the_font_cannot_draw_is_named_rather_than_silently_boxed() {
-        let text = "PRESS ` FOR COMMANDS";
-        // The control, first: if this font ever gains a backtick the row below stops meaning anything, and
-        // it must say so rather than going green on a vacuous expectation.
+        // The control, first: if this font ever gains an arrow the row below stops meaning anything, and it
+        // must say so rather than going green on a vacuous expectation.
         assert!(
-            !font::has_glyph('`'),
-            "this font now has a backtick glyph — the premise of this test is gone, re-measure it \
+            !font::has_glyph('\u{2192}'),
+            "this font now has an arrow glyph — the premise of this test is gone, re-measure it \
              rather than deleting it"
         );
         assert!(
             font::has_glyph('A'),
             "positive control: an ordinary letter is drawable"
         );
+        // The former defect, closed: the first toast the player shows now draws every character it holds.
+        let first_toast = "PRESS ` FOR COMMANDS";
+        assert!(
+            font::has_glyph('`'),
+            "F-FONT-BACKTICK regressed: the palette's own key has lost its glyph again"
+        );
+        let live = Surface::drawn(Kind::Toast, first_toast.into(), first_toast.into());
+        assert_eq!(
+            live.unrenderable,
+            Vec::<String>::new(),
+            "the player's first toast draws whole"
+        );
 
+        let text = "PRESS \u{2192} FOR COMMANDS";
         let s = Surface::drawn(Kind::Toast, text.into(), text.into());
         assert_eq!(
             s.unrenderable,
-            vec!["`".to_string()],
+            vec!["\u{2192}".to_string()],
             "the one character the player draws as a hollow box, named"
         );
         assert_eq!(s.text, text, "the source is untouched");
@@ -167,18 +182,27 @@ mod tests {
         );
     }
 
-    /// De-duplicated, in first-appearance order: a message with four em dashes has one defect, not four.
+    /// De-duplicated, in first-appearance order: a message with four arrows has one defect, not four.
+    ///
+    /// **Re-measured 2026-09-01 (F-FONT-EMDASH).** The fixture used to be the em dash and the backtick, both
+    /// then missing; both are drawable now, so the same shape is run over two characters that still are not,
+    /// and the old pair is asserted drawable rather than deleted — the premise moved, the row did not go.
     #[test]
     fn repeated_missing_glyphs_are_reported_once_each_in_the_order_they_appear() {
         assert!(
-            !font::has_glyph('\u{2014}'),
-            "premise: the em dash has no glyph"
+            font::has_glyph('\u{2014}') && font::has_glyph('`'),
+            "F-FONT-EMDASH / F-FONT-BACKTICK regressed: the separator or the palette key lost its glyph"
         );
-        let text = "WATCH CLEARED \u{2014} NO LONGER RECORDING \u{2014} SEE `LOG`";
+        assert!(
+            !font::has_glyph('\u{2192}') && !font::has_glyph('\u{00B7}'),
+            "premise: the arrow and the middle dot have no glyph"
+        );
+        let text = "WATCH CLEARED \u{2192} NO LONGER RECORDING \u{2192} SEE \u{00B7}LOG\u{00B7} \u{2014} `OK`";
         let s = Surface::drawn(Kind::Toast, text.into(), text.into());
         assert_eq!(
             s.unrenderable,
-            vec!["\u{2014}".to_string(), "`".to_string()]
+            vec!["\u{2192}".to_string(), "\u{00B7}".to_string()],
+            "each missing glyph once, in first-appearance order, and the drawable ones absent"
         );
     }
 
@@ -192,15 +216,18 @@ mod tests {
 
     /// **The title bar is the window manager's, and this build's font table says nothing about it.**
     ///
-    /// The em dash in `Oracle — frame N` has no 5×7 glyph, and the desktop draws it perfectly. Running the
-    /// font's predicate over a string the font never sees would report a defect that does not exist — a
-    /// claim about the wrong font, and a wrong answer is worse than no answer here.
+    /// Running the font's predicate over a string the font never sees would report a defect that does not
+    /// exist — a claim about the wrong font, and a wrong answer is worse than no answer here.
+    ///
+    /// **Re-measured 2026-09-01.** The em dash in `Oracle — frame N` used to be the character with no 5×7
+    /// glyph that made the point; it has one now (F-FONT-EMDASH), so the title carries a character the
+    /// overlay font still cannot draw — the desktop's font can — and the premise is asserted on that one.
     #[test]
     fn the_title_bar_is_not_measured_against_a_font_that_never_draws_it() {
-        let title = "Oracle \u{2014} frame 12720 [PAUSED]";
+        let title = "Oracle \u{2192} frame 12720 [PAUSED]";
         assert!(
-            !font::has_glyph('\u{2014}'),
-            "premise: the overlay font has no em dash, which is exactly why this row exists"
+            !font::has_glyph('\u{2192}'),
+            "premise: the overlay font has no arrow, which is exactly why this row exists"
         );
         let s = Surface::window_manager(title.into());
         assert_eq!(s.kind, Kind::TitleBar);
@@ -210,6 +237,220 @@ mod tests {
             s.unrenderable
         );
         assert_eq!(s.rendered, s.text, "no truncation this process can observe");
+    }
+
+    /// **Every message this crate can put on the glass draws whole — no hollow boxes.**
+    ///
+    /// The toasts are `format!` literals scattered across the frontend (`notify`, `notify_err`, `ov.push`,
+    /// the config loader's `warnings.push`, the lens and watch messages), and a hand-copied list of them here
+    /// would be stale by the next parcel. So the enumeration is **derived from the source**: every string
+    /// literal in every non-test region of every module `main.rs` declares, read back through the crate's own
+    /// `mod` lines at test time. That is a strict superset of the live toasts (it also covers `println!`-only
+    /// text, which costs nothing once the glyphs exist), and it was cross-checked against the hand grep that
+    /// found the toast sites in the first place:
+    ///
+    /// ```text
+    /// grep -n 'notify\|ov\.push\|toast' crates/oracle-frontend/src/main.rs
+    /// grep -n -P '"[^"]*[^\x00-\x7F][^"]*"' crates/oracle-frontend/src/*.rs | grep -v '///'
+    /// ```
+    ///
+    /// which is how the characters the table lacked were found: the backtick (`PRESS ` FOR COMMANDS`), the
+    /// em dash (41 literals) and the ellipsis (`config::kept_warning`) — and, once this row ran over every
+    /// literal instead of the grep's toast sites, the `~` in the usage text. Format placeholders (`{e}`,
+    /// `{:?}`) are stripped before measuring, because what reaches the glass is the substituted value, and
+    /// `\n`/`\t` escapes are skipped as line structure rather than glyphs. `unrenderable` is computed by
+    /// [`Surface::drawn`] — the same predicate the wire readout uses — so a literal failing here is exactly a
+    /// literal that would report a hollow box over `emulator/screen_text`.
+    ///
+    /// Red-first (2026-09-01): with the em-dash arm removed from `font::glyph`, this row failed with `62
+    /// undrawable literal(s):` starting `main.rs: ":  — cannot read " lacks glyphs for ["—"]`.
+    #[test]
+    fn every_string_literal_the_frontend_can_show_is_drawable() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // The module tree, from the crate's own `mod` declarations rather than a directory walk, so a file
+        // that is not compiled in cannot smuggle a literal into the measurement or hide one from it. A `mod
+        // x;` resolves to `x.rs` or `x/mod.rs` (the crate uses both — `lens/mod.rs` declares its own
+        // submodules), and the walk follows declarations into subdirectories the same way rustc does.
+        let mut modules: Vec<std::path::PathBuf> = Vec::new();
+        let mut pending: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+            vec![(root.join("main.rs"), root.clone())];
+        while let Some((file, dir)) = pending.pop() {
+            let src = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                panic!(
+                    "cannot read {}: {e} (a `mod` with a #[path]?)",
+                    file.display()
+                )
+            });
+            for line in src.lines() {
+                let Some(rest) = line.trim().strip_prefix("mod ") else {
+                    continue;
+                };
+                let Some(name) = rest.strip_suffix(';') else {
+                    continue;
+                };
+                let name = name.trim();
+                let flat = dir.join(format!("{name}.rs"));
+                let nested = dir.join(name).join("mod.rs");
+                if flat.is_file() {
+                    pending.push((flat, dir.clone()));
+                } else if nested.is_file() {
+                    pending.push((nested, dir.join(name)));
+                } else {
+                    panic!(
+                        "`mod {name};` in {} resolves to neither {} nor {}",
+                        file.display(),
+                        flat.display(),
+                        nested.display()
+                    );
+                }
+            }
+            modules.push(file);
+        }
+        assert!(
+            modules.len() > 10,
+            "COULD NOT MEASURE: only {} modules found — the `mod` scan is broken, not the font",
+            modules.len()
+        );
+
+        let mut checked = 0usize;
+        let mut defects: Vec<String> = Vec::new();
+        for path in &modules {
+            let file = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            let src = std::fs::read_to_string(path).expect("read a module the walk already opened");
+            // Production code only: everything up to the module's first `#[cfg(test)]`.
+            let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+            for lit in string_literals(prod) {
+                checked += 1;
+                let s = Surface::drawn(Kind::Toast, lit.clone(), lit.clone());
+                if !s.unrenderable.is_empty() {
+                    defects.push(format!(
+                        "{file}: {:?} lacks glyphs for {:?}",
+                        lit, s.unrenderable
+                    ));
+                }
+            }
+        }
+        assert!(
+            checked > 200,
+            "COULD NOT MEASURE: only {checked} literals lexed across {} files — the lexer is broken, not the font",
+            modules.len()
+        );
+        // Sanity on the lexer against the one literal this parcel exists for.
+        assert!(
+            string_literals(r#"ov.push("PRESS ` FOR COMMANDS", INFO);"#)
+                == vec!["PRESS ` FOR COMMANDS"],
+            "the lexer does not recover a plain literal"
+        );
+        assert!(
+            defects.is_empty(),
+            "{} undrawable literal(s):\n{}",
+            defects.len(),
+            defects.join("\n")
+        );
+    }
+
+    /// The string literals in a chunk of Rust source, unescaped as the compiler would (`\"`, `\\`, `\u{..}`,
+    /// and the backslash-newline continuation), with `{...}` format placeholders removed and `\n`/`\t`
+    /// dropped. Line comments are skipped; char literals (`'"'`, `'\''`) are stepped over so their quotes
+    /// cannot open a string. Deliberately small: this is a test aid over one crate's own style, not a Rust
+    /// lexer, and the caller asserts a floor on what it finds so a silent miss cannot pass as "clean".
+    fn string_literals(src: &str) -> Vec<String> {
+        let chars: Vec<char> = src.chars().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '/' && chars.get(i + 1) == Some(&'/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            } else if c == '\'' {
+                // A char literal, or a lifetime. `'\...'` is a char; `'x'` is a char; anything else is a
+                // lifetime and only the quote itself is consumed.
+                if chars.get(i + 1) == Some(&'\\') {
+                    i += 2;
+                    while i < chars.len() && chars[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if chars.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            } else if c == '"' {
+                i += 1;
+                let mut lit = String::new();
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                        match chars.get(i) {
+                            Some('n') | Some('t') | Some('r') | Some('0') => i += 1,
+                            Some('\n') => {
+                                // Continuation: the newline and the next line's leading whitespace vanish.
+                                i += 1;
+                                while i < chars.len() && chars[i].is_whitespace() {
+                                    i += 1;
+                                }
+                            }
+                            Some('u') => {
+                                // \u{XXXX}
+                                let start = i + 2;
+                                let mut end = start;
+                                while end < chars.len() && chars[end] != '}' {
+                                    end += 1;
+                                }
+                                let hex: String = chars[start..end].iter().collect();
+                                let cp =
+                                    u32::from_str_radix(&hex, 16).expect("\\u{..} escape is hex");
+                                lit.push(char::from_u32(cp).expect("\\u{..} escape is a scalar"));
+                                i = end + 1;
+                            }
+                            Some(&e) => {
+                                lit.push(e);
+                                i += 1;
+                            }
+                            None => {}
+                        }
+                    } else if chars[i] == '{' {
+                        if chars.get(i + 1) == Some(&'{') {
+                            lit.push('{');
+                            i += 2;
+                        } else {
+                            // A format placeholder: skip to its close, allowing nested `{}` in width/precision.
+                            let mut depth = 0usize;
+                            while i < chars.len() {
+                                if chars[i] == '{' {
+                                    depth += 1;
+                                } else if chars[i] == '}' {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        i += 1;
+                                        break;
+                                    }
+                                }
+                                i += 1;
+                            }
+                        }
+                    } else if chars[i] == '}' && chars.get(i + 1) == Some(&'}') {
+                        lit.push('}');
+                        i += 2;
+                    } else {
+                        lit.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                i += 1; // closing quote
+                out.push(lit);
+            } else {
+                i += 1;
+            }
+        }
+        out
     }
 
     /// **Z order, and the title bar is in it.** It is the one surface always visible regardless of F3,

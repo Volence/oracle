@@ -36,8 +36,10 @@ fn chip_width(px: usize) -> usize {
     (CHIP_COLUMNS * font::ADVANCE - 1) * px
 }
 
-/// The leading-truncation marker. Three full stops rather than `…`, which the 5x7 font has no
-/// glyph for — it would draw as the missing-glyph box (`font.rs:26`).
+/// The leading-truncation marker. Three full stops, chosen when the 5x7 font had no `…` glyph (it would
+/// have drawn as the missing-glyph box). The font gained U+2026 on 2026-09-01 for the toast cut mark
+/// (`overlay::TRUNCATION_MARK`); this chip keeps its three-glyph spelling and its tests unchanged —
+/// switching it saves two columns and is a separate, visible change, not a side effect of the toast fix.
 const ELLIPSIS: &str = "...";
 
 /// Fit `text` into `avail` device pixels by dropping characters from the **front**.

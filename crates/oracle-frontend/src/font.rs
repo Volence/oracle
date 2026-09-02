@@ -94,6 +94,19 @@ fn glyph(c: char) -> Option<[u8; GLYPH_H]> {
         '^' => [0x04, 0x0A, 0x11, 0x00, 0x00, 0x00, 0x00],
         '@' => [0x0E, 0x11, 0x17, 0x15, 0x17, 0x10, 0x0E],
         '&' => [0x0C, 0x12, 0x12, 0x0C, 0x15, 0x12, 0x0D],
+        // The palette's own key, in the player's first toast (`PRESS ` FOR COMMANDS`): the mirror image of
+        // the apostrophe's stroke, leaning the other way (F-FONT-BACKTICK).
+        '`' => [0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00],
+        // The home directory, in the usage text's `~/.config/oracle/player.conf`. Only ever printed to the
+        // terminal today, but the every-literal-is-drawable test measures every literal the crate can show
+        // and a glyph is cheaper than an exemption list.
+        '~' => [0x00, 0x00, 0x08, 0x15, 0x02, 0x00, 0x00],
+        // U+2014 EM DASH, the separator every second message in this crate uses — drawn at the hyphen's
+        // height but across the full cell, so the two stay distinguishable (F-FONT-EMDASH).
+        '\u{2014}' => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],
+        // U+2026 HORIZONTAL ELLIPSIS: the truncation mark `overlay::fit_marked` appends, and the config
+        // loader's "…" when it collapses a long list of unknown keys. Three dots on the baseline.
+        '\u{2026}' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15],
         _ => return None,
     })
 }
@@ -233,7 +246,9 @@ mod tests {
     /// Every glyph fits the 5-bit cell: a row with bits above bit 4 set would bleed into the next character.
     #[test]
     fn every_glyph_stays_inside_its_five_pixel_cell() {
-        let printable: Vec<char> = (0x20u8..0x7Fu8).map(char::from).collect();
+        let mut printable: Vec<char> = (0x20u8..0x7Fu8).map(char::from).collect();
+        // The table's two non-ASCII entries are outside that range and would otherwise go unchecked.
+        printable.extend(['\u{2014}', '\u{2026}']);
         for c in printable {
             if let Some(rows) = glyph(c.to_ascii_uppercase()) {
                 for (i, row) in rows.iter().enumerate() {
@@ -251,7 +266,8 @@ mod tests {
     /// confirmation would be a bug the tests should catch, not the user.
     #[test]
     fn the_characters_the_frontend_prints_all_have_glyphs() {
-        let used = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;-+/\\()[]$!?*#%<>=_'\"|^@&";
+        let used =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;-+/\\()[]$!?*#%<>=_'\"|^@&`~\u{2014}\u{2026}";
         for c in used.chars() {
             assert!(glyph(c).is_some(), "no glyph for {c:?}");
         }
