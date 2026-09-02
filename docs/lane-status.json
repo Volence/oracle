@@ -1,9 +1,14 @@
 {
-  "focus": "You picked the toolkit rebuild for the debug window; measuring the game loop under it before rebuilding anything.",
+  "focus": "Measuring the game loop under the new toolkit, and closing the last tests that read another team's live folder.",
   "inFlight": [
     {
-      "what": "Measuring the player's frame rate and audio pacing under the new toolkit, and pricing a separate panel window that leaves today's player alone",
+      "what": "Measuring the player's frame rate and audio pacing under the new toolkit, and pricing a separate panel window",
       "where": "branch worktree (toolkit spike)",
+      "agent": true
+    },
+    {
+      "what": "Closing the last tests and tools that read aeon's live folder instead of a frozen copy",
+      "where": "branch worktree (live-tree residue)",
       "agent": true
     }
   ],
@@ -19,6 +24,13 @@
       "project": "ORACLE-DEBUG-UI"
     },
     {
+      "id": "LIVE-TREE-RESIDUE",
+      "title": "Three of our tests still read another team's live folder instead of a frozen copy, so their rebuild can turn us red for no reason. The worst one closed this morning; the shape to build to is now ratified suite-wide.",
+      "state": "doing",
+      "size": "M",
+      "blockedBy": null
+    },
+    {
       "id": "SCHEMA-DRIFT-NIGHTLY",
       "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
       "state": "next",
@@ -31,13 +43,6 @@
       "state": "open",
       "size": "S",
       "blockedBy": null
-    },
-    {
-      "id": "LIVE-TREE-RESIDUE",
-      "title": "Three of our tests still read another team's live folder instead of a frozen copy, so their rebuild can turn us red for no reason. The worst one closed this morning; the shape to build to is now ratified suite-wide.",
-      "state": "open",
-      "size": "M",
-      "blockedBy": "you - the hub put it on your list, since it touches your aeon folder"
     },
     {
       "id": "ATTR-RGB-LATCH",
@@ -85,7 +90,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": "nothing blocking. Two things stay yours whenever: the live-folder cleanup, and whether the corner counter should read shorter than DRAWS.",
+  "awaiting": "nothing blocking, and nothing of yours is outstanding - you answered all three. When the toolkit measurement is ready I will ask for a few minutes of your screen, with a note on what to look for.",
   "atBoundary": false,
-  "updatedAt": "2026-09-02T20:08:59Z"
+  "updatedAt": "2026-09-02T20:38:11Z"
 }
