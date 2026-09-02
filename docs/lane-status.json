@@ -1,11 +1,6 @@
 {
-  "focus": "Measuring the game loop under the new toolkit, and closing the last tests that read another team's live folder.",
+  "focus": "The new debug window looks safe on the numbers; waiting on a minute of your screen for the one I cannot fake.",
   "inFlight": [
-    {
-      "what": "Measuring the player's frame rate and audio pacing under the new toolkit, and pricing a separate panel window",
-      "where": "branch worktree (toolkit spike)",
-      "agent": true
-    },
     {
       "what": "Closing the last tests and tools that read aeon's live folder instead of a frozen copy",
       "where": "branch worktree (live-tree residue)",
@@ -90,7 +85,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": "nothing blocking, and nothing of yours is outstanding - you answered all three. When the toolkit measurement is ready I will ask for a few minutes of your screen, with a note on what to look for.",
+  "awaiting": "a minute of your screen, whenever suits. A small window opens showing the game inside a debug layout, runs about a minute, closes itself, and you touch nothing. Look for: as smooth as the normal player, counter steady at 60. Bad: hitching, the number wandering below 60, or crackly sound. Aeon has a similar check queued ahead of mine.",
   "atBoundary": false,
-  "updatedAt": "2026-09-02T20:38:11Z"
+  "updatedAt": "2026-09-02T20:56:16Z"
 }
