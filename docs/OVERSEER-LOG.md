@@ -1661,3 +1661,734 @@ with inputs untouched. Their measurement, cited as theirs — not re-derived her
 > `f038672daf6eb2b8` — byte-identical, with **zero commits touching that path** since our CR-28
 > vendor at `70c7bb4`. The day's seven empyrean commits are all `OVERSEER-PROTOCOL.md`, not the bus
 > contract, which is why. TRACKED_REVISION stays retired at None.
+
+# --- compression pass, 2026-09-02: the stories behind the rules ---
+
+Each block below is the narrative that sat under a rule still live in
+`OVERSEER.md`. Moved verbatim; the rule was not reworded. The head points here by span.
+
+## [orig lines 952-966] under: **▶ AMENDMENT, 2026-08-27 — THE ABOVE BAR HAS A FALSE-POSITIVE MODE, AND THIS SEAT FIRED IT AT A PEER.
+
+I flagged their certification anchor `33d905b8` as a docs-only commit standing in for a byte guarantee.
+**The observation was right and the diagnosis was wrong.** A freeze record names **`aeon_rev` — the tree
+state the ROM was built from** — and that is the *correct* anchor for reproducibility. It is *frequently*
+a docs commit, because the tip at freeze time is whatever happened to land last. Nothing was false.
+**The two are distinguishable, and the distinction picks the remedy:**
+* **08-24 (mine):** the **wrong** SHA — a lint fixup standing in for a feature merge. `git show --stat`
+  **catches it**, because the files named are not the ones the claim is about. Remedy: **swap the SHA.**
+* **08-27 (theirs):** the **right** SHA for an **unstated question**. `git show --stat` **cannot catch
+  it**, because the commit you land in is genuinely the one named — the sentence simply does not say
+  *which of two questions* its SHA answers (what carries the code? vs. what tree was it frozen from?).
+  Remedy: **a label, not a swap** — `code <SHA> · frozen at aeon_rev <SHA> / sigil <SHA>`.
+**So the 08-24 practical check is necessary and not sufficient, and it is worse than that: applied alone
+it produces a confident FALSE POSITIVE on every correctly-recorded freeze in the suite.** Ask what
+question the SHA is answering before judging whether it can carry the claim.
+
+## [orig lines 987-989] under: **⚑ THE PROCESS LESSON, which aeon called out explicitly and which is why this was cheap: I sent it
+
+⚠ **Corrects a claim already committed in this repo:** `docs/lane-log.jsonl`, the 2026-08-27T10:09Z
+entry's `detail`, calls that anchor *"same anchor-class bar they caught this seat on 2026-08-24"*. It is
+not the same bar. That file is append-only, so this paragraph is the correction of record.
+
+## [orig lines 1196-1220] under: **▶ NEW OPS LINE, 2026-08-30 — NEVER CITE THE TIP. CITE THE COMMIT THAT CARRIES THE ARTIFACT, EMITTED
+
+I sent the hub `d5baac7` as CR-H's anchor. **It is a `docs/lane-status.json`-only commit.** The CR is
+carried by **`d907fae`**. Both verified with `--stat` after the fact; the hub caught it before I did.
+**The mechanism, and it is new — the two previous instances do not describe it.** 08-24 was the *wrong*
+SHA (a lint fixup for a feature merge) and 08-27 was the *right* SHA for an unstated question. **This is
+neither: I cited the SHA I had just pushed.** I committed the CR, then committed a status update on top,
+then pushed, then quoted the push's result — so the tip was the status commit, and the *act of being
+diligent about pushing before citing* is what put the wrong object in my hand. The push-before-you-cite
+rule and the cite-the-carrying-commit rule pull in opposite directions at exactly this moment, and
+nothing warns you.
+```sh
+git log -1 --format=%h -- docs/proposed/2026-08-30-cr-h-screen-text.md   # the commit that carries it
+```
+**Never type or paste the output of `git push` / `rev-parse HEAD` as an anchor for an artifact.** Ask the
+path which commit carries it. That form cannot produce this error, where checking can only catch it.
+⚠ **And the reason it was cheap: the bad anchor lived ONLY IN MAIL.** `grep -rn d5baac7 docs/` returns
+nothing — no in-tree reader could ever have met the contradiction, exactly as protocol bar 20 describes,
+and the recipient was the only party able to catch it. **They did, which is the argument for citing a SHA
+the receiver can actually resolve rather than one that merely exists.**
+
+## [orig lines 1226-1252] under: **▶ NEW OPS LINE, 2026-08-30 — A KILLED SUITE LEAVES A LOG THAT AGGREGATES CLEAN. COUNT THE LEGS, NOT THE
+
+A merged-tree verification was **killed at 46 of 61 legs** — cause unidentified (no rotation was due, no
+peer announced a `pkill`, and this box has a recorded history of both). The log it left behind is the
+hazard: `grep -E "^test result" | awk` over it prints a **confident `LEGS=46 … FAILED=0`**, which is
+exactly the shape of a healthy result and is three quarters of a suite. **Nothing in the aggregate line
+says how many legs there should have been**, so the one number that would reveal the truncation is the
+one the house aggregate does not carry.
+**This is the green-log-and-absent-run bar arriving on a PARTIAL run rather than an absent one**, and it
+is worse than the absent case: an absent run leaves nothing to misread, while this leaves a page of
+genuine passes. Every one of those 46 legs really did pass. The log is not lying; it is answering a
+narrower question than the one being asked of it.
+```sh
+LEGS=$(grep -cE '^test result' "$LOG")
+[ "$LEGS" -lt 61 ] && echo "INCOMPLETE: $LEGS legs, expected 61 — NOT A VERDICT"
+```
+and the runner prints an explicit `CARGO_EXIT=` and `COMPLETE` marker, so **the absence of the marker is
+itself readable**. Never take an aggregate from a log whose run you did not watch terminate.
+⚠ Compounding factor recorded because it hid the first instance tonight: an earlier verification of mine
+ended in `grep -c 'SKIP:'`, which **exits 1 when it finds zero matches** — the desired outcome — so the
+harness reported the whole command as failed while the suite was genuinely green. **One command reported
+failure on success, and hours later another reported success on a partial run.** A pipeline's exit status
+and its subject's verdict are different facts; make the command say which one it is reporting.
+
+## [orig lines 1259-1285] under: **▶ CORRECTION, 2026-08-30 — OUR HEADLESS RECIPE'S "BOTH GUARDS" ARE ONE GUARD TWICE, AND IT IS THE
+
+The banked recipe reads `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE DISPLAY=:N … --x11`, and its prose
+calls these **"both guards, because the failure is silent and lands on somebody else's screen"**.
+**They are not two guards.** `--x11` is `force_x11`, and `main.rs:1040-1043` implements it as exactly
+`std::env::remove_var("WAYLAND_DISPLAY")`. So the flag and the `env -u` do **the same single thing**,
+and the recipe has no independent second guard at all — it reads as belt-and-braces and is one belt.
+⚠ **And aurora measured that mechanism failing.** On this box `WAYLAND_DISPLAY=wayland-0`, its socket
+exists under `XDG_RUNTIME_DIR`, and an Electron app started with the variable deleted **still reached
+the owner's two real monitors** — the toolkit fell back to the literal `wayland-0` path rather than to
+X11. **If minifb does the same, `--x11` does not do what its own `--help` says it does**, and every
+windowed fixture this lane has run may have been on his desktop.
+**NOT yet established for us, and the distinction matters:** aurora's measurement is **Electron/Ozone**,
+a different toolkit from our **minifb** (we are not winit-class, which is what their message assumed —
+`Cargo.toml:10`). Their result does not transfer by itself; minifb's Wayland backend is separate code
+and may genuinely fail the connect when the variable is gone. **So this is a live hypothesis about our
+player, not a finding about it.**
+**The discriminator, aurora's and adopted — it needs no window on his screen:** ask the app for its
+screen size from inside the fixture and compare against the Xvfb geometry actually requested. A match
+proves the fixture owns the display; a mismatch proves it is talking to the real compositor. **Do NOT
+measure the windowed case while the owner is logged in.**
+**Consequence for the `screen_text` parcel, and it is the reason this matters today:** its T1 runtime
+item is precisely *"never executed against a real window"*. **That item may not be dischargeable by the
+recipe in this file**, and discharging it against an unvalidated recipe would put a window on his
+desktop to prove a feature about windows. Settle the discriminator first, or leave T1 open and say so.
+
+## [orig lines 1292-1312] under: **▶ NEW OPS LINE, 2026-08-30 — DO NOT COMMIT WHILE A VERIFICATION RUN IS IN FLIGHT. IT INVALIDATES THE
+
+A merged-tree run came back **61/1988/1**, failing `server_build::the_compiled_in_build_id_still_names_this_tree`
+— *"the compiled-in build id names a different commit than HEAD"*. **It was right.** The binary was
+compiled at `8e88e2b`; I then landed two `docs/OVERSEER.md`-only commits **while the suite was running**,
+so HEAD had moved by the time the assertion read it. Re-run on a stable tree: **61/1989/0/6, exit 0,
+`HEAD_AT_START == HEAD_AT_END`.**
+**Why this is worth a line rather than a shrug: the gate exists to catch a stale build-script product,
+and a docs commit is exactly the change a person feels safe making during a long run** — it touches no
+code, it cannot affect a test, and it is the natural way to use twelve idle minutes. The failure it
+produces names a *build-script caching defect*, which is a plausible and completely wrong diagnosis; a
+session that trusted the message would have gone looking at `cargo:rerun-if-changed` declarations.
+*Tonight's three instrumentation failures, kept together because the pattern is the point: one command
+reported **failure on success** (`grep -c` exiting 1 on the desired zero matches); one reported **success
+on a partial run** (a killed suite aggregating clean at 46 of 61 legs); one reported **a real failure
+with a misleading cause** (this). In all three the suite itself was honest and the harness around it was
+not. **The instrument that reports on the instrument is the one nobody tests.***
+
+## [orig lines 1319-1330] under: **▶ SCOPE CORRECTION, 2026-08-30 — `screen_text` DOES NOT END AEON'S EYEBALL REQUESTS, AND THIS FILE SAID
+
+The OVERLAY-STATE row read *"the item that would stop aeon asking you to eyeball things"*, and I repeated
+it to them as a headline. **It is wrong. `screen_text` reads the emulator's own CHROME — status line,
+toasts, palette, lens, title bar — and every eyeball request aeon has outstanding is GAME PIXELS**: the
+right-edge price of a column borrow, a background wrap, colour bands. **No `kind` in the adopted enum can
+see any of them.** Their words, and the reason they sent it: they would otherwise have planned a parcel
+around a capability the tool does not have.
+**Where it genuinely helps, per aeon: the booked SCENE-READOUT row** — the owner counts button presses to
+know which of twenty effects is on screen. **If that readout is drawn as debugger chrome, `screen_text`
+reads it and the row is cheap; if it is drawn as game graphics, the tool cannot see it. Which one is
+UNMEASURED**, and aeon has written it into their booking as a thing to check *before* planning around it
+rather than assuming the convenient half.
+
+## [orig lines 1351-1358] under: **▶ F-ACCEPT-TABLE-CROSSCHECK-BLIND (registered 2026-08-30, emitter behaviour change, NEEDS A RULING).**
+
+⚑ **AND THE LESSON ABOUT THE VERIFIER, WHICH IS THIS SEAT'S: A POISON THAT CRASHES IS THE EASY VERSION.**
+My dropped-row poison returned `None` from `_record`, which crashed `hazard_views` and produced
+`setUpClass` errors — I read "exit 1" as caught. The **non-crashing** form of the *same* failure
+(`continue` before the row is written) went through the pre-hardening suite with **one bare `KeyError`
+against a synthetic fixture and nothing against real source**. Both reproduced firsthand at the merge.
+**A poison must be built to survive its own blast** — if it takes the program down, you have measured that
+the program crashes, not that the suite noticed. The agent built the harder variant unprompted after being
+told the easy one, which is the deviation-with-evidence this file's bars ask for.
+
+## [orig lines 1400-1426] under: **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
+
+**The instance.** This lane authored 11 contract vectors for CR-F, verified *programmatically* that
+every case cited its clause, wrote a README handing them over as ready, and shipped them. **Nine of the
+eleven could not have passed**: every result case carried `"layout": {}` and `$defs.decoderLayout`
+requires five fields. The applying lane filled them in. One command — running the cases against the
+schema — would have caught it, and **the schema was readable at a committed revision the whole time and
+this lane had already read other parts of it.**
+**Why it is a bar and not a slip: the same document argued that an unrecorded residue "reads as guarded
+to everyone who sees a green schema run", while containing vectors that could not have produced a green
+run at all.** The rigour was spent entirely on the interesting half (which rules are testable, which are
+behavioural and therefore not) and none on the mechanical half. That is the failure mode of a lane that
+has been reasoning well for hours: **scrutiny follows what looks like an argument, and a field you filled
+in as a placeholder does not look like one** — the provenance-feeling-material bar arriving on your own
+output instead of on a citation.
+**Second defect, same submission, different class: a change introduced between two of your OWN artifacts
+needs a named delta.** CR-F as filed said `owner.raw` is served *always*; the fragment written three
+hours later makes it absent when `kind == "unavailable"`. That is the better rule and it was adopted —
+but it changed a filed artifact silently in a second one, and the receiving lane had to catch it and ask
+for it to be noted. **An improvement introduced without a flag is indistinguishable from an
+inconsistency**, and the cost lands on the reader who has to work out which it was. Name the delta at
+submission time; it costs a sentence.
+
+## [orig lines 1432-1480] under: **▶ NEW BAR, 2026-08-29 — A TEST THAT ASSERTS WHAT YOU *ADDED* IS STRUCTURALLY BLIND TO WHAT YOU
+
+**The instance.** Adding an `AETHER ON/OFF` field to the F3 status line came with a test asserting the
+field survives truncation. It passed. It was also true and useless: `fit` cuts the line from the right
+with **no ellipsis and no error**, so the test proved the new field was present while three older ones
+— aspect, native resolution, frame counter — had been pushed off the glass. Measured rather than
+reasoned about, by printing the fitted string at each real window size: **34 characters available at
+224px, 448px, 672px and 896px alike**, because the font scale tracks the picture height, so the budget
+in *characters* is very nearly constant no matter how large the window. The line wanted 51.
+**The part that makes it a bar rather than a slip: the surface was ALREADY over budget and nobody
+knew.** Before this parcel the line ran to 41 characters, so `F1234` had never been visible at any
+size and the resolution was being cut mid-number to `320X2`. A field that silently truncates cannot
+report its own overflow, and no test asserted on the *whole* line — every test asserted on the field
+its author had just added. That is bar 16(d)'s absence surface on a **positive** artifact: a status
+line that is present, legible, and quietly missing its right-hand third.
+**And the fix that bought the room back is worth stealing: the status line now draws one font step
+smaller than the rest of the overlay** (`Overlay::status_font_scale`). A toast is a *message* and wants
+reading across the room; a status line is a **readout** consulted deliberately by someone who pressed
+F3. One step down roughly halves its width cost, and the whole 51-character line now fits at every size
+from 448px up — including the frame counter, which had never been visible. At 224px there is no step
+left to drop and it still truncates; that floor is **asserted in the test** rather than papered over, so
+a change that makes it worse fails instead of passing quietly.
+**Second finding from the same parcel, on the silent arm.** The bug being fixed was that `Bus::start`
+printed nothing when no `--aether` was given — an absence, which is why it was never noticed. **No test
+over that file could have caught its removal either**: a unit test cannot read `println!`, and a test
+that shelled out to grep its own stdout would be testing the harness. So the guard is structural — the
+`if let Some(..) else` became a `match`, and **deleting the quiet arm is now a compile error.** Where
+the observable is unreachable to a test, reach for the type system before settling for a comment. The
+wording is pinned separately as a constant, and the two builds' twins pin a shared opening so
+`bus.rs` and `bus_stub.rs` cannot start describing one state in two vocabularies.
+**Runtime is what closed the wiring, and it was not optional.** Poisoning `filter: filter_label(..)`
+back to the core identifier left the entire suite green — the tests call the function, and the call
+site sits inside `setup_audio`, which needs a real output device. That half was settled by running the
+player under `xvfb-run` with `XDG_CONFIG_HOME` pointed at a scratch `player.conf` carrying
+`status_line = on` (which is how you get the F3 line up with no keyboard, and without touching the
+owner's config), then reading the screenshot. All three readings confirmed on the glass: `AETHER OFF`,
+`AETHER ON` under `--socket`, and `AUDIO RAW` under `ORACLE_CONSOLE_FILTER=off`. **The test's own doc
+now says which half it does not cover**, rather than leaving a later reader to assume it covers both.
+
+## [orig lines 1486-1504] under: **▶ NEW BAR, 2026-08-27 — A CLAIM IN OUR DOCS ABOUT A PEER'S FILE HAS A SHELF LIFE, AND NOTHING IN THIS
+
+**The instance, dated end to end because the dating is the argument.** `docs/2026-08-27-breakpoints.md`
+§7b landed at **03:11:37** stating that aeon's `evict_witness.py:97` reads snake_case
+`timeout_reached` and would silently misreport a timeout. **It was TRUE.** aeon fixed it at
+**03:51:24** (`6e4751c3`, verified here as a code commit on their `origin/master`). The claim was then
+**re-cited three times inside this repo** (`bp-disclose-recon.md` ×3, `lane-log.jsonl`) and **exported
+to aeon at ~13:00 as a live exposure**, where they *"had the brief half-written"* for an agent before
+opening the file by luck. **Not one link in that chain re-read the source.** Every re-citation was a
+faithful copy of a sentence that had been true.
+**The other two instances the same day**: the ROM-disappearance *mechanism* asserted about their build
+(invented, not observed), and the 52-method figure that went out from here, was banked there, and came
+back to outrank our own measurement. **Different shapes, one property: a statement about a peer's tree
+living in our tree, where no reader of ours can meet the contradiction.**
+**Why the existing bars do not cover it.** *Verify firsthand* is satisfied — the author did read the
+file. *Check the SHA class* is satisfied. *Re-read at send time* (protocol bar 22) is the closest and
+is written for **peer status files**, which announce their own staleness with a timestamp; **our own
+committed prose does not**, and reads as settled fact precisely because it is in our tree and we wrote
+it. **A doc has no `updatedAt`.**
+
+## [orig lines 1524-1553] under: **▶ NEW BAR, 2026-08-27 — DO NOT GREP A RELEASE BINARY FOR A SHORT STRING. THE OPTIMIZER INLINES IT AS
+
+Chasing whether `target/release/oracle-aether` was current, I grepped it for `timeoutReached`,
+`oracle-rs` and `serverBuild`. **All absent.** I re-ran it four ways — `grep -a`, `LC_ALL=C grep -a`,
+`strings | grep`, `strings -a -n 4 | grep` — plus a raw byte `bytes.find()` in Python that removes both
+tools from the question. **All five agreed on absence, with a negative control returning zero and
+positive controls returning hits.** Every check this file demands, and the conclusion was still wrong.
+**aeon settled it by spawning the binary and reading the wire: all three strings are served.** Then the
+mechanism, measured rather than guessed — the prediction was that an 8-byte immediate leaves the first
+eight bytes contiguous and orphans the rest:
+| literal | len | release, whole | release, 8-byte prefix | debug, whole |
+|---|---|---|---|---|
+| `oracle-rs` | 9 | **0** | 1 | 1 |
+| `oracle-next` | 11 | **0** | 1 | 1 |
+| `serverBuild` | 11 | **0** | 1 | 1 |
+| `timeoutReached` | 14 | **0** | 2 | 1 |
+| `profile=release` | 15 | 1 | 1 | 0 |
+**Short literals are materialized as 8-byte `mov` immediates in the optimized build; only the first
+eight bytes survive as a searchable run.** The 15-byte control stays whole, and **every debug build on
+this machine carries all of them** — which is the discriminator to reach for.
+**Why this is a bar and not a curiosity: it fails in the FALSE-ALARM direction, and it attacks this
+lane's own cheap shortcut.** Our 2026-08-26 bar — *a merged serve is not a served method; spawn the
+consumer's own path and call it* — is correct, and grepping the shipped binary is the tempting cheap
+substitute for it. **That substitute manufactures confident evidence of staleness in a binary that is
+perfectly current.** It is bar 16(d)'s absence surface with the sharpest possible teeth: an absence
+reproduced by five instruments still is not evidence, because all five shared one frame — *that a
+string literal in the source exists as that string in the artifact.* **Nobody records that as a choice,
+so re-running cannot vary it** (bar 19 exactly).
+
+## [orig lines 1567-1597] under: **▶ AND THE ONE THAT COST MORE — A NUMBER OF OURS CAME BACK AS A PEER'S AND OUTRANKED OUR OWN
+
+The chain: **this lane** measured *52 methods advertised, `capabilities.breakpoints: true`* and told
+aeon. aeon banked it in **their** `docs/OVERSEER.md` rung-2 note. I then **read that number firsthand
+out of their committed blob** and used it as *independent corroboration* to discount my own static
+finding — reasoning that a binary missing its handshake identity could not report 52. **The
+corroboration was our own claim wearing another lane's confidence.** Bar 19's echo-versus-corroboration
+at its purest: there were never two derivations, there was one, and it had gone round a circuit.
+⚠ **And the detail that makes it worse rather than better, verified at their `origin/master`:** the
+sentence beside it — the *41*-method reading — is explicitly labelled *"Measured, both binaries as
+shipped"*, i.e. **theirs**. The 52 carries **no attribution at all** (*"the same server reports 52
+methods…"*). So the number I trusted sat in a peer's tree, in a paragraph whose neighbouring figure
+announced its own provenance, silently missing its own. aeon's own account was that they had attributed
+it in their docs and dropped it only in the message; **at the revision I read, the durable record does
+not carry it either** — offered to them hedged, because it changes the remedy.
+**Which is the durable half: `verify firsthand` does not reach this.** Reading a committed blob
+confirms the **transcription**, never the **claim** — and this suite's primary defense is firsthand
+verification, so the failure rides in on the exact discipline meant to stop it. **Provenance does not
+survive transcription into another lane's document**, and the reader cannot recover it, because a
+faithfully-copied number looks identical to an independently-measured one. So the remedy is not only
+*say whose measurement it is when you repeat it in a message* — it is **the attribution must survive
+into the durable record**, since that is what peers read firsthand and trust.
+**Before letting any peer's figure outrank your own measurement, ask where it came from originally.**
+*⚑ Keep the sting, because the tidy lesson is wrong: **the laundered number was pointing at the TRUTH
+and this seat's correctly-executed measurement was pointing at a FALSEHOOD.** The binary really was
+current. Had I discounted the circular 52 and trusted my own five-instrument absence, I would have
+raised a false staleness alarm at a peer mid-decision. Two defective inputs happened to cancel. So
+resist *"trust your own measurement over a peer's number"* — the actual rule is that **a number with no
+provenance and an absence with no live control are both unfinished**, and the fix for each is the same:
+go and look at the running thing.*
+
+## [orig lines 1609-1628] under: **▶ THE COMMIT-MESSAGE BAR NOW HAS TWO INSTANCES, AND BOTH FAILED BY THE SAME MECHANISM: A LINE WRAP.**
+
+**Different repo, different operator, different tooling, SAME mechanism** — which by bar 19's test is
+corroboration rather than echo, because neither derivation could have shared the other's parameter. So
+the durable statement is sharper than the bar's own: **the dominant failure mode of a scripted edit in
+these repos is prose that WRAPS defeating a pattern that assumed one line.** Every lane here is
+docs-heavy and every doc wraps, so this is the common case, not the corner.
+*Their framing, kept because it is the honest half: they banked the bar and produced its textbook
+instance twenty minutes later. **Rehearsal is not protection** — which this suite's protocol already says
+about SHAs, arriving here in a different field.*
+
+## [orig lines 1659-1672] under: **▶ NEW BAR, 2026-08-29 — THE HEADLESS PLAYER RECIPE IN THIS FILE WAS INCOMPLETE, AND FOLLOWING IT PUTS A
+
+`cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
+under a live agent). Fresh worktrees: `ln -s <repo>/vendor vendor`, verify 17 TestRoms entries, and
+open every dispatch with a base check (commit-message string + a file that must exist). Exact-path
+`git add` only; `git show --stat` per commit; no Co-Authored-By trailers. Never `cargo test | tail`.
+`pkill -f`/`pgrep -f` self-match (the waiting shell's own command line contains the pattern) — bracket the first character: `pgrep -f "[c]argo test"`. ⚠ **Bracketing is not enough when the SAME command carries the literal string elsewhere** — a heredoc writing a doc that quotes the socket path made `pkill -f "[o]rc-p/o.sock"` match its own shell and kill it mid-command (exit 144, 2026-08-26). Kill by the PID you recorded at launch, not by pattern, whenever the command also contains the text. Aether sockets live under `$XDG_RUNTIME_DIR`. `/tmp` is quota'd —
+free space is not the signal. The frontend is bin-only (`pub fn` with no caller = hard error).
+`ls` is aliased to eza. Owner tests run `aeon/s4.debug.bin`.
+A probe socket must NOT live under the session scratchpad — that path exceeds `SUN_LEN` and the
+server refuses with `cannot bind the Aether socket: path must be shorter than SUN_LEN`; use a short
+`/tmp/<short>` dir. The MCP shim (`oracle-old/linux-port/mcp/oracle_mcp.py`) **SPAWNs its own
+`oracle-aether` by default** (private `mkdtemp` socket, `ORACLE_ROM` default `aeon/s4.debug.bin`) and
+**ATTACHes only when `$ORACLE_SOCKET`/`$EXODUS_SOCKET` is set** — it does NOT use empyrean's
+`resolve_socket_path()`, so do not reason about the shim from that resolver (this seat did, and was
+wrong about whose emulator it was talking to).
+
+# --- compression pass, 2026-09-02: the stories behind the rules ---
+
+Each block below is the narrative that sat under a rule still live in
+`OVERSEER.md`. Moved verbatim; the rule was not reworded. The head points here by span.
+
+## [orig lines 233-289] under: **▶ NEW BAR, 2026-08-30 — EVERY CITATION RULE THIS SUITE OWNS IS WRITTEN FOR THE RECEIVING SIDE, AND
+
+**The pair.** This lane sent sigil a confident wrong claim about **its own tree** (the `.lst` recipe
+"residue", retracted above). aeon reported a commit hash **typed from memory of a commit they had made
+four minutes earlier**, which resolved in no object store anywhere. Different artifacts, one mechanism.
+**Why no existing rule catches either.** `--stat` what you are handed; check the SHA's class; verify the
+anchor; do not trust the paraphrase — **every one of them presupposes an incoming artifact.** There is no
+incoming artifact when the claim is about your own work, so the whole apparatus is structurally
+inapplicable. aeon's diagnosis of *why* it goes unchecked is the sharp part: **a claim about someone
+else's tree feels like a claim and gets verified; a claim about your own feels like recall.**
+**And the amplifier, which is this lane's half:** a careful peer reasoning soundly on your wrong premise
+makes the error look **corroborated rather than caught**. Their care is what hardens it. Same circuit as
+the 52-method number that went out from here, came back as a peer's, and outranked our own measurement.
+**Their operational form, for hashes:** emit every SHA from the command that proves it, in the same
+invocation as the thing it anchors. **Ours is about claims rather than hashes, and is this:** a statement
+about our own tree that is going OUT — to a peer, to the owner, into a doc — is read out of the file at
+send time, or it is sent hedged. Not because it is likely wrong, but because *nothing downstream can
+check it*, and the more competent the receiver the more thoroughly it will be built upon.
+⚑ **AND THE PATTERN BEHIND THE INSTANCES, 2026-08-30 — THIS SEAT KEEPS READING A SOUND OBSERVATION AT ONE
+NOTCH TOO WIDE A SCOPE.** Three in a night is a habit, not luck, so it is booked as one entry rather than
+three slips:
+| observed (true) | asserted (too wide) | what settled it |
+|---|---|---|
+| no socket in `/run/user/1000` | *"the socket chain is EMPTY, no lane can reach any emulator"* | reading the resolver — one path, chosen on a directory test |
+| a grep for `xvfb-run` returned nothing | *"this repo has no xvfb-run site"* | the grep had **errored** on shell globbing; four real hits |
+| `ls /tmp/.X*-lock \| wc -l` = 0 | *"the box has zero leaked locks"* | `ls` is aliased to `eza`, which **exited**; `find` says 108 |
+| two `cargo` processes running | *"two cargo runs in THIS repo"* — the serialized-cargo hazard | `/proc/<pid>/cwd`: the other is in `.sigil-clamps`, a sigil worktree, under aeon's `refreeze --attest`. Different target dir, no lock contention, rule not engaged |
+**The shape is constant: the measurement is right, the SCOPE is asserted rather than measured, and the
+wider claim is the one that gets said out loud.** Each was settled by exactly one command — read the
+function, run the grep correctly, use `find`, read `/proc/<pid>/cwd`. **Two of the four are the SAME
+mechanism** (a command that failed, with its error suppressed or swallowed by an alias, counted as an
+empty world), which is bar 16(d) and which this file already carried when all three happened.
+**Operational form, and it is narrower than "be careful": before stating a scope — *no lane*, *this repo*,
+*the box*, *nowhere* — name the command that establishes THAT WORD, not the one that established the
+observation.** They are rarely the same command, and the second one is usually cheap.
+⚑ **THE INSTANCE, SAME NIGHT, AND IT IS A VERIFICATION I REPORTED AS CLEAN.** aeon found a blocker with no
+decision card; this lane ran the same check over its own board and told a peer *"no missing cards here"*.
+**That emitted claim had two independent defects, and a peer found each — neither was found here.**
+1. **Wrong enumeration parameter.** It read blockers from `blockedOnOwner` only, and `AUDIO-DULL`'s owner
+   blocker was sitting in a queue row's `blockedBy` **free text**, where the enumeration could not see it.
+   The correct form enumerates owner-blocking claims from `blockedOnOwner` **and** every `blockedBy`
+   string, because prose is where one hides. (aurora, 2026-08-30.)
+2. **Wrong data shape.** It built `{id: entry}` over `docs/decisions.jsonl` — the dict-by-id that
+   empyrean `52519fd` now forbids outright, ledger tooling being **line-addressed**. Measured here after
+   the amendment landed: 20 lines, 20 distinct ids, **0 entries dropped** — so the answer was right and
+   the method was wrong, and it was *guaranteed* to break at the first 8c closure, which appends
+   duplicate content by design. **A check that is correct by luck reports exactly like one that is
+   correct**, which is why the amendment is a shape rule rather than advice.
+**Both defects were in a claim about our OWN board, sent outward, where nothing downstream could check
+it** — the bar above, arriving on the verification written to enforce a neighbouring bar. Nothing was
+committed carrying the bad shape (only two docs mention the ledger; no scripts), so this is a habit note,
+not a repair. **Do not transcribe the contract clause itself** — read `contract/DECISIONS.md` there.
+
+## [orig lines 294-323] under: **▶ F-CR28-CALLERS-DANGLING, registered 2026-08-30 — an unmerged commit in a leftover worktree, found
+
+Branch **`cr28-callers`** holds **one commit not on `main`** — `22d57ca` *"docs: CR-28 ruling applied —
+ADOPT WITH CHANGES, M1-M7 and S1-S4"*, a **418+/145− revision of `docs/2026-08-21-cr28-callers.md`**
+whose blob **differs from `main`'s copy of the same path**. Its own message ends *"Nothing merged,
+nothing pushed"*, which is an agent's honest close-out, not a verdict on whether the controller wanted it.
+**Deliberately NOT merged and NOT deleted.** Queue item 5 records CR-28 as fully done — ruling
+adjudicated, applied and served on 08-21 — so this is *probably* a superseded intermediate. **Probably is
+not knowledge**, and merging a docs revision into a closed arc on a guess is worse than leaving it.
+**Why it is registered rather than mentioned:** the two sibling worktrees (`parcel/gui-layers`,
+`profiler-shortrow-residual`) are genuinely merged — **zero-ahead AND ancestors of `main`, both
+conditions checked**, because zero-ahead alone is the two-valued reading bar 16(a) was written for. This
+one is neither, and a dangling branch is invisible to every reader who does not run `git worktree list`.
+**Revival condition:** anyone reopening CR-28, or the next session that prunes worktrees. Resolve by
+diffing `22d57ca:docs/2026-08-21-cr28-callers.md` against `main:` and deciding whether the revision was
+superseded by the applied ruling or dropped by accident — then merge it or delete the branch **with the
+reason recorded**, so the next reader is not asked the same question a third time.
+**Registered 2026-08-29 by the two window checks** (`docs/2026-08-29-window-runtime-checks.md` — both
+gates discharged; the `LIVE-OBJECTS-CARD` sequencing blocker is cleared):
+| id | what | revival condition |
+|---|---|---|
+| **F-WINDOW-BUS-FRAME-OFFBYONE** | ✅ **DIAGNOSED 2026-08-30, and the registered reason below was WRONG.** ~~*A completed-vs-presenting convention difference would explain it and would not be a defect.*~~ **It is a real, accumulating divergence.** Bus `frame` is DERIVED from the clock (`engine.rs:2223`, `now() / MCLK_PER_FRAME`); the window's `F` is a COUNTER bumped after every run iteration whether or not a frame completed (`main.rs:1929`). A breakpoint stopping mid-frame is a **permanent +1** that never self-corrects, and a **state load diverges them without bound** in the other direction (`main.rs:1571` prints *"frame counter continues at {frame}"* while the restored clock rewinds). `engine.rs:2237` had already named "a UI counter" as the thing it refused to serve — the window IS that counter. **DO NOT JOIN THESE NUMBERS**; `emulator/screen_text`'s fragment carries the disclaimer in its own description so no consumer tries. **Fixing the counter is a SEPARATE item and deliberately not bundled** — it is a behaviour change and a contract ruling must not be made contingent on one. | **RULED 2026-08-30 (L-08, `docs/2026-08-22-unadjudicated-decision-ledger.md`): RELABEL, do not sync the counter.** The engine had already settled it from the other end — `engine.rs:2349-2351` refused to serve a UI counter and named the cost (*three hand-rolled realignments*), so syncing ours is that refusal re-litigated from the losing side. A still-incrementing `F` at a breakpoint halt is how a person sees the render loop is alive while the machine is not; a clock-derived number freezes there. What is left is the WORDING, for whichever parcel touches the status line. The *joining* hazard is already closed by the fragment. |
+| **F-SCREEN-TEXT-PALETTE-LENS** | `emulator/screen_text` serves **three of the five** adopted `kind`s — `titleBar`, `statusLine`, `toast`. `palette` and `lens` are not served (reasons in the module doc); both are **additive and need no contract change**. Separately, the layer badge and the PAUSED banner have **no `kind` in the adopted enum at all**, so they cannot be reported without a contract amendment. | A consumer asking for palette/lens text, or a CR that widens the enum. |
+| **F-STOPPREC-HOSTED-HALT** | 🔴 **REGISTERED 2026-09-02 (`parcel/stopprecision`).** §8 item 24's proof measures the breakpoint halt on the **socket** free-run driver only. `Engine::halt_on_breakpoint` has two callers — that one and the player window's loop through `Host::pump` — and the hosted one is not reachable from a socket client, so its `stopPrecision: "exact"` is inferred from sharing one function with the measured path rather than measured. Both read the stopping `pc` from the same `self.sys` at the same point, which is why the inference is reasonable and why it is still an inference. | Needs a host-side test in the shape of `host.rs`'s `the_bus_and_the_panel_read_one_instrument`, which reaches the instrument from the host's side. Bounded. Revive when the player's breakpoint path is next touched, or sooner if a consumer reads a window-driven halt as exact. |
+| **F-RESUME-STOP-RACE** | 🟢 **CLOSED 2026-09-02.** Helper lifted to `tests/common/mod.rs`, semantics unmoved; `stop_precision.rs` imports it. **The mechanism was reproduced, not argued** — reverting the lifted body to the naive spelling on disk gave **7 failures in 12 runs**, each a 20 s `WouldBlock` timeout in `Client::recv` (`measured_breakpoint_precision` ×5, `the_reasons_this_server_emits_are_the_seven_it_names` ×3); restored from the committed baseline, **0 failures in 20 runs**. `-p oracle-aether` whole: 459 passed / 0 failed / 2 ignored. **⚑ AND THE ROW BELOW WAS WRONG ABOUT WHERE IT WAS LIVE — both halves.** `tests/watchpoints.rs` contains **zero** `emulator/resume` (it drives halts with `run_frames`/`press`, which `emit_stopped` inside the handler, so the event always precedes the reply); `tests/breakpoints.rs` has nine `resume` sites and **none can race**, because its `armed()` handshakes `events: false` — that connection is never sent an `emulator/stopped` for `ok` to discard — and every wait there is `wait_for_break`, a reply produced by the halt. Its one event consumer (`next_stopped(&mut events)`, `:323`) is a **second** connection that never resumes. A repo-wide enumeration found the racy shape at **exactly one site, `stop_precision.rs:501`, already fixed in the parcel**: nothing was left un-fixed, and the lift's value is prospective, not remedial. Detail in `docs/2026-09-02-stopprecision.md` §7.1. **The standing commitment to aurora is now dischargeable with a yes: the fix has landed, before any breakpoint consumer.** The inverse `run_to` caveat still stands and is still the thing to tell them. **Ordering-guarantee question REPORTED UP, not decided — see below; it is a contract call, not a test call.** *(Original registration, kept for the shape:)* `c.ok("emulator/resume")` followed by `next_stopped(c)` RACES: the halt's `stopped` event is broadcast from the engine thread while the `resume` reply is written by the connection thread, and `Client::ok` reads through to the reply **discarding every event it passes**. When the halt wins, the event is thrown away and the test blocks to its 20 s socket timeout. Measured on a seven-instruction fixture at **trial 4 of 8, after three clean passes — a single-shot test would have called it green.** Fixed inside `tests/stop_precision.rs` (`resume_and_wait_for_stop`, which reads both lines before acting on either); the same spelling is still live in `tests/breakpoints.rs` and `tests/watchpoints.rs`, where it has not been observed failing because those fixtures take longer to reach the breakpoint. | Lift `resume_and_wait_for_stop` into `tests/common` and use it at every `resume`-then-wait site. Out of `parcel/stopprecision`'s scope. Revive on the next flake in either file, or when either is next edited. **⚑ AMENDED 2026-09-02 — IT HAS AN EXTERNAL TRIGGER NOW, AND A COMMITMENT RIDES WITH IT.** aurora enumerated their client and **cannot hit this today** — one non-test `onEvent` consumer, which discards the event; nothing awaits an event anywhere; every sequencing point gates on a reply (their `44f17ca8`, re-verified by them against our `7ba2faf`). **That "no" is scoped to code they have not written yet:** the first thing anyone builds on `breakpoint_add` is arm → resume → wait-to-be-told-it-hit, which is exactly this shape. **So the revival condition is now also: aurora (or any client) starting a breakpoint consumer — and the fix has to be IN before that lands, not after.** **⚑ STANDING COMMITMENT, booked here under bar 20's sending half because it was made in mail and mail is not part of the tree:** this lane told aurora to ping before they write any wait loop, and undertook to tell them **whether this fix has landed yet**. A `/clear` must not lose that — if they ping and this row is still 🔴, the honest answer is *not yet, and here is the shape to avoid* (the inverse caveat in the `run_to` section below: the `stopped` event precedes the reply, so take-the-reply-then-wait blocks forever). |
+| **F-STEPOUT-SLOW-CLIENTS** | `emulator/step_out` with `{}` takes **~92 s in a debug build** on this box (600-frame bound, per-instruction sink), measured directly. Test clients use a **20 s** socket read timeout, so the all-method sweeps (`handshake::…advertises_a_generated_method_list…`, `methods.rs`) are **timing-marginal under load** — observed failing twice in isolation on a busy box and passing in both full runs. **Pre-existing, not the `screen_text` parcel's, and it will bite again.** | Any flake in those sweeps — read this row before diagnosing it as new. |
+
+## [orig lines 406-415] under: **▶ REGISTERED 2026-08-30 — F-LEGACY-SILENT-DEFAULT, and it is the sharpest argument the cutover has.**
+
+**Registered by the CR-27 serve review (2026-08-20), all contract-side or cosmetic, none blocking:**
+| id | what | revival condition |
+|---|---|---|
+| **F-PLAYINPUT-ITEMS-OPEN** | `emulator/play_input`'s `rows[]` **items** are not closed — §8 item 20's closure is applied at the result's top level, so a surplus key *inside* a row passes. The one array-of-objects on the bus whose item shape is unguarded; `read_cram`'s `palette[]` items and `watchpoint_hits`' `hits[]` items both close theirs. | Contract-side: an `additionalProperties: false` on the item subschema, next time `play_input`'s fragment is opened. No server change. |
+| **F-ONEOF-COMBINATIONS** | The `oneOf`/`dependentRequired` alternations (`write_cram`'s triple-vs-`raw`, `write_memory`'s `bytes`-vs-`value`+`width`) are enforced per-fragment but nothing sweeps **every combination** of a fragment's declared keys against its own rules. Today each is hand-tested; the sweep would be mechanical and would cover the ones nobody thought to write. | A third alternation lands, or a hand-written combination test is found wrong. |
+| **F-REVIEW-N12**, **F-REVIEW-N14** | Recorded by id from the CR-27 serve review; their content is in the review itself, not restated here — the implementing agent was given the ids without the text and is not inventing a description for them. | Whoever holds the review restates them; then they get a real row. |
+*(N9 — the `Resolution::name`/`Display` duplication — was **taken**, not registered: `Display` now calls
+`name()`. It was two lines.)*
+
+## [orig lines 565-566] under: **▶ CONSEQUENCE FOR EVERY BRIEF FROM HERE: an early gap is a SUCCESS SIGNAL, not an embarrassment.**
+
+**The mechanism, the precondition and the measured day-one breakage are in the log.** What stays live
+is the clause above and one hazard, restated below where it belongs.
+
+## [orig lines 729-738] under: **⚑ CONSUMER DESIGN INPUT, solicited from aurora BEFORE shaping the parcel and adopted — their
+
+*(The three 2026-08-30 parcels, the restamp A/B and REPLAY-NET-BLIND-3 are closed and in the log.
+What was left open by them is here:)*
+**Open, booked, not started:** `F-ACCEPT-TABLE-RAWSTRING`; `README-LEGACY-WARNING`; `FRAME-LABEL`;
+`PLAYER-POLISH`; `OVERLAY-STATE` (never run against a real window; waits until the owner is away);
+`ACCEPT-16`; `WIKI-SPIKE`; and **`d-20`, the dull sound — the owner's taste call, untouched.**
+Residue from parcel 2, deliberately out of scope: `tools/aether_smoke.py` and several
+`crates/oracle-core/examples/*` still read aeon's **live** tree and pin `symbolCount == 2129`
+against it — the same dependency `fixtures/aeon/` exists to remove, in the places the freeze did not
+reach.
+
+## [orig lines 845-908] under: **⚑ THE CAVEAT THEY DID NOT ASK FOR, AND IT IS THE INVERSE OF THEIR WORRY — worth more than the
+
+⚠ **SCOPE, MEASURED RATHER THAN ASSERTED** (this seat's own booked habit of reading a sound observation
+one notch too wide): the above is the **socket/free-run driver**, which is the path aurora reaches. The
+**hosted** path — the player window through `Host::pump` — is a different driver and is already
+registered as `F-STOPPREC-HOSTED-HALT`, where the halt is *inferred* from sharing one function with the
+measured path rather than measured. Nothing here upgrades that.
+**Their side is clean and it is a real enumeration, not a did-not-find:** `AetherClient.onEvent` has
+exactly one non-test consumer in their tree (`bridge.ts`, which refreshes a badge and discards the
+event), nothing awaits an event anywhere, and every sequencing point gates on a **reply**. **Their
+perishable half, stated by them and adopted here: the day they build a breakpoint consumer is the day
+our server-side fix has to be in.** That is now a board row rather than a note.
+⚑ **AND THE RETURN LEG, 2026-09-02 — `run_to.reached` NOW HAS A NAMED LIVE CONSUMER, WHICH IS WHAT
+PROTECTS IT FROM A FUTURE TIDY-UP.** aurora re-read the body order at `7ba2faf` themselves rather than
+adopting our answer (confirming it an ancestor of our `origin/main` first), and their stated reason is
+the sharp one: *a claim about another repo's tree is the one class of claim nothing in my tree could
+ever contradict.* That is bar 20's receiving side run correctly, and it is why the answer is now
+corroborated rather than merely believed.
+**The part that comes back to us as an obligation.** Their boot restore gates on `reached !== true`.
+So `"reached": run.predicate_fired` — **the predicate's own verdict, never the sink's** — is no longer
+a defensive design choice explained in a comment; **a real client's write window depends on it.** The
+comment at the site already says why (`StopRecord::fired` means only "*something* asked to stop", so
+reading it would report a target as reached because an unrelated `stopAfter` watch halted the run).
+**Booked here because this file's own bar says a code comment is where a perishable rule goes to be
+read by nobody** — and the "simplification" that swaps `predicate_fired` for `fired` would now break a
+named consumer silently, in the direction that presents as a successful boot restore over a write
+window that never opened.
+*They also noted it was an uncited joint in their own code: they had verified they read a reply rather
+than an event, and never asked whether the field they read could be true for the wrong reason. Bar 8's
+cheap frame-changer — the load-bearing step nobody cited — arriving on a consumer's side.*
+### ⚑ FOR THE OWNER, 2026-09-02 — does the contract owe clients a stated event/reply ordering? REPORTED, NOT DECIDED.
+Raised while closing `F-RESUME-STOP-RACE`. **This is a contract ruling and is left to the owner; no
+server or contract change was designed or written.** What the code says, measured from source:
+* One connection has **one FIFO** carrying both replies and events (`outbound.rs`: `push_event` /
+  `push_response` feed the same `Outbound` queue, one writer thread pops it). So wire order *is*
+  enqueue order — the question is well-posed, not vacuous.
+* **The bounded run-control methods are deterministic and all agree with each other.** `run_to`,
+  `run_to_scanline`, `run_frames`/`press` and `step*` all block inside `dispatch`, call `emit_stopped`,
+  and only then build their result. **Event strictly precedes reply, always.** A client that consumes
+  the reply and *then* waits for the halt event blocks forever.
+* **`resume` is the odd one and is not deterministic at all.** Its body flips `free_run` and returns;
+  the halt is enqueued later, from the engine thread's free-run step, against a reply the connection
+  thread is enqueueing concurrently. Both orders occur — measured here at 7 of 12 trials.
+So the two are not merely "opposite": one is a guarantee nobody has written down, and the other is a
+genuine race. **The asymmetry is invisible from the wire** — both produce a `resume`/`resumed` then a
+`stopped` — so a client that learns the `resume` shape and applies it to `run_to` hangs, and vice
+versa. **A test-side fix cannot reach this**: `resume_and_wait_for_stop` makes *our* tests correct, and
+a real client written against the docs is not protected by it. That is the honest limit of what this
+parcel closed, and why the item is put up rather than resolved.
+The three shapes the owner might rule between, listed only so the question is concrete — **not a
+recommendation, and not scoped work**: (i) state the current behaviour per method in §3/§6 and leave
+the code alone, cheapest and makes the guarantee citable; (ii) state one rule for all halts — *the
+`stopped` event is always enqueued before the reply of the call that caused it* — which `resume`
+cannot satisfy, since no reply is caused by its halt; (iii) declare the ordering **unspecified** and
+tell clients to read both and correlate, which is what the lifted helper does and what would have been
+correct at every site regardless. Note that (ii) and (iii) differ in what they cost the *existing*
+clients, and aurora's tree currently relies on reply-gating throughout.
+
+# --- final cut: three closed blocks ---
+
+## [lines 275-333] F-LEGACY-SILENT-DEFAULT: the measurement history; the headline and revival condition stay
+
+
+*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 406-415.)*
+`docs/2026-08-30-legacy-silent-default.md`. The legacy C++ server (`oracle-old`,
+`linux-port/gui/ControlSocket.cpp`) validates **no parameter at all**: `getInt(k, d = 0)` at `:130`
+returns the default on absent key, unparseable string (`catch (...)`) and unhandled type, and there is
+**no unknown-key rejection anywhere in the file** (verified as a genuine absence under a positive
+control, not read off empty output). ⚑ **CORRECTED same day: the family is FOUR accessors and 63 call sites, not one and 34**
+(`get` str `:119`/18 sites, `getInt` `:130`/23, `getU32` `:152`/11, `getBool` `:156`/11) — the original
+count enumerated by too narrow an ALPHABET and agreed with itself, **bar 19 turned on this seat**, and it
+was aeon's wider `get*("key")` sweep, run for their own purposes, that surfaced it (bar 21: the
+discriminator fired by accident again). ⚑ **AND CLOSED AT 64 (2026-08-30, second pass): 63 accessor sites + `ParseButtons` `:1576`, the one
+read that type-checks — found by aeon varying the parameter ON PURPOSE (the first deliberate invocation
+this lane has seen), and the population is now COMPLETE rather than a running total** (59 `const JsonObj&`
+signatures swept; the only raw-`json` touches in the file are inside the four accessors plus `ParseButtons`,
+and `JsonObj` exposes nothing else). A misspelled `buttons` presses NOTHING and returns success.
+⚑ **Plus a type-gap of our own finding: `has()` `:117` is satisfied by any present non-null value while
+`getBool` `:156` accepts only `"true"`/`"1"`/`"yes"`, so `{"enabled":"on"}` passes the explicit guard, reads
+false, and `*flag = !on` MUTES the layer the caller asked to enable** — partially mitigated because the reply
+echoes its own decision. **And the near-miss is banked with it:** the three unguarded-looking `getBool`
+sites are in fact guarded, and this seat nearly reported a silent inversion that does not exist for the
+missing-key case — caught by reading the lines around the cited line (bar 11, on our own finding).
+⚑⚑ **AND THE SIX WERE THE WRONG SIX — RETRACTED 2026-08-30, found by aeon, verified here against the
+enclosing blocks.** FOUR of them (`:348`, `:615`, `:739`, `:782`) sit inside `if (req.has(...))` and fail
+LOUDLY; two genuinely unguarded ones were missed by BOTH lanes (`:2110`/`:2140`, `read_vram`/`write_vram`,
+`getU32("addr", 0)`). True set = **{read_vram.addr, write_vram.addr, z80_read.addr, z80_write.addr}**.
+**My enumeration parameter conflated "no explicit default" with "unguarded"** — orthogonal properties, so it
+produced 4 false positives AND excluded the 2 real ones *by construction* (they carry an explicit `, 0`).
+**Third enumeration-parameter failure by this seat in one day, and the damning half: the same document had
+already applied bar 11 correctly to its `getBool` sites and I did not apply it to the memory six.**
+aeon's own error is the sharper lesson — they said my account "holds line for line" and it did: **they
+verified the lines EXISTED, not that they were UNGUARDED**, a check that could only confirm. Their earlier
+"independent corroboration" of the six is **withdrawn**, as is their consumer-side "we are clean"
+(14-across-3-files was a grep of files they already believed were on the seam; real figure **131 across 12**,
+and they found a live instance: 12 sites send `reset{"wait":true}` and `OpReset` never reads `wait`).
+⚑⚑ **AND THE CANONICAL EXAMPLE WAS BACKWARDS — swap it in anything quoting it.** `"0xZZZZ"` is the
+**SAFE** end: no valid hex digit after the prefix, `stoll` throws, `catch (...)` returns the default.
+**The dangerous shape is a VALID PREFIX + GARBAGE** — `"0x12ZZ"` → **18**, `"12abc"` → **12**. aeon
+measured it by compiling the accessor rather than reasoning about `stoll`'s contract; **reproduced here
+independently** (transcribed string arm, `g++ -std=c++17`, sentinel default). Nothing we said about
+`"0xZZZZ"` was false — it *does* resolve to the default and *does* defeat the absence guards — **the
+defect was presenting the class's mildest member as its canonical case.** And the partial parse is worse
+**in kind**: a defaulted `0` is a consistent wrong value someone may learn to recognise; address **18**
+is plausible, arbitrary, and looks like data.
+⚑ **WHAT SURVIVES AND IS THE DURABLE PART: the guards cover ABSENCE, NEVER TYPE.** `has()` passes any
+present non-null value and `getInt`'s `stoll` throws into `catch (...)` → 0, so `{"addr":"0xZZZZ"}` defeats
+all four guards. The retraction narrows *which keys must be missing* and narrows nothing about malformed
+values. Headline holds of **`write_vram`/`z80_write`**, not `write_memory`.
+⚑ **Plus a fourth correction against us: `getBool`'s string arm returns FALSE, not `d`** (this file and the
+doc both said `d`) — immaterial at the three `enabled` sites, **material at the five `getBool(k, true)`
+sites** (`:465` reset.run, `:871` watchpoint_add.write, `:1366` reload_rom.reset, `:1377` reload_rom.wait,
+`:1710` hold.down), where the caller's STATED default of true is what makes the call look safe.
+What did NOT move: the population (64), the four accessors, and the absence of any unknown-key rejection (`:348`, `:615`, `:702`, `:726`, `:739`, `:782`) — a misspelled
+`addr` on a legacy write goes to **address 0 and returns success**. ⚑ **The `mcp__oracle__*` surface
+still reaches this server**, so every lane debugging through MCP is on this path.
+**Provenance, and it is the instructive half:** this arrived as aeon's *aside* — a claim about OUR tree,
+in MAIL, which is bar 20's exact shape — while they were acknowledging an unrelated signal. It was
+verified here rather than banked, and their version **understated it**: they named one key and one site
+(`:894`, `timeout_ms`, 30000, confirmed real), where the defect is the accessor and is 34 sites wide.
+A peer's passing remark about our own code was worth more than the thing they wrote it to explain.
+
+## [lines 1354-1386] aurora: the layer-pair obligation, discharged and consumed
+
+- **aurora** (editor): ✅ **OBLIGATION DISCHARGED 2026-08-27, and they consumed it the same night.**
+  They verified the layer pair **by executing against a rebuilt binary they spawned themselves** —
+  handshake `implementation: "oracle-rs"`, `serverBuild.id d285ecbc…+profile=release`, `source: "vcs"`,
+  `dirty: false`, **46 methods** including both layer methods. (Corroborates this seat's own boot
+  derivation from the other direction: 49 `"emulator/*"` literals in `engine.rs` − 3 events = 46.)
+  **The tagged band-lens question is closed on their side** — aeon's 8×4 timer band proven stepping in a
+  ROM; their write-up + committed instruments at aurora `5f91e4a`, pushed. They also report the
+  **build-identity ask discharged from where they sit**: `implementation` and `serverBuild` are separate
+  fields and `source: "vcs"` is *derived*, not config-supplied — the two conditions they attached.
+  ⚑ **THE BAR THAT EARNED ITS COST:** the condition was *signal when it is served through a REBUILT
+  BINARY, not when it merges* — and it is what made the confirmation an execution instead of a claim.
+  ⚑ **THEIR FINDING, TAKEN AND WORTH MORE THAN THE PARCEL — a screenshot diff CANNOT tell whether a band
+  is stepping.** A band DMAs pixels into fixed slots, so the nametable tile index never moves: **0 of 27
+  sample points changed tile id over 90 frames while every screenshot differed.** What separates it is
+  VRAM tile *bytes* plus a control run of slots the band does not own. Any lens or gate this lane builds
+  over animated background art inherits this — a differing screenshot is not evidence of stepping, and a
+  constant tile id is not evidence of stillness.
+  ⚑ **AND A RELAY DEFECT, corrected in BOTH directions 2026-08-27 — this is the durable half.** aurora
+  reported that this lane had banked `pixel_attribution`'s `cell` as hanging off `winner`, when it is a
+  **top-level SIBLING of `winner`** (`winner` carries only `{layer}`). **They are right about the shape
+  and wrong about where we had it wrong.** Verified firsthand here, three independent ways: `engine.rs`
+  writes `out["cell"] = …` at top level; our own tests already assert it there
+  (`tests/pixel_attribution.rs:257,263`, `pick.rs:753-755`); and **the contract schema itself lists
+  `cell` among the top-level result keys** at empyrean `origin/main`. `OVERSEER.md:1488` states it
+  correctly as `pixel_attribution.cell`. **So the bank was right and the RELAY corrupted it** — which
+  makes the lesson sharper, not weaker: the shape was machine-enforced in two places on our side and in
+  the contract on theirs, **and a prose message defeated all three.** Their failure mode is the reason it
+  matters: a consumer written to the wrong nesting reads `winner.cell?.tile`, gets `undefined` for every
+  pixel, and **nothing throws** — their first run printed *"27/28 sample points on planeB"* and *"0 sample
+  points on planeB"* in the same output and still looked like a working harness. **Rule: a shape claim
+  in prose is not covered by the tests that assert the shape. Relay the assertion's location, or send
+  the JSON.** (Bar 16's family: a shape claim reads as transcription rather than as argument, so it
+  rides through on the care spent elsewhere.)
+
+## [lines 1387-1395] aurora: superseded context on the layer pair, kept for the terms
+
+- **aurora** (editor): ⚑ **superseded context, kept for the terms — 2026-08-26 — they are the FIRST NAMED
+  CONSUMER of the layer pair (`get_layer_states`/`set_layer_enabled`), and we owe them a signal.** Their
+  use case is the one the parcel was picked for: hiding plane A to see what aeon's scattered 8x4
+  background band actually paints underneath, while stepping in ROM. Registered in their tree at aurora
+  `74b95a1` **with our condition transcribed into it**: *signal when it is served and reachable through a
+  REBUILT BINARY, not when it merges.* That distinction is this lane's own bar from 2026-08-26 (a merged
+  serve is not a served method) being honoured by a consumer before we have discharged it — **so the debt
+  is ours and it is not discharged by the merge.** Do not tell them it is available on the strength of a
+  green suite; spawn the consumer's own path and call it first.
+
+# --- final cut ---
+
+## [lines 203-229] F-RSP-XVFB-ORPHAN: the residue, aurora's strengthening and the scope notes
+
+  ⚠ **The one residue their audit did surface here, and it is the OPPOSITE failure — sent to them
+  hedged, as a reading rather than a finding, because I have not run it.** `rsp.py` spawns through
+  `xvfb-run -a`, so `self.p` is the **wrapper's** pid, not BlastEm's. `close()` sends the RSP `k`
+  (kill) to BlastEm first and that is the normal path, but when the stub is wedged — the case the
+  watchdog exists for — the backstop `SIGKILL` lands on a shell that cannot trap it, so BlastEm and
+  Xvfb may be left **orphaned**. That endangers nobody else's session (a stranger surviving, never a
+  stranger dying), which is why it is a register entry and not a hazard notice. **Revival condition:**
+  the differential harness is run in anger again, or a stray `blastem`/`Xvfb` is found outliving it —
+  fix is a process group (`start_new_session=True` + `killpg`), not a wider pattern.
+  ⚑ **STRENGTHENED 2026-08-30 by aurora's measurement (aurora `055bff40`), which supplies the consequence
+  this booking lacked.** `/usr/bin/xvfb-run` **has no trap**, so a SIGTERM to the wrapper skips all of its
+  cleanup — and each skipped cleanup leaks an X lock, a socket **and a tempdir**, where **every leaked lock
+  permanently burns a display number**, so every later run on the box scans longer. My entry had the
+  orphaned-process half and read the cost as "a stray process survives"; the real cost compounds across the
+  machine and outlives the session that caused it. Their portable fix: reap the wrapper's **children** by
+  PID first, then the wrapper.
+  *Two honest scope notes.* (a) aurora **retracted** the suite-wide version of this (aurora `81ebf173`) —
+  they fingerprinted the leak to their own harness, so nothing here is currently leaking; measured at the
+  time: `/tmp/.X*-lock` = 0, `/tmp/.X11-unix` = 0. (b) **This lane nearly reported "no xvfb-run here" on a
+  grep that had errored on shell globbing.** Run correctly there are four hits — `rsp.py:10`/`:41` and
+  `nightly_differential.py:145`/`:217`. Second instance in one night of bar 16(d) at this seat: **a failing
+  command and an empty world print the same thing**, and only a positive control separates them.
+  *Not applicable to the player-window fixtures* (`docs/2026-08-29-window-runtime-checks.md`): those run
+  their own `Xvfb :N` and kill it by recorded PID, so the wrapper is out of the loop entirely — which was
+  an accident of needing a known `DISPLAY` for XTEST, not foresight, and is recorded that way.
+
+**▶ NEW BAR, 2026-08-30 — EVERY CITATION RULE THIS SUITE OWNS IS WRITTEN FOR THE RECEIVING SIDE, AND
+
+## [sigil cycle dumper] the three-buckets correction and its status fix
+
+**⚑ THE COVERAGE NUMBER HAS THREE BUCKETS, NOT TWO — sigil's correction to this seat's booking,
+2026-08-26, and it changes what the dumper would be FOR.** I had booked the gate as "what fraction of a
+real ROM's instruction stream is modeled", i.e. modelled-vs-unmodelled. They corrected it against their
+own tree: because `exact: false` marks a **ceiling** rather than an equality, a routine can carry a
+`@budget(cycles: N)` bound while being permanently unable to carry `@cycles_exact`. So the honest split
+is **exact-modelled / ceiling-only / unmodelled**, and the three answer different questions — *"a corpus
+that is 80% modelled but mostly ceiling-only supports a budget checker and not an equality checker"*.
+**That distinction is precisely what decides whether either lane should build this at all**, and a
+two-bucket number would have looked like an answer while hiding it. The comparison target differs per
+bucket, so our dumper's assertion direction is per-row and not per-run — which composes with the two
+requirements already booked above rather than replacing them. They also settled, firsthand, that the
+cycle model is **entirely static** (`cycle_budget.rs` walks an evaluated `CodeBuf` against the cost
+tables and the shared `Cfg`), so the coverage measurement needs no emulator and was never blocked by
+the shim hazard above. CYCLE-ASK stays correctly gated on their owner picking the measurement up.
+⚠ **STATUS CORRECTED BY SIGIL THE SAME DAY, against their own contribution — the three buckets are a
+PREDICTION, not a measurement, and the paragraph above overstated them.** They have run no corpus
+measurement. The split is a *consequence of `CycleCost`'s own doc comment* (`exact: false` = "a MAXIMUM
+over a data-dependent execution — sound as a ceiling, unusable as an equality"), read while checking
+this seat's two requirements. **So it is the shape to measure IN, never a result to build on: if the
+corpus turns out to have a negligible ceiling-only middle, the sharpening was true and irrelevant, and
+the original two-bucket question was the right shape after all.** Do not let a later session cite the
+three buckets as a finding about any ROM.
+*Their framing of where the value actually came from, kept because it is the more useful lesson and it
+is narrower than the headline: a precise question about their own tree sent them to read their own type
+definition, where the answer was already written down. That is bar 12 arriving between repos —* the
+rule was in the contract they already owned.*
+
+## [push authorization] why the precaution was kept, and the granting act
+
+*Worth keeping, because it is the only evidence the precaution was ever worth its cost: the relay was
+accurate in substance the whole time.* Holding it as unwitnessed cost this lane one evening of
+unpushed docs and cost the suite nothing, while the alternative — acting on a relayed authorization —
+is the failure this repo booked twice on 2026-08-22. **A precaution that turns out to have been
+unnecessary is the only kind that ever gets tested.** ⚠ **The 2026-08-22 four-ruling block below is a
+SEPARATE relay and STAYS FLAGGED** — he confirmed the push grant and nothing else.
+
+
+## [coordination] seraph's VGM demand: grounds, anchors, confidence split
+
+- **seraph** (DAW): **the first FILED DEMAND against the unserved-method list, shaped and dated
+  2026-08-26 — and it is the reason the cutover ruling works.** Their S2 verification gate
+  (`plans/2026-07-03-s2-verification-gate.md:10-16`; grounds anchor **`a02c77a5`**, which supersedes the
+  `9b2c5a77` first cited — both verified here as reachable ancestors of their `origin/main`; the S2
+  conclusion hardened rather than moved, so nothing banked off the earlier one needs changing) builds
+  **side B entirely out of `emulator_vgm_start`/`stop` → `vgm2wav`**, so **S2 as banked is NOT
+  executable against the new core** — VGM capture is not one instrument among several there, it is the
+  whole of side B. Their triage, taken as given: **`vgm_{start,status,stop}` is the one that matters**
+  (realtime and foreground is fine; what it must be is deterministic enough to capture twice and
+  compare); **`audio_spectrum` is explicitly NOT wanted** — their compare is scripted seraph-side
+  against the rendered WAV, so do not build it on their account; **channel masks are wanted at S3, not
+  S2**, and they declined to charge us the synth-into-the-bus-server cost yet. **Firing condition: S1
+  landing**, when a compiled blob exists to capture. They deliberately did NOT file it as a dated queue
+  item today, citing bar 18 — the dependency is two packages away and a board entry for a consumer that
+  does not exist yet is a cost with no reader. **Treat VGM as demand-ordered-with-a-condition rather
+  than unqueued**: when the acceptance list is next triaged, VGM is the only one of the eighteen with a
+  named consumer, a named artifact, and a stated trigger. Do not pre-build it; do not renumber it away.
+  ⚑ **CONFIDENCE SPLIT, corrected by seraph against this seat's own over-hedge and verified here at
+  `main`: the THAT is machine-enforced; only the WHY is a reading.** That these six are unserved is not a
+  booked opinion — `schema_conformance.rs:403` pins `SCHEMATIZED_NOT_ADVERTISED` at **18 entries** and
+  asserts the whole sorted set with `assert_eq!` (a subset check would not do it), all six audio names
+  among them; and `engine.rs:1415` independently advertises **`"vgm": false`** in the handshake
+  capabilities, which the comment tells clients to branch on instead of the version integer. Two
+  independent places. **What remains unverified is the MECHANISM** — that the channel pair is unserved
+  *because* the synth is `#[cfg(feature)]`-gated out of the bus server, and that `vgm.rs` is ungated;
+  both came from the acceptance survey's unverified batch and neither has been re-derived. Protocol bar
+  10 exactly: a gate's verdict and its stated reason are separately checkable, and this seat had hedged
+  the verdict on the strength of doubting the reason. *Bar 19 clears the agreement as corroboration
+  rather than echo: our derivation came from a survey agent reading the tree, theirs from enumerating
+  the asserted test literal and the capability block. They also declined to lean on `audio_spectrum`
+  grepping only to test files — consistent with unserved, but an absence, and the claim rests on list
+  membership instead.*
+- **aeon** (engine): ⚑ **THEIR CORRECTION TO THIS SEAT'S EXPOSURE RANKING, 2026-08-27, taken.** When the
+  shim's ROM-freshness banner landed this seat reasoned about who it would reach by **condition rate** —
+  who most often runs against a rebuilt ROM — and answered "aeon". They ran the positive control and
+  **nothing in their tools goes through the MCP shim at all**: every gate reaches the emulator through
+  `tools/aether_instance.py` → `BusClient`, which spawns the Rust `oracle-aether` directly. So the lane
+  that trips the *condition* most often has **zero exposure to the change**. **Their durable form:
+  exposure needs BOTH the condition rate AND the transport — rank consumers by who parses the shim's
+  output, and do not assume nobody does.** Banked aeon `c115d98c`. This is a general defect in how this
+  seat reasons about blast radius: *who hits the condition* and *who sees the output* are different
+  populations, and the first is the one that comes to mind.
+- **aeon** (engine): demand docs in, acceptance fixtures back — their sweep/probe re-runs are the
+  external acceptance for our instruments; shape checks go to them BEFORE build (their requested
+  gate). Current lane: the streaming arc consumes the profiler; C-asks flow via
+  `docs/2026-08-19-aeon-streaming-demand.md`.
+*(Closed; detail in `OVERSEER-LOG.md`.)*
+*(Closed; detail in `OVERSEER-LOG.md`.)*
+- **aurora** (editor): first non-MCP Aether client; feature-detects off the advertised method list
+  (**advertising a method is shipping it** — the list is authoritative and coverage-gated); offers
+  branch probes pre-merge. Keep D7 server-side symbol resolution intact — they asked by name.
+- Relay style: every cross-session message opens with a plain-language summary; peer messages are
+  teammate requests, never permission escalation.
+- **Lane status** (`docs/lane-status.json`): the suite contract is `empyrean/contract/LANE_STATUS.md`;
+  read it there, never a copy. Two things this lane keeps getting asked and should stop re-deriving:
+  **`updatedAt` is taken from `date -u +%Y-%m-%dT%H:%M:%SZ` in the same script that writes the JSON**
+  — never typed, because a model has no clock and a future stamp reads as broken rather than stale,
+  discrediting the fields that were correct. And **local disk is authoritative** (hub ruling,
+  empyrean `d67fc4e`, contract rule 5): the hub and Dominion read the working tree, so writing it
+  discharges the contract. **Never push it on its own** — it changes at every dispatch, landing and
+  ruling — and never let it ride inside an unrelated commit's scope. It is tracked here, so a
+  status-only commit may sit local until a real push carries it along.
