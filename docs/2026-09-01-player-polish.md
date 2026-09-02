@@ -1,8 +1,8 @@
 # PLAYER-POLISH — six fixes in the player's own window (2026-09-01/02)
 
-Branch `parcel/player-polish`, six commits off `2fd5bb0`. Four registered defects in the frontend, one
-label ruling from the decision ledger, and one owner ruling relayed from the suite. Nothing in this parcel
-moves a byte of emulation: no core file is touched, no golden is regenerated, and every change is in
+Branch `parcel/player-polish`, off `2fd5bb0`. Four registered defects in the frontend, one label ruling
+from the decision ledger, and one owner ruling relayed from the suite. Nothing in this parcel moves a byte
+of emulation: no core file is touched, no golden is regenerated, and every code change is in
 `crates/oracle-frontend`.
 
 | Item | What | Commit |
@@ -13,6 +13,11 @@ moves a byte of emulation: no core file is touched, no golden is regenerated, an
 | D | `F-ROMOPEN-C-DOC` — an unreadable folder leaves the previous listing up | `e5f57c4` |
 | E | ledger `L-08` — the status line's `F n` becomes `DRAWS n` | `6853a17` |
 | F | owner ruling d-20 `remember-choice` — the console audio filter is a remembered setting | `d13e6c9`, `35e3cda` |
+
+Alongside those seven: `e7b81b9`, a review fix to item E's control (described in that section), and the
+commits carrying this document. `git log 2fd5bb0..` is the count; it is deliberately not restated here,
+because a self-referential total in a file that is itself a commit is stale the moment it is written —
+which is how it was wrong the first time.
 
 Every test below was proven red before it was made green: the code was put back to the behaviour it
 replaces, the failing assertion was read, and the change restored. The failure texts are quoted in the
@@ -122,10 +127,21 @@ and `DRAWS 1234` makes 56. Three tests claimed the whole line survives at 896. E
 actually renders there, asserted whole: the tally's digits are cut, both honesty fields (`AETHER OFF`,
 `AUDIO VA0-VA2`) survive, which is exactly what the field order exists to arrange.
 
-**That row was pinning the fixture, not the player.** A control added beside it shows the *old* five-glyph
-field overflowing the same 896 budget at six digits — which every session reaches after about seventeen
+**That row was pinning the fixture, not the player.** The control beside it *constructs the old label's
+line* — the same five leading fields, taken from `status_text`'s own output, then `F` and the digits — and
+sweeps the digit count against the same 896 budget. It fits at four digits (so the row was not wrong when
+it was written, only narrow) and stops fitting at **five**: from the 10,000th draw on, i.e. under three
 minutes at 60 fps. The claim "the whole line survives at 2x and above" was true of a four-digit test
 value, not of the running window.
+
+The first version of that control measured the **`DRAWS`** line instead and asserted it overflowed. That
+was a true statement resting on a measurement that could not fail for the reason it named: `DRAWS n` is
+strictly the longer string, so its overflow implies nothing about `F n`, and the control would have stayed
+green at a budget where the old label comfortably fit. Caught in review, fixed in `e7b81b9`, and proven in
+both directions: widening the budget by three glyph cells makes the claim false and the control now says
+so (`left: 6  right: 5`), and building the wrong string trips the four-digit premise instead. The
+corrected sweep is also what moved the figure — the earlier prose said six digits and seventeen minutes,
+which was wrong twice over (six digits is 27.8 minutes; the real threshold is five digits and 2.8).
 
 **The alternative, so the controller can overrule.** The only field that fits 51 glyphs is five characters
 including the digits — i.e. a bare letter and a number (`D1234`). That fits every existing row without
@@ -196,10 +212,19 @@ half is the owner's, as it was for SY-5.
 
 ## What is left open, in one place
 
-1. **Contract description staleness (item B)** — `bus-protocol.schema.json` still says `rendered` is "a
-   prefix of `text` today". Description-only; the file was not touched.
-2. **The 896 dip (item E)** — three rows now state a truncation they used to forbid. The numbers and the
-   one alternative label are above; this is the decision the controller may want to take differently.
-3. **The audible half of item F** — unverifiable here (no `/dev/snd`).
-4. **`filter_effect` prints a rounded cutoff** — `low-pass 3386 Hz` for 3386.3. Deliberate: the status
+1. **The vendored protocol schema is behind upstream, and that is not this parcel's to fix.** Empyrean
+   adopted §11.31 (`82982b7`, 2026-09-02 00:43) while this branch was in flight, so
+   `the_vendored_schema_is_byte_identical_to_the_upstream_contract` fails — on untouched `main` as well,
+   confirmed as a control. The re-vendor has to land **together with serving the new required field**, or
+   every `emulator/stopped` fixture under `crates/oracle-aether/tests/` goes red with it. Owner's lane.
+   The item B description staleness below folds into that same re-vendor.
+2. **Contract description staleness (item B)** — `bus-protocol.schema.json` still says `rendered` is "a
+   prefix of `text` today", which the truncation mark makes a prefix *plus one character*.
+   Description-only; the file was not touched.
+3. **The 896 dip (item E) — settled, keep `DRAWS`.** Three rows now state a truncation they used to
+   forbid. The alternative (`D1234`, the only field that fits 51 glyphs) was declined on review: the tally
+   is deliberately last in truncation order, the dip is one intermediate window height, and stating what
+   actually renders beats gaming the budget. Recorded so the question is not reopened for free.
+4. **The audible half of item F** — unverifiable here (no `/dev/snd`). Owner's lane.
+5. **`filter_effect` prints a rounded cutoff** — `low-pass 3386 Hz` for 3386.3. Deliberate: the status
    line and the toast are for reading, and the exact constants live in `console_filter.rs`.
