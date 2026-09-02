@@ -25,6 +25,7 @@ use crate::font;
 use crate::present::Rect;
 use crate::save_state::SLOT_COUNT;
 use oracle_core::render::LayerMask;
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 /// How long a toast stays up, in presented frames (~2.5 s at 60 fps). Long enough to read a save
@@ -320,8 +321,8 @@ impl Overlay {
         let mut toasts: Vec<crate::screen_text::Surface> = self
             .visible_toasts(area, px, margin)
             .into_iter()
-            .map(|(_, t, fit_len)| {
-                Surface::drawn(Kind::Toast, t.text.clone(), t.text[..fit_len].to_string())
+            .map(|(_, t, rendered)| {
+                Surface::drawn(Kind::Toast, t.text.clone(), rendered.into_owned())
             })
             .collect();
         toasts.reverse();
@@ -472,7 +473,8 @@ impl Overlay {
     }
 
     /// **The toasts that actually reach the glass**, newest first — the order [`draw_toasts`] paints them —
-    /// each with its row index in the stack and how many bytes of its text survive [`fit`].
+    /// each with its row index in the stack and the string that is actually painted — the whole text, or
+    /// what [`fit_marked`] kept of it plus its mark.
     ///
     /// Extracted for the same reason [`status_line_layout`](Self::status_line_layout) was: the readout and
     /// the paint must be one computation. Both exclusions are load-bearing and neither is an error — the
@@ -482,23 +484,39 @@ impl Overlay {
     /// The row index is carried rather than re-derived because it is **not** the position in this list: a
     /// toast whose text fits no glyph is skipped but still consumes its slot in the stack, so re-numbering
     /// the survivors would slide every toast above it down one row.
-    fn visible_toasts(&self, area: Rect, px: usize, margin: usize) -> Vec<(usize, &Toast, usize)> {
+    fn visible_toasts(
+        &self,
+        area: Rect,
+        px: usize,
+        margin: usize,
+    ) -> Vec<(usize, &Toast, Cow<'_, str>)> {
         let pad = 2 * px;
         let row_h = font::LINE_H * px + 2 * pad;
         let bottom = (area.y + area.h) as i32 - margin as i32;
+        let avail = Self::toast_text_avail(area, px, margin);
         let mut out = Vec::new();
         for (i, t) in self.toasts().rev().enumerate() {
             let y = bottom - ((i + 1) * row_h) as i32;
             if y < area.y as i32 {
                 break; // the stack has reached the top of the picture — never spill into the letterbox
             }
-            let fit_len = fit(&t.text, area.w.saturating_sub(2 * margin + 2 * pad), px).len();
-            if fit_len == 0 {
+            let rendered = fit_marked(&t.text, avail, px);
+            if rendered.is_empty() {
                 continue; // the picture is too narrow for even one glyph — draw no bare panel either
             }
-            out.push((i, t, fit_len));
+            out.push((i, t, rendered));
         }
         out
+    }
+
+    /// Device pixels of ink a toast's text may occupy in `area`: the picture's width less the outer margin
+    /// and the panel's padding on both sides. `pad` is `2 * px`, the same figure [`draw_toasts`] paints with.
+    ///
+    /// Extracted like [`status_text_avail`](Self::status_text_avail) so a test can stand at the real toast
+    /// width instead of a width it picked for itself.
+    pub fn toast_text_avail(area: Rect, px: usize, margin: usize) -> usize {
+        let pad = 2 * px;
+        area.w.saturating_sub(2 * margin + 2 * pad)
     }
 
     /// Toasts, stacked upward from the bottom-left corner with the newest at the bottom.
@@ -507,10 +525,10 @@ impl Overlay {
         let row_h = font::LINE_H * px + 2 * pad;
         let left = (area.x + margin) as i32;
         let bottom = (area.y + area.h) as i32 - margin as i32;
-        for (i, t, fit_len) in self.visible_toasts(area, px, margin) {
+        for (i, t, rendered) in self.visible_toasts(area, px, margin) {
             let y = bottom - ((i + 1) * row_h) as i32;
             let alpha = t.alpha();
-            let text = &t.text[..fit_len];
+            let text = rendered.as_ref();
             let panel_w = font::text_width(text) * px + 2 * pad;
             c.fill_rect(
                 left,
@@ -570,6 +588,37 @@ pub fn fit(text: &str, avail: usize, px: usize) -> &str {
         end = i + c.len_utf8();
     }
     &text[..end]
+}
+
+/// The one glyph [`fit_marked`] appends when it has to cut a string: U+2026 HORIZONTAL ELLIPSIS, which
+/// `font.rs` draws as three dots on the baseline.
+pub const TRUNCATION_MARK: char = '\u{2026}';
+
+/// `text` whole when its ink fits in `avail` device pixels at font scale `px`; otherwise the longest prefix
+/// that fits **together with a trailing [`TRUNCATION_MARK`]**, so a cut is visible on the glass instead of
+/// the message simply ending early. Returns `""` when not even one glyph of `text` plus the mark fits — a
+/// bare `…` would say "there was a message" and nothing else, and the caller draws no panel for `""`.
+///
+/// This is what toasts are fitted with (F-TOAST-TRUNCATES). A toast that was cut silently lost whatever
+/// was on its right — for `open ROM: cannot read <dir> (<reason>)` that was the reason, the one part that
+/// answered the question — and read as a complete sentence, so nobody knew to widen the window or look
+/// elsewhere. The status line keeps plain [`fit`]: its fields are ordered so the cut side is the least
+/// informative, and it is a fixed-width readout, not a sentence.
+///
+/// Cost arithmetic: `fit` charges the first glyph 5 columns and each later one [`font::ADVANCE`], so a
+/// prefix of `n` glyphs plus the mark costs exactly what `n + 1` glyphs of `text` would. Fitting the prefix
+/// into `avail - ADVANCE * px` is therefore the same as fitting prefix-plus-mark into `avail`.
+pub fn fit_marked(text: &str, avail: usize, px: usize) -> Cow<'_, str> {
+    let px = px.max(1);
+    let whole = fit(text, avail, px);
+    if whole.len() == text.len() {
+        return Cow::Borrowed(text);
+    }
+    let head = fit(text, avail.saturating_sub(font::ADVANCE * px), px);
+    if head.is_empty() {
+        return Cow::Borrowed("");
+    }
+    Cow::Owned(format!("{head}{TRUNCATION_MARK}"))
 }
 
 /// Multiply an opacity by a fade factor (both `0..=255`).
@@ -1550,6 +1599,113 @@ mod tests {
                 "fit({avail}) returned {got:?}, which is wider than its budget"
             );
         }
+    }
+
+    /// `fit_marked` shows the whole string when it fits, and otherwise a visibly cut one — never a shorter
+    /// string that reads as complete. Every expectation is arithmetic on `fit`'s own cost model (5 px for
+    /// the first glyph, `ADVANCE` for each later one), not a measured figure.
+    #[test]
+    fn a_marked_fit_is_whole_or_visibly_cut_and_never_wider_than_its_budget() {
+        let adv = font::ADVANCE;
+        // "ABCDE" is 5 glyphs = 5 + 4*adv = 29 px at 1x. Room for all of it: untouched, and borrowed.
+        assert!(matches!(
+            fit_marked("ABCDE", 5 + 4 * adv, 1),
+            Cow::Borrowed("ABCDE")
+        ));
+        // One pixel short: four glyphs would fit (5 + 3*adv = 23), but the mark is a glyph too, so three
+        // glyphs plus the mark. Never four glyphs with no mark — that is the defect.
+        assert_eq!(fit_marked("ABCDE", 5 + 4 * adv - 1, 1), "ABC\u{2026}");
+        // Exactly one glyph plus the mark.
+        assert_eq!(fit_marked("ABCDE", 5 + adv, 1), "A\u{2026}");
+        // Room for one glyph but not for one glyph plus the mark: nothing, rather than a bare mark or a
+        // lone letter pretending to be the message.
+        assert_eq!(fit_marked("ABCDE", 5 + adv - 1, 1), "");
+        assert_eq!(fit_marked("", 100, 2), "");
+        // Scale multiplies the requirement the same way it does for `fit`.
+        assert_eq!(fit_marked("ABCDE", (5 + adv) * 2, 2), "A\u{2026}");
+        assert_eq!(fit_marked("ABCDE", (5 + 4 * adv) * 2, 2), "ABCDE");
+        // Whatever comes back really does fit, and a cut one always carries the mark.
+        for avail in 0..120 {
+            let got = fit_marked("A LONGER MESSAGE", avail, 2);
+            assert!(
+                font::text_width(&got) * 2 <= avail,
+                "fit_marked({avail}) returned {got:?}, which is wider than its budget"
+            );
+            if !got.is_empty() && got.as_ref() != "A LONGER MESSAGE" {
+                assert!(
+                    got.ends_with(TRUNCATION_MARK),
+                    "fit_marked({avail}) cut the text without saying so: {got:?}"
+                );
+            }
+        }
+        // The mark itself is a glyph the font draws — otherwise this whole function paints a hollow box.
+        assert!(
+            font::has_glyph(TRUNCATION_MARK),
+            "the truncation mark has no glyph in font.rs"
+        );
+    }
+
+    /// **A toast that does not fit at the real toast width is cut with a visible mark, and the whole rendered
+    /// string is what the arithmetic says** — asserted whole, because `contains()` is how F-TOAST-TRUNCATES
+    /// hid: the old rendering `…/LOCKED (PE` contained every substring anyone checked for.
+    ///
+    /// The width is the one `draw` uses, via the same `font_scale`, margin and `toast_text_avail` it uses,
+    /// at the player's smallest picture (224 px tall, 4:3); the glyph capacity is then derived from `fit`'s
+    /// cost model, and the expected string is that many glyphs of the message minus one for the mark.
+    #[test]
+    fn a_toast_cut_at_the_real_toast_width_ends_with_the_mark_and_nothing_is_hidden() {
+        let area = whole(224 * 4 / 3, 224);
+        let px = Overlay::font_scale(area.h.max(1));
+        let margin = (2 * px).max(4);
+        let avail = Overlay::toast_text_avail(area, px, margin);
+        // Glyphs that fit in `avail`: the first costs 5 px, each later one `ADVANCE` px.
+        let capacity = if avail < 5 * px {
+            0
+        } else {
+            1 + (avail - 5 * px) / (font::ADVANCE * px)
+        };
+        assert!(
+            capacity >= 8,
+            "COULD NOT MEASURE: {capacity} glyphs of toast room at the floor is too few to cut anything"
+        );
+
+        // A message one glyph longer than the room: numbered so a wrong cut point names itself.
+        let text: String = (0..=capacity)
+            .map(|i| char::from(b'A' + (i % 26) as u8))
+            .collect();
+        let expected: String = text
+            .chars()
+            .take(capacity - 1)
+            .chain(std::iter::once(TRUNCATION_MARK))
+            .collect();
+        let mut o = Overlay::new();
+        o.push(text.clone(), INFO);
+        let v = o.text_surfaces(area, &status());
+        let s = only(&v, crate::screen_text::Kind::Toast);
+        assert_eq!(s.text, text, "the source string is the whole message");
+        assert_eq!(
+            s.rendered,
+            expected,
+            "the rendered toast must be {}-of-{} glyphs plus the mark",
+            capacity - 1,
+            capacity + 1
+        );
+        assert!(
+            s.unrenderable.is_empty(),
+            "the cut toast paints a hollow box: {:?}",
+            s.unrenderable
+        );
+
+        // And a message that exactly fills the room is shown whole — the mark is a cost, not a habit.
+        let mut o = Overlay::new();
+        let exact: String = text.chars().take(capacity).collect();
+        o.push(exact.clone(), INFO);
+        let v = o.text_surfaces(area, &status());
+        assert_eq!(
+            only(&v, crate::screen_text::Kind::Toast).rendered,
+            exact,
+            "a toast that fits is not marked"
+        );
     }
 
     /// The slot strip's width matches what it draws, so the status line's layout cannot overlap it.

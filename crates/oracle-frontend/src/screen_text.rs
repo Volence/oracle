@@ -52,15 +52,19 @@ pub enum Kind {
 /// One text surface: the string the player composed, and the string that reached the glass.
 ///
 /// **Why both.** A caller checking *"did the player say why the ROM failed to open"* against `rendered`
-/// alone sees `…/LOCKED (PE` and cannot tell that `Permission denied` was lost. A caller reading `text`
-/// alone is told about characters that are not on screen, which makes the readout useless for the one
-/// question it exists to answer — *is this window lying to me?*
+/// alone saw `…/LOCKED (PE` and could not tell that `Permission denied` was lost (the toast has since been
+/// reordered reason-first and is cut with a visible `…` — F-TOAST-TRUNCATES — but the readout still has to
+/// show the cut, not paper over it). A caller reading `text` alone is told about characters that are not on
+/// screen, which makes the readout useless for the one question it exists to answer — *is this window lying
+/// to me?*
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Surface {
     pub kind: Kind,
     /// The SOURCE string the player composed.
     pub text: String,
-    /// What is actually on the glass, after this surface's own truncation. A prefix of `text` today.
+    /// What is actually on the glass, after this surface's own truncation. For the status line a prefix of
+    /// `text`; for a toast, the whole of `text` or a prefix of it followed by [`crate::overlay::TRUNCATION_MARK`]
+    /// (`…`), so `rendered != text` is still exactly "it was cut" and the mark is on the glass too.
     pub rendered: String,
     /// Characters in `text` the player has **no glyph for** — it draws a hollow box where they should be.
     /// Empty when none.

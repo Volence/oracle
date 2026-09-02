@@ -461,6 +461,31 @@ fn notify_err(ov: &mut Overlay, msg: impl AsRef<str> + Into<String>) {
     ov.push(msg, ERROR);
 }
 
+/// The toast for "I could not read `what`, at `path`, because `reason`" — **reason first, path last.**
+///
+/// A toast is cut from the right when it does not fit (`overlay::fit_marked`), and a filesystem path is the
+/// part of the message with unbounded length. With the path first, `open ROM: cannot read
+/// /home/…/LOCKED (Permission denied…)` lost `Permission denied` at the player's smallest picture and read
+/// as a complete sentence — F-TOAST-TRUNCATES. The reason is the one part that answers the question; the
+/// path the person mostly already knows, because they just picked it.
+fn cannot_read_toast(what: &str, e: &std::io::Error, path: impl std::fmt::Display) -> String {
+    format!("{what}: {} — cannot read {path}", io_reason(e))
+}
+
+/// An `io::Error`'s text without the ` (os error N)` tail the standard library appends to OS errors.
+///
+/// The player's smallest picture (320x224 at 1x) holds 47 glyphs of toast; `open ROM: No such file or
+/// directory (os error 2) — ` is 51, so with the tail on, the floor cut the reason before the path even
+/// started. The number is the one part of the message a person cannot act on — `No such file or directory`
+/// is the answer, `2` is its index — so it is the part that goes. Errors without the tail are untouched.
+fn io_reason(e: &std::io::Error) -> String {
+    let s = e.to_string();
+    match s.rfind(" (os error ") {
+        Some(i) if s.ends_with(')') => s[..i].to_string(),
+        _ => s,
+    }
+}
+
 /// Which save-state slots currently have a file on disk. Probed only when it can have changed (a save, a
 /// load, a slot change), never per frame — this is the only thing the slot strip cannot know for itself.
 fn probe_slots(rom_path: &str) -> [bool; save_state::SLOT_COUNT] {
@@ -499,7 +524,7 @@ fn open_rom_picker(
     let entries = match rom_browser::scan(&dir) {
         Ok(entries) => entries,
         Err(e) => {
-            notify_err(ov, format!("open ROM: cannot read {} ({e})", dir.display()));
+            notify_err(ov, cannot_read_toast("open ROM", &e, dir.display()));
             return;
         }
     };
@@ -1686,10 +1711,13 @@ fn main() {
                 let bytes = match std::fs::read(&target) {
                     Ok(bytes) => bytes,
                     Err(e) => {
+                        // Reason first, paths last: two paths and a reason will not all fit a toast, and
+                        // the reason is the part that says what to do (F-TOAST-TRUNCATES).
                         notify_err(
                             &mut ov,
                             format!(
-                                "{what}: cannot read ROM {target} ({e}) — still running {rom_path}"
+                                "{}; still running {rom_path}",
+                                cannot_read_toast(what, &e, format!("ROM {target}"))
                             ),
                         );
                         break 'swap;
@@ -2347,6 +2375,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The reason survives the cut** (F-TOAST-TRUNCATES). The unreadable-folder toast, composed with a real
+    /// `io::Error` and a path long enough not to fit the player's smallest picture, is asserted **whole** as it
+    /// is rendered at the real toast width: `open ROM: <reason> — cannot read /…` cut with the mark, the
+    /// reason intact. The expected string is arithmetic on the overlay's own constants (`font_scale`,
+    /// margin, `toast_text_avail`, `fit`'s cost model), not a transcription.
+    #[test]
+    fn the_unreadable_folder_toast_keeps_its_reason_when_cut_at_the_real_toast_width() {
+        use overlay::{Overlay, Status, TRUNCATION_MARK};
+        use present::Rect;
+
+        // A real error from a real failed read, so the reason text is the OS's and not this test's.
+        let dir = std::path::PathBuf::from(
+            "/nonexistent-for-this-test/a/deliberately/long/path/to/a/folder/of/games/LOCKED",
+        );
+        let e = rom_browser::scan(&dir).expect_err("scanning a path that does not exist fails");
+        let reason = io_reason(&e);
+        assert!(
+            !reason.is_empty(),
+            "COULD NOT MEASURE: the io::Error has no text"
+        );
+        // The OS error's numeric tail is dropped and nothing else is: the reason is the error's own text.
+        assert!(
+            e.to_string().starts_with(&reason) && !reason.contains("(os error"),
+            "io_reason({e:?}) = {reason:?}"
+        );
+        let text = cannot_read_toast("open ROM", &e, dir.display());
+
+        // Reason before path: the property this parcel exists for.
+        assert_eq!(
+            text,
+            format!("open ROM: {reason} — cannot read {}", dir.display()),
+            "the reason must come before the path"
+        );
+
+        // The real toast width at the floor: the same geometry `Overlay::draw` derives.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            w: 224 * 4 / 3,
+            h: 224,
+        };
+        let px = Overlay::font_scale(area.h);
+        let margin = (2 * px).max(4);
+        let avail = Overlay::toast_text_avail(area, px, margin);
+        let capacity = 1 + (avail - 5 * px) / (font::ADVANCE * px);
+        let n = text.chars().count();
+        assert!(
+            n > capacity,
+            "COULD NOT MEASURE: the {n}-glyph toast fits the {capacity}-glyph floor, nothing is cut"
+        );
+        let expected: String = text
+            .chars()
+            .take(capacity - 1)
+            .chain(std::iter::once(TRUNCATION_MARK))
+            .collect();
+        assert!(
+            expected.starts_with(&format!("open ROM: {reason} — ")),
+            "COULD NOT MEASURE: the reason itself does not fit {capacity} glyphs: {expected:?}"
+        );
+
+        let mut ov = Overlay::new();
+        notify_err(&mut ov, text.clone());
+        let v = ov.text_surfaces(area, &Status::default());
+        let toast = v
+            .iter()
+            .find(|s| s.kind == screen_text::Kind::Toast)
+            .expect("the toast reached the glass");
+        assert_eq!(toast.text, text);
+        assert_eq!(
+            toast.rendered, expected,
+            "the whole rendered toast at the floor"
+        );
+        assert!(
+            toast.unrenderable.is_empty(),
+            "hollow boxes in the toast: {:?}",
+            toast.unrenderable
+        );
     }
 
     /// **The masked picture is the core's masked render, dot for dot** — and it is a *different* picture
