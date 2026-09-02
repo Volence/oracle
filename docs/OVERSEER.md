@@ -2280,6 +2280,27 @@ event), nothing awaits an event anywhere, and every sequencing point gates on a 
 perishable half, stated by them and adopted here: the day they build a breakpoint consumer is the day
 our server-side fix has to be in.** That is now a board row rather than a note.
 
+⚑ **AND THE RETURN LEG, 2026-09-02 — `run_to.reached` NOW HAS A NAMED LIVE CONSUMER, WHICH IS WHAT
+PROTECTS IT FROM A FUTURE TIDY-UP.** aurora re-read the body order at `7ba2faf` themselves rather than
+adopting our answer (confirming it an ancestor of our `origin/main` first), and their stated reason is
+the sharp one: *a claim about another repo's tree is the one class of claim nothing in my tree could
+ever contradict.* That is bar 20's receiving side run correctly, and it is why the answer is now
+corroborated rather than merely believed.
+
+**The part that comes back to us as an obligation.** Their boot restore gates on `reached !== true`.
+So `"reached": run.predicate_fired` — **the predicate's own verdict, never the sink's** — is no longer
+a defensive design choice explained in a comment; **a real client's write window depends on it.** The
+comment at the site already says why (`StopRecord::fired` means only "*something* asked to stop", so
+reading it would report a target as reached because an unrelated `stopAfter` watch halted the run).
+**Booked here because this file's own bar says a code comment is where a perishable rule goes to be
+read by nobody** — and the "simplification" that swaps `predicate_fired` for `fired` would now break a
+named consumer silently, in the direction that presents as a successful boot restore over a write
+window that never opened.
+
+*They also noted it was an uncited joint in their own code: they had verified they read a reply rather
+than an event, and never asked whether the field they read could be true for the wrong reason. Bar 8's
+cheap frame-changer — the load-bearing step nobody cited — arriving on a consumer's side.*
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
