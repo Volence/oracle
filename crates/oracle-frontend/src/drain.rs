@@ -920,12 +920,9 @@ mod tests {
 
     /// **A drain with nothing queued must change nothing — loudly.**
     ///
-    /// This is the control the four tests above lean on. Every one of them argues "the state moved, so
-    /// the seam moved it"; that argument is only worth anything if a drain that had nothing to react to
-    /// leaves the same state alone. It is also the answer to the vacuity that has bitten this repo
-    /// twice: a cache re-derived every iteration anyway would pass a staleness test with no signal in it,
-    /// and this is where that would show up — `symbols` would come back `None` from the engine and the
-    /// window's listing would evaporate on an idle frame.
+    /// This is the control the tests above lean on. Every one of them argues "the state moved, so the
+    /// seam moved it"; that argument is only worth anything if a drain that had nothing to react to
+    /// leaves the same state alone.
     #[test]
     fn a_drain_with_nothing_queued_touches_nothing() {
         let dir = scratch("quiet");
@@ -986,6 +983,86 @@ mod tests {
             sys.scheduler().now(),
             mclk,
             "an idle drain must not advance the machine"
+        );
+
+        drop(bus);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **★ The anti-vacuity control: the seam writes `symbols` ONLY when the report says to.**
+    ///
+    /// Without this row the reproduction above is not what it claims to be. Take the seam and move
+    /// `*r.symbols = bus.symbols().cloned()` *out* of its `if pumped.symbols_changed` — re-derive every
+    /// iteration, unconditionally — and every other test in this file, the reproduction included, stays
+    /// green: the window's clone still ends up matching the engine, just for a reason that has nothing to
+    /// do with the branch being tested. That is measured, not argued: the mutation was applied on disk and
+    /// the other six rows printed `ok`. A staleness test whose subject is refreshed every frame anyway is
+    /// the vacuity that has bitten this repo twice, and it is invisible from inside the assertion.
+    ///
+    /// So this row starts the window's clone and the **engine's deliberately out of step** — the window
+    /// holds a listing the bus was never told about — and drains with nothing queued. In step, the two
+    /// arrangements are indistinguishable; out of step, an unconditional re-derivation drops the window's
+    /// listing on an idle frame and this goes red. The divergence is a probe rather than a state the
+    /// running window reaches, which is exactly why it has to be built by hand here.
+    ///
+    /// **Alternative green ruled out:** `symbols` is asserted `Some` *before* the drains as well as
+    /// after, so a fixture that failed to install the listing fails here rather than passing as
+    /// "nothing was dropped". And the bus is asserted to hold nothing, so the survival below cannot be
+    /// the engine handing the same table back.
+    #[test]
+    fn an_idle_drain_does_not_re_derive_the_windows_listing() {
+        let dir = scratch("no-eager");
+        let rom = dir.join("game.bin");
+        std::fs::write(&rom, rom_with_appendix(0x8000)).unwrap();
+        let table = SymbolTable::parse(&listing_for(0x8000)).expect("parses");
+
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(std::fs::read(&rom).unwrap());
+        sys.reset();
+
+        let path = sock("no-eager");
+        // The bus is told about the cartridge and **not** about the listing …
+        let mut bus = Bus::start(
+            Some(Some(path.clone())),
+            MachineInfo {
+                rom_path: Some(rom.display().to_string()),
+                symbols: None,
+                symbols_path: None,
+            },
+        );
+        // … while the window holds one. Nothing has changed, so nothing may write either side.
+        let mut win = Win::new(save_state::rom_fingerprint(sys.rom()), Some(table), true);
+        let _peer = connected(&path, &mut win, &mut sys, &mut bus);
+
+        assert!(
+            bus.symbols().is_none(),
+            "the probe needs the engine to be holding nothing, or an eager re-derivation would be \
+             invisible here too"
+        );
+        assert!(
+            win.symbols.is_some(),
+            "the control: the window starts with a listing"
+        );
+
+        for _ in 0..8 {
+            win.drain(&mut sys, &mut bus);
+        }
+
+        assert!(
+            win.symbols.is_some(),
+            "an idle drain re-derived the window's listing from an engine that has none. Nothing in \
+             the report asked for that write, and a seam that performs it unconditionally makes the \
+             reload reproduction in this file green for the wrong reason"
+        );
+        assert_eq!(
+            win.symbols.as_ref().unwrap().address_of("Main"),
+            Some(0x300),
+            "…and it is the same listing, not a re-parse"
+        );
+        assert!(
+            win.toasts().is_empty(),
+            "an idle drain said something about symbols: {:?}",
+            win.toasts()
         );
 
         drop(bus);
