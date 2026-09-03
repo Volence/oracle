@@ -16,11 +16,21 @@
 //! read of the same method registry that contract D15 says an in-process GUI is. If the two ever drift,
 //! that test is what says so.
 //!
-//! Memory, Objects and the symbol-table port are parcels 2b/2c; the transport bar (step / run / pause /
-//! reset) needs the player's pause flag mirrored onto the bus and is parcel 3.
+//! **Parcel 2b adds [`Tab::Memory`]**, the symbol table, and the `Host` the running player owns. The
+//! Memory panel's model lives in [`crate::memory`] — reads through the *same* functions the five read
+//! handlers call, every gesture through `Host::call`, and the paused-write asymmetry reflected rather
+//! than smoothed. The status strip below stops saying `symbols  none loaded` and carries `symbolCount`
+//! and `symbolAtPc` for real, checked against `emulator/status` by the test module at the bottom.
+//!
+//! Objects, breakpoints, watchpoints, the profiler and the transport bar are parcel 2c; all of them need
+//! the run-loop change (`Observe` wrappers plus a per-frame `pump`) that re-opens parcel 1's pacing
+//! measurement, which is why they share one parcel and this one does not touch `Loop::iterate`.
 
+use crate::bus::Bus;
 use crate::machine::Machine;
+use crate::memory::{self, MemoryPanel};
 use crate::pacing::Governor;
+use oracle_core::symbols::SymbolTable;
 
 /// A docked tab.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -32,17 +42,30 @@ pub enum Tab {
     /// The 68000 register file and the cheap half of `emulator/status`, in one tab. Nine key/values in a
     /// tab of their own beside a tab holding the same pc/sp/sr is two panels waiting to disagree.
     Registers,
+    /// One hex view over five address spaces, with a selector rather than five tabs — five tabs would be
+    /// five scroll positions to keep in your head (design §2.1).
+    Memory,
 }
 
-/// Everything the tab bodies read. Held apart from the `DockState` so both can be borrowed at once.
+/// Everything the tab bodies touch. Held apart from the `DockState` so both can be borrowed at once.
+///
+/// **`machine` and `bus` are `&mut` from this parcel on**, because `Host::call` swaps the caller's
+/// `System` into the engine for the duration of a dispatch and hands it straight back. A panel still
+/// cannot *advance* the machine — nothing here reaches `run_frames` — but it can no longer take a shared
+/// borrow, and pretending otherwise would mean copying the machine to ask it a question.
 pub struct Panels<'a> {
     pub tex: Option<&'a egui::TextureHandle>,
-    pub machine: &'a Machine,
+    pub machine: &'a mut Machine,
+    pub bus: &'a mut Bus,
+    pub mem: &'a mut MemoryPanel,
     pub governor: &'a Governor,
     pub status: &'a str,
-    /// The `--rom` argument, verbatim — see [`StatusStrip::rom_path`] for why it is the player's own
-    /// string and not the bus's absolutised `romPath`.
+    /// The `--rom` argument as the human typed it. The strip absolutises it through the bus's own
+    /// [`oracle_aether::engine::absolutise`] before showing it — see [`StatusStrip::rom_path`].
     pub rom_path: &'a str,
+    /// The listing actually loaded, or `None`. The same table the bus resolves against — one
+    /// `SymbolTable`, handed to `Host::set_machine_info` and borrowed here, never two.
+    pub symbols: Option<&'a SymbolTable>,
 }
 
 impl egui_dock::TabViewer for Panels<'_> {
@@ -53,6 +76,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Screen => "screen",
             Tab::Pacing => "pacing",
             Tab::Registers => "registers",
+            Tab::Memory => "memory",
         })
     }
 
@@ -61,6 +85,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Screen => "Screen",
             Tab::Pacing => "Pacing",
             Tab::Registers => "Registers",
+            Tab::Memory => "Memory",
         }
         .into()
     }
@@ -70,6 +95,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Screen => self.screen(ui),
             Tab::Pacing => self.pacing(ui),
             Tab::Registers => self.registers(ui),
+            Tab::Memory => self.memory(ui),
         }
     }
 }
@@ -135,7 +161,7 @@ impl Panels<'_> {
     }
 
     fn registers(&self, ui: &mut egui::Ui) {
-        for (label, value) in StatusStrip::of(self.machine, self.rom_path).rows() {
+        for (label, value) in StatusStrip::of(self.machine, self.rom_path, self.symbols).rows() {
             ui.monospace(format!("{label:<18}{value}"));
         }
         ui.separator();
@@ -153,6 +179,265 @@ impl Panels<'_> {
              supervisor mode, USP in user. USP and SSP below it are the two storage slots, both shown \
              whichever mode the machine is in.",
         );
+    }
+
+    /// **The Memory panel.** One hex view, a space selector, an address box that takes a symbol, a write
+    /// cell that states its own gate, and a hash button. See [`crate::memory`] for which half of this
+    /// goes through `Host::call` and which reads direct, and why.
+    fn memory(&mut self, ui: &mut egui::Ui) {
+        // --- the space selector ---
+        ui.horizontal_wrapped(|ui| {
+            ui.label("space");
+            for space in memory::Space::ALL {
+                if ui
+                    .selectable_label(self.mem.space == space, space.label())
+                    .clicked()
+                {
+                    self.mem.space = space;
+                    // Notes belong to the gesture that produced them, and a gesture is scoped to the
+                    // space it was made in. Carrying "REFUSED …" across a selector click would put a
+                    // sentence about VRAM under a bus view.
+                    self.mem.addr_note = None;
+                    self.mem.write_note = None;
+                    self.mem.hash_note = None;
+                }
+            }
+        });
+        ui.small(format!(
+            "reads reproduce {} · writes go through {}",
+            self.mem.space.read_method(),
+            self.mem
+                .space
+                .write_method()
+                .unwrap_or("(no write row on this space)")
+        ));
+        ui.separator();
+
+        // --- the address box, which IS `emulator/lookup_symbol` (design §2.2) ---
+        ui.horizontal(|ui| {
+            ui.label("address");
+            let entry = ui.add(
+                egui::TextEdit::singleline(&mut self.mem.addr_text)
+                    .desired_width(220.0)
+                    .hint_text("0xFFFF0000 or a symbol name"),
+            );
+            let go = ui.button("go").clicked()
+                || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if go {
+                let space = self.mem.space;
+                let text = self.mem.addr_text.clone();
+                let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
+                self.mem.addr_note = Some(match memory::resolve_address(bus, sys, space, &text) {
+                    memory::Resolved::Hex(a) => {
+                        self.mem.base = a;
+                        memory::Line::plain(format!(
+                            "{} — a hex literal, taken as typed",
+                            oracle_aether::hex::addr(a)
+                        ))
+                    }
+                    memory::Resolved::Symbol { addr, reply } => {
+                        self.mem.base = addr;
+                        memory::Line::plain(format!("ok — {reply}"))
+                    }
+                    memory::Resolved::Refused(e) => {
+                        memory::answer_line(&crate::bus::Answer::Err(e))
+                    }
+                    memory::Resolved::Rejected(why) => memory::Line::from_panel(why),
+                });
+            }
+            if ui.button("◀ page").clicked() {
+                self.mem.base = self
+                    .mem
+                    .base
+                    .wrapping_sub((memory::ROWS * memory::PER_ROW) as u32);
+                self.mem.addr_text = oracle_aether::hex::addr(self.mem.base);
+            }
+            if ui.button("page ▶").clicked() {
+                self.mem.base = self
+                    .mem
+                    .base
+                    .wrapping_add((memory::ROWS * memory::PER_ROW) as u32);
+                self.mem.addr_text = oracle_aether::hex::addr(self.mem.base);
+            }
+        });
+        if let Some(note) = &self.mem.addr_note {
+            note_label(ui, note);
+        }
+        ui.separator();
+
+        // --- the hex view: a DIRECT read, through the handlers' own functions ---
+        let v = memory::view(
+            self.mem.space,
+            self.machine.system(),
+            self.mem.base,
+            memory::ROWS,
+            memory::PER_ROW,
+        );
+        match &v.error {
+            // Never an empty grid: a blank hex view and a refused read look identical on a screen, and
+            // only one of them means "there is nothing here".
+            Some(e) => {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!("REFUSED {}: {}", e.code, e.message),
+                );
+            }
+            None => {
+                if let Some(r) = v.region {
+                    ui.small(format!("region  {r}"));
+                }
+                if let Some(n) = v.truncated_to {
+                    ui.small(format!(
+                        "showing {n} bytes from {} — the space ends before a full page",
+                        oracle_aether::hex::addr(v.base)
+                    ));
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for row in &v.rows {
+                        ui.monospace(format!(
+                            "{}  {:<47}  {}",
+                            oracle_aether::hex::addr(row.addr),
+                            row.hex(),
+                            row.ascii()
+                        ));
+                    }
+                });
+            }
+        }
+        ui.separator();
+
+        // --- the write cell, gated by the handler's own answer ---
+        let gate = {
+            let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
+            self.mem.gates_for(bus, sys).clone()
+        };
+        ui.horizontal(|ui| {
+            ui.label("write at address");
+            // `add_enabled` is what makes the cell inert; the sentence beneath is what makes it
+            // *explicable*. Neither alone is acceptable — a greyed box with no words is a control a
+            // human cannot tell from a broken one.
+            ui.add_enabled(
+                gate.is_open(),
+                egui::TextEdit::singleline(&mut self.mem.write_text)
+                    .desired_width(220.0)
+                    .hint_text("hex bytes, e.g. 4E71"),
+            );
+            if ui
+                .add_enabled(gate.is_open(), egui::Button::new("poke"))
+                .clicked()
+            {
+                let (space, base) = (self.mem.space, self.mem.base);
+                let payload = self.mem.write_text.clone();
+                self.mem.write_note = Some(match memory::write_params(space, base, &payload) {
+                    Err(why) => memory::Line::from_panel(why),
+                    Ok(params) => {
+                        let method = space.write_method().unwrap_or("");
+                        let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
+                        // Stamped, because `write_vram` is the one write that lands in a *running*
+                        // machine (see the asymmetry below): "ok" alone leaves a human unable to say
+                        // which frame absorbed the poke, and the next frame may already have redrawn
+                        // over it. D11 puts `{frame, mclk, running}` on every reply for exactly this.
+                        let (answer, stamp) = bus.call_stamped(sys, method, &params);
+                        let line = memory::answer_line(&answer);
+                        memory::Line {
+                            refused: line.refused,
+                            text: format!(
+                                "{}   [frame {} · mclk {} · running {}]",
+                                line.text,
+                                stamp
+                                    .get("frame")
+                                    .map_or_else(|| "?".into(), |v| v.to_string()),
+                                stamp
+                                    .get("mclk")
+                                    .map_or_else(|| "?".into(), |v| v.to_string()),
+                                stamp
+                                    .get("running")
+                                    .map_or_else(|| "?".into(), |v| v.to_string()),
+                            ),
+                        }
+                    }
+                });
+                // A write can change the gate's own answer only via the run state, which a write cannot
+                // touch — so nothing is invalidated here. Said out loud because the reflex is to
+                // re-probe, and re-probing after every poke would be a dispatch per keystroke.
+            }
+        });
+        ui.small(gate.why());
+        if let Some(note) = &self.mem.write_note {
+            note_label(ui, note);
+        }
+
+        // ⚑ **All five gates at once, always visible.** The asymmetry this shows is real and it is the
+        // server's: three writes are paused-only and `write_vram` is not, so right now a human can poke
+        // VRAM mid-frame and is refused the identical gesture on work RAM. The panel does not gate VRAM
+        // for consistency's sake — a panel that refuses what the tool allows misdescribes the server
+        // just as surely as one that allows what the tool refuses — and it does not hide the
+        // inconsistency behind the selector either, because an asymmetry you can only find by clicking
+        // through five spaces is an asymmetry nobody finds.
+        ui.collapsing("what every space accepts right now", |ui| {
+            for space in memory::Space::ALL {
+                let g = self.mem.gate_of(space);
+                ui.monospace(format!(
+                    "{:<22} {}  {}",
+                    space.label(),
+                    if g.is_open() { "WRITE" } else { "  —  " },
+                    g.why()
+                ));
+            }
+            ui.small(
+                "Not a defect in this panel. §6's run-control rule names write_memory, write_cram and \
+                 z80_write and does not name write_vram, and the server serves the gate it was given \
+                 (relaxing a refusal later is additive; introducing one is not). The argument for \
+                 naming that row is filed upstream, not settled here.",
+            );
+        });
+        ui.separator();
+
+        // --- memory_hash: a read you invoke, for a range you chose ---
+        let hash_gate = memory::hash_gate(self.mem.space);
+        ui.horizontal(|ui| {
+            ui.label("hash range: len");
+            ui.add_enabled(
+                hash_gate.is_ok(),
+                egui::TextEdit::singleline(&mut self.mem.hash_len_text).desired_width(80.0),
+            );
+            if ui
+                .add_enabled(hash_gate.is_ok(), egui::Button::new("memory_hash"))
+                .clicked()
+            {
+                let base = self.mem.base;
+                let parsed = self.mem.hash_len_text.trim().parse::<u64>();
+                self.mem.hash_note = Some(match parsed {
+                    Err(e) => {
+                        memory::Line::from_panel(format!("len {:?}: {e}", self.mem.hash_len_text))
+                    }
+                    Ok(len) => {
+                        let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
+                        memory::answer_line(&memory::hash(bus, sys, base, len))
+                    }
+                });
+            }
+        });
+        if let Err(why) = &hash_gate {
+            ui.small(why.as_str());
+        }
+        if let Some(note) = &self.mem.hash_note {
+            note_label(ui, note);
+        }
+    }
+}
+
+/// One gesture's answer, coloured by whether it was a refusal.
+///
+/// The colour is taken from [`memory::Line::refused`], which the [`crate::bus::Answer`] carried — never
+/// from the shape of the rendered text. A refusal that reads like a success is the one rendering mistake
+/// a debug surface cannot afford, and deciding by looking for a `"REFUSED"` prefix would be a second
+/// encoding of a fact already in hand.
+fn note_label(ui: &mut egui::Ui, note: &memory::Line) {
+    if note.refused {
+        ui.colored_label(ui.visuals().error_fg_color, &note.text);
+    } else {
+        ui.monospace(&note.text);
     }
 }
 
@@ -261,13 +546,21 @@ pub fn register_rows(r: &oracle_core::m68000::Registers) -> Vec<RegRow> {
 
 /// The header strip above the register grid: what cartridge is loaded and where the machine is in time.
 ///
-/// Deliberately **not** the whole of `emulator/status`. `symbolAtPc` / `symbolCount` need a symbol table
-/// and this player has none — no `--symbols`, no auto-discovery — so the strip says *"none loaded"* in
-/// words rather than showing a `0` that a reader would take for "this ROM has no symbols".
+/// **Parcel 2b closes both of parcel 2a's honest gaps.** The player now has a symbol table (`--symbols`,
+/// plus the `.lst`-beside-the-ROM discovery `oracle-frontend` already does), so `symbolCount` and
+/// `symbolAtPc` are real rather than a "none loaded" placeholder — and the same table is handed to
+/// `Host::set_machine_info`, so the engine resolves names against the identical listing. Two tables would
+/// be the exact drift D7 exists to prevent, and the panel would have been the one that looked right.
 pub struct StatusStrip {
-    /// The path as the human gave it on `--rom`. **Not** the bus's `romPath`, which `Engine::set_rom_path`
-    /// absolutises through a private helper; the two agree only when the argument was already absolute,
-    /// so this field is the player's own and is not claimed to be the served string.
+    /// The ROM path **absolutised through the bus's own [`oracle_aether::engine::absolutise`]**, which is
+    /// the function `Engine::set_rom_path` calls.
+    ///
+    /// Parcel 2a could not do this and said so: the helper was a private free function, so R1's
+    /// one-derivation-two-consumers was defeated by a visibility modifier rather than by a decision, and
+    /// the row was labelled `rom` to avoid claiming a normalisation it did not perform. §11.30 (CR-I) had
+    /// already ruled that reporting an absolute path is a property of *every* reply field carrying a
+    /// filesystem path, so this parcel published the helper and the row is now `romPath` — the same
+    /// string, from the same four lines, including the pass-through case for a label that is not a path.
     pub rom_path: String,
     /// Bytes of cartridge **as the machine holds them** (`System::rom().len()`) — the identical derivation
     /// `emulator/status`'s `romBytes` uses, so the two cannot drift.
@@ -280,36 +573,71 @@ pub struct StatusStrip {
     /// confusion (`F-WINDOW-BUS-FRAME-OFFBYONE`) as something that has already cost this suite three
     /// hand-rolled realignments. Showing both, named apart, is the cheap way not to repeat it.
     pub frames_run: u64,
+    /// Symbols in the loaded listing, or `None` when no listing loaded at all.
+    ///
+    /// **An `Option`, not a `usize`.** `emulator/status` serves `symbolCount: 0` for both "no table" and
+    /// "an empty table", which is fine on a wire a client branches on `symbolsPath` for, and is exactly
+    /// the ambiguity that must not reach a human: a `0` reads as *this ROM has no symbols*, not as
+    /// *nothing was loaded*. The two are rendered as different sentences below.
+    pub symbol_count: Option<usize>,
+    /// The nearest preceding symbol for the PC and its displacement, through
+    /// [`oracle_aether::engine::symbol_at`] — the same function `emulator/status` resolves `symbolAtPc`
+    /// and `symbolDisp` with.
+    pub symbol_at_pc: Option<(String, u32)>,
 }
 
 impl StatusStrip {
     /// Derived from the machine, by the same expressions `Engine::status` uses. One derivation, two
     /// consumers.
-    pub fn of(machine: &Machine, rom_path: &str) -> Self {
+    pub fn of(machine: &Machine, rom_path: &str, symbols: Option<&SymbolTable>) -> Self {
         let sys = machine.system();
         Self {
-            rom_path: rom_path.to_string(),
+            rom_path: oracle_aether::engine::absolutise(rom_path),
             rom_bytes: sys.rom().len(),
             frame: sys.scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
             frames_run: machine.frames(),
+            symbol_count: symbols.map(|t| t.len()),
+            symbol_at_pc: symbols
+                .and_then(|t| oracle_aether::engine::symbol_at(t, sys.cpu_regs().pc)),
         }
     }
 
     /// The strip as label/value pairs, in display order.
+    ///
+    /// **Nothing here is ever blank and nothing unmeasurable is ever a `0`.** Each of the three absences
+    /// below — no listing, a listing that names nothing at this PC, and a symbol landing exactly on the
+    /// PC — is a different fact, and each gets its own sentence.
     pub fn rows(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("rom", self.rom_path.clone()),
+            ("romPath", self.rom_path.clone()),
             ("rom bytes", format!("{}", self.rom_bytes)),
             ("frame (emulated)", format!("{}", self.frame)),
             ("frames run (player)", format!("{}", self.frames_run)),
-            // Never a `0` and never blank: this player has no symbol table at all, and a count of zero
-            // reads as "this ROM has no symbols" rather than "nothing was loaded".
-            ("symbols", "none loaded".into()),
+            (
+                "symbols",
+                match self.symbol_count {
+                    None => "none loaded (no --symbols, and no .lst beside the ROM)".into(),
+                    Some(n) => format!("{n} loaded"),
+                },
+            ),
+            (
+                "symbol at pc",
+                match (&self.symbol_at_pc, self.symbol_count) {
+                    (Some((name, 0)), _) => name.clone(),
+                    (Some((name, disp)), _) => format!("{name}+${disp:X}"),
+                    (None, None) => "— no listing loaded".into(),
+                    // A table that resolves nothing at this address is a real answer and a different one:
+                    // the listing is there and the PC is before its first symbol (or past its end).
+                    (None, Some(_)) => "— the listing names no symbol at or before pc".into(),
+                },
+            ),
         ]
     }
 }
 
-/// The starting layout: the screen on the left, Pacing over Registers on the right.
+/// The starting layout: the screen on the left, Pacing over Registers on the right, and Memory tabbed
+/// beside Registers — the two panels a debugger reads together, in one pane, so a human is not choosing
+/// between "where is the PC" and "what is at that address".
 ///
 /// `egui_dock::DockState` derives `Serialize`/`Deserialize` under the crate's `serde` feature, so
 /// remembering a user's layout across runs is one feature flag and a `Serialize` bound on [`Tab`]. Still
@@ -321,7 +649,7 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
     let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
     let surface = dock.main_surface_mut();
     let [_, right] = surface.split_right(egui_dock::NodeIndex::root(), 0.68, vec![Tab::Pacing]);
-    surface.split_below(right, 0.45, vec![Tab::Registers]);
+    surface.split_below(right, 0.45, vec![Tab::Registers, Tab::Memory]);
     dock
 }
 
@@ -511,7 +839,7 @@ mod bus_parity {
         }
     }
 
-    /// The status strip's two derivable fields against `emulator/status`, through the same `Host::call`.
+    /// The status strip against `emulator/status`, through the same `Host::call`.
     ///
     /// **It calls [`StatusStrip::of`], not the expressions inside it.** Comparing hand-written copies of
     /// those expressions to the bus would check that *this test* agrees with the bus and leave the panel's
@@ -519,10 +847,13 @@ mod bus_parity {
     /// names. So the panel side is a real [`Machine`] and the bus side is a `System` **proved to be the
     /// same machine by its state hash** before anything is compared.
     ///
-    /// `romPath` is deliberately **not** compared: `Engine::set_rom_path` absolutises through a private
-    /// helper, so the served string and the `--rom` argument agree only when the argument was already
-    /// absolute. The strip shows the player's own argument and says so; claiming parity on it would be
-    /// claiming a normalisation the panel does not perform.
+    /// **`romPath` is compared now, and parcel 2a's reason for not comparing it is gone.** 2a said the
+    /// absolutiser was "a private helper", so the strip could only show the `--rom` argument verbatim and
+    /// claiming parity would have been claiming a normalisation the panel did not perform. Parcel 2b
+    /// published [`oracle_aether::engine::absolutise`] (§11.30 / CR-I: reporting an absolute path is a
+    /// property of *every* reply field carrying one), and the fixture below makes the check
+    /// non-vacuous — the path it passes in is one `canonicalize` visibly changes, so a strip that
+    /// skipped the call could not accidentally agree.
     #[test]
     fn the_status_strip_agrees_with_emulator_status_on_what_it_can_derive() {
         const FRAMES: u64 = 5;
@@ -543,8 +874,27 @@ mod bus_parity {
             "the panel's machine and the bus's machine must BE the same machine"
         );
 
-        let strip = StatusStrip::of(&machine, "roms/testrom.bin");
+        // A real file, named by a path `canonicalize` must rewrite — an existing directory traversed and
+        // backed out of. A path that is already canonical would let a strip that never absolutised at
+        // all pass this test, which is the vacuous-control shape.
+        let dir = std::env::temp_dir().join(format!("oracle-player-rom-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let real = dir.join("testrom.bin");
+        std::fs::write(&real, oracle_core::testrom::build()).unwrap();
+        let winding = format!("{}/sub/../testrom.bin", dir.display());
+        assert_ne!(
+            winding,
+            real.display().to_string(),
+            "the fixture path must not already be canonical, or this proves nothing"
+        );
+
+        let strip = StatusStrip::of(&machine, &winding, None);
         let mut h = Host::new(HostConfig::default());
+        h.set_machine_info(oracle_aether::host::MachineInfo {
+            rom_path: Some(winding.clone()),
+            symbols: None,
+            symbols_path: None,
+        });
         let (result, _) = h.call(&mut sys, "emulator/status", &json!({}));
         let reply = result.expect("emulator/status answers");
 
@@ -561,28 +911,122 @@ mod bus_parity {
         // Both must have moved, or two zeros agreeing would read as a pass.
         assert!(strip.frame > 0 && strip.rom_bytes > 0, "the fixture ran");
         assert_eq!(strip.frames_run, FRAMES, "the player's own count");
+
+        // ⚑ The residual parcel 2a booked, closed and checked in both directions.
         assert_eq!(
-            strip.rom_path, "roms/testrom.bin",
-            "verbatim, not absolutised"
+            strip.rom_path,
+            reply["romPath"].as_str().expect("romPath is a string"),
+            "the strip's `romPath` and the bus's `romPath` have DRIFTED"
+        );
+        assert_ne!(
+            strip.rom_path, winding,
+            "the strip showed the argument unchanged, so it did not absolutise and the agreement above \
+             is two copies of the same untouched string rather than one shared normalisation"
         );
 
-        // And the honest half: no symbol table exists in this player, so the strip must say so in words.
+        // The no-listing half, which is still the honest answer when there is no listing.
         assert_eq!(
             reply["symbolCount"],
             json!(0),
             "the bus counts zero symbols, which is exactly the `0` the strip must not show a human"
         );
+        assert_eq!(strip.symbol_count, None);
         let rows = strip.rows();
-        let symbols = &rows
-            .iter()
-            .find(|(k, _)| *k == "symbols")
-            .expect("the strip has a symbols row")
-            .1;
-        assert_eq!(symbols, "none loaded");
+        assert_eq!(
+            row(&rows, "symbols"),
+            "none loaded (no --symbols, and no .lst beside the ROM)"
+        );
+        assert_eq!(row(&rows, "symbol at pc"), "— no listing loaded");
         // Nothing in the strip may be rendered as a bare `0` or a blank — an unmeasurable shown as a
         // number is the wrong answer this row exists to avoid.
         for (label, value) in &rows {
             assert!(!value.is_empty(), "`{label}` renders blank");
+            assert_ne!(value, "0", "`{label}` renders an unmeasurable as a bare 0");
         }
+    }
+
+    fn row<'a>(rows: &'a [(&'static str, String)], key: &str) -> &'a str {
+        &rows
+            .iter()
+            .find(|(k, _)| *k == key)
+            .unwrap_or_else(|| panic!("the strip has a `{key}` row"))
+            .1
+    }
+
+    /// **The symbol half, with a listing actually loaded** — the two fields parcel 2a could only render
+    /// as "none loaded", now checked against the bus that resolves them.
+    ///
+    /// The listing is **built from the machine's own PC** rather than from a hardcoded address, so the
+    /// test cannot rot when the fixture ROM's boot path moves: a symbol is planted a known displacement
+    /// below wherever the PC actually is, and both `symbolAtPc` and `symbolDisp` are then predictions the
+    /// bus has to reproduce. A listing with a fixed address would keep passing while resolving to
+    /// nothing, which is the failure D7 records.
+    #[test]
+    fn the_status_strip_and_emulator_status_resolve_the_same_symbol_at_pc() {
+        const DISP: u32 = 4;
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        for _ in 0..5 {
+            machine.step(oracle_core::io::Pad::default());
+        }
+        let mut sys = booted();
+        sys.set_pad(0, oracle_core::io::Pad::default());
+        sys.set_pad(1, oracle_core::io::Pad::default());
+        sys.run_frames(5);
+        assert_eq!(
+            machine.system().state_hash().combined,
+            sys.state_hash().combined,
+            "the panel's machine and the bus's machine must BE the same machine"
+        );
+
+        let pc = machine.system().cpu_regs().pc;
+        assert!(
+            pc > DISP,
+            "the fixture's PC must leave room for a symbol below it, got {pc:#X}"
+        );
+        let listing = format!(
+            "  Symbol Table (* = unused):\n\n Boot : {:X} C |\n\n   1 symbols\n",
+            pc - DISP
+        );
+        let table = oracle_core::symbols::SymbolTable::parse(&listing).expect("a parsable listing");
+
+        let strip = StatusStrip::of(&machine, "testrom", Some(&table));
+        let mut h = Host::new(HostConfig::default());
+        // The SAME table on both sides — one parse, two consumers. Two parses of one file would agree
+        // here and would still be the arrangement D7 exists to forbid.
+        h.set_machine_info(oracle_aether::host::MachineInfo {
+            rom_path: Some("testrom".into()),
+            symbols: Some(table.clone()),
+            symbols_path: Some("testrom.lst".into()),
+        });
+        let (result, _) = h.call(&mut sys, "emulator/status", &json!({}));
+        let reply = result.expect("emulator/status answers");
+
+        assert_eq!(
+            strip.symbol_count.map(|n| n as u64),
+            reply["symbolCount"].as_u64(),
+            "the strip's symbol count and the bus's `symbolCount` have DRIFTED"
+        );
+        let (name, disp) = strip
+            .symbol_at_pc
+            .clone()
+            .expect("the planted symbol must resolve at the PC");
+        assert_eq!(
+            name,
+            reply["symbolAtPc"].as_str().expect("symbolAtPc is served"),
+            "the strip's symbol and the bus's `symbolAtPc` have DRIFTED"
+        );
+        assert_eq!(
+            u64::from(disp),
+            reply["symbolDisp"].as_u64().expect("symbolDisp is served"),
+            "the strip's displacement and the bus's `symbolDisp` have DRIFTED"
+        );
+        // The prediction, not just the agreement: two sides both resolving to nothing would agree too.
+        assert_eq!(name, "Boot");
+        assert_eq!(disp, DISP);
+        assert_eq!(
+            row(&strip.rows(), "symbol at pc"),
+            format!("Boot+${DISP:X}")
+        );
+        assert_eq!(row(&strip.rows(), "symbols"), "1 loaded");
     }
 }

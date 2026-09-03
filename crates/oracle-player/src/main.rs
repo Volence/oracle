@@ -46,12 +46,15 @@
 #[path = "../../oracle-frontend/src/audio.rs"]
 mod audio;
 
+mod bus;
 mod device;
 mod input;
 mod machine;
+mod memory;
 mod pacing;
 mod report;
 mod stats;
+mod symbols;
 mod ui;
 
 use std::time::{Duration, Instant};
@@ -74,6 +77,10 @@ enum Mode {
 
 struct Args {
     rom: String,
+    /// `--symbols PATH`. `None` means *discover* — the `.lst` beside the ROM, which is where
+    /// `sigil build --emit-lst` writes it and exactly what `oracle-frontend` already looks for. The two
+    /// absences are not the same absence; see [`crate::symbols::Source`].
+    symbols: Option<String>,
     mode: Mode,
     secs: f64,
     audio: bool,
@@ -90,8 +97,13 @@ struct Args {
 
 fn usage() -> ! {
     loud(
-        "usage: oracle-player --rom PATH [--mode window|bench-cpu|bench-window] [--secs N]\n\
-         \x20              [--audio on|off] [--expect-screen WxH] [--size WxH] [--target-fps N]\n\
+        "usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]\n\
+         \x20              [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]\n\
+         \x20              [--target-fps N]\n\
+         \n\
+         --symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,\n\
+         which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;\n\
+         a discovered one that is missing is not. Neither overrides the ROM-binding check.\n\
          \n\
          Both bench modes REQUIRE --expect-screen and force audio gain 0.0.\n\
          --target-fps 0 switches the GOVERNOR OFF. That is the control for the pacing design, not a\n\
@@ -103,6 +115,7 @@ fn usage() -> ! {
 fn parse_args() -> Args {
     let mut a = Args {
         rom: String::new(),
+        symbols: None,
         mode: Mode::Window,
         secs: 60.0,
         audio: true,
@@ -125,6 +138,10 @@ fn parse_args() -> Args {
         match argv[i].as_str() {
             "--rom" => {
                 a.rom = next(i, &argv);
+                i += 2;
+            }
+            "--symbols" => {
+                a.symbols = Some(next(i, &argv));
                 i += 2;
             }
             "--mode" => {
@@ -213,12 +230,22 @@ fn main() {
         args.audio
     ));
 
+    // Opt-in symbols, loaded here while `rom` is still ours to borrow: the binding check probes the
+    // image's `deb2` appendix at the offset the listing's own `EndOfRom` names, so it needs the bytes,
+    // not the core. Exactly where `oracle-frontend` does it, for exactly that reason.
+    let (sym_path, sym_source) = symbols::resolve(&args.rom, args.symbols.as_deref());
+    let loaded = symbols::load(&sym_path, sym_source, &rom);
+    if let Some(fatal) = loaded.fatal {
+        loud(&format!("symbols: {fatal}"));
+        std::process::exit(66);
+    }
+
     let device = if args.audio { Device::open(gain) } else { None };
     let machine = Machine::new(rom, device);
 
     match args.mode {
-        Mode::BenchCpu => run_bench_cpu(machine, &args),
-        Mode::Window | Mode::BenchWindow => run_window(machine, &args),
+        Mode::BenchCpu => run_bench_cpu(machine, &args, loaded),
+        Mode::Window | Mode::BenchWindow => run_window(machine, &args, loaded),
     }
 }
 
@@ -242,15 +269,51 @@ struct Loop {
     status: String,
     dock: egui_dock::DockState<ui::Tab>,
     tex: Option<egui::TextureHandle>,
-    /// The `--rom` argument, verbatim, for the Registers tab's status strip.
+    /// The `--rom` argument, verbatim. The status strip absolutises it through the bus's own helper.
     rom_path: String,
+    /// **The hosted Aether bus** — unbound, unserved, never pumped inside a frame. See [`crate::bus`] for
+    /// what it does not do and why, and for where the pause mirror lands.
+    bus: bus::Bus,
+    /// The listing, kept beside the bus rather than inside it: the engine owns an `Arc<SymbolTable>` it
+    /// resolves with, and the panel borrows *this* one. Two clones of one parse, never two parses.
+    symbols: Option<oracle_core::symbols::SymbolTable>,
+    /// The Memory panel's state between repaints.
+    mem: memory::MemoryPanel,
 }
 
 impl Loop {
-    fn new(machine: Machine, now: Instant, target_fps: Option<f64>, rom_path: String) -> Self {
+    fn new(
+        mut machine: Machine,
+        now: Instant,
+        target_fps: Option<f64>,
+        rom_path: String,
+        loaded: symbols::Loaded,
+    ) -> Self {
+        // ⚑ The pause mirror lands HERE, before the governor starts and outside every measured bucket.
+        //
+        // `Host::set_paused` queues; `Host::pump` applies. The player has no pause control in this
+        // parcel (the transport bar is 2c), so the mirrored value cannot change and one drain at setup
+        // is the whole of it — which is why `iterate` below is byte-identical to parcel 1's and its
+        // pacing numbers still stand. Without this the engine keeps `Engine::new`'s `free_run: false`
+        // and every paused-only write would succeed against a machine running at 60 Hz.
+        let symbols = loaded.table;
+        let bus = bus::Bus::new(
+            machine.system_mut(),
+            oracle_aether::host::MachineInfo {
+                rom_path: Some(rom_path.clone()),
+                // The engine takes its own `Arc` of the table; the clone is one parse shared, so the
+                // panel and `emulator/lookup_symbol` cannot resolve against two different listings.
+                symbols: symbols.clone(),
+                symbols_path: loaded.path.map(|p| p.display().to_string()),
+            },
+            false,
+        );
         Self {
             machine,
             rom_path,
+            bus,
+            symbols,
+            mem: memory::MemoryPanel::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -368,7 +431,8 @@ impl Loop {
     }
 
     fn build_ui(&mut self, root: &mut egui::Ui) {
-        // Disjoint field borrows: the dock mutably, everything the panels read immutably.
+        // Disjoint field borrows: the dock, the machine, the bus and the Memory panel's state mutably
+        // (`Host::call` lends the machine to the engine and takes it back), everything else immutably.
         let Loop {
             machine,
             governor,
@@ -376,6 +440,9 @@ impl Loop {
             tex,
             status,
             rom_path,
+            bus,
+            symbols,
+            mem,
             ..
         } = self;
         egui::Panel::top("bar").show(root, |ui| {
@@ -391,9 +458,12 @@ impl Loop {
                 let mut panels = ui::Panels {
                     tex: tex.as_ref(),
                     machine,
+                    bus,
+                    mem,
                     governor,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),
+                    symbols: symbols.as_ref(),
                 };
                 egui_dock::DockArea::new(dock)
                     .style(egui_dock::Style::from_egui(ui.style().as_ref()))
@@ -414,9 +484,9 @@ impl Loop {
 /// 92.87 fps and 22.71 fps. Here the deadline *is the player's own governor*, the same object the window
 /// mode drives. What this mode cannot see is the backend's present cost, and that is why `bench-window`
 /// exists.
-fn run_bench_cpu(machine: Machine, args: &Args) {
+fn run_bench_cpu(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let start = Instant::now();
-    let mut lp = Loop::new(machine, start, args.target_fps, args.rom.clone());
+    let mut lp = Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded);
     let ctx = egui::Context::default();
     let screen =
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(args.size.0, args.size.1));
@@ -578,10 +648,10 @@ impl eframe::App for App {
     }
 }
 
-fn run_window(machine: Machine, args: &Args) {
+fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let start = Instant::now();
     let app = App {
-        lp: Loop::new(machine, start, args.target_fps, args.rom.clone()),
+        lp: Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded),
         start,
         deadline: if args.mode == Mode::BenchWindow {
             Some(args.secs)
