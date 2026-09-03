@@ -409,7 +409,12 @@ impl Loop {
             // ⚑ A paused player owns its frame and does not advance the machine. The period, the upload
             // and the UI below all still happen — a paused window is not a frozen one — but nothing here
             // touches the clock, which is the whole content of the promise `Host::set_paused` makes to
-            // the bus on the next line.
+            // the bus below.
+            //
+            // A paused iteration is deliberately **absent** from `frames_per_iter` rather than counted as
+            // a 0. That bucket is "how many frames the AUDIO RING asked for", and `report` normalises it
+            // against its own sum — so a pause stays out of the fine trim's statistics instead of being
+            // reported as the governor running fast, which is what a 0 there means.
             if !self.paused {
                 let keys = input::poll_pad(ctx);
                 // egui 0.36 spells this `egui_wants_keyboard_input` (the `egui_` prefix distinguishes

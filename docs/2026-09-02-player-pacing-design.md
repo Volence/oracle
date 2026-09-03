@@ -209,6 +209,20 @@ unknown.
 
 ## 4. The measurement
 
+> ### ⚠ **SUPERSEDED as a description of the current loop — see `docs/2026-09-03-debug-panels-design.md` §5.6.**
+>
+> Everything below was measured against a loop with **no `Host::pump` and no `Observe` wrappers**. Parcel 3
+> (`PANELS-3-STOPPING`) put both in, which is exactly the invalidation §5.4 of the panels design predicted,
+> and **retook this measurement** — two runs before and two after, one rig, one session, the rig in this
+> section unchanged.
+>
+> The short answer is that nothing material moved: 60.038 emulated fps and a 16.665 ms median period on both
+> sides, zero steady starvations and zero producer drops on all four runs, and the new per-iteration drain
+> costs **0.000 ms at the median**. The one attributable increase is `ui-build` +0.009 ms for the transport
+> bar. §5.6 carries the full four-run table, the machine's condition per run, and the two movements that are
+> reported without being attributed. **Read the numbers there, not the ones below**, for anything about the
+> loop as it stands today; the rig, the instrument rule and the reasoning in this section all still hold.
+
 ROM: `aeon/s4.debug.bin` (736 454 bytes), free-running from reset into attract-mode gameplay, no input
 injected. Every run ends by reporting its last picture — **320×224, 27 distinct colours, 46–57 % non-black
 pixels** throughout — so the costs are for a real frame and not a black screen.

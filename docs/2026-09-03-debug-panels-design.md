@@ -452,10 +452,32 @@ Objects tab, and the tab must say that in those words rather than showing an emp
 
 ### 5.4 P4/P5/P6 — Breakpoints, Watchpoints, Profiler — *one prerequisite, and it is the run loop*
 
+> ### ⚠ **THIS SUBSECTION WAS WRITTEN BEFORE PARCEL 2 LANDED, AND TWO OF ITS THREE COSTS WERE ALREADY PAID.**
+>
+> It is kept as written because its *conclusion* was right — the three panels share one run-loop change and
+> that change re-opens parcel 1's measurement — but it prices work parcel 2b had already done, and a reader
+> costing parcel 3 from this list would double-count it. What it gets wrong:
+>
+> * **"hosting the `Host` in `oracle-player`"** — done in parcel 2b. `oracle-aether` is an unconditional
+>   dependency of `oracle-player`, `crates/oracle-player/src/bus.rs` owns a `Host`, and `Host::call`
+>   (`crates/oracle-aether/src/host.rs:533`) is what the Memory and Objects tabs already talk through.
+> * **"threading the pause flag both ways"** — the outbound half shipped in 2b as `Bus::mirror_pause`, with
+>   four tests behind it. Parcel 3 added the inbound half and made the drain unconditional.
+> * **"merging held pads"** — *not done, and not this parcel's.* `Host::set_live_pads` / `Host::held` are
+>   still unwired in `oracle-player`; a client's `emulator/hold` does not compose with the keyboard there.
+>   Booked below as an open item rather than quietly closed.
+> * **The pacing re-measurement was the one cost this section priced correctly, and parcel 3 paid it.**
+>   See **§5.6**.
+>
+> The parcel-1 quotation ("hosting it would put the 4 ms pump budget inside the frame") is worth reading
+> against §5.6's measured answer: the drain's **median cost is 0.000 ms and its worst across 9,000 measured
+> iterations is 0.013 ms**. `HostConfig::pump_budget` is a *ceiling on a drain that has queued work*, and an
+> unserved player never queues any.
+
 All three ride the same seam: `Host::run_sinks(resume_pc)` returns the `(Observe<&mut Watchpoints>,
 Observe<&mut Profiler>, BreakStop)` triple the player's own run must carry, and the halt must come back
-through `break_observed` → `Host::record_break`. Today `Machine::step` runs
-`self.sys.run_frames_with_sink(1, &mut self.cap)` with no wrapper at all. Adding it means:
+through `break_observed` → `Host::record_break`. Before parcel 3 `Machine::step` ran
+`self.sys.run_frames_with_sink(1, &mut self.cap)` with no wrapper at all. Adding it meant:
 
 * hosting the `Host` in `oracle-player` (parcel 1 excluded this deliberately — pacing doc line 446: *"hosting
   it would put the 4 ms pump budget inside the frame that this parcel is trying to prove"*);
@@ -478,6 +500,110 @@ progress and is not. Keeping them together also keeps the re-measurement to one 
 A thinner parcel 2, if the owner wants it thinner: **P1 + P3.** They share no prerequisite with each other
 except the symbol table P3 needs, and together they cover "look at the CPU" and "look at the game", which is
 most of what a Sonic-engine debugger is used for.
+
+---
+
+## 5.6 Parcel 3 — the run-loop seam, and the re-measurement it owed
+
+> ### ✅ **BUILT, on `parcel/panels-3-stopping`.** The seam only; the three tabs are the next parcel's.
+
+**What shipped.** `Machine::step` now carries `Bus::run_sinks(resume_pc)` on every emulated frame — the
+engine's own `Watchpoints` and `Profiler` wrapped in `Observe`, plus the breakpoint sink **bare** — and the
+halt returns through `break_observed` → `Bus::record_break`. `Bus::mirror_pause` drains once per iteration,
+**unconditionally**, after the frame; `Loop::iterate` adopts `Bus::is_paused()` at the **top**, before the
+governor's tick, which is what makes a halt stop the player rather than merely be recorded. The completed
+frame goes out through `Bus::publish`. Nothing is duplicated: there is one breakpoint list, one watch, one
+profiler and one layer mask, and they live on the `Host` (R2).
+
+The transport bar (pause / resume / step) is a **control, not a `Tab`**. `LAYOUT_VERSION` stays at **1** and
+no stored layout is discarded. Every gesture goes through `Host::call` and the bar renders the tool's own
+reply and its own refusal, branching on `Answer::reason()` — `emulator/step` against a running player is
+refused `-32005 machineRunning` by the handler, and that is the sentence a human sees.
+
+### 5.6.1 The measurement, retaken
+
+Same rig as `docs/2026-09-02-player-pacing-design.md` §4: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin`, a
+real audio device at gain 0.0, no window and no GPU. **Four separate process invocations, reported
+separately and never averaged.** BEFORE is the release binary built from `f2ddda9` (the parcel-2 tip),
+preserved and re-run in this same session so both halves are one sitting.
+
+**The condition of the machine, either side of every run.** `pgrep -c -f "[c]argo"` was **0** before and
+after all four — the peer `sigil` lane's `cargo test --release --workspace` had finished, and one earlier
+run taken while it was still going (load average 22.7) was **discarded rather than reported**. Everything
+else was the owner's live session: Vivaldi across three processes at ~46 %, Discord, `kwin_wayland`, Steam
+helpers throughout, plus what is named per run below. Load average **2.2–2.7 on 16 cores** for all four.
+
+| | **BEFORE 1** | **BEFORE 2** | **AFTER 1** | **AFTER 2** |
+|---|---|---|---|---|
+| **emulated frames/s** | **60.038** | **60.036** | **60.038** | **60.038** |
+| presented frames/s | 59.998 | 59.996 | 59.998 | 59.998 |
+| **frame period, median** | **16.665 ms** | **16.665 ms** | **16.666 ms** | **16.665 ms** |
+| frame period, p95 / p99 | 16.884 / 17.226 | 16.867 / 17.143 | 16.969 / 17.317 | 16.899 / 17.348 |
+| **frame period, WORST** | **22.591 ms** | **22.516 ms** | **23.536 ms** | **22.745 ms** |
+| governor rebases | 0 | 0 | 0 | 0 |
+| worst lateness | 6.451 ms | 6.438 ms | 10.334 ms | 7.683 ms |
+| iterations running 2 frames | 3 (0.067 %) | 3 (0.067 %) | 3 (0.067 %) | 3 (0.067 %) |
+| iterations running 0 frames | 0 | 0 | 0 | 0 |
+| **audio starvations, steady** | **0** | **0** | **0** | **0** |
+| **audio producer drops** | **0** | **0** | **0** | **0** |
+| leanest ring | 6702 (76.0 ms) | 6584 (74.6 ms) | 6584 (74.6 ms) | 6762 (76.7 ms) |
+| load on the box | browser + chat only | browser + chat only | one `sigil` at 98–100 % | one `sigil` at 78–95 % |
+
+Per-iteration cost, **medians**, milliseconds (n = 4500 each):
+
+```
+part            BEFORE 1  BEFORE 2  |  AFTER 1  AFTER 2
+emulate            2.653     2.744  |    2.694    2.744
+audio              0.001     0.001  |    0.001    0.001
+convert            0.056     0.056  |    0.035    0.035
+tex-upload         0.005     0.005  |    0.005    0.005
+ui-build           0.140     0.140  |    0.149    0.149
+tessellate         0.025     0.025  |    0.027    0.027
+bus-pump               —         —  |    0.000    0.000     <-- NEW: this parcel's own drain
+CPU TOTAL          2.854     2.946  |    2.887    2.937
+period            16.665    16.665  |   16.666   16.665
+```
+
+**Reading it, including the parts that moved.**
+
+* **The seam is free at the median and nearly free at the tail.** `bus-pump` — one `Host::set_paused` plus
+  one `Host::pump` per iteration — is **0.000 ms median, 0.001 ms p99, 0.003 / 0.013 ms worst** across
+  9,000 measured iterations. An unserved player queues nothing, so the drain is a `try_recv` on an empty
+  channel plus two ~1 KB `System` moves. `HostConfig::pump_budget`'s 4 ms is a ceiling on a drain that has
+  work; this one never does.
+* **`ui-build` rose 0.140 → 0.149 ms at the median, and that is attributable**: it is the transport bar —
+  two buttons, an armed-instruments label and the echo — drawn every frame. **+0.009 ms is 0.05 % of a
+  16.667 ms frame.** Named rather than absorbed.
+* **`convert` FELL, 0.056 → 0.035 ms, and this is reported unattributed.** It moved in the *opposite*
+  direction to the one a newly added `Bus::publish` call inside that bucket would push, and it lands back on
+  parcel 1's own documented 0.035–0.037 ms — so it is the BEFORE runs that are the outlier against the
+  historical figure, not the AFTER ones. The most likely mechanism is that these are two different
+  compilations (release, no LTO, 16 codegen units) and inlining around a 287 KB pixel conversion differs by
+  ~20 µs. **It is not claimed as a win.**
+* **`CPU TOTAL` at the median moved 2.854 / 2.946 → 2.887 / 2.937 — inside BEFORE's own between-run spread
+  of 0.092 ms.** Emulation is still ~93 % of the CPU frame.
+* **The tail moved slightly and it is named.** p99 is consistently ~0.15 ms higher after (17.14–17.23 →
+  17.32–17.35), and the worst frame 22.52 / 22.59 → 22.75 / 23.54. Both AFTER runs carried a `sigil`
+  process at 78–100 % of a core that neither BEFORE run did, which is the honest first explanation; no
+  bucket shows a matching increase, `bus-pump`'s own worst is 0.013 ms, and the design absorbed it — zero
+  rebases, zero steady starvations, zero producer drops, leanest ring unchanged at ~75 ms.
+* **The verdict: no material regression.** Emulated frame rate, median period, starvations, drops and the
+  fine trim's 2-frame rate are identical to three decimal places or exactly equal across all four runs.
+
+`--target-fps 0` remains the **CONTROL** and not a result; the report stamps any run made with it
+`GOVERNOR OFF` and nothing from it is a statement about the player.
+
+### 5.6.2 What parcel 3 deliberately did NOT do
+
+* **No `Tab` variants**, so `LAYOUT_VERSION` is untouched at 1. Breakpoints, Watchpoints and Profiler tabs
+  are the next parcel's, and `Bus::read_instruments` is the borrow they draw from.
+* **Held pads are still not merged.** `Host::set_live_pads` / `Host::held` are unwired in `oracle-player`,
+  so a client's `emulator/hold` does not compose with the keyboard there (it does in `oracle-frontend`).
+  §5.4 listed this among parcel 3's costs; it is a real gap and it is booked here rather than closed.
+* **The picture does not refresh after `emulator/step`.** A step advances one *instruction*, the run that
+  drew the retained frame is over, and `Host::publish_capture` is gated on `has_clients()` — which an
+  unserved player never satisfies, so `Host::framebuffer()` has nothing to pull. The retained frame is the
+  truthful last-drawn one; it updates on resume.
 
 ---
 
