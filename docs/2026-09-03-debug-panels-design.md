@@ -933,11 +933,39 @@ dependency list today is `oracle-core, eframe, egui, egui_dock, ringbuf, cpal` �
 
 Everything I could not establish in this worktree, gathered, not smoothed.
 
-1. **Nothing here was compiled or run.** Docs-only parcel; the cargo lane is held. Every `~lines`, every
-   "≈10 lines", and the `Host::call` signature are *designs*, not builds.
-2. **The per-frame cost of every panel body proposed.** Parcel 1 measured a `ui` bucket against a 20-row
-   monospace grid. A 5-space hex view, a decoded object table and a sprite table are unmeasured. The design's
-   claim that they are cheap is reasoning from size, not measurement.
+1. ~~**Nothing here was compiled or run.** Docs-only parcel; the cargo lane is held. Every `~lines`, every
+   "≈10 lines", and the `Host::call` signature are *designs*, not builds.~~ **Overtaken by every parcel
+   since**: 2b/2c built the panels, parcel 3 the seam (§5.6), parcel 3-tabs the three stopping tabs
+   (§5.7) — all compiled, tested and measured. `Host::call` exists at `host.rs:533`. Struck here rather
+   than left standing, because a stale UNMEASURED row reads as a live one. *(Items 4 and 6 were likewise
+   answered by parcels 2b and 3 — see §5.4's box and §5.6.1 — and are left as written; they are those
+   parcels' rows to strike, not this one's.)*
+2. **The per-frame cost of every panel body proposed.** ~~Parcel 1 measured a `ui` bucket against a 20-row
+   monospace grid. A 5-space hex view, a decoded object table and a sprite table are unmeasured. The
+   design's claim that they are cheap is reasoning from size, not measurement.~~
+   > ⚑ **PARTLY MEASURED as of parcel 3-tabs — §5.7.1 — and the item stays OPEN.** Three of the eight
+   > bodies were measured and the reasoning-from-size claim was **falsified for one of them**. What is
+   > now measured, and what each number is:
+   >
+   > * **Breakpoints, with sixteen rows: ≲0.2 ms** (`+0.217 ms` of `ui-build` in the one clean sitting).
+   >   Isolated — the shipped default arrangement draws that body and neither of its neighbours.
+   > * **Watchpoints + Profiler, with rows: +14.742 ms *together*, ~88 % of a frame budget.** A
+   >   **residual of two**: no arrangement `--dock` can build draws one without the other. **Splitting it
+   >   is still owed**, and so is the confirmation of §5.7.1's hypothesis about which body it is.
+   > * **The whole eight-tab arrangement, armed: `ui-build` 15.220 ms median**, against 0.173 ms for the
+   >   shipped default arrangement unarmed. In that state the player **does not hold real time** (51.6
+   >   emulated fps, 1754 rebases, 1353 steady audio starvations). Measured, named, unfixed.
+   >
+   > **What is STILL unmeasured, and this item is not closed until it is:**
+   >
+   > * **Registers, Memory and Objects individually.** The only figure touching them is
+   >   `ui-build` B − A = **+0.088 ms for four bodies at once** (Memory, Objects, and two *empty* stopping
+   >   ones) at one-eighth of the window each — a **lower bound on two of them**, not a cost of either.
+   >   §5.6.1's `ui-build` 0.140 ms *included* the Registers body, but as part of a four-body total that
+   >   was never differenced, so it is not this item's answer either.
+   > * **The Sprites panel** (§2.1) has not been built, so its body cannot be measured at all.
+   > * **A human-sized pane.** Every figure here is from `every_tab_dock` or the default dock. A hex view
+   >   or an object table given half the window lays out more rows than either arrangement gave it.
 3. **The serialized byte size of a real `registers` / `object_list` / `object_slot` reply.** Only `scanlines`
    is derived (§2.3), and that derivation is arithmetic over the handler's `json!` shape, not a captured
    payload.
