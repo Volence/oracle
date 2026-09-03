@@ -4,6 +4,14 @@ members = [
     "crates/oracle-aether",
     "crates/oracle-core",
     "crates/oracle-frontend",
+    # The toolkit player (egui + egui_dock + wgpu). A **member**, unlike the throwaway spike below, and
+    # deliberately so: it is the player now, and a crate outside the workspace is a crate that
+    # `cargo fmt --all`, `cargo clippy --all-targets` and `cargo test --workspace` do not cover, which is
+    # how it rots. Membership costs ~230 packages in the lock file and a longer cold build; it does NOT
+    # put egui/eframe/wgpu into any other member's dependency graph (a member's dependencies are its own,
+    # and `docs/2026-09-02-player-pacing-design.md` §5 gates `cargo tree -p oracle-core` /
+    # `-p oracle-frontend` on exactly that).
+    "crates/oracle-player",
     "crates/oracle-replay",
 ]
 # THROWAWAY MEASUREMENT SPIKE — deliberately NOT a member.
