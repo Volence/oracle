@@ -1,34 +1,21 @@
 {
-  "focus": "Panels designed to your rule - and I corrected the one line of it that was my mistake, not yours.",
-  "inFlight": [
-    {
-      "what": "Building the spawn/move/delete feature, and checking the contract team's work against our real replies",
-      "where": "branch worktree (spawn serve)",
-      "agent": true
-    }
-  ],
+  "focus": "Spawn feature is in and the panels are designed; next is building the first real panels.",
+  "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "When both overnight agents report and land; not before, since a rotation would cost their branches.",
+  "nextBoundary": "Now - both overnight parcels landed and pushed, nothing running.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
-      "title": "You played the first version and it felt fine. Next: the actual debug panels, tabs and remembering your layout, built on a foundation you have now used.",
-      "state": "doing",
+      "title": "Designed to your tab rule. Next: build the first real panels - registers, memory, objects - on the window you played.",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
     },
     {
-      "id": "SPAWN-MODE-CR",
-      "title": "Building the approved spawn feature: a tool can ask the running game to place, move or delete an object. The first job is measuring a hazard the approval left open.",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null
-    },
-    {
       "id": "SCHEMA-DRIFT-NIGHTLY",
       "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
-      "state": "next",
+      "state": "open",
       "size": "S",
       "blockedBy": null
     },
@@ -93,6 +80,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-03T04:39:15Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-03T04:54:58Z"
 }
