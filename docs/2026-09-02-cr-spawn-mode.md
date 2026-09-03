@@ -771,7 +771,7 @@ witnessed nothing.
 The hub's fragments (empyrean **`21c78d2`**, merge of `249690f`) left one thing neither §11.32 nor §9
 settles: does the reply **echo the accepted request**, or **re-read the record after the frame advance**?
 
-**RULED: it re-reads, and the field description must name the moment.** Echoing carries **zero
+**RULED: it re-reads, and the field description must name the moment.** *(Adopted as the §11.32 addendum, empyrean `e04a94f` — verified reachable on their `origin/main`, `--stat` shows `contract/protocol.md +13` and the schema's spawn result descriptions carrying the same sentence, so the contract of record is there and this section is the reasoning behind it. The ATTR-RGB-LATCH parallel is recorded in the addendum too, so the colour reply can reuse the wording rather than re-deriving it.)* Echoing carries **zero
 information** — the client already holds those numbers. The re-read is the actual machine state, which is
 what every other reply on this bus reports. But an unqualified `x`/`y` *after* an advance is a plausible
 wrong answer: an object with velocity has moved, and a client that reads the reply as "where I put it" is
