@@ -1,14 +1,14 @@
 {
-  "focus": "Memory panel is in - five spaces, editable, by symbol name. Objects panel is the last of the three.",
+  "focus": "All three panels are on the window: registers, memory, objects. Nothing running.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "Now - the memory panel is merged, verified and pushed, nothing running.",
+  "nextBoundary": "Now - all three panels merged, verified and pushed.",
   "queue": [
     {
-      "id": "DEBUG-PANELS",
-      "title": "Registers and memory are done and on the window. Objects is the last of the three, and the symbol list it needs is already in.",
+      "id": "PANELS-LOOK",
+      "title": "The three panels are built and tested but nobody has ever looked at them. Thirty seconds of your eyes, or your say-so to open a window.",
       "state": "next",
-      "size": "L",
+      "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
     },
@@ -77,9 +77,17 @@
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
+    },
+    {
+      "id": "Y-SIGN-COVERAGE",
+      "title": "Found from the panel side: nothing on the emulator's own test side checks that a negative vertical position survives being read. Correct today; a regression would pass unnoticed.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
     }
   ],
-  "awaiting": null,
+  "awaiting": "whether you want to look at the three panels - nothing visual has been checked across any of them, and that is the one thing I cannot do without putting a window on your screen.",
   "atBoundary": true,
-  "updatedAt": "2026-09-03T07:40:37Z"
+  "updatedAt": "2026-09-03T08:36:26Z"
 }
