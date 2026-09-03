@@ -20,10 +20,10 @@
     },
     {
       "id": "SPAWN-MODE-CR",
-      "title": "Written and filed as CR-J: how a tool asks the game to spawn, move or delete an object. It caught a mistake that would have made such a tool hang forever. Needs an independent read before any of it is built.",
-      "state": "blocked",
+      "title": "Approved and now part of the shared contract: how a tool asks the game to spawn, move or delete an object. Left to build. The contract team is writing the machine-readable half and I check it against the real server before anything is adopted.",
+      "state": "open",
       "size": "M",
-      "blockedBy": "an independent review of the text before it is built - a ruling authorises the change, the review authorises the words"
+      "blockedBy": null
     },
     {
       "id": "SCHEMA-DRIFT-NIGHTLY",
@@ -94,5 +94,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-03T02:03:48Z"
+  "updatedAt": "2026-09-03T02:10:41Z"
 }

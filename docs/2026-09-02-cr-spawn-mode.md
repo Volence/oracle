@@ -732,3 +732,36 @@ The field table itself re-derives correctly and needs no change.
 `emulator/object_list` reports"*; it is the low 16 bits of the `addr` that row reports. Worth a note
 back to that lane — it is their doc's claim about our surface, and it is the sentence our transcription
 inherited the imprecision from.
+
+---
+
+## 17. Adjudicated, and what this lane owes next (added 2026-09-02 after the ruling)
+
+**ADOPTED WHOLE** as `protocol.md` **§11.32**, empyrean **`5ae18dc`** — verified here as reachable on their
+`origin/main`, and `--stat` shows `contract/protocol.md +88`, so the SHA class matches what it anchors. All
+seven §15 questions came back decided: Q1 `-32602` (one fault, one code), Q2 cancel with `cancelled: true`
+and `Obj_Req_Op` left alone, Q3 token-plus-disclosure as v1 with the hard `pausedMidFrame` refusal **not
+ruled out** pending a measurement that is the implementing parcel's first job, Q4 structured params, Q5
+`def`/`defSymbol`, Q6 the §8.4 layout assertion adopted (not a duplicate of aeon's gate — ours runs against
+the ROM we were handed), Q7 yes.
+
+**§16 is discharged** — the corrections to `docs/2026-09-02-aeon-spawn-mailbox.md` landed inside `305b972`,
+with the original text kept visible above them. Aeon landed their three at **`4f5ad5a1`** (reachable on
+their `origin/master`, `ENGINE_ARCHITECTURE.md` only). **Nothing owed; nothing holds the serve.**
+
+### ⚑ STANDING COMMITMENT — booked here because it was made in mail, and mail is not part of the tree
+
+**The hub is authoring the schema fragments from §11.32; this lane CHECKS THEM AGAINST THE RUNNING
+SERVER'S REAL REPLIES at serve time** — not against the schema, and not against this CR. **Anything a
+fragment would refuse that we actually emit goes back to the hub BEFORE any re-vendor.**
+
+**Why the split is that way round, and it is the load-bearing reason rather than a division of labour:** on
+CR-F this lane authored the vectors, verified them programmatically, handed them over as ready, and **nine
+of eleven could not have passed** — every result case carried `"layout": {}` against a `$defs.decoderLayout`
+requiring five fields. Author-and-check by one lane share one frame, and that frame is what failed. Hub
+authoring from the spec and this lane checking from the implementation are **different enumeration
+parameters** (protocol bar 19), which is the only arrangement that catches what neither pass catches alone.
+
+**Re-vendor lands WITH the serve, never before** (§10). A re-vendor ahead of the serve makes the gate green
+against a server that does not yet emit the shape — this repo has already measured a re-vendor whose green
+witnessed nothing.
