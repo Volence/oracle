@@ -798,3 +798,142 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         std::process::exit(3);
     }
 }
+
+// -------------------------------------------------------------------------------------------------------
+// ⚑ The shipped loop, driven — parcel 3
+// -------------------------------------------------------------------------------------------------------
+
+/// The seam's own tests live in [`crate::bus`] and drive `Machine::step` directly, which leaves one gap
+/// they cannot close: **they replicate `Loop::iterate`'s order rather than running it.** A `Loop` that
+/// stopped reading [`bus::Bus::is_paused`] back would leave every one of them green while the player ran
+/// straight through every breakpoint — the "both sides agree because neither side is the shipped one"
+/// shape this repo has paid for before.
+///
+/// So this drives the real [`Loop::iterate`], through the same bare `egui::Context` [`run_bench_cpu`] uses.
+///
+/// `oracle-aether` is `#![cfg(unix)]`, so this module is too.
+#[cfg(all(test, unix))]
+mod loop_tests {
+    use super::*;
+
+    /// `move.w (A0),D0` in the fixture ROM's inner loop — the same address `crate::bus`'s seam tests arm
+    /// at, and *checked* there against the ROM's own bytes rather than re-checked here.
+    const HOT_PC: u32 = 0x0000_020E;
+
+    fn a_loop() -> Loop {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        machine
+            .system_mut()
+            .set_pad(0, oracle_core::io::Pad::default());
+        // The governor is switched OFF, so every `iterate` owns its frame and this test never waits on a
+        // wall clock. That is the same switch the pacing CONTROL uses.
+        Loop::new(
+            machine,
+            Instant::now(),
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: None,
+                path: None,
+                fatal: None,
+            },
+        )
+    }
+
+    /// Drive the real loop `n` times and return `(emulated frames, iterations actually run)`.
+    ///
+    /// **The two are counted separately and neither is assumed from `n`**: `egui::Context::run_ui` may run
+    /// its callback more than once for a single call when a repaint is requested mid-frame, so `n` is a
+    /// lower bound on iterations and not an equality. Measured this the hard way — a first version
+    /// asserted `frames == n` and got 13 from 12.
+    fn drive(lp: &mut Loop, ctx: &egui::Context, n: usize) -> (u64, u64) {
+        let before = lp.machine.frames();
+        let iters_before = lp.iterations;
+        for _ in 0..n {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(raw, |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            // `TexturesDelta` panics on drop in debug while it holds unapplied deltas; there is no backend
+            // here, so they are discarded through the API's own escape hatch, exactly as `run_bench_cpu`
+            // does. Getting this wrong aborts the test with a message about textures.
+            let mut d = out.textures_delta;
+            d.clear();
+        }
+        (lp.machine.frames() - before, lp.iterations - iters_before)
+    }
+
+    /// ★ **The shipped loop stops running frames on a breakpoint, and keeps turning while stopped.**
+    ///
+    /// **The alternative green paths, ruled out:**
+    ///
+    /// 1. *The loop never ran at all* (a governor that owned no frames, an `iterate` that did nothing) —
+    ///    ruled out by the control: the same loop with nothing armed must advance the machine on every
+    ///    one of its iterations.
+    /// 2. *The loop stopped because it froze rather than paused* — ruled out by `iterations`, which must
+    ///    keep climbing after the halt. A frozen loop and a paused one both stop the clock; only one of
+    ///    them is correct, and this is what tells them apart.
+    #[test]
+    fn the_players_own_loop_stops_running_frames_on_a_breakpoint() {
+        const N: usize = 12;
+        let ctx = egui::Context::default();
+
+        // (1) THE CONTROL, first: with nothing armed **every** iteration advances the machine, so the
+        // shortfall asserted below is caused by the breakpoint and by nothing else about this fixture.
+        {
+            let mut lp = a_loop();
+            let (advanced, iters) = drive(&mut lp, &ctx, N);
+            assert!(iters >= N as u64, "the loop did not iterate at all");
+            assert_eq!(
+                advanced, iters,
+                "the unarmed loop skipped a frame on some iteration, so a shortfall below would not be \
+                 evidence of anything"
+            );
+            assert!(!lp.paused, "the unarmed loop paused itself");
+        }
+
+        let mut lp = a_loop();
+        // Armed through the bus, exactly as a client or the next parcel's panel would.
+        let armed = lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/breakpoint_add",
+            &serde_json::json!({"addr": format!("0x{HOT_PC:08X}")}),
+        );
+        assert!(!armed.is_err(), "arming the fixture breakpoint was refused");
+
+        let (advanced, iters) = drive(&mut lp, &ctx, N);
+        assert!(
+            advanced < iters,
+            "the shipped loop ran a frame on every one of its {iters} iterations with a breakpoint \
+             armed — it is not following `Bus::is_paused`, so the halt the bus recorded never reached \
+             the loop"
+        );
+        assert!(lp.paused, "the loop's own pause must have followed the bus");
+        assert_eq!(
+            lp.machine.system().cpu_regs().pc,
+            HOT_PC,
+            "the loop stopped somewhere other than the breakpoint"
+        );
+
+        // (2) Stopped, not frozen: the loop keeps iterating and the clock stands still.
+        let clock = lp.machine.system().scheduler().now();
+        let (advanced, iters) = drive(&mut lp, &ctx, 5);
+        assert!(
+            iters >= 5,
+            "the loop stopped turning altogether, which is a hang and not a pause"
+        );
+        assert_eq!(advanced, 0, "a paused loop must not advance the machine");
+        assert_eq!(
+            lp.machine.system().scheduler().now(),
+            clock,
+            "the emulated clock moved while the player was paused"
+        );
+    }
+}
