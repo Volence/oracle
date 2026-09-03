@@ -1012,6 +1012,15 @@ impl Panels<'_> {
             // `stick_to_bottom` survives: `show_rows` calls `ui.set_height` for the whole virtual list, so
             // the `content_size` the stick-to-end arithmetic uses (`scroll_area.rs:1284`) is the full
             // height and not the drawn slice's.
+            //
+            // ⚠ **The one thing this DID change, so it is not re-found as a bug.** A vertical `ScrollArea`
+            // has `auto_shrink.x = true` by default (`scroll_area.rs:397`, applied at `:1186`), so its
+            // width follows its content — and its content is now the visible rows rather than all 4096.
+            // Row widths vary by a few characters (`{:#X}` on the value, `{:?}` on op and size), so this
+            // box's scrollbar can sit a few characters further left or right as the log is scrolled, where
+            // before it was pinned by the widest row in the whole ring. The rows themselves are identical.
+            // `auto_shrink([false, true])` would pin the scrollbar to the panel's right edge instead —
+            // a LARGER departure from what shipped, which is why it was not taken. Design §5.7.2.
             let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
             egui::ScrollArea::vertical()
                 .id_salt("watch-hits")
