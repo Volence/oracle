@@ -53,12 +53,14 @@
 
 use crate::engine::{Engine, EngineConfig};
 use crate::outbound::DEFAULT_CAPACITY;
+use crate::rpc::RpcError;
 use crate::server::{spawn_accept, AcceptCtx, EngineMsg, Server, ServerConfig};
 use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
 use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::{System, MCLK_PER_FRAME};
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -465,6 +467,81 @@ impl Host {
     /// whole frame exists. A host presents this after a [`PumpReport::screen_changed`] drain.
     pub fn framebuffer(&self) -> Option<crate::engine::FrameRef<'_>> {
         self.engine.latched_frame()
+    }
+
+    // ---------------------------------------------------------------- the synchronous call (D15)
+
+    /// **Answer one command synchronously, in-process, against the caller's machine** — [`pump`](Host::pump)'s
+    /// swap-and-dispatch without the queue, and without the wait.
+    ///
+    /// This is what the contract says an in-process GUI *is*. `protocol.md` D15: an in-process GUI is
+    /// *"a consumer of the same registry, not a second server … it reads the method registry directly,
+    /// in-process; it does not open a socket to itself."* A window that owns the machine can therefore ask
+    /// the tool's own handler a question and get the tool's own answer, the tool's own refusal and the
+    /// tool's own error text — no wire, no process boundary, no one-frame latency.
+    ///
+    /// **It is NOT a way around [`pump`](Host::pump) for socket clients.** Everything arriving on a socket
+    /// is queued as an `EngineMsg` and answered by the drain, under [`HostConfig::pump_budget`] and
+    /// [`HOSTED_MAX_RUN_FRAMES`] — the two bounds that keep one client from freezing the window. This entry
+    /// point has neither, because there is nobody to be fair to: the only caller is the process that owns
+    /// the loop, and a call it makes of itself is its own frame time to spend. Routing socket traffic
+    /// through here would delete both bounds at once.
+    ///
+    /// Returns the handler's result and the D11 stamp read *at reply time*, both taken while the real
+    /// machine is swapped in — the same pair `pump` sends back to a connection thread. Never the
+    /// placeholder's `frame 0, mclk 0`.
+    ///
+    /// # `pending_free_run` / `pending_break` are deliberately NOT applied here
+    ///
+    /// [`pump`](Host::pump) applies both at the top of a drain, in that order, and the order is
+    /// load-bearing (see [`pending_break`](Host::pending_break) for the worked collision). This call
+    /// applies neither, and that is a decision rather than an omission:
+    ///
+    /// * **Painting must not emit protocol events.** Both applies emit `emulator/stopped` /
+    ///   `emulator/resumed`. A panel repainting at 60 Hz through this entry point would be minting
+    ///   run-control events as a side effect of drawing itself, which is a new class of wrong answer on a
+    ///   surface whose whole job is to be readable.
+    /// * **A second apply site adds an interleaving point the ordering argument does not cover.** The
+    ///   argument is written for one site, where the pair is applied back to back. Split it across two and
+    ///   a loop ordered `run ▸ record_break ▸ call ▸ set_paused ▸ pump` applies the halt here, then lets
+    ///   [`set_paused`](Host::set_paused) — which compares against the engine's now-halted state — queue
+    ///   `free_run = true` for the drain. That is a machine that stops on a breakpoint and silently
+    ///   resumes: exactly the believable wrong answer the ordering exists to prevent, reintroduced by the
+    ///   duplication.
+    ///
+    /// **What that costs, named rather than hidden.** Between a latch and the next drain, a `call` to a
+    /// method that reports run state (`emulator/status`'s stamp, `running`) can answer with the run state
+    /// from before the halt or before the pause change. It is bounded by one iteration and it
+    /// self-corrects at the next [`pump`](Host::pump). In the meantime [`is_paused`](Host::is_paused) is
+    /// the truthful host-side reading — it already consults `pending_free_run` — so a panel that wants the
+    /// pause state should read *that*, not a `call`.
+    ///
+    /// # Re-entrancy
+    ///
+    /// A nested call — one made while the engine already holds the real machine — is **statically
+    /// impossible**, not merely avoided. Both this and `pump` take `&mut self`, `Engine` holds no
+    /// reference back to its `Host`, and a handler receives only `&mut Engine`, so there is no path from
+    /// inside a dispatch to another `call`. The engine can never be asked to swap a machine in while it is
+    /// already holding one.
+    ///
+    /// The one hazard the borrow checker does *not* catch is **handing this a different `System` than the
+    /// one the loop pumps**. Nothing breaks — the swap is symmetric either way — but the reply then
+    /// describes whichever machine was passed in. Pass the machine the loop owns.
+    ///
+    /// Panic-safety is [`pump`](Host::pump)'s, unchanged: if a handler panics mid-call the real machine is
+    /// left inside the engine and the caller's `sys` holds the placeholder. Neither path guards it today.
+    pub fn call(
+        &mut self,
+        sys: &mut System,
+        method: &str,
+        params: &Value,
+    ) -> (Result<Value, RpcError>, Map<String, Value>) {
+        self.engine.swap_system(sys);
+        let result = self.engine.dispatch(method, params);
+        // Read inside the window, exactly as the drain does, so the stamp is the real machine's.
+        let stamp = self.engine.stamp();
+        self.engine.swap_system(sys);
+        (result, stamp)
     }
 
     // ---------------------------------------------------------------- the drain
@@ -1248,6 +1325,91 @@ mod tests {
         h.set_paused(h.is_paused());
         h.pump(&mut sys);
         assert!(h.is_paused(), "and it must still be paused a drain later");
+    }
+
+    // ---------------------------------------------------------------- Host::call (D15)
+
+    /// **`call` answers against the real machine, not the placeholder** — the property the whole swap
+    /// exists for, checked on the synchronous path as well as the queued one.
+    ///
+    /// The negative control is the point: a `call` that forgot to swap would still *return* a stamp and a
+    /// register block, all zeros, and read as a pass. So the fixture advances the machine to a coordinate
+    /// the placeholder cannot have, and the stamp and `pc` are checked against it.
+    #[test]
+    fn call_answers_against_the_real_machine_and_stamps_it() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted();
+        sys.run_frames(3);
+        let mclk = sys.scheduler().now();
+        let pc = sys.cpu_regs().pc;
+        assert!(
+            mclk > 0 && pc != 0,
+            "the fixture must not look like a placeholder"
+        );
+
+        let (result, stamp) = h.call(&mut sys, "emulator/registers", &json!({}));
+        let v = result.expect("emulator/registers answers");
+        assert_eq!(
+            v["pc"],
+            json!(crate::hex::addr(pc)),
+            "the real machine's PC"
+        );
+        assert_eq!(stamp["mclk"], json!(mclk), "the real machine's clock (D11)");
+        assert_eq!(
+            sys.scheduler().now(),
+            mclk,
+            "and the machine came back — a call is a lend, not a take"
+        );
+    }
+
+    /// A `call` refuses exactly as the socket does: same registry, same error, no second reading of it.
+    #[test]
+    fn call_refuses_an_unknown_method_the_way_dispatch_does() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted();
+        let (result, _) = h.call(&mut sys, "emulator/no_such_thing", &json!({}));
+        let e = result.expect_err("an unknown method is refused, not answered");
+        assert_eq!(e.code, crate::rpc::code::METHOD_NOT_FOUND);
+    }
+
+    /// **`call` applies neither deferred run-state change** — the decision in its own doc comment, pinned
+    /// so a later "tidy-up" that copies `pump`'s preamble into it fails here rather than in the field.
+    ///
+    /// Both latches must still be sitting there afterwards, and the drain must still be the thing that
+    /// takes them.
+    #[test]
+    fn call_leaves_the_deferred_run_state_changes_for_the_drain() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted();
+
+        // A fresh engine is not free-running, so it is the *un*-pause that queues a change; `set_paused`
+        // compares against the engine's own state and records nothing when they already agree.
+        h.set_paused(false);
+        h.record_break(0x0000_1234);
+        assert_eq!(
+            h.pending_free_run,
+            Some(true),
+            "the fixture queued a pause change"
+        );
+        assert_eq!(h.pending_break, Some(0x0000_1234), "and a halt");
+
+        let (result, _) = h.call(&mut sys, "emulator/registers", &json!({}));
+        result.expect("the call itself succeeds");
+
+        assert_eq!(
+            h.pending_free_run,
+            Some(true),
+            "a call must not consume the deferred pause change — painting is not run control"
+        );
+        assert_eq!(
+            h.pending_break,
+            Some(0x0000_1234),
+            "nor the latched halt: the pair's ordering is argued at exactly one site, and `pump` is it"
+        );
+
+        h.pump(&mut sys);
+        assert_eq!(h.pending_free_run, None, "the drain is what takes them");
+        assert_eq!(h.pending_break, None);
     }
 
     /// An unapplied halt is never replaced by a later one.
