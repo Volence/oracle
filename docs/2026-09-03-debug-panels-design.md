@@ -707,8 +707,11 @@ agreeing until the day it did not, in the one place where being wrong retires so
 ### 5.7.1 The panel-cost measurement — and the panel that does not fit in a frame
 
 **This is the measurement §8 item 2 booked as owed, taken for these three panels, and it does not say what
-this design predicted.** §5's claim that the panel bodies are cheap was *reasoning from size*. It holds for
-seven of the eight bodies and it is wrong by two orders of magnitude for one of them.
+this design predicted.** §5's claim that the panel bodies are cheap was *reasoning from size*. It holds
+everywhere it was tested but one: **the Watchpoints/Profiler pair, whose two bodies together cost 14.7 ms
+of a 16.667 ms frame** — 167× what the four other bodies added between them. Which of that pair it is, this
+measurement cannot say (below), so "one of them is wrong by two orders of magnitude" is as far as the
+evidence goes and further than any single panel may be named.
 
 **The rig is §5.6.1's, unchanged**: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin` (+ its 2,884-symbol
 `.lst`), a real audio device at gain 0.0, no window and no GPU, `--expect-screen 1281x803`. **Four separate
@@ -943,9 +946,10 @@ Everything I could not establish in this worktree, gathered, not smoothed.
 2. **The per-frame cost of every panel body proposed.** ~~Parcel 1 measured a `ui` bucket against a 20-row
    monospace grid. A 5-space hex view, a decoded object table and a sprite table are unmeasured. The
    design's claim that they are cheap is reasoning from size, not measurement.~~
-   > ⚑ **PARTLY MEASURED as of parcel 3-tabs — §5.7.1 — and the item stays OPEN.** Three of the eight
-   > bodies were measured and the reasoning-from-size claim was **falsified for one of them**. What is
-   > now measured, and what each number is:
+   > ⚑ **PARTLY MEASURED as of parcel 3-tabs — §5.7.1 — and the item stays OPEN.** The three stopping
+   > bodies were measured, and the reasoning-from-size claim is **falsified inside the Watchpoints /
+   > Profiler pair** — which of the two, the measurement cannot say. What is now measured, and what each
+   > number is:
    >
    > * **Breakpoints, with sixteen rows: ≲0.2 ms** (`+0.217 ms` of `ui-build` in the one clean sitting).
    >   Isolated — the shipped default arrangement draws that body and neither of its neighbours.
@@ -961,8 +965,10 @@ Everything I could not establish in this worktree, gathered, not smoothed.
    > * **Registers, Memory and Objects individually.** The only figure touching them is
    >   `ui-build` B − A = **+0.088 ms for four bodies at once** (Memory, Objects, and two *empty* stopping
    >   ones) at one-eighth of the window each — a **lower bound on two of them**, not a cost of either.
-   >   §5.6.1's `ui-build` 0.140 ms *included* the Registers body, but as part of a four-body total that
-   >   was never differenced, so it is not this item's answer either.
+   >   §5.6.1's `ui-build` 0.140 ms *included* the Registers body — parcel 2's `initial_dock` drew
+   >   Screen, Pacing and Registers, with Memory and Objects inactive behind Registers in their leaf —
+   >   but as part of a three-body total that was never differenced, so it is not this item's answer
+   >   either.
    > * **The Sprites panel** (§2.1) has not been built, so its body cannot be measured at all.
    > * **A human-sized pane.** Every figure here is from `every_tab_dock` or the default dock. A hex view
    >   or an object table given half the window lays out more rows than either arrangement gave it.
