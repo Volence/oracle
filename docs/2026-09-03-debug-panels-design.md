@@ -1426,6 +1426,15 @@ defect.
 > > `Engine::rom_generation()`, read only by `Host::pump` to compute a flag — and `grep -rin generation
 > > crates/oracle-aether/tests/contract/` returns nothing. `symbols_generation` is the same kind of thing.
 > >
+> > ⚠ **Named limit: `oracle-frontend`'s branch is unwitnessed in that crate, and it is not alone.** Its
+> > whole `Pumped` reaction lives inside `fn main`'s run loop, which needs a window and an eframe/minifb
+> > event loop to enter — no existing test covers `screen_changed`, `rom_changed` or `timeline_moved`
+> > there either, and this parcel does not build that harness. What *is* pinned, and pinned deliberately
+> > from the player's socket tests, is the half that crate depends on: the **report flag** at all three
+> > emitter sites, including the two (`reload_rom`'s D7 drop, `restore`'s swap) whose repairs this player
+> > gets from `rom_changed` regardless. Those two assertions exist for the other host, and they say so.
+> > Ⓕ Runtime confirmation of the frontend's overlay line is a foreground follow-up.
+> >
 > > **`Host::set_machine_info` does not surface as a client's doing**, and the placement is what makes
 > > that true: `pump` snapshots the counter at its own top, and that setter runs on the host's thread
 > > *between* drains, so the frontend's F5 cartridge swap — which calls `set_symbols` — is invisible to
