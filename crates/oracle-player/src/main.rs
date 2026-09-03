@@ -102,13 +102,17 @@ struct Args {
     /// a bench arrangement written back over the operator's own layout would be this flag doing something
     /// nobody asked it to.
     dock_every_tab: bool,
+    /// `--bench-arm`. **A measurement fixture, refused outside a bench mode.** See
+    /// [`arm_for_measurement`]: the three stopping panels are empty until something is armed, so a
+    /// panel-cost run without this measures three headlines and calls it three panels.
+    bench_arm: bool,
 }
 
 fn usage() -> ! {
     loud(
         "usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]\n\
          \x20              [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]\n\
-         \x20              [--target-fps N] [--dock default|every-tab]\n\
+         \x20              [--target-fps N] [--dock default|every-tab] [--bench-arm]\n\
          \n\
          --symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,\n\
          which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;\n\
@@ -121,7 +125,11 @@ fn usage() -> ! {
          --dock every-tab puts every tab in a leaf of its own, so every panel body runs on every\n\
          frame. It is the arrangement the PANEL-COST measurement needs (egui_dock draws only a\n\
          leaf's active tab, so tabs sharing a pane cost one body, not three) and it neither reads\n\
-         nor writes a stored layout.",
+         nor writes a stored layout.\n\
+         \n\
+         --bench-arm arms sixteen (disabled) breakpoints, a work-RAM write watch and the profiler,\n\
+         through the served surface, so the three stopping panels have ROWS to draw. Without it a\n\
+         panel-cost run measures three empty headlines. Bench modes only.",
     );
     std::process::exit(64);
 }
@@ -137,6 +145,7 @@ fn parse_args() -> Args {
         size: (1280.0, 800.0),
         target_fps: None,
         dock_every_tab: false,
+        bench_arm: false,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -212,6 +221,10 @@ fn parse_args() -> Args {
                 };
                 i += 2;
             }
+            "--bench-arm" => {
+                a.bench_arm = true;
+                i += 1;
+            }
             "-h" | "--help" => usage(),
             other => {
                 loud(&format!("unknown flag {other}"));
@@ -222,6 +235,14 @@ fn parse_args() -> Args {
     if a.rom.is_empty() {
         loud("--rom is required");
         usage();
+    }
+    if a.bench_arm && a.mode == Mode::Window {
+        loud(
+            "--bench-arm is a MEASUREMENT FIXTURE, not a feature: it arms sixteen breakpoints, a \
+             work-RAM watch and the profiler behind the human's back, and a player that did that at \
+             launch would be lying about who armed them. Use it with a bench mode.",
+        );
+        std::process::exit(64);
     }
     if a.mode != Mode::Window && a.expect_screen.is_none() {
         loud(
@@ -599,6 +620,86 @@ impl Loop {
 ///
 /// **Why the frame rate from this mode is a real answer and the spike's was not.** The spike's paced mode
 /// invented a deadline for the measurement only; the real `eframe` mode had none, which is why it produced
+/// **Arm the three instruments, so a panel-cost measurement measures panels with rows in them.**
+///
+/// ⚑ *Why this exists at all.* The three stopping tabs are empty until a human arms something, so a bench
+/// run against a fresh player measures three headlines and an add box and reports it as *the cost of the
+/// Breakpoints, Watchpoints and Profiler panels*. That is the same vacuity as a parity test comparing `[]`
+/// against `[]`: it passes under any breakage and it answers a question nobody asked. The expensive parts
+/// of these bodies are the parts that only exist once there is something to draw — sixteen breakpoint rows,
+/// a hit log, and a `BTreeMap` of routines sorted every frame — so the measurement arms them.
+///
+/// **Every arm goes through `Host::call`**, exactly as a human's click would: this fixture cannot reach a
+/// state a user could not, and if a handler refuses, the run says so and continues rather than measuring a
+/// state it believes it is in and is not.
+///
+/// Two deliberate choices, both of which shape what the numbers mean:
+///
+/// * **The breakpoints are armed DISABLED.** An enabled breakpoint at an address this ROM executes would
+///   halt the player and there would be no run to measure. Disabled rows draw identically — the row body
+///   does not branch on `enabled` except to pick a word and a dimming — so the panel cost is the same and
+///   the machine keeps running. It also means `Breakpoints::any_enabled()` is false and no `BreakStop` is
+///   attached, so this run does not price the halt sink; that is the seam parcel's measurement and it is
+///   inside `emulate`, not `ui-build`.
+/// * **The watch is wide and the profiler is armed with `perFrame`**, which is what puts real rows in
+///   front of the panels. Both attach a sink to the run, so `emulate` will move. That is the *instrument's*
+///   cost and not the panel's, and the bucket split is exactly what keeps the two answers apart.
+fn arm_for_measurement(lp: &mut Loop) {
+    let Loop { bus, machine, .. } = lp;
+    let mut refused = 0usize;
+    let mut call = |method: &str, params: serde_json::Value| {
+        let a = bus.call(machine.system_mut(), method, &params);
+        if let bus::Answer::Err(e) = &a {
+            refused += 1;
+            loud(&format!(
+                "bench-arm: {method} REFUSED {} {}",
+                e.code, e.message
+            ));
+        }
+    };
+    for i in 0..16 {
+        call(
+            stopping::BREAKPOINT_ADD,
+            serde_json::json!({"addr": format!("0x{:06X}", 0x200 + i * 4), "enabled": false,
+                               "label": format!("bench{i}")}),
+        );
+    }
+    call(
+        stopping::WATCHPOINT_ADD,
+        serde_json::json!({"addr": "0xFF0000", "len": 0x10000u64, "space": "bus",
+                           "read": false, "write": true, "label": "bench-ram"}),
+    );
+    call(
+        stopping::SET_PROFILER,
+        serde_json::json!({"enabled": true, "perFrame": true, "callers": false}),
+    );
+
+    // **Loud on unmeasurable.** A fixture that armed nothing would leave three empty panels and the run
+    // would report their cost as though it had measured full ones — the silent wrong answer this whole
+    // flag exists to avoid. So the state is read back from the instruments themselves, not assumed from
+    // the calls having been made.
+    let breakpoints = bus.read_breakpoints().len();
+    let (watch, _, armed) = bus.read_instruments();
+    let watches = watch.watch_count();
+    if refused > 0 || breakpoints == 0 || watches == 0 || !armed {
+        loud(&format!(
+            "REFUSING TO MEASURE: --bench-arm armed {breakpoints} breakpoints, {watches} watches, \
+             profiler={armed} ({refused} refusals). The panels would be EMPTY and this run would report \
+             the cost of three headlines as the cost of three panels."
+        ));
+        std::process::exit(2);
+    }
+    loud(&format!(
+        "bench-arm: {breakpoints} breakpoints (disabled), {watches} watch, profiler armed with perFrame \
+         — the panels have rows"
+    ));
+}
+
+/// The display-independent pass: a bare `egui::Context`, no window, no GPU, no eframe, running the
+/// identical pipeline against the identical governor.
+///
+/// **Why the frame rate from this mode is a real answer and the spike's was not.** The spike's paced mode
+/// invented a deadline for the measurement only; the real `eframe` mode had none, which is why it produced
 /// 92.87 fps and 22.71 fps. Here the deadline *is the player's own governor*, the same object the window
 /// mode drives. What this mode cannot see is the backend's present cost, and that is why `bench-window`
 /// exists.
@@ -610,6 +711,9 @@ fn run_bench_cpu(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         // must say so in its own output or its numbers get compared against ones taken under the other.
         loud("dock: EVERY TAB IN ITS OWN LEAF — every panel body runs every frame (--dock every-tab)");
         lp.dock = ui::every_tab_dock();
+    }
+    if args.bench_arm {
+        arm_for_measurement(&mut lp);
     }
     let ctx = egui::Context::default();
     let screen =
@@ -823,6 +927,9 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         loud("dock: EVERY TAB IN ITS OWN LEAF — layout persistence is OFF for this run (--dock every-tab)");
         app.lp.dock = ui::every_tab_dock();
     }
+    if args.bench_arm {
+        arm_for_measurement(&mut app.lp);
+    }
     let scratch = (!persist).then(|| {
         std::env::temp_dir().join(format!("oracle-player-bench-{}.ron", std::process::id()))
     });
@@ -890,6 +997,85 @@ mod loop_tests {
     /// `move.w (A0),D0` in the fixture ROM's inner loop — the same address `crate::bus`'s seam tests arm
     /// at, and *checked* there against the ROM's own bytes rather than re-checked here.
     const HOT_PC: u32 = 0x0000_020E;
+
+    /// ★ **The measurement fixture actually arms something**, and the panels it is measured through
+    /// actually have rows.
+    ///
+    /// This is the anti-vacuity gate for the *measurement* rather than for a test. If
+    /// [`arm_for_measurement`]'s calls were refused — a renamed param, a cap, a `require_paused` nobody
+    /// expected — the run would draw three empty panels and the report would name their cost as the cost
+    /// of three full ones. `arm_for_measurement` exits(2) on that in production; here it is checked, so
+    /// the failure is a red test rather than a silently smaller number in a table.
+    ///
+    /// **The third assertion:** the instruments are read back through the panels' own view functions and
+    /// asserted to be drawing rows — `Live::has_rows()` and a non-empty table. Asserting only that the
+    /// `Host::call`s succeeded would go green on a fixture that armed things the panels do not show.
+    #[test]
+    fn the_measurement_fixture_puts_rows_in_all_three_panels() {
+        let mut lp = a_loop();
+        arm_for_measurement(&mut lp);
+
+        let bp = stopping::breakpoints(lp.bus.read_breakpoints(), None);
+        assert_eq!(bp.rows.len(), 16, "the fixture should arm sixteen rows");
+        assert_eq!(
+            bp.armed, 0,
+            "the fixture's breakpoints must be DISABLED — an enabled one at an executed address halts \
+             the player and there is no run to measure"
+        );
+        assert!(
+            bp.live.has_rows(),
+            "an empty Breakpoints table measures nothing"
+        );
+
+        let (w, p, armed) = lp.bus.read_instruments();
+        let wv = stopping::watches(w);
+        assert_eq!(wv.watches.len(), 1);
+        assert!(wv.live.has_rows());
+        assert!(
+            armed,
+            "the profiler must be armed or its panel draws a headline and nothing else"
+        );
+        assert!(
+            p.per_frame_armed(),
+            "perFrame is what fills the per-frame ring"
+        );
+        assert_eq!(
+            stopping::profiler_live(p, armed),
+            stopping::Live::Yes,
+            "a measurement of the Profiler panel taken while it reads NEVER ARMED is a measurement of a \
+             paragraph of text"
+        );
+
+        // …and once the machine runs, the panels have rows that cost something to draw. Without this the
+        // three assertions above are satisfied by an armed instrument that never recorded anything.
+        let ctx = egui::Context::default();
+        for _ in 0..8 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+        }
+        let (w, p, armed) = lp.bus.read_instruments();
+        assert!(
+            !w.hits().is_empty(),
+            "the work-RAM watch recorded nothing in eight frames, so the hit log the Watchpoints panel \
+             is measured drawing is EMPTY"
+        );
+        assert!(
+            p.routine_count() > 0,
+            "the profiler recorded no routines, so the grid the Profiler panel is measured drawing is \
+             EMPTY — and its per-frame sort, the one thing here that is not O(1), is sorting nothing"
+        );
+        assert!(armed, "the run must not have disarmed the instrument");
+    }
 
     fn a_loop() -> Loop {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
