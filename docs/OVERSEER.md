@@ -693,10 +693,15 @@ GETS.** ~~Prefer reading through the served surface over reaching into the emula
 ⚠ **THE REQUIREMENT IS HIS AND STANDS; THE MECHANISM WAS THIS SEAT'S AND IS WRONG — corrected 2026-09-03,
 original struck rather than deleted.** He agreed to an assessment that contained my error, so the record has
 to separate them. **"Route panels through the served surface" is the option this repo already considered and
-REJECTED, with the reasoning in-tree the whole time:** `pick.rs:649-655` states that **contract D15 argues
-explicitly against** a panel reaching the capability through a socket round-trip per repaint — *"an
-in-process GUI is a consumer of the same registry, not a second server"* — and our `Host::pump` makes it
-worse, since a click would enqueue and wait a frame to answer what it can answer synchronously.
+REJECTED, with the reasoning in-tree the whole time:** **the primary source is the contract itself**, `empyrean:contract/protocol.md:238` (D15), not our
+comment about it: *"An in-process GUI is a consumer of the same registry, not a second server. A debugger
+or inspector view living in the player's own window **reads the method registry directly, in-process; it
+does not open a socket to itself.** The one legitimate alternative — a GUI running out-of-process as an
+ordinary Aether client…"*. So the contract does not merely reject the round-trip, it **prescribes** the
+in-process read and names the only alternative. `pick.rs:649-655` is our in-tree echo of it, and our
+`Host::pump` makes the rejected shape worse still — a click would enqueue and wait a frame to answer what
+it can answer synchronously. *(Re-anchored 2026-09-03: this correction first cited the code comment, which
+is the story rather than the artifact — this repo's own bar.)*
 **What makes parity true by construction is ONE IMPLEMENTATION UNDER TWO CONSUMERS plus a parity test**, not
 a transport. `host.rs:439-440` already says so: panels draw from *"the same instruments its loop feeds and
 the bus serves, so a local readout and a client's reply cannot disagree."*
