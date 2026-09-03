@@ -1,12 +1,12 @@
 {
-  "focus": "Spawn feature is in and the panels are designed; next is building the first real panels.",
+  "focus": "The register panel on your window now matches the tools; memory and objects are next.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "Now - both overnight parcels landed and pushed, nothing running.",
+  "nextBoundary": "Now - parcel 2a is merged, verified and pushed, nothing running.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
-      "title": "Designed to your tab rule. Next: build the first real panels - registers, memory, objects - on the window you played.",
+      "title": "First panel done and on the window - registers, matching what the tools report. Next is the memory panel (needs the symbol table ported so you can type a name instead of an address), then objects.",
       "state": "next",
       "size": "L",
       "blockedBy": null,
@@ -35,17 +35,9 @@
     },
     {
       "id": "ATTR-RGB-LATCH",
-      "title": "aeon's colour finding: reproduced on all 55 rows and closed as a server change. What is left is a rules change - the reply should say which moment its colour is for. Needs a change request filed with the hub.",
+      "title": "Corrected: the rules change we thought we still owed the contract team was accepted four days ago, and they changed it for the better. What is actually ours now is building it - the colour reply saying, only when it can matter, that the picture on screen may disagree with it - plus four conformance samples they named us to write.",
       "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
-      "id": "README-LEGACY-WARNING",
-      "title": "Rewrite the README line you asked for on the 22nd so it carries what we found since - the debugging surface reaches a server that validates nothing - rather than the vaguer 'this is legacy'.",
-      "state": "open",
-      "size": "S",
+      "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
     },
@@ -81,5 +73,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-03T04:54:58Z"
+  "updatedAt": "2026-09-03T06:23:54Z"
 }
