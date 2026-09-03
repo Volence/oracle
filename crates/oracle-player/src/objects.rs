@@ -501,6 +501,7 @@ mod bus_parity {
                 symbols_path: Some("testrom.lst".into()),
             },
             true,
+            None,
         );
         zero_pool(&mut bus, sys);
         // Slots 0 and 1 are the player pool; 2 and 3 are dynamic; 50 is a system slot. Every code, x and
@@ -859,7 +860,7 @@ mod bus_parity {
     #[test]
     fn with_no_listing_loaded_the_tab_refuses_in_the_servers_own_words() {
         let mut sys = booted();
-        let mut bus = Bus::new(&mut sys, MachineInfo::default(), true);
+        let mut bus = Bus::new(&mut sys, MachineInfo::default(), true, None);
 
         let view = Objects::of(None, &sys);
         let Objects::Refused(e) = &view else {
@@ -934,6 +935,7 @@ mod bus_parity {
                 symbols_path: Some("testrom.lst".into()),
             },
             true,
+            None,
         );
         zero_pool(&mut bus, &mut sys);
         poke_object(&mut bus, &mut sys, 7, 0x0042, 0x0010_0000, 0x0020_0000);
@@ -981,6 +983,7 @@ mod bus_parity {
                 symbols_path: Some("testrom.lst".into()),
             },
             true,
+            None,
         );
         zero_pool(&mut bus, &mut sys);
 

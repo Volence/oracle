@@ -566,11 +566,17 @@ period            16.665    16.665  |   16.666   16.665
 
 **Reading it, including the parts that moved.**
 
-* **The seam is free at the median and nearly free at the tail.** `bus-pump` — one `Host::set_paused` plus
-  one `Host::pump` per iteration — is **0.000 ms median, 0.001 ms p99, 0.003 / 0.013 ms worst** across
+* ~~**The seam is free at the median and nearly free at the tail.** `bus-pump` — one `Host::set_paused`
+  plus one `Host::pump` per iteration — is **0.000 ms median, 0.001 ms p99, 0.003 / 0.013 ms worst** across
   9,000 measured iterations. An unserved player queues nothing, so the drain is a `try_recv` on an empty
   channel plus two ~1 KB `System` moves. `HostConfig::pump_budget`'s 4 ms is a ceiling on a drain that has
-  work; this one never does.
+  work; this one never does.~~
+  > ⚑ **The NUMBERS still stand; the REASONING under them was retired by `PLAYER-SERVE`.** *"An unserved
+  > player queues nothing"* was a true statement about a player that could not bind a socket, and it is a
+  > statement about a build that no longer exists — `--aether` / `--socket PATH` / `ORACLE_AETHER=1` now
+  > bind one, and a bound socket can queue. The 0.000 ms above is therefore the **unserved control** and
+  > nothing more; it is not the player's `bus-pump` cost with the bus turned on. §5.8.1 is the retake, and
+  > it re-establishes this row for the served configurations rather than assuming the reasoning carries.
 * **`ui-build` rose 0.140 → 0.149 ms at the median, and that is attributable**: it is the transport bar —
   two buttons, an armed-instruments label and the echo — drawn every frame. **+0.009 ms is 0.05 % of a
   16.667 ms frame.** Named rather than absorbed.
@@ -632,10 +638,35 @@ period            16.665    16.665  |   16.666   16.665
   > forever, while `Host::call` is reachable in-process (D15) and can install a held set anyway. Under the
   > gate that set would sit in the engine, be reported back by `emulator/hold`'s own `held` array, and
   > never reach the pad — a served method answering that it took effect when it did not.
-* **The picture does not refresh after `emulator/step`.** A step advances one *instruction*, the run that
-  drew the retained frame is over, and `Host::publish_capture` is gated on `has_clients()` — which an
+* ~~**The picture does not refresh after `emulator/step`.** A step advances one *instruction*, the run
+  that drew the retained frame is over, and `Host::publish_capture` is gated on `has_clients()` — which an
   unserved player never satisfies, so `Host::framebuffer()` has nothing to pull. The retained frame is the
-  truthful last-drawn one; it updates on resume.
+  truthful last-drawn one; it updates on resume.~~
+  > ⚑ **SUPERSEDED by `PLAYER-SERVE`, and the CONCLUSION survives while the MECHANISM does not.** The
+  > picture still does not refresh after `emulator/step`. But the reason given here was wrong about this
+  > crate, and re-reading it under a bound socket is what showed that.
+  >
+  > **What was checked.** `grep -rn "framebuffer\|present_frame\|screen_changed" crates/oracle-player`
+  > returns **one hit, in a doc comment**. `oracle-player` has never called `Host::framebuffer()` and has
+  > never read a `PumpReport`. So `has_clients()` was never the operative gate on the *window's* picture:
+  > even with the gate wide open there was no code on this side to pull a published frame, and there still
+  > is not. The gate governs what `emulator/screenshot` serves **over the socket**, which is a different
+  > surface with a different consumer.
+  >
+  > **What actually changed.** `has_clients()` is no longer permanently false — it goes true the moment a
+  > client attaches, which
+  > `bus::serving::has_clients_is_false_unserved_false_unattached_and_true_once_someone_attaches` pins in
+  > all three states. Two consequences, and they pull in opposite directions:
+  >
+  > * **A fix, for clients.** `Bus::publish` now really publishes, so `emulator/screenshot` and
+  >   `emulator/state_hash {includeFramebuffer}` answer with the frame the window drew — including
+  >   mid-frame palette effects a post-hoc VDP re-render cannot show. That seam had never been exercised;
+  >   it is now.
+  > * **A cost, for the frame budget.** It is one frame's copy per emulated frame, *conditional on a client
+  >   being attached*, and §5.8.1 prices it rather than assuming it away.
+  >
+  > The bullet's own subject — the window's glass after a step — is unchanged and is now booked properly
+  > in §5.8.2 as a gap with a real cause: the player drops the `PumpReport`.
 
 ### 5.7 Parcel 3-tabs — P4/P5/P6 themselves, on the seam
 
@@ -1091,6 +1122,266 @@ where before it was pinned by the widest row in the whole ring. The rows themsel
 scroll position, stick-to-bottom — are unchanged. The alternative, `auto_shrink([false, true])`, would
 pin the scrollbar to the panel's right edge, which is a *larger* departure from what ships today, so it
 was not taken.
+
+---
+
+### 5.8 `PLAYER-SERVE` — the window binds a socket
+
+> ### ✅ **BUILT, on `parcel/player-serve`.**
+
+**The defect.** Everything above this section built a debug window that no external tool could reach. The
+player owned a `Host` and never called `Host::serve`, which `crates/oracle-player/src/bus.rs`'s module doc
+stated outright: *"No `Host::serve`. No socket is bound, no filesystem entry is created and no thread is
+started."* So `emulator/hold`, every panel gesture and the whole method registry worked **in-process only**,
+and another lane's tool, a script or the MCP shim got nothing at all.
+
+**What shipped.** `--aether`, `--socket PATH` and `ORACLE_AETHER=1`, carrying `oracle-frontend`'s
+three-state `Option<Option<PathBuf>>` verbatim — `None` binds nothing, `Some(None)` binds the resolved
+default, `Some(Some(p))` binds `p`. The parser folds all three switches at one place, so `--socket P
+--aether` still binds `P` in either order. Nothing about the default launch changed: no flag, no socket, no
+thread.
+
+#### The socket is for EXTERNAL clients only, and the GUI is not a client of itself
+
+Written at the seam rather than left to be inferred, because "unify the two paths" is the tidying a later
+reader will reach for. `empyrean:contract/protocol.md` **D15**: *"An in-process GUI is a consumer of the
+same registry, not a second server… it reads the method registry directly, in-process; it does not open a
+socket to itself."* The panels keep reading the shared derivation directly and every gesture keeps going
+through `Host::call`. Routing them through the socket would add a `serde_json` round trip and a thread hop
+per click, and would have to land in `Host::pump` — **the drain that runs once per iteration** — so a click
+would cost a frame before it was even dispatched. That is the option this repo already considered and
+rejected, and it is the worse of the two.
+
+#### The default path — the decision, and what a collision does
+
+**The default stays the contract's own resolver** (`$ORACLE_SOCKET` → `$EXODUS_SOCKET` →
+`$XDG_RUNTIME_DIR/oracle.sock` → `/tmp/oracle.sock`, §7.1), which on this box is
+`/run/user/1000/oracle.sock` — the path the owner's `oracle-frontend` has historically held.
+
+That collision is real, and binding elsewhere by default would have been the *worse* answer: every lane's
+client resolver commits to that path, so a player with a private default would bind a socket and still leave
+"nothing can attach to this window" true in practice. The flag would do nothing a tool could use.
+
+So the collision is made **loud** instead of avoided, and `Server::bind` already draws exactly the right
+line — it was not changed:
+
+* It **connects first**. Something answers ⇒ `AddrInUse`, *"another Aether server is already live on
+  {path}"*, and this player prints `aether: NOT serving — cannot bind the socket (…)` and carries on
+  unserved. The incumbent is untouched.
+* Nothing answers ⇒ the entry is a corpse, and it is unlinked **only if it is actually a socket** (a typo
+  naming a ROM or a listing is refused, not deleted).
+* There is **no silent fallback to a second path**, and there is no unlink that could remove a live
+  server's entry.
+
+Pinned by `bus::serving::a_live_server_on_the_path_is_refused_and_never_stolen`, which asserts both halves:
+the second window fails to bind **and** the first is still serving and still connectable. A "fix" that
+unlinked the incumbent to make room passes the first half and fails the second — and that mutation was run,
+on disk, and does fail there.
+
+**The collision is not hypothetical, and it was live while this parcel was written.** Observed, without
+touching the process:
+
+```
+$ stat -c '%F %a %n' /run/user/1000/oracle.sock
+socket 600 /run/user/1000/oracle.sock          # created 12:20 today
+$ ps -eo pcpu,comm --sort=-pcpu | grep oracle-frontend
+ 22.3 oracle-frontend
+```
+
+So a `--aether` launch of the player on this box, right now, would print `aether: NOT serving — cannot bind
+the socket (another Aether server is already live on /run/user/1000/oracle.sock)` and carry on unserved,
+leaving his window untouched. That was **not** demonstrated by dialling his socket: `Server::bind`'s
+liveness probe is a connect, and connecting to an emulator this lane did not start is exactly the thing the
+standing invariants forbid. The behaviour is pinned by the test instead, against a server this process owns.
+
+A bind failure is never fatal. Someone who launched a game to play it is not stopped by a socket.
+
+#### Saying so out loud — and improving on the frontend's shape
+
+`oracle-frontend`'s `bus.rs:84` prints *"aether: not serving — no --aether given, so nothing can attach to
+this window (pass --aether, or --socket PATH, or set ORACLE_AETHER=1)"*, and the comment at `:101` records
+what earned it: the code printed **nothing at all** when not serving, so a launch without the flag emitted
+no line about Aether anywhere — and **an absence is not a statement**. The measured cost was the owner
+launching twice in one evening and going to a window that could not be attached to. That behaviour is
+reproduced here, and improved on twice:
+
+1. **The line is a value, not a side effect.** `ServeOutcome::sentence()` returns it; `main` prints it.
+   The frontend's own comment says why it had to defend the silent arm with a `match` instead of a test —
+   *"a unit test cannot read `println!`"*. The `match` is kept (deleting the silent arm is still a compile
+   error) **and** all three sentences are now covered by assertions, including that they are pairwise
+   different. The `println!` in `main` is unconditional, in one call site, with no per-case arm to delete.
+2. **The window says it too.** A new `aether` row on the status strip, built from the same sentence — so
+   the terminal and the window cannot describe one window's bus differently — reporting the path and
+   whether a client is attached. **It never hides itself**, unlike the held-pads row beside it, and the
+   asymmetry is the decision: the held row draws nothing when nothing is held because a permanent
+   `(none)` is a line readers learn to skip, whereas the state *this* row most needs to report is the
+   quiet one, which an only-when-interesting row would render as blank space — reproducing the original
+   defect inside the window.
+
+#### Every `is_serving()`, re-read
+
+The previous parcel was caught by a guard that was correct in one host and vacuous in another —
+`oracle-frontend`'s `is_serving()` early return in `merge_held`, inert in a player that never served. This
+parcel makes `is_serving()` meaningful in `oracle-player` for the first time, so every use was re-read:
+
+| Site | Before | After |
+|---|---|---|
+| `oracle-aether/src/host.rs:265` — the definition (`accept.is_some()`) | — | unchanged |
+| `oracle-aether` `Host::merge_held` (host.rs:330) — the **absence** of a gate, argued in the doc | The argument leaned on *"this player binds no socket, so `is_serving()` is false forever"*. Load-bearing then. | Still correct, and **stronger**: a socket client's `hold` now reaches the same held set through the same engine, so the deleted gate would drop two kinds of caller instead of one. No code change. |
+| `oracle-aether/src/host.rs:719, 924, 956` — its own tests | assert `!is_serving()` on a bare `Host` | unchanged; a bare `Host` still binds nothing |
+| `oracle-frontend/src/bus.rs:137` + `main.rs:2462, 2487` — the status field and the screen-text snapshot gate | the frontend's own, already meaningful there | untouched by this parcel |
+| **`oracle-player` — non-test uses** | **none. Zero. It appeared only in prose.** | **still none, deliberately** |
+
+That last row is the finding. `oracle-player` gates nothing on `is_serving()` and should not: `ServeOutcome`
+carries *why* (`NotAsked` and `Failed` are different facts a `bool` collapses), and a second weaker spelling
+of one state is the drift R2 exists to prevent. `Bus::is_serving`, `Bus::serve_outcome` and
+`Bus::socket_path` are therefore **`#[cfg(test)]`** — they exist so a test can compare the `Host`'s own view
+against our stored copy, and a future gate on one of them does not compile until somebody deliberately
+removes the attribute.
+
+### 5.8.1 The pacing retake — because serving deletes §5.6.1's premise
+
+§5.6.1 measured `bus-pump` at 0.000 ms median **with an explicit reason**: *"an unserved player queues
+nothing, so the drain is a `try_recv` on an empty channel."* A bound socket can queue, and an attached
+client makes `Bus::publish` copy a frame. Both premises die here, so the measurement was retaken rather
+than inherited.
+
+**The rig is §5.6.1's and §5.7.1's, unchanged**: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin` (+ its
+2,884-symbol `.lst`), a real audio device at gain 0.0, no window and no GPU, `WAYLAND_DISPLAY` and
+`XDG_SESSION_TYPE` unset. **Twelve separate process invocations, reported separately and never averaged**,
+from one release binary built at this branch's tip. `bench-window` was not run and is forbidden for this
+lane; the owner's screen was not touched.
+
+**Four configurations, because "served" is two different questions.** A brief that measured only
+served-with-nobody-attached would let that stand in for "served", and the interesting gate —
+`has_clients()` — is shut in exactly that case.
+
+| | what it is |
+|---|---|
+| **A** | **unserved** — no flag, today's behaviour. **The control.** |
+| **B** | `--socket /tmp/orb/s`, **nobody attached**. The socket exists; `has_clients()` is false. |
+| **C** | served, **one idle client** holding the connection and issuing nothing. `has_clients()` true. |
+| **D** | served, **one client polling `emulator/status` at 10 Hz** — 719 requests inside the 72 s it was up. |
+
+**The condition of the machine.** `pgrep -x cargo` and `pgrep -x rustc` were both **0** before every one of
+the twelve (checked with the `-x` forms; `pgrep -c -f "[c]argo"` counts its own watcher and reads 3 on an
+idle box). Everything else was the owner's live session throughout — Vivaldi, Discord, `kwin_wayland`,
+stremio, `next-server`, and **his own `oracle-frontend` at ~22 % of a core** — plus a peer lane's `sigil` at
+78–100 % and a `python3` at ~88 % for much of sittings 1 and 2. Load average **1.5–9.1 on 16 cores**,
+recorded per run below. **Sittings 1 and 2 are contaminated at the tail and sitting 3 is not**; that is
+argued rather than asserted, below.
+
+Per-invocation headline, and per-iteration cost at the **median**, milliseconds:
+
+| | **A1** | **B1** | **C1** | **D1** | **A2** | **B2** | **C2** | **D2** | **A3** | **B3** | **C3** | **D3** |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **emulated frames/s** | 60.024 | 59.926 | 59.631 | 60.044 | 60.042 | 59.956 | 60.051 | 60.040 | **60.048** | **60.039** | **60.038** | **60.038** |
+| presented frames/s | 59.891 | 59.526 | 58.671 | 59.911 | 59.962 | 59.156 | 59.918 | 59.973 | 59.981 | 59.865 | 59.998 | 59.998 |
+| **period, median** | 16.666 | 16.667 | 16.666 | 16.666 | 16.666 | 16.665 | 16.665 | 16.664 | 16.666 | 16.665 | 16.665 | 16.666 |
+| period, WORST | 39.4 | 89.9 | 85.9 | 30.9 | 36.8 | 72.4 | 31.3 | 43.7 | 26.9 | 35.7 | 28.9 | 23.0 |
+| governor rebases | 6 | 20 | 59 | 5 | 2 | 47 | 5 | 1 | 1 | 9 | **0** | **0** |
+| **audio starvations, steady** | 1 | 11 | 36 | 0 | 0 | 14 | 0 | 0 | **0** | **0** | **0** | **0** |
+| **audio producer drops** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** |
+| load avg at run's end | 3.96 | 9.11 | 7.18 | 2.89 | 1.50 | 5.57 | 5.44 | 3.30 | 7.37 | 6.21 | 4.15 | 3.17 |
+| | | | | | | | | | | | | |
+| emulate | 2.711 | 2.749 | 2.763 | 2.767 | 2.743 | 2.730 | 2.736 | 2.745 | 2.760 | 2.739 | 2.715 | 2.699 |
+| audio | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 |
+| **convert** | **0.035** | **0.036** | **0.092** | **0.092** | **0.035** | **0.036** | **0.092** | **0.092** | **0.036** | **0.036** | **0.093** | **0.092** |
+| tex-upload | 0.005 | 0.006 | 0.005 | 0.005 | 0.005 | 0.006 | 0.005 | 0.005 | 0.006 | 0.006 | 0.005 | 0.005 |
+| ui-build | 0.160 | 0.178 | 0.165 | 0.162 | 0.158 | 0.174 | 0.171 | 0.165 | 0.186 | 0.185 | 0.166 | 0.158 |
+| tessellate | 0.033 | 0.038 | 0.034 | 0.033 | 0.032 | 0.036 | 0.036 | 0.034 | 0.039 | 0.039 | 0.034 | 0.033 |
+| **bus-pump** | **0.000** | **0.001** | **0.000** | **0.000** | **0.000** | **0.000** | **0.000** | **0.000** | **0.001** | **0.001** | **0.000** | **0.000** |
+| CPU TOTAL | 2.922 | 2.982 | 3.042 | 3.031 | 2.951 | 2.955 | 3.010 | 3.014 | 2.996 | 2.969 | 2.986 | 2.956 |
+
+`bus-pump`, the other four statistics, milliseconds:
+
+| | A1 | B1 | C1 | D1 | A2 | B2 | C2 | D2 | A3 | B3 | C3 | D3 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| p95 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 | 0.002 | 0.001 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 |
+| p99 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 | 0.002 | 0.001 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 |
+| worst | 0.005 | 0.021 | 0.084 | 0.027 | 0.018 | 0.014 | 0.016 | 0.005 | 0.022 | 0.071 | 0.169 | 0.005 |
+
+#### Reading it
+
+**1. The one real, reproducible cost is `convert`, and it is `Bus::publish` becoming true.** The median
+goes **0.035–0.036 ms with no client → 0.092–0.093 ms with one**, in **all six** client-attached runs and
+in none of the six without. `bus.publish(&self.cap)` sits inside the `convert` bucket in
+`Machine::step`, and `Host::publish_capture` is gated on `has_clients()` — so this is exactly the gate
+§5.6.2 said an unserved player could never satisfy, opening, priced. **+0.057 ms is 0.34 % of a 16.667 ms
+frame.** It is charged only while somebody is attached; configuration B pays nothing.
+
+It reproduces to three decimal places across three sittings under three different loads, which is what
+makes it a finding rather than a sitting. Contrast §5.6.1's `convert` movement, which that section
+reported unattributed and explicitly did **not** claim: this one has a named mechanism, a gate that
+switches it, and a control on the other side of the switch.
+
+**2. `bus-pump` did NOT become expensive, and that contradicts the hypothesis this retake was ordered
+on.** The premise §5.6.1 rested on — *"an unserved player queues nothing, so the drain is a `try_recv` on
+an empty channel"* — is genuinely dead: configurations C and D queue. The **conclusion** survives anyway.
+`bus-pump` is 0.000–0.001 ms median and 0.001–0.002 ms at p99 in **every one of the twelve**, including
+the ones taking 719 requests, and its worst single iteration across all twelve is **0.169 ms** against
+`HostConfig::pump_budget`'s 4 ms ceiling. The reasoning is now: the drain is bounded and `try_recv`-only,
+and a 10 Hz client puts work in roughly one iteration in six, where `emulator/status` is a handful of
+field reads. **Reported as measured, not reconciled**: the retake was owed because the *reason* had
+expired, and the honest outcome is that the number had a second reason.
+
+**3. Nothing else moved.** Emulated frame rate, median period, producer drops and the 0-frame count are
+identical or within a thousandth across all twelve. `ui-build`'s 0.158–0.186 ms spread does not track
+configuration (A3 and B3 are the two highest, and B3 has no client at all); it tracks load.
+
+**4. The tails in sittings 1 and 2 are contamination, and the evidence is that they do not follow the
+configuration.** B — the *lightest* served configuration, with no client at all — has the worst tails in
+both of those sittings (20 and 47 rebases, 11 and 14 steady starvations, an 89.9 ms worst period), while
+D — the *heaviest* — is clean in both. That ordering is impossible as a configuration effect and exactly
+what a busy box produces: the load average at the end of B1 was 9.11 and at the end of D1 was 2.89, and
+`emulate`, which this parcel does not touch at all, moves with it (p99 10.2 ms in B1 against 4.8 ms in
+A1). **Sitting 3 is the comparable one** — all four configurations back to back at load 3.2–7.4, with
+**zero** steady starvations, zero drops, and 0–9 rebases across the four. The `convert` finding is the
+same there as in the two noisy sittings, which is the point of having taken three.
+
+**The verdict: no material regression, and one named, gated, sub-percent cost.**
+
+`--target-fps 0` remains the **CONTROL** and was not used here; nothing above was taken with the governor
+off.
+
+#### ⚑ UNMEASURED, named rather than implied
+
+* **A heavy client.** D polls `emulator/status` — a handful of field reads — at 10 Hz. A client running
+  `emulator/screenshot` (a whole framebuffer, serialised), `emulator/read_memory` over large ranges, or
+  `emulator/run_frames` against a paused window is a different load entirely, and **`bus-pump`'s
+  0.000 ms median is not a statement about it.** `HostConfig::pump_budget`'s 4 ms ceiling exists for that
+  case and was never approached here.
+* **More than one client.** Every served run had exactly one connection. `publish_capture` is one copy
+  regardless, but the accept path and the event fan-out are not exercised at *n* > 1.
+* **A client that moves the machine.** No run issued `run_frames`, `restore` or `reload_rom`, so nothing
+  here prices the `PumpReport` flags §5.8.2 books as dropped — and, being dropped, they have no cost to
+  price yet either way.
+* **The window.** `bench-cpu` has no window and no GPU by construction. Serving adds no draw work, and
+  the one new UI element (the `aether` status row) is one `ui.monospace` line inside `ui-build`, which
+  did not move outside its own between-run spread.
+
+
+### 5.8.2 What `PLAYER-SERVE` deliberately did NOT do — two gaps, booked
+
+Both are reachable *because* the socket now exists. Neither is closed here, and both are written down
+rather than left to be discovered, because a gap that is booked is a decision and a gap that is silent is a
+defect.
+
+* **The `PumpReport` is dropped, and now it can carry something.** `Bus::mirror_pause` calls `Host::pump`
+  and discards its report. Until this parcel that was *sound*, and the reason is the reason it no longer
+  is: `timeline_moved`, `screen_changed` and `rom_changed` all describe a **socket client** moving the
+  machine behind the loop's back, and there was no socket. Now there is. So after a client's
+  `emulator/run_frames`, `emulator/restore` or `emulator/reload_rom`, this player does not resynchronise
+  its audio ring, its frame counter or its scanline capture, and does not present the frame the run drew.
+  `oracle-frontend` reacts to exactly these flags; `oracle-player` reads `Host::framebuffer()` **nowhere**
+  — `grep -rn "framebuffer\|present_frame\|screen_changed" crates/oracle-player` returns one hit, in a doc
+  comment. **This, and not `has_clients()`, is why the picture does not refresh after `emulator/step`**
+  (see the correction in §5.6.2). Closing it is a behaviour change to the run loop with its own pacing
+  cost — a parcel, not a line.
+* **`emulator/screen_text` is unwired here.** `oracle-frontend` publishes its title bar and status line
+  through `Host::set_screen_text` (§11.29, CR-H); `oracle-player` has no such call, so a client that
+  attaches to this window and asks what a human can read on it gets the engine's empty answer. Before this
+  parcel no client could ask; now one can. Named, not fixed.
 
 ---
 

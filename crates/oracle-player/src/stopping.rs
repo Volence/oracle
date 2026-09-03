@@ -622,7 +622,7 @@ mod tests {
 
     fn rig() -> (Machine, Bus) {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
-        let bus = Bus::new(machine.system_mut(), MachineInfo::default(), false);
+        let bus = Bus::new(machine.system_mut(), MachineInfo::default(), false, None);
         (machine, bus)
     }
 
