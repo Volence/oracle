@@ -608,8 +608,10 @@ pub fn break_observed(brk: Option<BreakStop<'_>>) -> Option<u32> {
 /// a single "resynchronised" flag would let a test that meant to prove one of them pass on another.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Drained {
-    /// Commands the drain answered. Reported, never acted on — see [`drain`]'s field-by-field note.
-    pub calls: usize,
+    /// **The drain's own report, carried verbatim**, so a caller (and a test) can say which field
+    /// produced which repair rather than inferring it from the repairs. `calls` and `deferred` reach a
+    /// caller only through here, because nothing branches on them — see [`drain`]'s field-by-field note.
+    pub report: PumpReport,
     /// The capture was dropped and the audio ring and its clock were rebuilt
     /// ([`Machine::resync_after_replacement`](crate::machine::Machine::resync_after_replacement)).
     pub timeline: bool,
@@ -670,7 +672,7 @@ pub fn drain(
 ) -> Drained {
     let report = bus.mirror_pause(machine.system_mut(), paused);
     let mut out = Drained {
-        calls: report.calls,
+        report,
         ..Drained::default()
     };
 
@@ -782,7 +784,7 @@ mod tests {
             &poke()
         )));
 
-        bus.mirror_pause(&mut sys, true);
+        let _ = bus.mirror_pause(&mut sys, true);
         assert!(bus.is_paused());
         let a = bus.call(&mut sys, "emulator/write_memory", &poke());
         assert!(
@@ -790,7 +792,7 @@ mod tests {
             "a paused player must let the poke through — the mirror is not a one-way latch"
         );
 
-        bus.mirror_pause(&mut sys, false);
+        let _ = bus.mirror_pause(&mut sys, false);
         assert!(is_machine_running(&bus.call(
             &mut sys,
             "emulator/write_memory",
@@ -818,7 +820,7 @@ mod tests {
              about the mirror"
         );
         for _ in 0..3 {
-            bus.mirror_pause(&mut sys, true);
+            let _ = bus.mirror_pause(&mut sys, true);
             assert!(bus.is_paused());
             assert!(matches!(
                 bus.call(&mut sys, "emulator/write_memory", &poke()),
@@ -867,11 +869,11 @@ mod seam {
 
     /// `move.w (A0),D0` in the fixture ROM's inner loop — the address `oracle-aether/tests/hosted.rs`
     /// uses for the same purpose, taken from there rather than re-derived.
-    const HOT_PC: u32 = 0x0000_020E;
+    pub(super) const HOT_PC: u32 = 0x0000_020E;
 
     /// Every test below is vacuous if this address stopped being hot, so it is **checked** rather than
     /// asserted in prose. Same check as `hosted.rs::assert_hot_pc_is_the_stirring_loop`.
-    fn assert_hot_pc_is_the_stirring_loop() {
+    pub(super) fn assert_hot_pc_is_the_stirring_loop() {
         let rom = oracle_core::testrom::build();
         let a = HOT_PC as usize;
         assert!(a + 1 < rom.len(), "HOT_PC is outside the fixture ROM");
@@ -1245,7 +1247,7 @@ mod seam {
         );
 
         // The same value the bus was last told. Parcel 2b's gate returned here without pumping.
-        bus.mirror_pause(machine.system_mut(), false);
+        let _ = bus.mirror_pause(machine.system_mut(), false);
         assert!(
             bus.is_paused(),
             "the latched halt was never applied. A change-gated drain produces exactly this: the bus \
@@ -1567,6 +1569,11 @@ mod pumped {
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
+    /// The top of the fixture ROM's outer pass (`reload:` in `oracle_core::testrom`) — the breakpoint
+    /// address [`halt_with_a_dirty_capture`] needs, and deliberately **not** the inner loop every other
+    /// test here arms.
+    const RELOAD: u32 = 0x0000_0204;
+
     /// A socket path short enough for `SUN_LEN`, unique per process and per test.
     fn temp_socket(tag: &str) -> PathBuf {
         let n = SEQ.fetch_add(1, Ordering::SeqCst);
@@ -1683,14 +1690,20 @@ mod pumped {
         timeline: usize,
         picture: usize,
         symbols: usize,
+        /// The report of the drain that saw the cartridge replaced, kept so a test can assert about the
+        /// **flags** and not only about the repairs they produced.
+        replacement: Option<PumpReport>,
     }
 
     impl Totals {
         fn add(&mut self, d: Drained) {
-            self.calls += d.calls;
+            self.calls += d.report.calls;
             self.timeline += usize::from(d.timeline);
             self.picture += usize::from(d.picture);
             self.symbols += usize::from(d.symbols);
+            if d.report.rom_changed {
+                self.replacement = Some(d.report);
+            }
         }
     }
 
@@ -1830,6 +1843,175 @@ mod pumped {
         assert!(
             machine.image().is_none(),
             "and the glass must still be empty"
+        );
+    }
+
+    /// **A halted player whose scanline capture is holding real lines**, and the count it is holding.
+    ///
+    /// The setup the capture half of `resync_after_replacement` needs, and it takes some arranging.
+    /// [`Machine::step`] clears the capture on every frame boundary, so the only way to leave lines in it
+    /// is a run that a breakpoint ended **mid-frame** — and the obvious breakpoint does not do that. The
+    /// fixture ROM's inner loop (`HOT_PC`) is reached within a few instructions of any frame's start, so
+    /// halting there leaves *zero* lines delivered; measured, and it is what the first draft of this test
+    /// failed on.
+    ///
+    /// `RELOAD` — the top of the ROM's outer pass, `$000204` — is reached once every ~3.8 emulated frames,
+    /// which puts most of its hits somewhere in the middle of a frame. The first hit is still immediate
+    /// (the reset PC is `$000200`, two bytes before it), so this resumes and waits for a later one, and
+    /// returns only when the capture is genuinely dirty. The caller asserts on the count; a deadline turns
+    /// "never got a dirty capture" into a failure rather than a hang.
+    fn halt_with_a_dirty_capture(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        symbols: &mut Option<SymbolTable>,
+        paused: &mut bool,
+    ) -> usize {
+        let armed = bus.call(
+            machine.system_mut(),
+            "emulator/breakpoint_add",
+            &json!({"addr": format!("0x{RELOAD:08X}")}),
+        );
+        assert!(!armed.is_err(), "the fixture's breakpoint was refused");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "no breakpoint halt ever left lines in the capture, so the assertion this fixture \
+                 exists to make would have been vacuous"
+            );
+            if *paused {
+                let lines = machine.capture_lines();
+                if lines > 0 {
+                    return lines;
+                }
+                // Halted at the very top of a frame with nothing delivered yet. Resume and wait for a hit
+                // that lands mid-frame; the sink suppresses a re-fire at the PC the run resumes on, so the
+                // next hit is a whole outer pass away.
+                bus.call(machine.system_mut(), "emulator/resume", &json!({}));
+            }
+            iterate(machine, bus, symbols, paused);
+        }
+    }
+
+    /// ★ **A client's `emulator/reset` is not harmless, and the window puts itself back in step.**
+    ///
+    /// `PumpReport::rom_changed`'s own doc names this one specifically: the bytes did not change, but
+    /// everything clocked to the machine did, and *"a caller that resynchronised for the other two and not
+    /// for this one would be holding an audio clock and a frame counter from a timeline that no longer
+    /// exists."* This is that caller, made to resynchronise.
+    ///
+    /// **What is observed is the scanline capture**, because it is the one piece of the repair a test in
+    /// this crate can read. [`crate::device::Device`] owns the audio half and cannot be built without a
+    /// real sound card (it holds a live `cpal::Stream`), so the ring flush and the sink rebuild are
+    /// asserted here only through the branch being taken — `timeline` on [`Drained`] — with the two
+    /// functions they call covered where they live (`audio::tests::resync_sink_restores_rendering_after_
+    /// the_machine_clock_rewinds`, and `fill_output`'s flush). `oracle-frontend` has the identical limit
+    /// on the identical state; it is recorded rather than worked around, because the workaround would be
+    /// to make the window's audio path constructible without a device purely so a test could reach it.
+    ///
+    /// **Getting the capture non-empty is the whole setup, and it is what makes the "afterwards" mean
+    /// something.** [`Machine::step`] clears the capture on every frame boundary, so a run that ended
+    /// cleanly leaves nothing to clear and an assertion of `0` afterwards would be true of a `drain` that
+    /// did nothing at all. A breakpoint ends a run **mid-frame** (parcel 3), which leaves real lines
+    /// buffered for a frame that never completed — the lines that, kept across a machine replacement,
+    /// would be spliced onto the replacement's first lines and handed to `capture_to_image` as one frame.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The capture was empty all along.* Asserted non-empty before the client is spawned, and the
+    ///    exact count is carried into the control.
+    /// 2. *The capture clears itself.* The **control** below turns the loop twenty more times with a
+    ///    client that only handshakes: the lines are still there, to the line.
+    /// 3. *The drain repairs unconditionally.* Same control — `timeline` stays 0 across those twenty.
+    /// 4. *`rom_changed` was never involved and `timeline_moved()` did all the work.* Measured rather than
+    ///    assumed, and the answer is recorded on the assertion: on this build a reset moves the clock too
+    ///    (`System::reset` rebuilds the `System`, so `mclk` restarts), so **both** flags are set and the
+    ///    `|| report.rom_changed` in `drain` is redundant *here*. The assertion pins that measurement, so
+    ///    the day a producer replaces the machine without moving its clock this test says so instead of
+    ///    quietly changing meaning.
+    #[test]
+    fn a_client_reset_puts_the_windows_derived_state_back_in_step() {
+        let (mut machine, mut bus, socket) = served("reset", MachineInfo::default(), false);
+        let (mut symbols, mut paused) = (None, false);
+        let lines = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut symbols, &mut paused);
+        assert!(
+            lines > 0,
+            "the halted run left an EMPTY capture, so `0` afterwards would witness nothing"
+        );
+
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/reset", json!({}))
+        });
+
+        let mut totals = Totals::default();
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut paused,
+            &mut totals,
+            "the client's reset never reached the window",
+            |t, _| t.timeline > 0,
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(reply["deferred"], json!(false), "the reset really ran");
+        assert_eq!(
+            machine.capture_lines(),
+            0,
+            "a machine replacement left {lines} lines of the OLD machine in the capture, which the next \
+             completed frame would have spliced onto the new one"
+        );
+        let r = totals
+            .replacement
+            .expect("the reset must have arrived as rom_changed");
+        assert!(
+            r.rom_changed,
+            "`emulator/reset` did not raise rom_changed, so the flag this parcel reacts to is not the \
+             one the reset handler bumps"
+        );
+        assert!(
+            r.timeline_moved(),
+            "MEASUREMENT: a reset moved the ROM generation but NOT the clock on this build. `drain`'s \
+             `|| report.rom_changed` has stopped being redundant and is now the only thing that repairs \
+             a reset — which is exactly what the PumpReport doc warns about, so read this failure as \
+             news rather than as a broken test"
+        );
+
+        // --- the control: the same halted rig, the same drains, no reset. ---
+        let (mut machine, mut bus, socket) = served("reset-ctl", MachineInfo::default(), false);
+        let (mut symbols, mut paused) = (None, false);
+        let held = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut symbols, &mut paused);
+        assert!(held > 0, "the control's capture must be non-empty too");
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+        });
+        let mut totals = Totals::default();
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut paused,
+            &mut totals,
+            "the control's client never handshook",
+            |t, _| t.calls >= 1,
+        );
+        client.join().expect("the control client");
+        for _ in 0..20 {
+            totals.add(iterate(&mut machine, &mut bus, &mut symbols, &mut paused));
+        }
+        assert_eq!(
+            totals.timeline, 0,
+            "the drain repaired a timeline nothing had moved, so the repair above is not evidence that \
+             a reset caused it"
+        );
+        assert_eq!(
+            machine.capture_lines(),
+            held,
+            "the capture emptied itself with no machine replacement behind it"
         );
     }
 }
