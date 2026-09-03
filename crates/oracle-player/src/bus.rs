@@ -2014,4 +2014,157 @@ mod pumped {
             "the capture emptied itself with no machine replacement behind it"
         );
     }
+
+    /// A minimal AS-dialect listing, in `oracle-aether/tests/symbols_path.rs`'s own spelling, with one
+    /// addition: `EndOfRom` at `$100`, an offset that is inside the fixture ROM and does not carry the
+    /// `de b2` appendix magic. That makes `SymbolTable::validate_against_rom` return `Mismatch`, which is
+    /// what makes `emulator/reload_rom` **drop** the listing (D7) and gives this test something to observe.
+    const LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+ EndOfRom : 100 C |
+
+    3 symbols
+    0 unused symbols
+";
+
+    /// ★ **A client's `emulator/reload_rom` re-derives the window's symbol cache.**
+    ///
+    /// This is `rom_changed`'s **only** unique job in this crate, and finding that out is most of what the
+    /// field was worth reading for. Everything else `rom_changed` asks for, `timeline_moved()` already
+    /// asks for on the same drain (measured — see the reset test). The symbol listing is different: the
+    /// engine can *drop* it, on the D7 binding check, and nothing about the machine's clock says so.
+    ///
+    /// The player holds a clone of the table it handed to [`Bus::new`], and every panel and the status
+    /// strip resolve against that clone. After a reload that dropped it, `emulator/lookup_symbol` answers
+    /// "no symbols loaded" while the window goes on naming addresses out of a listing the engine has
+    /// discarded — one machine, two answers, which is the drift R2 exists to prevent.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The cache was empty to begin with.* Asserted `Some`, with its symbol count, before anything is
+    ///    sent — on **both** the player's copy and the engine's, since a fixture that loaded the table
+    ///    into only one of them would make the comparison meaningless.
+    /// 2. *The engine did not actually drop anything, and `None` here came from somewhere else.* The
+    ///    reload's own reply carries `symbolsDropped`, and it is asserted `true`.
+    /// 3. *The drain simply clears the cache whenever `rom_changed` fires.* Ruled out by the **second
+    ///    half**: a client `emulator/reset` also raises `rom_changed`, and the reset handler KEEPS the
+    ///    symbols ("the image is unchanged, so the binding that survived boot survives this") — so the
+    ///    cache must still be there afterwards, with the same count. A `drain` that cleared on the flag
+    ///    passes the first half and fails this one.
+    #[test]
+    fn a_client_rom_reload_re_derives_the_windows_symbol_cache() {
+        let table = SymbolTable::parse(LST).expect("parse the fixture listing");
+        let count = table.len();
+        assert!(count > 0, "the fixture listing parsed to nothing");
+
+        // The reload reads a real file. Write the fixture ROM out under a private name so nothing in this
+        // suite shares a path, and so the reload is a genuine `std::fs::read`.
+        let rom_path = std::env::temp_dir().join(format!(
+            "pp-reload-{}-{}.bin",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::write(&rom_path, oracle_core::testrom::build()).expect("write the fixture ROM");
+
+        let (mut machine, mut bus, socket) = served(
+            "reload",
+            MachineInfo {
+                rom_path: Some(rom_path.display().to_string()),
+                symbols: Some(table.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut symbols = Some(table);
+        assert_eq!(
+            symbols.as_ref().map(|t| t.len()),
+            Some(count),
+            "the window must start out holding the listing"
+        );
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(count),
+            "and so must the engine, or the two were never in agreement to begin with"
+        );
+
+        let path = rom_path.display().to_string();
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/reload_rom", json!({"path": path}))
+        });
+
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut paused,
+            &mut totals,
+            "the client's reload never reached the window",
+            |t, _| t.symbols > 0,
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(
+            reply["symbolsDropped"],
+            json!(true),
+            "the engine kept the listing, so `None` below would not be evidence of a re-derivation"
+        );
+        assert!(
+            bus.symbols().is_none(),
+            "the engine still holds a listing it said it dropped"
+        );
+        assert!(
+            symbols.is_none(),
+            "the window is still resolving names against a listing the engine has discarded — the \
+             panel and `emulator/lookup_symbol` now answer differently about one machine"
+        );
+
+        // --- the other half: a rom change that KEEPS the listing must keep the window's copy too. ---
+        let table = SymbolTable::parse(LST).expect("parse the fixture listing");
+        let (mut machine, mut bus, socket) = served(
+            "reload-keep",
+            MachineInfo {
+                rom_path: Some(rom_path.display().to_string()),
+                symbols: Some(table.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut symbols = Some(table);
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/reset", json!({}))
+        });
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut paused,
+            &mut totals,
+            "the client's reset never reached the window",
+            |t, _| t.symbols > 0,
+        );
+        client.join().expect("the client thread");
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(count),
+            "`emulator/reset` dropped the engine's symbols, which its handler says it does not do"
+        );
+        assert_eq!(
+            symbols.as_ref().map(|t| t.len()),
+            Some(count),
+            "the window threw its listing away on a rom change that kept it — the drain is CLEARING the \
+             cache on the flag rather than re-deriving it from the engine"
+        );
+
+        let _ = std::fs::remove_file(&rom_path);
+    }
 }
