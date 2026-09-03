@@ -1,21 +1,21 @@
 {
-  "focus": "The debug window is finished as specified: panels tab, drag, and now keep their layout between runs. Landed and pushed.",
+  "focus": "The debug window can stop the emulator now, and it holds full speed with every panel open. Landed and pushed.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "Here, now. Everything is merged, pushed and banked; nothing is running.",
+  "nextBoundary": "Here. Everything is merged, pushed and written down; a fresh session would lose nothing.",
   "queue": [
     {
-      "id": "PANELS-3-STOPPING",
-      "title": "The next window build after layout: tabs for breakpoints, watchpoints and the profiler - the three that need the emulator to be able to STOP where you tell it, not just be looked at while it runs. They share one change to the run loop, which is why they go together and why they were held back from the first three panels.",
-      "state": "next",
-      "size": "L",
+      "id": "HELD-PADS-PLAYER",
+      "title": "A client telling the emulator to hold a button does nothing in the player window - the two pad sources are never merged. Your own ruling says a capability that changes what the window does has to be visible in it; today someone could be left walking left with nothing on screen able to say why.",
+      "state": "open",
+      "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
     },
     {
       "id": "PANELS-LOOK",
-      "title": "Nothing in the debug window has ever been looked at - the three panels, and now the layout actually reloading on a real restart. Tests prove the format and the wiring; only a human at a window proves it happens. Thirty seconds of your eyes, or your say-so to open one. Gates no building.",
-      "state": "open",
+      "title": "Nothing in the debug window has ever been looked at - eight panels now, including the three that stop the emulator, and a layout that survives a restart. Tests and a bench prove the wiring and the speed; only a human at a window proves it looks right. Thirty seconds of your eyes, or your say-so to open one. Gates no building.",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
@@ -95,7 +95,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": "whether to keep going into the bigger window build (breakpoint/watchpoint/profiler tabs) - the goal you set for this window is now met, and that next step changes the run loop, so it is a real decision rather than more of the same.",
+  "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-03T09:44:10Z"
+  "updatedAt": "2026-09-03T18:39:11Z"
 }
