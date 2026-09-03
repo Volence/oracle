@@ -4304,12 +4304,7 @@ impl Engine {
     /// label, which round-trips through `emulator/lookup_symbol`. The pair is omitted — never `""`, never
     /// a displacement without a name — when `ObjCodeBase` is absent or nothing resolves at the target.
     fn attach_code_name(&self, out: &mut Map<String, Value>, rec: &decoders::DecodedRecord<'_>) {
-        if let Some(target) = rec.code_target() {
-            if let Some((name, disp)) = self.symbol_at(target) {
-                out.insert("name".into(), json!(name));
-                out.insert("nameDisp".into(), json!(disp));
-            }
-        }
+        attach_code_name(out, self.symbols.as_deref(), rec);
     }
 
     /// `emulator/object_list` — the active slots of the object pool (§6 ⚙, §11.25 D2).
@@ -7562,6 +7557,33 @@ pub fn z80_read_window(sys: &System, addr: u32, len: usize) -> Result<Vec<u8>, R
 pub fn symbol_at(table: &SymbolTable, addr: u32) -> Option<(String, u32)> {
     let r = table.resolve(addr)?;
     Some((r.name().to_string(), r.displacement))
+}
+
+/// Attach `name`/`nameDisp` for a decoded object record, **or neither** — §4's identifying spelling.
+///
+/// The three ⚙ decoder rows all end an item with this, and so does `oracle-player`'s Objects panel: the
+/// composition `code_target()` → [`symbol_at`] is two steps and both of them are places a second copy
+/// would be a believable wrong answer. `code_addr` is an **offset** from `ObjCodeBase`, not an address,
+/// so a renderer that resolved the raw word would name a symbol near `$0000` and look entirely healthy;
+/// and reaching for `demangled` rather than `name()` yields a spelling that does not round-trip through
+/// `emulator/lookup_symbol`.
+///
+/// The pair is omitted — never `""`, never a displacement without a name — when there is no table, when
+/// `ObjCodeBase` is absent from the one there is, or when nothing resolves at the target. That is also
+/// §11.25's second hardening against the legacy server, which strips a `_Main` suffix and so reports a
+/// name that resolves to nothing.
+pub fn attach_code_name(
+    out: &mut Map<String, Value>,
+    table: Option<&SymbolTable>,
+    rec: &decoders::DecodedRecord<'_>,
+) {
+    let (Some(table), Some(target)) = (table, rec.code_target()) else {
+        return;
+    };
+    if let Some((name, disp)) = symbol_at(table, target) {
+        out.insert("name".into(), json!(name));
+        out.insert("nameDisp".into(), json!(disp));
+    }
 }
 
 /// §6's `romPath` SHOULD be *the absolute path of the loaded image*. Make it one, or say nothing new.
