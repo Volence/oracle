@@ -45,7 +45,7 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 > contract/schema/bus-protocol.schema.json` answered `e04a94f`, which is the recipe below working
 > exactly as written.
 
-**Taken from the object store at a committed revision**, `git show 82982b7:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `125d17f0…`, equal to `git rev-parse 82982b7:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show e04a94f:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `487af407…`, equal to `git rev-parse e04a94f:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
