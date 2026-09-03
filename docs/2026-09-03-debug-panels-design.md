@@ -1388,7 +1388,7 @@ defect.
 > | `timeline_moved()` | drop the scanline capture; rebuild the audio ring and its clock | same |
 > | `frames_advanced()` | **nothing, deliberately** | frontend adds it to `draws` |
 > | `screen_changed` | adopt `Host::framebuffer` onto the glass | same in effect, new code here |
-> | `rom_changed` | re-derive the symbol cache from the engine; also drive the timeline repair | frontend re-derives a save-state fingerprint instead |
+> | `rom_changed` | re-derive the two pieces of cartridge-derived cache — the symbol listing **and the ROM path** — from the engine; also drive the timeline repair | frontend re-derives a save-state fingerprint instead |
 >
 > **The answer to “is the right fix to do what the frontend does?” is no, in both directions.** One of the
 > frontend's reactions is meaningless here and one thing it never needed is required:
@@ -1400,9 +1400,10 @@ defect.
 >   is labelled *“frames run (player)”*, which is what `Machine::frames` means and what `report.rs` divides
 >   by elapsed seconds to state this loop's throughput. Adding a client's frames would falsify a label and
 >   corrupt a measurement to repair a coordinate that was never wrong.
-> * **The symbol cache is required here and the frontend has no equivalent.** This player keeps a clone of
->   the listing it handed to `Bus::new`, and `emulator/reload_rom` can *drop* the engine's copy on the D7
->   binding check. Without a re-derivation the strip and the panels go on naming addresses out of a listing
+> * **The cartridge-derived cache is required here and the frontend has no equivalent.** This player keeps
+>   a clone of the listing it handed to `Bus::new` **and the ROM path it was launched with** (the status
+>   strip's `rom` row), and `emulator/reload_rom` moves both — it can *drop* the engine's listing on the D7
+>   binding check, and it always replaces the path. Without a re-derivation the strip and the panels go on naming addresses out of a listing
 >   the engine has discarded while `emulator/lookup_symbol` says there is none — one machine, two answers.
 >   This is `rom_changed`'s **only** unique job in this crate: everything else it asks for,
 >   `timeline_moved()` asks for on the same drain.
