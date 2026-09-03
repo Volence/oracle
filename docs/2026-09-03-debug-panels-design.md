@@ -704,6 +704,128 @@ that, an armed-but-never-recording instrument satisfies every other assertion in
 to name a row back to a `clear`, and a `format!("w{}")` in `ui.rs` would be a second spelling of one fact —
 agreeing until the day it did not, in the one place where being wrong retires somebody else's watch.
 
+### 5.7.1 The panel-cost measurement — and the panel that does not fit in a frame
+
+**This is the measurement §8 item 2 booked as owed, taken for these three panels, and it does not say what
+this design predicted.** §5's claim that the panel bodies are cheap was *reasoning from size*. It holds for
+seven of the eight bodies and it is wrong by two orders of magnitude for one of them.
+
+**The rig is §5.6.1's, unchanged**: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin` (+ its 2,884-symbol
+`.lst`), a real audio device at gain 0.0, no window and no GPU, `--expect-screen 1281x803`. **Four separate
+process invocations, reported separately and never averaged.**
+
+**Why the comparison is inside this one binary and not against the seam tip.** `--dock every-tab` and
+`--bench-arm` were both added by *this* branch, so `e208a04` cannot be run with either. A BEFORE/AFTER
+across the two binaries would mix **three** changes — the arrangement, the arming, and the panels — and
+report their sum as "the panel cost". So all four configurations below are the *same* binary, and each
+neighbouring pair differs in exactly one thing:
+
+| | arrangement | armed | bodies actually drawn (egui_dock draws only a leaf's ACTIVE tab) |
+|---|---|---|---|
+| **A** | default | no | Screen, Pacing, Registers, **Breakpoints (empty)** |
+| **B** | `--dock every-tab` | no | all eight; the three stopping ones **empty** |
+| **C** | `--dock every-tab` | `--bench-arm` | all eight; the three stopping ones **with rows** |
+| **D** | default | `--bench-arm` | Screen, Pacing, Registers, **Breakpoints (16 rows)** |
+
+* **D − A** isolates **one** panel: only Breakpoints is drawn of the three, so arming moves that body and
+  nothing else in `ui-build`.
+* **C − B** is all three stopping bodies gaining their rows, at one arrangement.
+* **B − A** is four *more bodies* appearing (Memory, Objects, and the two empty stopping ones).
+* **D − A** in the `emulate` bucket is the **instruments'** cost, not a panel's — and it is the only pair
+  where that bucket is comparable, because A/B/D run ~1.00 emulated frames per iteration and **C runs
+  1.83**, so C's `emulate` covers nearly two frames and cannot be differenced against a one-frame column.
+
+**The condition of the machine.** `pgrep -c -f "[c]argo"` was **0 before and after all four** runs below,
+1-minute load average **2.0–4.0 on 16 cores**, everything else the owner's live session (Vivaldi ×3,
+Discord, `kwin_wayland`, Steam helpers, and a peer lane's `oracle-frontend` at ~20 % of one core).
+**Two further sittings were taken and are NOT tabled**: both ran with a peer `sigil` lane's
+`cargo test --release --workspace` and its corpus jobs on the box (`pgrep` = 1 throughout, load average
+9–21), which is the condition §5.6.1 discarded a run for. They are named here only because the finding
+below reproduced in both — `ui-build` medians of **16.356 ms** and **16.717 ms** for configuration C — and
+a result that survives a 5× swing in machine load is not a load artefact.
+
+Per-iteration cost, **medians**, milliseconds:
+
+```
+part                     A         B         C         D
+                    default  every-tab  every-tab   default
+                     no arm     no arm    ARMED      ARMED
+emulate               2.702     2.680      5.582     4.497
+audio                 0.001     0.001      0.002     0.001
+convert               0.036     0.035      0.071     0.053
+tex-upload            0.006     0.005      0.006     0.009
+ui-build              0.173     0.261     15.220     0.390     <-- the panels
+tessellate            0.036     0.051      0.071     0.074
+bus-pump              0.000     0.000      0.001     0.001
+CPU TOTAL             2.922     2.989     20.905     5.025
+period               16.664    16.664     38.672    16.669
+n (iterations)         4500      4500       2113      4465
+```
+
+| | **A** | **B** | **C** | **D** |
+|---|---|---|---|---|
+| **emulated frames/s** | **60.038** | **60.038** | **51.581** | **60.033** |
+| presented frames/s | 59.998 | 59.998 | **28.170** | 59.526 |
+| emulated frames per iteration | 1.000 | 1.000 | **1.830** | 1.008 |
+| frame period, median | 16.664 ms | 16.664 ms | **38.672 ms** | 16.669 ms |
+| frame period, WORST | 23.689 ms | 28.040 ms | 64.375 ms | 42.573 ms |
+| governor rebases | 0 | 0 | **1754** | 30 |
+| **audio starvations, steady** | **0** | **0** | **1353** | **2** |
+| audio producer drops | 0 | 0 | 0 | 0 |
+| leanest ring | 6820 (77.3 ms) | 6526 (74.0 ms) | 2940 (33.3 ms) | 2940 (33.3 ms) |
+| `ui-build` p95 / p99 | 0.306 / 0.382 | 0.366 / 0.475 | 16.873 / 23.277 | 1.600 / 2.714 |
+
+**⚑ The finding, stated before the arithmetic: one of these panels costs 91 % of a frame budget on its own,
+and the player misses real time drawing it.** Configuration C is not a stress test invented for the
+occasion — it is eight tabs visible with a watch and the profiler armed, which is a layout a human can
+build with the mouse and a state `--bench-arm` reaches only through `Host::call`. In it the machine runs
+**51.6 emulated frames a second instead of 60**, presents **28**, rebases the governor **1754 times**, and
+inserts **10.6 seconds of silence into a 75-second run**. Nothing else in the report moved: `bus-pump` is
+still 0.001 ms, `convert` and `tex-upload` are unchanged, and `producer DROPS` is 0.
+
+**The arithmetic, and what each delta may be called.**
+
+* **`ui-build` B − A = +0.088 ms.** Four more panel bodies — Memory, Objects, and the two empty stopping
+  ones — is **0.5 % of a frame**. §5's "these are cheap" is *confirmed* for the read-only panels. ⚠ One
+  caveat that must travel with this number: `every_tab_dock` gives each of eight leaves ~1/8 of the window,
+  so Memory's hex view and Objects' table lay out **fewer visible rows** than they would in a pane a human
+  had made big. **B − A is a lower bound for those two bodies at full size, not their cost.**
+* **`ui-build` D − A = +0.217 ms** — **the Breakpoints panel with sixteen rows**, isolated, in the shipped
+  default arrangement. 1.3 % of a frame for the whole body, add box and all. Cheap, as designed. ⚠ This
+  delta is at the edge of what one clean sitting resolves: the two discarded sittings put it at +0.100 and
+  **+0.001** ms, both with an inflated A to difference against. Read it as **≲0.2 ms**, and note that every
+  reading of it is under 2 % of a frame, which is the part that matters.
+* **`ui-build` C − B = +14.959 ms** — the three stopping bodies gaining their rows.
+* **Therefore (C − B) − (D − A) = +14.742 ms is Watchpoints + Profiler**, and **today's flags cannot split
+  that pair**: no arrangement draws one of them without the other, and `--bench-arm` arms all three
+  together. It is booked as a **residual of two**, not attributed to one. ⚑ *What it is not:* it is not
+  the instruments recording — that is `emulate`, below — and it is not the `Live` header, which is three
+  words.
+* **`emulate` D − A = +1.795 ms per emulated frame** is the **instruments'** cost: a 64 KB-wide work-RAM
+  write watch plus a `perFrame` profiler, feeding sinks on every access. ⚠ **It is the least stable number
+  here and it must not be quoted as a figure.** The two discarded sittings put the same delta at **+0.62**
+  and at **−1.82** ms — the second one *negative*, i.e. the armed run was the faster of that pair, with a
+  peer `sigil` at 98 % of a core during the unarmed half — and D's own `emulate` p95 is 9.635 ms against
+  A's 3.184. All that is established is that **`emulate` moves, upward, by something under two
+  milliseconds a frame, and that this is the instruments' cost and not a panel's.** A 64 KB write watch is
+  the expensive end of the instrument; nothing here prices a narrow one.
+
+**The hypothesis for the 14.7 ms, kept separate from the measurement.** `ui::Panels::watchpoints` draws the
+hit log as `for h in &view.hits { ui.monospace(format!(…7 fields…)) }` inside a plain
+`ScrollArea::vertical().max_height(220.0)` — a **non-virtualised** list, `show` rather than `show_rows`. The
+log is a ring of `EngineConfig::watch_ring_cap` = **4096** entries (`engine.rs:205`), which a 64 KB write
+watch fills in well under a second, and `stopping::watches` copies all 4096 out with `hits().to_vec()` on
+every repaint besides. 4096 rows × ~3.6 µs of `format!` + galley layout is ~14.7 ms, which is the size of
+the residual — but *consistency is not attribution*, and the Profiler's own suspect (it sorts the whole
+routine map every repaint before truncating to `TOP_ROUTINES` = 24) is untested for the same reason. **The
+split, and the fix, are the next parcel's**, and the fix is named here so it is not re-derived: `show_rows`
+with a fixed row height, which draws the ~10 rows a 220 px viewport can show.
+
+**What this does NOT say.** It does not say the default player is slow: **configuration A is the shipped
+layout and it is 0.173 ms of `ui-build`**, and D — the shipped layout with instruments armed and a full
+Breakpoints table — holds 60.033 emulated fps with 2 steady starvations in 75 s. The regression is reachable
+by clicking a tab, not by launching the program.
+
 ---
 
 ## 6. Layout persistence
