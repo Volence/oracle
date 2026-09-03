@@ -513,31 +513,58 @@ mod bus_parity {
 
     /// The status strip's two derivable fields against `emulator/status`, through the same `Host::call`.
     ///
+    /// **It calls [`StatusStrip::of`], not the expressions inside it.** Comparing hand-written copies of
+    /// those expressions to the bus would check that *this test* agrees with the bus and leave the panel's
+    /// own derivation untested — the shape of a control that measures something other than the thing it
+    /// names. So the panel side is a real [`Machine`] and the bus side is a `System` **proved to be the
+    /// same machine by its state hash** before anything is compared.
+    ///
     /// `romPath` is deliberately **not** compared: `Engine::set_rom_path` absolutises through a private
     /// helper, so the served string and the `--rom` argument agree only when the argument was already
     /// absolute. The strip shows the player's own argument and says so; claiming parity on it would be
     /// claiming a normalisation the panel does not perform.
     #[test]
     fn the_status_strip_agrees_with_emulator_status_on_what_it_can_derive() {
-        let mut h = Host::new(HostConfig::default());
+        const FRAMES: u64 = 5;
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        for _ in 0..FRAMES {
+            machine.step(oracle_core::io::Pad::default());
+        }
         let mut sys = booted();
-        sys.run_frames(5);
+        sys.set_pad(0, oracle_core::io::Pad::default());
+        sys.set_pad(1, oracle_core::io::Pad::default());
+        sys.run_frames(FRAMES);
 
+        // Without this the two sides could be two different machines agreeing by luck, and every
+        // assertion below would be measuring nothing.
+        assert_eq!(
+            machine.system().state_hash().combined,
+            sys.state_hash().combined,
+            "the panel's machine and the bus's machine must BE the same machine"
+        );
+
+        let strip = StatusStrip::of(&machine, "roms/testrom.bin");
+        let mut h = Host::new(HostConfig::default());
         let (result, _) = h.call(&mut sys, "emulator/status", &json!({}));
         let reply = result.expect("emulator/status answers");
 
         assert_eq!(
+            strip.rom_bytes as u64,
             reply["romBytes"].as_u64().expect("romBytes is a count"),
-            sys.rom().len() as u64,
-            "the strip's `rom bytes` and the bus's `romBytes` are one expression"
+            "the strip's `rom bytes` and the bus's `romBytes` have DRIFTED"
         );
         assert_eq!(
+            strip.frame,
             reply["frameToken"].as_u64().expect("frameToken is a count"),
-            sys.scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
-            "the strip's `frame (emulated)` and the bus's `frameToken` are one expression"
+            "the strip's `frame (emulated)` and the bus's `frameToken` have DRIFTED"
         );
-        // The fixture must actually have moved, or both sides agreeing on 0 proves nothing.
-        assert!(reply["frameToken"].as_u64().unwrap() > 0, "the fixture ran");
+        // Both must have moved, or two zeros agreeing would read as a pass.
+        assert!(strip.frame > 0 && strip.rom_bytes > 0, "the fixture ran");
+        assert_eq!(strip.frames_run, FRAMES, "the player's own count");
+        assert_eq!(
+            strip.rom_path, "roms/testrom.bin",
+            "verbatim, not absolutised"
+        );
 
         // And the honest half: no symbol table exists in this player, so the strip must say so in words.
         assert_eq!(
@@ -545,17 +572,17 @@ mod bus_parity {
             json!(0),
             "the bus counts zero symbols, which is exactly the `0` the strip must not show a human"
         );
-        let strip_symbols = StatusStrip {
-            rom_path: "/tmp/x.bin".into(),
-            rom_bytes: 0,
-            frame: 0,
-            frames_run: 0,
+        let rows = strip.rows();
+        let symbols = &rows
+            .iter()
+            .find(|(k, _)| *k == "symbols")
+            .expect("the strip has a symbols row")
+            .1;
+        assert_eq!(symbols, "none loaded");
+        // Nothing in the strip may be rendered as a bare `0` or a blank — an unmeasurable shown as a
+        // number is the wrong answer this row exists to avoid.
+        for (label, value) in &rows {
+            assert!(!value.is_empty(), "`{label}` renders blank");
         }
-        .rows()
-        .into_iter()
-        .find(|(k, _)| *k == "symbols")
-        .expect("the strip has a symbols row")
-        .1;
-        assert_eq!(strip_symbols, "none loaded");
     }
 }
