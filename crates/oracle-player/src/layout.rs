@@ -132,7 +132,7 @@ pub fn load(storage: Option<&dyn eframe::Storage>) -> (DockState<Tab>, Outcome) 
 mod tests {
     use super::*;
     use eframe::Storage as _;
-    use egui_dock::{Node, TabIndex};
+    use egui_dock::{Node, NodePath, SurfaceIndex, TabIndex};
     use std::collections::BTreeMap;
 
     /// [`eframe::Storage`] over a map. The trait is four methods and the native backend's own
@@ -205,29 +205,39 @@ mod tests {
     /// difference between this file proving something and proving nothing.
     fn rearranged() -> DockState<Tab> {
         let mut dock = ui::initial_dock();
-        let surface = dock.main_surface_mut();
+        let below = {
+            let surface = dock.main_surface_mut();
 
-        let (node, tab) = surface
-            .find_tab(&Tab::Objects)
-            .expect("initial_dock() should contain an Objects tab to move");
-        let objects = surface
-            .remove_tab((node, tab))
-            .expect("the tab just located should remove");
+            let (node, tab) = surface
+                .find_tab(&Tab::Objects)
+                .expect("initial_dock() should contain an Objects tab to move");
+            let objects = surface
+                .remove_tab((node, tab))
+                .expect("the tab just located should remove");
 
-        let (screen, _) = surface
-            .find_tab(&Tab::Screen)
-            .expect("initial_dock() should contain a Screen tab");
-        let [_, below] = surface.split_below(screen, 0.7, vec![objects]);
+            let (screen, _) = surface
+                .find_tab(&Tab::Screen)
+                .expect("initial_dock() should contain a Screen tab");
+            let [_, below] = surface.split_below(screen, 0.7, vec![objects]);
 
-        let (regs, _) = surface
-            .find_tab(&Tab::Memory)
-            .expect("Memory should survive the move");
-        surface
-            .leaf_mut(regs)
-            .expect("the Registers/Memory pane is a leaf")
-            .set_active_tab(TabIndex(1))
-            .expect("index 1 is in range for a two-tab leaf");
-        surface.set_focused_node(below);
+            let (regs, _) = surface
+                .find_tab(&Tab::Memory)
+                .expect("Memory should survive the move");
+            surface
+                .leaf_mut(regs)
+                .expect("the Registers/Memory pane is a leaf")
+                .set_active_tab(TabIndex(1))
+                .expect("index 1 is in range for a two-tab leaf");
+            below
+        };
+
+        // **`DockState::set_focused_node_and_surface`, not `Tree::set_focused_node`.** The tree method
+        // sets the tree's own focus but leaves `DockState::focused_surface` at `None`, and
+        // `DockState::focused_leaf` — which is what `shape()` reads and what the round trip therefore
+        // checks — returns `None` unless the surface is set too. Using the tree method made the `focused`
+        // line of the fingerprint read `None` on both sides of every comparison: present, and witnessing
+        // nothing.
+        dock.set_focused_node_and_surface(NodePath::new(SurfaceIndex::main(), below));
         dock
     }
 
@@ -238,7 +248,22 @@ mod tests {
     /// checked, once, loudly.
     #[test]
     fn the_layout_under_test_is_not_the_default() {
-        let a = shape(&rearranged());
+        let rearranged = rearranged();
+        // Every line `shape()` emits should be capable of differing, or it is scenery. `focused` is the
+        // one that nearly was not: `Tree::set_focused_node` leaves `DockState::focused_surface` unset, so
+        // `focused_leaf()` answered `None` for both the rearranged layout and the default and that line
+        // compared nothing against nothing.
+        assert!(
+            rearranged.focused_leaf().is_some(),
+            "the rearranged layout has no focused leaf, so `shape()`'s `focused` line reads None on both \
+             sides of every comparison in this file and witnesses nothing"
+        );
+        assert!(
+            ui::initial_dock().focused_leaf().is_none(),
+            "the default layout now focuses a leaf too — check that `focused` still discriminates"
+        );
+
+        let a = shape(&rearranged);
         let b = shape(&ui::initial_dock());
         assert_ne!(
             a, b,
