@@ -906,7 +906,11 @@ mod seam {
         if !paused {
             machine.step([Pad::default(); 2], bus);
         }
-        bus.mirror_pause(machine.system_mut(), paused);
+        // `drain` and not `mirror_pause`: the loop's one call is the former, and a helper that pumped
+        // directly would let every test below pass against a window that dropped the report again. The
+        // symbol cache is local because nothing here loads symbols; the `pumped` module drives that half.
+        let mut symbols = None;
+        drain(machine, bus, &mut symbols, paused);
         bus.is_paused()
     }
 
@@ -1531,5 +1535,301 @@ mod serving {
         assert_ne!(quiet, up);
         assert_ne!(quiet, down);
         assert_ne!(up, down);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ PLAYER-PUMPREPORT — the drain's answer, driven by a client on the socket
+// ---------------------------------------------------------------------------------------------------
+
+/// These tests reach the window the way the defect does: **over the wire**.
+///
+/// That is not a preference, it is the only route. A `PumpReport` describes what one [`Host::pump`] did,
+/// and `Host::call` — the in-process path every panel gesture takes — is deliberately *not* a drain, so a
+/// command sent through it never appears in a report at all. Commands enter the drain only from a
+/// connection thread, so a test that wanted to see a non-empty report had to bind a socket and connect.
+///
+/// Every one of them is written around the same hazard the brief named: **a window that resynchronises
+/// every frame anyway would pass a resynchronisation test for the wrong reason.** The defence is structural
+/// rather than argued — the client *pauses the player first*, which it must do regardless (§6's
+/// run-control state rule refuses `run_frames`, `restore` and `reload_rom` against a running machine), and
+/// a paused player runs no frame of its own. `machine.frames() == 0` is asserted at the end of each, so
+/// nothing below can be explained by this loop having drawn anything.
+#[cfg(all(test, unix))]
+mod pumped {
+    use super::*;
+    use crate::machine::Machine;
+    use serde_json::json;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// A socket path short enough for `SUN_LEN`, unique per process and per test.
+    fn temp_socket(tag: &str) -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("pp-{tag}-{}-{n}.sock", std::process::id()))
+    }
+
+    /// One NDJSON connection, hand-rolled so these tests exercise the wire — the same shape
+    /// `oracle-aether/tests/hosted.rs` uses, and for the same reason.
+    struct Client {
+        reader: BufReader<UnixStream>,
+        writer: UnixStream,
+        next_id: i64,
+    }
+
+    impl Client {
+        fn connect(socket: &Path) -> Self {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match UnixStream::connect(socket) {
+                    Ok(s) => {
+                        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+                        return Self {
+                            reader: BufReader::new(s.try_clone().unwrap()),
+                            writer: s,
+                            next_id: 1,
+                        };
+                    }
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+        }
+
+        fn send_raw(&mut self, line: &str) {
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.write_all(b"\n").unwrap();
+            self.writer.flush().unwrap();
+        }
+
+        fn call(&mut self, method: &str, params: Value) -> Value {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.send_raw(
+                &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}).to_string(),
+            );
+            loop {
+                let mut line = String::new();
+                let n = self.reader.read_line(&mut line).expect("read");
+                assert!(n > 0, "connection closed while a reply was expected");
+                let v: Value = serde_json::from_str(&line).expect("bad JSON on the wire");
+                if v.get("id").is_some_and(|i| !i.is_null()) {
+                    assert_eq!(v["id"], json!(id), "response id must correlate");
+                    return v;
+                }
+            }
+        }
+
+        fn ok(&mut self, method: &str, params: Value) -> Value {
+            let v = self.call(method, params);
+            assert!(v.get("error").is_none(), "{method} failed: {}", v["error"]);
+            v["result"].clone()
+        }
+
+        fn handshake(&mut self) {
+            self.ok(
+                "initialize",
+                json!({
+                    "clientId": "pumpreport-test",
+                    "clientName": "pumpreport",
+                    "clientVersion": "0",
+                    "protocolVersion": 1,
+                    "clientCapabilities": {"events": false},
+                }),
+            );
+            self.send_raw(&json!({"jsonrpc":"2.0","method":"initialized"}).to_string());
+        }
+    }
+
+    /// A player whose bus is bound to a private socket, plus that socket's path.
+    ///
+    /// **`paused` is `true` in every test below, and that is the anti-vacuity measure, not a convenience.**
+    /// A running player draws a frame per iteration, and the drains here are spread over however long a
+    /// client takes to connect and handshake — so a fixture that started running would have drawn a
+    /// picture, advanced its clock and cleared its capture *by itself* before the client said anything,
+    /// and every assertion below would be green whatever `drain` did. Measured, not assumed: the first
+    /// draft of the picture test started from `false` and failed on `machine.frames(): left: 2, right: 0`.
+    /// A paused window is a state the transport bar reaches with one click, and it is the state a client
+    /// must put this player in anyway before §6 will let it run, restore or reload anything.
+    fn served(tag: &str, info: MachineInfo, paused: bool) -> (Machine, Bus, PathBuf) {
+        let socket = temp_socket(tag);
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = Bus::new(
+            machine.system_mut(),
+            info,
+            paused,
+            Some(Some(socket.clone())),
+        );
+        assert!(
+            bus.is_serving(),
+            "the fixture did not bind {}, so no client can reach it and nothing below is a test",
+            socket.display()
+        );
+        (machine, bus, socket)
+    }
+
+    /// Everything the drains of one test put back in step. Counts rather than flags: "the picture was
+    /// adopted" and "the picture was adopted on every one of forty iterations" are different facts, and
+    /// only the count tells them apart.
+    #[derive(Default)]
+    struct Totals {
+        calls: usize,
+        timeline: usize,
+        picture: usize,
+        symbols: usize,
+    }
+
+    impl Totals {
+        fn add(&mut self, d: Drained) {
+            self.calls += d.calls;
+            self.timeline += usize::from(d.timeline);
+            self.picture += usize::from(d.picture);
+            self.symbols += usize::from(d.symbols);
+        }
+    }
+
+    /// **One iteration of `Loop::iterate`'s machine half**, in `main.rs`'s order: adopt the bus's pause at
+    /// the top, run a frame only if not paused, then drain. `paused` is carried in and out because the
+    /// adoption is what makes a client's `emulator/pause` stop this loop, and every test below depends on
+    /// it having stopped.
+    fn iterate(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        symbols: &mut Option<SymbolTable>,
+        paused: &mut bool,
+    ) -> Drained {
+        *paused = bus.is_paused();
+        if !*paused {
+            machine.step([Pad::default(); 2], bus);
+        }
+        drain(machine, bus, symbols, *paused)
+    }
+
+    /// Turn the loop until `done` is satisfied or the deadline passes, accumulating what every drain did.
+    /// Fails on the clock rather than hanging the suite.
+    fn turn_until(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        symbols: &mut Option<SymbolTable>,
+        paused: &mut bool,
+        totals: &mut Totals,
+        what: &str,
+        done: impl Fn(&Totals, bool) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !done(totals, *paused) {
+            assert!(Instant::now() < deadline, "{what}");
+            totals.add(iterate(machine, bus, symbols, paused));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// ★ **The picture follows a client's run.** Design §5.6.2's picture-after-a-step bullet, and the half
+    /// of §5.8.2 that was visible to a human: a client pauses this window, runs frames, and the glass
+    /// showed the last thing *this loop* had drawn — which for a paused player is whatever was there
+    /// before, forever.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The window redraws every frame anyway, so of course it has a picture.* Ruled out structurally
+    ///    and then checked: the client pauses first (it has no choice — `run_frames` is refused against a
+    ///    running machine), so `iterate` runs no `Machine::step`, and `machine.frames() == 0` at the end
+    ///    says so. A picture on the glass cannot have come from this loop.
+    /// 2. *The fixture started with a picture.* Checked before the client is even spawned.
+    /// 3. *`adopt_frame` runs on every drain against whatever is latched, so any test would pass.* Ruled
+    ///    out by the **control** below, which pauses and drains just as many times with no run: the
+    ///    picture stays `None` and `picture == 0`.
+    /// 4. *The bus latched the frame from this player's own `publish`.* Cannot be: `publish_capture`
+    ///    deliberately does not bump `screen_generation` (engine.rs), so a published frame raises no
+    ///    `screen_changed` — and this player published nothing, having run nothing.
+    #[test]
+    fn a_paused_windows_picture_follows_a_clients_run() {
+        let (mut machine, mut bus, socket) = served("picture", MachineInfo::default(), true);
+        assert!(
+            machine.image().is_none(),
+            "the fixture already had a picture, so `is_some` below would witness nothing"
+        );
+
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/run_frames", json!({"frames": 2}))
+        });
+
+        let (mut paused, mut symbols, mut totals) = (true, None, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut paused,
+            &mut totals,
+            "the client's run never reached the window's picture",
+            |t, _| t.picture > 0,
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(reply["frames"], json!(2), "the client's run really ran");
+        assert!(
+            paused,
+            "the window stopped being paused, so it may have drawn this itself"
+        );
+        assert_eq!(
+            machine.frames(),
+            0,
+            "this loop ran a frame of its own, so the picture below is not evidence of anything"
+        );
+        assert!(
+            machine.image().is_some(),
+            "the client ran two frames and the window is still showing nothing"
+        );
+        assert_eq!(
+            totals.picture, 1,
+            "exactly one adoption, for one client run"
+        );
+        assert!(
+            totals.calls >= 2,
+            "initialize and run_frames were both answered"
+        );
+
+        // --- the control: the same rig, the same drains, no run. ---
+        let (mut machine, mut bus, socket) = served("picture-ctl", MachineInfo::default(), true);
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+        });
+        let (mut paused, mut symbols, mut totals) = (true, None, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut paused,
+            &mut totals,
+            "the control's client never handshook",
+            |t, _| t.calls >= 1,
+        );
+        client.join().expect("the control client");
+        for _ in 0..20 {
+            totals.add(iterate(&mut machine, &mut bus, &mut symbols, &mut paused));
+        }
+        assert_eq!(
+            totals.picture, 0,
+            "the window adopted a picture with no client run behind it — `screen_changed` is not what \
+             is being reacted to"
+        );
+        assert_eq!(
+            totals.timeline, 0,
+            "and nothing moved the timeline either, so the resynchronisation tests are not measuring \
+             a drain that repairs unconditionally"
+        );
+        assert!(
+            machine.image().is_none(),
+            "and the glass must still be empty"
+        );
     }
 }
