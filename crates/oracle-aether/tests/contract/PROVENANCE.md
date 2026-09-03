@@ -20,23 +20,32 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 82982b7ff3c057f347d538fcf61b7c62b18ee813
-    pin.blob     = 125d17f03ac33872d97dac9587f01a8e708b27da
-    pin.bytes    = 324083
+    pin.revision = e04a94f259bdaffc38da85785eb0e3f48ad0bd1b
+    pin.blob     = 487af407cbb08e433aa1d5aa60ceaad1e73916e6
+    pin.bytes    = 345965
 
 ## Current copy
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`82982b7ff3c057f347d538fcf61b7c62b18ee813`** (2026-09-02) — *not* `origin/main`'s tip (`38f6df4` at adoption), and that is deliberate: it is the last commit that **touched this file**, derived with `git log -1 -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip, and `git merge-base --is-ancestor 82982b7 origin/main` was **run**, not assumed (it exited 0). 64 fragments; all 64 declare `params`, all 64 close it with `unevaluatedProperties: false` (handshake exempt), and all 64 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
-| Last commit that touched the schema | **`82982b7ff3c057f347d538fcf61b7c62b18ee813`** — *"protocol §11.31: CR-E adjudicated, ADOPTED; stopPrecision (exact > afterCommit > approximate) as a per-reason handshake map, REQUIRED on every stopped …"* (2026-09-02). |
-| Git blob | `125d17f03ac33872d97dac9587f01a8e708b27da` |
-| SHA-256 | `4aa19101b2a56e9f4a7d2278277b723d0022c63dda635d8f885c64dbb8f8b972` |
-| Bytes | 324083 |
-| Vendored on | 2026-09-02 |
+| Contract repo revision | **`e04a94f259bdaffc38da85785eb0e3f48ad0bd1b`** (2026-09-03) — *not* `origin/main`'s tip (`02ea386` at adoption), and that is deliberate: it is the last commit that **touched this file**, derived with `git log -1 -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip, and `git merge-base --is-ancestor e04a94f origin/main` was **run**, not assumed (it exited 0). 67 fragments; all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
+| Last commit that touched the schema | **`e04a94f259bdaffc38da85785eb0e3f48ad0bd1b`** — *"§11.32 addendum: object_spawn/move replies re-read x/y after the frame advance, never echo (oracle's ruling); schema descriptions name the moment"* (2026-09-03). |
+| Git blob | `487af407cbb08e433aa1d5aa60ceaad1e73916e6` |
+| SHA-256 | `0638548c7317a421773fda71ba966832764c68d499d1fef9f9a9dd6eaa13b996` |
+| Bytes | 345965 |
+| Vendored on | 2026-09-03 |
 
-**Taken from the object store at a committed revision**, `git show 82982b7:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `125d17f0…`, equal to `git rev-parse 82982b7:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+> **⚑ The revision this pins is `e04a94f`, NOT the `21c78d2` the parcel was briefed with.** `21c78d2` is
+> the merge that landed the three CR-J fragments; `e04a94f` is the §11.32 **addendum** that lands on top
+> of it and rewrites `object_spawn.result.x`/`.y`'s descriptions from *"neither §11.32 nor CR-J §9 says
+> whether the reply echoes … or re-reads"* to *"AS READ FROM THE OBJECT'S RECORD AFTER `framesAdvanced`
+> FRAMES — never an echo"*. Vendoring `21c78d2` would have pinned a copy whose own text says the question
+> this lane already ruled on is open. Derived, not assumed: `git log -1 --format=%H origin/main --
+> contract/schema/bus-protocol.schema.json` answered `e04a94f`, which is the recipe below working
+> exactly as written.
+
+**Taken from the object store at a committed revision**, `git show e04a94f:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `487af407…`, equal to `git rev-parse e04a94f:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
@@ -85,6 +94,48 @@ serve that needs the new schema.
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.32, the three object MUTATION rows (2026-09-03)
+
+Landed **with** `emulator/object_spawn` / `_move` / `_delete` in one commit, and the ordering inside the
+parcel was the load-bearing part rather than the fact that both are present. Two gates go red the moment
+either half lands alone, in opposite directions: `params_closure.rs` demands a fragment for every
+advertised method (so the serve alone reddens it), and `schema_conformance.rs`'s coverage gate pins
+`UNCOVERED_METHODS` empty (so the re-vendor alone would pass while nothing emitted the shape). That
+second one is the trap: **a re-vendor ahead of the serve turns the gate green against a server that does
+not emit the shape**, which this repo has measured before, and this file's §11.30 box records the same
+defect wearing annotation instead of absence.
+
+**What ran BEFORE these bytes were written, and it is what the re-vendor rule is actually for:** the
+three rows were served, driven against a real aeon build carrying the mailbox, and every real reply and
+every real error object was validated against the hub's fragments — the fragments read out of the object
+store, not out of this directory. Six real replies passed the `result` fragment **closed with
+`unevaluatedProperties: false`**; twenty-three real error objects passed `$defs/errorObject`; all six of
+the hub's `expect: "pass"` params vectors were accepted by the running server and their replies passed
+the closed result fragment; all sixteen `expect: "fail"` vectors were refused. Nothing the server emits
+is refused by a fragment. That check is the lane's standing commitment (`docs/2026-09-02-cr-spawn-mode.md`
+§17), and it exists because on CR-F one lane both authored and verified vectors and nine of eleven could
+not have passed.
+
+Figures **re-derived by parsing the previous copy and this one**, never read from a commit message:
+
+| | previous copy (`82982b7`) | this copy (`e04a94f`) | delta |
+|---|---|---|---|
+| method fragments | 64 | **67** | **+3**: `emulator/object_spawn`, `emulator/object_move`, `emulator/object_delete` |
+| fragments declaring / closing / resulting | 64 / 64 / 64 | **67 / 67 / 67** | +3 / +3 / +3 |
+| `$defs` | 19 | **19** | unmoved — the rows reuse `hex`, `symbolName`, `decoderLayout`, `replyFields` |
+| `$defs.errorObject.data.reason` | 6 named discriminants | **12** | +6: `objectPoolFull`, `unknownSlot`, `slotOwnedByEntityWindow`, `mailboxNotConsumed`, `frameMoved`, `mailboxLayoutUnexpected`. **Prose inside a `description`, not an enum** — §11.18's rule that an emitted enum is unwidenable — so this half carries **no validation force** and no green here witnesses a reason spelling. `tests/object_mutation.rs` asserts each one on the wire. |
+
+**What this re-vendor's green does and does not witness.** The `params` half has real force: all three
+fragments are closed, so `params_closure.rs` ties each row's accepted key set to the fragment by parse
+and a drifted spelling is red. The `result` half has force for shape (required keys, `layout` closed
+against `decoderLayout`) and none at all for the two things §11.32 spends most of its words on — that a
+refusal by the game reaches the client as a **typed error** rather than a result field, and that `x`/`y`
+are a **re-read** rather than an echo. A schema cannot see either: a server that returned
+`{"status": 3}` in a result would fail the fragment only because `status` is an undeclared key at a level
+the fragment does not close, and an echo and a re-read are the same JSON. Both are held at runtime by
+`tests/object_mutation.rs`, whose consumer is a 68000 test double precisely so the machine's record can
+disagree with the request.
 
 ### What this re-vendor adopted — §11.31, `stopPrecision` (2026-09-02)
 

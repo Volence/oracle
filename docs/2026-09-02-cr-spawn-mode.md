@@ -794,3 +794,135 @@ embedded `+$hex` refused **matches our existing convention** — displacement is
 `handle` as `$defs/hex` rather than the opaque handle type is right, since §11.32 defines it as the low
 word of `addr`. And the published closure covers `layout` only, so a green run on these rows is **not**
 evidence that a stranger top-level key is caught.
+
+---
+
+## §17.2 — THE Q3 MEASUREMENT, taken 2026-09-03 by the implementing parcel
+
+**This section corrects §7.2, §14's weakest point 2 and §15 Q3 in place.** All three were written as
+UNMEASURED and the adjudicator made the measurement this parcel's first task. Everything below was run
+firsthand against a real aeon build carrying the mailbox, through the server's own socket, using only
+methods that existed **before** these rows did (`write_memory`, `run_frames`, `read_memory`,
+`breakpoint_add`, `lookup_symbol`) — so nothing here is calibrated by the thing it calibrates.
+
+### What it was measured on, and the provenance limit
+
+`/home/volence/sonic_hacks/.aeon-live-objects/s4.debug.bin` + `.lst`, built by the aeon lane at
+**`268d93a8`** — the parcel branch tip that aeon `36285940` merges as its second parent. `git diff
+268d93a8 36285940 -- games/sonic4/config/ram.emp games/sonic4/test/ojz_scroll_test.emp` touches the
+consumer file only through chain 205's unrelated edits: **zero lines matching `Obj_Req` or `objreq`**, and
+`config/ram.emp` is not in the diff at all. So the mailbox cells and `objreq_consume` in the measured ROM
+are byte-identical to the anchored revision.
+
+⚑ **NOT A FIXTURE, and it must not become one by drift.** That ROM is an unattested build in a sibling
+working tree. `fixtures/aeon/` is pinned at sigil chain 189 (`aeon_rev 3f143178`) and **carries no
+`Obj_Req_*` symbol at all** — `grep -c Obj_Req fixtures/aeon/s4.debug.lst` is `0`, and sigil's tip chain
+is 200, still short of the mailbox's 206. Nothing in the committed suite reads the measured ROM;
+`crates/oracle-aether/tests/object_mutation.rs` uses a 68000 test double instead. This is a measurement
+with its provenance stated, not a pin.
+
+### Q3(a) — a scheduler boundary is NOT the game's frame top. Measured, decisively.
+
+`GameState_OJZScroll_Update`'s entry — the game's frame top, where `Debug_Warp_Consume` and
+`objreq_consume` are spliced — sampled over twelve consecutive frames with a breakpoint:
+
+| what | in-frame offset (mclk of 896040) | PC |
+|---|---|---|
+| the game's frame top, 12 samples | **832096, 832123, 832153, 832154, 832155, 832166, 832220, 832251, 850488, 850490, 850545, 860067** — twelve distinct values | `0x000A63EA` every time |
+| where `run_frames` leaves the machine, 6 samples | **10, 12, 23, 36, 49, 53** | `Render_Sprites$owner_clear`, and once `EntityWindow_DespawnRings$loop+20` |
+
+Two facts, and the second is the one that matters. The game's frame top is **nowhere near** a scheduler
+boundary, and it does not sit at a *fixed* scheduler offset either — it drifts by up to 28,000 mclk
+frame to frame with the game's own workload. So **no scheduler quantity can stand in for it**, and
+`emulator/run_frames` does not leave a client at one.
+
+### Q3(b) — the server cannot recognise the game's frame top from a paused machine, so `pausedMidFrame` is NOT available. v1 stands as ruled.
+
+Three findings, each measured rather than argued:
+
+1. **The consumer carries no symbol to resolve.** `objreq_consume` is a `comptime fn ... -> Code`
+   template, and aeon's own comment says why — *"a template declares no symbol at all, so the DEBUG-only
+   guarantee is structural"*. Confirmed against the listing: the only `Obj_Req` entries in
+   `s4.debug.lst` are the eight RAM cells. There is nothing to resolve as *"where the consumer is"*.
+2. **`emulator/call_stack` is catalogued in §6 and NOT SERVED by this build** — `-32601`, measured. So
+   the one row that could have answered *"is `RunObjects` on the stack"* is not on the wire, and the
+   only landmark a paused machine offers is `pc` plus its nearest preceding symbol.
+3. **And the predicate a hard refusal needs is not "am I at the frame top" anyway.** What must be true
+   is *no object-mutating code runs between the server's write and the consumer*. That interval does not
+   end at `RunObjects`: one of the six `run_frames` samples above stopped inside
+   `EntityWindow_DespawnRings`, which calls `DeleteObject`. So the unsafe region runs from the frame top
+   to the end of the frame, and its only safe point is the handful of instructions between the game
+   state proc's entry and the consumer — an interval with no name, roughly one part in 800,000 of a
+   frame. A refusal built on `pc == GameState_OJZScroll_Update` would be exact and useless: it would
+   refuse every pause a human ever has, including safe ones.
+
+**VERDICT: the server cannot distinguish it. `expectFrameToken` plus disclosure is v1, exactly as §11.32
+ruled, and no `pausedMidFrame` addendum is filed.** The `caveat` key is declared on all three rows and
+this server **emits it never**, because §11.32 declares it for a server that *can tell* the window
+applied and this one cannot — an unconditional caveat on every reply is a field nobody reads.
+
+**The hazard itself is real and was demonstrated at the allocator**, which is the half that can be shown
+without staging a race: across four spawn/delete cycles the engine handed back **the same handle
+`0x9B56` every time**. A handle names a slot, and the slot is recycled immediately — so a listing and a
+request separated by any object code can name two different objects, which is exactly §7.2's story.
+
+### Q3(c) — the frame counts, and `maxFrames` default 2 is CONFIRMED
+
+Armed with `write_memory` (payload, then the flag last) and stepped one `run_frames` at a time:
+
+| where the machine was paused | in-frame offset | frames to ack |
+|---|---|---|
+| the game's frame top (breakpoint on `GameState_OJZScroll_Update`) | 832256 | **1** |
+| a scheduler boundary (`run_frames`) | 39 | **1** |
+| inside `RunObjects`, +400 steps — **past** that frame's top | 878760 | **2** |
+| inside `RunObjects`, +4000 steps — before the next top | 217604 | **1** |
+| delete, from a frame top | — | **1** |
+
+**Two is the right default and one would have been wrong.** A pause whose in-frame offset is past the
+game's frame top misses that frame's consumer and needs the next one. Two was sufficient in every
+position measured. §11.32's *"default 2 stands provisionally"* is hereby measured rather than reasoned,
+and the value does not move.
+
+### Q3(d) — the engine's five refusals, and the state precondition, reproduced against the real ROM
+
+Every one of these is the raw mailbox answering, before any of the three rows existed:
+
+* **status 3** after exactly **39** successful spawns into a 40-slot dynamic pool (one slot already
+  held) — pool full, nothing evicted.
+* **status 4** for a handle that named no live dynamic slot.
+* **status 2** for `ObjDef_Solid | 1`, the odd-pointer rail.
+* **Outside the consumer's game state the flag is never cleared** — armed after a reset and six frames,
+  the ack never came. This is `mailboxNotConsumed`, and §11.32 is right that it will be the commonest
+  error a user meets.
+
+### Q3(e) — a fifth finding nobody asked for: **flag-last is UNOBSERVABLE on this server**
+
+The test written to hold flag-last — *"write the flag before the payload and the consumer sees a stale
+value"* — was mutated on disk exactly that way and came back **GREEN**. Under `require_paused` no CPU
+cycles elapse between the server's seven writes, so no consumer can observe any order among them, and no
+test in this suite can hold the rule.
+
+That is §5.1(a) arriving as a measurement instead of an argument. The CR argued that flag-last over a
+request/response bus is safe here *"only through an unstated property of `require_paused`"* and that a
+rule whose correctness depends on an unstated server property is worse than no rule. The measurement is
+the same sentence from the other end: **the property is so total that the rule it protects has no
+observable content on this server.** The server writes the flag last regardless — the contract says so,
+it costs nothing, and a server whose machine ticks between writes (a hosted arrangement whose owner
+pumps the loop differently, or a second implementation) would need it — but the suite's test is renamed
+to what it can actually witness (`every_payload_cell_the_consumer_reads_belongs_to_this_request`), and a
+test named for flag-last would have been a control measuring a different string from the one it names.
+
+### What §14 said, and what now replaces it
+
+> *"Weakest point 2: everything about frame counts is unmeasured. `maxFrames` default 2 is reasoning,
+> not measurement."*
+
+Measured; default 2 confirmed; the mid-frame case that requires the second frame is named and
+reproducible.
+
+> *"Weakest point 3: the residual mid-frame window is disclosed, not closed."*
+
+**Still true, and now known to be unclosable from this side with today's surface**, which is a stronger
+statement than the CR could make. What would change it is a landmark the server can read: an
+`emulator/call_stack` that is actually served, or an engine-side symbol at the consumer's splice. Both
+are additive and neither is proposed here.

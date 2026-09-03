@@ -273,7 +273,16 @@
           "properties": {
             "reason": {
               "type": "string",
-              "description": "Machine-readable discriminant. REQUIRED for -32005, e.g. machineRunning | checkpointCapReached | unknownCheckpoint | watchCapReached | breakpointCapReached | unknownBreakpoint (protocol.md §5). The last two were added 2026-08-26 by §11.21: `breakpointCapReached` carries `cap` and `count` as integers beside it — the shape watchCapReached and checkpointCapReached already use, since a cap refusal that does not say what the cap was makes the client discover it by being refused twice — and `unknownBreakpoint` carries no further context, being the answer to a handle the server does not hold (emulator/breakpoint_set_enabled refuses; emulator/breakpoint_clear does not, and succeeds with removed 0)."
+              "description": "Machine-readable discriminant. REQUIRED for -32005, e.g. machineRunning | checkpointCapReached | unknownCheckpoint | watchCapReached | breakpointCapReached | unknownBreakpoint | objectPoolFull | unknownSlot | slotOwnedByEntityWindow | mailboxNotConsumed | frameMoved | mailboxLayoutUnexpected (protocol.md §5). NOT AN ENUM, deliberately, for §11.18's reason — an emitted enum is unwidenable, and this registry grows by amendment. breakpointCapReached and unknownBreakpoint were added 2026-08-26 by §11.21: `breakpointCapReached` carries `cap` and `count` as integers beside it — the shape watchCapReached and checkpointCapReached already use, since a cap refusal that does not say what the cap was makes the client discover it by being refused twice — and `unknownBreakpoint` carries no further context, being the answer to a handle the server does not hold (emulator/breakpoint_set_enabled refuses; emulator/breakpoint_clear does not, and succeeds with removed 0). The LAST SIX were added 2026-09-03 by §11.32 (CR-J) and belong to the three object MUTATION rows, whose whole point is that a refusal by the game reaches the client as an error and never as a result field (§8 item 25): `objectPoolFull` (nothing was evicted, and the message must say so, because a client's next instinct is to retry harder; `data` carries the dynamic pool's size where layout resolves it), `unknownSlot` (the unknownCheckpoint/unknownBreakpoint precedent verbatim, covering three realities the engine cannot distinguish — the slot died, the handle was never a dynamic slot, the handle is malformed — with `handle` in `data`), `slotOwnedByEntityWindow` (refused for coherence, not malformedness; the message must name the fix, since the slot despawns on its own and MOVE is allowed on it), `mailboxNotConsumed` (the commonest error a user will meet, because the consumer exists in exactly one game state, so its `message` MUST say that the game is not in a state that services this mailbox rather than leaving a reader to call the feature broken; carries `cancelled` and `framesAdvanced`), `frameMoved` (expectFrameToken did not match the current stamp) and `mailboxLayoutUnexpected` (the resolved cells were not contiguous in the published order with the flag highest; the resolved order rides in `data`)."
+            },
+            "cancelled": {
+              "type": "boolean",
+              "description": "Added 2026-09-03 by §11.32 (CR-J, Q2). On -32005 mailboxNotConsumed: the server cleared the request flag, so the request the client made can no longer fire. TRUE is the answer this reason always carries, and it is declared rather than left to prose because the alternative reading — an armed mailbox left behind after an error reply — is a world-change traced to a failure, and a client must be able to tell the two apart mechanically. error.data is an OPEN shape (it composes replyFields and closes nothing), so declaring the key adds its TYPE rather than its permission; cap and count, the same per-reason kind of key, remain prose-only in `reason` above, which is a pre-existing asymmetry this entry did not create."
+            },
+            "framesAdvanced": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Added 2026-09-03 by §11.32 (CR-J). The object mutation rows MUST report framesAdvanced on every reply, SUCCESS AND FAILURE (protocol.md §6 rule (5)), and the failure half of that obligation lands here: a caller whose request was refused after the machine advanced must still be able to say where the machine ended up. Same field, same meaning and same typing as the success-path key on emulator/object_spawn / _move / _delete."
             }
           },
           "description": "Always present: it carries the machine stamp (D11) and droppedEvents (D17), plus any structured context."
@@ -6459,6 +6468,327 @@
             "type": "string",
             "minLength": 1,
             "description": "As emulator/object_list."
+          }
+        }
+      }
+    },
+    "emulator/object_spawn": {
+      "$comment": "protocol.md §6 (object / player decoders ⚙), row at §6:1629; specified 2026-09-03 by §11.32 (CR-J, oracle 305b972, ADOPTED). The first of the family's three MUTATION rows, and a ⚙ group member: it inherits rule (1)'s REQUIRED `layout` and the -32012 a server with no symbol table owes instead of a decode from a guessed base, and it adds rule (5). Under rule (5) the server writes through a GAME-DEFINED MAILBOX whose cells it resolves BY NAME on every call — a build missing any required name is -32013 with error.data.missing naming every absent one, and is never written to at a computed address (§11.32 J5, the safety property: a release ROM cannot be written to at a guessed address) — and it owns the whole handshake (payload writes, the flag written last, the frame advance, the acknowledgement, the status read) as ONE INDIVISIBLE OPERATION ON THE ENGINE THREAD, so the client never sees a flag and no param here spells one (§11.32 J2). Named in §6's run-control state rule: a free-running machine is -32005 machineRunning, never an implicit pause. A REFUSAL BY THE GAME IS NEVER A RESULT FIELD (§8 item 25, §11.32 J3), which is why this fragment declares no `status`: the engine's non-zero codes leave as -32602 (a `def` that failed the archetype rails, error.data carrying `def` and naming all four rails because the engine's one status byte cannot say which), -32005 objectPoolFull (nothing was evicted), -32005 unknownSlot, -32005 slotOwnedByEntityWindow, and -32603 for an op byte the server itself wrote wrongly. `framesAdvanced` is REQUIRED on every reply, success and failure. THE RAW PLACEMENT WORD IS DELIBERATELY NOT A PARAM (§11.32 Q4): the engine masks it to $60FF silently, so a stray bit would be a value the caller set and the machine never saw — `subtype`/`flipH`/`flipV` are composed server-side instead, which is also what lets an out-of-range subtype be -32602 rather than a truncation. UNMEASURED and carried openly from the ruling: the frame counts (Q3), that layout.pools resolves on the build in question, and that the engine loop is single-request.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": [
+          "x",
+          "y"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "def"
+            ]
+          },
+          {
+            "required": [
+              "defSymbol"
+            ]
+          }
+        ],
+        "properties": {
+          "def": {
+            "$ref": "#/$defs/hex",
+            "description": "Address of the ObjDef archetype record to spawn from. D9 category 1. Exactly one of `def` and `defSymbol`, enforced by the oneOf above in BOTH directions (both present matches two branches, neither matches none) — emulator/write_memory's addr|symbol precedent, with the spellings NOT borrowed: §11.32 Q5 rules that `addr` on a spawn row reads as where to put it, which is `x`/`y`. A `def` outside the cart window is -32602 BEFORE any write is attempted."
+          },
+          "defSymbol": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/symbolName"
+              }
+            ],
+            "description": "The archetype named rather than addressed, resolved per call (D7). The ergonomic path: a client finds archetypes with emulator/lookup_symbol's bounded prefix search and hands the name straight back, which is why §11.32 adds no archetype-catalogue row. Typed as symbolName rather than as a bare non-empty string for the reason every symbol-typed param on this bus is: the name must ROUND-TRIP, and a trailing +$hex displacement is a number duplicated inside a string (§4). This row declares no `disp`, so there is nothing for such a suffix to mean here."
+          },
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "description": "World PIXELS, not the engine's fixed-point word (D9 category 2, the decodedSlot convention). Bounded by the engine's own 16-bit position cell; out of range is -32602, refused and never clamped."
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "description": "See x."
+          },
+          "subtype": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "default": 0,
+            "description": "The archetype's subtype byte, composed into the placement word's low byte server-side. Bounded at a byte so an over-large value is -32602 rather than the engine's silent truncation."
+          },
+          "flipH": {
+            "type": "boolean",
+            "default": false,
+            "description": "Horizontal flip, composed into the placement word server-side."
+          },
+          "flipV": {
+            "type": "boolean",
+            "default": false,
+            "description": "Vertical flip, composed into the placement word server-side."
+          },
+          "maxFrames": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 2,
+            "description": "How many frames the server may advance the paused machine while waiting for the engine to acknowledge the request. A request unacknowledged within it is -32005 mailboxNotConsumed — never a success — and the server CANCELS it, clearing the request flag so it cannot fire minutes after its own error reply, and reporting error.data.cancelled true (§11.32 Q2). The default of 2 stands PROVISIONALLY: §11.32 Q3 leaves the frame counts unmeasured and says so. NO CEILING IS DECLARED because the contract states none; the run-shaped rows bound theirs by limits.maxRunFrames and this row is not yet tied to that limit."
+          },
+          "expectFrameToken": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional guard against acting on a machine that moved under the caller: compared against the current stamp, and a mismatch is -32005 frameMoved. Typed exactly as the `frameToken` this bus already carries (D9 category 2, the emulated frame index, minimum 0, NOT a handle) — a negative value could match no stamp this envelope can carry."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "handle",
+          "addr",
+          "x",
+          "y",
+          "framesAdvanced",
+          "layout"
+        ],
+        "properties": {
+          "handle": {
+            "$ref": "#/$defs/hex",
+            "description": "The spawned object's handle: the LOW WORD of this record's `addr` (§11.32's re-read correction to CR-J §2.4 — object_list does not already report a handle field; it reports `addr`, of which this is the low word). A hex string under D9 category 1 and deliberately NOT #/$defs/handle's opaque token, because the contract states an arithmetic relationship between it and `addr`, and an opaque handle is one a client MUST NOT do arithmetic on."
+          },
+          "addr": {
+            "$ref": "#/$defs/hex",
+            "description": "Bus address of the object's record — the full SST address, D9 category 1. P1: the key that makes the reply checkable with emulator/read and joinable to emulator/object_slot."
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Pool index, the join back to emulator/object_list. PRESENT IFF `layout` resolves it, never fabricated — the ⚙ group's rule (3) one level up. The server inverts the layout's slot addressing so the client never does address arithmetic; where the layout cannot supply it the key is omitted."
+          },
+          "x": {
+            "type": "integer",
+            "description": "World pixels (D9 category 2), AS READ FROM THE OBJECT'S RECORD AFTER `framesAdvanced` FRAMES — never an echo of the accepted request (§11.32 addendum, 2026-09-03, oracle's ruling: an echo carries zero information, the client just sent those numbers; the re-read is the actual state of the machine, which is what every other reply on this bus reports). The moment is named because an unqualified position after a frame advance is a plausible wrong answer: these rows write POSITION ONLY and leave velocity untouched, so an object with velocity has moved by the time the acknowledgement is collected, and `framesAdvanced` on the same reply is what lets a client reason about how much time passed. STATED LIMIT, v1: the re-read conflates the engine adjusting a requested position on spawn with the object moving under its own velocity; `framesAdvanced` says time passed and does not separate the causes. Not a spawn-position confirmation. If a consumer ever needs the split it is an ADDED field (the accepted position), never a redefinition of this one. UNBOUNDED because a re-read after motion is not confined to the request's 0-65535."
+          },
+          "y": {
+            "type": "integer",
+            "description": "See x: a re-read after `framesAdvanced` frames, not an echo, with the same stated limit."
+          },
+          "framesAdvanced": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many frames the machine advanced to collect the engine's acknowledgement. REQUIRED on every reply, success and failure alike (rule (5)); on a failure it rides in error.data. 0 is a legal answer and IS the answer, not the absence of one. The machine is paused before and paused after: the advance is a change of POSITION, not of mode (§11.32 J4), which is why it is reported rather than treated as a mode change the caller must detect."
+          },
+          "layout": {
+            "$ref": "#/$defs/decoderLayout",
+            "description": "What the server decoded against, and how — the ⚙ group's rule (1), which binds these rows exactly as it binds the read rows."
+          },
+          "caveat": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§2.4 rule 4, DECLARED here because §11.32 permits it on these rows and §11.20 permits a caveat only where the schema declares it. Emitted for exactly ONE thing: the residual window between the server's write and the engine's consumer when the machine was paused mid-frame, and only where the server can tell that it applied. A server that cannot tell emits none — an unconditional caveat on every reply is a field nobody reads. §11.32 Q3 leaves a hard -32005 pausedMidFrame open as an additive refusal once the window is measured."
+          }
+        }
+      }
+    },
+    "emulator/object_move": {
+      "$comment": "protocol.md §6 (object / player decoders ⚙), row at §6:1630; specified 2026-09-03 by §11.32 (CR-J). emulator/object_spawn's rule (5) applies unchanged — mailbox cells resolved by name per call, one indivisible engine-thread operation, framesAdvanced on every reply, the game's refusals as typed errors — and only the addressing differs: `handle`|`slot`, the existing either-spelling convention (emulator/read, write_memory, memory_hash) applied to the same problem, since `slot` is what object_list reports and `handle` is what a previous object_spawn returned. TWO BEHAVIOURAL FACTS A CLIENT WILL ASSUME THE OPPOSITE OF, both normative and both stated here because they are the row's whole semantics: POSITION ONLY — velocity, status, angle and animation are untouched, so a moved badnik keeps doing what it was doing — and NO CLAMP, an out-of-act object is simply culled. A handle the pool does not hold is -32005 unknownSlot, the unknownCheckpoint/unknownBreakpoint precedent verbatim; where layout.pools resolves, a slot outside the dynamic pool is refused PRE-FLIGHT with -32602 naming that this row reaches the dynamic pool only, which fires only where the engine would have refused anyway (§11.32's 'Not proposed and not added' paragraph), and where pools does not resolve the engine's own refusal stands. Unlike delete, MOVE is allowed on a slot the entity window owns.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "required": [
+          "x",
+          "y"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "handle"
+            ]
+          },
+          {
+            "required": [
+              "slot"
+            ]
+          }
+        ],
+        "properties": {
+          "handle": {
+            "$ref": "#/$defs/hex",
+            "description": "The object's handle, as emulator/object_spawn returned it: the low word of the record's addr. D9 category 1. Exactly one of `handle` and `slot`, enforced in both directions by the oneOf above; both or neither is -32602."
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Pool index, as emulator/object_list reports it. Alternative to `handle`. A slot past the pool is -32602 with the bound in error.data, on the ⚙ group's rule (4)."
+          },
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "description": "New position, world PIXELS. As emulator/object_spawn."
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "description": "See x."
+          },
+          "maxFrames": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 2,
+            "description": "As emulator/object_spawn."
+          },
+          "expectFrameToken": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "As emulator/object_spawn."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "handle",
+          "addr",
+          "x",
+          "y",
+          "framesAdvanced",
+          "layout"
+        ],
+        "properties": {
+          "handle": {
+            "$ref": "#/$defs/hex",
+            "description": "As emulator/object_spawn — echoed whichever spelling the caller used, so a caller that addressed by `slot` still gets the handle."
+          },
+          "addr": {
+            "$ref": "#/$defs/hex",
+            "description": "As emulator/object_spawn."
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "As emulator/object_spawn: present iff the layout resolves it, never fabricated."
+          },
+          "x": {
+            "type": "integer",
+            "description": "As emulator/object_spawn, including the echo-versus-re-read residue, which bites harder here: this row moves an object that may already have velocity."
+          },
+          "y": {
+            "type": "integer",
+            "description": "See x."
+          },
+          "framesAdvanced": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "As emulator/object_spawn."
+          },
+          "layout": {
+            "$ref": "#/$defs/decoderLayout",
+            "description": "The ⚙ group's rule (1)."
+          },
+          "caveat": {
+            "type": "string",
+            "minLength": 1,
+            "description": "As emulator/object_spawn."
+          }
+        }
+      }
+    },
+    "emulator/object_delete": {
+      "$comment": "protocol.md §6 (object / player decoders ⚙), row at §6:1631; specified 2026-09-03 by §11.32 (CR-J). emulator/object_move's addressing and emulator/object_spawn's rule (5), with the position params dropped: a delete names a thing, not a place. NO `deleted: true` IN THE RESULT — a field that is true on every success is §11.5's 'released's defect with a useful name', and the failure path is a typed error, so the boolean could never carry information. Two behavioural facts, both normative: the delete CASCADES, taking the child chain with it, and a slot the entity window owns is refused -32005 slotOwnedByEntityWindow — the asymmetry with move, which is allowed on such a slot; the message must name the fix rather than reading as a malformed-request refusal, since the slot despawns on its own. Three rows and not one object_request{op} because servedness on this bus is `methods` membership (§8 item 23) and one row would make 'can spawn' and 'can delete' the same bit (§11.32 J1). capabilities.objectDecoders is true iff at least one of the three appears in `methods`, and never reports whether a layout was detected.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "handle"
+            ]
+          },
+          {
+            "required": [
+              "slot"
+            ]
+          }
+        ],
+        "properties": {
+          "handle": {
+            "$ref": "#/$defs/hex",
+            "description": "As emulator/object_move."
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "As emulator/object_move."
+          },
+          "maxFrames": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 2,
+            "description": "As emulator/object_spawn."
+          },
+          "expectFrameToken": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "As emulator/object_spawn."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "handle",
+          "addr",
+          "framesAdvanced",
+          "layout"
+        ],
+        "properties": {
+          "handle": {
+            "$ref": "#/$defs/hex",
+            "description": "As emulator/object_move. The handle of the record that was deleted; it names what the call acted on, which is the only thing left to report once the record is gone."
+          },
+          "addr": {
+            "$ref": "#/$defs/hex",
+            "description": "As emulator/object_spawn."
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "As emulator/object_spawn: present iff the layout resolves it, never fabricated."
+          },
+          "framesAdvanced": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "As emulator/object_spawn."
+          },
+          "layout": {
+            "$ref": "#/$defs/decoderLayout",
+            "description": "The ⚙ group's rule (1)."
+          },
+          "caveat": {
+            "type": "string",
+            "minLength": 1,
+            "description": "As emulator/object_spawn."
           }
         }
       }
