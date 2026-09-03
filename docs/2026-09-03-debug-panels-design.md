@@ -1,7 +1,46 @@
 # The debug panels — parcel 2 design
 
-**Status: DESIGN, not built.** Docs-only; no crate was touched and no `cargo` was run (another lane holds
-that). Base: `420c76d` on `main`, branch `debug-panels-design`.
+> ## ⚠ CORRECTIONS, 2026-09-03 — READ BEFORE BRIEFING 2b OR 2c OFF THIS DOCUMENT
+>
+> Parcel 2a is built and merged (`31d3408`). Building it surfaced that **this document's base
+> `420c76d` is ELEVEN commits behind** where 2a started, not the handful assumed, and the drift is not
+> only cosmetic. Found by the 2a agent, **re-verified firsthand at `31d3408` before being written here**
+> — the numbers below are this seat's own measurements, not a transcription of the report.
+>
+> **The one that changes a design, not just a citation: §1.3 says twelve `require_paused` methods. It is
+> FIFTEEN.** There are 13 call sites, and the thirteenth (`engine.rs:4767`) sits inside the shared
+> `objreq_exchange` helper, which three handlers call (`:4983`, `:5051`, `:5099`) — `object_spawn`,
+> `object_move`, `object_delete`. **A grep for `require_paused("emulator/` structurally cannot find a
+> shared-helper site**, which is how a correct-looking enumeration came back three short. This matters to
+> **P2 (Memory)** directly: the panel disables a write cell *with a reason* when the machine is running,
+> and the set it must cover is larger than this document says. §1.3's other claim — that `write_vram` is
+> **not** paused-gated while the other three writes are — still holds.
+>
+> **Also stale, verified:** §1.2's *"`object_spawn` does not exist, in either list… another lane's
+> branch"* is **false** — that lane merged at `9ead69b` and all three rows are in `METHODS`. The served
+> surface is **59**, not 56, so §2.5's checked partition (16+31+3+6=56) is short by three and must be
+> redone before it is cited. §2.1 says `emulator/status` has nine fields; it emits **ten** unconditionally
+> (`display` arrived with §11.29/CR-H) plus two conditionals. Every line number in §1.3, §9.3 and §9.4 has
+> moved — `fn registers` is `:2632` not `:2598`, `set_live_pads` is `:1385` not `:843`.
+>
+> **Verified still correct:** the 19-vs-21 register defect itself (§9.3, and 2a fixes it), `host.rs`'s
+> pause equivalence, `registers.rs:64`, `main.rs:75-89`, and §4's whole read-path argument, which 2a
+> implemented as written.
+>
+> **New residual booked from 2a, for P2:** the panel's `rom` line shows the `--rom` argument verbatim
+> while the bus's `romPath` is absolutised through `absolutise` (`engine.rs:7491`), which is a **private
+> free function** — so R1's one-derivation-two-consumers is defeated by a privacy boundary, not by a
+> design choice. The panel labels the row `rom` and documents it, so it claims nothing false today; P2
+> should close it properly, since §11.30/CR-I already ruled that absolute paths are a property of *every*
+> reply field carrying a filesystem path.
+>
+> *The general lesson, which this repo keeps paying for: a design document's coordinates age on the same
+> clock as a precedent narrative, and nothing re-reads them. Re-derive from source; where source and this
+> document disagree, source wins.*
+
+**Status: DESIGN, not built.** ~~Docs-only; no crate was touched and no `cargo` was run (another lane holds
+that).~~ **Parcel 2a of it is now BUILT and merged at `31d3408`;** §§1-4 are implemented as designed, §5's
+P2/P3 and the transport bar are not. Base: `420c76d` on `main`, branch `debug-panels-design`.
 
 **What this settles:** which of the 56 served methods becomes a tab, which becomes a control, which is
 on-demand and which is not surfaced at all; how a panel reads, and where the line between the two read paths
