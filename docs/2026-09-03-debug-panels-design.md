@@ -252,7 +252,7 @@ show a picture the Screen tab is already showing from a texture.
 |---|---|
 | `wait_for_break` | **Deprecated by the `stopped` event in its own summary** ("deprecated by the `stopped` event; see §6 D6"). Hosted, the window is the run loop: it learns of a halt *synchronously*, from `break_observed(brk)` on the sink it fed, one frame before any event could reach it. A polling control here would be a slower path to something the panel already has. |
 | `press`, `play_input` | The window has a keyboard, and `input::decide` (parcel 1) already delivers it. Both are `require_paused`, so a "press A" button would refuse for the whole time the game is playable — the state in which a human would reach for it. A macro/timeline editor is a real feature and it is not this parcel's. |
-| `hold`, `release_all` | Not as controls, for `press`'s reason. **But their effect must be visible** — see §9.4: a client's held set ORs into the human's pad (`Bus::merge_held`), and today a human whose character walks left forever has nothing on screen that can tell them a client is holding Left. One read-only line in the status strip, sourced from `Host::held(0)`/`held(1)`. That is not a tab and not a control; it is a field. |
+| `hold`, `release_all` | Not as controls, for `press`'s reason. **But their effect must be visible** — see §9.4: a client's held set ORs into the human's pad (`Bus::merge_held`), and today a human whose character walks left forever has nothing on screen that can tell them a client is holding Left. One read-only line in the status strip, sourced from `Host::held(0)`/`held(1)`. That is not a tab and not a control; it is a field. **✅ BUILT (`HELD-PADS-PLAYER`)**, together with the merge itself, which §5.6.2 had booked as undone — see §9.4. |
 | `screen_text` | **The window is this method's producer, not its consumer** (`Host::set_screen_text`; engine.rs:1355). A panel rendering it would render the window's own chrome back at itself. It exists so a *client* can read our glass. |
 | `restore` — the *implicit* case | Listed as a control in §2.2; noted here because `PumpReport.rom_changed`/`timeline_moved` mean every panel's cached state is stale after one. Panels must derive from the machine each repaint rather than cache across a pump. |
 
@@ -603,12 +603,35 @@ period            16.665    16.665  |   16.666   16.665
   > The second half was **wrong when written**: `Bus::read_instruments` is `(&Watchpoints, &Profiler,
   > bool)` and has never carried breakpoints, so it is the borrow *two* of the three tabs draw from. The
   > Breakpoints tab draws from `Bus::read_breakpoints`, added as its sibling. §5.7 has the reason.
-* **Held pads are still not merged.** `Host::set_live_pads` / `Host::held` are unwired in `oracle-player`,
-  so a client's `emulator/hold` does not compose with the keyboard there (it does in `oracle-frontend`,
-  via `Bus::merge_held`). §5.4 listed this among parcel 3's costs; it is a real gap and it is booked here
-  rather than quietly closed. **§9.4 is its sibling and not the same defect**: that one is about a held set
-  the frontend *does* apply being invisible to the human; this one is about the player not applying it at
-  all, so a client's `hold` against the toolkit player does nothing whatsoever.
+* ~~**Held pads are still not merged.** `Host::set_live_pads` / `Host::held` are unwired in
+  `oracle-player`, so a client's `emulator/hold` does not compose with the keyboard there (it does in
+  `oracle-frontend`, via `Bus::merge_held`). §5.4 listed this among parcel 3's costs; it is a real gap and
+  it is booked here rather than quietly closed. **§9.4 is its sibling and not the same defect**: that one
+  is about a held set the frontend *does* apply being invisible to the human; this one is about the player
+  not applying it at all, so a client's `hold` against the toolkit player does nothing whatsoever.~~
+  > ⚑ **CLOSED by `HELD-PADS-PLAYER`, together with §9.4** — and the two were taken together *because*
+  > they are siblings. Half 1 without half 2 makes the defect worse: today `hold` does nothing, so nothing
+  > is silently wrong; applied but unshown, it is exactly the trap §9.4 describes.
+  >
+  > `Machine::step` now takes `[Pad; 2]`, publishes the human's pads through `Bus::set_live_pads` and
+  > writes `Bus::merge_held`'s result — in `step` rather than in `Loop::iterate` (where `oracle-frontend`
+  > does it) because those two `set_pad` calls are the only place the crate writes a pad, so no path can
+  > grow that bypasses the merge, and because a merge in `iterate` needs a window and is therefore one no
+  > test in the crate can execute. Port 1 stopped being hardcoded to `Pad::default()` in the same change.
+  >
+  > **The merge itself was hoisted, not copied.** §7's R1 named porting `oracle-frontend`'s model halves
+  > into shared code as this parcel's opportunity, and it is taken: `Host::merge_held` in `oracle-aether`,
+  > beside `held`/`set_live_pads`, is the one implementation, and the frontend's `Bus::merge_held` is now a
+  > delegation to it.
+  >
+  > ⚑ **The `is_serving()` early return did not survive the move, and its absence is part of the fix.** It
+  > was a fast path and not a semantic — `held` is `Pad::default()` until something calls `emulator/hold`,
+  > and a per-button OR with a default pad is the identity, which
+  > `unserved_merge_is_the_identity_the_is_serving_gate_used_to_shortcut` pins in both directions. Kept, it
+  > would have been actively wrong here: this player **binds no socket**, so `is_serving()` is false
+  > forever, while `Host::call` is reachable in-process (D15) and can install a held set anyway. Under the
+  > gate that set would sit in the engine, be reported back by `emulator/hold`'s own `held` array, and
+  > never reach the pad — a served method answering that it took effect when it did not.
 * **The picture does not refresh after `emulator/step`.** A step advances one *instruction*, the run that
   drew the retained frame is over, and `Host::publish_capture` is gated on `has_clients()` — which an
   unserved player never satisfies, so `Host::framebuffer()` has nothing to pull. The retained frame is the
@@ -1283,6 +1306,32 @@ live instance of the defect the ruling's correctness half names — in the very 
 in about four lines.
 
 ### 9.4 A client's held buttons are invisible to the human at the keyboard
+
+> ### ✅ **BOTH HALVES BUILT, on `parcel/held-pads`** (`HELD-PADS-PLAYER`). The section below stands as the
+> argument, and everything it describes as absent is now present. What shipped, and the two things the
+> section did not anticipate:
+>
+> * **The field.** One read-only row in `StatusStrip`, sourced from `Host::held(0)`/`held(1)` through
+>   `Bus::held_pads`, shown only when non-empty — and **first**, because every other row answers *what is
+>   loaded and where is the machine*, questions a reader arrived with, while this one answers *is this
+>   window still doing what my hands tell it*, which is the question they have not thought to ask and the
+>   reason they are reading the strip at all. It renders
+>   `port 0: left, start — a bus client is holding these, not you; emulator/release_all clears them`. The
+>   remedy is **named in the row** precisely because this section says it "is one call, but you have to
+>   know to make it": the row is where you learn it. A bare `left` would have been correct and would have
+>   drawn *"what are the purple boxes"*.
+> * **One vocabulary, not two.** `engine::held_names` — the function `emulator/hold`'s reply `held` array
+>   is built from — is `pub` as of this parcel, and the row is built from it. A panel spelling the eight
+>   button names for itself would have been a second vocabulary that agrees until somebody adds a ninth.
+> * **⚑ What this section did not say: the sibling in §5.6.2 had to land in the SAME parcel.** Half 1
+>   without half 2 makes the defect worse rather than better — while `hold` does nothing, nothing is
+>   silently wrong; applied and unshown, it is this section's trap, built.
+> * **⚑ What this section got right and one thing it did not.** The field *is* a field and not a tab, as
+>   claimed. But the argument here rests on `Bus::merge_held` being applied — which in `oracle-player` it
+>   was not, and the section did not know that; §5.6.2 did. The two were written as separate defects and
+>   are one.
+>
+> `Engine::set_live_pads`' doc is at `engine.rs:1385`, not `:843` — §0's line-number caveat, again.
 
 `Bus::merge_held` ORs a client's held set into the pad before the run (bus.rs:163-171), and
 `Engine::set_live_pads`' doc (engine.rs:843-845) is explicit that `held` must stay *exactly what the client
