@@ -34,6 +34,27 @@
 > should close it properly, since §11.30/CR-I already ruled that absolute paths are a property of *every*
 > reply field carrying a filesystem path.
 >
+> **SECOND ROUND, after parcel 2b built (`64da529`) — and §2.1's own space list was wrong.**
+>
+> **§2.1 lists five spaces as `bus / rom+ram / vram / cram / z80`. Two of those are one derivation and one
+> real space is missing.** `emulator/read {space:"bus"}` and `emulator/read_memory` both resolve through
+> the same `debug_read` — verified firsthand at both call sites — so putting them in a selector as two
+> entries is 2a's `A7`/`SP` wrong answer one level up: two controls for one thing, which a reader takes
+> for two things that happen to agree. And **`vsram` is served by `emulator/read` and was dropped from the
+> list entirely.** The shipped panel is **bus / vram / cram / vsram / z80**. Found by the 2b agent, not by
+> this seat, and re-verified here.
+>
+> **§5.2 says "the four writes' real refusals".** There are five spaces and four write rows: **VSRAM has
+> no served write method at all**, which is a different fact from "refused right now" and needs its own
+> sentence in the panel, not a shared one.
+>
+> **A brief-level correction, mine, recorded because it was load-bearing and wrong:** I told the 2b agent
+> that `Host::set_paused` "exists for" pause mirroring. **It is inert on its own** — it queues into
+> `pending_free_run`, and only `Host::pump` applies it, since `Host::call` deliberately declines to (2a's
+> ordering argument). Mirroring therefore needs a drain, which is why 2b pumps once at setup. Related and
+> sharper: **`Engine::new` defaults to PAUSED**, so an unmirrored host does not refuse writes spuriously —
+> it **accepts paused-only writes against a machine running at 60 Hz and reports success.**
+>
 > *The general lesson, which this repo keeps paying for: a design document's coordinates age on the same
 > clock as a precedent narrative, and nothing re-reads them. Re-derive from source; where source and this
 > document disagree, source wins.*

@@ -547,3 +547,59 @@ two single-key rows, applied and read back from disk — failed `the_shared_a7_s
 (`left: 0, right: 1`) **while the main parity test stayed green**, which establishes that the two tests
 have independent teeth rather than one being a restatement of the other. The agent's own M3 tripped both
 at once and could not have shown that.
+
+---
+
+## L-12 — Parcel 2b: reflecting the `write_vram` asymmetry rather than correcting it, and publishing six `oracle-aether` functions · `SELF-RULED`
+
+**Reviewer: none.** Ruled by the oracle overseer on the ordinary model, Fable seat on HOLD. Named at the
+top per the 2026-08-27 hub rule.
+
+### (a) The panel REFLECTS that `write_vram` is ungated while the other three writes are
+
+**Verdict.** The Memory panel enables VRAM writes on a running machine and disables the other three with
+the server's own `-32005 machineRunning` text, per space, in words. It does **not** gate VRAM for
+consistency. The server is **not** changed.
+
+**Why.** The owner's standing rule is that a panel shows the same answer a tool gets. A panel that refuses
+what the tool allows misdescribes the server exactly as badly as one that allows what the tool refuses —
+and the second is easier to notice, which makes the first the more dangerous direction. The inconsistency
+is real and belongs where a client can see it.
+
+**Why the server is not wrong either, which is the agent's argument and I accept it.** `write_vram`'s own
+doc records this as audit **D-16 deviation 1**: §6's run-control state rule enumerates its methods and does
+not name this row, and §6 itself says *"relaxing a refusal later is additive (D5); introducing one is
+not"*. **A server quietly stricter than its contract is a divergence no client can discover.** So the
+contract is what should move, not the code.
+
+⚠ **One correction to the agent's framing, checked against empyrean rather than accepted.** They wrote that
+the argument is "already filed upstream as a CR". What exists is weaker: our own
+`docs/2026-08-27-write-vram.md` carries the CR text, and empyrean's CR-B ruling (B2b) names the **D-16
+cluster** as something to *"revisit"*. That is **acknowledged-and-deferred, not pending adjudication.**
+`write_vram` still does not appear in the contract's run-control rule at their `origin/main`, verified
+here. So the follow-through is to **raise it**, not to press an existing one — booked as a queue row.
+Their conclusion survives the correction intact; only the status of the upstream artifact was overstated.
+
+**What would have to be true for this to be wrong.** That a client is harmed by the window permitting a
+VRAM poke mid-frame more than it is harmed by the window disagreeing with the tool. **The audit should
+re-run:** whether the D-16 revisit lands, at which point `on_a_running_machine_vram_is_writable_and_the_other_three_are_not`
+goes red **by itself** — it reads the handler, not a table — and its failure message says why.
+
+### (b) Six `oracle-aether` functions published for R1 across a crate boundary
+
+**Verdict.** RATIFIED. Five private `Engine` methods became free `pub` functions with the methods
+delegating (`debug_read`, `vdp_space_read`, `z80_window`, `z80_read_window`, `symbol_at`), plus
+`absolutise`. Served messages preserved; the whole suite's existing 2097 rows stayed green.
+
+**Why.** R1 says a value a panel and a handler both need lives in exactly one function. Across a crate
+boundary that requires visibility, and the alternative — re-implementing five derivations in the player —
+is the drift this parcel exists to prevent. `oracle-aether`'s Rust surface is not a wire contract; the wire
+is. **What would have to be true for this to be wrong:** that a published helper hardens into an
+accidental API another lane pins. **The audit should re-run:** whether any sibling repo has begun calling
+these directly rather than over the bus.
+
+**Verified firsthand at merge:** 66 legs / 2122 passed / 0 failed / 6 ignored, exit 0, HEAD stable
+`64da529`, fmt 0, clippy 0. `Loop::iterate` **byte-identical** to parcel 1's (2,397 bytes both sides,
+compared programmatically), so the pacing measurement stands; exactly one `.pump(` in the player, in
+`bus.rs`, outside the frame loop. My own probe — reducing the shared `absolutise` to a pass-through —
+produced the new parity bar and is recorded there.
