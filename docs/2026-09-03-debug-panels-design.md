@@ -756,6 +756,13 @@ a result that survives a 5× swing in machine load is not a load artefact.
 > tabled runs show nothing but the owner's session on them. **A future measurement should gate on the
 > load average as well as on `pgrep`** — this one did, which is why it has one clean sitting rather than
 > three.
+>
+> **A second clean sitting was attempted and NOT obtained**, and that is recorded rather than papered
+> over: a ten-minute wait for `pgrep` 0 *and* a 1-minute load average under 4.0 timed out with the peer
+> lane still on the box. So every figure tabled above is **one clean invocation per configuration**, and
+> the two deltas that live near the noise floor — `ui-build` D − A and `emulate` D − A — are qualified in
+> the readings below accordingly. The 14.7 ms is not one of them: it is 60× the largest spread any
+> configuration showed.
 
 Per-iteration cost, **medians**, milliseconds:
 
