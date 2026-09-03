@@ -48,6 +48,9 @@
 //! traps in `watchpoint_add` (`write: true` rather than `op: "write"`, and a `len` that must be a JSON
 //! *number*) are held closed by something other than memory.
 
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+
 use oracle_aether::breakpoints::Breakpoints;
 use oracle_aether::engine::{breakpoint_wire_id, symbol_at, watch_wire_id};
 use oracle_aether::hex;
@@ -278,8 +281,13 @@ pub fn watches_live(w: &Watchpoints) -> Live {
 
 /// One routine's row, undivided. See [`ProfilerView::frames`] for why the panel shows the undivided sample
 /// and the frame count rather than the divided view.
+///
+/// **One spelling of the address, as [`BreakRow::addr_text`] states the rule.** The raw `u32` used to sit
+/// here too, and the only thing that ever read it was the sort — which now runs on the bare `(addr,
+/// counts)` pairs *before* a row exists ([`top_routines`]), so the field became a second spelling with no
+/// reader. Two spellings of one address is how a reader comes to compare a panel against a tool and see a
+/// difference that is not one.
 pub struct RoutineRow {
-    pub addr: u32,
     pub addr_text: String,
     pub symbol: Option<(String, u32)>,
     pub counts: Counts,
@@ -316,28 +324,54 @@ pub struct ProfilerView {
 /// one — the mistake `emulator/get_profiler_frames`' own `top` refuses to make by clamping.
 pub const TOP_ROUTINES: usize = 24;
 
-/// Read the profiler. The `armed` flag comes from
-/// [`Bus::read_instruments`](crate::bus::Bus::read_instruments)' third element and **nowhere else**.
-pub fn profiler(p: &Profiler, armed: bool, symbols: Option<&SymbolTable>) -> ProfilerView {
-    let mut top: Vec<RoutineRow> = p
-        .sample_routines()
+/// The panel's row order: descending by inclusive cycles, ties broken by **ascending address** so the
+/// order is stable boot to boot — a table whose rows swap places between repaints is unreadable at 60 Hz.
+///
+/// It is a **total** order on the sample, because the sample is a `BTreeMap` keyed by address and so no
+/// two rows can share one. That is what lets [`profiler`] select the top rows without sorting the whole
+/// map: a partial selection under a total order picks the same set, in the same order, as a full sort.
+fn hotter(a: (u32, Counts), b: (u32, Counts)) -> Ordering {
+    b.1.cycles.cmp(&a.1.cycles).then(a.0.cmp(&b.0))
+}
+
+/// The [`TOP_ROUTINES`] hottest rows of a sample, in [`hotter`] order.
+///
+/// ⚑ **Select first, format second — the panel pays for [`TOP_ROUTINES`], not for the sample.** The
+/// accumulator holds a row per routine the ROM has entered — thousands, for a ROM that has been running —
+/// and this runs on the 60 Hz repaint path. Building a [`RoutineRow`] costs a `hex::addr` allocation and a
+/// `symbol_at` lookup apiece, so ranking the bare `(addr, counts)` pairs and *then* formatting the 24 that
+/// survive is the difference between paying that per routine **in the map** and paying it per **drawn**
+/// row. `select_nth_unstable_by` does the ranking in one linear pass rather than an `n log n` sort.
+///
+/// **The result is identical to mapping every routine, sorting the lot, and truncating** — which is what
+/// this did before, and which `the_top_selection_matches_a_full_sort_even_with_ties` re-derives and
+/// compares against on a fixture built to be all ties. That equality is not an accident of the data: it
+/// holds because [`hotter`] is a *total* order here, so there is exactly one correct answer for a partial
+/// selection to find.
+fn top_routines(sample: &BTreeMap<u32, Counts>, symbols: Option<&SymbolTable>) -> Vec<RoutineRow> {
+    let mut ranked: Vec<(u32, Counts)> = sample
         .iter()
-        .map(|(&addr, &counts)| RoutineRow {
-            addr,
+        .map(|(&addr, &counts)| (addr, counts))
+        .collect();
+    if ranked.len() > TOP_ROUTINES {
+        ranked.select_nth_unstable_by(TOP_ROUTINES - 1, |a, b| hotter(*a, *b));
+        ranked.truncate(TOP_ROUTINES);
+    }
+    ranked.sort_unstable_by(|a, b| hotter(*a, *b));
+    ranked
+        .into_iter()
+        .map(|(addr, counts)| RoutineRow {
             addr_text: hex::addr(addr),
             symbol: symbols.and_then(|t| symbol_at(t, addr)),
             counts,
         })
-        .collect();
-    // Descending by inclusive cycles, ties broken by address so the order is stable boot to boot — a table
-    // whose rows swap places between repaints is unreadable at 60 Hz.
-    top.sort_by(|a, b| {
-        b.counts
-            .cycles
-            .cmp(&a.counts.cycles)
-            .then(a.addr.cmp(&b.addr))
-    });
-    top.truncate(TOP_ROUTINES);
+        .collect()
+}
+
+/// Read the profiler. The `armed` flag comes from
+/// [`Bus::read_instruments`](crate::bus::Bus::read_instruments)' third element and **nowhere else**.
+pub fn profiler(p: &Profiler, armed: bool, symbols: Option<&SymbolTable>) -> ProfilerView {
+    let top = top_routines(p.sample_routines(), symbols);
     ProfilerView {
         armed,
         frames: p.frames(),
@@ -895,6 +929,104 @@ mod tests {
             "the retained sentence must say so in words a human reads: {}",
             view.live.sentence("x", "y")
         );
+    }
+
+    /// **The fast selection returns exactly what the slow one did — ties included.**
+    ///
+    /// [`top_routines`] stopped sorting the whole sample: it selects the [`TOP_ROUTINES`] hottest pairs in
+    /// one linear pass and formats only those, because formatting every routine cost 91 % of a frame
+    /// budget (design §5.7.1). That is a **pure performance change**, so the rows a human sees must be
+    /// byte-for-byte the old ones, and this is what says so. The old algorithm is re-derived here — map
+    /// every routine, sort the lot, truncate — rather than a golden list being pasted in, so the reference
+    /// stays a *statement of the rule* and not a snapshot of one run of it.
+    ///
+    /// **The fixture is built to be all ties, on purpose.** A partial selection can only diverge from a
+    /// full sort where the comparator declines to separate two rows: with distinct keys, `select_nth` and
+    /// `sort` cannot disagree about *which* rows are in the top 24, and any correct-looking result proves
+    /// nothing. So the cycle counts take three values across `4 × TOP_ROUTINES` routines, which puts a tie
+    /// group of ~32 rows **straddling the 24-row cut** — the exact place a partial selection is free to
+    /// pick a different 24 — and that straddle is asserted before the comparison leans on it.
+    ///
+    /// The all-equal fixture is the same trap at its limit: every row ties every other, so the answer is
+    /// decided entirely by the address tie-break, and a selection that dropped that tie-break would return
+    /// an arbitrary 24 of 96 and still be "the hottest rows".
+    #[test]
+    fn the_top_selection_matches_a_full_sort_even_with_ties() {
+        /// The old body, verbatim in shape: a row per routine, one sort of the whole vector, then the cut.
+        fn reference(sample: &BTreeMap<u32, Counts>) -> Vec<(String, Counts)> {
+            let mut all: Vec<(u32, Counts)> = sample.iter().map(|(&a, &c)| (a, c)).collect();
+            all.sort_by(|a, b| b.1.cycles.cmp(&a.1.cycles).then(a.0.cmp(&b.0)));
+            all.truncate(TOP_ROUTINES);
+            all.into_iter().map(|(a, c)| (hex::addr(a), c)).collect()
+        }
+
+        fn actual(sample: &BTreeMap<u32, Counts>) -> Vec<(String, Counts)> {
+            top_routines(sample, None)
+                .into_iter()
+                .map(|r| (r.addr_text, r.counts))
+                .collect()
+        }
+
+        fn counts(cycles: u64) -> Counts {
+            Counts {
+                cycles,
+                self_cycles: cycles / 2,
+                stall_cycles: 0,
+                calls: 1,
+            }
+        }
+
+        // Addresses ascend with `i`, so the tie-break's ordering is not accidentally the insertion order
+        // of the hot rows: the hottest group is spread across the whole address range.
+        let n = 4 * TOP_ROUTINES;
+        let strided: BTreeMap<u32, Counts> = (0..n)
+            .map(|i| (0x00FF_0000 + (i as u32) * 6, counts((i % 3) as u64)))
+            .collect();
+        let flat: BTreeMap<u32, Counts> = (0..n)
+            .map(|i| (0x00FF_0000 + (i as u32) * 6, counts(7)))
+            .collect();
+
+        // ⚑ Anti-vacuity, checked before the comparisons are leaned on. If the fixture were smaller than
+        // the cut, or if no tie group straddled it, both implementations would be forced to the same
+        // answer and this test would be green for a reason that has nothing to do with the change.
+        assert!(
+            strided.len() > TOP_ROUTINES,
+            "the fixture does not reach the cut, so nothing is selected and nothing is proven"
+        );
+        let hottest = strided.values().map(|c| c.cycles).max().unwrap();
+        let in_hottest = strided.values().filter(|c| c.cycles == hottest).count();
+        assert!(
+            in_hottest > TOP_ROUTINES,
+            "the hottest tie group is {in_hottest} rows and the cut is {TOP_ROUTINES}; the boundary must \
+             fall INSIDE a tie group or a partial selection has no freedom to diverge"
+        );
+
+        for (name, sample) in [("strided ties", &strided), ("all equal", &flat)] {
+            let want = reference(sample);
+            let got = actual(sample);
+            assert_eq!(
+                got.len(),
+                TOP_ROUTINES,
+                "{name}: the selection returned {} rows, not the {TOP_ROUTINES} the panel draws",
+                got.len()
+            );
+            assert_eq!(
+                got, want,
+                "{name}: the fast selection picked a different table than a full sort would have. This \
+                 is a pure performance change and the drawn rows must be identical."
+            );
+        }
+
+        // A sample below the cut is returned whole, still in order — the branch that skips `select_nth`.
+        let small: BTreeMap<u32, Counts> = (0..TOP_ROUTINES / 2)
+            .map(|i| (0x0010_0000 + (i as u32) * 4, counts((i % 2) as u64)))
+            .collect();
+        assert_eq!(actual(&small), reference(&small), "short sample");
+        assert_eq!(actual(&small).len(), TOP_ROUTINES / 2);
+
+        // And the empty sample, which `select_nth_unstable_by` would panic on if the guard were dropped.
+        let empty: BTreeMap<u32, Counts> = BTreeMap::new();
+        assert!(actual(&empty).is_empty());
     }
 
     /// **Watch hits outlive the watch, and `Live` says so.** The `watchpoint_clear` handler keeps them on

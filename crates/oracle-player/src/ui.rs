@@ -996,12 +996,29 @@ impl Panels<'_> {
                     String::new()
                 }
             ));
+            // ⚑ **`show_rows`, not `show` — the log is virtualised, and it has to be.** The ring holds
+            // `EngineConfig::watch_ring_cap` = 4096 hits and a 64 KB write watch fills it in well under a
+            // second; a plain `show` formats and lays out **every** retained hit on every repaint to fill
+            // a 220 px viewport that displays about ten of them. Measured at 15.220 ms of `ui-build` —
+            // 91 % of a frame budget — in design §5.7.1. `show_rows` draws only the visible slice.
+            //
+            // It is sound here for one reason and would not be sound without it: **every row is exactly
+            // one `ui.monospace` line**, so the rows are uniform and the height below describes them. A
+            // `row_height` that disagrees with what is drawn misaligns the scrollbar silently, which is a
+            // wrong answer traded for speed. The height is asked of the style rather than typed, and is
+            // passed **sans spacing** — `show_rows` adds `item_spacing.y` itself (egui 0.36.1
+            // `scroll_area.rs:991`), so adding it here would double-count it and skew the scrollbar.
+            //
+            // `stick_to_bottom` survives: `show_rows` calls `ui.set_height` for the whole virtual list, so
+            // the `content_size` the stick-to-end arithmetic uses (`scroll_area.rs:1284`) is the full
+            // height and not the drawn slice's.
+            let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
             egui::ScrollArea::vertical()
                 .id_salt("watch-hits")
                 .max_height(220.0)
                 .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for h in &view.hits {
+                .show_rows(ui, row_height, view.hits.len(), |ui, rows| {
+                    for h in &view.hits[rows] {
                         ui.monospace(format!(
                             "#{:<7} f{:<6} {} {:?} {:?} {:#X} pc {}",
                             h.seq,
