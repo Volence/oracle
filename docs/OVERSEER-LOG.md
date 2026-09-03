@@ -2392,3 +2392,87 @@ SEPARATE relay and STAYS FLAGGED** — he confirmed the push grant and nothing e
   discharges the contract. **Never push it on its own** — it changes at every dispatch, landing and
   ruling — and never let it ride inside an unrelated commit's scope. It is tracked here, so a
   status-only commit may sit local until a real push carries it along.
+
+---
+
+## 2026-09-03 — `ATTR-RGB-LATCH`: the row said "file a CR" for four days after the CR had been adopted
+
+Closed narrative for the live obligation now stated in `OVERSEER.md` under that board row id. Recorded here
+because the *lesson* is closed history and the *obligation* is not, and this file's own splitting rule says
+the second stays in the boot read while the first moves.
+
+**What the row said, and what was true.** The board title and `OVERSEER.md`'s 2026-09-02 anchor both read
+"Needs a change request filed with the hub". **CR-G was filed by this lane and adjudicated `ADOPT WITH
+CHANGES` as `contract/protocol.md` §11.27** at empyrean **`32a0041`**, timestamped 2026-08-30T02:37Z —
+verified firsthand rather than taken from the log line: the object is an ancestor of their `origin/main`,
+and `--stat` shows `contract/protocol.md` +48 and `contract/schema/bus-protocol.schema.json` +6, so its SHA
+class carries what it anchors. §11.27's own text cites our `d4ed310` and merge `2765023` as the raising
+evidence. **The lane's work was inside the adopted contract text and the lane's own board did not know.**
+
+**Why nothing surfaced it.** Every downstream artifact was faithful to its source: the 2026-09-02 anchoring
+commit copied the row's title into `OVERSEER.md` *correctly*, and the status file copied it again, and each
+copy was an accurate transcription of the previous one. This is the file's own bar firing against itself —
+**a queue row's justification ages exactly like a precedent narrative and nothing re-reads it** — with the
+aggravating detail that the re-anchoring pass, whose whole purpose was to give the row a durable home,
+transcribed the stale sentence rather than re-deriving it. Re-anchoring is not re-grounding.
+
+**What actually found it.** Not an audit. The row was picked up to be *worked* — an agent was about to be
+dispatched to draft the CR — and the pre-dispatch check for an existing upstream CR (this repo's standing
+"grep the history before putting it to the owner OR funding work off it") hit `32a0041` on the first search.
+The cost of the miss would have been one agent drafting a document the hub adopted four days earlier, and
+the near-certain second cost of that document then *disagreeing* with §11.27's adopted emission rule, since
+§11.27 **changed** our proposal rather than adopting it. A re-filed CR would have re-proposed the rejected
+half.
+
+**The half worth keeping: the hub rejected our emission rule and was right.** We proposed emitting the
+caveat whenever a completed frame exists to disagree with. On any ROM that rebuilds CRAM every vblank —
+both engines in this suite do — that is *every reply after the first frame*, which is §2.4's named
+anti-pattern (`read_memory`'s constant string, learned once and ignored forever). The adopted rule is a
+**measurement**: emitted when the CRAM entry at `cramIndex` has been written since line `y` of the last
+completed frame was drawn. Our own CR argued, correctly, that the flag must not be a heuristic about raster
+programs — and then proposed a rule that was unconditional in practice, which fails the same test from the
+other direction. Both of our stated properties survived adjudication; the rule we wrapped them in did not.
+
+---
+
+## 2026-08-22 — the Fable-seat provenance audit, moved out of the boot read 2026-09-03 (SUPERSEDED, kept verbatim)
+
+Moved from `OVERSEER.md`'s "The role" paragraph, where it had sat inside the first thing every cold session
+reads. **It is closed**: owner ruling 2 of 2026-08-22 (in `OVERSEER.md`, the four relayed rulings) states in
+terms that it *"retires the provenance worry above by superseding it: there is now a live cited ruling on the
+seat, so the unwitnessed 2026-08-21 ratification is correct and moot."* The standing rule it produced — never
+record an approval whose granting act you have not seen — is live and stays in `OVERSEER.md`'s bars. Verbatim:
+
+> adjudicate contracts un-framed (a fresh Fable agent, no steer — recorded 2026-08-21 as
+> cost-questioned-and-ratified by the owner, on the reasoning that the ruling is where one judgment becomes
+> permanent contract text, so the smartest model sits there and nowhere in the bulk work. ⚠ **PROVENANCE,
+> audited 2026-08-22 after empyrean flagged the class:** that ratification is recorded in `7fd201d`'s prose
+> and commit message and **nowhere else — no citation of the granting act exists.** It is *stronger* than
+> empyrean's parallel case (their string was a spec's own self-declared status field; this one carries a
+> rationale responsive to a cost objection, which is the shape of a real exchange) and it is *weaker than a
+> cited ruling*, which is the only thing that settles it. Git authorship proves nothing here: every commit in
+> this repo carries the owner's identity whoever wrote it. **Standing rule adopted from empyrean: never
+> record an approval whose granting act you have not seen — cite the ruling, not a status field.** Treat the
+> seat as owner-confirmable, not owner-confirmed. **The action it was used to justify survives the doubt
+> anyway** — declining to spend a premium-model budget without the owner is his call whether or not a prior
+> ratification exists — but the *justification* was over-claimed, twice to him and once across the fence, and
+> is corrected here)
+
+
+---
+
+## 2026-08-27 — the replacement anchor this seat guessed from a subject line, moved out of the boot read 2026-09-03
+
+Narrative half of the live bar *"Run `--stat` on the SHA you propose, not only on the one you doubt"*, which
+stays in `OVERSEER.md` under the 2026-08-24 anchor-class bar. Verbatim:
+
+> **⚑ AND THE HALF THAT COST ME MORE THAN THE CATCH — I NAMED A REPLACEMENT ANCHOR BY GUESSING FROM A
+> COMMIT SUBJECT LINE, AND IT WAS ALSO DOCS.** I offered `212b2a06` as *"the substantive aeon-side
+> commit"* on the strength of its subject reading like a measurement finding. `--stat` says it is **a
+> single 509-line doc, zero code**. The real code anchor is **`cbd04ba8`** (`engine/objects/sprites.emp`
+> +121, `engine/ram.emp` +20, `tools/test_sprite_owner.py` +281; 532 insertions) — all three verified
+> firsthand here. **Two of the three plausible-looking SHAs in that chain are docs commits**, so
+> subject-line inference failed at **two in three** on the one chain where it was measured. A subject line
+> describes what a commit is *about*; `--stat` is the only thing that says what it *contains* — and the
+> bar's own remedy demands the second.
+

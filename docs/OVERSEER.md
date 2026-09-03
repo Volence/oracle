@@ -13,22 +13,13 @@ demand are committed artifacts in this repo; peers accelerate, they are never pr
 ## The role
 
 Dispatch Opus subagents for implementation and recon; adjudicate contracts un-framed (a fresh
-Fable agent, no steer — recorded 2026-08-21 as cost-questioned-and-ratified by the owner, on the
-reasoning that the ruling is where one judgment becomes permanent contract text, so the smartest
-model sits there and nowhere in the bulk work. ⚠ **PROVENANCE, audited 2026-08-22 after empyrean
-flagged the class:** that ratification is recorded in `7fd201d`'s prose and commit message and
-**nowhere else — no citation of the granting act exists.** It is *stronger* than empyrean's
-parallel case (their string was a spec's own self-declared status field; this one carries a
-rationale responsive to a cost objection, which is the shape of a real exchange) and it is *weaker
-than a cited ruling*, which is the only thing that settles it. Git authorship proves nothing here:
-every commit in this repo carries the owner's identity whoever wrote it. **Standing rule adopted
-from empyrean: never record an approval whose granting act you have not seen — cite the ruling,
-not a status field.** Treat the seat as owner-confirmable, not owner-confirmed. **The action it was
-used to justify survives the doubt anyway** — declining to spend a premium-model budget without the
-owner is his call whether or not a prior ratification exists — but the *justification* was
-over-claimed, twice to him and once across the fence, and is corrected here); verify every gate
-firsthand before accepting a slice; make the design
-rulings (delegated by the owner — pick best, record why); merge and push. The owner's standing
+Fable agent, no steer) — **the seat is on HOLD, and that is a live owner ruling, not this seat's
+call**: see owner ruling 2 below, and the substituted-reviewer rule under the 2026-08-27 hub ruling
+for how adjudications run meanwhile. *(The 2026-08-22 provenance audit of the seat's original
+ratification is closed and moot by that ruling's own words; moved verbatim to `OVERSEER-LOG.md`
+2026-09-03. The standing rule it produced — never record an approval whose granting act you have
+not seen — is live, and lives in the bars.)* Verify every gate firsthand before accepting a slice;
+make the design rulings (delegated by the owner — pick best, record why); merge and push. The owner's standing
 directives: **a legacy surface or demand spec is the compatibility floor, never the design
 ceiling** (run a visible better-approach pass on every request), and **instrument co-development
 with aeon** is the ratified lane (their diagnoses name gaps; we build them; the engine gets fixed
@@ -582,10 +573,33 @@ and `git rev-parse 82982b7:contract/schema/bus-protocol.schema.json` in empyrean
 blob id**. Byte identity by construction, checked in both trees, neither read from a working file.
 
 **Board row id: `ATTR-RGB-LATCH`** — detail lives in `docs/2026-08-30-rgb-live-resolve.md`
-(aeon's colour finding: reproduced 55/55, closed as a server change; what remains is a contract change
-so the reply says which moment its colour is for and names `emulator/scanlines` as the caller's path).
+(aeon's colour finding: reproduced 55/55, closed as a server change; ~~what remains is a contract change
+so the reply says which moment its colour is for and names `emulator/scanlines` as the caller's path~~).
 Anchored here 2026-09-02 because the row's own title carried the only copy, and `LANE_STATUS.md` rule 7
 requires the row to point at its detail by id.
+
+⚠ **CORRECTED 2026-09-03 — THE CR IS FILED AND ADOPTED; WHAT IS OWED IS OURS TO BUILD.** The struck sentence
+said a CR still had to be filed. **CR-G was ours, and was adjudicated `ADOPT WITH CHANGES` as
+`contract/protocol.md` §11.27** at empyrean **`32a0041`** (2026-08-30T02:37Z; ancestor-verified, `--stat`
+shows protocol +48 and schema +6, so the SHA class carries what it anchors). *(How the row stayed wrong for
+four days, and why the hub was right to change our emission rule: `OVERSEER-LOG.md`, 2026-09-03.)*
+
+**What §11.27 leaves owed, read out of the adopted text and not summarised from memory:**
+1. **The emission rule is a MEASUREMENT, and it is NOT the one we proposed.** Adopted: emit when the CRAM
+   entry at `cramIndex` **has been written since line `y` of the last completed frame was drawn**, or when
+   no frame has completed; absent otherwise. A server that cannot yet stamp per-entry writes **MAY** emit on
+   *any* CRAM write since the line drew — coarser, still conditional — and **MUST NOT emit unconditionally.**
+2. **Four vectors, and §11.27 names US as their author**, red-first, run against the schema before handover
+   (the bar this lane set itself on CR-F): caveat after a qualifying write (valid); a caveat naming no method
+   (red); a pre-first-frame reply carrying it (valid); no qualifying write and no caveat (valid).
+3. **The "required when applicable" half is a LIVE CONFORMANCE CHECK, never a schema property** — a schema
+   cannot see the write stamp. It rides with our conformance rows the way `object_at`'s did.
+
+**State measured here 2026-09-03, both sides.** The vendored fragment at our pin **already declares**
+`caveat` on `emulator/pixel_attribution`'s result, with §11.27's rule quoted in its own `description`; and
+`Engine::pixel_attribution` **never sets the key**. So we are conformant-by-omission (the fragment does not
+require it) and silent on exactly the divergence aeon asked us to make audible. **F-SCANLINE-INDEX is
+untouched**: §11.27 makes the divergence audible, it does not close it.
 
 ⚑ **AND THE SCOPE OF WHAT THE HUB CAN HAND US, ESTABLISHED 2026-09-02 BY THE HUB RETRACTING ITS OWN
 GO — bank this, it will recur.** At 10:40Z the hub cleared `LIVE-TREE-RESIDUE` "under the owner's
@@ -762,16 +776,11 @@ a reachable ancestor of their `origin/master`, docs SHA carrying docs).
 
 
 
-**⚑ AND THE HALF THAT COST ME MORE THAN THE CATCH — I NAMED A REPLACEMENT ANCHOR BY GUESSING FROM A
-COMMIT SUBJECT LINE, AND IT WAS ALSO DOCS.** I offered `212b2a06` as *"the substantive aeon-side
-commit"* on the strength of its subject reading like a measurement finding. `--stat` says it is **a
-single 509-line doc, zero code**. The real code anchor is **`cbd04ba8`** (`engine/objects/sprites.emp`
-+121, `engine/ram.emp` +20, `tools/test_sprite_owner.py` +281; 532 insertions) — all three verified
-firsthand here. **Two of the three plausible-looking SHAs in that chain are docs commits**, so
-subject-line inference failed at **two in three** on the one chain where it was measured. A subject line
-describes what a commit is *about*; `--stat` is the only thing that says what it *contains* — and the
-bar's own remedy demands the second. **Run `--stat` on the SHA you propose, not only on the one you
-doubt.**
+**⚑ AND THE HALF THAT COST ME MORE THAN THE CATCH: RUN `--stat` ON THE SHA YOU PROPOSE, NOT ONLY ON THE
+ONE YOU DOUBT.** This seat named a replacement anchor by inferring from a commit's subject line and it was
+also a docs commit; on the one chain where it was measured, subject-line inference failed at two in three.
+A subject line describes what a commit is *about*; `--stat` is the only thing that says what it *contains*.
+*(The archaeology: `OVERSEER-LOG.md`, 2026-08-27.)*
 
 **⚑ THE PROCESS LESSON, which aeon called out explicitly and which is why this was cheap: I sent it
 
