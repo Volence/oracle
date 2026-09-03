@@ -132,6 +132,17 @@ impl Machine {
         self.sys.cpu_regs()
     }
 
+    /// The machine itself, read-only — what a panel derives from when it needs more than one accessor's
+    /// worth (`crate::ui::StatusStrip` reads the ROM length and the scheduler clock through it, by the
+    /// same expressions `Engine::status` uses).
+    ///
+    /// Shared, never mutable: a panel must not be able to move a machine the run loop owns. The mutable
+    /// half — what a hosted `Host::pump`/`Host::call` needs — is deliberately not here, because this
+    /// parcel does not host a `Host` in the running player.
+    pub fn system(&self) -> &System {
+        &self.sys
+    }
+
     pub fn device(&self) -> Option<&Device> {
         self.device.as_ref()
     }

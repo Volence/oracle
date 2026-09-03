@@ -22,3 +22,23 @@ egui_dock = "0.21"
 # exactly the player's versions. See `src/audio.rs` for why it is included rather than depended on.
 ringbuf = "0.4"
 cpal = "0.15"
+
+# TEST-ONLY, and deliberately so for parcel 2a. `ui.rs`'s `mod bus_parity` compares what the Registers
+# panel derives against what `Engine::registers` answers through `Host::call`, so the test needs to see
+# both sides; `oracle-frontend` does the same thing in `pick.rs` and takes `serde_json` dev-only for it.
+#
+# **Why dev and not a real dependency.** Nothing on the *shipped* path reaches `oracle-aether` in this
+# parcel: the panel reads `Machine::cpu_regs()` / `Machine::system()` directly (design §4.4's route (a) —
+# anything repainting at 60 Hz reads a shared derivation, it does not dispatch). Keeping the link in
+# `[dev-dependencies]` therefore leaves the binary's dependency graph byte-identical to parcel 1's, which
+# is the measurable answer to §8 item 7 rather than an assurance about it — `cargo tree -p oracle-player`
+# without `--all-targets` shows no `oracle-aether`.
+#
+# Parcels 2b/2c change this: the Objects panel calls `oracle_aether::decoders` on the repaint path, and
+# the transport bar calls `Host::call` per gesture. Both need a real dependency, and promoting one line is
+# cheaper than shipping an unused link now for a parcel that does not use it.
+#
+# `oracle-aether` is `#![cfg(unix)]`, so the test module that uses it is `#[cfg(unix)]` too.
+[dev-dependencies]
+oracle-aether = { path = "../oracle-aether" }
+serde_json = "1"
