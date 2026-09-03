@@ -509,6 +509,13 @@ impl Host {
 
     /// The frame the bus would serve — the last one drawn, line-major RGB, with its width. `None` before any
     /// whole frame exists. A host presents this after a [`PumpReport::screen_changed`] drain.
+    /// The listing the engine resolves against **now** — see [`Engine::symbols`](crate::engine::Engine::symbols)
+    /// for why an embedder must re-read it rather than trust the clone it handed to
+    /// [`set_machine_info`](Host::set_machine_info).
+    pub fn symbols(&self) -> Option<&SymbolTable> {
+        self.engine.symbols()
+    }
+
     pub fn framebuffer(&self) -> Option<crate::engine::FrameRef<'_>> {
         self.engine.latched_frame()
     }

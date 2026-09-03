@@ -1443,6 +1443,18 @@ impl Engine {
         self.rom_generation
     }
 
+    /// **The listing this engine resolves against right now** — the one `emulator/lookup_symbol` answers
+    /// from, not a copy of what somebody handed in at startup.
+    ///
+    /// It exists because the two can differ, and the difference is silent. `emulator/reload_rom` re-runs the
+    /// binding check and **drops** the table when it no longer describes the image; an embedder that kept its
+    /// own clone from [`Engine::set_symbols`] would go on resolving names against a listing this engine has
+    /// already discarded — a panel and a served method giving two answers about one machine. A hosted caller
+    /// re-derives from here when [`crate::host::PumpReport::rom_changed`] says the cartridge moved.
+    pub fn symbols(&self) -> Option<&SymbolTable> {
+        self.symbols.as_deref()
+    }
+
     /// Hand the engine a frame drawn by somebody else's run loop, so `emulator/screenshot` and
     /// `emulator/state_hash {includeFramebuffer}` answer with the picture that is actually on the glass.
     ///

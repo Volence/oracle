@@ -195,9 +195,87 @@ impl Machine {
         cost
     }
 
+    /// **The machine this wraps was replaced under the player** — a client's `emulator/restore`,
+    /// `emulator/reload_rom` or `emulator/reset`, applied inside [`crate::bus::Bus::mirror_pause`]'s drain
+    /// between two of this window's own frames. Put back in step everything this struct derives from a
+    /// machine rather than reads back out of one.
+    ///
+    /// Two things qualify, and the list is short **because most of what this window shows is already read
+    /// live**: the status strip's `frame (emulated)` is `mclk / MCLK_PER_FRAME` off the machine itself, and
+    /// every panel asks the bus in the draw pass it renders. Neither can go stale, so neither is here.
+    ///
+    /// 1. **The scanline capture.** Normally empty at this point — [`Machine::step`] clears it on every
+    ///    frame boundary — but a run that a breakpoint ended *mid-frame* leaves real lines buffered for a
+    ///    frame that never completed. Those lines belong to the machine that has just been thrown away, and
+    ///    kept here they would be spliced onto the replacement's first lines and handed to
+    ///    [`capture_to_image`] as one frame: a picture made of two timelines, which is a believable wrong
+    ///    answer rather than a visible fault.
+    /// 2. **The audio ring and its clock** ([`crate::device::Device::resync`]) — the severe one, and the one
+    ///    a caller that resynchronised for `restore` and not for `reset` would miss. See that method.
+    ///
+    /// ⚑ **`frames` is deliberately NOT advanced here, and the frontend's equivalent is.** `oracle-frontend`
+    /// adds `PumpReport::frames_advanced()` to its `draws` tally, because that tally is the only frame
+    /// coordinate its title bar shows. This window shows two rows and they are already right: `frame
+    /// (emulated)` is derived live from the machine's own clock (`crate::ui::StatusStrip::of`), so a
+    /// client-driven run is on the glass with no help from here — and the other row is labelled *"frames run
+    /// (player)"*, which is what [`Machine::frames`] means and what `crate::report` divides by elapsed
+    /// seconds to state this loop's throughput. Adding a client's frames to it would falsify the label and
+    /// corrupt the measurement to fix a coordinate that was never wrong. [`Machine::pictures`] is left alone
+    /// for the same reason: it counts conversions this loop performed.
+    pub fn resync_after_replacement(&mut self) {
+        self.cap.clear();
+        if let Some(d) = self.device.as_mut() {
+            d.resync();
+        }
+    }
+
+    /// **Take the picture a client's own run drew**, from the bus's latched frame, and put it on the glass.
+    ///
+    /// This is what [`crate::bus::Bus::mirror_pause`]'s `screen_changed` is for. The frames a client runs
+    /// through `emulator/run_frames` (or `step`, or `run_to`) are run by the *engine*, against the engine's
+    /// own scanline capture — this crate's `cap` is not attached to them — so the completed frame exists
+    /// only there. Without this the window keeps showing the last picture its own loop drew, which for a
+    /// **paused** player (and a client must pause the player to run anything at all: §6's run-control state
+    /// rule) is every frame the client will ever ask for.
+    ///
+    /// Returns whether a picture was taken. `false` covers the case the `PumpReport` doc names explicitly —
+    /// the drain *invalidated* the picture rather than redrawing it (a restore, a ROM reload), leaving
+    /// nothing to present — and there the retained image stays up exactly as it does for an iteration that
+    /// emulated nothing.
+    ///
+    /// The height is taken from the data (`rgb.len() / width`) rather than assumed to be [`HEIGHT`]: the
+    /// engine builds this frame with its own `ACTIVE_LINES`, and a mismatched constant here would be a
+    /// silently sheared picture rather than a failure.
+    pub fn adopt_frame(&mut self, width: usize, rgb: &[oracle_aether::engine::Rgb]) -> bool {
+        if width == 0 || rgb.is_empty() || rgb.len() % width != 0 {
+            return false;
+        }
+        let height = rgb.len() / width;
+        self.image = Some(egui::ColorImage {
+            size: [width, height],
+            source_size: egui::vec2(width as f32, height as f32),
+            pixels: rgb
+                .iter()
+                .map(|&(r, g, b)| egui::Color32::from_rgb(r, g, b))
+                .collect(),
+        });
+        true
+    }
+
     /// The last completed picture, or `None` before the first frame finishes.
     pub fn image(&self) -> Option<&egui::ColorImage> {
         self.image.as_ref()
+    }
+
+    /// Lines the scanline capture is holding right now — **for the tests that prove
+    /// [`resync_after_replacement`] cleared it**, and for nothing else.
+    ///
+    /// A run that ends on a frame boundary leaves this at 0 all by itself, so a test that only asserted
+    /// "0 afterwards" would be green against a `resync_after_replacement` that did nothing whatsoever. The
+    /// tests read it *before* as well, and that reading is what makes the one after mean something.
+    #[cfg(test)]
+    pub fn capture_lines(&self) -> usize {
+        self.cap.lines().len()
     }
 
     pub fn cpu_regs(&self) -> &oracle_core::m68000::Registers {

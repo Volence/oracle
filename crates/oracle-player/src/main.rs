@@ -561,9 +561,22 @@ impl Loop {
         // green — two lines, each covering for the other, which is how a redundancy passes for a
         // safeguard. The adoption at the top is the one that is correct on its own, for both the halt and
         // the transport bar, and it is now the only one.
+        //
+        // **And the drain's answer is acted on, in the same call.** `bus::drain` mirrors the pause, pumps,
+        // and performs every repair the returned `PumpReport` obliges this window to make — the picture a
+        // client's run drew, the capture and audio ring a machine replacement invalidated, the symbol cache
+        // a ROM reload may have dropped. It is one function rather than a pump here and a reaction below it
+        // because `PLAYER-SERVE` shipped exactly that second shape and the reaction was missing; a drain
+        // whose answer the caller may decline to mention is the shape that made the omission expressible.
+        // The whole of it is inside the `bus` bucket, for `Machine::step`'s reason one module over: timing
+        // only the pump would make this parcel's own cost structurally invisible.
         let t_bus = Instant::now();
-        self.bus
-            .mirror_pause(self.machine.system_mut(), self.paused);
+        bus::drain(
+            &mut self.machine,
+            &mut self.bus,
+            &mut self.symbols,
+            self.paused,
+        );
         let bus_ms = ms(t_bus.elapsed());
 
         // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the

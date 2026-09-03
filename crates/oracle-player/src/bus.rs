@@ -84,12 +84,14 @@
 //!    mean anything against this window**: without it the bus reports a halt the loop never took.
 
 use oracle_aether::breakpoints::BreakStop;
-use oracle_aether::host::{Host, HostConfig, MachineInfo};
+use oracle_aether::engine::FrameRef;
+use oracle_aether::host::{Host, HostConfig, MachineInfo, PumpReport};
 use oracle_aether::rpc::RpcError;
 use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
 use oracle_core::profiler::Profiler;
 use oracle_core::scanline_capture::ScanlineCapture;
+use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::Watchpoints;
 use serde_json::{Map, Value};
@@ -271,7 +273,10 @@ impl Bus {
             None => ServeOutcome::NotAsked,
         };
         let mut bus = Bus { host, outcome };
-        bus.mirror_pause(sys, paused);
+        // The report is explicitly discarded, and this is the one call site where that is right: nothing
+        // has been derived from this machine yet — no picture, no audio ring, no symbol cache older than
+        // the `MachineInfo` handed in three lines up — so there is nothing here to put back in step.
+        let _ = bus.mirror_pause(sys, paused);
         bus
     }
 
@@ -368,29 +373,45 @@ impl Bus {
     /// on the frame a breakpoint fires it has not. The player would keep running past a breakpoint the bus
     /// believed it had stopped on.
     ///
-    /// # ⚑ The dropped [`PumpReport`](oracle_aether::host::PumpReport) — a KNOWN GAP as of `PLAYER-SERVE`
+    /// # The [`PumpReport`] is returned, not dropped — `PLAYER-SERVE`'s booked gap, closed
     ///
-    /// The report is dropped. Until this parcel that was **sound**, and the reason it was sound is the
-    /// reason it no longer is: its three interesting flags — `timeline_moved`, `screen_changed`,
-    /// `rom_changed` — all describe *a socket client* moving the machine behind the loop's back, and this
-    /// player bound no socket, so none of them could ever be true. (The transport bar can move the machine
-    /// too, but it goes through [`Host::call`], which is not a drain and cannot appear in this report at
-    /// all.)
+    /// `PLAYER-SERVE` dropped it and said why that had been sound: the report's three interesting flags all
+    /// describe *a socket client* moving the machine behind the loop's back, and until that parcel this
+    /// player bound no socket, so none of them could ever be true. Binding one made all three reachable and
+    /// turned the drop into the defect. It is `PLAYER-PUMPREPORT` that acts on them, and the acting lives in
+    /// [`drain`] rather than here — one function both the loop and its tests call, so a window that pumped
+    /// and then ignored the answer is not a shape this crate can be written in.
     ///
-    /// **Now that [`Bus::new`] can bind, all three are reachable**, and dropping them means: after a
-    /// client's `emulator/run_frames`, `emulator/restore` or `emulator/reload_rom`, the player does not
-    /// resynchronise its audio ring, its frame counter or its scanline capture, and does not present the
-    /// frame the run drew. `oracle-frontend` reacts to exactly these flags; this crate has no equivalent —
-    /// it never reads [`Host::framebuffer`] at all.
-    ///
-    /// **Booked, not closed, and deliberately so.** Closing it is a *behaviour* change to the run loop
-    /// (present the bus's frame, restart the ring, re-derive the counter) with its own pacing cost, which
-    /// is a parcel and not a line; `PLAYER-SERVE` is the parcel that makes the socket exist. It is written
-    /// here rather than left to be discovered because a gap that is booked is a decision and a gap that is
-    /// silent is a defect. `docs/2026-09-03-debug-panels-design.md` §5.8.2 is its entry.
-    pub fn mirror_pause(&mut self, sys: &mut System, paused: bool) {
+    /// **`#[must_use]` states that in the type.** A caller that wants only the pause mirror — [`Bus::new`],
+    /// which has no window, no picture and no audio to put back in step — says so with an explicit `let _`.
+    #[must_use]
+    pub fn mirror_pause(&mut self, sys: &mut System, paused: bool) -> PumpReport {
         self.host.set_paused(paused);
-        self.host.pump(sys);
+        self.host.pump(sys)
+    }
+
+    /// **The picture a client's own run drew**, line-major RGB and its width, or `None` when the bus is
+    /// holding no whole frame.
+    ///
+    /// `PLAYER-SERVE` recorded that "this crate never reads [`Host::framebuffer`] at all" as the reason its
+    /// window could not show a client-driven run. This is the read that makes it possible; [`drain`] is what
+    /// decides when to take it, and [`Machine::adopt_frame`](crate::machine::Machine::adopt_frame) is what
+    /// puts it on the glass.
+    ///
+    /// Unmasked, deliberately: this window applies no display-layer mask to its own picture either (there is
+    /// no `blit_masked` in this crate), so masking here would make a client-driven frame the *only* one that
+    /// honoured `emulator/set_layer_enabled` — one window, two rules for what it is showing.
+    pub fn framebuffer(&self) -> Option<FrameRef<'_>> {
+        self.host.framebuffer()
+    }
+
+    /// **The listing the engine resolves against now.**
+    ///
+    /// Read rather than remembered because `emulator/reload_rom` can *drop* the table — that is the D7
+    /// binding check's whole point — and the copy this process handed to [`Bus::new`] would outlive the
+    /// drop. See [`drain`].
+    pub fn symbols(&self) -> Option<&SymbolTable> {
+        self.host.symbols()
     }
 
     /// **Both instruments plus the breakpoint sink, for the frame the player is about to run.**
@@ -579,6 +600,100 @@ impl Bus {
 /// the borrow checker enforcing the ordering this seam depends on.
 pub fn break_observed(brk: Option<BreakStop<'_>>) -> Option<u32> {
     brk.and_then(|b| b.fired).map(|(_, addr)| addr)
+}
+
+/// What [`drain`] put back in step, for a caller that wants to say so and for the tests that prove it.
+///
+/// Three booleans and not one, because they are three different repairs with three different triggers, and
+/// a single "resynchronised" flag would let a test that meant to prove one of them pass on another.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Drained {
+    /// Commands the drain answered. Reported, never acted on — see [`drain`]'s field-by-field note.
+    pub calls: usize,
+    /// The capture was dropped and the audio ring and its clock were rebuilt
+    /// ([`Machine::resync_after_replacement`](crate::machine::Machine::resync_after_replacement)).
+    pub timeline: bool,
+    /// A frame the bus had drawn was taken onto the glass
+    /// ([`Machine::adopt_frame`](crate::machine::Machine::adopt_frame)). `false` when `screen_changed` said
+    /// the picture was *invalidated* rather than redrawn — there is nothing to present and the window keeps
+    /// what it has.
+    pub picture: bool,
+    /// The symbol cache was re-derived from the engine's own listing.
+    pub symbols: bool,
+}
+
+/// **The loop's one drain, and everything the drain's answer obliges the window to do.**
+///
+/// One function rather than a `pump` in the loop and a reaction beside it, because the reaction is the
+/// parcel: `PLAYER-SERVE` left the window pumping and discarding, and the shape that made that possible was
+/// a drain whose answer the caller could simply not mention. Here the caller cannot pump without this — the
+/// only other `mirror_pause` in the crate is [`Bus::new`]'s, which has nothing derived to repair — and the
+/// tests in this file drive *this* function, not a re-implementation of it beside it.
+///
+/// # What each [`PumpReport`] field makes this window do
+///
+/// * **`calls`** — nothing, and that is a decision. It counts commands answered; no state this window
+///   derives from the machine is a function of how many commands went past. `oracle-frontend` ignores it
+///   too. It is carried on [`Drained`] so a caller can say "the bus was busy", not so anything branches.
+/// * **`deferred`** — nothing, for a stronger reason: it means the drain stopped on `pump_budget` with the
+///   queue possibly non-empty, and the remainder is taken next iteration with nothing lost. There is no
+///   repair to make. Reacting to it — a second drain, say — would trade the bound the budget exists to
+///   enforce for a stall on the UI thread.
+/// * **`mclk_before`/`mclk_after`**, via [`PumpReport::timeline_moved`] — the machine's clock moved under
+///   the window, so the capture and the audio ring are holding a timeline that is gone:
+///   [`Machine::resync_after_replacement`](crate::machine::Machine::resync_after_replacement).
+///   **`frames_advanced()` is deliberately not added to any counter here**, which is where this window and
+///   `oracle-frontend` part company; the reason is on that method.
+/// * **`screen_changed`** — take the bus's frame ([`Bus::framebuffer`]). This is the field with no
+///   equivalent at all before this parcel, and the one whose absence was visible: a client must pause this
+///   player before it may run anything (§6's run-control state rule), and a paused player runs no frame of
+///   its own, so *every* frame a client asks for was drawn where this window could not see it.
+/// * **`rom_changed`** — re-derive the symbol cache, and resynchronise the timeline as above. See the note
+///   below on why the second is not redundant even though it usually is.
+///
+/// # ⚑ `rom_changed` drives the timeline repair too, and `emulator/reset` is why
+///
+/// `PumpReport::rom_changed`'s own doc says to read it as *"resynchronise"*, and names `emulator/reset` as
+/// the producer a caller is most likely to treat as harmless. Measured, on this build: a reset also moves
+/// the clock (`System::reset` rebuilds the `System`, so `mclk` restarts near 0) and `timeline_moved()` is
+/// therefore true for it as well, which makes `|| report.rom_changed` **redundant in every case this
+/// crate can reach today**. It is written anyway, because the alternative is a window whose correctness
+/// depends on a coincidence between two flags that are documented as separate facts — and the case where
+/// they separate is not exotic: a reset issued at `mclk == 0`, or any future producer that replaces the
+/// machine without moving its clock. The condition is what the doc asks for; the redundancy is measured
+/// and recorded rather than assumed.
+pub fn drain(
+    machine: &mut crate::machine::Machine,
+    bus: &mut Bus,
+    symbols: &mut Option<SymbolTable>,
+    paused: bool,
+) -> Drained {
+    let report = bus.mirror_pause(machine.system_mut(), paused);
+    let mut out = Drained {
+        calls: report.calls,
+        ..Drained::default()
+    };
+
+    if report.timeline_moved() || report.rom_changed {
+        machine.resync_after_replacement();
+        out.timeline = true;
+    }
+    if report.screen_changed {
+        // `None` is the documented invalidated-not-redrawn case (a restore, a ROM reload): nothing to
+        // present, and the retained image stays up exactly as it does for an iteration that ran no frame.
+        if let Some((width, rgb)) = bus.framebuffer() {
+            out.picture = machine.adopt_frame(width, rgb);
+        }
+    }
+    if report.rom_changed {
+        // Unconditional re-derivation rather than a drop, because the engine's answer covers both outcomes:
+        // `emulator/reload_rom` drops the listing when it no longer binds (D7) and keeps it when it does,
+        // and `emulator/reset` keeps it always. Cloning a table is not free, but this runs only when a
+        // cartridge was replaced, which is not a per-frame event.
+        *symbols = bus.symbols().cloned();
+        out.symbols = true;
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------------
