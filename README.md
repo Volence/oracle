@@ -18,16 +18,40 @@ already-running server (for example the legacy C++ `oracle_gui`) only when `ORAC
 legacy `EXODUS_SOCKET`) is set. So `mcp__oracle__emulator_*` calls exercise this core unless you
 deliberately point them elsewhere.
 
+⚠ **And if you do point them elsewhere, know what you are pointing them at.** The legacy C++ server
+**silently defaults parameters it does not recognise** — ask it for a key it has never heard of and
+its accessor hands back the default and tells nobody. So a stale, misspelled or newly-renamed call
+against `oracle_gui` returns a plausible answer rather than an error, and a gate built on one can
+observe for thirty seconds while reporting that it observed for a hundred and twenty. This server
+does the opposite on purpose: an unknown method is `-32601` by name, and an unknown or malformed
+parameter is `-32602` naming the key, refused at the dispatch choke *before* the handler runs. That
+asymmetry is the whole reason the cutover was sequenced onto this implementation rather than away
+from it — **a missing capability that returns something is far worse than one that refuses.**
+
 The Python MCP client itself has never been ported into this repo; the cross-checking test
 `crates/oracle-aether/tests/mcp_tool_sweep.rs` reads `oracle-old/linux-port/mcp/oracle_mcp.py` off
 disk precisely because it is a foreign artifact.
 
-**Where the Rust server actually stands:** the shared bus contract
+**Where the Rust server actually stands.** The shared bus contract
 (`empyrean/contract/protocol.md`, vendored here as
-`crates/oracle-aether/tests/contract/bus-protocol.schema.json`) defines **64 request methods**.
-This server serves **56**. The remaining **8 are unserved** (counts as of 2026-08-30 — re-derive
-from the two lists below rather than trusting these numbers), and that list *is* the acceptance
-contract for the cutover:
+`crates/oracle-aether/tests/contract/bus-protocol.schema.json`) catalogues a set of request methods;
+this server serves all but the eight below, and that list *is* the acceptance contract for the
+cutover.
+
+**No total is printed here on purpose.** Earlier revisions of this section carried one, it went
+stale three landings later while every assertion around it stayed green, and a consumer elsewhere in
+this suite once pinned a published method count as a freshness check — so the guard written to
+detect staleness became the stale thing and rejected every correct binary. A count changes for
+reasons unrelated to the question anyone is actually asking. Derive it when you need it:
+
+```sh
+# served, from the one table that is simultaneously the dispatch table and the advertised list
+grep -oE 'name: "[A-Za-z0-9_/]+"' crates/oracle-aether/src/engine.rs | sort -u | wc -l
+```
+
+Note the character class: `[a-z_]` silently drops `emulator/romReloaded` behind the capital R and
+returns a smaller number with no error, which is how two independent derivations in this repo once
+agreed with each other and were both wrong.
 
 | Group | Unserved methods |
 |---|---|
