@@ -706,6 +706,21 @@ agreeing until the day it did not, in the one place where being wrong retires so
 
 ### 5.7.1 The panel-cost measurement — and the panel that does not fit in a frame
 
+> ### ⚑ **SUPERSEDED IN TWO PLACES by §5.7.2, and everything below is left standing as the measurement that
+> found the defect.**
+>
+> * **The residual of two is now a residual of ONE, and it is the Watchpoints hit log.** Not by argument —
+>   by two extra binaries, each carrying exactly one of the two fixes, run against the same configuration
+>   in the same sitting. Fixing the hit log alone recovers the whole 14.7 ms; fixing the Profiler alone
+>   recovers **nothing**. §5.7.1's own hypothesis, below, was right; its refusal to name the panel without
+>   evidence was also right, and §5.7.2 is that evidence.
+> * **`ui-build` in configuration C is 0.573 ms, not 15.220**, and the player holds 60 emulated fps with
+>   all eight tabs visible and both instruments armed. The numbers below are the state of
+>   `parcel/panels-3-tabs` at `d944286` and remain the honest record of it.
+> * **A second correction to this section's own rig**, on top of the one already boxed below:
+>   `pgrep -c -f "[c]argo"` **counts the watcher that runs it**, so a wait-for-quiet loop written around it
+>   can never see 0. See §5.7.2.
+
 **This is the measurement §8 item 2 booked as owed, taken for these three panels, and it does not say what
 this design predicted.** §5's claim that the panel bodies are cheap was *reasoning from size*. It holds
 everywhere it was tested but one: **the Watchpoints/Profiler pair, whose two bodies together cost 14.7 ms
@@ -841,10 +856,218 @@ routine map every repaint before truncating to `TOP_ROUTINES` = 24) is untested 
 split, and the fix, are the next parcel's**, and the fix is named here so it is not re-derived: `show_rows`
 with a fixed row height, which draws the ~10 rows a 220 px viewport can show.
 
+> ⚑ **This hypothesis was right, and §5.7.2 is the measurement of it.** The hit log was **14.779 ms** of
+> the 14.7; the Profiler's suspected sort was **0.027 ms** and never a contributor. The named fix —
+> `show_rows` — is what shipped, with the row height taken from the style rather than fixed by hand. The
+> paragraph is left standing because the discipline it demonstrates is the point: *consistency is not
+> attribution*, and the panel was not named until a binary that fixed one and not the other said so.
+
 **What this does NOT say.** It does not say the default player is slow: **configuration A is the shipped
 layout and it is 0.173 ms of `ui-build`**, and D — the shipped layout with instruments armed and a full
 Breakpoints table — holds 60.033 emulated fps with 2 steady starvations in 75 s. The regression is reachable
 by clicking a tab, not by launching the program.
+
+### 5.7.2 The retake — the residual of two was one panel, and it was the hit log
+
+**§5.7.1 could not split its residual because no flag drew one of the pair without the other. This retake
+does not split it with a flag; it splits it with the FIX.** Four release binaries were built from this
+branch and run back to back in one sitting:
+
+| binary | hit log virtualised (`show_rows`) | profiler selects before formatting |
+|---|---|---|
+| **BEFORE** (`d944286`) | no | no |
+| **HITLOG-ONLY** | **yes** | no |
+| **PROF-ONLY** | no | **yes** |
+| **AFTER** (`c7c9b5a`) | **yes** | **yes** |
+
+Each fix targets exactly one panel body, so `BEFORE − HITLOG-ONLY` is the Watchpoints hit log's cost and
+`BEFORE − PROF-ONLY` is the Profiler's, with no arrangement flag needed and nothing left over to guess at.
+All four are configuration **C** (`--dock every-tab --bench-arm`) so the *only* thing that differs between
+them is which body was made cheap. The four binaries were confirmed to be four distinct files before the
+sitting, and `AFTER` was rebuilt from a clean tree and compared byte-for-byte with the copy that was run —
+a measurement in which two of the "different" builds were the same file would look exactly like a fix that
+did nothing.
+
+**The rig is §5.7.1's, unchanged**: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin` (+ its 2,884-symbol
+`.lst`, auto-discovered), a real audio device at gain 0.0, no window and no GPU, `--expect-screen
+1281x803`. **Separate process invocations, reported separately and never averaged.**
+
+> ### ⚑ **A second correction to the rig, and it is worse than the first: `pgrep -c -f "[c]argo"` COUNTS THE WATCHER.**
+>
+> §5.7.1's box says the check is a *cargo* check that misses a peer's compiled binaries. That is true and
+> it is not the whole fault. `-f` matches the **whole command line**, so a wait-for-quiet loop whose own
+> text mentions `cargo` — as any loop that reports `cargo=$(…)` must — matches **itself**. Measured here:
+> at 13:26 the documented check read **3** while `pgrep -c -x cargo` and `pgrep -c -x rustc` both read
+> **0** and the box was genuinely idle; all three "cargo processes" were this session's own watchers. A
+> gate written on it waits forever and then reports that the box was never quiet — which is very close to
+> what §5.7.1's own "second clean sitting was attempted and NOT obtained" says happened.
+>
+> **`pgrep -x cargo` is the check.** `-x` matches the process *name*, so it cannot match a shell whose
+> command line merely mentions the word. Every run below records `pgrep -c -x cargo`, `pgrep -c -x rustc`,
+> `/proc/loadavg` and `ps --sort=-pcpu` on **both** sides of the run, and the `-f` reading is recorded
+> beside them so the two can be compared rather than argued about. The lesson is §5.7.1's own, one turn
+> further in: *a control must measure the string it names* — and a control that can match itself is not
+> measuring the box, it is measuring the measurement.
+
+**The condition of the machine, and what was discarded.** The four C runs were taken in one continuous
+clean stretch: `cargo -x` **0** and `rustc -x` **0** on both sides of every one, 1-minute load average
+**2.53 → 3.02** on 16 cores, nothing on the box but the owner's session (Vivaldi, Discord,
+`kwin_wayland`, a peer lane's `oracle-frontend` at ~23 % of one core). **Six further runs were taken and
+are DISCARDED**, named here rather than quietly dropped: a peer `sigil` lane's cargo job returned during
+`B-BEFORE` and stayed, putting `B-BEFORE`, `B-AFTER`, `D-AFTER`, `A-AFTER`, `C-AFTER2` and `C-BEFORE2` at
+load **4.9–8.7** with `cargo -x` 1–2. They were re-taken in a second sitting, below, behind a per-run
+quiet guard. One thing the discarded pair is worth for: `C-BEFORE2`, at load 7.53, put `ui-build` at
+**15.879 ms** — the defect reproduces at 2.5× the load, exactly as §5.7.1's two discarded sittings found,
+and it is not a load artefact.
+
+#### The split, at configuration C — medians, milliseconds
+
+```
+part            BEFORE   PROF-ONLY  HITLOG-ONLY   AFTER
+              (neither)  (profiler)  (hit log)   (both)
+emulate         5.670      5.840       2.837      2.890     <-- NOT comparable across the pair; see below
+audio           0.002      0.002       0.001      0.001
+convert         0.071      0.071       0.057      0.035
+tex-upload      0.006      0.006       0.005      0.005
+ui-build       15.379     15.436       0.600      0.573     <-- the panels
+tessellate      0.070      0.071       0.052      0.052
+bus-pump        0.001      0.001       0.000      0.000
+CPU TOTAL      21.145     21.363       3.507      3.510
+period         38.910     39.172      16.662     16.664
+n (iterations)   2113       2091        4500       4500
+```
+
+| | **BEFORE** | **PROF-ONLY** | **HITLOG-ONLY** | **AFTER** |
+|---|---|---|---|---|
+| **emulated frames/s** | **51.577** | **51.292** | **60.050** | **60.050** |
+| presented frames/s | 28.168 | 27.872 | 59.997 | 59.997 |
+| emulated frames per iteration | 1.831 | 1.841 | 1.001 | 1.001 |
+| frame period, median | 38.910 ms | 39.172 ms | **16.662 ms** | **16.664 ms** |
+| frame period, WORST | 53.084 ms | 53.011 ms | 28.308 ms | 28.692 ms |
+| worst lateness | 36.417 ms | 38.682 ms | 12.346 ms | 12.946 ms |
+| **governor rebases** | **1754** | **1756** | **0** | **0** |
+| **audio starvations, steady** | **1348** | **1368** | **0** | **0** |
+| inserted silence | 10.599 s | 10.958 s | 0.067 s | 0.067 s |
+| audio producer drops | 0 | 0 | 0 | 0 |
+| leanest ring | 1176 (13.3 ms) | 1176 (13.3 ms) | 6056 (68.7 ms) | 7232 (82.0 ms) |
+| `ui-build` p95 / p99 | 16.506 / 22.959 | 16.521 / 23.158 | 0.741 / 0.972 | 0.688 / 0.884 |
+| load average, before → after | 2.53 → 2.82 | 3.16 → 3.02 | 3.17 → 3.16 | 3.31 → 3.17 |
+| `cargo -x` / `rustc -x` | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+**⚑ The finding: the 14.7 ms was the Watchpoints hit log, all of it, and the Profiler was never in it.**
+
+* **`ui-build` BEFORE − HITLOG-ONLY = +14.779 ms.** Virtualising the hit log **alone** recovers the whole
+  regression: 51.577 → 60.050 emulated fps, 1754 → **0** governor rebases, 1348 → **0** steady audio
+  starvations, 10.6 s of inserted silence → 0.067 s. That is the Watchpoints panel's cost, isolated.
+* **`ui-build` BEFORE − PROF-ONLY = −0.057 ms.** Fixing the Profiler **alone** recovers **nothing** — the
+  sign is negative, which is to say the difference is noise, and the run is still 51.292 fps with 1756
+  rebases and 1368 starvations. **The Profiler was not a contributor and the ranking it does was never the
+  cost.**
+* **The Profiler's own cost, isolated the other way round** — HITLOG-ONLY − AFTER = **0.027 ms**, with the
+  expensive neighbour already out of the way. **0.16 % of a frame.** §5's reasoning-from-size claim is
+  *confirmed* for the Profiler body. ⚠ It is confirmed **at this ROM's routine count**, which this report
+  does not print and which is therefore not stated here; the body is `O(n)` in the sample either way now,
+  and it was the `O(n)` formatting rather than the sort that the fix removed.
+* **The two add up.** 14.779 + (−0.057) = 14.722 against BEFORE − AFTER = **14.806 ms** measured directly:
+  the parts agree with the whole to 0.084 ms, which is what a genuine partition looks like and what a
+  mis-attribution would not survive.
+* **`emulate` must NOT be differenced across this table.** BEFORE and PROF-ONLY run **1.83 emulated frames
+  per iteration** and HITLOG-ONLY and AFTER run **1.00**, so the BEFORE column's `emulate` covers nearly
+  two frames. Its apparent halving is the iteration getting shorter, not the emulator getting faster —
+  §5.7.1's own caveat about configuration C, and it applies within this table as well as across it.
+
+**What the fixes were, and that they changed nothing a human sees.** `crates/oracle-player/src/ui.rs`
+draws the hit log with `ScrollArea::show_rows` rather than `show` — the rows are uniform (every one is a
+single `ui.monospace` line), the height comes from `ui.text_style_height(&TextStyle::Monospace)` rather
+than a typed number and is passed **sans spacing** because `show_rows` adds `item_spacing.y` itself
+(egui 0.36.1 `scroll_area.rs:991`), and `stick_to_bottom` survives because `show_rows` sets the content
+height for the whole virtual list. `stopping::top_routines` ranks the bare `(addr, counts)` pairs with one
+`select_nth_unstable_by` and formats only the `TOP_ROUTINES` that survive; the answer is provably the old
+one because the row order is a **total** order over a `BTreeMap` keyed by address, and
+`the_top_selection_matches_a_full_sort_even_with_ties` re-derives the old algorithm and compares against
+it on a fixture whose 32-row tie group straddles the 24-row cut.
+
+#### The four configurations, re-taken — so `C − B` is the same subtraction §5.7.1 booked the defect with
+
+A **second sitting**, behind a per-run quiet guard, because the first lost B/D/A to the returning peer. Same
+binary throughout (`AFTER`) except `B-BEFORE`, which is there to check that this branch's B reproduces
+§5.7.1's B rather than being compared against a number from another day.
+
+```
+part                     A         B         C         D    |  B-BEFORE
+                    default  every-tab  every-tab   default  |  every-tab
+                     no arm     no arm    ARMED      ARMED   |    no arm
+emulate               2.754     2.733     2.890     2.907    |    2.738
+audio                 0.001     0.001     0.001     0.001    |    0.001
+convert               0.035     0.035     0.035     0.035    |    0.035
+tex-upload            0.005     0.005     0.005     0.006    |    0.005
+ui-build              0.167     0.250     0.573     0.225    |    0.260   <-- the panels
+tessellate            0.035     0.049     0.052     0.041    |    0.050
+bus-pump              0.000     0.000     0.000     0.000    |    0.000
+CPU TOTAL             2.969     3.031     3.510     3.182    |    3.061
+period               16.666    16.666    16.664    16.665    |   16.664
+n (iterations)         4500      4500      4500      4499    |    4498
+```
+
+| | **A** | **B** | **C** | **D** | | **C, §5.7.1** |
+|---|---|---|---|---|---|---|
+| **emulated frames/s** | **60.051** | **60.051** | **60.050** | **60.037** | | 51.581 |
+| presented frames/s | 59.998 | 59.997 | **59.997** | 59.984 | | 28.170 |
+| emulated frames per iteration | 1.001 | 1.001 | **1.001** | 1.001 | | 1.830 |
+| frame period, median | 16.666 ms | 16.666 ms | **16.664 ms** | 16.665 ms | | 38.672 ms |
+| frame period, WORST | 23.630 ms | 28.153 ms | 28.692 ms | 32.082 ms | | 64.375 ms |
+| **governor rebases** | **0** | **0** | **0** | **1** | | 1754 |
+| **audio starvations, steady** | **0** | **0** | **0** | **0** | | 1353 |
+| audio producer drops | 0 | 0 | 0 | 0 | | 0 |
+| leanest ring | 7584 (86.0 ms) | 6232 (70.7 ms) | 7232 (82.0 ms) | 5350 (60.7 ms) | | 2940 (33.3 ms) |
+| `ui-build` p95 / p99 | 0.249 / 0.350 | 0.323 / 0.454 | 0.688 / 0.884 | 0.499 / 0.997 | | 16.873 / 23.277 |
+| load, before → after | 3.09 → 3.75 | 2.80 → 2.14 | 3.31 → 3.17 | 2.14 → 4.83 | | 2.0–4.0 |
+| `cargo -x` / `rustc -x` | 0/0 both sides | 0/0 both sides | 0/0 both sides | 0/0 both sides | | — |
+
+**⚑ The player holds real time with every tab open and both instruments armed.** Configuration C — the one
+that was 51.6 emulated fps, 28 presented, 1754 rebases and 1353 steady starvations — is **60.050 emulated
+fps, 59.997 presented, 0 rebases and 0 steady starvations**, with the same eight bodies drawing the same
+rows. `ui-build` is **0.573 ms**, 3.4 % of a frame, against 15.220 ms and 91 %.
+
+**The arithmetic, recomputed against the same subtractions §5.7.1 used.**
+
+* **`ui-build` C − B = +0.323 ms**, against §5.7.1's **+14.959 ms**. The three stopping bodies gaining
+  their rows is **1.9 % of a frame**, down from 90 %.
+* **`ui-build` B − A = +0.083 ms**, against §5.7.1's +0.088. Four more bodies; unchanged by this parcel, as
+  it must be — neither fix touches Memory or Objects — and reproducing to 0.005 ms is a check on the
+  sitting, not a finding. §5.7.1's caveat still travels with it: `every_tab_dock` gives each leaf ~1/8 of
+  the window, so this is a **lower bound** for Memory and Objects at full size.
+* **`ui-build` D − A = +0.058 ms**, against §5.7.1's +0.217 (which that section already qualified as
+  **≲0.2 ms**, its two discarded sittings putting it at +0.100 and +0.001). This reading is inside that
+  band and adds no precision to it. ⚠ It also should not be read as a change: neither fix touches the
+  Breakpoints body, so **D and A are the same code before and after**, and the movement here is the noise
+  floor of a single sitting, which is what §5.7.1 said it was.
+* **Therefore `(C − B) − (D − A)` = +0.265 ms is Watchpoints + Profiler**, against §5.7.1's **+14.742 ms**
+  — **a 56× reduction**, and 1.6 % of a frame rather than 88 %.
+* **The two independent routes to the same number agree to 0.01 ms.** The residual route says the pair cost
+  `(C−B) − (D−A)` = (15.119 − 0.058) = **+15.061 ms** before the fixes, using this sitting's own
+  `B-BEFORE` = 0.260. The fix-isolation route says the fixes removed **14.806 ms** and left **0.265 ms**
+  behind, i.e. **15.071 ms** before. Two different subtractions over two different sittings, 0.010 ms
+  apart. That agreement is the reason the attribution above is stated as a measurement and not as a story
+  that fits.
+
+**The condition of the machine for this second sitting**, per run, both sides: A, B, C and D all read
+`cargo -x` **0** and `rustc -x` **0** before *and* after. Load averages are tabled above. Two tails are
+worth naming rather than smoothing: **`B-BEFORE` finished with a peer `rustc ×2` arriving in its last
+seconds** — its median 0.260 is the figure used and it reproduces §5.7.1's B (0.261) to 0.001 ms, but its
+`emulate` p99 of 6.715 ms against B's 3.197 is that peer and not the player. **`D-AFTER` ended at load
+4.83** with a peer `sigil` binary at 96 % of a core, which is where its `emulate` p95 of 5.309 ms and its
+single governor rebase come from. Neither tail touches a median this section leans on.
+
+⚠ **One respect in which the drawn output is not literally identical, stated rather than glossed.** A
+vertical `ScrollArea` has `auto_shrink.x = true` by default (`scroll_area.rs:397`, applied at `:1186`), so
+its width follows its content — and its content is now the ~10 visible rows instead of all 4096. Row
+widths vary by a few monospace characters (`{:#X}` on the hit value, `{:?}` on op and size), so the hit
+log's **vertical scrollbar can now sit a few characters further left or right as the log is scrolled**,
+where before it was pinned by the widest row in the whole ring. The rows themselves — text, order, count,
+scroll position, stick-to-bottom — are unchanged. The alternative, `auto_shrink([false, true])`, would
+pin the scrollbar to the panel's right edge, which is a *larger* departure from what ships today, so it
+was not taken.
 
 ---
 
@@ -970,12 +1193,21 @@ Everything I could not establish in this worktree, gathered, not smoothed.
    >
    > * **Breakpoints, with sixteen rows: ≲0.2 ms** (`+0.217 ms` of `ui-build` in the one clean sitting).
    >   Isolated — the shipped default arrangement draws that body and neither of its neighbours.
-   > * **Watchpoints + Profiler, with rows: +14.742 ms *together*, ~88 % of a frame budget.** A
+   > * ~~**Watchpoints + Profiler, with rows: +14.742 ms *together*, ~88 % of a frame budget.** A
    >   **residual of two**: no arrangement `--dock` can build draws one without the other. **Splitting it
-   >   is still owed**, and so is the confirmation of §5.7.1's hypothesis about which body it is.
-   > * **The whole eight-tab arrangement, armed: `ui-build` 15.220 ms median**, against 0.173 ms for the
+   >   is still owed**, and so is the confirmation of §5.7.1's hypothesis about which body it is.~~
+   >   > ⚑ **SPLIT AND FIXED — §5.7.2.** It was **the Watchpoints hit log, all of it**, established by
+   >   > running two binaries each carrying exactly one of the two fixes: virtualising the hit log alone
+   >   > recovers **+14.779 ms** and 60 fps, fixing the Profiler alone recovers **−0.057 ms** — nothing.
+   >   > **Watchpoints, hit log at the 4096 ring cap, unvirtualised: +14.779 ms.** **Profiler, isolated
+   >   > with the hit log already cheap: +0.027 ms** — 0.16 % of a frame, so §5's reasoning-from-size
+   >   > claim is *confirmed* for that body. Both panels are now measured individually; this bullet is
+   >   > closed.
+   > * ~~**The whole eight-tab arrangement, armed: `ui-build` 15.220 ms median**, against 0.173 ms for the
    >   shipped default arrangement unarmed. In that state the player **does not hold real time** (51.6
-   >   emulated fps, 1754 rebases, 1353 steady audio starvations). Measured, named, unfixed.
+   >   emulated fps, 1754 rebases, 1353 steady audio starvations). Measured, named, unfixed.~~
+   >   **Fixed and re-measured (§5.7.2): `ui-build` 0.573 ms in that same configuration, 60.050 emulated
+   >   fps, 0 rebases, 0 steady starvations.**
    >
    > **What is STILL unmeasured, and this item is not closed until it is:**
    >
