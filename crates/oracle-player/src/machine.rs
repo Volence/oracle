@@ -64,11 +64,28 @@ impl Machine {
         }
     }
 
-    /// Run this iteration's emulated frames — however many the **audio ring** asks for — with `pad` on
-    /// port 1, drain the synth into the ring, and convert the completed picture.
+    /// Run this iteration's emulated frames — however many the **audio ring** asks for — with `human` on
+    /// the two pads, drain the synth into the ring, and convert the completed picture.
     ///
     /// `set_pad` is called once per iteration, before the run, exactly as the minifb player does: the pad
     /// is the state of the keys at the top of the frame and is held for every frame the iteration runs.
+    ///
+    /// # ⚑ The pads are the human's OR the client's, and the merge happens HERE
+    ///
+    /// `human` is what the keyboard says. What reaches `System::set_pad` is that OR-ed, per button, with
+    /// the set a client is holding through `emulator/hold`
+    /// ([`Bus::merge_held`](crate::bus::Bus::merge_held)), and the human's own pads are published to the
+    /// bus first ([`Bus::set_live_pads`](crate::bus::Bus::set_live_pads)) so the engine's own pad writes
+    /// compose with them instead of erasing them. Neither side can suppress the other; that is the OR.
+    ///
+    /// **It is here rather than in `Loop::iterate`, where `oracle-frontend` does it, for two reasons.**
+    /// These two lines are the *only* place this crate writes a pad into the `System`, so no path can grow
+    /// that bypasses the merge — and `iterate` needs a window, so a merge placed there is a merge no test
+    /// in this crate could ever execute. A seam that can only be exercised behind a GUI is a seam that is
+    /// asserted rather than shown.
+    ///
+    /// Port 1 is no longer hardcoded to [`Pad::default`] for the same reason: `Host::held(1)` is real, and
+    /// a merge that dropped it would show a held set in the status strip that never reached the machine.
     ///
     /// # ⚑ The bus rides every emulated frame (parcel 3)
     ///
@@ -88,9 +105,11 @@ impl Machine {
     /// **All of it is inside the `emulate` bucket.** `run_sinks` and `record_break` are new per-frame work
     /// on the emulation path, and timing only `run_frames_with_sink` would have made this parcel's own
     /// re-measurement structurally unable to see the thing it was retaken to price.
-    pub fn step(&mut self, pad: Pad, bus: &mut crate::bus::Bus) -> StepCost {
-        self.sys.set_pad(0, pad);
-        self.sys.set_pad(1, Pad::default());
+    pub fn step(&mut self, human: [Pad; 2], bus: &mut crate::bus::Bus) -> StepCost {
+        bus.set_live_pads(human);
+        let pads = bus.merge_held(human);
+        self.sys.set_pad(0, pads[0]);
+        self.sys.set_pad(1, pads[1]);
 
         let n = match self.device.as_ref() {
             Some(d) => crate::pacing::frames_to_run_for(d.prod(), d.frame_samples(), self.skips),
