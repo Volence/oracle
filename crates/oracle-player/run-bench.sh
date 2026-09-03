@@ -15,6 +15,13 @@
 #   ./run-bench.sh cpu    <secs>        # THE ANSWER: governor-paced, display-independent
 #   ./run-bench.sh window <secs>        # the real winit+wgpu stack on Xvfb (llvmpipe: fps is REFUSED)
 #
+# A 4th argument overrides the governor's target rate; OMIT it and the player's own FRAME_PERIOD is used
+# exactly, with no float round-trip through a rate. `0` switches the governor OFF, which is the
+# CONTROL for the whole pacing design -- the spike's arrangement -- and never a playable mode:
+#
+#   ./run-bench.sh cpu    75 on 0     # control: layer 1 removed
+#   ./run-bench.sh window 75 on 0     # control: layer 1 removed, real stack
+#
 # Run these on a QUIET machine. Nothing else may be building: a cargo job on the other cores is what turned
 # the toolkit spike's frame rate into 92.87 and then 22.71.
 set -euo pipefail
@@ -61,15 +68,15 @@ case "${1:-}" in
     # No window at all, so no display is touched — but --expect-screen is still passed, because the binary
     # refuses any bench mode without it and that refusal is the point.
     "$BIN" --rom "$ROM" --mode bench-cpu --secs "${2:-75}" --audio "${3:-on}" \
-      --expect-screen "${GEOM_W}x${GEOM_H}"
+      ${4:+--target-fps "$4"} --expect-screen "${GEOM_W}x${GEOM_H}"
     ;;
   window)
     ensure_xvfb
     headless "$BIN" --rom "$ROM" --mode bench-window --secs "${2:-75}" --audio "${3:-on}" \
-      --expect-screen "${GEOM_W}x${GEOM_H}"
+      ${4:+--target-fps "$4"} --expect-screen "${GEOM_W}x${GEOM_H}"
     ;;
   *)
-    echo "usage: $0 {screens|cpu|window} [secs] [on|off]" >&2
+    echo "usage: $0 {screens|cpu|window} [secs] [on|off] [target-fps]" >&2
     exit 64
     ;;
 esac

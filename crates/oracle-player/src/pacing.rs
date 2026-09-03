@@ -141,7 +141,10 @@ pub struct Tick {
 /// It is deliberately **not** a catch-up scheduler. See [`Governor::tick`].
 #[derive(Debug)]
 pub struct Governor {
-    period: Duration,
+    /// `None` = **the governor is off**: every repaint owns a frame and nothing ever waits. That is the
+    /// spike's arrangement, and it exists here only so the bench can measure the design against its own
+    /// absence — see [`Governor::unpaced`]. Nothing in the player ever constructs it.
+    period: Option<Duration>,
     /// When the next frame is due.
     next: Instant,
     /// Iterations that started late enough to force a rebase (see [`Governor::tick`]).
@@ -156,12 +159,42 @@ impl Governor {
     /// Start a governor whose first frame is due immediately.
     pub fn start(now: Instant, period: Duration) -> Self {
         Self {
-            period,
+            period: Some(period),
             next: now,
             rebases: 0,
             early_wakes: 0,
             worst_late: Duration::ZERO,
         }
+    }
+
+    /// **The control, not a mode of the player.** A governor with layer 1 removed: every repaint owns a
+    /// frame, nothing ever waits, and the audio ring's trim is the only pacing left. That is exactly the
+    /// arrangement the toolkit spike measured at 92.87 fps and 22.71 fps.
+    ///
+    /// It exists so the bench can measure the design against its own absence rather than only argue for
+    /// it. An absence has to have a control, or the green run witnesses nothing. `--target-fps 0` selects
+    /// it, and the report labels the run GOVERNOR OFF so a number from it can never be mistaken for the
+    /// player's.
+    pub fn unpaced(now: Instant) -> Self {
+        Self {
+            period: None,
+            next: now,
+            rebases: 0,
+            early_wakes: 0,
+            worst_late: Duration::ZERO,
+        }
+    }
+
+    /// Whether layer 1 is switched on. False only in the control.
+    pub fn is_paced(&self) -> bool {
+        self.period.is_some()
+    }
+
+    /// The deadline this governor is actually holding, or `None` in the control. The report prints *this*
+    /// rather than [`FRAME_PERIOD`], so a run made with `--target-fps` cannot silently be compared against
+    /// a target it was never given.
+    pub fn period(&self) -> Option<Duration> {
+        self.period
     }
 
     /// Decide what this iteration does.
@@ -175,6 +208,15 @@ impl Governor {
     /// made up. That is the correct division of labour, because only the ring knows whether they need to
     /// be.
     pub fn tick(&mut self, now: Instant) -> Tick {
+        let Some(period) = self.period else {
+            // The control: no deadline, so nothing is early, nothing is late, and nothing waits.
+            return Tick {
+                run: true,
+                wait: Duration::ZERO,
+                late_by: Duration::ZERO,
+                rebased: false,
+            };
+        };
         if self.next > now + EARLY_TOLERANCE {
             self.early_wakes += 1;
             return Tick {
@@ -188,11 +230,11 @@ impl Governor {
         let late_by = now.saturating_duration_since(self.next);
         self.worst_late = self.worst_late.max(late_by);
 
-        self.next += self.period;
+        self.next += period;
         let rebased = self.next <= now;
         if rebased {
             self.rebases += 1;
-            self.next = now + self.period;
+            self.next = now + period;
         }
 
         Tick {
@@ -358,6 +400,48 @@ mod tests {
         let nearly = t0 + FRAME_PERIOD - Duration::from_micros(900);
         assert!(g.tick(nearly).run, "900 us early is inside the tolerance");
         assert_eq!(g.early_wakes(), 0);
+    }
+
+    /// **The control's own contract.** With layer 1 off, every repaint owns a frame and nothing waits —
+    /// the spike's arrangement exactly. If this ever started waiting, the "governor off" bench run would
+    /// quietly be measuring a governor, and its numbers would witness nothing.
+    #[test]
+    fn the_unpaced_control_never_waits_and_never_turns_a_repaint_away() {
+        let t0 = Instant::now();
+        let mut g = Governor::unpaced(t0);
+        assert!(!g.is_paced());
+        let mut at = t0;
+        for i in 0..1000 {
+            let t = g.tick(at);
+            assert!(t.run, "iteration {i}: the control must run every repaint");
+            assert_eq!(
+                t.wait,
+                Duration::ZERO,
+                "iteration {i}: the control must never wait"
+            );
+            assert!(!t.rebased);
+            // Free-running: the caller comes straight back.
+            at += Duration::from_micros(200);
+        }
+        assert_eq!(g.rebases(), 0);
+        assert_eq!(g.early_wakes(), 0);
+        assert_eq!(g.worst_late(), Duration::ZERO);
+        // ...and a paced governor over the same 1000 free-running repaints turns nearly all of them away,
+        // which is the difference the bench is there to measure.
+        let mut p = Governor::start(t0, FRAME_PERIOD);
+        let mut at = t0;
+        let mut ran = 0;
+        for _ in 0..1000 {
+            if p.tick(at).run {
+                ran += 1;
+            }
+            at += Duration::from_micros(200);
+        }
+        assert!(
+            ran <= 14,
+            "a paced governor let {ran} of 1000 free-running repaints through"
+        );
+        assert!(p.early_wakes() >= 985);
     }
 
     // ---- the frame policy ---------------------------------------------------------------------------

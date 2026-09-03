@@ -80,14 +80,22 @@ struct Args {
     expect_screen: Option<(u32, u32)>,
     /// Window geometry the player asks for.
     size: (f32, f32),
+    /// The governor's target rate. `None` — the default, and the only thing the player itself ever uses —
+    /// means exactly [`pacing::FRAME_PERIOD`], with no float round-trip through a rate. **`Some(0.0)`
+    /// switches the governor OFF**: the control, not a mode of the player, reproducing the spike's
+    /// arrangement so the bench can measure the design against its own absence
+    /// ([`pacing::Governor::unpaced`]).
+    target_fps: Option<f64>,
 }
 
 fn usage() -> ! {
     loud(
         "usage: oracle-player --rom PATH [--mode window|bench-cpu|bench-window] [--secs N]\n\
-         \x20              [--audio on|off] [--expect-screen WxH] [--size WxH]\n\
+         \x20              [--audio on|off] [--expect-screen WxH] [--size WxH] [--target-fps N]\n\
          \n\
-         Both bench modes REQUIRE --expect-screen and force audio gain 0.0.",
+         Both bench modes REQUIRE --expect-screen and force audio gain 0.0.\n\
+         --target-fps 0 switches the GOVERNOR OFF. That is the control for the pacing design, not a\n\
+         playable mode; the report labels any run made with it.",
     );
     std::process::exit(64);
 }
@@ -100,6 +108,7 @@ fn parse_args() -> Args {
         audio: true,
         expect_screen: None,
         size: (1280.0, 800.0),
+        target_fps: None,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -154,6 +163,10 @@ fn parse_args() -> Args {
                     w.parse().unwrap_or_else(|_| usage()),
                     h.parse().unwrap_or_else(|_| usage()),
                 );
+                i += 2;
+            }
+            "--target-fps" => {
+                a.target_fps = Some(next(i, &argv).parse().unwrap_or_else(|_| usage()));
                 i += 2;
             }
             "-h" | "--help" => usage(),
@@ -232,10 +245,27 @@ struct Loop {
 }
 
 impl Loop {
-    fn new(machine: Machine, now: Instant) -> Self {
+    fn new(machine: Machine, now: Instant, target_fps: Option<f64>) -> Self {
         Self {
             machine,
-            governor: Governor::start(now, FRAME_PERIOD),
+            governor: match target_fps {
+                None => Governor::start(now, FRAME_PERIOD),
+                Some(f) if f <= 0.0 => {
+                    loud(
+                        "GOVERNOR OFF (--target-fps 0). This is the CONTROL — the spike's arrangement, \
+                         with layer 1 removed. Nothing measured under it is the player's behaviour.",
+                    );
+                    Governor::unpaced(now)
+                }
+                Some(f) => {
+                    loud(&format!(
+                        "governor target OVERRIDDEN to {f} fps. The player's own rate is \
+                         {:.3} ms; this run is not it.",
+                        FRAME_PERIOD.as_secs_f64() * 1000.0
+                    ));
+                    Governor::start(now, Duration::from_secs_f64(1.0 / f))
+                }
+            },
             buckets: Buckets::default(),
             iterations: 0,
             frame_iterations: 0,
@@ -290,8 +320,12 @@ impl Loop {
             0.0
         };
         self.status = format!(
-            "{:.1} fps target · {} frames · {} rebases",
-            1.0 / FRAME_PERIOD.as_secs_f64(),
+            "{} · {} frames · {} rebases",
+            if self.governor.is_paced() {
+                "governor on"
+            } else {
+                "GOVERNOR OFF (control)"
+            },
             self.machine.frames(),
             self.governor.rebases()
         );
@@ -377,7 +411,7 @@ impl Loop {
 /// exists.
 fn run_bench_cpu(machine: Machine, args: &Args) {
     let start = Instant::now();
-    let mut lp = Loop::new(machine, start);
+    let mut lp = Loop::new(machine, start, args.target_fps);
     let ctx = egui::Context::default();
     let screen =
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(args.size.0, args.size.1));
@@ -396,7 +430,7 @@ fn run_bench_cpu(machine: Machine, args: &Args) {
             late_by: Duration::ZERO,
             rebased: false,
         };
-        let out = ctx.run_ui(raw, |root| {
+        let mut out = ctx.run_ui(raw, |root| {
             let c = root.ctx().clone();
             tick = lp.iterate(&c, root, now);
         });
@@ -409,7 +443,15 @@ fn run_bench_cpu(machine: Machine, args: &Args) {
             tessellate.push(ms(t.elapsed()));
         }
         drop(prims);
-        drop(out.textures_delta);
+        // `TexturesDelta` PANICS on drop while it still holds unapplied deltas (epaint 0.36
+        // `textures.rs:337`), because in a real backend an unapplied delta is a leaked GPU texture. There
+        // is no backend here, so the deltas are discarded — but they have to be discarded *deliberately*,
+        // through `clear()`, which is the API's own escape hatch. Note the panic is debug-only, so a
+        // release-mode bench never sees it: `drop(out.textures_delta)` is silent in `--release` and
+        // aborts under `cargo test`. (The throwaway spike still has that bug at
+        // `crates/oracle-panels-spike/src/main.rs:628`; it has no test target, so nothing ever ran it in
+        // debug.)
+        out.textures_delta.clear();
         let wait = tick.wait;
 
         // Stand in for the toolkit's wait. `request_repaint_after` is what the window modes use; a sleep
@@ -420,7 +462,11 @@ fn run_bench_cpu(machine: Machine, args: &Args) {
     }
     lp.buckets.tessellate = tessellate;
     report::print(&report::Run {
-        label: "bench-cpu (governor-paced, no window, no GPU)",
+        label: if lp.governor.is_paced() {
+            "bench-cpu (governor-paced, no window, no GPU)"
+        } else {
+            "bench-cpu -- CONTROL, GOVERNOR OFF (no window, no GPU)"
+        },
         reach: Reach::DisplayIndependent,
         elapsed: start.elapsed().as_secs_f64(),
         iterations: lp.iterations,
@@ -505,7 +551,11 @@ impl eframe::App for App {
             if self.start.elapsed().as_secs_f64() >= secs && !self.reported {
                 self.reported = true;
                 report::print(&report::Run {
-                    label: "bench-window (real winit + wgpu stack)",
+                    label: if self.lp.governor.is_paced() {
+                        "bench-window (real winit + wgpu stack)"
+                    } else {
+                        "bench-window -- CONTROL, GOVERNOR OFF (real winit + wgpu stack)"
+                    },
                     reach: Reach::SoftwareRasteriser,
                     elapsed: self.start.elapsed().as_secs_f64(),
                     iterations: self.lp.iterations,
@@ -526,7 +576,7 @@ impl eframe::App for App {
 fn run_window(machine: Machine, args: &Args) {
     let start = Instant::now();
     let app = App {
-        lp: Loop::new(machine, start),
+        lp: Loop::new(machine, start, args.target_fps),
         start,
         deadline: if args.mode == Mode::BenchWindow {
             Some(args.secs)

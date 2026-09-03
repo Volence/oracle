@@ -133,14 +133,23 @@ pub fn print(r: &Run) {
     }
 
     // The headline, in the two numbers a mean would have hidden.
+    if !r.governor.is_paced() {
+        println!(
+            "\n*** GOVERNOR OFF — this is the CONTROL run, the toolkit spike's arrangement with layer 1 \
+             removed. Nothing below is the player's behaviour. ***"
+        );
+    }
     if r.buckets.period.is_empty() {
         println!("\nFRAME PERIOD         NOT MEASURED — fewer than two frame-owning iterations completed");
     } else {
         println!(
-            "\nFRAME PERIOD         median {:.3} ms, WORST {:.3} ms  (target {:.3} ms)",
+            "\nFRAME PERIOD         median {:.3} ms, WORST {:.3} ms  (target {})",
             r.buckets.period.median(),
             r.buckets.period.max(),
-            crate::pacing::FRAME_PERIOD.as_secs_f64() * 1000.0
+            match r.governor.period() {
+                Some(p) => format!("{:.3} ms", p.as_secs_f64() * 1000.0),
+                None => "NONE — governor off".to_string(),
+            }
         );
     }
 

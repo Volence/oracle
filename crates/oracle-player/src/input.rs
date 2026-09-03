@@ -169,4 +169,70 @@ mod tests {
         assert_eq!(decide(Pad::default(), false, &mut latch), Pad::default());
         assert!(!latch);
     }
+
+    /// Feed a **real** `egui::Context` real key events and read the pad back off it.
+    ///
+    /// Every test above pins the *mapping*, through a closure. None of them touches the seam that can
+    /// actually be wrong in a toolkit swap: whether [`poll_pad`]'s `InputState::key_down` reports what
+    /// egui stores when a key event arrives, and whether it stays true across the following frame (a
+    /// player polls once per frame, and a key held down produces **no** further events). Nothing else in
+    /// this crate exercises that, and it is exactly the kind of thing an egui bump changes.
+    #[test]
+    fn a_real_egui_context_holds_a_key_down_across_frames() {
+        fn key(key: egui::Key, pressed: bool) -> egui::Event {
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }
+        }
+        fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> Pad {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(640.0, 480.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut seen = Pad::default();
+            let mut out = ctx.run_ui(raw, |ui| seen = poll_pad(ui.ctx()));
+            // See `main.rs`: dropping unapplied texture deltas panics in debug builds.
+            out.textures_delta.clear();
+            seen
+        }
+
+        let ctx = egui::Context::default();
+        assert_eq!(frame(&ctx, vec![]), Pad::default(), "nothing pressed yet");
+
+        // Right + S (Genesis B) go down together: run and jump.
+        let pressed = frame(
+            &ctx,
+            vec![key(egui::Key::ArrowRight, true), key(egui::Key::S, true)],
+        );
+        assert!(pressed.right, "ArrowRight did not reach the pad");
+        assert!(pressed.b, "S did not reach the pad as Genesis B");
+        assert!(
+            !pressed.c && !pressed.a && !pressed.left,
+            "spurious buttons"
+        );
+
+        // A HELD key emits no further events. If `key_down` did not latch, the very next frame would
+        // report the button released and the player would be unplayable in the least obvious way.
+        let still = frame(&ctx, vec![]);
+        assert_eq!(
+            still, pressed,
+            "a held key must stay down on a frame that carries no events"
+        );
+
+        // ...and releasing one releases exactly that one.
+        let after = frame(&ctx, vec![key(egui::Key::S, false)]);
+        assert!(after.right, "ArrowRight is still held");
+        assert!(!after.b, "S was released and must not still read as B");
+
+        let none = frame(&ctx, vec![key(egui::Key::ArrowRight, false)]);
+        assert_eq!(none, Pad::default(), "everything released");
+    }
 }
