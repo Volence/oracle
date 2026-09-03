@@ -1,0 +1,24 @@
+[package]
+name = "oracle-player"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "The toolkit player: the Oracle emulator hosted in a dockable egui/egui_dock UI. Parcel 1 = the shell, the pacing and the input; the debug panels land in later parcels."
+
+[dependencies]
+# The emulation core, with the native synth on — the audio device is the master clock here, so the synth is
+# not optional the way it is in `oracle-frontend`.
+oracle-core = { path = "../oracle-core", features = ["synth"] }
+
+# The toolkit. These must NEVER appear in `oracle-core` or `oracle-frontend`; being a *member* of this
+# workspace does not put them there (a member's dependencies are its own), and `cargo tree -p oracle-core`
+# / `-p oracle-frontend` are gated on that in the design doc's reproduction section.
+eframe = "0.36"
+egui = "0.36"
+egui_dock = "0.21"
+
+# The SAME audio substrate `oracle-frontend` uses. `src/audio.rs` here is `#[path]`-included from
+# `crates/oracle-frontend/src/audio.rs`, byte for byte, so this crate needs exactly its two dependencies at
+# exactly the player's versions. See `src/audio.rs` for why it is included rather than depended on.
+ringbuf = "0.4"
+cpal = "0.15"
