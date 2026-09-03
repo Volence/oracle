@@ -281,20 +281,20 @@ impl Bus {
         format!("aether: {}", self.outcome.sentence())
     }
 
-    /// # The three cross-check accessors below are `#[cfg(test)]`, and that is the design
-    ///
-    /// The **shipped** surface for "what about the bus?" is exactly two calls: [`Bus::announcement`] for
-    /// the launch line and [`Bus::aether_status`] for the window's row. These three exist so a test can
-    /// compare our stored [`ServeOutcome`] against the **`Host`'s own** view — the two are built three
-    /// lines apart and could disagree, and a test that read only our copy would be checking that a field
-    /// holds what we put in it.
-    ///
-    /// `#[cfg(test)]` states in the type system what a paragraph would only ask for: a future gate on any
-    /// of them does not compile until somebody deliberately removes the attribute. That matters here more
-    /// than usual — `oracle-frontend` gates two behaviours on its own `is_serving()`, and this crate
-    /// deliberately gates none, because [`ServeOutcome`] carries *why* (`NotAsked` and `Failed` are
-    /// different facts a `bool` collapses) and a second weaker spelling of one state is the drift R2
-    /// exists to prevent.
+    // # The three cross-check accessors below are `#[cfg(test)]`, and that is the design
+    //
+    // The **shipped** surface for "what about the bus?" is exactly two calls: [`Bus::announcement`] for
+    // the launch line and [`Bus::aether_status`] for the window's row. These three exist so a test can
+    // compare our stored [`ServeOutcome`] against the **`Host`'s own** view — the two are built three
+    // lines apart and could disagree, and a test that read only our copy would be checking that a field
+    // holds what we put in it.
+    //
+    // `#[cfg(test)]` states in the type system what a paragraph would only ask for: a future gate on any
+    // of them does not compile until somebody deliberately removes the attribute. That matters here more
+    // than usual — `oracle-frontend` gates two behaviours on its own `is_serving()`, and this crate
+    // deliberately gates none, because [`ServeOutcome`] carries *why* (`NotAsked` and `Failed` are
+    // different facts a `bool` collapses) and a second weaker spelling of one state is the drift R2
+    // exists to prevent.
 
     /// What [`Bus::new`] did about the socket. Our stored copy.
     #[cfg(test)]
