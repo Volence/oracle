@@ -765,3 +765,32 @@ parameters** (protocol bar 19), which is the only arrangement that catches what 
 **Re-vendor lands WITH the serve, never before** (§10). A re-vendor ahead of the serve makes the gate green
 against a server that does not yet emit the shape — this repo has already measured a re-vendor whose green
 witnessed nothing.
+
+### §17.1 — the x/y question, ruled by this lane as implementer (2026-09-02)
+
+The hub's fragments (empyrean **`21c78d2`**, merge of `249690f`) left one thing neither §11.32 nor §9
+settles: does the reply **echo the accepted request**, or **re-read the record after the frame advance**?
+
+**RULED: it re-reads, and the field description must name the moment.** Echoing carries **zero
+information** — the client already holds those numbers. The re-read is the actual machine state, which is
+what every other reply on this bus reports. But an unqualified `x`/`y` *after* an advance is a plausible
+wrong answer: an object with velocity has moved, and a client that reads the reply as "where I put it" is
+wrong. So the description reads *"as read from the object's record after `framesAdvanced` frames, not an
+echo of the accepted request"*, and `framesAdvanced` (Q2) is what lets a client reason about the gap.
+
+⚑ **Same defect as `ATTR-RGB-LATCH`, one surface over:** that row exists because a colour reply does not
+say **which moment its colour is for**. Identical remedy — the reply names the moment. If either is ever
+reworded, reword both.
+
+**The residual, NOT closed and deliberately so:** a re-read conflates *the engine adjusted your requested
+position* with *the object moved under its own velocity*. `framesAdvanced` says time passed; it does not
+separate the causes. Judged not worth a field in v1 — one honest number beats two the client must
+reconcile. **If a consumer ever needs the split it is an ADDED field, never a redefinition of these**, and
+nobody may later read the re-read as a spawn-position confirmation.
+
+*Checked, not assumed, on the hub's other two flags:* `defSymbol` typed `$defs/symbolName` with an
+embedded `+$hex` refused **matches our existing convention** — displacement is a separate field here
+(`{symbol, symbolDisp}` out, `disp` in; `engine.rs:2085`, `:2202-2203`, `:2262`), never part of the name.
+`handle` as `$defs/hex` rather than the opaque handle type is right, since §11.32 defines it as the low
+word of `addr`. And the published closure covers `layout` only, so a green run on these rows is **not**
+evidence that a stranger top-level key is caught.
