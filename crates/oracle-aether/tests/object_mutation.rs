@@ -486,13 +486,24 @@ fn an_unconsumed_request_is_refused_and_cancelled() {
 // 3. The protocol the server hides
 // ---------------------------------------------------------------------------------------------------
 
-/// **Flag-last, witnessed by the consumer rather than by reading our own source.**
+/// **Every cell of the payload is this request's, witnessed by the consumer rather than by reading our
+/// own source** — no cell is left carrying the previous request's value for the engine to act on.
 ///
-/// The double copies the payload at the instant it first sees the flag set. If the server had written
-/// the flag before any payload cell, the witness would hold the previous request's values — which is
-/// exactly what this asserts against, by making the second request differ from the first in every cell.
+/// ⚑ **This test does NOT witness flag-last, and the attempt to make it do so is the finding.** The
+/// obvious claim — *"write the flag before the payload and this goes red"* — was written, mutated on
+/// disk, and came back **green**: with the machine paused, no CPU cycles elapse between the server's
+/// seven writes, so the consumer cannot observe any order among them. Which is *exactly* CR-J §5.1(a),
+/// arriving as a measurement instead of an argument: flag-last over a request/response bus is safe on
+/// this server *"only through an unstated property of `require_paused`"*, and a rule whose correctness
+/// depends on an unstated server property is worse than no rule. The server writes the flag last
+/// regardless — the contract says so, it costs nothing, and a server whose machine ticks between
+/// writes would need it — but nothing in this suite can hold it, and a test named as if it could would
+/// be a control that measures a different string from the one it names.
+///
+/// What is left is real and does bite: drop or reorder *which cells get written* and the consumer sees
+/// a stale value, which the second request below is built to catch in every cell at once.
 #[test]
-fn the_payload_is_complete_before_the_flag_is_written() {
+fn every_payload_cell_the_consumer_reads_belongs_to_this_request() {
     let mut f = fixture("flaglast");
     seat_record(&mut f.c, dynamic_slot(3), 7, 9);
     script(&mut f.c, 0, slot_addr(dynamic_slot(3)) & 0xFFFF);

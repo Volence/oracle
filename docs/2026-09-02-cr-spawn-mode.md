@@ -895,6 +895,23 @@ Every one of these is the raw mailbox answering, before any of the three rows ex
   the ack never came. This is `mailboxNotConsumed`, and §11.32 is right that it will be the commonest
   error a user meets.
 
+### Q3(e) — a fifth finding nobody asked for: **flag-last is UNOBSERVABLE on this server**
+
+The test written to hold flag-last — *"write the flag before the payload and the consumer sees a stale
+value"* — was mutated on disk exactly that way and came back **GREEN**. Under `require_paused` no CPU
+cycles elapse between the server's seven writes, so no consumer can observe any order among them, and no
+test in this suite can hold the rule.
+
+That is §5.1(a) arriving as a measurement instead of an argument. The CR argued that flag-last over a
+request/response bus is safe here *"only through an unstated property of `require_paused`"* and that a
+rule whose correctness depends on an unstated server property is worse than no rule. The measurement is
+the same sentence from the other end: **the property is so total that the rule it protects has no
+observable content on this server.** The server writes the flag last regardless — the contract says so,
+it costs nothing, and a server whose machine ticks between writes (a hosted arrangement whose owner
+pumps the loop differently, or a second implementation) would need it — but the suite's test is renamed
+to what it can actually witness (`every_payload_cell_the_consumer_reads_belongs_to_this_request`), and a
+test named for flag-last would have been a control measuring a different string from the one it names.
+
 ### What §14 said, and what now replaces it
 
 > *"Weakest point 2: everything about frame counts is unmeasured. `maxFrames` default 2 is reasoning,
