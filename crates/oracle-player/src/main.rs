@@ -242,12 +242,15 @@ struct Loop {
     status: String,
     dock: egui_dock::DockState<ui::Tab>,
     tex: Option<egui::TextureHandle>,
+    /// The `--rom` argument, verbatim, for the Registers tab's status strip.
+    rom_path: String,
 }
 
 impl Loop {
-    fn new(machine: Machine, now: Instant, target_fps: Option<f64>) -> Self {
+    fn new(machine: Machine, now: Instant, target_fps: Option<f64>, rom_path: String) -> Self {
         Self {
             machine,
+            rom_path,
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -372,6 +375,7 @@ impl Loop {
             dock,
             tex,
             status,
+            rom_path,
             ..
         } = self;
         egui::Panel::top("bar").show(root, |ui| {
@@ -389,6 +393,7 @@ impl Loop {
                     machine,
                     governor,
                     status: status.as_str(),
+                    rom_path: rom_path.as_str(),
                 };
                 egui_dock::DockArea::new(dock)
                     .style(egui_dock::Style::from_egui(ui.style().as_ref()))
@@ -411,7 +416,7 @@ impl Loop {
 /// exists.
 fn run_bench_cpu(machine: Machine, args: &Args) {
     let start = Instant::now();
-    let mut lp = Loop::new(machine, start, args.target_fps);
+    let mut lp = Loop::new(machine, start, args.target_fps, args.rom.clone());
     let ctx = egui::Context::default();
     let screen =
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(args.size.0, args.size.1));
@@ -576,7 +581,7 @@ impl eframe::App for App {
 fn run_window(machine: Machine, args: &Args) {
     let start = Instant::now();
     let app = App {
-        lp: Loop::new(machine, start, args.target_fps),
+        lp: Loop::new(machine, start, args.target_fps, args.rom.clone()),
         start,
         deadline: if args.mode == Mode::BenchWindow {
             Some(args.secs)

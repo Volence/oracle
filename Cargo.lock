@@ -2937,8 +2937,10 @@ dependencies = [
  "eframe",
  "egui",
  "egui_dock",
+ "oracle-aether",
  "oracle-core",
  "ringbuf",
+ "serde_json",
 ]
 
 [[package]]
