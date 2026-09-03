@@ -483,13 +483,60 @@ most of what a Sonic-engine debugger is used for.
 
 ## 6. Layout persistence
 
+> ### ✅ **BUILT AND ON, as of the `parcel/layout-persist` branch.**
+>
+> The rest of this section is the design as written before it was built, kept because its argument is the
+> one that was implemented. **What actually shipped, and where it differs:**
+>
+> * **It is on.** `crates/oracle-player/src/layout.rs` is the whole of it: `save(storage, dock)` and
+>   `load(storage) -> (DockState<Tab>, Outcome)`. `main.rs` wires them into `eframe::App::save` and the
+>   `run_native` creation closure. `ui::initial_dock()` is now the **fallback**, not the layout.
+> * **The version integer is `LAYOUT_VERSION = 1`**, and it lives in its **own storage key**
+>   (`oracle_player_dock_layout_version`) *beside* the blob (`oracle_player_dock_layout`) rather than
+>   inside it — so a layout from another `Tab` vocabulary is refused before a deserializer sees it. Bump
+>   it in the same change that touches `Tab`.
+> * **Discard wholesale, never migrate**, as designed below. Version mismatch, missing or junk version,
+>   corrupt bytes, truncation, an unknown tab name: one fallback path, the default layout, a line on
+>   stderr, nothing in the UI. No `Tab::Unknown(String)`.
+> * **eframe's own storage, not a hand-rolled config file** — the framework owns the per-OS path, and
+>   `persistence` also gets the window's geometry remembered. One correction to the mechanics: eframe
+>   0.36.1 exposes `CreationContext::storage` as a public **field**, not the `storage()` accessor that
+>   `Frame` carries.
+> * ⚠ **The saved layout is RON and cannot be JSON — a fact this section did not anticipate.** Every dock
+>   node carries an `egui::Rect`, and one that has not been laid out yet holds `Rect::NOTHING`, i.e.
+>   `±f32::INFINITY` (`emath-0.36.1/src/rect.rs:55`). `serde_json` writes non-finite floats as `null` and
+>   then refuses to read one back as an `f32`, so a JSON layout file would have been lossy from the very
+>   first save — before the first repaint filled the rects in. RON spells them `inf`. The test
+>   `the_default_layout_holds_non_finite_rects_which_is_why_this_is_ron` fails if that ever stops being
+>   true, rather than a comment claiming it. This means §9.2's "persisting by hand with `serde_json` to a
+>   config path avoids `ron`" **is not an available alternative** for this type.
+> * ⚠ **`bench-window` neither persists nor restores.** eframe's restore path is not symmetric with its
+>   save path: `persist_window` gates *writing* the window geometry
+>   (`eframe-0.36.1/src/native/epi_integration.rs:412`) but `load_window_settings` on the way in is not
+>   gated by it at all (`wgpu_integration.rs:1105`). A bench run sharing the player's storage would
+>   silently inherit whatever size the operator last dragged the window to and ignore `--size`, which the
+>   `--expect-screen` guard cannot catch because it checks the *monitor*, not the window. The measured
+>   modes get a per-process `persistence_path` scratch file, removed on exit, plus
+>   `persist_egui_memory() == false`.
+> * **§9.2 was right and this section was wrong about the cost**: two feature flags, not one. Confirmed by
+>   building it. The lock-file delta is `ron 0.12.2`, `enumn`, `typeid` — three packages — and
+>   `cargo tree -p oracle-core` / `-p oracle-frontend` still match `egui|eframe|wgpu|winit` **zero** times
+>   and carry no `ron`.
+> * **Nine tests** in `layout::tests`, driven through a `BTreeMap`-backed `eframe::Storage` so they run the
+>   shipped seam. Each was proven red-first by a mutation applied to disk and restored from a committed
+>   baseline; the sharpest result is that with `save` writing the default layout *and* the "non-default"
+>   fixture returning the default, **eight of the nine still pass** — only
+>   `the_layout_under_test_is_not_the_default` catches it. That is the vacuity this repo keeps paying for,
+>   reproduced deliberately.
+
 **Verified, not quoted.** `egui_dock` 0.21.1's `Cargo.toml:48-53` has `serde = ["dep:serde", "egui/serde"]`;
 `src/dock_state/mod.rs:44` derives `Serialize`/`Deserialize` on `DockState<Tab>` under it, over
 `surfaces: Vec<Surface<Tab>>`, with `translations` `#[serde(skip)]`.
 
 **When it turns on:** at the *end* of the parcel that removes the last placeholder tab and stabilises the
 `Tab` enum — i.e. after P1-P3 ship, not with them. Not because a saved layout is expensive, but because the
-`Tab` enum is what gets saved.
+`Tab` enum is what gets saved. *(This condition was met at `9c23365`, when the Objects panel made all five
+of `Screen | Pacing | Registers | Memory | Objects` real.)*
 
 **What migrating a layout saved too early would cost, concretely.** `DockState<Tab>` serializes the `Tab`
 values themselves, so a saved layout is a tree with `"Registers"`, `"Screen"`, `"Pacing"` embedded in it as
@@ -519,7 +566,7 @@ dependency list today is `oracle-core, eframe, egui, egui_dock, ringbuf, cpal` �
 | excluded | why |
 |---|---|
 | **P4-P6 (breakpoints / watchpoints / profiler)** | §5.4. One shared run-loop change that re-opens parcel 1's pacing measurement. Parcel 3. |
-| **Layout persistence** | §6. Turns on when the `Tab` enum stops moving, which is the end of this parcel's own work. |
+| ~~**Layout persistence**~~ | §6. Turned on when the `Tab` enum stopped moving, which it did at `9c23365`. **No longer excluded — built; see §6's box.** |
 | **`scanlines` as anything but an action** | §2.3. 438 KB/frame. |
 | **A macro / input-timeline editor** (`press`, `play_input`, `hold`) | §2.2. Both are `require_paused`, so they are refused in the state a human would use them; a real timeline editor is a feature, not a panel. |
 | **`object_spawn` and the spawn/move/delete surface** | Not on `main` (§1.2) — it is another lane's branch. When it merges its surface is a **click in the Screen tab**, per the ruling, sharing the click handler `object_at`/`pixel_attribution` already need. Designing that click for two consumers now and wiring the third later is free; guessing the method's shape now is not. |
@@ -581,6 +628,11 @@ It is **two** feature flags — `egui_dock/serde` and `eframe/persistence`, the 
 eframe default (§6) — plus derives, plus `App::save`/storage wiring, plus `serde` and `ron` entering a crate
 that has neither. The conclusion both documents draw (don't do it yet) is right; the cost they quote is low
 by roughly a dependency graph.
+
+> **Confirmed by building it** (see §6's box). Two flags exactly, and the parenthetical below about
+> hand-rolling with `serde_json` to avoid `ron` turns out **not to be available**: a `DockState` holds
+> non-finite `Rect`s, which JSON cannot represent. `ui.rs`'s comment has been rewritten; the pacing doc's
+> line 203-205 is left as the historical record of the same understatement.
 
 ### 9.3 Parcel 1's Registers placeholder already disagrees with `emulator/registers`
 
