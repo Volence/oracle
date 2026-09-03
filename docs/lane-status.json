@@ -7,7 +7,7 @@
     {
       "id": "PANELS-LOOK",
       "title": "Nothing in the debug window has ever been looked at - eight panels now, including the three that stop the emulator. Staged to go LAST in one sitting with aeon's three game looks, so you are interrupted once: they show you the band and the reels, then I arm a breakpoint, halt the player and step it in front of you. Thirty seconds. Gates no building.",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
@@ -97,5 +97,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-03T19:33:27Z"
+  "updatedAt": "2026-09-03T19:33:54Z"
 }
