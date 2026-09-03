@@ -43,7 +43,15 @@ use crate::pacing::Governor;
 use oracle_core::symbols::SymbolTable;
 
 /// A docked tab.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+///
+/// **`Serialize`/`Deserialize` are load-bearing and their spelling is part of the saved file.** A
+/// `DockState<Tab>` stores these values inline as serde's external tagging of unit variants — the literal
+/// text `Objects` ends up in the layout file — so renaming, removing or reordering a variant invalidates
+/// every layout already on disk. That is handled by discarding, not migrating: **bump
+/// [`crate::layout::LAYOUT_VERSION`] in the same change that touches this enum.** See `layout.rs`'s header
+/// for what happens if you do not (the user still gets a working default; the discard is just less
+/// deliberate).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Tab {
     /// The emulator picture. The one tab that carries the uploaded texture.
     Screen,
@@ -819,12 +827,14 @@ impl StatusStrip {
 /// beside Registers — the two panels a debugger reads together, in one pane, so a human is not choosing
 /// between "where is the PC" and "what is at that address".
 ///
-/// `egui_dock::DockState` derives `Serialize`/`Deserialize` under the crate's `serde` feature, so
-/// remembering a user's layout across runs is one feature flag and a `Serialize` bound on [`Tab`]. Still
-/// deliberately **not** done: `DockState<Tab>` serializes the `Tab` values themselves, and a plain
-/// externally-tagged enum errors on an unknown variant — so a layout saved before the enum stops moving
-/// does not lose one tab, it fails to deserialize and the user loses the whole layout. It turns on at the
-/// end of the parcel that removes the last placeholder tab (design §6), which parcel 2a is not.
+/// **This is now the *fallback*, not the layout.** Since the layout-persistence parcel the window opens on
+/// whatever the user last arranged, and reaches this function only on a first run or when a stored layout
+/// is refused — a version mismatch, or bytes that will not decode. [`crate::layout`] holds that decision
+/// and the reasoning; the short version is that a layout is discarded wholesale rather than migrated,
+/// because a `DockState<Tab>` carries the [`Tab`] variant *names* and an unknown one costs the whole tree.
+///
+/// The cost of turning it on was the two feature flags design §9.2 predicted (`eframe/persistence` and
+/// `egui_dock/serde`) rather than the one this comment used to claim, plus `ron` entering the lock file.
 pub fn initial_dock() -> egui_dock::DockState<Tab> {
     let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
     let surface = dock.main_surface_mut();
