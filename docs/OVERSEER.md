@@ -688,10 +688,24 @@ of them**, and the split is the ruling:
   never a docked tab quietly costing frames.
 
 ⚑ **And the half that is a correctness rule rather than taste: A PANEL MUST SHOW THE SAME ANSWER A TOOL
-GETS.** Prefer reading through the served surface over reaching into the emulator by a private route. This
-repo already carries the invariant that `pick.rs` and `emulator/pixel_attribution` *"must never disagree"*
-— routing panels through the same surface makes that true **by construction** instead of by vigilance, and
-it dogfoods our own contract. Cost: slightly more work per panel. Accepted.
+GETS.** ~~Prefer reading through the served surface over reaching into the emulator by a private route.~~
+
+⚠ **THE REQUIREMENT IS HIS AND STANDS; THE MECHANISM WAS THIS SEAT'S AND IS WRONG — corrected 2026-09-03,
+original struck rather than deleted.** He agreed to an assessment that contained my error, so the record has
+to separate them. **"Route panels through the served surface" is the option this repo already considered and
+REJECTED, with the reasoning in-tree the whole time:** `pick.rs:649-655` states that **contract D15 argues
+explicitly against** a panel reaching the capability through a socket round-trip per repaint — *"an
+in-process GUI is a consumer of the same registry, not a second server"* — and our `Host::pump` makes it
+worse, since a click would enqueue and wait a frame to answer what it can answer synchronously.
+**What makes parity true by construction is ONE IMPLEMENTATION UNDER TWO CONSUMERS plus a parity test**, not
+a transport. `host.rs:439-440` already says so: panels draw from *"the same instruments its loop feeds and
+the bus serves, so a local readout and a client's reply cannot disagree."*
+**The line, from the parcel-2 design:** per-frame panel bodies read the shared derivation **directly**;
+per-gesture **commands** go through a synchronous `Host::call`, so a click gets the tool's exact reply *and
+its refusal*. That grants his correctness half in full and costs JSON per click, not per frame.
+**Mirror he did not state and it follows from his own default:** a served capability that **changes what the
+window does** must be *visible* in it — `hold` ORs a client's pad into the player's, so a disconnected client
+can leave someone walking left forever with nothing on screen able to say why.
 
 **Parcel-2 line items this settles:** layout persistence is one `serde` flag and is deliberately OFF until
 the placeholders are gone (saving a layout of placeholders buys a migration); `Tab::Registers` content is
