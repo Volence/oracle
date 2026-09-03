@@ -595,8 +595,14 @@ period            16.665    16.665  |   16.666   16.665
 
 ### 5.6.2 What parcel 3 deliberately did NOT do
 
-* **No `Tab` variants**, so `LAYOUT_VERSION` is untouched at 1. Breakpoints, Watchpoints and Profiler tabs
-  are the next parcel's, and `Bus::read_instruments` is the borrow they draw from.
+* ~~**No `Tab` variants**, so `LAYOUT_VERSION` is untouched at 1. Breakpoints, Watchpoints and Profiler
+  tabs are the next parcel's, and `Bus::read_instruments` is the borrow they draw from.~~
+  > ⚑ **SUPERSEDED by parcel 3-tabs (§5.7), and BOTH halves of the sentence changed.** The first half was
+  > true of parcel 3 and is no longer true of the branch that sits on it: three `Tab` variants shipped and
+  > `LAYOUT_VERSION` is **2**, and it is no longer an integer anybody bumps — it is `VOCABULARIES.len()`.
+  > The second half was **wrong when written**: `Bus::read_instruments` is `(&Watchpoints, &Profiler,
+  > bool)` and has never carried breakpoints, so it is the borrow *two* of the three tabs draw from. The
+  > Breakpoints tab draws from `Bus::read_breakpoints`, added as its sibling. §5.7 has the reason.
 * **Held pads are still not merged.** `Host::set_live_pads` / `Host::held` are unwired in `oracle-player`,
   so a client's `emulator/hold` does not compose with the keyboard there (it does in `oracle-frontend`,
   via `Bus::merge_held`). §5.4 listed this among parcel 3's costs; it is a real gap and it is booked here
@@ -607,6 +613,96 @@ period            16.665    16.665  |   16.666   16.665
   drew the retained frame is over, and `Host::publish_capture` is gated on `has_clients()` — which an
   unserved player never satisfies, so `Host::framebuffer()` has nothing to pull. The retained frame is the
   truthful last-drawn one; it updates on resume.
+
+### 5.7 Parcel 3-tabs — P4/P5/P6 themselves, on the seam
+
+> ### ✅ **BUILT, on `parcel/panels-3-tabs`** (`fe00618` the three tabs, `017e21b` the measurement fixture).
+> The panels §5.4 priced and §5.5 insisted on keeping together. `Tab` is now all eight of
+> `Screen | Pacing | Registers | Memory | Objects | Breakpoints | Watchpoints | Profiler`.
+
+**What shipped.** Three tabs, `crates/oracle-player/src/stopping.rs` as their one shared model — one module
+for three tabs for the reason `memory.rs` is one module for five spaces. Every panel body is a **direct
+read of the instrument the run loop itself feeds** (§4.4's hybrid, read half), and every gesture is a
+`(method, params)` pair dispatched through `Bus::call` and rendered by `memory::answer_line` (§4.4's write
+half), branching on `Answer::reason()` and colouring on `Answer::is_err()`. Nothing in `stopping.rs` or
+`ui.rs` composes a refusal sentence: the arming rules, the caps, the handle grammar and the param types are
+the handlers' own, and the panels inherit every one of them including the ones this design did not
+anticipate. Two such were caught by the tests rather than by memory — `emulator/run_frames` takes `frames`
+and not `n`, and it is `require_paused`.
+
+**⚑ Breakpoints are NOT in `read_instruments`, and §5.6.2's second half was wrong to say they were.**
+`Bus::read_instruments` is `(&Watchpoints, &Profiler, bool)` (`bus.rs:203`, over
+`engine.rs:1698`) and has never carried a breakpoint set. The distinction is not an accident of the
+signature, it is the seam's own vocabulary: **an instrument RECORDS and is lent to a run wrapped in
+`Observe`; a breakpoint HALTS and is lent bare** — that is exactly how §5.6's `run_sinks(resume_pc)` hands
+them over, `(Observe<&mut Watchpoints>, Observe<&mut Profiler>, BreakStop)`. So the Breakpoints tab gets a
+**sibling** rather than a fourth element: `Engine::read_breakpoints` (`engine.rs:1724`) →
+`Host::read_breakpoints` (`host.rs:463`) → `Bus::read_breakpoints` (`bus.rs:225`). All four reads are
+`&self`, which is the only reason `read_instruments` bundles three at all — a draw pass holds every one of
+them at once. The alternative, calling `emulator/breakpoint_list` on every repaint, is **route (b) on a
+60 Hz path**, and §4.4's whole line is that a repaint does not pay for it.
+
+**⚑ `Live` = Yes / Retained / Never, which is the panel-shaped answer to the trap `read_instruments`' own
+doc names.** *Armed is not derivable from the rows.* It is true of all three instruments and in **three
+separate mechanisms**, so no single fix covers it and no amount of correct row rendering would:
+
+* **Profiler** — `set_profiler {enabled:false}` disarms and **retains** the sample (protocol §11.16: arming
+  resets, disarming retains, reading never clears). A grid of hot routines from four minutes ago is
+  pixel-identical to a grid of hot routines from now.
+* **Watchpoints** — `watchpoint_clear` retires the watch and keeps its hits **on purpose** (the handler:
+  *"a destructive clear would let one client erase another's evidence"*). A hit log can outlive every watch
+  that could add to it.
+* **Breakpoints** — `breakpoint_set_enabled {enabled:false}` carries `hits` **across the toggle** (§6 of
+  the protocol: *"a client wanting a fresh count clears and re-adds"*). A disabled row reading 12,000 hits
+  fired 12,000 times and will not fire again.
+
+So a **full table says nothing about whether anything is still recording**. Each tab prints `Live` in words
+before it draws a row, and `Live::Never` **refuses to draw the table at all** — the Objects tab's rule, one
+instrument over: an empty grid where "never measured" belongs asserts that this ROM has no hot code.
+`Retained` and `Never` are a genuinely reachable pair and not a bool, which `stopping::tests` is red for.
+
+**`LAYOUT_VERSION` 1 → 2, and it stops being a number anybody remembers.** §6's box says *"bump it in the
+same change that touches `Tab`"* — a rule with nowhere to enforce it. It is now
+`VOCABULARIES.len()` (`layout.rs:56`), over an append-only table of the `Tab` vocabularies this player has
+shipped, spelled in serde's own alphabet because that is the text a `DockState<Tab>` writes into the RON.
+**Appending a row IS the bump**, so there is no second place to forget; what remains is changing `Tab` and
+appending nothing, and one test is red for exactly that. A version-1 layout is discarded by the version
+gate before `ron` sees the blob, proven on a real version-1 blob whose bytes are also shown to be readable
+under the current stamp — otherwise the test would pass on an unreadable blob and prove the wrong thing.
+
+**`--dock every-tab` — a measurement arrangement, not a layout.** `egui_dock` draws only a leaf's *active*
+tab, so a bench run against `initial_dock` executes **one** of the three panels that share a pane and would
+report it as the cost of adding three. `ui::every_tab_dock` puts all eight in leaves of their own: the
+worst case a user could arrange, and the only arrangement in which measuring N panels measures N panels.
+It neither reads nor writes a stored layout in either direction (`main.rs:910`), so a measured run can
+never inherit — or overwrite — the operator's own dock.
+
+**`--bench-arm` — a measurement fixture, refused outside a bench mode**, and the reason §5.7's numbers in
+§8 item 2 are not vacuous. The three tabs are **empty until a human arms something**, so a bench run
+against a fresh player draws three headlines and an add box; reporting that as *the cost of the
+Breakpoints, Watchpoints and Profiler panels* is the same vacuity as a parity test comparing `[]` against
+`[]`. The expensive parts of these bodies exist only once there is something to draw — sixteen breakpoint
+rows, a hit log, and a `BTreeMap` of routines the panel sorts on every repaint. Every arm goes through
+`Host::call` exactly as a click would, so **the fixture cannot reach a state a user could not**. Two
+choices shape what its numbers mean, and both are stated at the function:
+
+* **The breakpoints are armed DISABLED.** An enabled one at an address this ROM executes halts the player
+  and there is no run left to measure. Rows draw identically (the body branches on `enabled` only to pick a
+  word and a dimming), so the panel cost is unchanged — but `any_enabled()` is false, no `BreakStop` is
+  attached, and **this run does not price the halt sink.** That is §5.6's number and it lives in `emulate`.
+* **The watch is wide (64 KB of work RAM, writes) and the profiler is armed with `perFrame`**, which is
+  what puts real rows in front of the panels. Both attach a sink, so **`emulate` moves** — that is the
+  *instrument's* cost and not the panel's, and the bucket split is what keeps the two answers apart.
+
+⚑ **Loud on unmeasurable, in both directions.** `arm_for_measurement` reads the armed state back **off the
+instruments** rather than assuming its own calls landed, and `exit(2)`s with the counts if the panels would
+be empty: a refused arm must never become a quietly smaller number in a table. The test does the same and
+then runs eight real `iterate()` frames, asserting the hit log and the routine map are non-empty — without
+that, an armed-but-never-recording instrument satisfies every other assertion in it.
+
+`watch_wire_id` and `breakpoint_wire_id` are now `pub`. A panel reading the instrument directly still has
+to name a row back to a `clear`, and a `format!("w{}")` in `ui.rs` would be a second spelling of one fact —
+agreeing until the day it did not, in the one place where being wrong retires somebody else's watch.
 
 ---
 
@@ -620,10 +716,15 @@ period            16.665    16.665  |   16.666   16.665
 > * **It is on.** `crates/oracle-player/src/layout.rs` is the whole of it: `save(storage, dock)` and
 >   `load(storage) -> (DockState<Tab>, Outcome)`. `main.rs` wires them into `eframe::App::save` and the
 >   `run_native` creation closure. `ui::initial_dock()` is now the **fallback**, not the layout.
-> * **The version integer is `LAYOUT_VERSION = 1`**, and it lives in its **own storage key**
+> * ~~**The version integer is `LAYOUT_VERSION = 1`**~~, and it lives in its **own storage key**
 >   (`oracle_player_dock_layout_version`) *beside* the blob (`oracle_player_dock_layout`) rather than
->   inside it — so a layout from another `Tab` vocabulary is refused before a deserializer sees it. Bump
->   it in the same change that touches `Tab`.
+>   inside it — so a layout from another `Tab` vocabulary is refused before a deserializer sees it.
+>   ~~Bump it in the same change that touches `Tab`.~~
+>   > ⚑ **SUPERSEDED by §5.7.** It is **2**, and it is no longer an integer at all: `LAYOUT_VERSION =
+>   > VOCABULARIES.len()` over an append-only table of the `Tab` vocabularies shipped so far. The struck
+>   > instruction was a rule with nowhere to enforce it — appending the row **is** the bump now. The
+>   > storage-key half of this bullet still stands exactly as written, and version 1 blobs are discarded
+>   > by it.
 > * **Discard wholesale, never migrate**, as designed below. Version mismatch, missing or junk version,
 >   corrupt bytes, truncation, an unknown tab name: one fallback path, the default layout, a line on
 >   stderr, nothing in the UI. No `Tab::Unknown(String)`.
@@ -694,7 +795,7 @@ dependency list today is `oracle-core, eframe, egui, egui_dock, ringbuf, cpal` �
 
 | excluded | why |
 |---|---|
-| **P4-P6 (breakpoints / watchpoints / profiler)** | §5.4. One shared run-loop change that re-opens parcel 1's pacing measurement. Parcel 3. |
+| ~~**P4-P6 (breakpoints / watchpoints / profiler)**~~ | §5.4. One shared run-loop change that re-opens parcel 1's pacing measurement. Parcel 3. **No longer excluded — the seam shipped as parcel 3 (§5.6) and the three tabs shipped on top of it (§5.7). The run-loop change was made once and re-measured once, as §5.5 asked.** |
 | ~~**Layout persistence**~~ | §6. Turned on when the `Tab` enum stopped moving, which it did at `9c23365`. **No longer excluded — built; see §6's box.** |
 | **`scanlines` as anything but an action** | §2.3. 438 KB/frame. |
 | **A macro / input-timeline editor** (`press`, `play_input`, `hold`) | §2.2. Both are `require_paused`, so they are refused in the state a human would use them; a real timeline editor is a feature, not a panel. |
