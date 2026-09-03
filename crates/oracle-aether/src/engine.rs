@@ -2213,9 +2213,7 @@ impl Engine {
     /// address that happened to land exactly on a label. Every caller here feeds a wire field, so every
     /// caller wanted [`Resolution::name`].
     fn symbol_at(&self, addr: u32) -> Option<(String, u32)> {
-        let table = self.symbols.as_ref()?;
-        let r = table.resolve(addr)?;
-        Some((r.name().to_string(), r.displacement))
+        symbol_at(self.symbols.as_deref()?, addr)
     }
 
     /// Resolve an `addr`-or-`symbol` parameter pair. Symbol-first addressing is D7: clients resolve,
@@ -2356,38 +2354,11 @@ impl Engine {
         Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
     }
 
+    /// The bus-space debug read, forwarded to the free [`debug_read`] so an **in-process panel and this
+    /// handler run the same function over the same bytes** (the design's R1: one derivation, two
+    /// consumers). See that function for why it is free rather than a method.
     fn debug_read(&self, addr: u32, len: usize) -> Result<(Vec<u8>, &'static str), RpcError> {
-        let end = (addr as u64) + (len as u64) - 1;
-        if (WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) {
-            if end > u64::from(WORK_RAM_HI) {
-                return Err(out_of_range(
-                    addr,
-                    "the read would run past the end of work RAM",
-                ));
-            }
-            let ram = self.sys.ram();
-            let out = (0..len)
-                .map(|i| ram[((addr as usize).wrapping_add(i)) & (RAM_SIZE - 1)])
-                .collect();
-            return Ok((out, "work RAM"));
-        }
-        let rom = self.sys.rom();
-        if (addr as usize) < rom.len() {
-            if end >= rom.len() as u64 {
-                return Err(out_of_range(
-                    addr,
-                    "the read would run past the end of the ROM image",
-                ));
-            }
-            return Ok((
-                rom[addr as usize..addr as usize + len].to_vec(),
-                "cartridge ROM",
-            ));
-        }
-        Err(out_of_range(
-            addr,
-            "only cartridge ROM ($000000..rom_len) and work RAM ($E00000-$FFFFFF) are readable in this slice",
-        ))
+        debug_read(&self.sys, addr, len)
     }
 
     /// The active display as a row-major RGB framebuffer, its width, and **whether it is the frame the
@@ -3177,25 +3148,9 @@ impl Engine {
                 let (data, region) = self.debug_read(addr, len as usize)?;
                 (data, Some(region))
             }
-            _ => {
-                let mem: &[u8] = match space {
-                    WatchSpace::Vram => self.sys.vram(),
-                    WatchSpace::Cram => self.sys.vdp().cram(),
-                    _ => self.sys.vdp().vsram(),
-                };
-                let end = u64::from(addr) + len;
-                if end > mem.len() as u64 {
-                    return Err(out_of_range(
-                        addr,
-                        &format!(
-                            "the read would run past the end of {} ({} bytes)",
-                            space_name(space),
-                            mem.len()
-                        ),
-                    ));
-                }
-                (mem[addr as usize..end as usize].to_vec(), None)
-            }
+            // Forwarded to the free [`vdp_space_read`] for R1's reason (see [`debug_read`]): the Memory
+            // panel reads the same three arrays under the same bound check, from the same function.
+            _ => (vdp_space_read(&self.sys, space, addr, len)?, None),
         };
 
         let mut out = Map::new();
@@ -4478,19 +4433,7 @@ impl Engine {
     /// carry that code for the identical refusal. `-32602` stays for *shape* refusals — a `value` out of
     /// range, two payload spellings — and the two are different failures.
     fn z80_window(&self, addr: u32, len: usize) -> Result<(), RpcError> {
-        let end = u64::from(addr) + len as u64;
-        if addr > 0x3FFF || end > 0x4000 {
-            return Err(RpcError::new(
-                code::ADDRESS_OUT_OF_RANGE,
-                format!(
-                    "the Z80 window is 0x0000-0x3FFF and this access ends at {} — refused whole rather \
-                     than wrapped, because a wrapped write lands on 0x0000 and reports success",
-                    hex::addr(end.min(u64::from(u32::MAX)) as u32)
-                ),
-            )
-            .with_data(json!({"window": {"lo": "0x00000000", "hi": "0x00003FFF"}})));
-        }
-        Ok(())
+        z80_window(addr, len)
     }
 
     /// `emulator/z80_read` — the Z80's own 16 KB window (§6, §11.24 D-09, §11.28).
@@ -4513,11 +4456,9 @@ impl Engine {
             Some(v) => hex::parse_count("len", v, 0, 0x2000)? as usize,
             None => 1,
         };
-        self.z80_window(addr, len)?;
-        let ram = self.sys.z80_ram();
-        let bytes: Vec<u8> = (0..len)
-            .map(|i| ram[(addr as usize + i) & (Z80_RAM_SIZE - 1)])
-            .collect();
+        // Forwarded to the free [`z80_read_window`] for R1's reason (see [`debug_read`]) — and the
+        // `$2000-$3FFF` mirror fold is exactly the thing a second copy would be free to get wrong.
+        let bytes = z80_read_window(&self.sys, addr, len)?;
         Ok(json!({"addr": hex::addr(addr), "len": len, "bytes": hex::bytes(&bytes)}))
     }
 
@@ -7475,6 +7416,154 @@ fn cram_entry(cram: &[u8], line: u8, index: u8) -> Value {
     })
 }
 
+// ---------------------------------------------------------------------------------------------------
+// The shared derivations — one function, two consumers (debug-panels design §4.4 R1)
+// ---------------------------------------------------------------------------------------------------
+//
+// Everything in this block was a private method on [`Engine`] until parcel 2b of the debug window. It is
+// free and public now for one structural reason, and the reason is not convenience: an **in-process GUI
+// is a consumer of the same registry, not a second server** (contract D15), and a panel that repaints at
+// 60 Hz reads direct rather than dispatching. "Reads direct" is only safe if *direct* and *the handler*
+// are literally the same code — otherwise the panel and the tool grow two region decodes, two bound
+// checks and two mirror folds that agree right up until one of them is edited.
+//
+// So these are not helpers extracted for tidiness. Each is a place where a second copy would be a
+// believable wrong answer: a region label, a refused-versus-clipped decision, and the Z80's
+// `$2000-$3FFF` fold. The handlers above call them; `oracle-player`'s Memory panel calls them; there is
+// no third implementation to drift.
+
+/// **The bus-space debug read** — straight out of the region, deliberately bypassing the bus.
+///
+/// Bypassing is the right call for an inspection API (no side effects, no open-bus latch churn, no FIFO),
+/// but it means the value can differ from what a CPU read at the same address would return — so the
+/// read-shaped replies built on this (`read`, `read_memory`, `read_vram`) each carry a `caveat` saying
+/// so. Not every caller wants that caveat: `memory_hash` is also built on this and deliberately carries
+/// none — a fingerprint's provenance note lives in its own contract row, not in the reply envelope.
+///
+/// Returns the bytes and the **region label** the reply reports (`"work RAM"` / `"cartridge ROM"`).
+/// Refused, never clipped: a clipped read reports bytes it never looked at.
+pub fn debug_read(
+    sys: &System,
+    addr: u32,
+    len: usize,
+) -> Result<(Vec<u8>, &'static str), RpcError> {
+    let end = (addr as u64) + (len as u64) - 1;
+    if (WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) {
+        if end > u64::from(WORK_RAM_HI) {
+            return Err(out_of_range(
+                addr,
+                "the read would run past the end of work RAM",
+            ));
+        }
+        let ram = sys.ram();
+        let out = (0..len)
+            .map(|i| ram[((addr as usize).wrapping_add(i)) & (RAM_SIZE - 1)])
+            .collect();
+        return Ok((out, "work RAM"));
+    }
+    let rom = sys.rom();
+    if (addr as usize) < rom.len() {
+        if end >= rom.len() as u64 {
+            return Err(out_of_range(
+                addr,
+                "the read would run past the end of the ROM image",
+            ));
+        }
+        return Ok((
+            rom[addr as usize..addr as usize + len].to_vec(),
+            "cartridge ROM",
+        ));
+    }
+    Err(out_of_range(
+        addr,
+        "only cartridge ROM ($000000..rom_len) and work RAM ($E00000-$FFFFFF) are readable in this slice",
+    ))
+}
+
+/// **One of the VDP's three internal arrays, read** — `emulator/read`'s non-`bus` branch verbatim.
+///
+/// `space` must not be [`WatchSpace::Bus`]; that space is [`debug_read`]'s, because it is the only one
+/// with a region decode and a symbol. Passing `Bus` here reads VSRAM, which is why the caller above
+/// matches on the space rather than letting this function guess — stated rather than asserted, because a
+/// silent wrong-array read is exactly the class this block exists to prevent.
+pub fn vdp_space_read(
+    sys: &System,
+    space: WatchSpace,
+    addr: u32,
+    len: u64,
+) -> Result<Vec<u8>, RpcError> {
+    let mem: &[u8] = match space {
+        WatchSpace::Vram => sys.vram(),
+        WatchSpace::Cram => sys.vdp().cram(),
+        _ => sys.vdp().vsram(),
+    };
+    let end = u64::from(addr) + len;
+    if end > mem.len() as u64 {
+        return Err(out_of_range(
+            addr,
+            &format!(
+                "the read would run past the end of {} ({} bytes)",
+                space_name(space),
+                mem.len()
+            ),
+        ));
+    }
+    Ok(mem[addr as usize..end as usize].to_vec())
+}
+
+/// The Z80 window's bounds check, shared by `z80_read`, `z80_write` and the Memory panel so all three
+/// refuse the same accesses (§11.28).
+///
+/// **Bounded at BOTH ends, and the end is the half that was missing.** The legacy server bounded only the
+/// start, then looped `addr + i` with no end check — so a multi-byte write near `$3FFF` folded past the
+/// window, clobbered `$0000`, and **replied success** (CR-B §5, read at `oracle-old d629771`). Refused
+/// **whole, before any byte lands**, never wrapped and never clamped.
+///
+/// `-32004` rather than `-32602`: §11.28 aligned this with `read`/`memory_hash`/`write_memory`, which
+/// carry that code for the identical refusal. `-32602` stays for *shape* refusals — a `value` out of
+/// range, two payload spellings — and the two are different failures.
+pub fn z80_window(addr: u32, len: usize) -> Result<(), RpcError> {
+    let end = u64::from(addr) + len as u64;
+    if addr > 0x3FFF || end > 0x4000 {
+        return Err(RpcError::new(
+            code::ADDRESS_OUT_OF_RANGE,
+            format!(
+                "the Z80 window is 0x0000-0x3FFF and this access ends at {} — refused whole rather \
+                 than wrapped, because a wrapped write lands on 0x0000 and reports success",
+                hex::addr(end.min(u64::from(u32::MAX)) as u32)
+            ),
+        )
+        .with_data(json!({"window": {"lo": "0x00000000", "hi": "0x00003FFF"}})));
+    }
+    Ok(())
+}
+
+/// The Z80's own 16 KB window, read, **including the `$2000-$3FFF` mirror fold**.
+///
+/// The mirror is *the machine, not a defect*: it folds exactly as `z80/bus.rs` folds it, from the same
+/// mask, because a second implementation of the mirror would be free to disagree with the one the guest
+/// sees — and that disagreement would look like a plausible number, not like a fault.
+pub fn z80_read_window(sys: &System, addr: u32, len: usize) -> Result<Vec<u8>, RpcError> {
+    z80_window(addr, len)?;
+    let ram = sys.z80_ram();
+    Ok((0..len)
+        .map(|i| ram[(addr as usize + i) & (Z80_RAM_SIZE - 1)])
+        .collect())
+}
+
+/// The nearest **preceding** symbol for `addr`, as `emulator/status`'s `symbolAtPc` / `symbolDisp` and
+/// `emulator/read_memory`'s `symbol` / `symbolDisp` report it.
+///
+/// Free and public so a window's status strip resolves a PC through the identical call rather than
+/// through its own second reading of [`SymbolTable::resolve`]. The two would agree today and the pair
+/// `(name, displacement)` is exactly the kind of thing that stops agreeing quietly — `name()` is the
+/// *identifying* spelling and a panel reaching for `demangled` instead would show a name that does not
+/// round-trip through `lookup_symbol` (§4, rewritten 2026-08-15).
+pub fn symbol_at(table: &SymbolTable, addr: u32) -> Option<(String, u32)> {
+    let r = table.resolve(addr)?;
+    Some((r.name().to_string(), r.displacement))
+}
+
 /// §6's `romPath` SHOULD be *the absolute path of the loaded image*. Make it one, or say nothing new.
 ///
 /// **`canonicalize` and no fallback, deliberately.** The obvious alternative — join a relative path onto
@@ -7488,7 +7577,19 @@ fn cram_entry(cram: &[u8], line: u8, index: u8) -> Value {
 /// So: if the string names a file this process can resolve, report the resolved absolute path (symlinks
 /// and `..` included — one image, one spelling, so two clients naming the same cartridge agree). If it
 /// does not, it was never a path we could speak for, and it is passed through untouched.
-fn absolutise(path: &str) -> String {
+///
+/// # Why this is `pub` (parcel 2b)
+///
+/// It was private, and that privacy was the whole of a booked residual: parcel 2a's status strip showed
+/// the player's `--rom` argument verbatim while `emulator/status.romPath` came through here, so R1's
+/// one-derivation-two-consumers was defeated by a visibility modifier rather than by a decision. §11.30
+/// (CR-I) had already ruled that reporting an absolute path is a property of *every* reply field
+/// carrying a filesystem path — so the window showing a different string than the bus was a drift the
+/// contract does not sanction, however honestly the row was labelled. Publishing this closes it: the
+/// panel and `status` now normalise through the same four lines, including the pass-through case, which
+/// is the half a re-implementation would be most likely to get wrong (see the paragraph above — the
+/// string is not always a path).
+pub fn absolutise(path: &str) -> String {
     match std::fs::canonicalize(path) {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => path.to_string(),
