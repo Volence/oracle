@@ -736,7 +736,10 @@ mod bus_parity {
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("the reply carries a `bytes` hex string, got {v}"));
         let d = s.trim_start_matches("0x");
-        assert!(d.len().is_multiple_of(2), "an even number of hex digits: {s:?}");
+        assert!(
+            d.len().is_multiple_of(2),
+            "an even number of hex digits: {s:?}"
+        );
         (0..d.len() / 2)
             .map(|i| u8::from_str_radix(&d[i * 2..i * 2 + 2], 16).expect("hex"))
             .collect()
@@ -755,11 +758,46 @@ mod bus_parity {
     /// (`emulator/read`, `emulator/read_vram`, `emulator/z80_read`), because that is what a human would
     /// reach for from a tool, and it is the pair that must agree. The panel side calls [`read`], which is
     /// what the shipped hex view calls.
+    ///
+    /// ⚑ **The fixture is seeded first, and without that most of this test was vacuous.** Measured, not
+    /// assumed: seven frames into the fixture ROM the compared pages hold 30 and 31 distinct byte values
+    /// in `bus` and `vram` — and **exactly one** in `cram`, `vsram` and `z80`, all of them zero. Three of
+    /// the five legs were therefore comparing 32 zeros against 32 zeros, which a panel reading entirely
+    /// the wrong array would have passed. So each writable space is poked through the bus with a
+    /// distinctive pattern before it is read, and the seeding is asserted to have taken.
+    ///
+    /// `vsram` cannot be seeded — the surface has no write row for it, which is the same fact
+    /// `Space::write_method` returns `None` for — so that leg stays a comparison over a uniformly zero
+    /// range. It is kept, and it is kept *named*: the assertion below states the range is constant, so
+    /// if the fixture ever gains real VSRAM content this note goes stale loudly instead of quietly.
     #[test]
     fn the_memory_panel_shows_the_same_bytes_the_bus_serves() {
         let mut sys = booted();
-        let mut b = bus(&mut sys, false);
+        // Paused, because two of the three seeding pokes are paused-only — which is this parcel's
+        // subject and is checked in its own right by the gate tests.
+        let mut b = bus(&mut sys, true);
         const LEN: usize = 32;
+
+        for (method, params) in [
+            (
+                "emulator/write_memory",
+                json!({"addr": "0x00FF0000", "bytes": "0x0123456789ABCDEF"}),
+            ),
+            (
+                "emulator/write_vram",
+                json!({"addr": "0x00000100", "bytes": "0xFEDCBA9876543210"}),
+            ),
+            (
+                "emulator/write_cram",
+                json!({"line": 0, "index": 8, "raw": 0x0EEE}),
+            ),
+            (
+                "emulator/z80_write",
+                json!({"addr": "0x00000100", "bytes": "0xC3A55A3C"}),
+            ),
+        ] {
+            ok(b.call(&mut sys, method, &params));
+        }
 
         for (space, method, params) in [
             (
@@ -802,6 +840,27 @@ mod bus_parity {
                 space.label()
             );
             assert_eq!(served.len(), LEN, "{method} answered a short read");
+
+            // The anti-vacuity guard, per leg: two identical runs of one repeated byte agree with each
+            // other whatever either side actually read.
+            let distinct = served
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
+            if space == Space::Vsram {
+                assert_eq!(
+                    distinct, 1,
+                    "vsram has gained content — this leg was documented as the one weak comparison \
+                     precisely because it could not be seeded, and it can be strengthened now"
+                );
+            } else {
+                assert!(
+                    distinct > 1,
+                    "{}: the compared page is a single repeated byte ({distinct} distinct value), so \
+                     this leg proves nothing — the seeding above did not take",
+                    space.label()
+                );
+            }
         }
     }
 

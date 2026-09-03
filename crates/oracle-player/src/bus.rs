@@ -268,11 +268,23 @@ mod tests {
 
     /// A repeated mirror of the value already landed is a no-op, which is what lets the transport bar
     /// call it every iteration in parcel 2c without a drain per frame. Checked by state rather than by
-    /// counting calls: a second `mirror_pause(true)` must not disturb a gate that is already open.
+    /// counting calls: repeating `mirror_pause(true)` must not disturb a gate that is already open.
+    ///
+    /// **It starts from a RUNNING player and pauses into the loop, deliberately.** Written the obvious
+    /// way — construct with `paused: true` and repeat — this test is nearly vacuous, because `paused` is
+    /// where [`Engine::new`] already starts: the gate would be open with no mirror at all, and the
+    /// assertions would pass against a `mirror_pause` that did nothing whatsoever. Coming from the
+    /// running state means the open gate below is one the mirror had to *create*, so a repetition that
+    /// undid it would be visible here.
     #[test]
     fn mirroring_an_unchanged_pause_state_changes_nothing() {
         let mut sys = booted();
-        let mut bus = Bus::new(&mut sys, MachineInfo::default(), true);
+        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false);
+        assert!(
+            is_machine_running(&bus.call(&mut sys, "emulator/write_memory", &poke())),
+            "the fixture must begin from a state where the gate is CLOSED, or nothing below is a fact \
+             about the mirror"
+        );
         for _ in 0..3 {
             bus.mirror_pause(&mut sys, true);
             assert!(bus.is_paused());
