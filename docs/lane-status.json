@@ -1,5 +1,5 @@
 {
-  "focus": "Tools outside the debug window can attach to it now. Landed and pushed; the window look is staged behind aeon's, whose window is live on your screen.",
+  "focus": "Four parcels landed today; the debug window stops the emulator, obeys tools, is reachable, and no longer goes silent on a reset.",
   "inFlight": [],
   "blockedOnOwner": [],
   "nextBoundary": "Here. Everything merged, pushed and written down.",
@@ -87,23 +87,23 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     },
     {
-      "id": "PLAYER-PUMPREPORT",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The window ignores what the bus tells it after a client changes the machine, so a tool that reloads a ROM or jumps the emulator leaves the window's sound and frame counter quietly describing the old one. Found while making the window reachable; it is the real cause of a bug we had blamed on something else."
-    },
-    {
       "id": "PLAYER-SCREEN-TEXT",
       "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "A tool can now ask the window what text is on screen, and the window never answers, because that one wire was never connected in this player. Nobody could ask before, so nobody noticed."
+    },
+    {
+      "id": "PLAYER-SYMBOLS-STALE",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "A tool can swap the emulator's symbol listing and nothing tells the window, so the panels go on naming addresses from the old one. Found while fixing the same class for ROM reloads; this one has no signal to listen to yet."
     }
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-03T20:46:33Z"
+  "updatedAt": "2026-09-03T22:09:06Z"
 }
