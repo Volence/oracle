@@ -51,6 +51,7 @@ mod device;
 mod input;
 mod machine;
 mod memory;
+mod objects;
 mod pacing;
 mod report;
 mod stats;
@@ -279,6 +280,9 @@ struct Loop {
     symbols: Option<oracle_core::symbols::SymbolTable>,
     /// The Memory panel's state between repaints.
     mem: memory::MemoryPanel,
+    /// The Objects panel's state between repaints — which row is expanded, and nothing else. The pool
+    /// itself is re-derived each repaint, never cached.
+    objects: objects::ObjectsPanel,
 }
 
 impl Loop {
@@ -314,6 +318,7 @@ impl Loop {
             bus,
             symbols,
             mem: memory::MemoryPanel::default(),
+            objects: objects::ObjectsPanel::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -443,6 +448,7 @@ impl Loop {
             bus,
             symbols,
             mem,
+            objects,
             ..
         } = self;
         egui::Panel::top("bar").show(root, |ui| {
@@ -460,6 +466,7 @@ impl Loop {
                     machine,
                     bus,
                     mem,
+                    objects,
                     governor,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),

@@ -316,6 +316,21 @@ impl ObjectLayout {
         Value::Object(out)
     }
 
+    /// **Every field name this layout declares**, in catalogue order.
+    ///
+    /// The enumeration a `fields` request is validated against, published so a *second consumer* of the
+    /// decoders can offer the whole set without writing the names down. [`FieldSpec`] stays opaque — this
+    /// hands out names, never offsets — so the one place a field's bytes are interpreted is still the one
+    /// place its type is declared.
+    ///
+    /// Added for `oracle-player`'s Objects panel (design §4.4 R1, "one decoder, two renderers"). Without
+    /// it that panel's slot expansion would have to carry its own copy of the 29 names, which is exactly
+    /// the fact-about-a-build a decoder is forbidden to hold: the catalogue changed when the record folded
+    /// `$52` -> `$50`, and a copy would have gone on offering names for a shape nobody serves.
+    pub fn field_names(&self) -> Vec<&'static str> {
+        self.spec.fields.iter().map(|f| f.name).collect()
+    }
+
     /// Resolve a requested `fields` list against this engine's catalogue.
     ///
     /// **The refusal precedes any decode** (§11.25 obligation 4, §2.5's *"the refusal precedes any

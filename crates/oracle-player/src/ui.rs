@@ -22,13 +22,23 @@
 //! than smoothed. The status strip below stops saying `symbols  none loaded` and carries `symbolCount`
 //! and `symbolAtPc` for real, checked against `emulator/status` by the test module at the bottom.
 //!
-//! Objects, breakpoints, watchpoints, the profiler and the transport bar are parcel 2c; all of them need
-//! the run-loop change (`Observe` wrappers plus a per-frame `pump`) that re-opens parcel 1's pacing
-//! measurement, which is why they share one parcel and this one does not touch `Loop::iterate`.
+//! **Parcel 2c adds [`Tab::Objects`]** — the live object pool, the player slots and one addressed slot,
+//! in one tab (design §2.1: `player_state` is a section and `object_slot` is a row expansion, because a
+//! separate tab for either would be the same table under a different filter). Its model lives in
+//! [`crate::objects`], which calls `oracle_aether::decoders` — *the module the three handlers themselves
+//! use* — so panel and reply run one decoder over one set of bytes. That is R1 at its purest and also its
+//! sharpest edge: a parity pair cannot see a defect in what it shares, which is why that module's test
+//! carries a clause comparing the decode against values the test wrote rather than against the bus.
+//!
+//! Breakpoints, watchpoints, the profiler and the transport bar are still not here: they share the
+//! run-loop change (`Observe` wrappers plus a per-frame `pump`) that re-opens parcel 1's pacing
+//! measurement. The Objects tab needs none of it — its reads are direct and none of the three rows is
+//! paused-gated — so `Loop::iterate` is still untouched.
 
 use crate::bus::Bus;
 use crate::machine::Machine;
 use crate::memory::{self, MemoryPanel};
+use crate::objects::{self, Objects, ObjectsPanel};
 use crate::pacing::Governor;
 use oracle_core::symbols::SymbolTable;
 
@@ -45,6 +55,9 @@ pub enum Tab {
     /// One hex view over five address spaces, with a selector rather than five tabs — five tabs would be
     /// five scroll positions to keep in your head (design §2.1).
     Memory,
+    /// The live object pool, the player slots as a section, and one addressed slot as a row expansion.
+    /// Three served rows, one tab, for the same reason Memory is one tab.
+    Objects,
 }
 
 /// Everything the tab bodies touch. Held apart from the `DockState` so both can be borrowed at once.
@@ -58,6 +71,10 @@ pub struct Panels<'a> {
     pub machine: &'a mut Machine,
     pub bus: &'a mut Bus,
     pub mem: &'a mut MemoryPanel,
+    /// The Objects tab's own state: which row is expanded. The pool itself is re-derived every repaint
+    /// and never cached — `emulator/load_symbols` can move the layout mid-session, so a cached one is
+    /// stale by construction.
+    pub objects: &'a mut ObjectsPanel,
     pub governor: &'a Governor,
     pub status: &'a str,
     /// The `--rom` argument as the human typed it. The strip absolutises it through the bus's own
@@ -77,6 +94,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Pacing => "pacing",
             Tab::Registers => "registers",
             Tab::Memory => "memory",
+            Tab::Objects => "objects",
         })
     }
 
@@ -86,6 +104,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Pacing => "Pacing",
             Tab::Registers => "Registers",
             Tab::Memory => "Memory",
+            Tab::Objects => "Objects",
         }
         .into()
     }
@@ -96,6 +115,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Pacing => self.pacing(ui),
             Tab::Registers => self.registers(ui),
             Tab::Memory => self.memory(ui),
+            Tab::Objects => self.objects(ui),
         }
     }
 }
@@ -425,6 +445,166 @@ impl Panels<'_> {
             note_label(ui, note);
         }
     }
+
+    /// **The Objects tab.** One tab, three served rows: the pool table (`object_list`), the player
+    /// section (`player_state`) and the row expansion (`object_slot`). Every one of them is a DIRECT
+    /// read through `oracle_aether::decoders` — the module the handlers use — because these repaint at
+    /// 60 Hz and none of the three is paused-gated, so the table is live while the game plays.
+    ///
+    /// ⚑ **The refusal is the first thing this function handles and it is a whole-tab state**, not a
+    /// banner over an empty grid. `decoders::derive(None)` refuses, and an empty table in its place would
+    /// assert that this game has no objects.
+    fn objects(&mut self, ui: &mut egui::Ui) {
+        let view = Objects::of(self.symbols, self.machine.system());
+        let pool = match &view {
+            Objects::Refused(e) => {
+                ui.colored_label(ui.visuals().error_fg_color, objects::refusal_text(e));
+                return;
+            }
+            Objects::Pool(p) => p,
+        };
+
+        ui.monospace(format!(
+            "engine {}   slots {}   record ${:X} bytes   layout {}",
+            pool.engine, pool.slot_count, pool.slot_bytes, pool.layout_json
+        ));
+        ui.small(
+            "Every address here is read out of the loaded listing — the base from Object_RAM/Player_1, \
+             the stride from Player_2 − Player_1, the count from Object_RAM_End. Nothing is hardcoded, \
+             because an object-table address is a fact about one build.",
+        );
+        ui.separator();
+
+        // --- the player section: the same decoder, the same layout, its own refusal ---
+        match &pool.players {
+            Err(e) => {
+                ui.strong("players — emulator/player_state");
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!(
+                        "REFUSED {} {}\n\nThe pool table below is unaffected: this refusal is about \
+                         which slots are PLAYERS, not about where the table is.",
+                        e.code, e.message
+                    ),
+                );
+            }
+            Ok(pv) => {
+                // The section says how much of the table it covers. Two rows out of sixty-six is a fact
+                // a reader needs in order not to take this section for the pool.
+                ui.strong(format!(
+                    "players — emulator/player_state — {} of {} slots",
+                    pv.players.len(),
+                    pv.layout.slot_count()
+                ));
+                for p in &pv.players {
+                    let role = p.cell("role");
+                    if p.active {
+                        ui.monospace(format!("{role:<12} {}", p.summary()));
+                    } else {
+                        // `active: false` is the answer to "is player 2 present", so it is a row that
+                        // says so — not a row omitted and not a row of zeroes.
+                        ui.monospace(format!(
+                            "{role:<12} {:>3}  {:<10}  not present (the slot is empty)",
+                            p.slot,
+                            p.cell("addr")
+                        ));
+                    }
+                }
+            }
+        }
+        ui.separator();
+
+        // --- the pool table ---
+        ui.strong(format!(
+            "object pool — emulator/object_list — {} active of {} slots",
+            pool.total, pool.slot_count
+        ));
+        if pool.objects.is_empty() {
+            // A stated fact, and a different one from the refusal above: the layout derived, the table
+            // was read, and nothing is live in it right now.
+            ui.monospace(
+                "0 active objects — the layout derived and every slot's code word is the empty-slot \
+                 sentinel. This is not a missing listing.",
+            );
+        }
+        ui.monospace(format!(
+            "{:>3}  {:<10}  {:<8}  {:>7} {:>7}  {}",
+            "sl", "addr", "code", "x", "y", "name"
+        ));
+        egui::ScrollArea::vertical()
+            .id_salt("object-pool")
+            .max_height(240.0)
+            .show(ui, |ui| {
+                for r in &pool.objects {
+                    let open = self.objects.selected == Some(r.slot);
+                    if ui
+                        .selectable_label(open, egui::RichText::new(r.summary()).monospace())
+                        .clicked()
+                    {
+                        // A second click closes it: the expansion is one row's detail, and a row that
+                        // cannot be un-expanded is a mode with no way out.
+                        self.objects.selected = if open { None } else { Some(r.slot) };
+                    }
+                }
+            });
+
+        // --- the row expansion: one addressed slot, every field the layout declares ---
+        let Some(slot) = self.objects.selected else {
+            return;
+        };
+        ui.separator();
+        match objects::object_slot(self.symbols, self.machine.system(), slot) {
+            Err(e) => {
+                ui.strong(format!("slot {slot} — emulator/object_slot"));
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!("REFUSED {} {}", e.code, e.message),
+                );
+            }
+            Ok(v) => {
+                // The address is spelled by the bus's own `hex::addr`, not by a second `{:X}` here: this
+                // is the string `addr` carries on the wire, and two spellings of one address is how a
+                // reader ends up comparing the panel to a tool and seeing a difference that is not one.
+                ui.strong(format!(
+                    "slot {slot} of {} at {} — emulator/object_slot",
+                    v.layout.slot_count(),
+                    oracle_aether::hex::addr(v.row.addr)
+                ));
+                egui::ScrollArea::vertical()
+                    .id_salt("object-slot")
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for (k, val) in &v.row.item {
+                            if k == "fields" {
+                                continue;
+                            }
+                            ui.monospace(format!("{k:<12} {}", render(val)));
+                        }
+                        if let Some(f) = v.row.item.get("fields").and_then(|f| f.as_object()) {
+                            ui.separator();
+                            for (k, val) in f {
+                                ui.monospace(format!("  {k:<20} {}", render(val)));
+                            }
+                        } else {
+                            // Only reachable on an inactive slot, where the decoded keys are OMITTED
+                            // rather than zeroed — bytes the game never wrote are not data.
+                            ui.monospace(
+                                "no fields — this slot is empty, and an empty slot's record is bytes \
+                                 the game never wrote, so they are omitted rather than shown as zeroes",
+                            );
+                        }
+                    });
+            }
+        }
+    }
+}
+
+/// A JSON scalar as the panel prints it: a string without its quotes, anything else as itself.
+fn render(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// One gesture's answer, coloured by whether it was a refusal.
@@ -649,7 +829,7 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
     let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
     let surface = dock.main_surface_mut();
     let [_, right] = surface.split_right(egui_dock::NodeIndex::root(), 0.68, vec![Tab::Pacing]);
-    surface.split_below(right, 0.45, vec![Tab::Registers, Tab::Memory]);
+    surface.split_below(right, 0.45, vec![Tab::Registers, Tab::Memory, Tab::Objects]);
     dock
 }
 
