@@ -2327,7 +2327,11 @@ mod bus_parity {
 
         // --- (3) NOT measured: loud, and distinguishable from both states above ---
         let blind_rows = StatusStrip::of(&machine, "testrom", None, None).rows();
-        assert_eq!(blind_rows[0].0, HELD_LABEL);
+        assert_eq!(
+            blind_rows[0].0, HELD_LABEL,
+            "a strip with no bus to ask drew no held row at all — `unavailable` was rendered as `nothing \
+             is held`, which is the one collapse this field must never make"
+        );
         assert_eq!(
             &blind_rows[1..],
             &quiet_rows[..],
