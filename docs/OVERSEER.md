@@ -604,57 +604,23 @@ owner.** Precedent from the same morning, banked in the hub's own record at empy
 adopted a hub *ruling* while holding for the owner's *word* on the same shape — **a relay carries a
 ruling, never an authorization.** Two lanes, same hour, same conclusion, reached independently.
 
-## ⚑ 2026-09-02 — `run_to` DOES **NOT** SHARE `resume`'S THREAD SPLIT. Measured from source, answering aurora.
+## ⚑ `run_to` vs `resume` — TWO LIVE RULES (2026-09-02; derivation in `OVERSEER-LOG.md`)
 
-**The question, theirs (relayed via the hub, 2026-09-02):** their Build-&-Run boot restore awaits the
-`emulator/run_to` reply and gates on `reached`, assuming the machine is **already halted** when that
-reply lands. If `run_to` had `resume`'s split, their next call would land on a running machine. They
-correctly noted it would fail **loudly** (`write_memory` is behind `require_paused`, so it refuses by
-name) — a diagnosis cost, not a corruption risk. **Answer: their assumption holds, and structurally.**
+Answered for aurora and re-derived by them independently at `7ba2faf`; the exchange is closed and its
+mechanism reading is in the log. What stays live:
 
-**The mechanism, read at `2a7fd82`, and it is one thread doing two things in order.** `engine_loop`
-(`server.rs`, spawned at the `engine thread` builder) handles one `EngineMsg::Call` at a time as
-`engine.dispatch(&method, &params)` **then** `reply.send(CallResult { .. })`. So:
-
-- **`run_to` blocks INSIDE `dispatch`.** It `require_paused`es, sets `self.running = true`, calls
-  `advance_until(max_frames, |pc, _| pc == target)` — which does not return until the target, the
-  bound, a breakpoint or a `stopAfter` watch ends the run — sets `self.running = false`, emits
-  `stopped`, and only then builds its result map. **`reply.send` therefore cannot execute before the
-  halt: the reply is PRODUCED BY the halt, not merely correlated with it.**
-- **`resume` does not block at all.** Its whole body is
-  `Ok(json!({"wasRunning": self.set_free_run(true)}))` — it flips a flag and returns. The halt happens
-  later, on a subsequent `free_run_step()` in the loop's `None` branch, and `emit_stopped` broadcasts
-  from the engine thread **after** the `resume` reply was already sent. That gap is the whole of
-  F-RESUME-STOP-RACE.
-
-**⚑ THE CAVEAT THEY DID NOT ASK FOR, AND IT IS THE INVERSE OF THEIR WORRY — worth more than the
-
-*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 845-908.)*
-answer.** `run_to` calls `emit_stopped` **before** it builds its reply, so **on the wire the `stopped`
-event PRECEDES the `run_to` reply.** A client reading through to the reply and discarding events (what
-aurora does, and what `Client::ok` does) is correct and unaffected. **A client that consumed the reply
-and THEN waited for the halt event would block forever** — the same read-ordering hazard as
-F-RESUME-STOP-RACE with the two halves swapped. This is exactly the shape a first breakpoint consumer
-reaches for, so it is recorded before anyone writes one.
-
-
-⚑ **AND THE RETURN LEG, 2026-09-02 — `run_to.reached` NOW HAS A NAMED LIVE CONSUMER, WHICH IS WHAT
-PROTECTS IT FROM A FUTURE TIDY-UP.** aurora re-read the body order at `7ba2faf` themselves rather than
-adopting our answer (confirming it an ancestor of our `origin/main` first), and their stated reason is
-the sharp one: *a claim about another repo's tree is the one class of claim nothing in my tree could
-ever contradict.* That is bar 20's receiving side run correctly, and it is why the answer is now
-corroborated rather than merely believed.
-
-**The part that comes back to us as an obligation.** Their boot restore gates on `reached !== true`.
-So `"reached": run.predicate_fired` — **the predicate's own verdict, never the sink's** — is no longer
-a defensive design choice explained in a comment; **a real client's write window depends on it.** The
-comment at the site already says why (`StopRecord::fired` means only "*something* asked to stop", so
-reading it would report a target as reached because an unrelated `stopAfter` watch halted the run).
-**Booked here because this file's own bar says a code comment is where a perishable rule goes to be
-read by nobody** — and the "simplification" that swaps `predicate_fired` for `fired` would now break a
-named consumer silently, in the direction that presents as a successful boot restore over a write
-window that never opened.
-
+1. **⚑ ON THE WIRE, `run_to`'s `stopped` EVENT PRECEDES ITS REPLY** — it calls `emit_stopped` before it
+   builds the result. A client that reads through to the reply and discards events (aurora's, and
+   `Client::ok`'s) is correct and unaffected. **A client that consumed the reply and THEN waited for the
+   halt event would block forever** — F-RESUME-STOP-RACE with the halves swapped, and exactly the shape a
+   first breakpoint consumer reaches for. `run_to` blocks inside `dispatch`, so its reply is *produced by*
+   the halt; `resume` only flips a flag and returns, which is the whole of that race.
+2. **`"reached": run.predicate_fired` — the predicate's own verdict, NEVER the sink's — now has a named
+   live consumer** (aurora's boot restore gates on `reached !== true`). `StopRecord::fired` means only
+   *"something asked to stop"*, so reading it would report a target as reached because an unrelated
+   `stopAfter` watch halted the run. The "simplification" that swaps them would break a real client
+   **silently, in the direction that presents as a successful boot restore over a write window that never
+   opened.** Booked here because a code comment is where a perishable rule goes to be read by nobody.
 
 ## ⚑ OWNER RULING, 2026-09-03 — WHAT GETS A TAB IN THE DEBUG WINDOW (ORACLE-DEBUG-UI)
 
@@ -702,6 +668,20 @@ the placeholders are gone (saving a layout of placeholders buys a migration); `T
 filler on purpose while the docking it exercises is real.
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
+
+**▶ NEW BAR, 2026-09-03 — A PARITY PAIR IS STRUCTURALLY BLIND TO A DEFECT IN THE DERIVATION IT SHARES.
+ASSERT THE SHARED DERIVATION DID SOMETHING.** Found by this seat probing parcel 2b, where the defence
+already existed and is the reason the probe is a bar rather than a bug. R1 ("one derivation, two
+consumers") makes a panel and a handler agree **by construction** — which is the point, and which means a
+parity test can only witness *agreement*, never *correctness*. Break the shared function and both sides
+move together: the pair agrees perfectly and both are wrong. Measured: `absolutise` reduced to
+`path.to_string()` leaves the strip and `emulator/status.romPath` in exact agreement on the un-normalised
+string. **The remedy is a third assertion in the pair — that the derivation is not a no-op** — and 2b's
+test carries it (`assert_ne!` against the raw argument, failing with *"the agreement above is two copies
+of the same untouched string rather than one shared normalisation"*), so the mutation went red. **Every
+R1 pair owes this third clause**; without it a parity suite grows more confident exactly as it shares
+more code. Same family as the poison bars: the row measures a real quantity and not the one it is named
+for.
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
 Found in the foreground pass that closed the CR-D `⟨RUNTIME⟩` debt

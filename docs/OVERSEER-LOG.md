@@ -2523,3 +2523,64 @@ so there is no sigil-side consumer this week either.
 **⚑ THE COVERAGE NUMBER IS A PREDICTION, NOT A MEASUREMENT.** sigil's three-bucket split (exact-modelled / ceiling-only / unmodelled) is a consequence of `CycleCost`'s own doc comment, read while checking this seat's two requirements -- **no corpus measurement has been run.** Do not let a later session cite the three buckets as a finding about any ROM; it is the shape to measure in. CYCLE-ASK stays gated on their owner picking the measurement up. *(The exchange: `OVERSEER-LOG.md`.)*
 
 
+
+---
+
+## 2026-09-02 — the `run_to` thread-split answer to aurora, moved out of the boot read 2026-09-03
+
+Moved whole and verbatim. The question is answered, aurora re-derived it themselves at `7ba2faf` rather than
+adopting our answer, and the exchange is closed. **Two rules from it are live and stay in `OVERSEER.md`**:
+the wire-ordering caveat, and the `reached = predicate_fired` obligation that now has a named consumer.
+
+## ⚑ 2026-09-02 — `run_to` DOES **NOT** SHARE `resume`'S THREAD SPLIT. Measured from source, answering aurora.
+
+**The question, theirs (relayed via the hub, 2026-09-02):** their Build-&-Run boot restore awaits the
+`emulator/run_to` reply and gates on `reached`, assuming the machine is **already halted** when that
+reply lands. If `run_to` had `resume`'s split, their next call would land on a running machine. They
+correctly noted it would fail **loudly** (`write_memory` is behind `require_paused`, so it refuses by
+name) — a diagnosis cost, not a corruption risk. **Answer: their assumption holds, and structurally.**
+
+**The mechanism, read at `2a7fd82`, and it is one thread doing two things in order.** `engine_loop`
+(`server.rs`, spawned at the `engine thread` builder) handles one `EngineMsg::Call` at a time as
+`engine.dispatch(&method, &params)` **then** `reply.send(CallResult { .. })`. So:
+
+- **`run_to` blocks INSIDE `dispatch`.** It `require_paused`es, sets `self.running = true`, calls
+  `advance_until(max_frames, |pc, _| pc == target)` — which does not return until the target, the
+  bound, a breakpoint or a `stopAfter` watch ends the run — sets `self.running = false`, emits
+  `stopped`, and only then builds its result map. **`reply.send` therefore cannot execute before the
+  halt: the reply is PRODUCED BY the halt, not merely correlated with it.**
+- **`resume` does not block at all.** Its whole body is
+  `Ok(json!({"wasRunning": self.set_free_run(true)}))` — it flips a flag and returns. The halt happens
+  later, on a subsequent `free_run_step()` in the loop's `None` branch, and `emit_stopped` broadcasts
+  from the engine thread **after** the `resume` reply was already sent. That gap is the whole of
+  F-RESUME-STOP-RACE.
+
+**⚑ THE CAVEAT THEY DID NOT ASK FOR, AND IT IS THE INVERSE OF THEIR WORRY — worth more than the
+
+*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 845-908.)*
+answer.** `run_to` calls `emit_stopped` **before** it builds its reply, so **on the wire the `stopped`
+event PRECEDES the `run_to` reply.** A client reading through to the reply and discarding events (what
+aurora does, and what `Client::ok` does) is correct and unaffected. **A client that consumed the reply
+and THEN waited for the halt event would block forever** — the same read-ordering hazard as
+F-RESUME-STOP-RACE with the two halves swapped. This is exactly the shape a first breakpoint consumer
+reaches for, so it is recorded before anyone writes one.
+
+
+⚑ **AND THE RETURN LEG, 2026-09-02 — `run_to.reached` NOW HAS A NAMED LIVE CONSUMER, WHICH IS WHAT
+PROTECTS IT FROM A FUTURE TIDY-UP.** aurora re-read the body order at `7ba2faf` themselves rather than
+adopting our answer (confirming it an ancestor of our `origin/main` first), and their stated reason is
+the sharp one: *a claim about another repo's tree is the one class of claim nothing in my tree could
+ever contradict.* That is bar 20's receiving side run correctly, and it is why the answer is now
+corroborated rather than merely believed.
+
+**The part that comes back to us as an obligation.** Their boot restore gates on `reached !== true`.
+So `"reached": run.predicate_fired` — **the predicate's own verdict, never the sink's** — is no longer
+a defensive design choice explained in a comment; **a real client's write window depends on it.** The
+comment at the site already says why (`StopRecord::fired` means only "*something* asked to stop", so
+reading it would report a target as reached because an unrelated `stopAfter` watch halted the run).
+**Booked here because this file's own bar says a code comment is where a perishable rule goes to be
+read by nobody** — and the "simplification" that swaps `predicate_fired` for `fired` would now break a
+named consumer silently, in the direction that presents as a successful boot restore over a write
+window that never opened.
+
+
