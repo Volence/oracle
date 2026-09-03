@@ -1,19 +1,13 @@
 {
-  "focus": "The spawn request is written and caught a hang before anyone built it; the new debug window is still being built.",
-  "inFlight": [
-    {
-      "what": "Rebuild parcel 1: the new window running the game at the right speed with the controls wired, in a docked layout",
-      "where": "branch worktree (debug-panels parcel 1)",
-      "agent": true
-    }
-  ],
+  "focus": "First playable build of the new debug window is in. Ready to show you when you have a couple of minutes.",
+  "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "When both agents report and their work is landed; the rebuild parcel ends at the first thing you can actually play.",
+  "nextBoundary": "Now - everything landed and pushed, nothing running.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
-      "title": "Rebuilding the debug window on a real UI toolkit, as you picked: panels that tab together, drag to any side, and remember their layout. Measuring the game loop under it first, before anything is rebuilt around it.",
-      "state": "doing",
+      "title": "The new debug window runs the game at true speed with controls wired - the first playable version. Next parcels are the actual panels and remembering your layout.",
+      "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
@@ -92,7 +86,7 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-03T02:10:41Z"
+  "awaiting": "a couple of minutes of your screen, whenever suits - this is the playable one you asked to be shown at. It opens a window you can actually move Sonic around in. What matters is whether it FEELS right to play, not whether it looks smooth sitting still; that was the question the last look could not answer.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-03T03:35:56Z"
 }
