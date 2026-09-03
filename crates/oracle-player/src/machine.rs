@@ -136,11 +136,24 @@ impl Machine {
     /// worth (`crate::ui::StatusStrip` reads the ROM length and the scheduler clock through it, by the
     /// same expressions `Engine::status` uses).
     ///
-    /// Shared, never mutable: a panel must not be able to move a machine the run loop owns. The mutable
-    /// half — what a hosted `Host::pump`/`Host::call` needs — is deliberately not here, because this
-    /// parcel does not host a `Host` in the running player.
+    /// Shared: what a panel body reads when it needs more than one accessor's worth.
     pub fn system(&self) -> &System {
         &self.sys
+    }
+
+    /// The machine, mutably — **for `Host::call` and `Host::pump` and nothing else** (parcel 2b).
+    ///
+    /// Parcel 2a said this was "deliberately not here, because this parcel does not host a `Host` in the
+    /// running player". It hosts one now, and both entry points take `&mut System` because they *swap*
+    /// the caller's machine into the engine for the duration of a dispatch and swap it straight back —
+    /// the machine is lent, not moved, and the mutability is the swap's, not a handler's licence to run
+    /// the CPU.
+    ///
+    /// It is still not a licence for a panel to advance the machine: nothing in `ui.rs` reaches
+    /// `run_frames`, and the run-control methods that could are refused with `-32005 machineRunning`
+    /// while the player's loop owns the clock — which is what the pause mirror in [`crate::bus`] is for.
+    pub fn system_mut(&mut self) -> &mut System {
+        &mut self.sys
     }
 
     pub fn device(&self) -> Option<&Device> {

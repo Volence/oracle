@@ -23,22 +23,24 @@ egui_dock = "0.21"
 ringbuf = "0.4"
 cpal = "0.15"
 
-# TEST-ONLY, and deliberately so for parcel 2a. `ui.rs`'s `mod bus_parity` compares what the Registers
-# panel derives against what `Engine::registers` answers through `Host::call`, so the test needs to see
-# both sides; `oracle-frontend` does the same thing in `pick.rs` and takes `serde_json` dev-only for it.
+# **Promoted from `[dev-dependencies]` by parcel 2b**, which is when it stopped being a test-only link.
+# Parcel 2a kept it dev-only because nothing on the shipped path reached the bus: the Registers panel
+# reads `Machine::cpu_regs()` directly (design §4.4's route (a) — anything repainting at 60 Hz reads a
+# shared derivation, it does not dispatch), and only `ui.rs`'s `mod bus_parity` needed to see both sides.
 #
-# **Why dev and not a real dependency.** Nothing on the *shipped* path reaches `oracle-aether` in this
-# parcel: the panel reads `Machine::cpu_regs()` / `Machine::system()` directly (design §4.4's route (a) —
-# anything repainting at 60 Hz reads a shared derivation, it does not dispatch). Keeping the link in
-# `[dev-dependencies]` therefore leaves the binary's dependency graph byte-identical to parcel 1's, which
-# is the measurable answer to §8 item 7 rather than an assurance about it — `cargo tree -p oracle-player`
-# without `--all-targets` shows no `oracle-aether`.
+# The running player now **owns a `Host`**. The Memory panel's writes, its address box's symbol
+# resolution and its `memory_hash` button are per-gesture commands and go through `Host::call`, so they
+# get the tool's own reply, the tool's own refusal and the tool's own error text rather than a sentence
+# this crate composed about a server it lives inside. Its *reads* still go direct — through
+# `oracle_aether::engine`'s free `debug_read` / `vdp_space_read` / `z80_read_window`, which are the same
+# functions the five read handlers call.
 #
-# Parcels 2b/2c change this: the Objects panel calls `oracle_aether::decoders` on the repaint path, and
-# the transport bar calls `Host::call` per gesture. Both need a real dependency, and promoting one line is
-# cheaper than shipping an unused link now for a parcel that does not use it.
+# Nothing here serves: no socket is bound, no thread is started (`Host::new`'s own guarantee), and
+# `Host::pump` is never called inside a frame. The one drain is at setup, for the pause mirror.
 #
-# `oracle-aether` is `#![cfg(unix)]`, so the test module that uses it is `#[cfg(unix)]` too.
-[dev-dependencies]
+# `oracle-aether` is `#![cfg(unix)]`, and so is this whole crate in practice — it is a Unix player.
 oracle-aether = { path = "../oracle-aether" }
+
+# The wire vocabulary. `Host::call` takes and returns `serde_json::Value`, so every panel that invokes a
+# command speaks it; it was dev-only for parcel 2a for the same reason `oracle-aether` was.
 serde_json = "1"
