@@ -1,21 +1,13 @@
 {
-  "focus": "The debug window can stop the emulator now, and it holds full speed with every panel open. Landed and pushed.",
+  "focus": "Held buttons from a tool now work in the player window and say so. Landed and pushed; the debug-window look is staged behind aeon's three.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "Here. Everything is merged, pushed and written down; a fresh session would lose nothing.",
+  "nextBoundary": "Here. Everything merged, pushed and written down.",
   "queue": [
     {
-      "id": "HELD-PADS-PLAYER",
-      "title": "A client telling the emulator to hold a button does nothing in the player window - the two pad sources are never merged. Your own ruling says a capability that changes what the window does has to be visible in it; today someone could be left walking left with nothing on screen able to say why.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI"
-    },
-    {
       "id": "PANELS-LOOK",
-      "title": "Nothing in the debug window has ever been looked at - eight panels now, including the three that stop the emulator, and a layout that survives a restart. Tests and a bench prove the wiring and the speed; only a human at a window proves it looks right. Thirty seconds of your eyes, or your say-so to open one. Gates no building.",
-      "state": "next",
+      "title": "Nothing in the debug window has ever been looked at - eight panels now, including the three that stop the emulator. Staged to go LAST in one sitting with aeon's three game looks, so you are interrupted once: they show you the band and the reels, then I arm a breakpoint, halt the player and step it in front of you. Thirty seconds. Gates no building.",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
@@ -93,9 +85,17 @@
       "state": "blocked",
       "size": "M",
       "blockedBy": "a live player window on your screen; runs only when none is open"
+    },
+    {
+      "id": "PLAYER-SERVE",
+      "title": "No program outside the player window can reach it - it binds no socket, so a tool can only drive it from inside. Held buttons and every panel gesture work in-process today; an external client gets nothing. Found while landing held pads.",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI"
     }
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-03T18:39:11Z"
+  "updatedAt": "2026-09-03T19:33:27Z"
 }
