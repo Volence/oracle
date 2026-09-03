@@ -1,14 +1,9 @@
 {
-  "focus": "Overnight: building the spawn feature and designing the real debug panels to the rule you set.",
+  "focus": "Panels designed to your rule - and I corrected the one line of it that was my mistake, not yours.",
   "inFlight": [
     {
       "what": "Building the spawn/move/delete feature, and checking the contract team's work against our real replies",
       "where": "branch worktree (spawn serve)",
-      "agent": true
-    },
-    {
-      "what": "Designing the real debug panels to your tab ruling: what becomes a tab, what becomes a button, what is fetched on demand",
-      "where": "branch worktree (panels design)",
       "agent": true
     }
   ],
@@ -99,5 +94,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-03T04:27:09Z"
+  "updatedAt": "2026-09-03T04:39:15Z"
 }
