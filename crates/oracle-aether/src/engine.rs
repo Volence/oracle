@@ -1455,6 +1455,16 @@ impl Engine {
         self.symbols.as_deref()
     }
 
+    /// **The absolute path of the image this engine is running** — `emulator/status`'s `romPath`, read
+    /// directly rather than through a call.
+    ///
+    /// `emulator/reload_rom` moves it, so a hosted caller that showed a human the path it launched with
+    /// would keep naming a cartridge that is no longer loaded. Absolutised at the boundary (see
+    /// [`Engine::set_rom_path`]), so this is the same string every route reports.
+    pub fn rom_path(&self) -> Option<&str> {
+        self.rom_path.as_deref()
+    }
+
     /// Hand the engine a frame drawn by somebody else's run loop, so `emulator/screenshot` and
     /// `emulator/state_hash {includeFramebuffer}` answer with the picture that is actually on the glass.
     ///

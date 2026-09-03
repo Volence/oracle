@@ -575,6 +575,7 @@ impl Loop {
             &mut self.machine,
             &mut self.bus,
             &mut self.symbols,
+            &mut self.rom_path,
             self.paused,
         );
         let bus_ms = ms(t_bus.elapsed());

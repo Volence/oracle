@@ -414,6 +414,13 @@ impl Bus {
         self.host.symbols()
     }
 
+    /// **The absolute path of the image the bus is running.** Read for [`Bus::symbols`]'s reason:
+    /// `emulator/reload_rom` moves it, and the status strip's `rom` row is the launch argument this
+    /// process was started with until something re-derives it.
+    pub fn rom_path(&self) -> Option<&str> {
+        self.host.rom_path()
+    }
+
     /// **Both instruments plus the breakpoint sink, for the frame the player is about to run.**
     ///
     /// The whole argument lives in [`Engine::run_sinks`](oracle_aether::engine::Engine::run_sinks): why
@@ -620,7 +627,7 @@ pub struct Drained {
     /// the picture was *invalidated* rather than redrawn — there is nothing to present and the window keeps
     /// what it has.
     pub picture: bool,
-    /// The symbol cache was re-derived from the engine's own listing.
+    /// The symbol cache was re-derived from the engine's own listing, and the ROM path with it.
     pub symbols: bool,
 }
 
@@ -668,6 +675,7 @@ pub fn drain(
     machine: &mut crate::machine::Machine,
     bus: &mut Bus,
     symbols: &mut Option<SymbolTable>,
+    rom_path: &mut String,
     paused: bool,
 ) -> Drained {
     let report = bus.mirror_pause(machine.system_mut(), paused);
@@ -693,6 +701,17 @@ pub fn drain(
         // and `emulator/reset` keeps it always. Cloning a table is not free, but this runs only when a
         // cartridge was replaced, which is not a per-frame event.
         *symbols = bus.symbols().cloned();
+        // The path goes with it, and for the same reason: the status strip's `rom` row is a cached string
+        // this process was launched with, and after a reload it names a cartridge that is not loaded. The
+        // engine's copy is absolutised at the boundary, which is what §6's `romPath` means, so this is the
+        // same string `emulator/status` reports rather than a second spelling of it. `None` — an engine
+        // that was never told a path — leaves the launch string alone rather than blanking the row.
+        if let Some(p) = bus.rom_path() {
+            if *rom_path != p {
+                rom_path.clear();
+                rom_path.push_str(p);
+            }
+        }
         out.symbols = true;
     }
     out
@@ -912,7 +931,8 @@ mod seam {
         // directly would let every test below pass against a window that dropped the report again. The
         // symbol cache is local because nothing here loads symbols; the `pumped` module drives that half.
         let mut symbols = None;
-        drain(machine, bus, &mut symbols, paused);
+        let mut rom_path = String::new();
+        drain(machine, bus, &mut symbols, &mut rom_path, paused);
         bus.is_paused()
     }
 
@@ -1681,6 +1701,14 @@ pub mod pumped {
         (machine, bus, socket)
     }
 
+    /// **The window's cartridge-derived cache**, as `Loop` holds it — the two fields `drain` re-derives on
+    /// `rom_changed`, kept together so a helper takes one borrow instead of two.
+    #[derive(Default)]
+    struct Cache {
+        symbols: Option<SymbolTable>,
+        rom_path: String,
+    }
+
     /// Everything the drains of one test put back in step. Counts rather than flags: "the picture was
     /// adopted" and "the picture was adopted on every one of forty iterations" are different facts, and
     /// only the count tells them apart.
@@ -1714,14 +1742,20 @@ pub mod pumped {
     fn iterate(
         machine: &mut Machine,
         bus: &mut Bus,
-        symbols: &mut Option<SymbolTable>,
+        cache: &mut Cache,
         paused: &mut bool,
     ) -> Drained {
         *paused = bus.is_paused();
         if !*paused {
             machine.step([Pad::default(); 2], bus);
         }
-        drain(machine, bus, symbols, *paused)
+        drain(
+            machine,
+            bus,
+            &mut cache.symbols,
+            &mut cache.rom_path,
+            *paused,
+        )
     }
 
     /// Turn the loop until `done` is satisfied or the deadline passes, accumulating what every drain did.
@@ -1729,7 +1763,7 @@ pub mod pumped {
     fn turn_until(
         machine: &mut Machine,
         bus: &mut Bus,
-        symbols: &mut Option<SymbolTable>,
+        cache: &mut Cache,
         paused: &mut bool,
         totals: &mut Totals,
         what: &str,
@@ -1738,7 +1772,7 @@ pub mod pumped {
         let deadline = Instant::now() + Duration::from_secs(15);
         while !done(totals, *paused) {
             assert!(Instant::now() < deadline, "{what}");
-            totals.add(iterate(machine, bus, symbols, paused));
+            totals.add(iterate(machine, bus, cache, paused));
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -1775,11 +1809,11 @@ pub mod pumped {
             c.ok("emulator/run_frames", json!({"frames": 2}))
         });
 
-        let (mut paused, mut symbols, mut totals) = (true, None, Totals::default());
+        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
         turn_until(
             &mut machine,
             &mut bus,
-            &mut symbols,
+            &mut cache,
             &mut paused,
             &mut totals,
             "the client's run never reached the window's picture",
@@ -1816,11 +1850,11 @@ pub mod pumped {
             let mut c = Client::connect(&socket);
             c.handshake();
         });
-        let (mut paused, mut symbols, mut totals) = (true, None, Totals::default());
+        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
         turn_until(
             &mut machine,
             &mut bus,
-            &mut symbols,
+            &mut cache,
             &mut paused,
             &mut totals,
             "the control's client never handshook",
@@ -1828,7 +1862,7 @@ pub mod pumped {
         );
         client.join().expect("the control client");
         for _ in 0..20 {
-            totals.add(iterate(&mut machine, &mut bus, &mut symbols, &mut paused));
+            totals.add(iterate(&mut machine, &mut bus, &mut cache, &mut paused));
         }
         assert_eq!(
             totals.picture, 0,
@@ -1863,7 +1897,7 @@ pub mod pumped {
     fn halt_with_a_dirty_capture(
         machine: &mut Machine,
         bus: &mut Bus,
-        symbols: &mut Option<SymbolTable>,
+        cache: &mut Cache,
         paused: &mut bool,
     ) -> usize {
         let armed = bus.call(
@@ -1889,7 +1923,7 @@ pub mod pumped {
                 // next hit is a whole outer pass away.
                 bus.call(machine.system_mut(), "emulator/resume", &json!({}));
             }
-            iterate(machine, bus, symbols, paused);
+            iterate(machine, bus, cache, paused);
         }
     }
 
@@ -1932,8 +1966,8 @@ pub mod pumped {
     #[test]
     fn a_client_reset_puts_the_windows_derived_state_back_in_step() {
         let (mut machine, mut bus, socket) = served("reset", MachineInfo::default(), false);
-        let (mut symbols, mut paused) = (None, false);
-        let lines = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut symbols, &mut paused);
+        let (mut cache, mut paused) = (Cache::default(), false);
+        let lines = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut cache, &mut paused);
         assert!(
             lines > 0,
             "the halted run left an EMPTY capture, so `0` afterwards would witness nothing"
@@ -1949,7 +1983,7 @@ pub mod pumped {
         turn_until(
             &mut machine,
             &mut bus,
-            &mut symbols,
+            &mut cache,
             &mut paused,
             &mut totals,
             "the client's reset never reached the window",
@@ -1982,8 +2016,8 @@ pub mod pumped {
 
         // --- the control: the same halted rig, the same drains, no reset. ---
         let (mut machine, mut bus, socket) = served("reset-ctl", MachineInfo::default(), false);
-        let (mut symbols, mut paused) = (None, false);
-        let held = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut symbols, &mut paused);
+        let (mut cache, mut paused) = (Cache::default(), false);
+        let held = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut cache, &mut paused);
         assert!(held > 0, "the control's capture must be non-empty too");
         let client = std::thread::spawn(move || {
             let mut c = Client::connect(&socket);
@@ -1993,7 +2027,7 @@ pub mod pumped {
         turn_until(
             &mut machine,
             &mut bus,
-            &mut symbols,
+            &mut cache,
             &mut paused,
             &mut totals,
             "the control's client never handshook",
@@ -2001,7 +2035,7 @@ pub mod pumped {
         );
         client.join().expect("the control client");
         for _ in 0..20 {
-            totals.add(iterate(&mut machine, &mut bus, &mut symbols, &mut paused));
+            totals.add(iterate(&mut machine, &mut bus, &mut cache, &mut paused));
         }
         assert_eq!(
             totals.timeline, 0,
@@ -2063,25 +2097,35 @@ pub mod pumped {
 
         // The reload reads a real file. Write the fixture ROM out under a private name so nothing in this
         // suite shares a path, and so the reload is a genuine `std::fs::read`.
-        let rom_path = std::env::temp_dir().join(format!(
-            "pp-reload-{}-{}.bin",
+        // TWO files, same bytes, different names. The reload must be to a **different path** or the
+        // `rom_path` half of this test is two identical strings agreeing: the window's row would be right
+        // by having never moved.
+        let stamp = format!(
+            "{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::write(&rom_path, oracle_core::testrom::build()).expect("write the fixture ROM");
+        );
+        let launched = std::env::temp_dir().join(format!("pp-launched-{stamp}.bin"));
+        let reloaded = std::env::temp_dir().join(format!("pp-reloaded-{stamp}.bin"));
+        std::fs::write(&launched, oracle_core::testrom::build()).expect("write the launched ROM");
+        std::fs::write(&reloaded, oracle_core::testrom::build()).expect("write the reloaded ROM");
+        assert_ne!(launched, reloaded, "the two fixture paths must differ");
 
         let (mut machine, mut bus, socket) = served(
             "reload",
             MachineInfo {
-                rom_path: Some(rom_path.display().to_string()),
+                rom_path: Some(launched.display().to_string()),
                 symbols: Some(table.clone()),
                 symbols_path: None,
             },
             true,
         );
-        let mut symbols = Some(table);
+        let mut cache = Cache {
+            symbols: Some(table),
+            rom_path: launched.display().to_string(),
+        };
         assert_eq!(
-            symbols.as_ref().map(|t| t.len()),
+            cache.symbols.as_ref().map(|t| t.len()),
             Some(count),
             "the window must start out holding the listing"
         );
@@ -2091,7 +2135,7 @@ pub mod pumped {
             "and so must the engine, or the two were never in agreement to begin with"
         );
 
-        let path = rom_path.display().to_string();
+        let path = reloaded.display().to_string();
         let client = std::thread::spawn(move || {
             let mut c = Client::connect(&socket);
             c.handshake();
@@ -2102,7 +2146,7 @@ pub mod pumped {
         turn_until(
             &mut machine,
             &mut bus,
-            &mut symbols,
+            &mut cache,
             &mut paused,
             &mut totals,
             "the client's reload never reached the window",
@@ -2120,9 +2164,20 @@ pub mod pumped {
             "the engine still holds a listing it said it dropped"
         );
         assert!(
-            symbols.is_none(),
+            cache.symbols.is_none(),
             "the window is still resolving names against a listing the engine has discarded — the \
              panel and `emulator/lookup_symbol` now answer differently about one machine"
+        );
+        assert_eq!(
+            cache.rom_path,
+            reloaded.display().to_string(),
+            "the window's `rom` row still names the cartridge it was LAUNCHED with, which is not the one \
+             loaded — the same cached-from-the-machine defect as the listing, one row over"
+        );
+        assert_eq!(
+            bus.rom_path(),
+            Some(reloaded.display().to_string().as_str()),
+            "and the engine must agree, or the row above was compared against the wrong thing"
         );
 
         // --- the other half: a rom change that KEEPS the listing must keep the window's copy too. ---
@@ -2130,13 +2185,16 @@ pub mod pumped {
         let (mut machine, mut bus, socket) = served(
             "reload-keep",
             MachineInfo {
-                rom_path: Some(rom_path.display().to_string()),
+                rom_path: Some(launched.display().to_string()),
                 symbols: Some(table.clone()),
                 symbols_path: None,
             },
             true,
         );
-        let mut symbols = Some(table);
+        let mut cache = Cache {
+            symbols: Some(table),
+            rom_path: launched.display().to_string(),
+        };
         let client = std::thread::spawn(move || {
             let mut c = Client::connect(&socket);
             c.handshake();
@@ -2146,7 +2204,7 @@ pub mod pumped {
         turn_until(
             &mut machine,
             &mut bus,
-            &mut symbols,
+            &mut cache,
             &mut paused,
             &mut totals,
             "the client's reset never reached the window",
@@ -2159,12 +2217,18 @@ pub mod pumped {
             "`emulator/reset` dropped the engine's symbols, which its handler says it does not do"
         );
         assert_eq!(
-            symbols.as_ref().map(|t| t.len()),
+            cache.symbols.as_ref().map(|t| t.len()),
             Some(count),
             "the window threw its listing away on a rom change that kept it — the drain is CLEARING the \
              cache on the flag rather than re-deriving it from the engine"
         );
+        assert_eq!(
+            cache.rom_path,
+            launched.display().to_string(),
+            "and a reset must not have moved the path either"
+        );
 
-        let _ = std::fs::remove_file(&rom_path);
+        let _ = std::fs::remove_file(&launched);
+        let _ = std::fs::remove_file(&reloaded);
     }
 }

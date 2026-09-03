@@ -516,6 +516,11 @@ impl Host {
         self.engine.symbols()
     }
 
+    /// The absolute path of the loaded image — see [`Engine::rom_path`](crate::engine::Engine::rom_path).
+    pub fn rom_path(&self) -> Option<&str> {
+        self.engine.rom_path()
+    }
+
     pub fn framebuffer(&self) -> Option<crate::engine::FrameRef<'_>> {
         self.engine.latched_frame()
     }
