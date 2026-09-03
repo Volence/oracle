@@ -30,10 +30,12 @@
 //! sharpest edge: a parity pair cannot see a defect in what it shares, which is why that module's test
 //! carries a clause comparing the decode against values the test wrote rather than against the bus.
 //!
-//! Breakpoints, watchpoints, the profiler and the transport bar are still not here: they share the
-//! run-loop change (`Observe` wrappers plus a per-frame `pump`) that re-opens parcel 1's pacing
-//! measurement. The Objects tab needs none of it — its reads are direct and none of the three rows is
-//! paused-gated — so `Loop::iterate` is still untouched.
+//! **Parcel 3 makes the run-loop change** — `Observe` wrappers plus a per-frame `pump` — and adds the
+//! [`Transport`] bar that rides it. It is a **control, not a [`Tab`]**: things you *do* live on the bar,
+//! things you *look at* live in the dock, and a `Tab` variant would also owe
+//! [`crate::layout::LAYOUT_VERSION`] a bump and discard every stored layout. The three tabs that read the
+//! instruments this parcel started feeding — Breakpoints, Watchpoints, Profiler — are the next parcel's;
+//! [`Bus::read_instruments`](crate::bus::Bus::read_instruments) is what they will draw from.
 
 use crate::bus::Bus;
 use crate::machine::Machine;
@@ -41,6 +43,7 @@ use crate::memory::{self, MemoryPanel};
 use crate::objects::{self, Objects, ObjectsPanel};
 use crate::pacing::Governor;
 use oracle_core::symbols::SymbolTable;
+use serde_json::json;
 
 /// A docked tab.
 ///
@@ -844,6 +847,268 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
 }
 
 // ---------------------------------------------------------------------------------------------------
+// ⚑ The transport bar — a CONTROL, not a tab
+// ---------------------------------------------------------------------------------------------------
+
+/// The three gestures the bar makes.
+///
+/// **Named as methods, not as verbs**, because the method name is the whole of what the bar knows. It does
+/// not model "pausing"; it asks a registry entry a question and shows the reply. Constants rather than
+/// literals at the call sites so the test that checks them against the engine's `METHODS` registry is
+/// checking *these* strings and not a second copy of them.
+pub const PAUSE: &str = "emulator/pause";
+pub const RESUME: &str = "emulator/resume";
+pub const STEP: &str = "emulator/step";
+
+/// One answer the bus gave a transport gesture, kept for display until the next one replaces it.
+///
+/// The `text` is the **server's own words**, assembled from `code` and `message` and nothing else — no
+/// wording of ours anywhere in it. That is the rule `crate::bus`'s [`Answer`](crate::bus::Answer) doc
+/// states: *"a refusal a panel writes for itself is a sentence about a server, not the server's."*
+pub struct Echo {
+    /// The method that was called. Shown so a human can tell which button produced the line.
+    pub method: &'static str,
+    /// `"<code> <message>"` for a refusal, or the compact reply for a success. Verbatim either way.
+    pub text: String,
+    /// `error.data.reason` — the machine-readable discriminant, shown *as* a discriminant. `None` on
+    /// success, and also on a refusal that carried no reason, which is a distinction worth seeing.
+    pub reason: Option<String>,
+    /// Whether this was a refusal. **This is what the bar colours on**, never the shape of `text`: a
+    /// refusal that reads like a success is the one rendering mistake a debug surface cannot afford.
+    pub refused: bool,
+}
+
+/// The transport bar's state between repaints: the last answer, and nothing else.
+///
+/// It deliberately holds **no pause flag**. The play/pause button reads `Bus::is_paused()` every frame,
+/// which is the bus's own truthful reading (it consults `pending_free_run`, which a `call` does not
+/// apply). A cached copy here would be a second belief about the run state — the drift R2 exists to
+/// prevent, in the one place a human would read it.
+#[derive(Default)]
+pub struct Transport {
+    pub last: Option<Echo>,
+}
+
+impl Transport {
+    /// Draw the bar and issue whatever the human clicked.
+    ///
+    /// **Every gesture goes through `Host::call`.** The alternative — reaching past the bus to flip a flag
+    /// the player also owns — is what makes a debug surface and its tool disagree, and it is specifically
+    /// what puts a *second* pause state in this process (R2). Going through the registry also means the
+    /// bar inherits every refusal the tool already knows how to give, including ones nobody here
+    /// anticipated: `emulator/step` against a free-running machine is refused `-32005 machineRunning` by
+    /// `require_stopped`, and that sentence is the server's, arrives here whole, and is shown whole.
+    pub fn bar(&mut self, ui: &mut egui::Ui, machine: &mut Machine, bus: &mut Bus) {
+        // The bus's reading, every frame, never a field of ours.
+        let paused = bus.is_paused();
+
+        // ⚑ Pause and resume are ONE button, because they are one question ("is it running?") and two
+        // buttons would let a human ask for the state it is already in — whose honest answer from the
+        // tool is a success that changes nothing, which reads as a broken button.
+        let (label, method) = if paused {
+            ("▶ resume", RESUME)
+        } else {
+            ("⏸ pause", PAUSE)
+        };
+        if ui.button(label).clicked() {
+            self.issue(machine, bus, method);
+        }
+
+        // Step is offered unconditionally, and while running it is REFUSED rather than hidden. A hidden
+        // button teaches nothing; the refusal names the state and the remedy in the tool's own words, and
+        // it is the same sentence a socket client gets for the same mistake.
+        if ui.button("⏭ step").clicked() {
+            self.issue(machine, bus, STEP);
+        }
+
+        // **What is armed to stop this machine**, read from the instruments the loop itself feeds — one
+        // count, not a list, because the lists are the next parcel's three tabs. It belongs on the
+        // transport bar rather than in a tab for the same reason the buttons do: it is state about
+        // *stopping*, and a human reaching for "step" needs to know whether anything else will stop it
+        // first. Read through [`Bus::read_instruments`], which is the same borrow
+        // `emulator/watchpoint_hits` answers from — there is one instrument, so the bar and a client
+        // cannot disagree about how many watches exist.
+        let (watch, _, profiler_armed) = bus.read_instruments();
+        let watches = watch.watch_count();
+        if watches > 0 || profiler_armed {
+            ui.separator();
+            ui.weak(format!(
+                "{watches} watch{} · profiler {}",
+                if watches == 1 { "" } else { "es" },
+                if profiler_armed { "on" } else { "off" }
+            ));
+        }
+
+        if let Some(e) = &self.last {
+            ui.separator();
+            let colour = if e.refused {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            let reason = match &e.reason {
+                Some(r) => format!(" [{r}]"),
+                None => String::new(),
+            };
+            ui.colored_label(colour, format!("{}: {}{}", e.method, e.text, reason))
+                .on_hover_text(
+                    "the bus's own reply, verbatim. The bracketed word is `error.data.reason`, the \
+                     discriminant clients branch on — never the message text.",
+                );
+        }
+    }
+
+    /// Make one call and keep its answer.
+    ///
+    /// A method the registry does not carry would come back `-32601` and be shown like any other refusal;
+    /// the explicit check exists so a *typo in this file* is caught by the test below rather than by a
+    /// human clicking a button that can only ever fail.
+    fn issue(&mut self, machine: &mut Machine, bus: &mut Bus, method: &'static str) {
+        let answer = bus.call(machine.system_mut(), method, &json!({}));
+        self.last = Some(Echo {
+            method,
+            refused: answer.is_err(),
+            reason: answer.reason().map(str::to_string),
+            text: match &answer {
+                // The reply bodies here are small (`emulator/step` carries the new pc); shown compactly
+                // rather than summarised, so nothing of the server's answer is dropped on the way.
+                crate::bus::Answer::Ok(v) => format!("ok {v}"),
+                crate::bus::Answer::Err(e) => format!("{} {}", e.code, e.message),
+            },
+        });
+    }
+}
+
+#[cfg(all(test, unix))]
+mod transport_tests {
+    use super::*;
+    use crate::machine::Machine;
+
+    fn rig() -> (Machine, Bus) {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = Bus::new(
+            machine.system_mut(),
+            oracle_aether::host::MachineInfo::default(),
+            false,
+        );
+        (machine, bus)
+    }
+
+    /// **Every button names a method the registry actually carries.**
+    ///
+    /// A typo here produces a button whose only possible outcome is `-32601`, which the bar would render
+    /// perfectly correctly and which a human would read as "the emulator is broken". Checked against
+    /// `METHODS` — the same slice `emulator/initialize` builds its advertised list from — rather than
+    /// against a second list here, so there is nothing for the two to drift apart from.
+    ///
+    /// **The alternative green path, ruled out:** `is_served` returning `true` unconditionally would pass
+    /// the loop above and prove nothing, so a name that must NOT be served is checked in the same test.
+    #[test]
+    fn every_transport_button_names_a_served_method() {
+        for m in [PAUSE, RESUME, STEP] {
+            assert!(
+                memory::is_served(m),
+                "the transport bar offers {m}, which the engine's METHODS registry does not carry — that \
+                 button can only ever produce -32601"
+            );
+        }
+        assert!(
+            !memory::is_served("emulator/pause_but_spelled_wrong"),
+            "`is_served` answered true for a method that cannot exist, so the loop above witnesses \
+             nothing"
+        );
+    }
+
+    /// ★ **The refusal is the server's, and the bar branches on `reason`, not on prose.**
+    ///
+    /// `emulator/step` against a free-running player is refused by `require_stopped` with
+    /// `-32005 machineRunning`. This drives the bar's own `issue` — the code path a click takes — and
+    /// checks that the discriminant survives to the [`Echo`] intact.
+    ///
+    /// **Two alternative green paths, both ruled out here:**
+    ///
+    /// 1. *The bar composes its own refusal and it happens to say the same thing.* Ruled out by asserting
+    ///    the echoed text contains the handler's own numeric code, which nothing in `ui.rs` writes.
+    /// 2. *`reason` is `Some` for everything, so matching it proves nothing.* Ruled out by the second half:
+    ///    the very next gesture succeeds, and its echo must carry `reason == None` and `refused == false`.
+    #[test]
+    fn step_is_refused_by_the_tool_while_the_player_runs_and_taken_once_it_is_paused() {
+        let (mut machine, mut bus) = rig();
+        let mut t = Transport::default();
+
+        // The arrangement stated as a fact rather than assumed: an un-paused player IS a free-running bus.
+        assert!(
+            !bus.is_paused(),
+            "the fixture must begin free-running or the refusal below is not the one being tested"
+        );
+
+        t.issue(&mut machine, &mut bus, STEP);
+        let e = t.last.as_ref().expect("a gesture leaves an echo");
+        assert!(
+            e.refused,
+            "a step against a running machine must be refused"
+        );
+        assert_eq!(
+            e.reason.as_deref(),
+            Some("machineRunning"),
+            "the bar must carry the tool's own discriminant: {}",
+            e.text
+        );
+        assert!(
+            e.text.contains("-32005"),
+            "the echoed text must be the server's, and the code is the part no panel writes: {}",
+            e.text
+        );
+
+        // …and the same button, once the machine is stopped, is taken.
+        t.issue(&mut machine, &mut bus, PAUSE);
+        assert!(
+            bus.is_paused(),
+            "`emulator/pause` through Host::call must move the bus's own reading"
+        );
+        let pc_before = machine.system().cpu_regs().pc;
+        t.issue(&mut machine, &mut bus, STEP);
+        let e = t.last.as_ref().expect("a gesture leaves an echo");
+        assert!(
+            !e.refused,
+            "a step against a stopped machine must be taken: {}",
+            e.text
+        );
+        assert_eq!(
+            e.reason, None,
+            "a success carries no reason — if it did, matching on `reason` would be meaningless"
+        );
+        // The third assertion: an `ok` that moved nothing would satisfy everything above.
+        assert_ne!(
+            machine.system().cpu_regs().pc,
+            pc_before,
+            "the step reported success without advancing the machine, so `Host::call` answered for the \
+             engine's placeholder rather than for this machine"
+        );
+    }
+
+    /// **The bar holds no pause flag of its own** (R2), so a resume issued through the tool is visible to
+    /// the bar on the very next read.
+    ///
+    /// The alternative green path — a `Transport` that cached the state and happened to be right — is
+    /// ruled out structurally: `Transport` has one field and it is the echo. Asserted anyway on the value
+    /// the button label is chosen from, because that is the thing a human sees.
+    #[test]
+    fn the_bars_label_follows_the_bus_and_not_a_cached_flag() {
+        let (mut machine, mut bus) = rig();
+        let mut t = Transport::default();
+        assert!(!bus.is_paused());
+        t.issue(&mut machine, &mut bus, PAUSE);
+        assert!(bus.is_paused(), "pause must land");
+        t.issue(&mut machine, &mut bus, RESUME);
+        assert!(
+            !bus.is_paused(),
+            "resume must land too — a one-way transport is worse than none"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
 // The parity invariant — design §4.4 R3
 // ---------------------------------------------------------------------------------------------------
 
@@ -874,6 +1139,21 @@ mod bus_parity {
         sys.load_rom(oracle_core::testrom::build());
         sys.reset();
         sys
+    }
+
+    /// A bus for a machine with **nothing armed** — the state every one of these parity fixtures is in.
+    ///
+    /// Parcel 3 put the bus into `Machine::step`, so the two tests below now run their frames *through the
+    /// seam*. That is not incidental: each of them already compares `machine.system().state_hash()`
+    /// against a plain `sys.run_frames()` of the same count, and that comparison is now also the proof
+    /// that **an unarmed seam does not perturb the machine** — three `None` sinks, a bare `Fanout`, and a
+    /// byte-identical timeline. Had the wrappers changed a single cycle, both tests would go red here.
+    fn idle_bus(machine: &mut Machine) -> Bus {
+        Bus::new(
+            machine.system_mut(),
+            oracle_aether::host::MachineInfo::default(),
+            false,
+        )
     }
 
     /// `"0x0000B000"` → `0xB000`. The bus spells values as hex strings (D9 category 1); the panel carries
@@ -1048,8 +1328,9 @@ mod bus_parity {
     fn the_status_strip_agrees_with_emulator_status_on_what_it_can_derive() {
         const FRAMES: u64 = 5;
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut idle = idle_bus(&mut machine);
         for _ in 0..FRAMES {
-            machine.step(oracle_core::io::Pad::default());
+            machine.step(oracle_core::io::Pad::default(), &mut idle);
         }
         let mut sys = booted();
         sys.set_pad(0, oracle_core::io::Pad::default());
@@ -1155,8 +1436,9 @@ mod bus_parity {
     fn the_status_strip_and_emulator_status_resolve_the_same_symbol_at_pc() {
         const DISP: u32 = 4;
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut idle = idle_bus(&mut machine);
         for _ in 0..5 {
-            machine.step(oracle_core::io::Pad::default());
+            machine.step(oracle_core::io::Pad::default(), &mut idle);
         }
         let mut sys = booted();
         sys.set_pad(0, oracle_core::io::Pad::default());

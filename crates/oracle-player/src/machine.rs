@@ -17,6 +17,10 @@ use crate::device::Device;
 /// Active display height, matching `crates/oracle-frontend/src/main.rs`.
 pub const HEIGHT: usize = 224;
 
+/// The ceiling on the capture's per-delivery line log (~215 KB per emulated second, unbounded by design),
+/// for runs that keep ending mid-frame. Same value as `oracle-frontend/src/main.rs`'s, same reason.
+const MAX_CAPTURE_LINES: usize = 8 * HEIGHT;
+
 /// What one iteration cost, in milliseconds, split the way the toolkit spike split it so the two sets of
 /// numbers can be read side by side.
 #[derive(Clone, Copy, Debug, Default)]
@@ -65,7 +69,26 @@ impl Machine {
     ///
     /// `set_pad` is called once per iteration, before the run, exactly as the minifb player does: the pad
     /// is the state of the keys at the top of the frame and is held for every frame the iteration runs.
-    pub fn step(&mut self, pad: Pad) -> StepCost {
+    ///
+    /// # ⚑ The bus rides every emulated frame (parcel 3)
+    ///
+    /// `bus` is not decoration and it is not optional. Three of its four contributions are invisible until
+    /// something is armed, and the fourth changes what a frame *is*:
+    ///
+    /// * [`Bus::run_sinks`](crate::bus::Bus::run_sinks) lends the run the engine's own watch and profiler,
+    ///   `Observe`-wrapped, plus the breakpoint sink bare. Unarmed, all three come back `None`, whose sink
+    ///   impl wants nothing and does nothing — which is why there is no "is anything armed" branch here.
+    /// * The breakpoint sink can **end the run mid-frame**. That is the whole point, and it is why the
+    ///   capture-lifecycle check below already tolerates a run that did not complete a frame.
+    /// * [`break_observed`](crate::bus::break_observed) consumes the sink — releasing its borrow of `bus` —
+    ///   and [`record_break`](crate::bus::Bus::record_break) latches the halt for the loop's drain.
+    /// * [`publish`](crate::bus::Bus::publish) hands over the completed frame *before* the capture is
+    ///   cleared, because that clear drops the pixels along with the line log.
+    ///
+    /// **All of it is inside the `emulate` bucket.** `run_sinks` and `record_break` are new per-frame work
+    /// on the emulation path, and timing only `run_frames_with_sink` would have made this parcel's own
+    /// re-measurement structurally unable to see the thing it was retaken to price.
+    pub fn step(&mut self, pad: Pad, bus: &mut crate::bus::Bus) -> StepCost {
         self.sys.set_pad(0, pad);
         self.sys.set_pad(1, Pad::default());
 
@@ -87,14 +110,33 @@ impl Machine {
 
         for _ in 0..n {
             let t0 = Instant::now();
+            // Read *before* the run: the breakpoint sink suppresses a re-fire at the PC the run started
+            // on until one instruction retires, without which a machine halted at a breakpoint could
+            // never be resumed past it. The engine cannot read this for itself — outside a `pump` drain
+            // it holds a placeholder `System` whose PC is 0.
+            let resume_pc = self.sys.cpu_regs().pc;
+            let (watch, prof, mut brk) = bus.run_sinks(resume_pc);
+            let instruments = Fanout::new(watch, prof);
+            // The breakpoint sink rides in the OUTER `Fanout`, beside the capture, in both arms: the stop
+            // signal is then composed by a plain `Fanout` in every build variant and cannot be dropped by
+            // an intervening combinator.
             match self.device.as_mut() {
                 Some(d) => {
-                    let mut sink = Fanout::new(&mut self.cap, d.sink_mut());
+                    let mut sink = Fanout::new(
+                        &mut self.cap,
+                        Fanout::new(&mut brk, Fanout::new(d.sink_mut(), instruments)),
+                    );
                     self.sys.run_frames_with_sink(1, &mut sink);
                 }
                 None => {
-                    self.sys.run_frames_with_sink(1, &mut self.cap);
+                    let mut sink = Fanout::new(&mut self.cap, Fanout::new(&mut brk, instruments));
+                    self.sys.run_frames_with_sink(1, &mut sink);
                 }
+            }
+            // Consuming the sink is what releases its borrow of `bus`, which is why this is a free
+            // function and not a method (see `bus::break_observed`).
+            if let Some(addr) = crate::bus::break_observed(brk) {
+                bus.record_break(addr);
             }
             emulate += t0.elapsed();
             self.frames += 1;
@@ -109,10 +151,21 @@ impl Machine {
             if let Some(img) = capture_to_image(&self.cap) {
                 self.image = Some(img);
                 self.pictures += 1;
+                // Published on exactly the frames that produced a picture, and *before* the clear below,
+                // which drops the retained pixels along with the line log.
+                bus.publish(&self.cap);
             }
             convert += t2.elapsed();
 
-            if self.cap.frames_completed() >= 1 && self.cap.lines().len() == HEIGHT {
+            // The normal case is a run that ended cleanly on the frame boundary. **Parcel 3 makes the other
+            // case reachable for the first time**: with the breakpoint sink attached a run can end
+            // mid-frame, leaving real pixels buffered for a frame that has not completed, which must be
+            // left to finish. Before this parcel `run_frames_with_sink(1, ..)` carried nothing that could
+            // stop it, so this branch could not be taken and the player needed no bound; it needs one now.
+            // Copied from `oracle-frontend/src/main.rs`, constant and all, because it is the same hazard.
+            let ended_on_a_frame_boundary =
+                self.cap.frames_completed() >= 1 && self.cap.lines().len() == HEIGHT;
+            if ended_on_a_frame_boundary || self.cap.lines().len() >= MAX_CAPTURE_LINES {
                 self.cap.clear();
             }
         }

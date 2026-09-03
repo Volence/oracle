@@ -284,6 +284,15 @@ struct Loop {
     /// The Objects panel's state between repaints — which row is expanded, and nothing else. The pool
     /// itself is re-derived each repaint, never cached.
     objects: objects::ObjectsPanel,
+    /// **Whether this iteration advances the machine**, and nothing more.
+    ///
+    /// It is not a second copy of the bus's run state — it is re-read from [`bus::Bus::is_paused`] twice
+    /// per iteration and never written from a click. The transport bar changes the run state by asking the
+    /// *tool* (`emulator/pause`), and this follows whatever the tool did, so a refusal leaves it exactly
+    /// where it was without the bar having to know what a refusal means.
+    paused: bool,
+    /// The transport bar's echo of the last answer the bus gave it. Rendered verbatim; never composed.
+    transport: ui::Transport,
 }
 
 impl Loop {
@@ -320,6 +329,10 @@ impl Loop {
             symbols,
             mem: memory::MemoryPanel::default(),
             objects: objects::ObjectsPanel::default(),
+            // The player plays. This is the same `false` handed to `Bus::new` above, and the two are one
+            // fact: the bus was just told the loop is running, and the loop is.
+            paused: false,
+            transport: ui::Transport::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -372,16 +385,42 @@ impl Loop {
             self.last_frame_at = Some(now);
             self.frame_iterations += 1;
 
-            let keys = input::poll_pad(ctx);
-            // egui 0.36 spells this `egui_wants_keyboard_input` (the `egui_` prefix distinguishes egui's
-            // own focus from a hosting app's). It is true whenever a widget — a text field, a tab rename,
-            // a future memory-panel search box — is consuming typing.
-            let pad = input::decide(keys, ctx.egui_wants_keyboard_input(), &mut self.latch);
-            cost = self.machine.step(pad);
-            // `MAX_FRAMES_PER_ITER` is 2, so the bucket cannot overflow; clamp anyway rather than index
-            // out of bounds if that constant is ever raised.
-            self.frames_per_iter[cost.frames.min(2)] += 1;
+            // ⚑ A paused player owns its frame and does not advance the machine. The period, the upload
+            // and the UI below all still happen — a paused window is not a frozen one — but nothing here
+            // touches the clock, which is the whole content of the promise `Host::set_paused` makes to
+            // the bus on the next line.
+            if !self.paused {
+                let keys = input::poll_pad(ctx);
+                // egui 0.36 spells this `egui_wants_keyboard_input` (the `egui_` prefix distinguishes
+                // egui's own focus from a hosting app's). It is true whenever a widget — a text field, a
+                // tab rename, a future memory-panel search box — is consuming typing.
+                let pad = input::decide(keys, ctx.egui_wants_keyboard_input(), &mut self.latch);
+                cost = self.machine.step(pad, &mut self.bus);
+                // `MAX_FRAMES_PER_ITER` is 2, so the bucket cannot overflow; clamp anyway rather than
+                // index out of bounds if that constant is ever raised.
+                self.frames_per_iter[cost.frames.min(2)] += 1;
+            }
         }
+
+        // --- ⚑ The drain: one bounded, non-blocking pump per iteration. ---
+        //
+        // **AFTER the frame, not before it, and the ordering is the halt path.** `Machine::step` latched
+        // any breakpoint halt through `Bus::record_break`, and a latch is applied at the top of the next
+        // `Host::pump` and nowhere else. Draining here applies it in the *same* iteration that observed
+        // it, so `is_paused()` below is true before the governor's next tick and no further frame runs.
+        // Draining at the top of `iterate` instead — which is where parcel 2b's module doc predicted this
+        // call would move — would leave the halt unapplied across the following tick, and the player would
+        // run one extra frame past a breakpoint it had already stopped on.
+        let t_bus = Instant::now();
+        self.bus
+            .mirror_pause(self.machine.system_mut(), self.paused);
+        // Conflict 1's inbound half. Two things speak through this: a breakpoint halt, which `pump` just
+        // applied by clearing the run flags, and `emulator/pause` / `emulator/resume` from the transport
+        // bar. Read from the bus rather than tracked here — `Bus::is_paused` consults the pending change
+        // and is the one truthful reading (bus.rs), and a second copy of the run state in this struct is
+        // exactly the duplication R2 forbids.
+        self.paused = self.bus.is_paused();
+        let bus_ms = ms(t_bus.elapsed());
 
         // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
         // texture already bound, which is both correct and free — uploading again would be 287 KB of
@@ -404,6 +443,12 @@ impl Loop {
         let t = Instant::now();
         self.build_ui(root);
         let ui_ms = ms(t.elapsed());
+        // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
+        // deliberately NOT a drain and applies neither pending change (host.rs). So a pause or resume it
+        // just issued has already moved the *engine's* flags, and this is where the loop adopts it —
+        // without this line the next iteration's `mirror_pause` would mirror the stale local value and
+        // queue the click straight back out again.
+        self.paused = self.bus.is_paused();
 
         if tick.run {
             self.buckets.emulate.push(cost.emulate);
@@ -411,9 +456,10 @@ impl Loop {
             self.buckets.convert.push(cost.convert);
             self.buckets.upload.push(upload);
             self.buckets.ui.push(ui_ms);
+            self.buckets.bus.push(bus_ms);
             self.buckets
                 .cpu_total
-                .push(cost.emulate + cost.audio + cost.convert + upload + ui_ms);
+                .push(cost.emulate + cost.audio + cost.convert + upload + ui_ms + bus_ms);
         }
         tick
     }
@@ -450,11 +496,17 @@ impl Loop {
             symbols,
             mem,
             objects,
+            transport,
             ..
         } = self;
         egui::Panel::top("bar").show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("oracle-player");
+                ui.separator();
+                // ⚑ A CONTROL, NOT A TAB. Things you *do* are controls; the `Tab` enum is for things you
+                // *look at*, and adding a variant here would also owe `layout::LAYOUT_VERSION` a bump and
+                // discard every stored layout on the owner's machine.
+                transport.bar(ui, machine, bus);
                 ui.separator();
                 ui.monospace(status.as_str());
             });

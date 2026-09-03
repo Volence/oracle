@@ -32,6 +32,15 @@ pub struct Buckets {
     pub upload: Series,
     pub ui: Series,
     pub tessellate: Series,
+    /// **Parcel 3's own cost, named rather than folded in.** One `Host::set_paused` plus one `Host::pump`
+    /// per iteration — the drain that lands a breakpoint halt and a client pause. It is a bucket of its own
+    /// because this parcel invalidated parcel 1's measurement and a re-measurement that could not see the
+    /// thing that invalidated it would be worth nothing. Recorded on every *frame-owning* iteration, so it
+    /// shares its `n` with the columns beside it.
+    ///
+    /// (The instrument wrappers are the other half of the change, and they are inside `emulate` — see
+    /// [`crate::machine::Machine::step`] for why they are timed there rather than here.)
+    pub bus: Series,
     pub cpu_total: Series,
     /// Wall time between the starts of consecutive *frame-owning* iterations. This is the frame period,
     /// and its distribution is the stutter answer.
@@ -189,6 +198,7 @@ pub fn print(r: &Run) {
         ("tex-upload", &r.buckets.upload),
         ("ui-build", &r.buckets.ui),
         ("tessellate", &r.buckets.tessellate),
+        ("bus-pump", &r.buckets.bus),
         ("CPU TOTAL", &r.buckets.cpu_total),
         ("period", &r.buckets.period),
     ] {

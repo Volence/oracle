@@ -11,11 +11,19 @@
 //! * **No [`Host::serve`].** No socket is bound, no filesystem entry is created and no thread is started.
 //!   `Host::new`'s own doc states the guarantee this leans on: *"a player that never asks for the bus
 //!   behaves exactly as it did before this existed."* Owning one costs a struct.
-//! * **No [`Host::pump`] in the frame loop.** Parcel 1's pacing numbers were taken against a loop with no
-//!   pump and no `Observe` wrappers. Breakpoints, watchpoints and the profiler need both, they share that
-//!   one run-loop change, and it re-opens that measurement — so they are parcel 2c's, together, and this
-//!   parcel leaves `Loop::iterate` alone.
-//! * **No `Observe` wrappers, no `run_sinks`, no `record_break`, no `publish_capture`.** Same reason.
+//!
+//! Two entries that stood here have been **struck by parcel 3 (`PANELS-3-STOPPING`)**, which is the parcel
+//! they named as their owner. They are kept, struck, because the reason they were deferred is the reason
+//! the parcel that took them owed a re-measurement:
+//!
+//! * ~~**No [`Host::pump`] in the frame loop.**~~ There is one now, once per iteration, in
+//!   [`Bus::mirror_pause`] — see that method for why the drain became unconditional and why it sits
+//!   *after* the frame rather than before it.
+//! * ~~**No `Observe` wrappers, no `run_sinks`, no `record_break`, no `publish_capture`.**~~ All four are
+//!   here, and [`crate::machine::Machine::step`] carries them on every emulated frame.
+//!
+//! Parcel 1's pacing numbers were taken against a loop with neither. **They were retaken** — before and
+//! after, on one rig in one session — and the result is in `docs/2026-09-03-debug-panels-design.md` §5.6.
 //!
 //! # ⚑ The pause mirror, which is the one subtle piece
 //!
@@ -34,31 +42,48 @@
 //! argument between `pending_free_run` and `pending_break`). So a `set_paused` with no drain behind it is
 //! inert, and the mirror needs a drain.
 //!
-//! **Where the drain goes: at setup, not in the loop** — [`Bus::new`] pumps exactly once, before the
-//! first iteration, and [`Bus::mirror_pause`] pumps again only on an actual change of the player's pause
-//! state. In this parcel there is no pause control at all (the transport bar is 2c), so the mirrored
-//! value cannot change and no pump ever runs inside a frame. That is why parcel 1's pacing is untouched
-//! by this parcel rather than "probably fine": the loop body is byte-identical, and the one drain happens
-//! before the governor starts.
+//! **Where the drain goes.** Parcel 2b put it at setup only — [`Bus::new`] pumped once and
+//! [`Bus::mirror_pause`] pumped again only on a change that could not happen, because there was no pause
+//! control. Parcel 3 adds the transport bar *and* the breakpoint sink, and both need a drain that runs
+//! whether or not the pause moved: [`Host::record_break`] only **latches**, and the latch is applied at
+//! the top of the next [`Host::pump`]. A change-gated pump would leave a machine that halts on a
+//! breakpoint and never tells the loop — the exact silent failure `record_break`'s own doc calls "the
+//! *worse* of the two failures". So the drain is now unconditional, once per iteration, and its cost is
+//! measured rather than argued (`report`'s `bus-pump` bucket).
 //!
-//! When 2c adds the transport bar, [`mirror_pause`](Bus::mirror_pause) is the call that moves to the top
-//! of `Loop::iterate` — and it lands in the same parcel as the `Observe` wrappers, which is the parcel
-//! that owes the re-measurement anyway. Splitting it out now would pay that cost early and bank it twice.
+//! # ⚑ The seam this crate rides, in the order it runs
+//!
+//! 1. [`Bus::run_sinks`] hands the run the two instruments (wrapped in `Observe`, which drops only their
+//!    stop signal) and the breakpoint sink (**bare** — the halt is the whole point).
+//! 2. [`crate::machine::Machine::step`] puts all three in the sink it already builds for the scanline
+//!    capture, and runs the frame.
+//! 3. [`break_observed`] consumes the breakpoint sink — which is what releases its borrow of the `Bus` —
+//!    and [`Bus::record_break`] latches whatever it saw.
+//! 4. [`Bus::publish`] hands the completed frame over, and [`Bus::mirror_pause`] drains: the latch lands,
+//!    the run flags clear, and [`Bus::is_paused`] goes true.
+//! 5. `Loop::iterate` reads that and stops running frames. **That last step is what makes a breakpoint
+//!    mean anything against this window**: without it the bus reports a halt the loop never took.
 
+use oracle_aether::breakpoints::BreakStop;
 use oracle_aether::host::{Host, HostConfig, MachineInfo};
 use oracle_aether::rpc::RpcError;
+use oracle_core::bus::Observe;
+use oracle_core::profiler::Profiler;
+use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::system::System;
+use oracle_core::watchpoints::Watchpoints;
 use serde_json::{Map, Value};
 
-/// The hosted capability layer plus the one piece of state the host owes it: what the bus was last told
-/// about the player's pause.
+/// The hosted capability layer.
+///
+/// Parcel 2b carried a `mirrored: Option<bool>` beside it, to gate the drain on an actual change of the
+/// player's pause. **Parcel 3 removed it, and the removal is the point**: the drain is now unconditional
+/// (see [`Bus::mirror_pause`]), so a cached copy of the pause could only ever answer a question nobody
+/// asks — and a second place where this process believes it knows the engine's run state is precisely the
+/// duplication R2 exists to prevent. [`Host::set_paused`] already compares against the engine's own flag,
+/// so calling it every iteration with an unchanged value queues nothing.
 pub struct Bus {
     host: Host,
-    /// The pause state the **engine** has actually been told, as opposed to the one queued. `None` before
-    /// the first mirror. Compared against rather than `Host::is_paused`, because `is_paused` already
-    /// consults `pending_free_run` — it would report the value we *asked* for and let a queued change we
-    /// never drained look landed.
-    mirrored: Option<bool>,
 }
 
 /// One command's answer, as the tool would have received it: the handler's own reply or its own refusal.
@@ -99,29 +124,96 @@ impl Bus {
     pub fn new(sys: &mut System, info: MachineInfo, paused: bool) -> Self {
         let mut host = Host::new(HostConfig::default());
         host.set_machine_info(info);
-        let mut bus = Bus {
-            host,
-            mirrored: None,
-        };
+        let mut bus = Bus { host };
         bus.mirror_pause(sys, paused);
         bus
     }
 
-    /// Tell the bus what the player's loop is doing, and **make it land**.
+    /// Tell the bus what the player's loop is doing, and **make it land** — the loop's one drain.
     ///
-    /// A no-op — one `bool` compare, no dispatch, no allocation — when nothing changed, which in this
-    /// parcel is every call after the first. The drain is [`Host::pump`] rather than a new
-    /// apply-the-pending entry point on purpose: `pump` is the *single* site where `pending_free_run` and
-    /// `pending_break` are applied in that order, and `Host::call`'s doc spends a paragraph on why a
-    /// second site reintroduces "a machine that stops on a breakpoint and silently resumes". Reusing the
-    /// one site adds no interleaving the ordering argument does not already cover.
+    /// The drain is [`Host::pump`] rather than a new apply-the-pending entry point on purpose: `pump` is
+    /// the *single* site where `pending_free_run` and `pending_break` are applied in that order, and
+    /// [`Host::call`]'s doc spends a paragraph on why a second site reintroduces "a machine that stops on
+    /// a breakpoint and silently resumes". Reusing the one site adds no interleaving the ordering argument
+    /// does not already cover.
+    ///
+    /// **Unconditional, unlike parcel 2b's change-gated version.** A halt latched by
+    /// [`record_break`](Bus::record_break) is applied at the top of the *next* pump and nowhere else, so a
+    /// pump that only ran when the pause moved would apply it only if the pause happened to move — which
+    /// on the frame a breakpoint fires it has not. The player would keep running past a breakpoint the bus
+    /// believed it had stopped on.
+    ///
+    /// The [`PumpReport`](oracle_aether::host::PumpReport) is dropped, deliberately. Its three interesting
+    /// flags — `timeline_moved`, `screen_changed`, `rom_changed` — all describe *a socket client* moving
+    /// the machine behind the loop's back, and this player never binds one ([`Host::serve`] is not called
+    /// anywhere in this crate). The one caller that can move the machine here is the transport bar, and it
+    /// goes through [`Host::call`], which is not a drain and so cannot appear in this report at all.
     pub fn mirror_pause(&mut self, sys: &mut System, paused: bool) {
-        if self.mirrored == Some(paused) {
-            return;
-        }
         self.host.set_paused(paused);
         self.host.pump(sys);
-        self.mirrored = Some(paused);
+    }
+
+    /// **Both instruments plus the breakpoint sink, for the frame the player is about to run.**
+    ///
+    /// The whole argument lives in [`Engine::run_sinks`](oracle_aether::engine::Engine::run_sinks): why
+    /// they are lent rather than owned by the run driver, why the arming conditions are asked of the
+    /// shared instruments rather than of this loop's state, and why the pair comes from one call (one run
+    /// needs both, and two `&mut self` accessors cannot both be live in the sink expression).
+    ///
+    /// **R2 in its load-bearing form.** These are the engine's own `Watchpoints` and `Profiler` — the same
+    /// ones `emulator/watchpoint_hits` and `emulator/get_profiler` read. A player that armed instruments of
+    /// its own would give a panel and a `Host::call` two different answers about one frame, which is the
+    /// drift R2 exists to prevent; there is nothing here to drift *from*.
+    ///
+    /// The third half is the breakpoint sink, **bare**. The two instruments are wrapped in
+    /// [`Observe`], which forwards every observation and drops only `stop_requested`; an `Observe` around
+    /// the breakpoint sink would count hits on a window that never stopped — the same believable wrong
+    /// answer wearing the other hat. `resume_pc` is the machine's PC *before* the run, which the loop has
+    /// and the engine (holding its placeholder `System` outside a drain) does not.
+    pub fn run_sinks(
+        &mut self,
+        resume_pc: u32,
+    ) -> (
+        Option<Observe<&mut Watchpoints>>,
+        Option<Observe<&mut Profiler>>,
+        Option<BreakStop<'_>>,
+    ) {
+        self.host.run_sinks(resume_pc)
+    }
+
+    /// Hand back the halt the sink from [`run_sinks`](Bus::run_sinks) observed.
+    ///
+    /// This only **latches**; [`mirror_pause`](Bus::mirror_pause) is what applies it. Dropping the
+    /// observation on the floor is the worse of the two failures — a machine that halts with nothing
+    /// saying so — which is why the loop consumes the sink through [`break_observed`] rather than letting
+    /// it fall out of scope.
+    pub fn record_break(&mut self, addr: u32) {
+        self.host.record_break(addr);
+    }
+
+    /// **What a panel reads** — the watch instrument, the profiler, and whether the profiler is armed.
+    ///
+    /// One call rather than three accessors, because a draw pass needs all three live at once and
+    /// `run_sinks` is `&mut self`: the borrows could not coexist. Shared borrows throughout, which states
+    /// the guarantee in the type — a panel cannot move a number a `Host::call` is gating on.
+    ///
+    /// The armed flag is not derivable from the accumulator: disarming RETAINS the sample, so rows exist
+    /// whether or not anything is still recording, and a panel showing only the rows could not tell the
+    /// two apart. Parcel 3 provides this; the three tabs that read it are the next parcel's.
+    pub fn read_instruments(&self) -> (&Watchpoints, &Profiler, bool) {
+        self.host.read_instruments()
+    }
+
+    /// Hand the bus the frame the player's own run just drew, so `emulator/screenshot` and
+    /// `emulator/state_hash {includeFramebuffer}` answer with what is on the glass rather than a post-hoc
+    /// re-render of the VDP state — which, taken in V-Blank after the game has rewritten CRAM for the next
+    /// frame, cannot show a single mid-frame palette effect.
+    ///
+    /// Free while nobody is connected: [`Host::publish_capture`] is gated on `has_clients()` internally,
+    /// and this player binds no socket, so today this is one atomic load and a return. It is wired anyway
+    /// because the alternative is a seam that has never been exercised on the day something does connect.
+    pub fn publish(&mut self, cap: &ScanlineCapture) {
+        self.host.publish_capture(cap);
     }
 
     /// Whether the **bus** believes the machine is paused. Read this, never a `call` to
@@ -162,6 +254,16 @@ impl Bus {
             stamp,
         )
     }
+}
+
+/// The address a breakpoint sink halted the run on, or `None` if nothing fired.
+///
+/// A free function rather than a method because the sink borrows the [`Bus`] for the length of the run,
+/// and the loop needs that borrow released before it can call [`Bus::record_break`] — **consuming the sink
+/// here is what ends it**. Written as `brk.take()` inside `Machine::step` it would not compile, which is
+/// the borrow checker enforcing the ordering this seam depends on.
+pub fn break_observed(brk: Option<BreakStop<'_>>) -> Option<u32> {
+    brk.and_then(|b| b.fired).map(|(_, addr)| addr)
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -312,6 +414,309 @@ mod tests {
         assert!(
             sys.scheduler().now() > 0,
             "the fixture ran, so a zero here would be two placeholders agreeing"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ PARCEL 3 — the run-loop seam, driven through the player's own `Machine::step`
+// ---------------------------------------------------------------------------------------------------
+
+/// These tests run frames through [`crate::machine::Machine::step`] — the *real* per-frame path, sink
+/// wiring and all — rather than rebuilding the `Fanout` here. A test that composed its own sink would pass
+/// against a `Machine::step` that carried no bus at all, which is precisely the defect this parcel exists
+/// to make impossible.
+///
+/// `oracle-aether` is `#![cfg(unix)]`, so this module is too.
+#[cfg(all(test, unix))]
+mod seam {
+    use super::*;
+    use crate::machine::Machine;
+    use oracle_core::io::Pad;
+    use serde_json::json;
+
+    /// `move.w (A0),D0` in the fixture ROM's inner loop — the address `oracle-aether/tests/hosted.rs`
+    /// uses for the same purpose, taken from there rather than re-derived.
+    const HOT_PC: u32 = 0x0000_020E;
+
+    /// Every test below is vacuous if this address stopped being hot, so it is **checked** rather than
+    /// asserted in prose. Same check as `hosted.rs::assert_hot_pc_is_the_stirring_loop`.
+    fn assert_hot_pc_is_the_stirring_loop() {
+        let rom = oracle_core::testrom::build();
+        let a = HOT_PC as usize;
+        assert!(a + 1 < rom.len(), "HOT_PC is outside the fixture ROM");
+        assert_eq!(
+            u16::from_be_bytes([rom[a], rom[a + 1]]),
+            0x3010,
+            "0x{HOT_PC:08X} is no longer `move.w (A0),D0` — the fixture ROM moved and every breakpoint \
+             test below is armed at a dead address"
+        );
+    }
+
+    fn rig() -> (Machine, Bus) {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = Bus::new(machine.system_mut(), MachineInfo::default(), false);
+        (machine, bus)
+    }
+
+    fn ok(bus: &mut Bus, machine: &mut Machine, method: &str, params: Value) -> Value {
+        match bus.call(machine.system_mut(), method, &params) {
+            Answer::Ok(v) => v,
+            Answer::Err(e) => panic!("{method} was refused: {} {}", e.code, e.message),
+        }
+    }
+
+    /// **One iteration of `Loop::iterate`'s machine half**, in the order the loop runs it: run the frame
+    /// (which latches any halt), then drain (which applies it), then read the bus's pause back.
+    ///
+    /// Written here rather than reaching into `main.rs` because `Loop` owns a `Governor`, a dock and an
+    /// `egui::Context`; this is the part of it that is *this parcel's*, and keeping the order in one
+    /// helper is what makes the order testable at all.
+    fn iterate(machine: &mut Machine, bus: &mut Bus, paused: bool) -> bool {
+        if !paused {
+            machine.step(Pad::default(), bus);
+        }
+        bus.mirror_pause(machine.system_mut(), paused);
+        bus.is_paused()
+    }
+
+    /// ★ **THE PARCEL** — a breakpoint armed over the bus halts the player's own loop, at the breakpoint.
+    ///
+    /// This is the whole seam end to end: `run_sinks` ▸ the frame ▸ `break_observed` ▸ `record_break` ▸
+    /// `mirror_pause`'s drain ▸ `is_paused` ▸ the loop stops running frames. Before this parcel the player
+    /// carried none of it, and a client that armed a breakpoint got `hits: 0` — a reply indistinguishable
+    /// from "the ROM never reached that address", i.e. a statement about the program under test rather
+    /// than about the emulator.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The loop pauses for some reason of its own.* Ruled out by the **control**: the identical loop,
+    ///    same frame count, with nothing armed, must NOT pause. Without it "it paused" is not evidence
+    ///    that a breakpoint did it.
+    /// 2. *The breakpoint sink was `Observe`-wrapped* (hits counted, run never ended). Caught by `pc`: an
+    ///    `Observe` drops only `stop_requested`, so the halt still lands — after the frame has run to
+    ///    completion — and the PC is then wherever the frame ended, not `HOT_PC`.
+    /// 3. *`record_break` was never called* (the halt observed and dropped). Caught by the pause never
+    ///    arriving at all, and distinguished from (1) by `hits`, which the sink counts either way.
+    /// 4. *The pause is the bus's opinion and the loop ignored it.* Caught by the emulated clock standing
+    ///    still across further iterations while the loop keeps turning.
+    #[test]
+    fn a_breakpoint_halts_the_players_own_loop_at_the_breakpoint() {
+        assert_hot_pc_is_the_stirring_loop();
+        const FRAMES: usize = 20;
+
+        // --- (1) THE CONTROL, and it must come first. Nothing armed: the loop must not stop. ---
+        {
+            let (mut machine, mut bus) = rig();
+            for _ in 0..FRAMES {
+                assert!(
+                    !iterate(&mut machine, &mut bus, false),
+                    "the player paused itself with nothing armed, so a pause below would witness \
+                     nothing about breakpoints"
+                );
+            }
+            assert!(
+                machine.system().scheduler().now() > 0,
+                "the control ran no frames, so it established nothing"
+            );
+        }
+
+        // --- The arrangement: a free-running player, stated as a fact. ---
+        let (mut machine, mut bus) = rig();
+        let refusal = bus.call(
+            machine.system_mut(),
+            "emulator/run_frames",
+            &json!({"frames": 1}),
+        );
+        assert_eq!(
+            refusal.reason(),
+            Some("machineRunning"),
+            "the player must really be free-running or this test proves nothing"
+        );
+
+        let bp = ok(
+            &mut bus,
+            &mut machine,
+            "emulator/breakpoint_add",
+            json!({"addr": format!("0x{HOT_PC:08X}")}),
+        )["breakpoint"]
+            .as_str()
+            .expect("a breakpoint handle")
+            .to_string();
+
+        let mut paused = false;
+        let mut ran = 0;
+        while !paused && ran < FRAMES {
+            paused = iterate(&mut machine, &mut bus, paused);
+            ran += 1;
+        }
+        assert!(
+            paused,
+            "the player ran {FRAMES} frames past an armed breakpoint without stopping. Two defects \
+             produce this identical result: the breakpoint sink never rode the run (`run_sinks` not \
+             attached), or the halt was observed and dropped (`record_break` never called)."
+        );
+
+        // (2) AT the breakpoint, which is what separates a bare sink from an `Observe`-wrapped one.
+        assert_eq!(
+            machine.system().cpu_regs().pc,
+            HOT_PC,
+            "the machine stopped somewhere other than the breakpoint. An `Observe` around the \
+             breakpoint sink produces exactly this: the hit is counted and the halt still lands, but \
+             only after the frame has run to completion."
+        );
+
+        // (3) …and the hit was counted, on the handle that stopped it.
+        let rows = ok(
+            &mut bus,
+            &mut machine,
+            "emulator/breakpoint_list",
+            json!({}),
+        );
+        let row = rows["breakpoints"]
+            .as_array()
+            .expect("breakpoints[]")
+            .iter()
+            .find(|b| b["breakpoint"] == json!(bp))
+            .unwrap_or_else(|| panic!("no row for {bp} in {rows}"));
+        assert_eq!(row["hits"], json!(1), "one halt is one hit: {row}");
+
+        // (4) The loop really stopped: the clock stands still while the loop keeps turning.
+        let halted_at = machine.system().scheduler().now();
+        assert!(halted_at > 0, "the fixture never ran");
+        for _ in 0..5 {
+            paused = iterate(&mut machine, &mut bus, paused);
+            assert!(paused, "the halt un-stuck itself");
+        }
+        assert_eq!(
+            machine.system().scheduler().now(),
+            halted_at,
+            "the player kept emulating after a halt the bus told it about — a pause the loop does not \
+             follow leaves the clock moving while the bus claims otherwise"
+        );
+    }
+
+    /// ★ **The `Observe` wrappers: the watch sees the player's own frames, and does not stop them.**
+    ///
+    /// The asymmetry is the design. Both instruments are wrapped, so they observe everything and end
+    /// nothing; the breakpoint sink is bare, so it ends the run. This checks both halves of the watch's
+    /// side at once.
+    ///
+    /// **The alternative green path, ruled out by the control:** `seen()` counting something regardless of
+    /// attachment. The same machine runs the same number of frames *around* `Machine::step` first — via
+    /// `System::run_frames`, which carries no sink — and `seen()` must still be 0. Only then is a non-zero
+    /// count after `step` evidence that the wrapper is attached to the player's run.
+    #[test]
+    fn an_armed_watch_sees_the_players_frames_through_observe_and_never_halts_them() {
+        const FRAMES: usize = 4;
+        let (mut machine, mut bus) = rig();
+
+        // A write watch over the whole of work RAM: any ROM that runs at all writes here.
+        ok(
+            &mut bus,
+            &mut machine,
+            "emulator/watchpoint_add",
+            json!({"addr": "0x00FF0000", "len": 65536, "write": true}),
+        );
+
+        // --- THE CONTROL: frames the seam did not carry must be invisible to the instrument. ---
+        machine.system_mut().run_frames(FRAMES as u64);
+        assert_eq!(
+            bus.read_instruments().0.seen(),
+            0,
+            "the watch counted deliveries from a run it was never attached to, so a non-zero count \
+             below would say nothing about `run_sinks`"
+        );
+
+        // --- The player's own frames, through the real path. ---
+        for _ in 0..FRAMES {
+            assert!(
+                !iterate(&mut machine, &mut bus, false),
+                "an `Observe`-wrapped watch must never end the run — that is the one thing the wrapper \
+                 drops, and a halt here means the watch was attached BARE"
+            );
+        }
+        let (watch, _, _) = bus.read_instruments();
+        assert!(
+            watch.seen() > 0,
+            "the armed watch saw nothing across {FRAMES} of the player's own frames — the instrument \
+             was not in the sink, and a client would be told `seen: 0` about frames that really happened"
+        );
+    }
+
+    /// **Nothing armed lends no sinks**, which is what justifies `Machine::step` having no "is anything
+    /// armed" branch: the unarmed case costs three `None`s whose sink impl wants nothing and does nothing.
+    ///
+    /// **The alternative green path, ruled out:** a `run_sinks` that always answers `None` would pass the
+    /// first half and would silently disable every instrument. So the second half arms a watch and
+    /// requires the first slot to become `Some`.
+    #[test]
+    fn run_sinks_lends_nothing_until_something_is_armed_and_lends_it_once_it_is() {
+        let (mut machine, mut bus) = rig();
+        let pc = machine.system().cpu_regs().pc;
+        {
+            let (w, p, b) = bus.run_sinks(pc);
+            assert!(w.is_none(), "an unarmed watch must not be lent");
+            assert!(p.is_none(), "an unarmed profiler must not be lent");
+            assert!(
+                b.is_none(),
+                "with no breakpoints there is nothing to stop for"
+            );
+        }
+        ok(
+            &mut bus,
+            &mut machine,
+            "emulator/watchpoint_add",
+            json!({"addr": "0x00FF0000", "len": 16, "write": true}),
+        );
+        let (w, _, _) = bus.run_sinks(pc);
+        assert!(
+            w.is_some(),
+            "an armed watch was not lent to the run, so the `None`s above are unconditional and the \
+             first half of this test is vacuous"
+        );
+    }
+
+    /// **The drain is unconditional, and that is what lands the halt.**
+    ///
+    /// Parcel 2b's `mirror_pause` returned early when the pause had not changed. This pins the change
+    /// directly at the seam it broke: a halt is latched while `paused` is `false`, and a pump called with
+    /// that same unchanged `false` must still apply it.
+    ///
+    /// **The alternative green path, ruled out:** the halt landing because something *else* pumped. There
+    /// is exactly one `Host::pump` call in this crate (`Bus::mirror_pause`), and this test makes only that
+    /// one call — with an argument identical to the value already mirrored, which is precisely the case
+    /// the old change-gate skipped.
+    ///
+    /// **A breakpoint must be armed at the latched address, and finding that out is worth recording**:
+    /// `Engine::halt_on_breakpoint` answers `false` and changes nothing when no enabled breakpoint sits
+    /// there ("which a client that cleared it between the observation and the apply can produce"). A
+    /// version of this test that latched a bare address passed through the whole drain and left the
+    /// machine running — red for the right reason, but not the reason it was written for.
+    #[test]
+    fn a_pump_with_an_unchanged_pause_still_applies_a_latched_halt() {
+        let (mut machine, mut bus) = rig();
+        assert!(!bus.is_paused(), "the fixture starts running");
+        ok(
+            &mut bus,
+            &mut machine,
+            "emulator/breakpoint_add",
+            json!({"addr": format!("0x{HOT_PC:08X}")}),
+        );
+
+        bus.record_break(HOT_PC);
+        assert!(
+            !bus.is_paused(),
+            "a latch alone must not move the run state — if it did, the drain below would be untested"
+        );
+
+        // The same value the bus was last told. Parcel 2b's gate returned here without pumping.
+        bus.mirror_pause(machine.system_mut(), false);
+        assert!(
+            bus.is_paused(),
+            "the latched halt was never applied. A change-gated drain produces exactly this: the bus \
+             holds a halt it will apply only if the pause happens to move, which on the frame a \
+             breakpoint fires it has not."
         );
     }
 }
