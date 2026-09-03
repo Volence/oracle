@@ -1,21 +1,27 @@
 {
-  "focus": "First playable build of the new debug window is in. Ready to show you when you have a couple of minutes.",
-  "inFlight": [],
+  "focus": "Building the spawn feature while parcel 1 waits for you to play it.",
+  "inFlight": [
+    {
+      "what": "Building the spawn/move/delete feature so tools can place objects in a running level, and checking the contract team's work against our real replies",
+      "where": "branch worktree (spawn serve)",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [],
   "nextBoundary": "Now - everything landed and pushed, nothing running.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
       "title": "The new debug window runs the game at true speed with controls wired - the first playable version. Next parcels are the actual panels and remembering your layout.",
-      "state": "open",
+      "state": "blocked",
       "size": "L",
-      "blockedBy": null,
+      "blockedBy": "you playing the first version - the next parcel should not be designed before you have told me how it feels",
       "project": "ORACLE-DEBUG-UI"
     },
     {
       "id": "SPAWN-MODE-CR",
-      "title": "Approved and now part of the shared contract: how a tool asks the game to spawn, move or delete an object. Left to build. The contract team is writing the machine-readable half and I check it against the real server before anything is adopted.",
-      "state": "open",
+      "title": "Building the approved spawn feature: a tool can ask the running game to place, move or delete an object. The first job is measuring a hazard the approval left open.",
+      "state": "doing",
       "size": "M",
       "blockedBy": null
     },
@@ -87,6 +93,6 @@
     }
   ],
   "awaiting": "a couple of minutes of your screen, whenever suits - this is the playable one you asked to be shown at. It opens a window you can actually move Sonic around in. What matters is whether it FEELS right to play, not whether it looks smooth sitting still; that was the question the last look could not answer.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-03T03:35:56Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-03T03:37:58Z"
 }
