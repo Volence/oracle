@@ -260,6 +260,29 @@ authorizes PUSHING, not the work being pushed.** It does not release this lane's
 not approval to dispatch or to land a parcel, and **it does not touch the CR-A/CR-B adjudication
 hold**, which remains a separately parked owner item.
 
+## ⚑ OWNER RULING, 2026-09-02T18:20:42Z — CUT THE CEREMONY. **IT OUTRANKS EVERY BAR IN THIS FILE.**
+
+Verified at empyrean **`90554f2`**. ⚠ **Relayed here 09-02 and never banked — zero occurrences in this
+file or the log until 09-03, so the 09-03 session spent hours on apparatus it forbids. The absence is the
+failure.**
+
+Owner, asked *"did we do something beurocratic to slow things down?"*: *"Yes please cut anyything that's
+arbitrarily slowing us down without like an actual good reason please … as long as it's correct and stuff
+and hitting our goal, that should be what we mainly care about."*
+
+In force until EFFECTS-W1 ships:
+* **No new process bars, no rulings about rules, no boot-doc growth.** New bars go to
+  `docs/OVERSEER-PENDING-BARS.md` PARKED, not into force. The protocol pass waits.
+* **A correction is ONE LINE in the lane log. No story.**
+* **DoD items and the bug tier only** — no cross-lane audits, no instrument or ledger work, no re-measuring
+  a peer's numbers, unless it blocks a DoD item or ships wrong output.
+* **Status files, decision cards and lane logs are written once in the accepted shape and not polished.**
+* **The boot-read gate stays, but nobody hand-trims for it** — over the bound, move history out in ONE cut
+  and carry on.
+* **"Correct" is unchanged:** a landing still builds, passes the lane's own tests, and shows on screen or
+  in a witness. What is cut is certifying things that are not the feature, and record-keeping about the
+  record-keeping.
+
 ## ⚑ OWNER RULING, 2026-09-03T05:21:01Z — **REPORT TO THE HUB WHENEVER YOU FINISH OR STOP**
 
 ⚑ **RELAYED BY empyrean-01, NOT WITNESSED BY THIS LANE** — same flag, same reason, as the relayed
@@ -669,8 +692,9 @@ filler on purpose while the docking it exercises is real.
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
-**▶ NEW BAR, 2026-09-03 — A PARITY PAIR IS STRUCTURALLY BLIND TO A DEFECT IN THE DERIVATION IT SHARES.
-ASSERT THE SHARED DERIVATION DID SOMETHING.** Found by this seat probing parcel 2b, where the defence
+**▶ PARKED, NOT IN FORCE (moratorium above; parked at the hub in `OVERSEER-PENDING-BARS.md`) — A PARITY
+PAIR IS STRUCTURALLY BLIND TO A DEFECT IN THE DERIVATION IT SHARES. ASSERT THE SHARED DERIVATION DID
+SOMETHING.** Found by this seat probing parcel 2b, where the defence
 already existed and is the reason the probe is a bar rather than a bug. R1 ("one derivation, two
 consumers") makes a panel and a handler agree **by construction** — which is the point, and which means a
 parity test can only witness *agreement*, never *correctness*. Break the shared function and both sides
