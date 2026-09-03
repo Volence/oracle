@@ -2222,6 +2222,21 @@ pub mod pumped {
             Some(reloaded.display().to_string().as_str()),
             "and the engine must agree, or the row above was compared against the wrong thing"
         );
+        // **The D7 drop must also arrive as `symbols_changed`**, and this crate is not who needs it.
+        // Everything above is satisfied by `rom_changed` alone, so without this assertion the
+        // `reload_rom` half of `symbols_generation` is unwitnessed — and `oracle-frontend` has **no**
+        // `rom_changed` → listing branch at all: `symbols_changed` is its only symbol repair. A drop
+        // that raised only `rom_changed` would leave that window naming addresses out of a listing the
+        // engine discarded, which is this parcel's own defect one host over.
+        let dropped = totals.listing.expect(
+            "the reload's D7 drop did not raise symbols_changed, so a host that reads only \
+                     that flag never learns its listing is gone",
+        );
+        assert!(
+            dropped.rom_changed,
+            "a reload raised symbols_changed WITHOUT rom_changed — the two are documented as both \
+             moving here, and the ROM path repair hangs off the second"
+        );
 
         // --- the other half: a rom change that KEEPS the listing must keep the window's copy too. ---
         let table = SymbolTable::parse(LST).expect("parse the fixture listing");
@@ -2269,6 +2284,16 @@ pub mod pumped {
             cache.rom_path,
             launched.display().to_string(),
             "and a reset must not have moved the path either"
+        );
+        // **And the reset raised NO `symbols_changed`**, which is the asymmetry that makes `drain`'s
+        // `symbols_changed || rom_changed` more than a tidy `||`. `reset` keeps the listing and so bumps
+        // no listing generation; `rom_changed` is the only term that re-derives here. If a future reset
+        // handler starts replacing the listing this flips, and the `||` becomes redundant rather than
+        // load-bearing — a change worth being told about rather than absorbing silently.
+        assert!(
+            totals.listing.is_none(),
+            "`emulator/reset` raised symbols_changed, so it is now replacing the listing its own \
+             handler says it keeps"
         );
 
         let _ = std::fs::remove_file(&launched);
