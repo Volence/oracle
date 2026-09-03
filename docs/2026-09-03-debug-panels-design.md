@@ -747,6 +747,16 @@ Discord, `kwin_wayland`, Steam helpers, and a peer lane's `oracle-frontend` at ~
 below reproduced in both — `ui-build` medians of **16.356 ms** and **16.717 ms** for configuration C — and
 a result that survives a 5× swing in machine load is not a load artefact.
 
+> ⚑ **A correction to the rig, found by running it: `pgrep -c -f "[c]argo"` = 0 is NOT "the box is
+> quiet".** A peer lane's *compiled* binaries do not match that pattern. While waiting for a second clean
+> sitting, `pgrep` read **0** with two `sigil` processes at **98 % of a core each** and a 1-minute load
+> average of 5.1 — a machine the check calls idle and that would have cost ~2 cores of the 16. The check
+> is a *cargo* check, and it catches the peer's build; it does not catch the peer's run. Every run in the
+> table above also records `ps --sort=-pcpu` and `/proc/loadavg` for exactly this reason, and the four
+> tabled runs show nothing but the owner's session on them. **A future measurement should gate on the
+> load average as well as on `pgrep`** — this one did, which is why it has one clean sitting rather than
+> three.
+
 Per-iteration cost, **medians**, milliseconds:
 
 ```
