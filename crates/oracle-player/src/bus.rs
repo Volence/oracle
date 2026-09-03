@@ -2403,7 +2403,14 @@ pub mod pumped {
             &mut totals,
             "the client's symbol load never reached the window — the engine replaces its listing with \
              no generation behind it, which is the defect",
-            |t, _| t.symbols > 0,
+            // **Turn until the SIGNAL arrives, not until the repair happens.** `t.symbols > 0` — the
+            // spelling its sibling tests use, and the first draft of this one — is satisfied on the very
+            // first drain by a `drain` that re-derives unconditionally, which stops the loop before the
+            // client has connected and turns the vacuity mutation into a client-side read timeout
+            // instead of a named failure. Measured: that is exactly what it did. Waiting on the report
+            // flag makes the loop turn until the load really lands, so the *control* below is what
+            // catches an unconditional re-derivation, by name and with its own sentence.
+            |t, _| t.listing.is_some(),
         );
         let reply = client.join().expect("the client thread");
 
