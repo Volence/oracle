@@ -68,6 +68,7 @@ use oracle_aether::breakpoints::BreakStop;
 use oracle_aether::host::{Host, HostConfig, MachineInfo};
 use oracle_aether::rpc::RpcError;
 use oracle_core::bus::Observe;
+use oracle_core::io::Pad;
 use oracle_core::profiler::Profiler;
 use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::system::System;
@@ -236,6 +237,40 @@ impl Bus {
     /// because the alternative is a seam that has never been exercised on the day something does connect.
     pub fn publish(&mut self, cap: &ScanlineCapture) {
         self.host.publish_capture(cap);
+    }
+
+    /// **Conflict 2, the half parcel 3 booked as not done** — OR the client's held set into the pads the
+    /// loop is about to write.
+    ///
+    /// A delegation and not an implementation: the merge itself is
+    /// [`Host::merge_held`](oracle_aether::host::Host::merge_held), the same function
+    /// `oracle-frontend`'s `Bus::merge_held` now calls. Design §7's R1 named porting the frontend's model
+    /// halves into shared code as the opportunity here, and a second `merge_held` in this crate would have
+    /// been the drift the tabs parcel published `watch_wire_id` to avoid.
+    ///
+    /// **Not inert here, despite the socket this player never binds.** `Host::call` is in-process and
+    /// reachable — the transport bar and every panel gesture already go through it (D15) — so
+    /// `emulator/hold` can install a held set with `is_serving()` false. That is exactly why the hoisted
+    /// merge has no `is_serving()` gate; see its doc.
+    pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
+        self.host.merge_held(pads)
+    }
+
+    /// The other half: tell the bus what the human at *this* keyboard is holding, so `emulator/press` and
+    /// `emulator/hold` compose with it instead of erasing it.
+    pub fn set_live_pads(&mut self, pads: [Pad; 2]) {
+        self.host.set_live_pads(pads);
+    }
+
+    /// **What the status strip shows a human** (design §9.4) — the client's held set on both ports, as the
+    /// engine holds it.
+    ///
+    /// Deliberately the raw pads and not a sentence: the wording is [`crate::ui::StatusStrip`]'s and the
+    /// button *names* are [`oracle_aether::engine::held_names`]'s, which is the same function
+    /// `emulator/hold`'s reply `held` array is built from. Three spellings of "which buttons are down" is
+    /// what this shape exists to prevent.
+    pub fn held_pads(&self) -> [Pad; 2] {
+        [self.host.held(0), self.host.held(1)]
     }
 
     /// Whether the **bus** believes the machine is paused. Read this, never a `call` to
@@ -496,10 +531,110 @@ mod seam {
     /// helper is what makes the order testable at all.
     fn iterate(machine: &mut Machine, bus: &mut Bus, paused: bool) -> bool {
         if !paused {
-            machine.step(Pad::default(), bus);
+            machine.step([Pad::default(); 2], bus);
         }
         bus.mirror_pause(machine.system_mut(), paused);
         bus.is_paused()
+    }
+
+    /// ★ **HELD-PADS-PLAYER, half 1** — a client's `emulator/hold` reaches the pads this player writes,
+    /// and the human's own pad reaches the bus.
+    ///
+    /// Design §5.6.2 booked both halves as *not done*: "a client's `hold` against the toolkit player does
+    /// nothing whatsoever". This is the assertion that they are done, and it runs the client's side
+    /// through [`Bus::call`] — the same in-process registry a socket client's request would land in
+    /// (D15) — rather than reaching into the engine, so what is measured is the served method and not a
+    /// field.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *`Machine::step` writes whatever it is handed, and always did.* Ruled out by the **control**
+    ///    below: the same call with nothing held must leave the human's pad exactly as it was, and that
+    ///    pad is non-empty, so the equality cannot be two `Pad::default()`s agreeing.
+    /// 2. *The merge is a replace.* Caught by asserting the human's `right` **and** the client's `left`
+    ///    are both down afterwards — a precedence rule in either direction drops one of them.
+    /// 3. *Port 1 was left hardcoded to `Pad::default()`* (which it was before this parcel). Caught by
+    ///    holding a button on port 1 and reading port 1 back.
+    /// 4. *`set_live_pads` was never called, so the bus's own pad writes erase the human.* Caught
+    ///    **without a second step**: `emulator/hold` ends in `Engine::apply_pads`, which writes
+    ///    `merge_pads(live, held)` into the very `System` `Host::call` swapped in — so if the human's
+    ///    `right` were not published, the pad immediately after the hold would carry `left` alone.
+    /// 5. *The held set leaks and can never be cleared*, which would make the remedy the status-strip row
+    ///    advertises a lie. Caught by the `release_all` clause at the end.
+    #[test]
+    fn a_clients_hold_reaches_the_players_pads_and_the_humans_pad_reaches_the_bus() {
+        let (mut machine, mut bus) = rig();
+        let human = [
+            Pad {
+                right: true,
+                ..Pad::default()
+            },
+            Pad::default(),
+        ];
+        assert_ne!(
+            human[0],
+            Pad::default(),
+            "the human's fixture pad must not be empty, or every equality below is two defaults agreeing"
+        );
+
+        // --- the control: nothing held, so the merge is the identity and the human drives alone ---
+        machine.step(human, &mut bus);
+        assert_eq!(
+            machine.system().pad(0),
+            human[0],
+            "with nothing held the machine must see exactly the human's pad"
+        );
+        assert_eq!(machine.system().pad(1), human[1], "and port 1 likewise");
+
+        // --- the client holds, through the served surface ---
+        let reply = ok(
+            &mut bus,
+            &mut machine,
+            "emulator/hold",
+            json!({"port": 0, "buttons": ["left"]}),
+        );
+        assert_eq!(reply["held"], json!(["left"]), "the client's set, verbatim");
+
+        // (4) — before any further step. `apply_pads` inside the handler already merged the human's pad,
+        // which it can only have because `Machine::step` published it.
+        let after_hold = machine.system().pad(0);
+        assert!(
+            after_hold.right,
+            "the human's own button vanished the moment a client held one — `set_live_pads` is not being \
+             called, and `emulator/hold` erased the person at the keyboard"
+        );
+        assert!(after_hold.left, "and the client's button landed");
+
+        ok(
+            &mut bus,
+            &mut machine,
+            "emulator/hold",
+            json!({"port": 1, "buttons": ["a"]}),
+        );
+
+        // --- the loop's own write, which is the half that was missing ---
+        machine.step(human, &mut bus);
+        let p0 = machine.system().pad(0);
+        assert!(
+            p0.left,
+            "a client's held button did not reach the pad the player writes — half 1 is not applied"
+        );
+        assert!(p0.right, "and it must not have replaced the human's own");
+        assert!(
+            machine.system().pad(1).a,
+            "port 1's held set was dropped — `Machine::step` is still hardcoding `Pad::default()` there"
+        );
+
+        // --- (5) the remedy the status strip's row names must actually work ---
+        ok(&mut bus, &mut machine, "emulator/release_all", json!({}));
+        machine.step(human, &mut bus);
+        assert_eq!(
+            machine.system().pad(0),
+            human[0],
+            "`emulator/release_all` did not clear the held set, so the row that tells a human to call it \
+             is advertising a remedy that does not work"
+        );
+        assert_eq!(machine.system().pad(1), human[1], "on both ports");
     }
 
     /// ★ **THE PARCEL** — a breakpoint armed over the bus halts the player's own loop, at the breakpoint.

@@ -43,6 +43,7 @@ use crate::memory::{self, MemoryPanel};
 use crate::objects::{self, Objects, ObjectsPanel};
 use crate::pacing::Governor;
 use crate::stopping::{self, Live};
+use oracle_core::io::Pad;
 use oracle_core::symbols::SymbolTable;
 use serde_json::{json, Value};
 
@@ -233,7 +234,12 @@ impl Panels<'_> {
     }
 
     fn registers(&self, ui: &mut egui::Ui) {
-        for (label, value) in StatusStrip::of(self.machine, self.rom_path, self.symbols).rows() {
+        // `Some(...)`, never `None`: this panel has a bus, so the strip is asked rather than told nothing.
+        // The `None` arm exists for a caller that genuinely has no bus, and there is none on this path.
+        let held = Some(self.bus.held_pads());
+        for (label, value) in
+            StatusStrip::of(self.machine, self.rom_path, self.symbols, held).rows()
+        {
             ui.monospace(format!("{label:<18}{value}"));
         }
         ui.separator();
@@ -1360,12 +1366,32 @@ pub struct StatusStrip {
     /// [`oracle_aether::engine::symbol_at`] — the same function `emulator/status` resolves `symbolAtPc`
     /// and `symbolDisp` with.
     pub symbol_at_pc: Option<(String, u32)>,
+    /// **The buttons a client is holding through `emulator/hold`, both ports** (design §9.4).
+    ///
+    /// `Some([Pad::default(); 2])` and `None` are different facts and are rendered as different sentences:
+    /// the first is *the bus was asked and nothing is held*, which is the ordinary case and draws nothing
+    /// at all; the second is *nothing asked the bus*, which draws a loud row. Collapsing them would make
+    /// the one state this field exists to reveal indistinguishable from the state where the field is not
+    /// wired up — the same "unmeasurable rendered as a measurement" mistake `symbol_count` is an `Option`
+    /// to avoid, one field up.
+    pub held: Option<[Pad; 2]>,
 }
+
+/// The label on the held-pads row. A constant because two tests derive their expectations from it rather
+/// than retyping it, and a row whose label a test pins by hand is a row that can be renamed to nothing.
+pub const HELD_LABEL: &str = "held by a client";
 
 impl StatusStrip {
     /// Derived from the machine, by the same expressions `Engine::status` uses. One derivation, two
     /// consumers.
-    pub fn of(machine: &Machine, rom_path: &str, symbols: Option<&SymbolTable>) -> Self {
+    /// `held` is [`crate::bus::Bus::held_pads`], or `None` when the caller has no bus to ask — see
+    /// [`held`](Self::held) for why that is a different row and not an absent one.
+    pub fn of(
+        machine: &Machine,
+        rom_path: &str,
+        symbols: Option<&SymbolTable>,
+        held: Option<[Pad; 2]>,
+    ) -> Self {
         let sys = machine.system();
         Self {
             rom_path: oracle_aether::engine::absolutise(rom_path),
@@ -1375,7 +1401,55 @@ impl StatusStrip {
             symbol_count: symbols.map(|t| t.len()),
             symbol_at_pc: symbols
                 .and_then(|t| oracle_aether::engine::symbol_at(t, sys.cpu_regs().pc)),
+            held,
         }
+    }
+
+    /// **The held-pads row, or `None` when there is nothing to say** (design §9.4).
+    ///
+    /// Three outcomes, and the middle one is the reason this is not a `bool`:
+    ///
+    /// * `None` for the field → a loud row. Nothing asked the bus, and an empty set is not the answer to a
+    ///   question nobody put.
+    /// * asked, nothing held → **no row at all**. §9.4 specifies the field is shown only when non-empty,
+    ///   and a permanent `held by a client   (none)` is a line every reader learns to skip, which is how a
+    ///   row that matters one day in a hundred stops being read on that day.
+    /// * asked, something held → the row, naming its own subject in words and naming the remedy.
+    ///
+    /// **The button names are [`oracle_aether::engine::held_names`]'s**, which is the function
+    /// `emulator/hold`'s reply `held` array is built from. A panel that spelled `left`/`start` for itself
+    /// would be a second vocabulary for one fact.
+    ///
+    /// The wording is deliberately a sentence rather than a bare `left`. §9.4's whole complaint is that a
+    /// human watching their character walk left forever has nothing that tells them *why*, and a lens that
+    /// is perfectly correct and explains nothing is a lens that gets asked "what are the purple boxes".
+    /// `emulator/release_all` is named because §9.4 says the remedy "is one call, but you have to know to
+    /// make it" — so the field is where you learn it.
+    pub fn held_row(&self) -> Option<(&'static str, String)> {
+        let Some(pads) = self.held else {
+            return Some((
+                HELD_LABEL,
+                "NOT MEASURED — this strip was built with no bus to ask".into(),
+            ));
+        };
+        let by_port: Vec<String> = pads
+            .iter()
+            .enumerate()
+            .filter_map(|(port, pad)| {
+                let names = oracle_aether::engine::held_names(pad);
+                (!names.is_empty()).then(|| format!("port {port}: {}", names.join(", ")))
+            })
+            .collect();
+        if by_port.is_empty() {
+            return None;
+        }
+        Some((
+            HELD_LABEL,
+            format!(
+                "{} — a bus client is holding these, not you; emulator/release_all clears them",
+                by_port.join(" · ")
+            ),
+        ))
     }
 
     /// The strip as label/value pairs, in display order.
@@ -1383,8 +1457,17 @@ impl StatusStrip {
     /// **Nothing here is ever blank and nothing unmeasurable is ever a `0`.** Each of the three absences
     /// below — no listing, a listing that names nothing at this PC, and a symbol landing exactly on the
     /// PC — is a different fact, and each gets its own sentence.
+    ///
+    /// # ⚑ [`held_row`](Self::held_row) is FIRST, and the position is the decision
+    ///
+    /// Every other row here answers *what is loaded and where is the machine* — questions a reader came
+    /// with. The held row answers *is this window still doing what my hands tell it*, which is a question
+    /// a reader has not thought to ask and is the reason they are staring at the strip in the first place.
+    /// A row that only ever appears when something is wrong belongs where an alarm belongs, above the
+    /// steady state, not appended after six rows a reader has already learned to skim past.
     pub fn rows(&self) -> Vec<(&'static str, String)> {
-        vec![
+        let mut rows: Vec<(&'static str, String)> = self.held_row().into_iter().collect();
+        rows.extend([
             ("romPath", self.rom_path.clone()),
             ("rom bytes", format!("{}", self.rom_bytes)),
             ("frame (emulated)", format!("{}", self.frame)),
@@ -1407,7 +1490,8 @@ impl StatusStrip {
                     (None, Some(_)) => "— the listing names no symbol at or before pc".into(),
                 },
             ),
-        ]
+        ]);
+        rows
     }
 }
 
@@ -1956,7 +2040,7 @@ mod bus_parity {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
         let mut idle = idle_bus(&mut machine);
         for _ in 0..FRAMES {
-            machine.step(oracle_core::io::Pad::default(), &mut idle);
+            machine.step([oracle_core::io::Pad::default(); 2], &mut idle);
         }
         let mut sys = booted();
         sys.set_pad(0, oracle_core::io::Pad::default());
@@ -1985,7 +2069,9 @@ mod bus_parity {
             "the fixture path must not already be canonical, or this proves nothing"
         );
 
-        let strip = StatusStrip::of(&machine, &winding, None);
+        // `Some(idle.held_pads())` and not `None`: a real bus, really asked, with nothing held — so the
+        // held row is absent because the fact is "nothing is held" and not because nobody looked.
+        let strip = StatusStrip::of(&machine, &winding, None, Some(idle.held_pads()));
         let mut h = Host::new(HostConfig::default());
         h.set_machine_info(oracle_aether::host::MachineInfo {
             rom_path: Some(winding.clone()),
@@ -2064,7 +2150,7 @@ mod bus_parity {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
         let mut idle = idle_bus(&mut machine);
         for _ in 0..5 {
-            machine.step(oracle_core::io::Pad::default(), &mut idle);
+            machine.step([oracle_core::io::Pad::default(); 2], &mut idle);
         }
         let mut sys = booted();
         sys.set_pad(0, oracle_core::io::Pad::default());
@@ -2087,7 +2173,7 @@ mod bus_parity {
         );
         let table = oracle_core::symbols::SymbolTable::parse(&listing).expect("a parsable listing");
 
-        let strip = StatusStrip::of(&machine, "testrom", Some(&table));
+        let strip = StatusStrip::of(&machine, "testrom", Some(&table), Some(idle.held_pads()));
         let mut h = Host::new(HostConfig::default());
         // The SAME table on both sides — one parse, two consumers. Two parses of one file would agree
         // here and would still be the arrangement D7 exists to forbid.
@@ -2126,5 +2212,250 @@ mod bus_parity {
             format!("Boot+${DISP:X}")
         );
         assert_eq!(row(&strip.rows(), "symbols"), "1 loaded");
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // HELD-PADS-PLAYER, half 2 — design §9.4
+    // -------------------------------------------------------------------------------------------
+
+    /// The six rows the strip carried before this parcel, in order. **Derived from the strip itself**
+    /// below rather than trusted: a hand-written list that had silently gone stale would make the
+    /// displacement check below assert against fiction.
+    const BASE_LABELS: [&str; 6] = [
+        "romPath",
+        "rom bytes",
+        "frame (emulated)",
+        "frames run (player)",
+        "symbols",
+        "symbol at pc",
+    ];
+
+    fn labels(rows: &[(&'static str, String)]) -> Vec<&'static str> {
+        rows.iter().map(|(k, _)| *k).collect()
+    }
+
+    fn hold(bus: &mut Bus, machine: &mut Machine, params: Value) -> Value {
+        match bus.call(machine.system_mut(), "emulator/hold", &params) {
+            crate::bus::Answer::Ok(v) => v,
+            crate::bus::Answer::Err(e) => panic!("emulator/hold refused: {} {}", e.code, e.message),
+        }
+    }
+
+    /// ★ **The held row leads the strip, and displaces nothing** (§9.4).
+    ///
+    /// ⚑ **This asserts the WHOLE row list on every one of the three states**, not the new row alone. A
+    /// test that only looked at what it added would be structurally unable to see what it pushed out, and
+    /// an added row on a strip is by definition a displacement of everything below it.
+    ///
+    /// ⚑ **On the ordering claim's anti-vacuity clause, and where this departs from the brief.** The
+    /// brief asked for "a width that drops a late field while keeping an early one". **This surface does
+    /// not truncate** — [`StatusStrip::rows`] is a `Vec` and [`Panels::registers`] draws one
+    /// `ui.monospace` line per row, so there is no width at which a late row is dropped and no such clause
+    /// is constructible here. The vacuity it guards against is real all the same: "the new row is first"
+    /// is worth nothing on a strip with one row. So the equivalent is asserted directly — the strip has
+    /// six other rows, the row that *was* first is now second, and the six below the new one are
+    /// byte-identical to the six the quiet strip renders.
+    ///
+    /// **The alternative green paths ruled out:**
+    ///
+    /// 1. *The row is always present and the "only when non-empty" rule is unimplemented.* Ruled out by
+    ///    the quiet strip, whose labels must equal `BASE_LABELS` exactly.
+    /// 2. *The row is never present, and the loud case is measuring nothing.* Ruled out by the held strip
+    ///    having exactly one row more, whose label is [`HELD_LABEL`].
+    /// 3. *`None` renders as "nothing held"* — the unmeasurable drawn as a measurement. Ruled out by the
+    ///    third strip, which must produce a row that differs from both other states.
+    #[test]
+    fn the_held_row_leads_the_strip_and_displaces_nothing() {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut bus = idle_bus(&mut machine);
+        // Advance before anything is measured, and never between the three strips below — the last
+        // clause of this test forbids a bare `0` on any row, and `frame (emulated)` on an unrun machine
+        // is a *measured* zero that the clause cannot tell from an unmeasurable one. Stepping between the
+        // strips would instead move `frame`/`frames run` and break the displacement equality on purpose.
+        for _ in 0..5 {
+            machine.step([Pad::default(); 2], &mut bus);
+        }
+
+        // --- (1) asked, nothing held: no row, and the strip is exactly what it was before this parcel ---
+        let quiet = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads()));
+        let quiet_rows = quiet.rows();
+        assert_eq!(
+            quiet.held_row(),
+            None,
+            "nothing is held, so §9.4's `shown only when non-empty` means no row at all"
+        );
+        assert_eq!(
+            labels(&quiet_rows),
+            BASE_LABELS,
+            "the quiet strip is no longer the strip that shipped — something was added, removed or \
+             reordered on a surface where every row displaces the ones below it"
+        );
+
+        // --- (2) held: one row more, first, and nothing below it moved or changed ---
+        hold(
+            &mut bus,
+            &mut machine,
+            json!({"port": 0, "buttons": ["left", "start"]}),
+        );
+        let loud_rows = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads())).rows();
+        assert_eq!(
+            loud_rows.len(),
+            quiet_rows.len() + 1,
+            "a held set must add exactly one row, not zero and not two"
+        );
+        assert_eq!(loud_rows[0].0, HELD_LABEL, "and it must be the FIRST row");
+        // The anti-vacuity clause, adapted: "first" is a claim about an ordering, so there must be
+        // something it is ahead of, and the row that used to be first must have visibly moved.
+        assert_eq!(
+            loud_rows[1].0, BASE_LABELS[0],
+            "the row that was first is not second, so the held row did not displace it — either the \
+             strip has no other rows or they were reordered"
+        );
+        assert!(loud_rows.len() > 1, "a one-row strip makes `first` vacuous");
+        // ⚑ The whole surface, not the new field: everything below the addition must be untouched.
+        assert_eq!(
+            &loud_rows[1..],
+            &quiet_rows[..],
+            "the held row DISPLACED content — the six rows below it are no longer the six the strip \
+             renders without it"
+        );
+        assert!(
+            loud_rows[0].1.contains("left, start"),
+            "the row must name the buttons, got {:?}",
+            loud_rows[0].1
+        );
+
+        // --- (3) NOT measured: loud, and distinguishable from both states above ---
+        let blind_rows = StatusStrip::of(&machine, "testrom", None, None).rows();
+        assert_eq!(blind_rows[0].0, HELD_LABEL);
+        assert_eq!(
+            &blind_rows[1..],
+            &quiet_rows[..],
+            "the unmeasured strip displaced content too"
+        );
+        assert_ne!(
+            labels(&blind_rows),
+            labels(&quiet_rows),
+            "`no bus to ask` rendered as `nothing held` — an unmeasurable drawn as a measurement, which \
+             is the one state this field must never be confused with"
+        );
+        assert_ne!(
+            blind_rows[0].1, loud_rows[0].1,
+            "`no bus to ask` renders the same sentence as a real held set"
+        );
+
+        // The strip-wide invariant, re-run over all three states: nothing blank, nothing a bare `0`.
+        for rows in [&quiet_rows, &loud_rows, &blind_rows] {
+            for (label, value) in rows.iter() {
+                assert!(!value.is_empty(), "`{label}` renders blank");
+                assert_ne!(value, "0", "`{label}` renders an unmeasurable as a bare 0");
+            }
+        }
+    }
+
+    /// ★ **The row names the same buttons `emulator/hold` reports** — one vocabulary, not two (§9.4, R1).
+    ///
+    /// ⚑ **A parity pair is structurally blind to a defect in the derivation it shares.** The strip and
+    /// the reply are both [`oracle_aether::engine::held_names`] since this parcel, so they agree *by
+    /// construction* and the agreement below can witness agreement and never correctness — break
+    /// `held_names` and both sides move together. The two clauses at the end are the third assertion that
+    /// pair owes: the derivation is a **function of its argument** (a different held set renders a
+    /// different sentence) and it is **not the constant** either degenerate implementation would give
+    /// (all eight names, or none).
+    ///
+    /// The panel side is the **rendered row**, parsed back out, not a second call to `held_names` — a
+    /// comparison between two calls of one function is an identity, not a test of the panel.
+    #[test]
+    fn the_held_row_names_the_same_buttons_emulator_hold_reports() {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut bus = idle_bus(&mut machine);
+
+        let reply = hold(
+            &mut bus,
+            &mut machine,
+            json!({"port": 0, "buttons": ["left", "start"]}),
+        );
+        let wire: Vec<&str> = reply["held"]
+            .as_array()
+            .expect("`held` is an array")
+            .iter()
+            .map(|v| v.as_str().expect("a button name"))
+            .collect();
+        assert!(
+            !wire.is_empty(),
+            "the wire reported nothing held, so the parity below would be two \
+             empty lists agreeing"
+        );
+
+        let (label, value) = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads()))
+            .held_row()
+            .expect("something is held, so there is a row");
+        assert_eq!(label, HELD_LABEL);
+        let shown = names_in(&value, 0);
+        assert_eq!(
+            shown,
+            wire.join(", "),
+            "the status strip and `emulator/hold`'s own `held` array name different buttons"
+        );
+
+        // --- the third assertion the pair owes ---
+        const ALL: [&str; 8] = ["up", "down", "left", "right", "a", "b", "c", "start"];
+        assert_ne!(
+            shown,
+            ALL.join(", "),
+            "both sides named every button there is, so the agreement above is a derivation that ignores \
+             its argument"
+        );
+        assert_ne!(
+            shown, "",
+            "both sides named nothing, so the agreement above is two copies of one empty list"
+        );
+        assert_eq!(
+            shown, "left, start",
+            "the names must be the two the request asked for and no others"
+        );
+
+        // …and a DIFFERENT held set must render a DIFFERENT sentence. A row that is a constant would
+        // satisfy every assertion above and still tell a human nothing about their own machine.
+        hold(
+            &mut bus,
+            &mut machine,
+            json!({"port": 0, "buttons": ["left", "start"], "down": false}),
+        );
+        hold(&mut bus, &mut machine, json!({"port": 1, "buttons": ["c"]}));
+        let other = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads()))
+            .held_row()
+            .expect("port 1 holds something, so there is still a row")
+            .1;
+        assert_ne!(
+            other, value,
+            "two different held sets rendered the identical sentence — the row is a constant and the \
+             agreement above is two copies of one untouched string"
+        );
+        assert_eq!(
+            names_in(&other, 1),
+            "c",
+            "and it is port 1's set that is named now"
+        );
+        assert!(
+            !other.contains("port 0"),
+            "port 0 was released and must have left the row entirely, got {other:?}"
+        );
+    }
+
+    /// Pull the button list back out of a rendered held row, for `port`. Parses the row the human reads
+    /// rather than re-deriving it, which is the only way the *panel* is what is under test.
+    fn names_in(value: &str, port: usize) -> String {
+        let after = value
+            .split_once(&format!("port {port}: "))
+            .unwrap_or_else(|| panic!("the row names no port {port}: {value:?}"))
+            .1;
+        // The row is `port N: a, b [· port M: …] — <remedy>`; stop at whichever separator comes first.
+        let end = [" · ", " — "]
+            .iter()
+            .filter_map(|s| after.find(s))
+            .min()
+            .unwrap_or(after.len());
+        after[..end].to_string()
     }
 }

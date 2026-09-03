@@ -8040,7 +8040,14 @@ fn store_from_capture(slot: &mut Option<CapturedFrame>, cap: &ScanlineCapture) -
     true
 }
 
-fn held_names(pad: &Pad) -> Vec<&'static str> {
+/// The buttons a pad has down, by **the names the wire uses** — `emulator/hold`'s reply `held` array is
+/// this function, and `parse_buttons` accepts exactly this vocabulary.
+///
+/// `pub` since `HELD-PADS-PLAYER`, for the same one-derivation reason [`absolutise`] and [`merge_pads`]
+/// are: the player's status strip has to tell a human which buttons a client is holding, and a panel that
+/// spelled the eight names for itself would be a second vocabulary that agrees with the handler's until
+/// somebody adds a ninth button to one of them.
+pub fn held_names(pad: &Pad) -> Vec<&'static str> {
     let mut v = Vec::new();
     for (name, on) in [
         ("up", pad.up),

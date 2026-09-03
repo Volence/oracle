@@ -318,6 +318,36 @@ impl Host {
         self.engine.set_live_pads(pads);
     }
 
+    /// **The other half of conflict 2, and the ONE implementation of it** — OR the client's held set into
+    /// the pads a host is about to write, per button, both ports.
+    ///
+    /// It lives here rather than in a host because every term is `Host` state and because there were about
+    /// to be two of it: `oracle-frontend`'s `Bus::merge_held` was the only copy, and `oracle-player` needed
+    /// the same fact. This repo has a standing bar against a second spelling of one fact (the tabs parcel
+    /// published `watch_wire_id`/`breakpoint_wire_id` rather than let a panel `format!` its own), and two
+    /// merges agree right up until the day one of them learns about a button the other does not.
+    ///
+    /// # ⚑ There is deliberately no `is_serving()` early return, and its absence is the fix
+    ///
+    /// The copy this replaced opened with `if !self.host.is_serving() { return pads; }`. That was a **fast
+    /// path, not a semantic**: `held` is `Pad::default()` until something calls `emulator/hold`, and a
+    /// per-button OR with a default pad is the identity — so on the unserved frontend the gate and the
+    /// merge return the same array (`unserved_merge_is_the_identity_the_is_serving_gate_used_to_shortcut`
+    /// below proves it).
+    ///
+    /// Keeping it would have been actively wrong for the **hosted, socket-less** player, where `Host::call`
+    /// is reachable in-process (contract D15: an in-process GUI *is* a client) and can therefore install a
+    /// held set while `is_serving()` is false. Under the gate that set would sit in the engine, be reported
+    /// back by `emulator/hold`'s own `held` array, and never reach the pad — a served capability answering
+    /// that it took effect when it did not, which is the silent-wrong-answer class this surface cannot
+    /// afford.
+    pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
+        [
+            crate::engine::merge_pads(pads[0], self.held(0)),
+            crate::engine::merge_pads(pads[1], self.held(1)),
+        ]
+    }
+
     // ---------------------------------------------------------------- the glass (§11.29, CR-H)
 
     /// **Hand the bus the text the host's own present just put on the glass**, so `emulator/screen_text`
@@ -876,6 +906,72 @@ mod tests {
             h.held(0),
         );
         assert!(merged.a && merged.left, "the host writes both");
+    }
+
+    /// **The claim `Host::merge_held` makes when it drops the `is_serving()` early return**: on a host with
+    /// nothing held the merge *is* the identity the gate used to shortcut, and on a host with something
+    /// held it is not — even though that host is unserved.
+    ///
+    /// Both halves are in one test on purpose. The identity half alone goes green for a second reason
+    /// entirely: a `merge_held` that returned its argument unconditionally — which is exactly what the
+    /// deleted gate did on this host — passes it perfectly. The second half is what rules that out, and
+    /// separating them would let a regression restore the gate and keep one green row.
+    #[test]
+    fn unserved_merge_is_the_identity_the_is_serving_gate_used_to_shortcut() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted();
+        assert!(
+            !h.is_serving(),
+            "the whole point is that no socket is bound; a served host would prove the other case"
+        );
+
+        // A pad with something in it, so an identity that came from returning `Pad::default()` twice
+        // could not pass for the identity that comes from OR-ing with an empty held set.
+        let human = [
+            Pad {
+                left: true,
+                ..Pad::default()
+            },
+            Pad {
+                start: true,
+                ..Pad::default()
+            },
+        ];
+        assert_ne!(human, [Pad::default(); 2], "the fixture pad is not empty");
+        assert_eq!(
+            h.merge_held(human),
+            human,
+            "nothing is held, so the merge must return the human's pads unchanged — this is the identity \
+             the deleted `is_serving()` gate was shortcutting, and dropping it changed no answer"
+        );
+
+        // …and the same unserved host, after an in-process `emulator/hold`, must NOT be the identity.
+        // This is the player's entire path: `Host::call` with no socket bound (contract D15).
+        h.engine.swap_system(&mut sys);
+        h.engine
+            .dispatch("emulator/hold", &json!({"buttons": ["a"], "port": 1}))
+            .expect("hold");
+        h.engine.swap_system(&mut sys);
+        assert!(
+            !h.is_serving(),
+            "still unserved — no socket was bound by that"
+        );
+        assert!(h.held(1).a, "the engine took the hold");
+
+        let merged = h.merge_held(human);
+        assert_ne!(
+            merged, human,
+            "an unserved host with a held set merged nothing — the `is_serving()` gate is back, and a \
+             client's `emulator/hold` against the hosted player is inert again"
+        );
+        assert!(
+            merged[1].a && merged[1].start,
+            "port 1 carries both sources"
+        );
+        assert_eq!(
+            merged[0], human[0],
+            "and port 0, which nothing held, is untouched"
+        );
     }
 
     /// The long-run bound is a refusal that names the limit, and the limit is the hosted one.

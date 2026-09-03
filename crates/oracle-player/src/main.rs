@@ -470,7 +470,12 @@ impl Loop {
                 // egui's own focus from a hosting app's). It is true whenever a widget — a text field, a
                 // tab rename, a future memory-panel search box — is consuming typing.
                 let pad = input::decide(keys, ctx.egui_wants_keyboard_input(), &mut self.latch);
-                cost = self.machine.step(pad, &mut self.bus);
+                // Port 1 is the keyboard's empty pad — this player binds no second controller. It is
+                // still handed over rather than dropped, because `Machine::step` merges a client's
+                // `emulator/hold` set into *both* ports and the status strip shows both.
+                cost = self
+                    .machine
+                    .step([pad, oracle_core::io::Pad::default()], &mut self.bus);
                 // `MAX_FRAMES_PER_ITER` is 2, so the bucket cannot overflow; clamp anyway rather than
                 // index out of bounds if that constant is ever raised.
                 self.frames_per_iter[cost.frames.min(2)] += 1;

@@ -161,14 +161,14 @@ impl Bus {
 
     /// Conflict 2 — merge the client's held set into the pads the loop is about to write. See
     /// [`Host::held`](oracle_aether::host::Host::held).
+    ///
+    /// **The body moved to [`Host::merge_held`](oracle_aether::host::Host::merge_held) in
+    /// `HELD-PADS-PLAYER`** and this is now a delegation, because `oracle-player` needs the identical
+    /// merge and a second copy of it is the drift that bar exists to prevent. The `is_serving()` early
+    /// return that used to open this function is gone; `Host::merge_held`'s doc has the proof that it was
+    /// a fast path rather than a semantic, and the test one crate over pins it.
     pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
-        if !self.host.is_serving() {
-            return pads;
-        }
-        [
-            oracle_aether::engine::merge_pads(pads[0], self.host.held(0)),
-            oracle_aether::engine::merge_pads(pads[1], self.host.held(1)),
-        ]
+        self.host.merge_held(pads)
     }
 
     /// The other half of conflict 2: tell the bus what the human is holding, so `emulator/press` and
