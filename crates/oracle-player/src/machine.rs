@@ -247,7 +247,7 @@ impl Machine {
     /// engine builds this frame with its own `ACTIVE_LINES`, and a mismatched constant here would be a
     /// silently sheared picture rather than a failure.
     pub fn adopt_frame(&mut self, width: usize, rgb: &[oracle_aether::engine::Rgb]) -> bool {
-        if width == 0 || rgb.is_empty() || rgb.len() % width != 0 {
+        if width == 0 || rgb.is_empty() || !rgb.len().is_multiple_of(width) {
             return false;
         }
         let height = rgb.len() / width;
