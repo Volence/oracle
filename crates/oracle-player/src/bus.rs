@@ -84,12 +84,14 @@
 //!    mean anything against this window**: without it the bus reports a halt the loop never took.
 
 use oracle_aether::breakpoints::BreakStop;
-use oracle_aether::host::{Host, HostConfig, MachineInfo};
+use oracle_aether::engine::FrameRef;
+use oracle_aether::host::{Host, HostConfig, MachineInfo, PumpReport};
 use oracle_aether::rpc::RpcError;
 use oracle_core::bus::Observe;
 use oracle_core::io::Pad;
 use oracle_core::profiler::Profiler;
 use oracle_core::scanline_capture::ScanlineCapture;
+use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::Watchpoints;
 use serde_json::{Map, Value};
@@ -271,7 +273,10 @@ impl Bus {
             None => ServeOutcome::NotAsked,
         };
         let mut bus = Bus { host, outcome };
-        bus.mirror_pause(sys, paused);
+        // The report is explicitly discarded, and this is the one call site where that is right: nothing
+        // has been derived from this machine yet — no picture, no audio ring, no symbol cache older than
+        // the `MachineInfo` handed in three lines up — so there is nothing here to put back in step.
+        let _ = bus.mirror_pause(sys, paused);
         bus
     }
 
@@ -368,29 +373,52 @@ impl Bus {
     /// on the frame a breakpoint fires it has not. The player would keep running past a breakpoint the bus
     /// believed it had stopped on.
     ///
-    /// # ⚑ The dropped [`PumpReport`](oracle_aether::host::PumpReport) — a KNOWN GAP as of `PLAYER-SERVE`
+    /// # The [`PumpReport`] is returned, not dropped — `PLAYER-SERVE`'s booked gap, closed
     ///
-    /// The report is dropped. Until this parcel that was **sound**, and the reason it was sound is the
-    /// reason it no longer is: its three interesting flags — `timeline_moved`, `screen_changed`,
-    /// `rom_changed` — all describe *a socket client* moving the machine behind the loop's back, and this
-    /// player bound no socket, so none of them could ever be true. (The transport bar can move the machine
-    /// too, but it goes through [`Host::call`], which is not a drain and cannot appear in this report at
-    /// all.)
+    /// `PLAYER-SERVE` dropped it and said why that had been sound: the report's three interesting flags all
+    /// describe *a socket client* moving the machine behind the loop's back, and until that parcel this
+    /// player bound no socket, so none of them could ever be true. Binding one made all three reachable and
+    /// turned the drop into the defect. It is `PLAYER-PUMPREPORT` that acts on them, and the acting lives in
+    /// [`drain`] rather than here — one function both the loop and its tests call, so a window that pumped
+    /// and then ignored the answer is not a shape this crate can be written in.
     ///
-    /// **Now that [`Bus::new`] can bind, all three are reachable**, and dropping them means: after a
-    /// client's `emulator/run_frames`, `emulator/restore` or `emulator/reload_rom`, the player does not
-    /// resynchronise its audio ring, its frame counter or its scanline capture, and does not present the
-    /// frame the run drew. `oracle-frontend` reacts to exactly these flags; this crate has no equivalent —
-    /// it never reads [`Host::framebuffer`] at all.
-    ///
-    /// **Booked, not closed, and deliberately so.** Closing it is a *behaviour* change to the run loop
-    /// (present the bus's frame, restart the ring, re-derive the counter) with its own pacing cost, which
-    /// is a parcel and not a line; `PLAYER-SERVE` is the parcel that makes the socket exist. It is written
-    /// here rather than left to be discovered because a gap that is booked is a decision and a gap that is
-    /// silent is a defect. `docs/2026-09-03-debug-panels-design.md` §5.8.2 is its entry.
-    pub fn mirror_pause(&mut self, sys: &mut System, paused: bool) {
+    /// **`#[must_use]` states that in the type.** A caller that wants only the pause mirror — [`Bus::new`],
+    /// which has no window, no picture and no audio to put back in step — says so with an explicit `let _`.
+    #[must_use]
+    pub fn mirror_pause(&mut self, sys: &mut System, paused: bool) -> PumpReport {
         self.host.set_paused(paused);
-        self.host.pump(sys);
+        self.host.pump(sys)
+    }
+
+    /// **The picture a client's own run drew**, line-major RGB and its width, or `None` when the bus is
+    /// holding no whole frame.
+    ///
+    /// `PLAYER-SERVE` recorded that "this crate never reads [`Host::framebuffer`] at all" as the reason its
+    /// window could not show a client-driven run. This is the read that makes it possible; [`drain`] is what
+    /// decides when to take it, and [`Machine::adopt_frame`](crate::machine::Machine::adopt_frame) is what
+    /// puts it on the glass.
+    ///
+    /// Unmasked, deliberately: this window applies no display-layer mask to its own picture either (there is
+    /// no `blit_masked` in this crate), so masking here would make a client-driven frame the *only* one that
+    /// honoured `emulator/set_layer_enabled` — one window, two rules for what it is showing.
+    pub fn framebuffer(&self) -> Option<FrameRef<'_>> {
+        self.host.framebuffer()
+    }
+
+    /// **The listing the engine resolves against now.**
+    ///
+    /// Read rather than remembered because `emulator/reload_rom` can *drop* the table — that is the D7
+    /// binding check's whole point — and the copy this process handed to [`Bus::new`] would outlive the
+    /// drop. See [`drain`].
+    pub fn symbols(&self) -> Option<&SymbolTable> {
+        self.host.symbols()
+    }
+
+    /// **The absolute path of the image the bus is running.** Read for [`Bus::symbols`]'s reason:
+    /// `emulator/reload_rom` moves it, and the status strip's `rom` row is the launch argument this
+    /// process was started with until something re-derives it.
+    pub fn rom_path(&self) -> Option<&str> {
+        self.host.rom_path()
     }
 
     /// **Both instruments plus the breakpoint sink, for the frame the player is about to run.**
@@ -581,6 +609,114 @@ pub fn break_observed(brk: Option<BreakStop<'_>>) -> Option<u32> {
     brk.and_then(|b| b.fired).map(|(_, addr)| addr)
 }
 
+/// What [`drain`] put back in step, for a caller that wants to say so and for the tests that prove it.
+///
+/// Three booleans and not one, because they are three different repairs with three different triggers, and
+/// a single "resynchronised" flag would let a test that meant to prove one of them pass on another.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Drained {
+    /// **The drain's own report, carried verbatim**, so a caller (and a test) can say which field
+    /// produced which repair rather than inferring it from the repairs. `calls` and `deferred` reach a
+    /// caller only through here, because nothing branches on them — see [`drain`]'s field-by-field note.
+    pub report: PumpReport,
+    /// The capture was dropped and the audio ring and its clock were rebuilt
+    /// ([`Machine::resync_after_replacement`](crate::machine::Machine::resync_after_replacement)).
+    pub timeline: bool,
+    /// A frame the bus had drawn was taken onto the glass
+    /// ([`Machine::adopt_frame`](crate::machine::Machine::adopt_frame)). `false` when `screen_changed` said
+    /// the picture was *invalidated* rather than redrawn — there is nothing to present and the window keeps
+    /// what it has.
+    pub picture: bool,
+    /// The symbol cache was re-derived from the engine's own listing, and the ROM path with it.
+    pub symbols: bool,
+}
+
+/// **The loop's one drain, and everything the drain's answer obliges the window to do.**
+///
+/// One function rather than a `pump` in the loop and a reaction beside it, because the reaction is the
+/// parcel: `PLAYER-SERVE` left the window pumping and discarding, and the shape that made that possible was
+/// a drain whose answer the caller could simply not mention. Here the caller cannot pump without this — the
+/// only other `mirror_pause` in the crate is [`Bus::new`]'s, which has nothing derived to repair — and the
+/// tests in this file drive *this* function, not a re-implementation of it beside it.
+///
+/// # What each [`PumpReport`] field makes this window do
+///
+/// * **`calls`** — nothing, and that is a decision. It counts commands answered; no state this window
+///   derives from the machine is a function of how many commands went past. `oracle-frontend` ignores it
+///   too. It is carried on [`Drained`] so a caller can say "the bus was busy", not so anything branches.
+/// * **`deferred`** — nothing, for a stronger reason: it means the drain stopped on `pump_budget` with the
+///   queue possibly non-empty, and the remainder is taken next iteration with nothing lost. There is no
+///   repair to make. Reacting to it — a second drain, say — would trade the bound the budget exists to
+///   enforce for a stall on the UI thread.
+/// * **`mclk_before`/`mclk_after`**, via [`PumpReport::timeline_moved`] — the machine's clock moved under
+///   the window, so the capture and the audio ring are holding a timeline that is gone:
+///   [`Machine::resync_after_replacement`](crate::machine::Machine::resync_after_replacement).
+///   **`frames_advanced()` is deliberately not added to any counter here**, which is where this window and
+///   `oracle-frontend` part company; the reason is on that method.
+/// * **`screen_changed`** — take the bus's frame ([`Bus::framebuffer`]). This is the field with no
+///   equivalent at all before this parcel, and the one whose absence was visible: a client must pause this
+///   player before it may run anything (§6's run-control state rule), and a paused player runs no frame of
+///   its own, so *every* frame a client asks for was drawn where this window could not see it.
+/// * **`rom_changed`** — re-derive the symbol cache, and resynchronise the timeline as above. See the note
+///   below on why the second is not redundant even though it usually is.
+///
+/// # ⚑ `rom_changed` drives the timeline repair too, and `emulator/reset` is why
+///
+/// `PumpReport::rom_changed`'s own doc says to read it as *"resynchronise"*, and names `emulator/reset` as
+/// the producer a caller is most likely to treat as harmless. Measured, on this build: a reset also moves
+/// the clock (`System::reset` rebuilds the `System`, so `mclk` restarts near 0) and `timeline_moved()` is
+/// therefore true for it as well, which makes `|| report.rom_changed` **redundant in every case this
+/// crate can reach today**. It is written anyway, because the alternative is a window whose correctness
+/// depends on a coincidence between two flags that are documented as separate facts — and the case where
+/// they separate is not exotic: a reset issued at `mclk == 0`, or any future producer that replaces the
+/// machine without moving its clock. The condition is what the doc asks for; the redundancy is measured
+/// and recorded rather than assumed.
+pub fn drain(
+    machine: &mut crate::machine::Machine,
+    bus: &mut Bus,
+    symbols: &mut Option<SymbolTable>,
+    rom_path: &mut String,
+    paused: bool,
+) -> Drained {
+    let report = bus.mirror_pause(machine.system_mut(), paused);
+    let mut out = Drained {
+        report,
+        ..Drained::default()
+    };
+
+    if report.timeline_moved() || report.rom_changed {
+        machine.resync_after_replacement();
+        out.timeline = true;
+    }
+    if report.screen_changed {
+        // `None` is the documented invalidated-not-redrawn case (a restore, a ROM reload): nothing to
+        // present, and the retained image stays up exactly as it does for an iteration that ran no frame.
+        if let Some((width, rgb)) = bus.framebuffer() {
+            out.picture = machine.adopt_frame(width, rgb);
+        }
+    }
+    if report.rom_changed {
+        // Unconditional re-derivation rather than a drop, because the engine's answer covers both outcomes:
+        // `emulator/reload_rom` drops the listing when it no longer binds (D7) and keeps it when it does,
+        // and `emulator/reset` keeps it always. Cloning a table is not free, but this runs only when a
+        // cartridge was replaced, which is not a per-frame event.
+        *symbols = bus.symbols().cloned();
+        // The path goes with it, and for the same reason: the status strip's `rom` row is a cached string
+        // this process was launched with, and after a reload it names a cartridge that is not loaded. The
+        // engine's copy is absolutised at the boundary, which is what §6's `romPath` means, so this is the
+        // same string `emulator/status` reports rather than a second spelling of it. `None` — an engine
+        // that was never told a path — leaves the launch string alone rather than blanking the row.
+        if let Some(p) = bus.rom_path() {
+            if *rom_path != p {
+                rom_path.clear();
+                rom_path.push_str(p);
+            }
+        }
+        out.symbols = true;
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------------------------------
 // ⚑ The pause mirror is load-bearing, and this is what proves it
 // ---------------------------------------------------------------------------------------------------
@@ -667,7 +803,7 @@ mod tests {
             &poke()
         )));
 
-        bus.mirror_pause(&mut sys, true);
+        let _ = bus.mirror_pause(&mut sys, true);
         assert!(bus.is_paused());
         let a = bus.call(&mut sys, "emulator/write_memory", &poke());
         assert!(
@@ -675,7 +811,7 @@ mod tests {
             "a paused player must let the poke through — the mirror is not a one-way latch"
         );
 
-        bus.mirror_pause(&mut sys, false);
+        let _ = bus.mirror_pause(&mut sys, false);
         assert!(is_machine_running(&bus.call(
             &mut sys,
             "emulator/write_memory",
@@ -703,7 +839,7 @@ mod tests {
              about the mirror"
         );
         for _ in 0..3 {
-            bus.mirror_pause(&mut sys, true);
+            let _ = bus.mirror_pause(&mut sys, true);
             assert!(bus.is_paused());
             assert!(matches!(
                 bus.call(&mut sys, "emulator/write_memory", &poke()),
@@ -752,11 +888,11 @@ mod seam {
 
     /// `move.w (A0),D0` in the fixture ROM's inner loop — the address `oracle-aether/tests/hosted.rs`
     /// uses for the same purpose, taken from there rather than re-derived.
-    const HOT_PC: u32 = 0x0000_020E;
+    pub(super) const HOT_PC: u32 = 0x0000_020E;
 
     /// Every test below is vacuous if this address stopped being hot, so it is **checked** rather than
     /// asserted in prose. Same check as `hosted.rs::assert_hot_pc_is_the_stirring_loop`.
-    fn assert_hot_pc_is_the_stirring_loop() {
+    pub(super) fn assert_hot_pc_is_the_stirring_loop() {
         let rom = oracle_core::testrom::build();
         let a = HOT_PC as usize;
         assert!(a + 1 < rom.len(), "HOT_PC is outside the fixture ROM");
@@ -791,7 +927,12 @@ mod seam {
         if !paused {
             machine.step([Pad::default(); 2], bus);
         }
-        bus.mirror_pause(machine.system_mut(), paused);
+        // `drain` and not `mirror_pause`: the loop's one call is the former, and a helper that pumped
+        // directly would let every test below pass against a window that dropped the report again. The
+        // symbol cache is local because nothing here loads symbols; the `pumped` module drives that half.
+        let mut symbols = None;
+        let mut rom_path = String::new();
+        drain(machine, bus, &mut symbols, &mut rom_path, paused);
         bus.is_paused()
     }
 
@@ -1126,7 +1267,7 @@ mod seam {
         );
 
         // The same value the bus was last told. Parcel 2b's gate returned here without pumping.
-        bus.mirror_pause(machine.system_mut(), false);
+        let _ = bus.mirror_pause(machine.system_mut(), false);
         assert!(
             bus.is_paused(),
             "the latched halt was never applied. A change-gated drain produces exactly this: the bus \
@@ -1416,5 +1557,678 @@ mod serving {
         assert_ne!(quiet, up);
         assert_ne!(quiet, down);
         assert_ne!(up, down);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ PLAYER-PUMPREPORT — the drain's answer, driven by a client on the socket
+// ---------------------------------------------------------------------------------------------------
+
+/// These tests reach the window the way the defect does: **over the wire**.
+///
+/// That is not a preference, it is the only route. A `PumpReport` describes what one [`Host::pump`] did,
+/// and `Host::call` — the in-process path every panel gesture takes — is deliberately *not* a drain, so a
+/// command sent through it never appears in a report at all. Commands enter the drain only from a
+/// connection thread, so a test that wanted to see a non-empty report had to bind a socket and connect.
+///
+/// Every one of them is written around the same hazard the brief named: **a window that resynchronises
+/// every frame anyway would pass a resynchronisation test for the wrong reason.** The defence is structural
+/// rather than argued — the client *pauses the player first*, which it must do regardless (§6's
+/// run-control state rule refuses `run_frames`, `restore` and `reload_rom` against a running machine), and
+/// a paused player runs no frame of its own. `machine.frames() == 0` is asserted at the end of each, so
+/// nothing below can be explained by this loop having drawn anything.
+#[cfg(all(test, unix))]
+pub mod pumped {
+    use super::*;
+    use crate::machine::Machine;
+    use serde_json::json;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// The top of the fixture ROM's outer pass (`reload:` in `oracle_core::testrom`) — the breakpoint
+    /// address [`halt_with_a_dirty_capture`] needs, and deliberately **not** the inner loop every other
+    /// test here arms.
+    const RELOAD: u32 = 0x0000_0204;
+
+    /// A socket path short enough for `SUN_LEN`, unique per process and per test.
+    fn temp_socket(tag: &str) -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("pp-{tag}-{}-{n}.sock", std::process::id()))
+    }
+
+    /// One NDJSON connection, hand-rolled so these tests exercise the wire — the same shape
+    /// `oracle-aether/tests/hosted.rs` uses, and for the same reason.
+    struct Client {
+        reader: BufReader<UnixStream>,
+        writer: UnixStream,
+        next_id: i64,
+    }
+
+    impl Client {
+        fn connect(socket: &Path) -> Self {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match UnixStream::connect(socket) {
+                    Ok(s) => {
+                        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+                        return Self {
+                            reader: BufReader::new(s.try_clone().unwrap()),
+                            writer: s,
+                            next_id: 1,
+                        };
+                    }
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+        }
+
+        fn send_raw(&mut self, line: &str) {
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.write_all(b"\n").unwrap();
+            self.writer.flush().unwrap();
+        }
+
+        fn call(&mut self, method: &str, params: Value) -> Value {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.send_raw(
+                &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}).to_string(),
+            );
+            loop {
+                let mut line = String::new();
+                let n = self.reader.read_line(&mut line).expect("read");
+                assert!(n > 0, "connection closed while a reply was expected");
+                let v: Value = serde_json::from_str(&line).expect("bad JSON on the wire");
+                if v.get("id").is_some_and(|i| !i.is_null()) {
+                    assert_eq!(v["id"], json!(id), "response id must correlate");
+                    return v;
+                }
+            }
+        }
+
+        fn ok(&mut self, method: &str, params: Value) -> Value {
+            let v = self.call(method, params);
+            assert!(v.get("error").is_none(), "{method} failed: {}", v["error"]);
+            v["result"].clone()
+        }
+
+        fn handshake(&mut self) {
+            self.ok(
+                "initialize",
+                json!({
+                    "clientId": "pumpreport-test",
+                    "clientName": "pumpreport",
+                    "clientVersion": "0",
+                    "protocolVersion": 1,
+                    "clientCapabilities": {"events": false},
+                }),
+            );
+            self.send_raw(&json!({"jsonrpc":"2.0","method":"initialized"}).to_string());
+        }
+    }
+
+    /// A player whose bus is bound to a private socket, plus that socket's path.
+    ///
+    /// **`paused` is `true` in every test below, and that is the anti-vacuity measure, not a convenience.**
+    /// A running player draws a frame per iteration, and the drains here are spread over however long a
+    /// client takes to connect and handshake — so a fixture that started running would have drawn a
+    /// picture, advanced its clock and cleared its capture *by itself* before the client said anything,
+    /// and every assertion below would be green whatever `drain` did. Measured, not assumed: the first
+    /// draft of the picture test started from `false` and failed on `machine.frames(): left: 2, right: 0`.
+    /// A paused window is a state the transport bar reaches with one click, and it is the state a client
+    /// must put this player in anyway before §6 will let it run, restore or reload anything.
+    fn served(tag: &str, info: MachineInfo, paused: bool) -> (Machine, Bus, PathBuf) {
+        let socket = temp_socket(tag);
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = Bus::new(
+            machine.system_mut(),
+            info,
+            paused,
+            Some(Some(socket.clone())),
+        );
+        assert!(
+            bus.is_serving(),
+            "the fixture did not bind {}, so no client can reach it and nothing below is a test",
+            socket.display()
+        );
+        (machine, bus, socket)
+    }
+
+    /// **The window's cartridge-derived cache**, as `Loop` holds it — the two fields `drain` re-derives on
+    /// `rom_changed`, kept together so a helper takes one borrow instead of two.
+    #[derive(Default)]
+    struct Cache {
+        symbols: Option<SymbolTable>,
+        rom_path: String,
+    }
+
+    /// Everything the drains of one test put back in step. Counts rather than flags: "the picture was
+    /// adopted" and "the picture was adopted on every one of forty iterations" are different facts, and
+    /// only the count tells them apart.
+    #[derive(Default)]
+    struct Totals {
+        calls: usize,
+        timeline: usize,
+        picture: usize,
+        symbols: usize,
+        /// The report of the drain that saw the cartridge replaced, kept so a test can assert about the
+        /// **flags** and not only about the repairs they produced.
+        replacement: Option<PumpReport>,
+    }
+
+    impl Totals {
+        fn add(&mut self, d: Drained) {
+            self.calls += d.report.calls;
+            self.timeline += usize::from(d.timeline);
+            self.picture += usize::from(d.picture);
+            self.symbols += usize::from(d.symbols);
+            if d.report.rom_changed {
+                self.replacement = Some(d.report);
+            }
+        }
+    }
+
+    /// **One iteration of `Loop::iterate`'s machine half**, in `main.rs`'s order: adopt the bus's pause at
+    /// the top, run a frame only if not paused, then drain. `paused` is carried in and out because the
+    /// adoption is what makes a client's `emulator/pause` stop this loop, and every test below depends on
+    /// it having stopped.
+    fn iterate(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        cache: &mut Cache,
+        paused: &mut bool,
+    ) -> Drained {
+        *paused = bus.is_paused();
+        if !*paused {
+            machine.step([Pad::default(); 2], bus);
+        }
+        drain(
+            machine,
+            bus,
+            &mut cache.symbols,
+            &mut cache.rom_path,
+            *paused,
+        )
+    }
+
+    /// Turn the loop until `done` is satisfied or the deadline passes, accumulating what every drain did.
+    /// Fails on the clock rather than hanging the suite.
+    fn turn_until(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        cache: &mut Cache,
+        paused: &mut bool,
+        totals: &mut Totals,
+        what: &str,
+        done: impl Fn(&Totals, bool) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !done(totals, *paused) {
+            assert!(Instant::now() < deadline, "{what}");
+            totals.add(iterate(machine, bus, cache, paused));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// ★ **The picture follows a client's run.** Design §5.6.2's picture-after-a-step bullet, and the half
+    /// of §5.8.2 that was visible to a human: a client pauses this window, runs frames, and the glass
+    /// showed the last thing *this loop* had drawn — which for a paused player is whatever was there
+    /// before, forever.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The window redraws every frame anyway, so of course it has a picture.* Ruled out structurally
+    ///    and then checked: the client pauses first (it has no choice — `run_frames` is refused against a
+    ///    running machine), so `iterate` runs no `Machine::step`, and `machine.frames() == 0` at the end
+    ///    says so. A picture on the glass cannot have come from this loop.
+    /// 2. *The fixture started with a picture.* Checked before the client is even spawned.
+    /// 3. *`adopt_frame` runs on every drain against whatever is latched, so any test would pass.* Ruled
+    ///    out by the **control** below, which pauses and drains just as many times with no run: the
+    ///    picture stays `None` and `picture == 0`.
+    /// 4. *The bus latched the frame from this player's own `publish`.* Cannot be: `publish_capture`
+    ///    deliberately does not bump `screen_generation` (engine.rs), so a published frame raises no
+    ///    `screen_changed` — and this player published nothing, having run nothing.
+    #[test]
+    fn a_paused_windows_picture_follows_a_clients_run() {
+        let (mut machine, mut bus, socket) = served("picture", MachineInfo::default(), true);
+        assert!(
+            machine.image().is_none(),
+            "the fixture already had a picture, so `is_some` below would witness nothing"
+        );
+
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/run_frames", json!({"frames": 2}))
+        });
+
+        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's run never reached the window's picture",
+            |t, _| t.picture > 0,
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(reply["frames"], json!(2), "the client's run really ran");
+        assert!(
+            paused,
+            "the window stopped being paused, so it may have drawn this itself"
+        );
+        assert_eq!(
+            machine.frames(),
+            0,
+            "this loop ran a frame of its own, so the picture below is not evidence of anything"
+        );
+        assert!(
+            machine.image().is_some(),
+            "the client ran two frames and the window is still showing nothing"
+        );
+        assert_eq!(
+            totals.picture, 1,
+            "exactly one adoption, for one client run"
+        );
+        assert!(
+            totals.calls >= 2,
+            "initialize and run_frames were both answered"
+        );
+
+        // --- the control: the same rig, the same drains, no run. ---
+        let (mut machine, mut bus, socket) = served("picture-ctl", MachineInfo::default(), true);
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+        });
+        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the control's client never handshook",
+            |t, _| t.calls >= 1,
+        );
+        client.join().expect("the control client");
+        for _ in 0..20 {
+            totals.add(iterate(&mut machine, &mut bus, &mut cache, &mut paused));
+        }
+        assert_eq!(
+            totals.picture, 0,
+            "the window adopted a picture with no client run behind it — `screen_changed` is not what \
+             is being reacted to"
+        );
+        assert_eq!(
+            totals.timeline, 0,
+            "and nothing moved the timeline either, so the resynchronisation tests are not measuring \
+             a drain that repairs unconditionally"
+        );
+        assert!(
+            machine.image().is_none(),
+            "and the glass must still be empty"
+        );
+    }
+
+    /// **A halted player whose scanline capture is holding real lines**, and the count it is holding.
+    ///
+    /// The setup the capture half of `resync_after_replacement` needs, and it takes some arranging.
+    /// [`Machine::step`] clears the capture on every frame boundary, so the only way to leave lines in it
+    /// is a run that a breakpoint ended **mid-frame** — and the obvious breakpoint does not do that. The
+    /// fixture ROM's inner loop (`HOT_PC`) is reached within a few instructions of any frame's start, so
+    /// halting there leaves *zero* lines delivered; measured, and it is what the first draft of this test
+    /// failed on.
+    ///
+    /// `RELOAD` — the top of the ROM's outer pass, `$000204` — is reached once every ~3.8 emulated frames,
+    /// which puts most of its hits somewhere in the middle of a frame. The first hit is still immediate
+    /// (the reset PC is `$000200`, two bytes before it), so this resumes and waits for a later one, and
+    /// returns only when the capture is genuinely dirty. The caller asserts on the count; a deadline turns
+    /// "never got a dirty capture" into a failure rather than a hang.
+    fn halt_with_a_dirty_capture(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        cache: &mut Cache,
+        paused: &mut bool,
+    ) -> usize {
+        let armed = bus.call(
+            machine.system_mut(),
+            "emulator/breakpoint_add",
+            &json!({"addr": format!("0x{RELOAD:08X}")}),
+        );
+        assert!(!armed.is_err(), "the fixture's breakpoint was refused");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "no breakpoint halt ever left lines in the capture, so the assertion this fixture \
+                 exists to make would have been vacuous"
+            );
+            if *paused {
+                let lines = machine.capture_lines();
+                if lines > 0 {
+                    return lines;
+                }
+                // Halted at the very top of a frame with nothing delivered yet. Resume and wait for a hit
+                // that lands mid-frame; the sink suppresses a re-fire at the PC the run resumes on, so the
+                // next hit is a whole outer pass away.
+                bus.call(machine.system_mut(), "emulator/resume", &json!({}));
+            }
+            iterate(machine, bus, cache, paused);
+        }
+    }
+
+    /// ★ **A client's `emulator/reset` is not harmless, and the window puts itself back in step.**
+    ///
+    /// `PumpReport::rom_changed`'s own doc names this one specifically: the bytes did not change, but
+    /// everything clocked to the machine did, and *"a caller that resynchronised for the other two and not
+    /// for this one would be holding an audio clock and a frame counter from a timeline that no longer
+    /// exists."* This is that caller, made to resynchronise.
+    ///
+    /// **What is observed is the scanline capture**, because it is the one piece of the repair a test in
+    /// this crate can read. [`crate::device::Device`] owns the audio half and cannot be built without a
+    /// real sound card (it holds a live `cpal::Stream`), so the ring flush and the sink rebuild are
+    /// asserted here only through the branch being taken — `timeline` on [`Drained`] — with the two
+    /// functions they call covered where they live (`audio::tests::resync_sink_restores_rendering_after_
+    /// the_machine_clock_rewinds`, and `fill_output`'s flush). `oracle-frontend` has the identical limit
+    /// on the identical state; it is recorded rather than worked around, because the workaround would be
+    /// to make the window's audio path constructible without a device purely so a test could reach it.
+    ///
+    /// **Getting the capture non-empty is the whole setup, and it is what makes the "afterwards" mean
+    /// something.** [`Machine::step`] clears the capture on every frame boundary, so a run that ended
+    /// cleanly leaves nothing to clear and an assertion of `0` afterwards would be true of a `drain` that
+    /// did nothing at all. A breakpoint ends a run **mid-frame** (parcel 3), which leaves real lines
+    /// buffered for a frame that never completed — the lines that, kept across a machine replacement,
+    /// would be spliced onto the replacement's first lines and handed to `capture_to_image` as one frame.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The capture was empty all along.* Asserted non-empty before the client is spawned, and the
+    ///    exact count is carried into the control.
+    /// 2. *The capture clears itself.* The **control** below turns the loop twenty more times with a
+    ///    client that only handshakes: the lines are still there, to the line.
+    /// 3. *The drain repairs unconditionally.* Same control — `timeline` stays 0 across those twenty.
+    /// 4. *`rom_changed` was never involved and `timeline_moved()` did all the work.* Measured rather than
+    ///    assumed, and the answer is recorded on the assertion: on this build a reset moves the clock too
+    ///    (`System::reset` rebuilds the `System`, so `mclk` restarts), so **both** flags are set and the
+    ///    `|| report.rom_changed` in `drain` is redundant *here*. The assertion pins that measurement, so
+    ///    the day a producer replaces the machine without moving its clock this test says so instead of
+    ///    quietly changing meaning.
+    #[test]
+    fn a_client_reset_puts_the_windows_derived_state_back_in_step() {
+        let (mut machine, mut bus, socket) = served("reset", MachineInfo::default(), false);
+        let (mut cache, mut paused) = (Cache::default(), false);
+        let lines = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut cache, &mut paused);
+        assert!(
+            lines > 0,
+            "the halted run left an EMPTY capture, so `0` afterwards would witness nothing"
+        );
+
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/reset", json!({}))
+        });
+
+        let mut totals = Totals::default();
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's reset never reached the window",
+            |t, _| t.timeline > 0,
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(reply["deferred"], json!(false), "the reset really ran");
+        assert_eq!(
+            machine.capture_lines(),
+            0,
+            "a machine replacement left {lines} lines of the OLD machine in the capture, which the next \
+             completed frame would have spliced onto the new one"
+        );
+        let r = totals
+            .replacement
+            .expect("the reset must have arrived as rom_changed");
+        assert!(
+            r.rom_changed,
+            "`emulator/reset` did not raise rom_changed, so the flag this parcel reacts to is not the \
+             one the reset handler bumps"
+        );
+        assert!(
+            r.timeline_moved(),
+            "MEASUREMENT: a reset moved the ROM generation but NOT the clock on this build. `drain`'s \
+             `|| report.rom_changed` has stopped being redundant and is now the only thing that repairs \
+             a reset — which is exactly what the PumpReport doc warns about, so read this failure as \
+             news rather than as a broken test"
+        );
+
+        // --- the control: the same halted rig, the same drains, no reset. ---
+        let (mut machine, mut bus, socket) = served("reset-ctl", MachineInfo::default(), false);
+        let (mut cache, mut paused) = (Cache::default(), false);
+        let held = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut cache, &mut paused);
+        assert!(held > 0, "the control's capture must be non-empty too");
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+        });
+        let mut totals = Totals::default();
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the control's client never handshook",
+            |t, _| t.calls >= 1,
+        );
+        client.join().expect("the control client");
+        for _ in 0..20 {
+            totals.add(iterate(&mut machine, &mut bus, &mut cache, &mut paused));
+        }
+        assert_eq!(
+            totals.timeline, 0,
+            "the drain repaired a timeline nothing had moved, so the repair above is not evidence that \
+             a reset caused it"
+        );
+        assert_eq!(
+            machine.capture_lines(),
+            held,
+            "the capture emptied itself with no machine replacement behind it"
+        );
+    }
+
+    /// A minimal AS-dialect listing, in `oracle-aether/tests/symbols_path.rs`'s own spelling, with one
+    /// addition: `EndOfRom` at `$100`, an offset that is inside the fixture ROM and does not carry the
+    /// `de b2` appendix magic. That makes `SymbolTable::validate_against_rom` return `Mismatch`, which is
+    /// what makes `emulator/reload_rom` **drop** the listing (D7) and gives this test something to observe.
+    pub const LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+ EndOfRom : 100 C |
+
+    3 symbols
+    0 unused symbols
+";
+
+    /// ★ **A client's `emulator/reload_rom` re-derives the window's symbol cache.**
+    ///
+    /// This is `rom_changed`'s **only** unique job in this crate, and finding that out is most of what the
+    /// field was worth reading for. Everything else `rom_changed` asks for, `timeline_moved()` already
+    /// asks for on the same drain (measured — see the reset test). The symbol listing is different: the
+    /// engine can *drop* it, on the D7 binding check, and nothing about the machine's clock says so.
+    ///
+    /// The player holds a clone of the table it handed to [`Bus::new`], and every panel and the status
+    /// strip resolve against that clone. After a reload that dropped it, `emulator/lookup_symbol` answers
+    /// "no symbols loaded" while the window goes on naming addresses out of a listing the engine has
+    /// discarded — one machine, two answers, which is the drift R2 exists to prevent.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The cache was empty to begin with.* Asserted `Some`, with its symbol count, before anything is
+    ///    sent — on **both** the player's copy and the engine's, since a fixture that loaded the table
+    ///    into only one of them would make the comparison meaningless.
+    /// 2. *The engine did not actually drop anything, and `None` here came from somewhere else.* The
+    ///    reload's own reply carries `symbolsDropped`, and it is asserted `true`.
+    /// 3. *The drain simply clears the cache whenever `rom_changed` fires.* Ruled out by the **second
+    ///    half**: a client `emulator/reset` also raises `rom_changed`, and the reset handler KEEPS the
+    ///    symbols ("the image is unchanged, so the binding that survived boot survives this") — so the
+    ///    cache must still be there afterwards, with the same count. A `drain` that cleared on the flag
+    ///    passes the first half and fails this one.
+    #[test]
+    fn a_client_rom_reload_re_derives_the_windows_symbol_cache() {
+        let table = SymbolTable::parse(LST).expect("parse the fixture listing");
+        let count = table.len();
+        assert!(count > 0, "the fixture listing parsed to nothing");
+
+        // The reload reads a real file. Write the fixture ROM out under a private name so nothing in this
+        // suite shares a path, and so the reload is a genuine `std::fs::read`.
+        // TWO files, same bytes, different names. The reload must be to a **different path** or the
+        // `rom_path` half of this test is two identical strings agreeing: the window's row would be right
+        // by having never moved.
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        );
+        let launched = std::env::temp_dir().join(format!("pp-launched-{stamp}.bin"));
+        let reloaded = std::env::temp_dir().join(format!("pp-reloaded-{stamp}.bin"));
+        std::fs::write(&launched, oracle_core::testrom::build()).expect("write the launched ROM");
+        std::fs::write(&reloaded, oracle_core::testrom::build()).expect("write the reloaded ROM");
+        assert_ne!(launched, reloaded, "the two fixture paths must differ");
+
+        let (mut machine, mut bus, socket) = served(
+            "reload",
+            MachineInfo {
+                rom_path: Some(launched.display().to_string()),
+                symbols: Some(table.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut cache = Cache {
+            symbols: Some(table),
+            rom_path: launched.display().to_string(),
+        };
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(count),
+            "the window must start out holding the listing"
+        );
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(count),
+            "and so must the engine, or the two were never in agreement to begin with"
+        );
+
+        let path = reloaded.display().to_string();
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/reload_rom", json!({"path": path}))
+        });
+
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's reload never reached the window",
+            |t, _| t.symbols > 0,
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(
+            reply["symbolsDropped"],
+            json!(true),
+            "the engine kept the listing, so `None` below would not be evidence of a re-derivation"
+        );
+        assert!(
+            bus.symbols().is_none(),
+            "the engine still holds a listing it said it dropped"
+        );
+        assert!(
+            cache.symbols.is_none(),
+            "the window is still resolving names against a listing the engine has discarded — the \
+             panel and `emulator/lookup_symbol` now answer differently about one machine"
+        );
+        assert_eq!(
+            cache.rom_path,
+            reloaded.display().to_string(),
+            "the window's `rom` row still names the cartridge it was LAUNCHED with, which is not the one \
+             loaded — the same cached-from-the-machine defect as the listing, one row over"
+        );
+        assert_eq!(
+            bus.rom_path(),
+            Some(reloaded.display().to_string().as_str()),
+            "and the engine must agree, or the row above was compared against the wrong thing"
+        );
+
+        // --- the other half: a rom change that KEEPS the listing must keep the window's copy too. ---
+        let table = SymbolTable::parse(LST).expect("parse the fixture listing");
+        let (mut machine, mut bus, socket) = served(
+            "reload-keep",
+            MachineInfo {
+                rom_path: Some(launched.display().to_string()),
+                symbols: Some(table.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut cache = Cache {
+            symbols: Some(table),
+            rom_path: launched.display().to_string(),
+        };
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/reset", json!({}))
+        });
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's reset never reached the window",
+            |t, _| t.symbols > 0,
+        );
+        client.join().expect("the client thread");
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(count),
+            "`emulator/reset` dropped the engine's symbols, which its handler says it does not do"
+        );
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(count),
+            "the window threw its listing away on a rom change that kept it — the drain is CLEARING the \
+             cache on the flag rather than re-deriving it from the engine"
+        );
+        assert_eq!(
+            cache.rom_path,
+            launched.display().to_string(),
+            "and a reset must not have moved the path either"
+        );
+
+        let _ = std::fs::remove_file(&launched);
+        let _ = std::fs::remove_file(&reloaded);
     }
 }

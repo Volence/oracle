@@ -667,6 +667,12 @@ period            16.665    16.665  |   16.666   16.665
   >
   > The bullet's own subject — the window's glass after a step — is unchanged and is now booked properly
   > in §5.8.2 as a gap with a real cause: the player drops the `PumpReport`.
+  >
+  > **⚡ SUPERSEDED by `PLAYER-PUMPREPORT` (branch `parcel/player-pumpreport`).** The glass now follows a
+  > client's run. `bus::drain` takes the bus's latched frame on `screen_changed` and
+  > `Machine::adopt_frame` puts it on screen, and
+  > `bus::pumped::a_paused_windows_picture_follows_a_clients_run` pins it from a client on a real socket.
+  > See §5.8.2.
 
 ### 5.7 Parcel 3-tabs — P4/P5/P6 themselves, on the seam
 
@@ -1367,7 +1373,66 @@ Both are reachable *because* the socket now exists. Neither is closed here, and 
 rather than left to be discovered, because a gap that is booked is a decision and a gap that is silent is a
 defect.
 
-* **The `PumpReport` is dropped, and now it can carry something.** `Bus::mirror_pause` calls `Host::pump`
+> ### ✅ **The first bullet is CLOSED by `PLAYER-PUMPREPORT` (branch `parcel/player-pumpreport`).**
+>
+> `Bus::mirror_pause` returns the report (`#[must_use]`) and the whole reaction lives in one new
+> `bus::drain` that the loop and its tests both call — one function rather than a pump with a reaction
+> beside it, because the second shape is precisely what let the reaction go missing here. **Per field, with
+> the two that correctly do nothing said out loud, since an unhandled field and a deliberately-inapplicable
+> one look identical in code:**
+>
+> | field | what this window does | vs `oracle-frontend` |
+> |---|---|---|
+> | `calls` | nothing — no derived state is a function of how many commands went past | same (ignored) |
+> | `deferred` | nothing — the remainder is taken next iteration, nothing is lost | same (ignored) |
+> | `timeline_moved()` | drop the scanline capture; rebuild the audio ring and its clock | same |
+> | `frames_advanced()` | **nothing, deliberately** | frontend adds it to `draws` |
+> | `screen_changed` | adopt `Host::framebuffer` onto the glass | same in effect, new code here |
+> | `rom_changed` | re-derive the two pieces of cartridge-derived cache — the symbol listing **and the ROM path** — from the engine; also drive the timeline repair | frontend re-derives a save-state fingerprint instead |
+>
+> **The answer to “is the right fix to do what the frontend does?” is no, in both directions.** One of the
+> frontend's reactions is meaningless here and one thing it never needed is required:
+>
+> * **`frames_advanced()` must NOT be carried here.** The frontend's `draws` is the only frame coordinate
+>   its title bar shows, so it adds the bus's frames to it. This window shows two rows and they are
+>   already right: `frame (emulated)` is `mclk / MCLK_PER_FRAME` read live off the machine
+>   (`ui::StatusStrip::of`), so a client-driven run is on the glass with no help at all — and the other row
+>   is labelled *“frames run (player)”*, which is what `Machine::frames` means and what `report.rs` divides
+>   by elapsed seconds to state this loop's throughput. Adding a client's frames would falsify a label and
+>   corrupt a measurement to repair a coordinate that was never wrong.
+> * **The cartridge-derived cache is required here and the frontend has no equivalent.** This player keeps
+>   a clone of the listing it handed to `Bus::new` **and the ROM path it was launched with** (the status
+>   strip's `rom` row), and `emulator/reload_rom` moves both — it can *drop* the engine's listing on the D7
+>   binding check, and it always replaces the path. Without a re-derivation the strip and the panels go on naming addresses out of a listing
+>   the engine has discarded while `emulator/lookup_symbol` says there is none — one machine, two answers.
+>   This is `rom_changed`'s **only** unique job in this crate: everything else it asks for,
+>   `timeline_moved()` asks for on the same drain.
+>
+> **Two measurements worth keeping**, both pinned as assertions rather than left in prose:
+>
+> 1. **A reset raises `rom_changed` *and* moves the clock**, because `System::reset` rebuilds the `System`
+>    and its scheduler. So `drain`'s `|| report.rom_changed` is redundant for the timeline repair in every
+>    case this crate can reach today. It is written anyway — the `PumpReport` doc asks for it, and the case
+>    where the two flags separate (a reset at `mclk == 0`; any future producer that replaces the machine
+>    without moving its clock) is not exotic. The test asserts the redundancy, so the day it stops holding
+>    the suite says so rather than quietly changing meaning.
+> 2. **The audio half is the severe one and it needed a seam the crate did not have.**
+>    `AudioSink::on_step_boundary` renders only on a *strictly advancing* frame index, so a reset — which
+>    puts that index back to 0 — left the window silent until the machine climbed back past where it was: a
+>    minute in, a minute of silence, with nothing on screen saying why. `Device` had dropped the callback's
+>    flush flag into the closure on parcel 1's stated grounds that no caller existed; one exists now, and
+>    `Device::resync` is it. **Named limit:** `Device` holds a live `cpal::Stream` and cannot be built
+>    without a sound card, so the ring flush and the sink rebuild are witnessed in-crate only through the
+>    branch being taken; the two functions they call are covered where they live. `oracle-frontend` has the
+>    identical limit on the identical state.
+>
+> **Also learned on the way past:** `Host::call` is not a drain, so a command sent in-process can never
+> appear in a `PumpReport`. Every test for this is therefore driven by a real client over a private socket,
+> which is the only route that reaches the code at all. Today nothing in `ui.rs` calls a machine-replacing
+> method, so no in-process gesture can go unreported; a future transport button for reset or reload would
+> be outside this signal and needs its own answer.
+
+* ~~**The `PumpReport` is dropped, and now it can carry something.**~~ `Bus::mirror_pause` calls `Host::pump`
   and discards its report. Until this parcel that was *sound*, and the reason is the reason it no longer
   is: `timeline_moved`, `screen_changed` and `rom_changed` all describe a **socket client** moving the
   machine behind the loop's back, and there was no socket. Now there is. So after a client's

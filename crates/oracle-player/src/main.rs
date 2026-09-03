@@ -561,9 +561,23 @@ impl Loop {
         // green — two lines, each covering for the other, which is how a redundancy passes for a
         // safeguard. The adoption at the top is the one that is correct on its own, for both the halt and
         // the transport bar, and it is now the only one.
+        //
+        // **And the drain's answer is acted on, in the same call.** `bus::drain` mirrors the pause, pumps,
+        // and performs every repair the returned `PumpReport` obliges this window to make — the picture a
+        // client's run drew, the capture and audio ring a machine replacement invalidated, the symbol cache
+        // a ROM reload may have dropped. It is one function rather than a pump here and a reaction below it
+        // because `PLAYER-SERVE` shipped exactly that second shape and the reaction was missing; a drain
+        // whose answer the caller may decline to mention is the shape that made the omission expressible.
+        // The whole of it is inside the `bus` bucket, for `Machine::step`'s reason one module over: timing
+        // only the pump would make this parcel's own cost structurally invisible.
         let t_bus = Instant::now();
-        self.bus
-            .mirror_pause(self.machine.system_mut(), self.paused);
+        bus::drain(
+            &mut self.machine,
+            &mut self.bus,
+            &mut self.symbols,
+            &mut self.rom_path,
+            self.paused,
+        );
         let bus_ms = ms(t_bus.elapsed());
 
         // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
@@ -1155,6 +1169,137 @@ mod loop_tests {
              EMPTY — and its per-frame sort, the one thing here that is not O(1), is sorting nothing"
         );
         assert!(armed, "the run must not have disarmed the instrument");
+    }
+
+    /// ★ **The SHIPPED loop acts on the drain's report** — not merely the helper beside it.
+    ///
+    /// `crate::bus`'s tests drive `bus::drain` directly, which is the right level for *what* each
+    /// `PumpReport` field makes the window do. What none of them can see is whether `Loop::iterate` calls
+    /// it at all: reverted to `Bus::mirror_pause`, this crate would compile, every one of those tests
+    /// would stay green, and the window would be back to discarding the report. `#[must_use]` narrows that
+    /// to a warning, and a warning is silenced with `let _`.
+    ///
+    /// So this drives the real `Loop::iterate` — governor, egui context, panels and all — and observes the
+    /// one repair that nothing else in an iteration can produce: the symbol cache. Frames do not touch it,
+    /// the UI does not touch it, and `Host::call` cannot raise `rom_changed` because it is not a drain.
+    /// `lp.symbols` going `None` here means `bus::drain` ran inside the shipped loop.
+    ///
+    /// **The alternative green paths, ruled out:** the cache is asserted `Some` with its count before the
+    /// client is spawned (it did not start empty); the reload's own `symbolsDropped` is asserted `true`
+    /// (the engine really discarded it, so `None` cannot come from somewhere else); and the loop is left
+    /// running rather than paused, so nothing here depends on a contrivance about frames.
+    #[test]
+    fn the_shipped_loop_re_derives_its_symbol_cache_when_a_client_reloads_the_rom() {
+        use std::io::{BufRead as _, Write as _};
+
+        let tag = format!("{}-{}", std::process::id(), line!());
+        let socket = std::env::temp_dir().join(format!("pl-{tag}.sock"));
+        let rom_path = std::env::temp_dir().join(format!("pl-{tag}.bin"));
+        std::fs::write(&rom_path, oracle_core::testrom::build()).expect("write the fixture ROM");
+
+        let table = oracle_core::symbols::SymbolTable::parse(crate::bus::pumped::LST)
+            .expect("parse the fixture listing");
+        let count = table.len();
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            Some(0.0),
+            rom_path.display().to_string(),
+            symbols::Loaded {
+                table: Some(table),
+                path: None,
+                fatal: None,
+            },
+            // A **private** path, not the well-known default `a_loop` declines to bind: nothing else can
+            // collide with it and nothing on the developer's box is looking for it.
+            Some(Some(socket.clone())),
+        );
+        assert_eq!(
+            lp.symbols.as_ref().map(|t| t.len()),
+            Some(count),
+            "the fixture loop must start out holding the listing"
+        );
+
+        let path = rom_path.display().to_string();
+        let client = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let stream = loop {
+                match std::os::unix::net::UnixStream::connect(&socket) {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut send = |v: serde_json::Value| {
+                writeln!(writer, "{v}").unwrap();
+                writer.flush().unwrap();
+            };
+            let recv = |reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>| loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).expect("read") > 0, "hung up");
+                let v: serde_json::Value = serde_json::from_str(&line).expect("bad JSON");
+                if v.get("id").is_some_and(|i| !i.is_null()) {
+                    return v;
+                }
+            };
+            send(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "clientId":"loop-wiring","clientName":"loop","clientVersion":"0",
+                "protocolVersion":1,"clientCapabilities":{"events":false}}}),
+            );
+            recv(&mut reader);
+            send(serde_json::json!({"jsonrpc":"2.0","method":"initialized"}));
+            // `reload_rom` is refused against a running machine, so the client stops this window first —
+            // which is exactly what a real one has to do.
+            send(serde_json::json!({"jsonrpc":"2.0","id":2,"method":"emulator/pause","params":{}}));
+            recv(&mut reader);
+            send(
+                serde_json::json!({"jsonrpc":"2.0","id":3,"method":"emulator/reload_rom",
+                "params":{"path": path}}),
+            );
+            recv(&mut reader)
+        });
+
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while lp.symbols.is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the client's reload never reached the shipped loop's symbol cache — `Loop::iterate` is \
+                 not acting on the drain's report"
+            );
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let reply = client.join().expect("the client thread");
+        assert_eq!(
+            reply["result"]["symbolsDropped"],
+            serde_json::json!(true),
+            "the engine kept the listing, so the `None` above is not evidence of a re-derivation"
+        );
+        assert!(
+            lp.bus.symbols().is_none(),
+            "the engine still holds a listing it said it dropped"
+        );
+        let _ = std::fs::remove_file(&rom_path);
     }
 
     fn a_loop() -> Loop {

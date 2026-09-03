@@ -53,6 +53,13 @@ pub struct Device {
     /// Ring samples the producer could not push because the ring was full — the *other* end of the
     /// feedback loop from a starve, and the one that ran to 5.8 M in the spike's overflowing run.
     dropped: u64,
+    /// The callback's "discard what you are holding" flag, **kept this side too** — see [`Device::resync`].
+    ///
+    /// ⚑ Parcel 1 left this owned by the callback alone, on the stated grounds that there was "no save-state
+    /// load or ROM reload here yet ... a caller that does not exist". `PLAYER-PUMPREPORT` is the parcel that
+    /// makes the caller exist: `emulator/restore`, `emulator/reload_rom` and `emulator/reset` all arrive over
+    /// the socket now, and each of them leaves the whole ring holding PCM from a timeline that is gone.
+    flush: Arc<AtomicBool>,
     gain: f32,
     rate: u32,
     channels: usize,
@@ -111,10 +118,11 @@ impl Device {
         let counters = Arc::new(Counters::default());
         counters.min_occupancy.store(u64::MAX, Ordering::Relaxed);
         let cb = Arc::clone(&counters);
-        // The callback's "discard what you are holding" flag. Parcel 1 never raises it — there is no
-        // save-state load or ROM reload here yet — so it is owned by the callback alone rather than kept a
-        // second time on `Device` for a caller that does not exist.
+        // The callback's "discard what you are holding" flag, held at BOTH ends: the callback checks it
+        // (`audio::fill_output`) and `Device::resync` raises it. The producer half cannot drain the ring
+        // itself — `clear` is a consumer operation — so this flag is the whole hand-off.
         let cb_flush = Arc::new(AtomicBool::new(false));
+        let flush = Arc::clone(&cb_flush);
 
         let data_cb = move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
             // Ring samples this callback is about to want, given the device's channel count. Read BEFORE
@@ -174,11 +182,35 @@ impl Device {
             frame_samples,
             counters,
             dropped: 0,
+            flush,
             gain,
             rate,
             channels,
             _stream: stream,
         })
+    }
+
+    /// **Put audio back in step with a machine that was replaced under the player** — a client's
+    /// `emulator/restore`, `emulator/reload_rom` or `emulator/reset`, arriving through
+    /// [`Host::pump`](oracle_aether::host::Host::pump) between two of this window's own frames.
+    ///
+    /// Two repairs, for two different failures, and the second is the severe one:
+    ///
+    /// 1. **Drop the ring backlog.** Up to [`crate::audio::RING_FRAMES`] frames of already-rendered PCM
+    ///    belong to the timeline the machine has left. Playing them out is an audible burp of the past.
+    /// 2. **Rebuild the sink** ([`crate::audio::resync_sink`]). [`AudioSink::on_step_boundary`] renders only
+    ///    when the frame index it is handed is **strictly greater** than the last one it saw
+    ///    (`Some(prev) if frame > prev`). All three of those methods can move the machine's frame index
+    ///    *backwards* — `emulator/reset` puts it back to 0 outright, because `System::reset` rebuilds the
+    ///    `System` and its scheduler — so a sink carried across the jump renders **nothing at all** until the
+    ///    machine climbs back past where it was. A reset one minute into a game is a minute of total silence,
+    ///    and nothing in the window says why.
+    ///
+    /// This is the same pair `oracle-frontend`'s `resync_audio` performs, reached through the same two
+    /// shared functions; only the state it lives on is this crate's.
+    pub fn resync(&mut self) {
+        audio::resync_sink(&mut self.sink);
+        self.flush.store(true, Ordering::Release);
     }
 
     /// Drain the synth's last emulated frame and push it into the ring, counting what would not fit.
