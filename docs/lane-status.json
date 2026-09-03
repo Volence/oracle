@@ -1,13 +1,21 @@
 {
-  "focus": "All three panels are on the window: registers, memory, objects. Nothing running.",
+  "focus": "The debug window is finished as specified: panels tab, drag, and now keep their layout between runs. Landed and pushed.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "Now - all three panels merged, verified and pushed.",
+  "nextBoundary": "Here, now. Everything is merged, pushed and banked; nothing is running.",
   "queue": [
     {
-      "id": "PANELS-LOOK",
-      "title": "The three panels are built and tested but nobody has ever looked at them. Thirty seconds of your eyes, or your say-so to open a window.",
+      "id": "PANELS-3-STOPPING",
+      "title": "The next window build after layout: tabs for breakpoints, watchpoints and the profiler - the three that need the emulator to be able to STOP where you tell it, not just be looked at while it runs. They share one change to the run loop, which is why they go together and why they were held back from the first three panels.",
       "state": "next",
+      "size": "L",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI"
+    },
+    {
+      "id": "PANELS-LOOK",
+      "title": "Nothing in the debug window has ever been looked at - the three panels, and now the layout actually reloading on a real restart. Tests prove the format and the wiring; only a human at a window proves it happens. Thirty seconds of your eyes, or your say-so to open one. Gates no building.",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
@@ -18,6 +26,22 @@
       "state": "open",
       "size": "S",
       "blockedBy": null
+    },
+    {
+      "id": "VRAM-WRITE-RULE-CR",
+      "title": "Video memory can be written while the game runs and the other three memory spaces cannot. Our emulator is following the written rules exactly; the rules are what look wrong. Needs raising with the contract team; gates nothing.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
+    },
+    {
+      "id": "ATTR-RGB-LATCH",
+      "title": "The rules change was accepted four days ago and improved. What is ours now is building it - the colour reply saying, only when it can matter, that the picture on screen may disagree with it - plus four conformance samples they named us to write.",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
     },
     {
       "id": "ORACLE-SANITY-WEEKLY",
@@ -34,10 +58,10 @@
       "blockedBy": null
     },
     {
-      "id": "ATTR-RGB-LATCH",
-      "title": "Corrected: the rules change we thought we still owed the contract team was accepted four days ago, and they changed it for the better. What is actually ours now is building it - the colour reply saying, only when it can matter, that the picture on screen may disagree with it - plus four conformance samples they named us to write.",
+      "id": "Y-SIGN-COVERAGE",
+      "title": "Nothing on the emulator's own test side checks that a negative vertical position survives being read. Correct today; a regression would pass unnoticed.",
       "state": "open",
-      "size": "M",
+      "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
     },
@@ -65,29 +89,13 @@
     },
     {
       "id": "OVERLAY-STATE",
-      "title": "Serves 56 methods, verified by spawning the binary. Scope corrected by aeon: it reads the emulator's own chrome, not game pixels, so it does not end their eyeball requests. Left: never run against a real window.",
+      "title": "Serves 56 methods, verified by spawning the binary. It reads the emulator's own chrome, not game pixels, so it does not end their eyeball requests. Left: never run against a real window.",
       "state": "blocked",
       "size": "M",
       "blockedBy": "a live player window on your screen; runs only when none is open"
-    },
-    {
-      "id": "VRAM-WRITE-RULE-CR",
-      "title": "Video memory can be written while the game runs and the other three memory spaces cannot. Our emulator is following the written rules exactly; the rules are what look wrong. We thought this was already raised with the contract team - it is only deferred, so it needs raising properly.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
-      "id": "Y-SIGN-COVERAGE",
-      "title": "Found from the panel side: nothing on the emulator's own test side checks that a negative vertical position survives being read. Correct today; a regression would pass unnoticed.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
     }
   ],
-  "awaiting": "whether you want to look at the three panels - nothing visual has been checked across any of them, and that is the one thing I cannot do without putting a window on your screen.",
+  "awaiting": "whether to keep going into the bigger window build (breakpoint/watchpoint/profiler tabs) - the goal you set for this window is now met, and that next step changes the run loop, so it is a real decision rather than more of the same.",
   "atBoundary": true,
-  "updatedAt": "2026-09-03T08:36:26Z"
+  "updatedAt": "2026-09-03T09:44:10Z"
 }
