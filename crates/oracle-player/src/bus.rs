@@ -1558,7 +1558,7 @@ mod serving {
 /// a paused player runs no frame of its own. `machine.frames() == 0` is asserted at the end of each, so
 /// nothing below can be explained by this loop having drawn anything.
 #[cfg(all(test, unix))]
-mod pumped {
+pub mod pumped {
     use super::*;
     use crate::machine::Machine;
     use serde_json::json;
@@ -2019,7 +2019,7 @@ mod pumped {
     /// addition: `EndOfRom` at `$100`, an offset that is inside the fixture ROM and does not carry the
     /// `de b2` appendix magic. That makes `SymbolTable::validate_against_rom` return `Mismatch`, which is
     /// what makes `emulator/reload_rom` **drop** the listing (D7) and gives this test something to observe.
-    const LST: &str = "\
+    pub const LST: &str = "\
   Symbol Table (* = unused):
   --------------------------
 
