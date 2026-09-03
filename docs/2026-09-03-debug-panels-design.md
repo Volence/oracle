@@ -503,7 +503,7 @@ most of what a Sonic-engine debugger is used for.
 
 ---
 
-## 5.6 Parcel 3 — the run-loop seam, and the re-measurement it owed
+### 5.6 Parcel 3 — the run-loop seam, and the re-measurement it owed
 
 > ### ✅ **BUILT, on `parcel/panels-3-stopping`.** The seam only; the three tabs are the next parcel's.
 
@@ -598,8 +598,11 @@ period            16.665    16.665  |   16.666   16.665
 * **No `Tab` variants**, so `LAYOUT_VERSION` is untouched at 1. Breakpoints, Watchpoints and Profiler tabs
   are the next parcel's, and `Bus::read_instruments` is the borrow they draw from.
 * **Held pads are still not merged.** `Host::set_live_pads` / `Host::held` are unwired in `oracle-player`,
-  so a client's `emulator/hold` does not compose with the keyboard there (it does in `oracle-frontend`).
-  §5.4 listed this among parcel 3's costs; it is a real gap and it is booked here rather than closed.
+  so a client's `emulator/hold` does not compose with the keyboard there (it does in `oracle-frontend`,
+  via `Bus::merge_held`). §5.4 listed this among parcel 3's costs; it is a real gap and it is booked here
+  rather than quietly closed. **§9.4 is its sibling and not the same defect**: that one is about a held set
+  the frontend *does* apply being invisible to the human; this one is about the player not applying it at
+  all, so a client's `hold` against the toolkit player does nothing whatsoever.
 * **The picture does not refresh after `emulator/step`.** A step advances one *instruction*, the run that
   drew the retained frame is over, and `Host::publish_capture` is gated on `has_clients()` — which an
   unserved player never satisfies, so `Host::framebuffer()` has nothing to pull. The retained frame is the

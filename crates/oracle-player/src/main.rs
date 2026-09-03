@@ -433,11 +433,13 @@ impl Loop {
         // **AFTER the frame, not before it, and the ordering is the halt path.** `Machine::step` latched
         // any breakpoint halt through `Bus::record_break`, and a latch is applied at the top of the next
         // `Host::pump` and nowhere else. Draining here applies it in the *same* iteration that observed
-        // it, so `is_paused()` below is true before the governor's next tick and no further frame runs.
-        // Draining at the top of `iterate` instead — which is where parcel 2b's module doc predicted this
-        // call would move — would leave the halt unapplied across the following tick, and the player would
-        // run one extra frame past a breakpoint it had already stopped on. The *adoption* is what moved to
-        // the top; the drain stays here, behind the frame that latches into it.
+        // it, so the adoption at the TOP of the next iteration already sees a paused bus and that
+        // iteration's tick runs no frame.
+        //
+        // Draining at the top instead — which is where parcel 2b's module doc predicted this call would
+        // move — would land *after* that adoption and leave the halt unapplied for the tick that follows
+        // it, so the player would run one extra frame past a breakpoint it had already stopped on. The
+        // *adoption* is what moved to the top; the drain stays here, behind the frame that latches into it.
         //
         // There is deliberately **no second `self.paused = ...` after this**. An earlier draft had one,
         // and both it and the one at the top were then individually removable with every test still
