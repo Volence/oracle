@@ -2476,3 +2476,50 @@ stays in `OVERSEER.md` under the 2026-08-24 anchor-class bar. Verbatim:
 > describes what a commit is *about*; `--stat` is the only thing that says what it *contains* — and the
 > bar's own remedy demands the second.
 
+
+---
+
+## 2026-08-24 — the sigil cycle-dumper exchange, moved out of the boot read 2026-09-03 (DORMANT)
+
+Moved whole and verbatim. The item is `blocked` on an ask nobody has filed, and its consumer (sigil's Spec 2
+cycle budgets) is deferred at their spec freeze, so nothing in a boot needs it. The four things a session
+must not lose are restated as a pointer in `OVERSEER.md`; everything below is the reasoning behind them.
+
+## ⚑ SIGIL CYCLE DUMPER — my join objection is REFUTED; two requirements survive it (2026-08-24)
+
+**Do not re-raise the join objection.** I priced the differential as blocked on *who supplies the
+opcode-to-key join*, reasoning that sigil's `instr_cycles` is keyed on mnemonic + size + EA category
+and holds no opcode (true, and derived here without contact). **The conclusion over-reached.**
+Verified firsthand at sigil `origin/master` **`4b02eb07`** — their committed revision, not their live
+worktree: `m68k_decode.rs::decode_one`, `m68k.rs:180 pub struct Instruction { mnemonic, size, ops }`,
+`m68k_cycles.rs::instr_cycles`, and `sigil-frontend-emp/src/m68k_cycles.rs:130 fn classify(op:
+&CodeOperand, …)`. **They own both halves.** The real gap is one adapter between two of their own
+types, inside one repo. *My premise was right and I turned "the mapping lives in your decoder" into a
+cross-repo ownership problem without checking whether the decoder existed — it had landed the week
+before, in the very parcel whose Capstone precedent I had just praised in the same message.*
+
+**TWO REQUIREMENTS THAT BIND OUR DUMPER, both cheap up front and awkward retrofitted:**
+1. **⚑ BRANCH OUTCOME PER EXECUTION, not just a cycle count.** `CycleCost::Branch { taken, not_taken,
+   exact }` is **outcome-keyed** (verified at `m68k_cycles.rs:103-109`), so a measured count cannot be
+   compared to a `Branch` row unless the dump says which way the branch went. **This is a real change
+   to what would otherwise have been built.**
+2. **The assertion comes from the DATA, which beats my framing.** Rows carry `exact: bool`, doc'd at
+   `:92-93` verbatim: *"`exact: false` marks a MAXIMUM over a data-dependent execution — sound as a
+   ceiling, unusable as an equality."* So the gate is `measured <= modeled` on inexact rows and `==`
+   on exact ones, **read off the flag rather than chosen**. My "≤ direction only" was right and was a
+   convention; theirs is a property. *This satisfies our own name-the-assertion bar out of the data
+   instead of by fiat, which is the stronger form of it.*
+
+**THE NUMBER THAT DECIDES WHETHER TO BUILD AT ALL, sigil's own and stated against their interest:**
+`CycleCost::Unmodeled` exists (`:112`), so the differential's domain is **partial by construction**.
+The gate is **what fraction of a real ROM's instruction stream is modeled**. Unmeasured; theirs to
+measure; **it comes before either lane spends a parcel.** A differential over 20% of the stream is a
+different proposition from one over 95%.
+
+**Status: still `blocked` on `no filed ask exists`** — correctly, and sigil is filing one. The
+consumer (Spec 2 cycle budgets, `SIGIL_SPEC2_LANGUAGE.md` S2-D7(c)) is **deferred at the spec freeze**,
+so there is no sigil-side consumer this week either.
+
+**⚑ THE COVERAGE NUMBER IS A PREDICTION, NOT A MEASUREMENT.** sigil's three-bucket split (exact-modelled / ceiling-only / unmodelled) is a consequence of `CycleCost`'s own doc comment, read while checking this seat's two requirements -- **no corpus measurement has been run.** Do not let a later session cite the three buckets as a finding about any ROM; it is the shape to measure in. CYCLE-ASK stays gated on their owner picking the measurement up. *(The exchange: `OVERSEER-LOG.md`.)*
+
+

@@ -195,23 +195,10 @@ BOTH OF TONIGHT'S FAILURES WERE ON THE EMITTING SIDE, WHERE NO RULE REACHES.** a
 by them at aeon `4fae2d8d`; two instances, one from each lane, hours apart.
 
 
-
-
-
-
-
-
-
 **▶ F-CR28-CALLERS-DANGLING, registered 2026-08-30 — an unmerged commit in a leftover worktree, found
 
 *(The incident that earned this: `OVERSEER-LOG.md`, orig lines 294-323.)*
 while earning an `atBoundary: true` claim rather than asserting one.**
-
-
-
-
-
-
 
 
 **▶ AND THE RESPONDER'S HALF, SIGIL'S, WHICH COMPLETES THE CIRCUIT ABOVE — HEDGE THE PREMISE, NOT THE
@@ -238,8 +225,6 @@ dependency: they are filing it, and a second lane telling the hub the same thing
 **Revival condition:** the README sentence owner ruling 4 requires — it should carry this fact, not
 merely that the surface is legacy. Explicitly NOT a fix recommendation for `oracle-old`: it is
 reference-only and the cutover exists to delete it.
-
-
 
 
 ## ⚑ OWNER RULING — PUSH AUTHORIZATION — ✅ **CONFIRMED DIRECTLY BY THE OWNER, 2026-08-24, IN THIS SESSION**
@@ -274,6 +259,25 @@ never-record-an-unwitnessed-approval bar exists to draw.
 authorizes PUSHING, not the work being pushed.** It does not release this lane's boot stop, it is
 not approval to dispatch or to land a parcel, and **it does not touch the CR-A/CR-B adjudication
 hold**, which remains a separately parked owner item.
+
+## ⚑ OWNER RULING, 2026-09-03T05:21:01Z — **REPORT TO THE HUB WHENEVER YOU FINISH OR STOP**
+
+⚑ **RELAYED BY empyrean-01, NOT WITNESSED BY THIS LANE** — same flag, same reason, as the relayed
+rulings below. **Verified firsthand rather than taken on the relay's word**, which is what makes it
+usable: empyrean **`f04afe3`** is an ancestor of their `origin/main`, `--stat` shows it is a docs commit
+carrying a docs ruling (so its SHA class matches what it anchors), and the owner's words are present in
+the blob at that revision. His words: *"tell the agents any time theyy finish work or stop to report to
+you please, loosk like aeon's stopped right now"*.
+
+**Standing, every lane: a landing, a boundary, a block, an owner question, or a dispatched agent
+returning — anything that leaves nothing running — gets ONE message to the hub saying what landed (SHA
+emitted from git output, never typed) or why you stopped, and what you need.** Going quiet with nothing
+running is the state he named.
+
+⚠ **This does NOT license the aggregate waste bar 18 exists for.** The trigger is *finishing or
+stopping*, not *changing something* — a pin, a correction, or an interesting finding still needs a named
+reader before it is sent. The two rules compose: report your own state unconditionally; relay a *fact* to
+a peer only when you can name their dependency on it.
 
 ## ⚑ FOUR OWNER RULINGS, 2026-08-22 — **RELAYED, NOT WITNESSED BY THIS LANE**
 
@@ -427,43 +431,21 @@ the handler); the legacy server silently defaults unknown params, which is exact
 sequence a cutover onto the STRICT implementation. **A missing capability that returns something is
 far worse here than one that refuses.**
 
-## ⚑ SIGIL CYCLE DUMPER — my join objection is REFUTED; two requirements survive it (2026-08-24)
+## ⚑ SIGIL CYCLE DUMPER — DORMANT (2026-08-24; detail in `OVERSEER-LOG.md`)
 
-**Do not re-raise the join objection.** I priced the differential as blocked on *who supplies the
-opcode-to-key join*, reasoning that sigil's `instr_cycles` is keyed on mnemonic + size + EA category
-and holds no opcode (true, and derived here without contact). **The conclusion over-reached.**
-Verified firsthand at sigil `origin/master` **`4b02eb07`** — their committed revision, not their live
-worktree: `m68k_decode.rs::decode_one`, `m68k.rs:180 pub struct Instruction { mnemonic, size, ops }`,
-`m68k_cycles.rs::instr_cycles`, and `sigil-frontend-emp/src/m68k_cycles.rs:130 fn classify(op:
-&CodeOperand, …)`. **They own both halves.** The real gap is one adapter between two of their own
-types, inside one repo. *My premise was right and I turned "the mapping lives in your decoder" into a
-cross-repo ownership problem without checking whether the decoder existed — it had landed the week
-before, in the very parcel whose Capstone precedent I had just praised in the same message.*
-
-**TWO REQUIREMENTS THAT BIND OUR DUMPER, both cheap up front and awkward retrofitted:**
-1. **⚑ BRANCH OUTCOME PER EXECUTION, not just a cycle count.** `CycleCost::Branch { taken, not_taken,
-   exact }` is **outcome-keyed** (verified at `m68k_cycles.rs:103-109`), so a measured count cannot be
-   compared to a `Branch` row unless the dump says which way the branch went. **This is a real change
-   to what would otherwise have been built.**
-2. **The assertion comes from the DATA, which beats my framing.** Rows carry `exact: bool`, doc'd at
-   `:92-93` verbatim: *"`exact: false` marks a MAXIMUM over a data-dependent execution — sound as a
-   ceiling, unusable as an equality."* So the gate is `measured <= modeled` on inexact rows and `==`
-   on exact ones, **read off the flag rather than chosen**. My "≤ direction only" was right and was a
-   convention; theirs is a property. *This satisfies our own name-the-assertion bar out of the data
-   instead of by fiat, which is the stronger form of it.*
-
-**THE NUMBER THAT DECIDES WHETHER TO BUILD AT ALL, sigil's own and stated against their interest:**
-`CycleCost::Unmodeled` exists (`:112`), so the differential's domain is **partial by construction**.
-The gate is **what fraction of a real ROM's instruction stream is modeled**. Unmeasured; theirs to
-measure; **it comes before either lane spends a parcel.** A differential over 20% of the stream is a
-different proposition from one over 95%.
-
-**Status: still `blocked` on `no filed ask exists`** — correctly, and sigil is filing one. The
-consumer (Spec 2 cycle budgets, `SIGIL_SPEC2_LANGUAGE.md` S2-D7(c)) is **deferred at the spec freeze**,
-so there is no sigil-side consumer this week either.
-
-**⚑ THE COVERAGE NUMBER IS A PREDICTION, NOT A MEASUREMENT.** sigil's three-bucket split (exact-modelled / ceiling-only / unmodelled) is a consequence of `CycleCost`'s own doc comment, read while checking this seat's two requirements -- **no corpus measurement has been run.** Do not let a later session cite the three buckets as a finding about any ROM; it is the shape to measure in. CYCLE-ASK stays gated on their owner picking the measurement up. *(The exchange: `OVERSEER-LOG.md`.)*
-
+`blocked` on `no filed ask exists`, and sigil's own consumer (Spec 2 cycle budgets) is deferred at their
+spec freeze, so neither lane has one. **Four things not to lose, each argued in the log:**
+1. **Do not re-raise the join objection.** I priced this as blocked on who supplies the opcode-to-key join;
+   sigil owns both halves and the gap is one adapter inside their repo. The premise was right, the
+   conclusion over-reached.
+2. **Branch outcome per execution, not just a cycle count** — `CycleCost::Branch` is outcome-keyed, so a
+   measured count is uncomparable unless the dump says which way the branch went. A real design change.
+3. **The assertion comes from the DATA:** rows carry `exact: bool`, so the gate is `measured <= modeled` on
+   inexact rows and `==` on exact ones — read off the flag rather than chosen by us.
+4. **⚑ The coverage number is a PREDICTION, not a measurement.** `CycleCost::Unmodeled` exists, so the
+   differential's domain is partial by construction, and the deciding number — what fraction of a real ROM's
+   stream is modelled — is **unmeasured and theirs to measure, before either lane spends a parcel.** Never
+   let a later session cite the three-bucket split as a finding about any ROM.
 
 ## ▶ LAYER-MASK — LANDED. One safety property survives it and must not be "finished".
 
@@ -523,7 +505,6 @@ consume this. Cheaper before the design than after.)*
    no standing on-screen statement is the unlabelled-highlight defect one level up: *the author will
    forget, and then read a masked picture as the real one.* Their canvas palette treats colour as a
    language deliberately; a toggle that fights that is worse than none.
-
 
 
 ## ⚑ HUB RULING, 2026-09-02 — HERMETIC GATE IS THE RATIFIED SHAPE; DRIFT IS A NIGHTLY, AND IT GETS **NO SECOND OWNER CARD**
@@ -657,16 +638,6 @@ F-RESUME-STOP-RACE with the two halves swapped. This is exactly the shape a firs
 reaches for, so it is recorded before anyone writes one.
 
 
-
-
-
-
-
-
-
-
-
-
 ⚑ **AND THE RETURN LEG, 2026-09-02 — `run_to.reached` NOW HAS A NAMED LIVE CONSUMER, WHICH IS WHAT
 PROTECTS IT FROM A FUTURE TIDY-UP.** aurora re-read the body order at `7ba2faf` themselves rather than
 adopting our answer (confirming it an ancestor of our `origin/main` first), and their stated reason is
@@ -773,7 +744,6 @@ claim is about.
 A RIGHT SHA ANSWERING AN UNSTATED QUESTION IS NOT A WRONG SHA.** Found by aiming the 08-24 bar at aeon
 and being half right; the diagnosis below is theirs, banked by them at aeon `b64f6bcb` (verified here as
 a reachable ancestor of their `origin/master`, docs SHA carrying docs).
-
 
 
 **⚑ AND THE HALF THAT COST ME MORE THAN THE CATCH: RUN `--stat` ON THE SHA YOU PROPOSE, NOT ONLY ON THE
@@ -1001,12 +971,8 @@ method* — knowing a thing in the tree is not the thing reaching the process th
 FROM THE PATH.** Third instance of the anchor-class family against this seat, caught by the hub.
 
 
-
 **The corrective is constructive, not verifying**, because `--stat`-after-the-fact is what the existing
 bar already prescribes and it did not fire — I had no reason to doubt a hash I had watched go out:
-
-
-
 
 
 **▶ NEW OPS LINE, 2026-08-30 — A KILLED SUITE LEAVES A LOG THAT AGGREGATES CLEAN. COUNT THE LEGS, NOT THE
@@ -1015,11 +981,8 @@ bar already prescribes and it did not fire — I had no reason to doubt a hash I
 FAILURES.** Nearly quoted as a merge verdict by this seat.
 
 
-
 **Corrective, and it is cheap because it is one more line in the same command:** a verification asserts
 its own **completeness** before its verdict —
-
-
 
 
 **▶ CORRECTION, 2026-08-30 — OUR HEADLESS RECIPE'S "BOTH GUARDS" ARE ONE GUARD TWICE, AND IT IS THE
@@ -1029,11 +992,6 @@ GUARD A PEER JUST MEASURED AS INEFFECTIVE.** Prompted by aurora's O36 finding (r
 the defect below is ours and was found by reading our own source, not theirs.
 
 
-
-
-
-
-
 **▶ NEW OPS LINE, 2026-08-30 — DO NOT COMMIT WHILE A VERIFICATION RUN IS IN FLIGHT. IT INVALIDATES THE
 
 *(The incident that earned this: `OVERSEER-LOG.md`, orig lines 1292-1312.)*
@@ -1041,11 +999,9 @@ BUILD-ID GATE AND THE FAILURE LOOKS LIKE THE PARCEL'S.** Third instrumentation f
 the only one that produced a red that was entirely mine.
 
 
-
 **Corrective:** a verification prints `HEAD_AT_START` and `HEAD_AT_END` and **they must be equal for the
 verdict to count**. Bank findings *after* the run, never during — the twelve minutes are not free time,
 they are part of the measurement.
-
 
 
 **▶ SCOPE CORRECTION, 2026-08-30 — `screen_text` DOES NOT END AEON'S EYEBALL REQUESTS, AND THIS FILE SAID
@@ -1053,7 +1009,6 @@ they are part of the measurement.
 *(The incident that earned this: `OVERSEER-LOG.md`, orig lines 1319-1330.)*
 IT WOULD.** Corrected by aeon against a claim this seat made to them, which was taken verbatim from our
 own queue row.
-
 
 
 **The durable shape, and it is why this is an ops line rather than a typo fix: the over-claim was in a
@@ -1112,14 +1067,12 @@ a rule you have read does not fire, a curl does. Found by the aurora lane readin
 peers are up: the verdict is only ever one curl away, and nothing else will surface it.
 
 
-
 **▶ NEW BAR, 2026-08-29 — VALIDATE AN ARTIFACT AGAINST THE SCHEMA IT TARGETS BEFORE CALLING IT READY.
 
 *(The incident that earned this: `OVERSEER-LOG.md`, orig lines 1400-1426.)*
 A "ready to merge" IS a completeness claim, and it is the one nobody thinks to check because it reads
 as a status rather than an assertion.** Earned against this seat, on the same submission where it was
 lecturing about unchecked residues.
-
 
 
 **Corrective, and it is mechanical because vigilance already failed:** an artifact authored against a
@@ -1135,7 +1088,6 @@ what was not checked, rather than letting a confident cover note stand in for it
 SCREEN-HONESTY parcel, against this seat's own green test.
 
 
-
 **Correctives, in the order they are cheap.** (1) When adding to a fixed-width surface, assert on the
 **whole** rendered string, not on the field you added — `assert_eq!(rendered, full)` is the form, and
 it fails for the person who adds the *next* field too. (2) **Print it and look at it** before believing
@@ -1146,15 +1098,11 @@ a width that drops a late field while keeping an early one, or the ordering test
 never truncates at all.
 
 
-
-
 **▶ NEW BAR, 2026-08-27 — A CLAIM IN OUR DOCS ABOUT A PEER'S FILE HAS A SHELF LIFE, AND NOTHING IN THIS
 
 *(The incident that earned this: `OVERSEER-LOG.md`, orig lines 1486-1504.)*
 REPO CAN EVER TELL YOU IT HAS EXPIRED. MEASURED SHELF LIFE: FORTY MINUTES.** Third instance in one day,
 which is what makes it a bar rather than three slips.
-
-
 
 
 **The remedy, and it is cheap because it is the protocol's verified-at anchor pointed at our own
@@ -1178,10 +1126,6 @@ AN IMMEDIATE AND IT IS SIMPLY NOT THERE AS A CONTIGUOUS SEQUENCE.** Earned by ne
 stale-binary emergency to a peer who was about to make a decision on it.
 
 
-
-
-
-
 **Operational form:** to ask whether a binary contains a symbol or wire key, (1) **spawn it and call
 it** — the bar already says this and it is the only answer that cannot be fooled; (2) failing that,
 grep the **debug** build, or the **8-byte prefix**; (3) never read a short-string absence in a release
@@ -1195,10 +1139,6 @@ arriving with the seat on the losing side.
 MEASUREMENT. FIRSTHAND VERIFICATION DID NOT PROTECT US; IT IS WHAT LAUNDERED IT.** Found by aeon
 against this seat, same hour, and it is the reason the absence above went unbelieved for as long as it
 did.
-
-
-
-
 
 
 **▶ THE COMMIT-MESSAGE BAR NOW HAS TWO INSTANCES, AND BOTH FAILED BY THE SAME MECHANISM: A LINE WRAP.**
@@ -1255,7 +1195,6 @@ the note never said which of the two it was promising. Same class as *check the 
 sentence true of the file and false of the situation. *(`xdotool` is absent on this machine; `python-xlib`
 0.33 is present and gives XTEST, which is what drove the keystrokes. `import` from ImageMagick grabs the
 screen; `scrot`/`xwd` are absent.)*
-
 
 
 `cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
