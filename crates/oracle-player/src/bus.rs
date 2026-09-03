@@ -1,4 +1,4 @@
-//! **The player owns a `Host`** — the Aether capability layer, in-process, unbound.
+//! **The player owns a `Host`** — the Aether capability layer, in-process, and (opt-in) bound to a socket.
 //!
 //! Parcel 2a shipped `oracle-aether` as a *dev*-dependency: the parity test needed to see both sides and
 //! nothing on the shipped path reached the bus. Parcel 2b promotes it, because the Memory panel's writes,
@@ -6,11 +6,26 @@
 //! same method registry that contract D15 says an in-process GUI *is*. A panel that showed a refusal it
 //! composed itself would be a panel guessing at the server it lives inside.
 //!
-//! # What this does NOT do, and why the list is the design
+//! # ⚑ The socket is for EXTERNAL clients only — this GUI is NOT a client of itself
 //!
-//! * **No [`Host::serve`].** No socket is bound, no filesystem entry is created and no thread is started.
-//!   `Host::new`'s own doc states the guarantee this leans on: *"a player that never asks for the bus
-//!   behaves exactly as it did before this existed."* Owning one costs a struct.
+//! `PLAYER-SERVE` adds [`Host::serve`], so another lane's tool, a script or the MCP shim can attach to
+//! *this* window. It changes **nothing** about how the window talks to itself, and that is a decision this
+//! repo already made rather than an accident of the diff:
+//!
+//! * `empyrean:contract/protocol.md` **D15** — *"An in-process GUI is a consumer of the same registry, not
+//!   a second server… it reads the method registry directly, in-process; it does not open a socket to
+//!   itself."*
+//! * So the panels keep reading the shared derivation directly ([`Bus::read_instruments`],
+//!   [`Bus::read_breakpoints`], [`Bus::held_pads`]) and every gesture keeps going through [`Host::call`],
+//!   which is synchronous and answers against the machine handed in.
+//! * **Routing panels through the socket is the option that was considered and rejected.** It would put a
+//!   `serde_json` round trip and a thread hop between a click and its answer, and it would have to land in
+//!   [`Host::pump`] — the drain that runs *once per iteration* — so a click would cost a frame before it
+//!   was even dispatched. A later reader tempted to "unify the two paths" is looking at the worse of the
+//!   two, and this paragraph is why it was not taken.
+//!
+//! What serving *does* change is listed at [`Bus::publish`] and [`Bus::mirror_pause`]: `has_clients()` can
+//! now be true, and a socket client can move the machine behind the loop's back.
 //!
 //! Two entries that stood here have been **struck by parcel 3 (`PANELS-3-STOPPING`)**, which is the parcel
 //! they named as their owner. They are kept, struck, because the reason they were deferred is the reason
@@ -24,6 +39,10 @@
 //!
 //! Parcel 1's pacing numbers were taken against a loop with neither. **They were retaken** — before and
 //! after, on one rig in one session — and the result is in `docs/2026-09-03-debug-panels-design.md` §5.6.
+//!
+//! ⚑ **§5.6.1's `bus-pump` measurement rested on a premise `PLAYER-SERVE` deletes.** It read 0.000 ms
+//! median with the reasoning *"an unserved player queues nothing, so the drain is a `try_recv` on an empty
+//! channel"*. A bound socket can queue. The measurement was retaken for that reason; §5.8.1 has it.
 //!
 //! # ⚑ The pause mirror, which is the one subtle piece
 //!
@@ -74,6 +93,92 @@ use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::system::System;
 use oracle_core::watchpoints::Watchpoints;
 use serde_json::{Map, Value};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
+
+/// **What this launch has to say about the bus** — one of exactly three states, each with its own
+/// sentence.
+///
+/// It is a stored value rather than a `println!` at the bind site, and that is the improvement over
+/// `oracle-frontend`'s twin of this code. There, the three lines are printed inline and the file's own
+/// comment records the consequence: *"no test over this file's output could have caught its removal — a
+/// unit test cannot read `println!`"*, so the silent-arm defect had to be defended with a `match` whose
+/// deletion is a compile error. That defence is kept here **and** the lines themselves are now readable by
+/// a test, because they are [`ServeOutcome::sentence`]'s return value rather than a side effect.
+///
+/// The same sentence is what the status strip's `aether` row shows a human ([`crate::ui::StatusStrip`]),
+/// so the launch line and the window cannot describe this window's bus differently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServeOutcome {
+    /// Nobody asked. **This is still a statement and it is still printed** — see [`ServeOutcome::sentence`].
+    NotAsked,
+    /// Bound, accepting, and reachable at this path.
+    Serving(PathBuf),
+    /// Asked, and it did not happen. Carries the `io::Error`'s own text, never a paraphrase.
+    Failed(String),
+}
+
+impl ServeOutcome {
+    /// The one sentence this outcome is, without the `aether: ` prefix.
+    ///
+    /// ⚑ **The [`NotAsked`](ServeOutcome::NotAsked) arm is the load-bearing one, and it is why this is not
+    /// an `Option<String>`.** Until 2026-08-29 `oracle-frontend`'s equivalent printed nothing at all when
+    /// it was not serving, so a launch without the flag emitted no line about Aether anywhere — and **an
+    /// absence is not a statement**. The measured cost was the owner launching twice in one evening and
+    /// going to a window that could not be attached to. A silent unserved player is the defect, not the
+    /// default, so this arm returns prose like the other two.
+    ///
+    /// It names all three switches because the reader of this line is, by construction, someone who wanted
+    /// the bus and did not get it — a message that reports a state without naming the remedy sends them to
+    /// the `--help` this line could have been.
+    pub fn sentence(&self) -> String {
+        match self {
+            ServeOutcome::NotAsked => String::from(
+                "not serving — no --aether given, so nothing can attach to this window \
+                 (pass --aether, or --socket PATH, or set ORACLE_AETHER=1)",
+            ),
+            ServeOutcome::Serving(p) => format!(
+                "serving on {} (mode 0600, {} methods, protocol version {})",
+                p.display(),
+                oracle_aether::engine::METHODS.len(),
+                oracle_aether::rpc::PROTOCOL_VERSION
+            ),
+            ServeOutcome::Failed(e) => {
+                format!("NOT serving — cannot bind the socket ({e})")
+            }
+        }
+    }
+}
+
+/// **What the window says about its bus right now** — the startup outcome, plus whether anybody is
+/// actually on the other end of it.
+///
+/// Two fields rather than one because they answer two different questions and a human staring at the
+/// strip usually has the second: *a socket exists* is a fact about this launch, *somebody is attached* is
+/// a fact about this second. The second is the one that explains a character walking left on its own,
+/// beside the held-pads row that names the buttons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AetherStatus {
+    pub outcome: ServeOutcome,
+    /// Live, now. Structurally `false` whenever `outcome` is not [`ServeOutcome::Serving`] — nothing can
+    /// attach to a socket that does not exist — so [`AetherStatus::sentence`] mentions it only there,
+    /// rather than printing "0 attached" under a bus that is off and inviting the reader to wonder
+    /// whether it should be 1.
+    pub attached: bool,
+}
+
+impl AetherStatus {
+    /// The row's sentence: [`ServeOutcome::sentence`] plus, when there is a socket, who is on it.
+    pub fn sentence(&self) -> String {
+        let base = self.outcome.sentence();
+        match (&self.outcome, self.attached) {
+            (ServeOutcome::Serving(_), true) => format!("{base} — a client is attached"),
+            (ServeOutcome::Serving(_), false) => format!("{base} — nothing attached yet"),
+            _ => base,
+        }
+    }
+}
 
 /// The hosted capability layer.
 ///
@@ -85,6 +190,9 @@ use serde_json::{Map, Value};
 /// so calling it every iteration with an unchanged value queues nothing.
 pub struct Bus {
     host: Host,
+    /// What [`Bus::new`] did about the socket. Stored so [`Bus::announcement`] and the status strip read
+    /// one fact, and so a test can read it at all.
+    outcome: ServeOutcome,
 }
 
 /// One command's answer, as the tool would have received it: the handler's own reply or its own refusal.
@@ -122,12 +230,128 @@ impl Bus {
     ///
     /// `paused` is the player's own pause at launch — `false` for the player, which plays. See the module
     /// doc for why this pumps and why the pump is here rather than in the loop.
-    pub fn new(sys: &mut System, info: MachineInfo, paused: bool) -> Self {
+    ///
+    /// # The socket (`PLAYER-SERVE`)
+    ///
+    /// `socket` carries `oracle-frontend`'s shape unchanged, because a second spelling of one decision is
+    /// the drift R2 exists to prevent: **`None` binds nothing**, `Some(None)` binds the contract's own
+    /// resolved default (`$ORACLE_SOCKET` → `$EXODUS_SOCKET` → `$XDG_RUNTIME_DIR/oracle.sock` →
+    /// `/tmp/oracle.sock`, §7.1), and `Some(Some(p))` binds `p`.
+    ///
+    /// **The default is the well-known path deliberately, and a collision is loud rather than avoided.**
+    /// Every lane's client resolver commits to `$XDG_RUNTIME_DIR/oracle.sock`, so a player that defaulted
+    /// to a path of its own would be unreachable by exactly the tools this parcel exists to reach — the
+    /// flag would bind a socket and still leave "nothing can attach to this window" true in practice.
+    /// [`Server::bind`](oracle_aether::server::Server::bind) already separates the two collisions that
+    /// matter: it **connects first**, refuses `AddrInUse` against a live server on the path (the owner's
+    /// own `oracle-frontend` window, historically), and unlinks only a corpse that is actually a socket.
+    /// So there is no silent fallback to a second path and no unlink that could remove a live server's
+    /// entry; there is a refusal, and the refusal is printed.
+    ///
+    /// A bind failure degrades to inert and is **never fatal**: someone who launched a game to play it
+    /// should not be stopped by a socket, and [`ServeOutcome::Failed`] says exactly what did not happen.
+    ///
+    /// The `match` on `socket` is deliberate, and `oracle-frontend`'s reason travels with it: written as
+    /// `if let Some(path) = socket`, **deleting the silent case would be a silent regression** rather than
+    /// a compile error. Here it is defended twice — by the `match`, and by [`ServeOutcome::sentence`]
+    /// being a value a test can read.
+    pub fn new(
+        sys: &mut System,
+        info: MachineInfo,
+        paused: bool,
+        socket: Option<Option<PathBuf>>,
+    ) -> Self {
         let mut host = Host::new(HostConfig::default());
         host.set_machine_info(info);
-        let mut bus = Bus { host };
+        let outcome = match socket {
+            Some(path) => match host.serve(path) {
+                Ok(p) => ServeOutcome::Serving(p),
+                Err(e) => ServeOutcome::Failed(e.to_string()),
+            },
+            None => ServeOutcome::NotAsked,
+        };
+        let mut bus = Bus { host, outcome };
         bus.mirror_pause(sys, paused);
         bus
+    }
+
+    /// The launch line, prefixed. Printed unconditionally by `main`, in **one** call site with no per-case
+    /// arm to delete — which is the property the frontend's three inline prints do not have.
+    pub fn announcement(&self) -> String {
+        format!("aether: {}", self.outcome.sentence())
+    }
+
+    /// # The three cross-check accessors below are `#[cfg(test)]`, and that is the design
+    ///
+    /// The **shipped** surface for "what about the bus?" is exactly two calls: [`Bus::announcement`] for
+    /// the launch line and [`Bus::aether_status`] for the window's row. These three exist so a test can
+    /// compare our stored [`ServeOutcome`] against the **`Host`'s own** view — the two are built three
+    /// lines apart and could disagree, and a test that read only our copy would be checking that a field
+    /// holds what we put in it.
+    ///
+    /// `#[cfg(test)]` states in the type system what a paragraph would only ask for: a future gate on any
+    /// of them does not compile until somebody deliberately removes the attribute. That matters here more
+    /// than usual — `oracle-frontend` gates two behaviours on its own `is_serving()`, and this crate
+    /// deliberately gates none, because [`ServeOutcome`] carries *why* (`NotAsked` and `Failed` are
+    /// different facts a `bool` collapses) and a second weaker spelling of one state is the drift R2
+    /// exists to prevent.
+
+    /// What [`Bus::new`] did about the socket. Our stored copy.
+    #[cfg(test)]
+    pub fn serve_outcome(&self) -> &ServeOutcome {
+        &self.outcome
+    }
+
+    /// The path the socket is actually bound to, or `None` when nothing is bound. The **`Host`'s**, so it
+    /// is the *resolved* path and not the argument — `Some(None)` asks for a default whose value only
+    /// §7.1's resolver knows.
+    #[cfg(test)]
+    pub fn socket_path(&self) -> Option<&Path> {
+        self.host.socket_path()
+    }
+
+    /// Whether the bus is actually **bound and reachable by an external client**.
+    ///
+    /// It asks the `Host` — `accept.is_some()` — rather than re-deriving from the command line, so a
+    /// launch that asked to serve and failed to bind answers `false`. That is the one case a flag-derived
+    /// field gets wrong, and it is the case that matters.
+    ///
+    /// ⚑ **Read the next sentence before gating anything on this.** `is_serving()` is *not* "the bus is
+    /// usable": [`Host::call`] is in-process and reachable with it false (D15), so every panel gesture,
+    /// `emulator/hold`, the transport bar and the whole method registry work in an unserved player. This
+    /// answers exactly one question — *can something outside this process attach* — and the only correct
+    /// uses of it are ones where the answer to that question is the point.
+    ///
+    /// ⚑ **Nothing in this crate gates on it**, unlike `oracle-frontend`, which has two call sites for
+    /// its own. See the block above [`serve_outcome`](Bus::serve_outcome) for why, and for why this is
+    /// `#[cfg(test)]`.
+    #[cfg(test)]
+    pub fn is_serving(&self) -> bool {
+        self.host.is_serving()
+    }
+
+    /// **What this window says about its bus right now**, for the status strip.
+    ///
+    /// One call rather than two accessors, because the row is one sentence and the two facts in it are
+    /// read in the same instant.
+    pub fn aether_status(&self) -> AetherStatus {
+        AetherStatus {
+            outcome: self.outcome.clone(),
+            attached: self.has_clients(),
+        }
+    }
+
+    /// Whether an external client is connected **right now**.
+    ///
+    /// ⚑ This is the predicate design §5.6.2 called one that *"an unserved player never satisfies"*. That
+    /// sentence was true of every build before `PLAYER-SERVE` and is false of this one, which is why it is
+    /// exposed here at all: [`Bus::publish`]'s cost and `emulator/screenshot`'s answer both turn on it,
+    /// and a claim about a gate that can never open needs re-establishing the moment it can.
+    ///
+    /// Distinct from [`is_serving`](Bus::is_serving): serving is *a socket exists*, this is *somebody is
+    /// on it*. A served player with nobody attached answers `false` here and `true` there.
+    pub fn has_clients(&self) -> bool {
+        self.host.has_clients()
     }
 
     /// Tell the bus what the player's loop is doing, and **make it land** — the loop's one drain.
@@ -144,11 +368,26 @@ impl Bus {
     /// on the frame a breakpoint fires it has not. The player would keep running past a breakpoint the bus
     /// believed it had stopped on.
     ///
-    /// The [`PumpReport`](oracle_aether::host::PumpReport) is dropped, deliberately. Its three interesting
-    /// flags — `timeline_moved`, `screen_changed`, `rom_changed` — all describe *a socket client* moving
-    /// the machine behind the loop's back, and this player never binds one ([`Host::serve`] is not called
-    /// anywhere in this crate). The one caller that can move the machine here is the transport bar, and it
-    /// goes through [`Host::call`], which is not a drain and so cannot appear in this report at all.
+    /// # ⚑ The dropped [`PumpReport`](oracle_aether::host::PumpReport) — a KNOWN GAP as of `PLAYER-SERVE`
+    ///
+    /// The report is dropped. Until this parcel that was **sound**, and the reason it was sound is the
+    /// reason it no longer is: its three interesting flags — `timeline_moved`, `screen_changed`,
+    /// `rom_changed` — all describe *a socket client* moving the machine behind the loop's back, and this
+    /// player bound no socket, so none of them could ever be true. (The transport bar can move the machine
+    /// too, but it goes through [`Host::call`], which is not a drain and cannot appear in this report at
+    /// all.)
+    ///
+    /// **Now that [`Bus::new`] can bind, all three are reachable**, and dropping them means: after a
+    /// client's `emulator/run_frames`, `emulator/restore` or `emulator/reload_rom`, the player does not
+    /// resynchronise its audio ring, its frame counter or its scanline capture, and does not present the
+    /// frame the run drew. `oracle-frontend` reacts to exactly these flags; this crate has no equivalent —
+    /// it never reads [`Host::framebuffer`] at all.
+    ///
+    /// **Booked, not closed, and deliberately so.** Closing it is a *behaviour* change to the run loop
+    /// (present the bus's frame, restart the ring, re-derive the counter) with its own pacing cost, which
+    /// is a parcel and not a line; `PLAYER-SERVE` is the parcel that makes the socket exist. It is written
+    /// here rather than left to be discovered because a gap that is booked is a decision and a gap that is
+    /// silent is a defect. `docs/2026-09-03-debug-panels-design.md` §5.8.2 is its entry.
     pub fn mirror_pause(&mut self, sys: &mut System, paused: bool) {
         self.host.set_paused(paused);
         self.host.pump(sys);
@@ -232,9 +471,23 @@ impl Bus {
     /// re-render of the VDP state — which, taken in V-Blank after the game has rewritten CRAM for the next
     /// frame, cannot show a single mid-frame palette effect.
     ///
-    /// Free while nobody is connected: [`Host::publish_capture`] is gated on `has_clients()` internally,
-    /// and this player binds no socket, so today this is one atomic load and a return. It is wired anyway
-    /// because the alternative is a seam that has never been exercised on the day something does connect.
+    /// # ⚑ `has_clients()` is no longer permanently false, and this is the call that notices
+    ///
+    /// [`Host::publish_capture`] is gated on `has_clients()` internally. Before `PLAYER-SERVE` that gate
+    /// could never open — the player bound no socket, so `live` was 0 forever and this was one atomic load
+    /// and a return. It was wired anyway "because the alternative is a seam that has never been exercised
+    /// on the day something does connect"; **this is that day**.
+    ///
+    /// So the cost here is now *conditional on an attached client*, not zero: with one connected, every
+    /// emulated frame that produced a picture copies it into the engine's latched frame, which is what
+    /// makes `emulator/screenshot` and `emulator/state_hash {includeFramebuffer}` answer with what is on
+    /// the glass rather than a post-hoc re-render of the VDP state — which, taken in V-Blank after the game
+    /// has rewritten CRAM for the next frame, cannot show a single mid-frame palette effect. That is the
+    /// point of publishing; it is priced in §5.8.1 rather than assumed free.
+    ///
+    /// **It changes nothing about the window's own picture.** The glass is
+    /// [`Machine::image`](crate::machine::Machine::image); this crate never reads [`Host::framebuffer`].
+    /// See §5.8.2 and [`Bus::mirror_pause`].
     pub fn publish(&mut self, cap: &ScanlineCapture) {
         self.host.publish_capture(cap);
     }
@@ -248,10 +501,15 @@ impl Bus {
     /// halves into shared code as the opportunity here, and a second `merge_held` in this crate would have
     /// been the drift the tabs parcel published `watch_wire_id` to avoid.
     ///
-    /// **Not inert here, despite the socket this player never binds.** `Host::call` is in-process and
-    /// reachable — the transport bar and every panel gesture already go through it (D15) — so
-    /// `emulator/hold` can install a held set with `is_serving()` false. That is exactly why the hoisted
-    /// merge has no `is_serving()` gate; see its doc.
+    /// **Not inert even when nothing is bound.** `Host::call` is in-process and reachable — the transport
+    /// bar and every panel gesture already go through it (D15) — so `emulator/hold` can install a held set
+    /// with `is_serving()` false. That is exactly why the hoisted merge has no `is_serving()` gate; see its
+    /// doc.
+    ///
+    /// ⚑ `PLAYER-SERVE` does **not** weaken that argument, it strengthens it. The gate's absence was
+    /// already load-bearing here (an in-process `hold` under a false `is_serving()`); now a *socket*
+    /// client's `hold` reaches the same held set through the same engine, so the gate would drop two kinds
+    /// of caller instead of one. Nothing about this method changed.
     pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
         self.host.merge_held(pads)
     }
@@ -372,12 +630,12 @@ mod tests {
         );
     }
 
-    /// …and the mirror lands. Same machine, same gesture, one `Bus::new(.., paused: false)` between
+    /// …and the mirror lands. Same machine, same gesture, one `Bus::new(.., paused: false, None)` between
     /// them, and the write is refused with the tool's own `-32005 machineRunning`.
     #[test]
     fn the_pause_mirror_makes_a_running_machine_refuse_a_paused_only_write() {
         let mut sys = booted();
-        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false);
+        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false, None);
         assert!(
             !bus.is_paused(),
             "an un-paused player IS a free-running bus (host.rs), so the bus must agree it is running"
@@ -402,7 +660,7 @@ mod tests {
     #[test]
     fn pausing_the_player_opens_the_gate_and_un_pausing_closes_it_again() {
         let mut sys = booted();
-        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false);
+        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false, None);
         assert!(is_machine_running(&bus.call(
             &mut sys,
             "emulator/write_memory",
@@ -438,7 +696,7 @@ mod tests {
     #[test]
     fn mirroring_an_unchanged_pause_state_changes_nothing() {
         let mut sys = booted();
-        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false);
+        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false, None);
         assert!(
             is_machine_running(&bus.call(&mut sys, "emulator/write_memory", &poke())),
             "the fixture must begin from a state where the gate is CLOSED, or nothing below is a fact \
@@ -461,7 +719,7 @@ mod tests {
     fn a_call_answers_for_the_machine_it_was_handed_and_not_the_placeholder() {
         let mut sys = booted();
         sys.run_frames(9);
-        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false);
+        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false, None);
         let (_, stamp) = bus.call_stamped(&mut sys, "emulator/status", &json!({}));
         assert_eq!(
             stamp["mclk"],
@@ -512,7 +770,7 @@ mod seam {
 
     fn rig() -> (Machine, Bus) {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
-        let bus = Bus::new(machine.system_mut(), MachineInfo::default(), false);
+        let bus = Bus::new(machine.system_mut(), MachineInfo::default(), false, None);
         (machine, bus)
     }
 
@@ -875,5 +1133,288 @@ mod seam {
              holds a halt it will apply only if the pause happens to move, which on the frame a \
              breakpoint fires it has not."
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ PLAYER-SERVE — the socket, and the three things that change once one exists
+// ---------------------------------------------------------------------------------------------------
+
+/// These bind **real** Unix sockets. Three constraints shape every fixture below and each one has
+/// already cost somebody an hour:
+///
+/// * **Never the well-known path.** `Some(None)` resolves `$XDG_RUNTIME_DIR/oracle.sock`, which the
+///   owner's live `oracle-frontend` window has historically held. A test that bound it would either
+///   collide with his window or (worse, if his window were down) leave a socket on it. Every test here
+///   names its own path.
+/// * **Never the session scratchpad.** That directory's path is long enough to exceed `SUN_LEN`, and the
+///   bind fails with *"path must be shorter than SUN_LEN"* — a refusal that looks exactly like the
+///   bind-failure case one of these tests is trying to *produce* deliberately, so it would make that test
+///   pass for the wrong reason. `/tmp/<short>` throughout.
+/// * **Unique per test.** `cargo test` runs these on threads of one process, so two tests sharing a path
+///   would race the live-server check.
+///
+/// `oracle-aether` is `#![cfg(unix)]`, so this module is too.
+#[cfg(all(test, unix))]
+mod serving {
+    use super::*;
+    use oracle_core::system::System;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    fn booted() -> System {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        sys
+    }
+
+    /// A short, unique directory under `/tmp` — see the module doc for why not the scratchpad and why not
+    /// `$XDG_RUNTIME_DIR`. Returned with the socket file name already joined.
+    fn short_path(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("orp-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a short /tmp dir for the probe socket");
+        dir.join("s")
+    }
+
+    fn cleanup(p: &Path) {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// **The control, and it comes first.** With `socket: None` the player is what it has always been:
+    /// nothing bound, no path, and the outcome that says so in words.
+    ///
+    /// Without this assertion the served case below would be checking that something we never established
+    /// was off has been turned on — and a `Bus::new` that bound unconditionally would pass it just as
+    /// green.
+    #[test]
+    fn the_default_launch_binds_nothing_and_says_so() {
+        let mut sys = booted();
+        let bus = Bus::new(&mut sys, MachineInfo::default(), false, None);
+        assert!(!bus.is_serving(), "no socket was requested");
+        assert_eq!(bus.socket_path(), None, "and none was resolved");
+        assert_eq!(bus.serve_outcome(), &ServeOutcome::NotAsked);
+        assert!(
+            !bus.has_clients(),
+            "nothing is bound, so nothing can be attached"
+        );
+    }
+
+    /// `is_serving()` answers for the **socket**, not for the flag — and the socket is real.
+    ///
+    /// ⚑ **The `connect` is the assertion that matters.** `is_serving()` is `accept.is_some()`, so a
+    /// `serve` that bound, spawned an accept thread and then had it die instantly would still report
+    /// `true`. Connecting is what distinguishes *a flag was honoured* from *a client can attach*, which is
+    /// the entire subject of this parcel. `socket_path()` is checked against the requested path for the
+    /// sibling failure: serving, but somewhere nobody is looking.
+    #[test]
+    fn a_requested_socket_is_bound_and_a_client_can_actually_connect() {
+        let p = short_path("connect");
+        let mut sys = booted();
+        let bus = Bus::new(
+            &mut sys,
+            MachineInfo::default(),
+            false,
+            Some(Some(p.clone())),
+        );
+        assert!(
+            bus.is_serving(),
+            "a bound socket is serving, got {:?}",
+            bus.serve_outcome()
+        );
+        assert_eq!(
+            bus.socket_path(),
+            Some(p.as_path()),
+            "serving on a path nobody asked for is not serving"
+        );
+        assert_eq!(bus.serve_outcome(), &ServeOutcome::Serving(p.clone()));
+        UnixStream::connect(&p).expect("an external client must be able to attach to this window");
+        drop(bus);
+        cleanup(&p);
+    }
+
+    /// **A bind failure is reported, and is never fatal.** The bus degrades to inert and every in-process
+    /// caller keeps working, because someone who launched a game to play it should not be stopped by a
+    /// socket.
+    ///
+    /// The failure is produced by giving the socket a **regular file as its parent directory**, so
+    /// `create_dir_all` fails. That is a real `io::Error` from the real bind path rather than a stub.
+    ///
+    /// ⚑ The alternative green path ruled out: this test would pass identically against a `Bus::new` that
+    /// ignored `socket` altogether and never even tried — so it asserts `Failed` (not `NotAsked`) and
+    /// checks that the sentence carries the *error's own text*, which only a real attempt can produce.
+    #[test]
+    fn a_bind_failure_is_loud_specific_and_not_fatal() {
+        let p = short_path("badparent");
+        let blocker = p.parent().unwrap().join("f");
+        std::fs::File::create(&blocker)
+            .unwrap()
+            .write_all(b"not a directory")
+            .unwrap();
+        let doomed = blocker.join("s");
+
+        let mut sys = booted();
+        let mut bus = Bus::new(&mut sys, MachineInfo::default(), false, Some(Some(doomed)));
+        assert!(!bus.is_serving(), "the bind failed, so nothing is serving");
+        assert_eq!(bus.socket_path(), None);
+        let ServeOutcome::Failed(e) = bus.serve_outcome() else {
+            panic!(
+                "a failed bind must report Failed, not {:?} — an ignored `socket` argument would look \
+                 exactly like NotAsked here",
+                bus.serve_outcome()
+            );
+        };
+        assert!(
+            !e.is_empty(),
+            "the io::Error's own text is carried, never a paraphrase"
+        );
+        let line = bus.announcement();
+        assert!(
+            line.contains("NOT serving") && line.contains(e),
+            "the launch line must name the failure and quote the error: {line}"
+        );
+        // …and it is not fatal: the in-process registry still answers, which is the whole claim behind
+        // "degraded to inert".
+        assert!(matches!(
+            bus.call(&mut sys, "emulator/status", &serde_json::json!({})),
+            Answer::Ok(_)
+        ));
+        cleanup(&p);
+    }
+
+    /// **A live server on the path is REFUSED, and the live one is not disturbed.**
+    ///
+    /// This is the collision the default path makes reachable: every lane's client resolver commits to
+    /// `$XDG_RUNTIME_DIR/oracle.sock` and the owner's own window has historically held it. The decision
+    /// recorded at [`Bus::new`] is that the default stays the well-known path and the collision is loud,
+    /// so this pins both halves of that: the second bind fails, **and the first is still serving and still
+    /// connectable**. A "fix" that unlinked the incumbent's entry to make room would pass the first half
+    /// and fail the second.
+    #[test]
+    fn a_live_server_on_the_path_is_refused_and_never_stolen() {
+        let p = short_path("incumbent");
+        let mut sys_a = booted();
+        let a = Bus::new(
+            &mut sys_a,
+            MachineInfo::default(),
+            false,
+            Some(Some(p.clone())),
+        );
+        assert!(a.is_serving(), "the incumbent must be up first");
+
+        let mut sys_b = booted();
+        let b = Bus::new(
+            &mut sys_b,
+            MachineInfo::default(),
+            false,
+            Some(Some(p.clone())),
+        );
+        assert!(!b.is_serving(), "the second window must not bind");
+        let ServeOutcome::Failed(e) = b.serve_outcome() else {
+            panic!("a busy path must fail, got {:?}", b.serve_outcome());
+        };
+        assert!(
+            e.contains("already live"),
+            "the refusal must say a live server holds the path, not something generic: {e}"
+        );
+
+        assert!(a.is_serving(), "the incumbent is untouched");
+        assert!(
+            p.exists(),
+            "the incumbent's filesystem entry survived the collision"
+        );
+        UnixStream::connect(&p).expect("the incumbent is still reachable after the refused bind");
+        drop(b);
+        drop(a);
+        cleanup(&p);
+    }
+
+    /// **`has_clients()` can now go true, and §5.6.2's claim about it needs re-establishing.**
+    ///
+    /// The design says the picture-publish gate is one *"which an unserved player never satisfies"*. Three
+    /// states are checked in one test because the interesting fact is the transition, and a test that only
+    /// asserted the last one would pass against a `has_clients()` hardcoded to `true`.
+    ///
+    /// The accept loop polls at 5 ms ([`ACCEPT_POLL`](oracle_aether::server)), so the third state is
+    /// waited for with a deadline rather than slept at — and the deadline **fails loudly** rather than
+    /// falling through to a green `assert!(true)`.
+    #[test]
+    fn has_clients_is_false_unserved_false_unattached_and_true_once_someone_attaches() {
+        let mut sys = booted();
+        let unserved = Bus::new(&mut sys, MachineInfo::default(), false, None);
+        assert!(
+            !unserved.has_clients(),
+            "an unserved player never satisfies the gate — this is §5.6.2's premise, checked"
+        );
+        drop(unserved);
+
+        let p = short_path("clients");
+        let mut sys = booted();
+        let bus = Bus::new(
+            &mut sys,
+            MachineInfo::default(),
+            false,
+            Some(Some(p.clone())),
+        );
+        assert!(bus.is_serving());
+        assert!(
+            !bus.has_clients(),
+            "serving with nobody attached is still no clients — the two predicates are different facts"
+        );
+
+        let client = UnixStream::connect(&p).expect("attach");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !bus.has_clients() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            bus.has_clients(),
+            "a connected client must open the gate; it stayed shut for 5 s, so the publish path is \
+             still dead and §5.6.2's bullet would still stand for the reason it gave"
+        );
+        drop(client);
+        drop(bus);
+        cleanup(&p);
+    }
+
+    /// **Every outcome says something out loud, and the quiet one names the remedy.**
+    ///
+    /// The `NotAsked` arm is the one this exists for: an absence is not a statement, and the frontend's
+    /// version of this defect cost the owner two launches in one evening. `oracle-frontend`'s own comment
+    /// records that no test there could cover it — *"a unit test cannot read `println!`"* — which is why
+    /// the line is a returned `String` here.
+    ///
+    /// ⚑ The alternative green path: this would pass against a `sentence()` whose result nothing prints.
+    /// That is covered structurally rather than by this assertion — `main` prints `announcement()`
+    /// unconditionally, in one call site with no per-case arm to delete, and `Bus::new`'s `match` makes
+    /// deleting the `None` arm a compile error. Both defences are named at those two sites.
+    #[test]
+    fn every_outcome_is_a_sentence_and_the_quiet_one_names_all_three_switches() {
+        let quiet = ServeOutcome::NotAsked.sentence();
+        for needle in ["not serving", "--aether", "--socket", "ORACLE_AETHER"] {
+            assert!(
+                quiet.contains(needle),
+                "the not-serving line must name `{needle}` — the reader of it is by construction \
+                 someone who wanted the bus and did not get it: {quiet}"
+            );
+        }
+        let up = ServeOutcome::Serving(PathBuf::from("/tmp/x/s")).sentence();
+        assert!(
+            up.contains("/tmp/x/s") && up.contains("serving on"),
+            "the serving line must name the path a client is supposed to dial: {up}"
+        );
+        let down = ServeOutcome::Failed("boom".into()).sentence();
+        assert!(
+            down.contains("NOT serving") && down.contains("boom"),
+            "the failure line must be distinguishable from the quiet one at a glance: {down}"
+        );
+        // The three are pairwise different sentences. Collapsing any two would make the state this
+        // parcel exists to reveal indistinguishable from a state it is not.
+        assert_ne!(quiet, up);
+        assert_ne!(quiet, down);
+        assert_ne!(up, down);
     }
 }

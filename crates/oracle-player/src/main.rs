@@ -106,6 +106,17 @@ struct Args {
     /// [`arm_for_measurement`]: the three stopping panels are empty until something is armed, so a
     /// panel-cost run without this measures three headlines and calls it three panels.
     bench_arm: bool,
+    /// **Whether this window serves the Aether bus to EXTERNAL clients, and on what path** —
+    /// `--aether` / `--socket PATH` / `ORACLE_AETHER=1` (`PLAYER-SERVE`).
+    ///
+    /// The nesting is `oracle-frontend`'s and is carried rather than re-invented: `None` = *do not bind*
+    /// (the default, and the launch the player has always had), `Some(None)` = *bind the contract's own
+    /// resolved default path* (§7.1), `Some(Some(p))` = *bind `p`*. Three states, because "serve" and
+    /// "serve here" are different asks and an `Option<PathBuf>` cannot hold both.
+    ///
+    /// It changes nothing about how the window talks to itself — see [`crate::bus`]'s module doc, which
+    /// carries D15's rule that an in-process GUI is a consumer of the registry and not a second server.
+    socket: Option<Option<std::path::PathBuf>>,
 }
 
 fn usage() -> ! {
@@ -113,6 +124,15 @@ fn usage() -> ! {
         "usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]\n\
          \x20              [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]\n\
          \x20              [--target-fps N] [--dock default|every-tab] [--bench-arm]\n\
+         \x20              [--aether | --socket PATH]\n\
+         \n\
+         --aether serves the Aether control bus from this process, so an external tool can attach to\n\
+         THIS window (also: ORACLE_AETHER=1). --socket PATH does the same on a path you name, and\n\
+         implies --aether. Without either, nothing binds and nothing can attach; the launch says so.\n\
+         The default path is the contract's own ($ORACLE_SOCKET, $EXODUS_SOCKET,\n\
+         $XDG_RUNTIME_DIR/oracle.sock, /tmp/oracle.sock) because that is the one every client\n\
+         resolver looks on. If another emulator is already live there the bind is REFUSED and said\n\
+         out loud, never silently moved to a second path.\n\
          \n\
          --symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,\n\
          which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;\n\
@@ -135,6 +155,20 @@ fn usage() -> ! {
 }
 
 fn parse_args() -> Args {
+    parse_args_from(
+        std::env::args().skip(1).collect(),
+        std::env::var_os("ORACLE_AETHER"),
+    )
+}
+
+/// The testable half of [`parse_args`], over an arbitrary argv and an arbitrary `ORACLE_AETHER`.
+///
+/// Split out by `PLAYER-SERVE` so the socket decision — three flags folding into one three-state value —
+/// is checkable without a process. **Only the accepting paths are reachable from a test**: every refusal
+/// in here goes through [`usage`], which `exit(64)`s, and that is this parser's pre-existing shape rather
+/// than something this split introduced. A test that asserted on a refusal would take the test binary
+/// down with it.
+fn parse_args_from(argv: Vec<String>, aether_env: Option<std::ffi::OsString>) -> Args {
     let mut a = Args {
         rom: String::new(),
         symbols: None,
@@ -146,8 +180,12 @@ fn parse_args() -> Args {
         target_fps: None,
         dock_every_tab: false,
         bench_arm: false,
+        // Serving is **opt-in**, and the default is "no socket exists". The environment is read at the
+        // same place as the flags, and folded into the same value, so `--aether` and `ORACLE_AETHER` are
+        // one decision with one spelling and the usage text can be truthful about both. `ORACLE_AETHER=0`
+        // is an explicit *off*, not a present-therefore-on — copied from `oracle-frontend` exactly.
+        socket: aether_env.is_some_and(|v| v != "0").then_some(None),
     };
-    let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     let next = |i: usize, argv: &[String]| -> String {
         match argv.get(i + 1) {
@@ -224,6 +262,19 @@ fn parse_args() -> Args {
             "--bench-arm" => {
                 a.bench_arm = true;
                 i += 1;
+            }
+            // `--aether` turns serving on and **preserves any path already chosen** — `--socket P
+            // --aether` must still bind `P`, because asking for a specific path and then binding
+            // somewhere else is worse than either flag alone. `flatten()` is what carries it.
+            "--aether" => {
+                a.socket = Some(a.socket.flatten());
+                i += 1;
+            }
+            // `--socket PATH` implies `--aether`: naming a path and then not serving on it would be a
+            // flag that does nothing.
+            "--socket" => {
+                a.socket = Some(Some(std::path::PathBuf::from(next(i, &argv))));
+                i += 2;
             }
             "-h" | "--help" => usage(),
             other => {
@@ -350,6 +401,7 @@ impl Loop {
         target_fps: Option<f64>,
         rom_path: String,
         loaded: symbols::Loaded,
+        socket: Option<Option<std::path::PathBuf>>,
     ) -> Self {
         // ⚑ The pause mirror lands HERE, before the governor starts and outside every measured bucket.
         //
@@ -369,7 +421,16 @@ impl Loop {
                 symbols_path: loaded.path.map(|p| p.display().to_string()),
             },
             false,
+            socket,
         );
+        // ⚑ **Unconditional, and there is deliberately no arm here to delete.** All three outcomes —
+        // serving, failed-to-bind, never-asked — are one `println!` of one string, because the defect this
+        // repairs is a launch that says *nothing* when the bus is off: an absence is not a statement, and
+        // the measured cost of the frontend's version of that absence was the owner launching twice in one
+        // evening and going to a window nothing could attach to. `Bus::announcement` composes the sentence
+        // and `ServeOutcome::sentence` is a value a test reads, so unlike the frontend's three inline
+        // prints, the wording here is covered.
+        println!("{}", bus.announcement());
         Self {
             machine,
             rom_path,
@@ -710,7 +771,14 @@ fn arm_for_measurement(lp: &mut Loop) {
 /// exists.
 fn run_bench_cpu(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let start = Instant::now();
-    let mut lp = Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded);
+    let mut lp = Loop::new(
+        machine,
+        start,
+        args.target_fps,
+        args.rom.clone(),
+        loaded,
+        args.socket.clone(),
+    );
     if args.dock_every_tab {
         // The measurement arrangement. Announced, because a run whose layout differs from the default
         // must say so in its own output or its numbers get compared against ones taken under the other.
@@ -914,7 +982,14 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     // defeat it and saving it would overwrite the operator's own layout with a bench rig.
     let persist = args.mode == Mode::Window && !args.dock_every_tab;
     let mut app = App {
-        lp: Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded),
+        lp: Loop::new(
+            machine,
+            start,
+            args.target_fps,
+            args.rom.clone(),
+            loaded,
+            args.socket.clone(),
+        ),
         start,
         deadline: if args.mode == Mode::BenchWindow {
             Some(args.secs)
@@ -1099,6 +1174,9 @@ mod loop_tests {
                 path: None,
                 fatal: None,
             },
+            // The fixture loop binds nothing. A test that served would put a real socket on the
+            // developer's box for the length of a `cargo test`, and on the well-known path at that.
+            None,
         )
     }
 
@@ -1257,5 +1335,123 @@ mod loop_tests {
             advanced > 0,
             "the player never resumed, so the zero above was a stuck loop rather than a pause"
         );
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------
+// ⚑ PLAYER-SERVE — the three switches that fold into one three-state value
+// -------------------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod socket_args {
+    use super::*;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn parse(argv: &[&str]) -> Args {
+        parse_args_from(argv.iter().map(|s| s.to_string()).collect(), None)
+    }
+
+    fn parse_env(argv: &[&str], env: &str) -> Args {
+        parse_args_from(
+            argv.iter().map(|s| s.to_string()).collect(),
+            Some(OsString::from(env)),
+        )
+    }
+
+    /// **The control, first.** A launch with no switch binds nothing, and that has to be established
+    /// before any of the "turns it on" assertions mean anything — every one of them would pass just as
+    /// green against a default of `Some(None)`.
+    #[test]
+    fn the_default_is_no_socket() {
+        assert_eq!(parse(&["--rom", "r.bin"]).socket, None);
+    }
+
+    /// `--aether` alone means *serve on the contract's resolved default* — `Some(None)`, which is not the
+    /// same value as `Some(Some(default_path))` and must not be flattened into one. The parser does not
+    /// resolve; §7.1's resolver does, at bind time, and it reads the environment.
+    #[test]
+    fn the_bare_flag_asks_for_the_resolved_default_and_does_not_resolve_it_here() {
+        assert_eq!(parse(&["--aether", "--rom", "r.bin"]).socket, Some(None));
+    }
+
+    /// `--socket PATH` implies `--aether`, and **`--socket P --aether` still binds `P`**.
+    ///
+    /// ⚑ That second case is the one worth having. Written as `socket = Some(None)`, `--aether` would
+    /// silently discard a path the operator named and bind the well-known one instead — the exact
+    /// "silently moved to a second path" failure the usage text promises does not happen. Both orders are
+    /// checked, because a fold that is order-dependent is a fold that will be got wrong once.
+    #[test]
+    fn a_named_path_survives_the_bare_flag_in_either_order() {
+        let want = Some(Some(PathBuf::from("/tmp/x.sock")));
+        assert_eq!(
+            parse(&["--socket", "/tmp/x.sock", "--rom", "r.bin"]).socket,
+            want
+        );
+        assert_eq!(
+            parse(&["--socket", "/tmp/x.sock", "--aether", "--rom", "r.bin"]).socket,
+            want,
+            "--aether after --socket must not discard the named path"
+        );
+        assert_eq!(
+            parse(&["--aether", "--socket", "/tmp/x.sock", "--rom", "r.bin"]).socket,
+            want,
+            "…and --socket after --aether must not be ignored"
+        );
+    }
+
+    /// `ORACLE_AETHER` is a third spelling of the same decision, folded at the same place — and
+    /// **`ORACLE_AETHER=0` is an explicit off, not a present-therefore-on**. Copied from
+    /// `oracle-frontend`, including that asymmetry, because two spellings of one switch behaving
+    /// differently in the two players is the drift this shape exists to prevent.
+    #[test]
+    fn the_environment_turns_it_on_and_zero_turns_it_off() {
+        assert_eq!(parse_env(&["--rom", "r.bin"], "1").socket, Some(None));
+        assert_eq!(
+            parse_env(&["--rom", "r.bin"], "0").socket,
+            None,
+            "ORACLE_AETHER=0 is an explicit refusal, not a set variable"
+        );
+        // A flag still wins over an environment that said no — the flag is the more specific statement.
+        assert_eq!(
+            parse_env(&["--aether", "--rom", "r.bin"], "0").socket,
+            Some(None)
+        );
+        // …and a named path composes with the environment rather than being overridden by it.
+        assert_eq!(
+            parse_env(&["--socket", "/tmp/y.sock", "--rom", "r.bin"], "1").socket,
+            Some(Some(PathBuf::from("/tmp/y.sock")))
+        );
+    }
+
+    /// The switches change **nothing else**. A flag that quietly moved the mode, the rate or the dock
+    /// would be a flag doing something nobody asked it to, and this is cheap to pin.
+    #[test]
+    fn serving_does_not_disturb_any_other_argument() {
+        let plain = parse(&[
+            "--rom",
+            "r.bin",
+            "--mode",
+            "bench-cpu",
+            "--expect-screen",
+            "1x1",
+        ]);
+        let served = parse(&[
+            "--rom",
+            "r.bin",
+            "--mode",
+            "bench-cpu",
+            "--expect-screen",
+            "1x1",
+            "--aether",
+        ]);
+        assert_eq!(plain.rom, served.rom);
+        assert_eq!(plain.expect_screen, served.expect_screen);
+        assert_eq!(plain.secs, served.secs);
+        assert_eq!(plain.target_fps, served.target_fps);
+        assert_eq!(plain.dock_every_tab, served.dock_every_tab);
+        assert_eq!(plain.bench_arm, served.bench_arm);
+        assert!(plain.mode == Mode::BenchCpu && served.mode == Mode::BenchCpu);
+        assert_ne!(plain.socket, served.socket, "…and the one it does change");
     }
 }

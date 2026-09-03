@@ -237,8 +237,14 @@ impl Panels<'_> {
         // `Some(...)`, never `None`: this panel has a bus, so the strip is asked rather than told nothing.
         // The `None` arm exists for a caller that genuinely has no bus, and there is none on this path.
         let held = Some(self.bus.held_pads());
-        for (label, value) in
-            StatusStrip::of(self.machine, self.rom_path, self.symbols, held).rows()
+        for (label, value) in StatusStrip::of(
+            self.machine,
+            self.rom_path,
+            self.symbols,
+            held,
+            Some(self.bus.aether_status()),
+        )
+        .rows()
         {
             ui.monospace(format!("{label:<18}{value}"));
         }
@@ -1375,11 +1381,18 @@ pub struct StatusStrip {
     /// wired up — the same "unmeasurable rendered as a measurement" mistake `symbol_count` is an `Option`
     /// to avoid, one field up.
     pub held: Option<[Pad; 2]>,
+    /// **Whether anything outside this process can attach to this window** (`PLAYER-SERVE`), as
+    /// [`crate::bus::Bus::serve_outcome`] reports it. `None` means the strip was built with no bus to ask,
+    /// exactly as for [`held`](Self::held) and for the same reason.
+    pub aether: Option<crate::bus::AetherStatus>,
 }
 
 /// The label on the held-pads row. A constant because two tests derive their expectations from it rather
 /// than retyping it, and a row whose label a test pins by hand is a row that can be renamed to nothing.
 pub const HELD_LABEL: &str = "held by a client";
+
+/// The label on the Aether row, a constant for [`HELD_LABEL`]'s reason.
+pub const AETHER_LABEL: &str = "aether";
 
 impl StatusStrip {
     /// Derived from the machine, by the same expressions `Engine::status` uses. One derivation, two
@@ -1391,6 +1404,7 @@ impl StatusStrip {
         rom_path: &str,
         symbols: Option<&SymbolTable>,
         held: Option<[Pad; 2]>,
+        aether: Option<crate::bus::AetherStatus>,
     ) -> Self {
         let sys = machine.system();
         Self {
@@ -1402,7 +1416,31 @@ impl StatusStrip {
             symbol_at_pc: symbols
                 .and_then(|t| oracle_aether::engine::symbol_at(t, sys.cpu_regs().pc)),
             held,
+            aether,
         }
+    }
+
+    /// **The Aether row — always present, unlike [`held_row`](Self::held_row)**, and the difference is the
+    /// decision.
+    ///
+    /// `held_row` draws nothing when nothing is held, because a permanent `held by a client   (none)` is a
+    /// line every reader learns to skip. This row is the opposite case: the state it most needs to report
+    /// is the *quiet* one — a window nothing can attach to — and that is precisely the state an
+    /// only-when-interesting row would render as blank space. **An absence is not a statement**; the
+    /// defect `PLAYER-SERVE` inherits from `oracle-frontend` (a launch that said nothing about a bus that
+    /// was off, and an owner who went twice to a window that could not be attached to) is exactly what a
+    /// row that hid itself would reproduce inside the window.
+    ///
+    /// The sentence is [`crate::bus::ServeOutcome::sentence`]'s — the same string the launch line prints —
+    /// so the terminal and the window cannot describe this window's bus differently.
+    pub fn aether_row(&self) -> (&'static str, String) {
+        (
+            AETHER_LABEL,
+            match &self.aether {
+                None => "NOT MEASURED — this strip was built with no bus to ask".into(),
+                Some(o) => o.sentence(),
+            },
+        )
     }
 
     /// **The held-pads row, or `None` when there is nothing to say** (design §9.4).
@@ -1491,6 +1529,12 @@ impl StatusStrip {
                 },
             ),
         ]);
+        // **Last, and the position is a decision too.** Every row above answers *what is loaded and where
+        // is the machine* — facts about the emulated system. This one answers *can anything outside this
+        // process reach this window*, which is a fact about the process, so it sits after the machine
+        // rather than among it. It is not in the alarm slot `held_row` occupies because it is not an
+        // alarm: it is always true of something, and it is always shown.
+        rows.push(self.aether_row());
         rows
     }
 }
@@ -1700,6 +1744,7 @@ mod transport_tests {
             machine.system_mut(),
             oracle_aether::host::MachineInfo::default(),
             false,
+            None,
         );
         (machine, bus)
     }
@@ -1863,6 +1908,7 @@ mod bus_parity {
             machine.system_mut(),
             oracle_aether::host::MachineInfo::default(),
             false,
+            None,
         )
     }
 
@@ -2071,7 +2117,13 @@ mod bus_parity {
 
         // `Some(idle.held_pads())` and not `None`: a real bus, really asked, with nothing held — so the
         // held row is absent because the fact is "nothing is held" and not because nobody looked.
-        let strip = StatusStrip::of(&machine, &winding, None, Some(idle.held_pads()));
+        let strip = StatusStrip::of(
+            &machine,
+            &winding,
+            None,
+            Some(idle.held_pads()),
+            Some(idle.aether_status()),
+        );
         let mut h = Host::new(HostConfig::default());
         h.set_machine_info(oracle_aether::host::MachineInfo {
             rom_path: Some(winding.clone()),
@@ -2173,7 +2225,13 @@ mod bus_parity {
         );
         let table = oracle_core::symbols::SymbolTable::parse(&listing).expect("a parsable listing");
 
-        let strip = StatusStrip::of(&machine, "testrom", Some(&table), Some(idle.held_pads()));
+        let strip = StatusStrip::of(
+            &machine,
+            "testrom",
+            Some(&table),
+            Some(idle.held_pads()),
+            Some(idle.aether_status()),
+        );
         let mut h = Host::new(HostConfig::default());
         // The SAME table on both sides — one parse, two consumers. Two parses of one file would agree
         // here and would still be the arrangement D7 exists to forbid.
@@ -2218,16 +2276,21 @@ mod bus_parity {
     // HELD-PADS-PLAYER, half 2 — design §9.4
     // -------------------------------------------------------------------------------------------
 
-    /// The six rows the strip carried before this parcel, in order. **Derived from the strip itself**
-    /// below rather than trusted: a hand-written list that had silently gone stale would make the
-    /// displacement check below assert against fiction.
-    const BASE_LABELS: [&str; 6] = [
+    /// The rows the strip carries with nothing held, in order. **Derived from the strip itself** below
+    /// rather than trusted: a hand-written list that had silently gone stale would make the displacement
+    /// check below assert against fiction.
+    ///
+    /// `PLAYER-SERVE` appended [`AETHER_LABEL`] and this list grew with it — six to seven. The row is
+    /// **always** present (see [`StatusStrip::aether_row`] for why it does not hide itself the way the
+    /// held row does), so it belongs in the base and not in the held delta.
+    const BASE_LABELS: [&str; 7] = [
         "romPath",
         "rom bytes",
         "frame (emulated)",
         "frames run (player)",
         "symbols",
         "symbol at pc",
+        AETHER_LABEL,
     ];
 
     fn labels(rows: &[(&'static str, String)]) -> Vec<&'static str> {
@@ -2277,7 +2340,13 @@ mod bus_parity {
         }
 
         // --- (1) asked, nothing held: no row, and the strip is exactly what it was before this parcel ---
-        let quiet = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads()));
+        let quiet = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            Some(bus.held_pads()),
+            Some(bus.aether_status()),
+        );
         let quiet_rows = quiet.rows();
         assert_eq!(
             quiet.held_row(),
@@ -2297,7 +2366,14 @@ mod bus_parity {
             &mut machine,
             json!({"port": 0, "buttons": ["left", "start"]}),
         );
-        let loud_rows = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads())).rows();
+        let loud_rows = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            Some(bus.held_pads()),
+            Some(bus.aether_status()),
+        )
+        .rows();
         assert_eq!(
             loud_rows.len(),
             quiet_rows.len() + 1,
@@ -2326,7 +2402,11 @@ mod bus_parity {
         );
 
         // --- (3) NOT measured: loud, and distinguishable from both states above ---
-        let blind_rows = StatusStrip::of(&machine, "testrom", None, None).rows();
+        // Only the HELD field is unmeasured here. The aether field is still asked, deliberately: this
+        // test's subject is the held row displacing nothing, and blinding a second field as well would
+        // move a row below it and make the displacement equality fail for an unrelated reason.
+        let blind_rows =
+            StatusStrip::of(&machine, "testrom", None, None, Some(bus.aether_status())).rows();
         assert_eq!(
             blind_rows[0].0, HELD_LABEL,
             "a strip with no bus to ask drew no held row at all — `unavailable` was rendered as `nothing \
@@ -2354,6 +2434,102 @@ mod bus_parity {
                 assert!(!value.is_empty(), "`{label}` renders blank");
                 assert_ne!(value, "0", "`{label}` renders an unmeasurable as a bare 0");
             }
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // PLAYER-SERVE — the window says whether anything can attach to it
+    // -------------------------------------------------------------------------------------------
+
+    /// ★ **The Aether row is ALWAYS drawn, and the quiet state is the one it exists for.**
+    ///
+    /// The defect this parcel inherits from `oracle-frontend` is a launch that said *nothing* when the bus
+    /// was off — an absence is not a statement, and the measured cost was the owner going twice to a
+    /// window nothing could attach to. A row that hid itself when there was no socket would reproduce
+    /// that inside the window, so the row is unconditional and this pins it.
+    ///
+    /// **The alternative green paths ruled out:**
+    ///
+    /// 1. *The row is present but constant* — it would pass any single-state check. Ruled out by
+    ///    rendering four distinct states and requiring four distinct sentences.
+    /// 2. *`None` (no bus to ask) renders as "not serving"* — the unmeasurable drawn as a measurement,
+    ///    the same collapse the held row must never make. Ruled out by the explicit `assert_ne`.
+    /// 3. *The row exists but the launch line says something else* — two surfaces describing one window
+    ///    differently, which is the whole reason the sentence is a shared function. Ruled out by
+    ///    comparing the row against `Bus::announcement()` itself.
+    #[test]
+    fn the_aether_row_is_always_drawn_and_agrees_with_the_launch_line() {
+        use crate::bus::{AetherStatus, ServeOutcome};
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = idle_bus(&mut machine);
+
+        let quiet = StatusStrip::of(&machine, "testrom", None, None, Some(bus.aether_status()));
+        let (label, off) = quiet.aether_row();
+        assert_eq!(label, AETHER_LABEL);
+        assert!(
+            quiet.rows().iter().any(|(k, v)| (*k, v) == (label, &off)),
+            "the row must actually be IN the strip, not merely derivable from it"
+        );
+        assert!(
+            off.contains("not serving") && off.contains("--aether"),
+            "the quiet state must say so and name the remedy: {off}"
+        );
+
+        // 3: the terminal and the window are the same sentence, not two descriptions of one window.
+        assert_eq!(
+            bus.announcement(),
+            format!("{}: {off}", AETHER_LABEL),
+            "the launch line and the row have drifted apart"
+        );
+
+        // 1 and 2: four states, four sentences.
+        let unmeasured = StatusStrip::of(&machine, "testrom", None, None, None)
+            .aether_row()
+            .1;
+        let up = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            None,
+            Some(AetherStatus {
+                outcome: ServeOutcome::Serving("/tmp/probe/s".into()),
+                attached: false,
+            }),
+        )
+        .aether_row()
+        .1;
+        let busy = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            None,
+            Some(AetherStatus {
+                outcome: ServeOutcome::Serving("/tmp/probe/s".into()),
+                attached: true,
+            }),
+        )
+        .aether_row()
+        .1;
+        assert_ne!(
+            off, unmeasured,
+            "`no bus to ask` rendered identically to `the bus is off` — an unmeasurable drawn as a \
+             measurement"
+        );
+        assert!(
+            unmeasured.contains("NOT MEASURED"),
+            "and it must say which: {unmeasured}"
+        );
+        assert!(
+            up.contains("/tmp/probe/s"),
+            "a serving window must name the path a client is supposed to dial: {up}"
+        );
+        assert_ne!(
+            up, busy,
+            "`serving, nobody there` and `serving, someone attached` are different facts about this \
+             second, and the row that explains a character walking on its own is the second one"
+        );
+        for a in [&off, &unmeasured, &up, &busy] {
+            assert!(!a.trim().is_empty(), "no state renders as blank space");
         }
     }
 
@@ -2391,9 +2567,15 @@ mod bus_parity {
              empty lists agreeing"
         );
 
-        let (label, value) = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads()))
-            .held_row()
-            .expect("something is held, so there is a row");
+        let (label, value) = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            Some(bus.held_pads()),
+            Some(bus.aether_status()),
+        )
+        .held_row()
+        .expect("something is held, so there is a row");
         assert_eq!(label, HELD_LABEL);
         let shown = names_in(&value, 0);
         assert_eq!(
@@ -2427,10 +2609,16 @@ mod bus_parity {
             json!({"port": 0, "buttons": ["left", "start"], "down": false}),
         );
         hold(&mut bus, &mut machine, json!({"port": 1, "buttons": ["c"]}));
-        let other = StatusStrip::of(&machine, "testrom", None, Some(bus.held_pads()))
-            .held_row()
-            .expect("port 1 holds something, so there is still a row")
-            .1;
+        let other = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            Some(bus.held_pads()),
+            Some(bus.aether_status()),
+        )
+        .held_row()
+        .expect("port 1 holds something, so there is still a row")
+        .1;
         assert_ne!(
             other, value,
             "two different held sets rendered the identical sentence — the row is a constant and the \

@@ -724,7 +724,7 @@ mod bus_parity {
     }
 
     fn bus(sys: &mut System, paused: bool) -> Bus {
-        Bus::new(sys, MachineInfo::default(), paused)
+        Bus::new(sys, MachineInfo::default(), paused, None)
     }
 
     /// `"0x00AA55"` → the bytes. The bus spells payloads as hex strings (D9 category 1) and the panel
@@ -1065,6 +1065,7 @@ mod bus_parity {
                 symbols_path: Some("testrom.lst".into()),
             },
             false,
+            None,
         );
         match resolve_address(&mut b, &mut sys, Space::Bus, "Boot") {
             Resolved::Symbol { addr, reply } => {
