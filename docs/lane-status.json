@@ -1,14 +1,9 @@
 {
-  "focus": "Two running: the first piece of the new debug window, and the change request for spawning objects live.",
+  "focus": "The spawn request is written and caught a hang before anyone built it; the new debug window is still being built.",
   "inFlight": [
     {
       "what": "Rebuild parcel 1: the new window running the game at the right speed with the controls wired, in a docked layout",
       "where": "branch worktree (debug-panels parcel 1)",
-      "agent": true
-    },
-    {
-      "what": "The change request for spawning, moving and deleting objects in a running level, against aeon's landed interface",
-      "where": "branch worktree (spawn-mode CR)",
       "agent": true
     }
   ],
@@ -25,10 +20,10 @@
     },
     {
       "id": "SPAWN-MODE-CR",
-      "title": "aeon's way for a tool to spawn, move and delete objects in a running level has landed. Ours is a change request written against their symbol names, not addresses, so a release build refuses instead of guessing.",
-      "state": "doing",
+      "title": "Written and filed as CR-J: how a tool asks the game to spawn, move or delete an object. It caught a mistake that would have made such a tool hang forever. Needs an independent read before any of it is built.",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null
+      "blockedBy": "an independent review of the text before it is built - a ruling authorises the change, the review authorises the words"
     },
     {
       "id": "SCHEMA-DRIFT-NIGHTLY",
@@ -99,5 +94,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-03T01:49:59Z"
+  "updatedAt": "2026-09-03T02:03:48Z"
 }
