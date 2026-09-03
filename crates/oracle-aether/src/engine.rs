@@ -32,6 +32,7 @@ use crate::breakpoints::{BreakStop, BreakpointId, Breakpoints};
 use crate::build_info;
 use crate::decoders;
 use crate::hex;
+use crate::objreq;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
 use oracle_core::bus::{
@@ -590,6 +591,39 @@ pub const METHODS: &[MethodSpec] = &[
         summary: "what is showing at one screen dot: the layer, the act-world point, and the object slot \
                   that drew it — with each half naming its own unavailability",
         params: &["x", "y"],
+    },
+    // §6's three object **MUTATION** rows, adopted 2026-09-03 by §11.32 (CR-J). Three rows and not one
+    // `object_request { op }`, because servedness on this bus is `methods` membership (§8 item 23) and
+    // one row would make *can spawn* and *can delete* the same bit. All three are named in §6's
+    // run-control state rule — they are writes and they advance the machine — so all three
+    // `require_paused` and refuse `-32005 machineRunning` rather than pausing implicitly.
+    MethodSpec {
+        name: "emulator/object_spawn",
+        handler: Engine::object_spawn,
+        summary: "place one archetype in the live object pool, through the game's mailbox; returns its handle",
+        params: &[
+            "def",
+            "defSymbol",
+            "expectFrameToken",
+            "flipH",
+            "flipV",
+            "maxFrames",
+            "subtype",
+            "x",
+            "y",
+        ],
+    },
+    MethodSpec {
+        name: "emulator/object_move",
+        handler: Engine::object_move,
+        summary: "move one live dynamic object — POSITION ONLY, no clamp, velocity and animation untouched",
+        params: &["expectFrameToken", "handle", "maxFrames", "slot", "x", "y"],
+    },
+    MethodSpec {
+        name: "emulator/object_delete",
+        handler: Engine::object_delete,
+        summary: "delete one live dynamic object and its child chain; entity-window slots are refused",
+        params: &["expectFrameToken", "handle", "maxFrames", "slot"],
     },
     MethodSpec {
         name: "emulator/screen_text",
@@ -4690,6 +4724,543 @@ impl Engine {
         Ok(Value::Object(out))
     }
 
+    // ----------------------------------------------------------------------------------------------
+    // §6's three object MUTATION rows (§11.32, CR-J) — the live-object mailbox
+    // ----------------------------------------------------------------------------------------------
+
+    /// One whole mailbox exchange: resolve, assert, write payload, **write the flag last**, advance
+    /// until the engine acknowledges, read the status. One indivisible operation on the engine thread.
+    ///
+    /// # Why the advance is here at all, and why it is not a mode change
+    ///
+    /// Aeon's prose says the mailbox is consumed "on a paused frame". That is the **game's**
+    /// `Game_Paused`, tested at the first instruction of `RunObjects` — not this server's pause. Under
+    /// an *emulator* pause no frames execute, `objreq_consume` never runs, the flag is never cleared,
+    /// and a server that wrote the mailbox and then waited for the ack would **hang forever against a
+    /// correctly-working engine**. So the server advances the machine itself.
+    ///
+    /// §5 forbids resolving a wrong-*state* case implicitly — pausing a running machine to service a
+    /// call and leaving it paused. This changes no mode: the machine is paused before and paused after.
+    /// It changes the machine's **position**, which is what `step`, `run_to` and `run_frames` all do
+    /// under the same paused precondition, and `framesAdvanced` is on every reply, success and failure
+    /// alike, so a caller can always reconstruct where it ended up.
+    ///
+    /// **No `resumed`/`stopped` events are emitted.** Those announce a change of mode to stream
+    /// consumers, and no mode changed here; the stamp's `frame` moves visibly on the reply, which is
+    /// the honest report of what did change. (`emulator/press` emits them because it *runs* the
+    /// machine; this collects an acknowledgement.)
+    ///
+    /// # The residual window this cannot close
+    ///
+    /// Between the flag write and `objreq_consume` there is, by construction, the remainder of the
+    /// current frame's object code. Paused at the game's frame top that remainder is empty; paused
+    /// mid-frame it is not, and a slot deleted and recycled in it resolves to a **new occupant** — a
+    /// clean `status 0` on the wrong object. `expectFrameToken` closes the client→server half
+    /// completely; nothing outside the machine closes the other half. See
+    /// [`Engine::objreq_midframe_caveat`] for what this server can and cannot tell about it.
+    fn objreq_exchange(
+        &mut self,
+        method: &str,
+        req: ObjReqRequest,
+        params: &Value,
+    ) -> Result<ObjReqAck, RpcError> {
+        self.require_paused(method)?;
+        // Resolved BY NAME, individually, on every call — never an offset from another cell (§11.32 J5).
+        // A build missing any name is refused here, before anything is written anywhere.
+        let mailbox = objreq::resolve(self.symbols.as_deref())?;
+        mailbox.assert_layout()?;
+
+        let max_frames = match params.get("maxFrames") {
+            None => OBJREQ_DEFAULT_MAX_FRAMES,
+            // The fragment declares no ceiling; this server bounds it by `limits.maxRunFrames` all the
+            // same, because an unbounded budget is an unbounded run and that is the transport hang
+            // `run_to`'s own `maxFrames` exists to prevent. Filed upstream as the row wanting the same
+            // tie the run-shaped rows have.
+            Some(v) => hex::parse_count("maxFrames", v, 1, self.config.max_run_frames)?,
+        };
+        if let Some(v) = params.get("expectFrameToken") {
+            let want = hex::parse_count("expectFrameToken", v, 0, u64::MAX)?;
+            let have = self.frame();
+            if want != have {
+                return Err(RpcError::invalid_state(
+                    "frameMoved",
+                    format!(
+                        "the machine is at frame {have}, not the frame {want} this request was built \
+                         against — refusing rather than acting on a machine that moved under the caller. \
+                         Re-read the state you are addressing and try again."
+                    ),
+                    json!({"expectFrameToken": want, "frameToken": have, "framesAdvanced": 0}),
+                ));
+            }
+        }
+
+        // The payload, then the flag LAST. That ordering IS the concurrency control, and it is the one
+        // line of this function that must not be reordered for tidiness.
+        self.poke(mailbox.at(objreq::DEF), &req.def.to_be_bytes())?;
+        self.poke(mailbox.at(objreq::X), &req.x.to_be_bytes())?;
+        self.poke(mailbox.at(objreq::Y), &req.y.to_be_bytes())?;
+        self.poke(mailbox.at(objreq::SLOT), &req.slot.to_be_bytes())?;
+        self.poke(mailbox.at(objreq::PLACE), &req.place.to_be_bytes())?;
+        self.poke(mailbox.at(objreq::OP), &[req.op])?;
+        self.poke(mailbox.at(objreq::FLAG), &[1])?;
+
+        let mut interrupted = false;
+        let mut advanced = 0u64;
+        for _ in 0..max_frames {
+            // Counted through the same [`Engine::frames_advanced`] every other advancing row uses, one
+            // frame at a time. **Not** as a total mclk delta divided by the frame length: an advance
+            // that starts mid-frame ends at that frame's boundary, so two `advance(1)` calls from a
+            // mid-frame pause cover less than two whole frames of clock and a division would report `1`
+            // for two frames that really ran. Measured, on the frame-count probe this parcel took.
+            let mclk_before = self.sys.scheduler().now();
+            let run = self.advance(1);
+            advanced += self.frames_advanced(&run, 1, mclk_before);
+            if self.read_u8(mailbox.at(objreq::FLAG))? == 0 {
+                break;
+            }
+            // A breakpoint or a `stopAfter` watch can end an advance early, which leaves the request
+            // armed on a machine that did not finish its frame. Reported rather than retried: retrying
+            // would run past a halt the caller asked for.
+            if run.stopped_by.is_some() || run.broke_at.is_some() {
+                interrupted = true;
+                break;
+            }
+        }
+        if self.read_u8(mailbox.at(objreq::FLAG))? != 0 {
+            // **CANCEL, per §11.32 Q2.** Left armed, the request fires whenever the game next enters the
+            // one state that carries the consumer — possibly minutes after the client was told it
+            // failed, which is a world-change traced to an error reply. The clear is race-free because
+            // the machine is paused. `Obj_Req_Op` is deliberately left alone, so a watchpoint can still
+            // see what the last request was.
+            self.poke(mailbox.at(objreq::FLAG), &[0])?;
+            return Err(RpcError::invalid_state(
+                "mailboxNotConsumed",
+                format!(
+                    "the game is not in a state that services this mailbox: {advanced} frame(s) ran and \
+                     the request was never acknowledged{}. The consumer is spliced into one game state's \
+                     frame top, so outside it every request times out. The request has been CANCELLED so \
+                     it cannot fire later.",
+                    if interrupted {
+                        ", and a breakpoint or watch ended the advance early"
+                    } else {
+                        ""
+                    }
+                ),
+                json!({
+                    "cancelled": true,
+                    "framesAdvanced": advanced,
+                    "maxFrames": max_frames,
+                    "advanceInterrupted": interrupted,
+                }),
+            ));
+        }
+        // The flag reads 0, so — and only so — the status byte is this request's.
+        let status = self.read_u8(mailbox.at(objreq::STATUS))?;
+        Ok(ObjReqAck {
+            mailbox,
+            status,
+            frames_advanced: advanced,
+        })
+    }
+
+    /// The reply body every one of the three rows shares: `handle`, `addr`, `slot`?, `framesAdvanced`,
+    /// `layout`, `caveat`?.
+    ///
+    /// `handle` is the **low word of `addr`**, and the two are related by arithmetic the contract
+    /// states, which is why it is a `$defs/hex` string and not an opaque handle. The address is the
+    /// sign-extension of the handle — the engine's own `movea.w d1, a0`, not a convention invented
+    /// here.
+    fn objreq_reply(
+        &mut self,
+        handle: u16,
+        frames_advanced: u64,
+        layout: &decoders::ObjectLayout,
+    ) -> Map<String, Value> {
+        let addr = objreq_handle_addr(layout, handle);
+        let mut out = Map::new();
+        out.insert("handle".into(), json!(hex::u16_hex(handle)));
+        out.insert("addr".into(), json!(hex::addr(addr)));
+        if let Some(slot) = objreq_slot_of(layout, addr) {
+            out.insert("slot".into(), json!(slot));
+        }
+        out.insert("framesAdvanced".into(), json!(frames_advanced));
+        out.insert("layout".into(), layout.to_json());
+        if let Some(c) = self.objreq_midframe_caveat() {
+            out.insert("caveat".into(), json!(c));
+        }
+        out
+    }
+
+    /// `x`/`y` for a spawn or a move reply: **re-read from the record after the frame advance, never an
+    /// echo of the accepted request** (§11.32's 2026-09-03 addendum, this lane's own ruling).
+    ///
+    /// Echoing carries zero information — the client already holds those numbers. The re-read is the
+    /// actual state of the machine, which is what every other reply on this bus reports, and it is the
+    /// only version that can be usefully wrong. **Stated limit:** it conflates *the engine adjusted your
+    /// requested position on spawn* with *the object moved under its own velocity*; `framesAdvanced`
+    /// says time passed and separates neither. Nobody may read it as a spawn-position confirmation.
+    ///
+    /// The values are the decoder's own signed reading of the position word, so they join
+    /// `emulator/object_list` exactly. That is deliberately *not* the param's unsigned 0-65535: the
+    /// reply's job is to agree with the other instrument on this bus, not with the request.
+    ///
+    /// A record that is no longer active after the advance — the object culled or collected itself
+    /// inside the frame — still owes the fragment its required `x`/`y`, so the last written values are
+    /// reported with a `caveat` naming that they are no longer live.
+    fn objreq_position(
+        &mut self,
+        out: &mut Map<String, Value>,
+        layout: &decoders::ObjectLayout,
+        addr: u32,
+    ) -> Result<(), RpcError> {
+        let (bytes, _) = self.debug_read(addr, layout.slot_bytes() as usize)?;
+        let slot = objreq_slot_of(layout, addr).unwrap_or(0);
+        let rec = decoders::DecodedRecord::new(layout, slot, addr, bytes);
+        let (x, y) = rec.position();
+        out.insert("x".into(), json!(x));
+        out.insert("y".into(), json!(y));
+        if !rec.active() {
+            // The record went inactive inside the advanced frame(s). `x`/`y` are REQUIRED here, so the
+            // honest answer is the last values the game wrote plus a caveat that says so — rather than
+            // omitting a required key or fabricating a live position. (The fragment describes `caveat`
+            // as carrying exactly one thing, the mid-frame window; this is a second, rarer condition
+            // that a client must not read past, and it is filed upstream as such.)
+            out.insert(
+                "caveat".into(),
+                json!(
+                    "the slot is no longer active: the object was removed inside the frame(s) this call \
+                     advanced, so `x`/`y` are the last values its record carried and not a live position."
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// The disclosed mid-frame window, **only where this server can tell that it applied**.
+    ///
+    /// It cannot, and saying so is the measurement's own answer rather than a hedge: this server pauses
+    /// at an *instruction boundary*, and it has no landmark for the game's frame top. The consumer is a
+    /// comptime template and declares no symbol at all, so there is nothing to resolve; the enclosing
+    /// game-state proc is a symbol, but a PC inside it says nothing about whether this frame's
+    /// `objreq_consume` has already run. An unconditional caveat on every reply is a field nobody
+    /// reads, and §11.32 declares this key for exactly one condition, so a server that cannot tell
+    /// emits none — which is this one, today. The window itself is disclosed on the row's description.
+    fn objreq_midframe_caveat(&self) -> Option<String> {
+        None
+    }
+
+    /// `emulator/object_spawn` — place one archetype (§6 ⚙, §11.32).
+    fn object_spawn(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // Rule (5) wants `framesAdvanced` on EVERY reply, success and failure — so the
+        // refusals that never got as far as an advance say `0` rather than saying nothing.
+        // `0` is the answer, not the absence of one.
+        self.object_spawn_inner(params)
+            .map_err(objreq_frames_default)
+    }
+
+    fn object_spawn_inner(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let def = self.objreq_def_param(params)?;
+        let x = objreq_pixel_param(params, "x")?;
+        let y = objreq_pixel_param(params, "y")?;
+        let subtype = match params.get("subtype") {
+            None => 0u8,
+            Some(v) => hex::parse_count("subtype", v, 0, 255)? as u8,
+        };
+        let flip_h = objreq_bool_param(params, "flipH")?;
+        let flip_v = objreq_bool_param(params, "flipV")?;
+        // The one rail pre-flighted here (§11.32 Q1): a `def` outside the cart window is refused BEFORE
+        // any write, so a pointer that cannot be an archetype never reaches the machine. The other three
+        // rails are the engine's, and its status 2 carries them.
+        if def >= objreq::CART_WINDOW_END {
+            return Err(RpcError::invalid_params(format!(
+                "`def` {} is outside the cart address window ($000000-$3FFFFF); an archetype pointer \
+                 cannot live there, so this is refused before anything is written",
+                hex::addr(def)
+            ))
+            .with_data(json!({"def": hex::addr(def)})));
+        }
+        let layout = decoders::derive(self.symbols.as_deref())?;
+        let ack = self.objreq_exchange(
+            "emulator/object_spawn",
+            ObjReqRequest {
+                op: objreq::OP_SPAWN,
+                def,
+                x,
+                y,
+                slot: 0,
+                place: objreq::place_word(subtype, flip_h, flip_v),
+            },
+            params,
+        )?;
+        if ack.status != objreq::OK {
+            return Err(objreq::status_error(
+                ack.status,
+                ack.frames_advanced,
+                &objreq::StatusContext {
+                    def: Some(hex::addr(def)),
+                    handle: None,
+                    dynamic_slots: layout.pool("dynamic").map(|p| p.slot_count),
+                },
+            ));
+        }
+        // The engine publishes the new slot's handle into `Obj_Req_Slot` before it clears the flag.
+        let handle = self.read_u16(ack.mailbox.at(objreq::SLOT))?;
+        // …and it must seat in the pool this server decoded, or the two disagree about what the machine
+        // is. Refused rather than answered: with a handle that seats nowhere, `slot` is omitted and
+        // `x`/`y` become a decode of bytes that are not a record — the ⚙ group's rule (3) defect, at the
+        // top level and dressed as a success.
+        if objreq_slot_of(&layout, objreq_handle_addr(&layout, handle)).is_none() {
+            return Err(RpcError::new(
+                code::INTERNAL_ERROR,
+                format!(
+                    "the engine reported success and published handle {}, which does not seat in the \
+                     object pool this server decoded — the reply would describe bytes that are not a \
+                     record, so it is refused instead.",
+                    hex::u16_hex(handle)
+                ),
+            )
+            .with_data(json!({
+                "handle": hex::u16_hex(handle),
+                "framesAdvanced": ack.frames_advanced,
+                "layout": layout.to_json(),
+            })));
+        }
+        let mut out = self.objreq_reply(handle, ack.frames_advanced, &layout);
+        self.objreq_position(&mut out, &layout, objreq_handle_addr(&layout, handle))?;
+        Ok(Value::Object(out))
+    }
+
+    /// `emulator/object_move` — reposition one live dynamic object (§6 ⚙, §11.32).
+    ///
+    /// **Position only, and no clamp** — both are the engine's semantics and a client will assume the
+    /// opposite of both. Velocity, status, angle and animation are untouched, so a moved badnik keeps
+    /// doing whatever it was doing from its new place; and an out-of-act object is simply culled by the
+    /// camera-distance test rather than being pulled back inside.
+    fn object_move(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // Rule (5) wants `framesAdvanced` on EVERY reply, success and failure — so the
+        // refusals that never got as far as an advance say `0` rather than saying nothing.
+        // `0` is the answer, not the absence of one.
+        self.object_move_inner(params)
+            .map_err(objreq_frames_default)
+    }
+
+    fn object_move_inner(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let x = objreq_pixel_param(params, "x")?;
+        let y = objreq_pixel_param(params, "y")?;
+        let (handle, layout) = self.objreq_target(params)?;
+        let ack = self.objreq_exchange(
+            "emulator/object_move",
+            ObjReqRequest {
+                op: objreq::OP_MOVE,
+                def: 0,
+                x,
+                y,
+                slot: handle,
+                place: 0,
+            },
+            params,
+        )?;
+        if ack.status != objreq::OK {
+            return Err(objreq::status_error(
+                ack.status,
+                ack.frames_advanced,
+                &objreq::StatusContext {
+                    def: None,
+                    handle: Some(hex::u16_hex(handle)),
+                    dynamic_slots: layout.pool("dynamic").map(|p| p.slot_count),
+                },
+            ));
+        }
+        let mut out = self.objreq_reply(handle, ack.frames_advanced, &layout);
+        self.objreq_position(&mut out, &layout, objreq_handle_addr(&layout, handle))?;
+        Ok(Value::Object(out))
+    }
+
+    /// `emulator/object_delete` — remove one live dynamic object (§6 ⚙, §11.32).
+    ///
+    /// The delete **cascades**: the engine's `DeleteObject` takes the slot's child chain with it, so a
+    /// debug-spawned parent takes its children and no lifetime tracking of ours is needed. A slot the
+    /// entity window owns is refused (`slotOwnedByEntityWindow`) — the asymmetry with `object_move`,
+    /// which is allowed on such a slot because it touches no bookkeeping.
+    ///
+    /// There is deliberately **no `deleted: true`** in the result: a field that is `true` on every
+    /// success is §11.5's *"`released`'s defect with a useful name"*, and the failure path is a typed
+    /// error, so the boolean could never carry information.
+    fn object_delete(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // Rule (5) wants `framesAdvanced` on EVERY reply, success and failure — so the
+        // refusals that never got as far as an advance say `0` rather than saying nothing.
+        // `0` is the answer, not the absence of one.
+        self.object_delete_inner(params)
+            .map_err(objreq_frames_default)
+    }
+
+    fn object_delete_inner(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let (handle, layout) = self.objreq_target(params)?;
+        let ack = self.objreq_exchange(
+            "emulator/object_delete",
+            ObjReqRequest {
+                op: objreq::OP_DELETE,
+                def: 0,
+                x: 0,
+                y: 0,
+                slot: handle,
+                place: 0,
+            },
+            params,
+        )?;
+        if ack.status != objreq::OK {
+            return Err(objreq::status_error(
+                ack.status,
+                ack.frames_advanced,
+                &objreq::StatusContext {
+                    def: None,
+                    handle: Some(hex::u16_hex(handle)),
+                    dynamic_slots: layout.pool("dynamic").map(|p| p.slot_count),
+                },
+            ));
+        }
+        Ok(Value::Object(self.objreq_reply(
+            handle,
+            ack.frames_advanced,
+            &layout,
+        )))
+    }
+
+    /// `def` **or** `defSymbol`, exactly one — the `addr`|`symbol` pattern with the spellings
+    /// deliberately not borrowed (§11.32 Q5: `addr` on a spawn row reads as *where to put it*, which is
+    /// `x`/`y`).
+    fn objreq_def_param(&self, params: &Value) -> Result<u32, RpcError> {
+        match (params.get("def"), params.get("defSymbol")) {
+            (Some(_), Some(_)) => Err(RpcError::invalid_params(
+                "exactly one of `def` (hex string) and `defSymbol` (name) — both were given",
+            )),
+            (None, None) => Err(RpcError::invalid_params(
+                "exactly one of `def` (hex string) and `defSymbol` (name) is required: the archetype to \
+                 spawn from. `emulator/lookup_symbol`'s prefix search over `ObjDef_` lists them.",
+            )),
+            (Some(a), None) => hex::parse_addr("def", a),
+            (None, Some(name)) => {
+                let Some(name) = name.as_str() else {
+                    return Err(RpcError::invalid_params("`defSymbol` must be a string"));
+                };
+                let table = self.symbols.as_ref().ok_or_else(no_symbols)?;
+                table.address_of(name).ok_or_else(|| {
+                    RpcError::new(code::SYMBOL_NOT_FOUND, format!("no symbol named {name}"))
+                        .with_data(json!({"defSymbol": name}))
+                })
+            }
+        }
+    }
+
+    /// `handle` **or** `slot`, exactly one, converted server-side to the handle the engine wants — plus
+    /// the layout both the conversion and the reply need.
+    ///
+    /// `slot` is what `emulator/object_list` reports and `handle` is what a previous
+    /// `emulator/object_spawn` returned; a client holds one of two spellings of the same thing and
+    /// should not have to convert. Where `layout.pools` resolves, a slot outside the **dynamic** pool is
+    /// refused pre-flight — the engine would answer `4` for it anyway, and `unknownSlot` on the player
+    /// is a confusing right answer where *this row reaches the dynamic pool only* is a useful one.
+    fn objreq_target(&mut self, params: &Value) -> Result<(u16, decoders::ObjectLayout), RpcError> {
+        let layout = decoders::derive(self.symbols.as_deref())?;
+        let handle = match (params.get("handle"), params.get("slot")) {
+            (Some(_), Some(_)) => {
+                return Err(RpcError::invalid_params(
+                    "exactly one of `handle` (hex string) and `slot` (pool index) — both were given",
+                ))
+            }
+            (None, None) => {
+                return Err(RpcError::invalid_params(
+                    "exactly one of `handle` (hex string) and `slot` (pool index) is required — this row \
+                     names an object, and a request that names none is not a smaller request",
+                ))
+            }
+            (Some(h), None) => {
+                let raw = hex::parse_addr("handle", h)?;
+                if raw > 0xFFFF {
+                    return Err(RpcError::invalid_params(format!(
+                        "`handle` {} is wider than 16 bits — a handle is the LOW WORD of an object's \
+                         `addr`, not the whole address",
+                        hex::addr(raw)
+                    ))
+                    .with_data(json!({"handle": hex::addr(raw)})));
+                }
+                raw as u16
+            }
+            (None, Some(s)) => {
+                let slot = hex::parse_count("slot", s, 0, u64::from(u32::MAX))?;
+                if slot >= u64::from(layout.slot_count()) {
+                    // The ⚙ group's rule (4): refused with the bound, never clamped.
+                    return Err(RpcError::invalid_params(format!(
+                        "`slot` {slot} is past this layout's object pool"
+                    ))
+                    .with_data(json!({"slot": slot, "slotCount": layout.slot_count()})));
+                }
+                (layout.slot_addr(slot as u32) & 0xFFFF) as u16
+            }
+        };
+        // Two different faults, and they must not share a message. A handle that does not land on a
+        // record boundary at all can never name a slot in any pool; a handle that does, but lands
+        // outside the dynamic pool, is the player/system/effect case §11.32 gives the cheap pre-flight.
+        // The engine answers `4` for both, which is the right answer and a confusing one.
+        let seated = objreq_slot_of(&layout, objreq_handle_addr(&layout, handle));
+        let Some(slot) = seated else {
+            return Err(RpcError::invalid_params(format!(
+                "{} does not land on a record boundary of this layout, so it cannot be any object's \
+                 handle. A handle is the LOW WORD of a record's `addr`, and records sit at the layout's \
+                 own stride from its base.",
+                hex::u16_hex(handle)
+            ))
+            .with_data(json!({
+                "handle": hex::u16_hex(handle),
+                "baseAddr": hex::addr(layout.slot_addr(0)),
+                "slotBytes": layout.slot_bytes(),
+            })));
+        };
+        if let Some(pool) = layout.pool("dynamic") {
+            if slot < pool.first_slot || slot >= pool.first_slot.saturating_add(pool.slot_count) {
+                return Err(RpcError::invalid_params(format!(
+                    "this row reaches the DYNAMIC object pool only, and {} (slot {slot}) does not lie in \
+                     it. Moving a player is `Debug_Warp_*`'s job, and the system and effect pools are \
+                     the engine's.",
+                    hex::u16_hex(handle)
+                ))
+                .with_data(json!({
+                    "handle": hex::u16_hex(handle),
+                    "slot": slot,
+                    "pool": "dynamic",
+                    "firstSlot": pool.first_slot,
+                    "slotCount": pool.slot_count,
+                })));
+            }
+        }
+        Ok((handle, layout))
+    }
+
+    /// One byte read through [`Engine::debug_read`], so it inherits that function's region checks.
+    fn read_u8(&self, addr: u32) -> Result<u8, RpcError> {
+        let (bytes, _) = self.debug_read(addr, 1)?;
+        Ok(bytes[0])
+    }
+
+    /// The write half of `emulator/write_memory`, without its param parsing: the work-RAM window check
+    /// and a byte-by-byte write through the **real 68000 bus**, so the hardware mirror masking and the
+    /// region decode are the machine's rather than ours.
+    fn poke(&mut self, addr: u32, data: &[u8]) -> Result<(), RpcError> {
+        let end = u64::from(addr) + data.len() as u64 - 1;
+        if !(WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) || end > u64::from(WORK_RAM_HI) {
+            return Err(out_of_range(
+                addr,
+                "only the work-RAM window ($E00000-$FFFFFF) is writable; ROM and I/O writes are refused",
+            ));
+        }
+        let mut sink = ();
+        let mut bus = self.sys.mega_bus(&mut sink);
+        for (i, b) in data.iter().enumerate() {
+            bus.write8(addr + i as u32, FC_SUPERVISOR_DATA, *b);
+        }
+        Ok(())
+    }
+
     /// `emulator/get_layer_states` — which display layers are drawn (`protocol.md` §6 line 1136).
     ///
     /// **All four keys, always.** The fragment requires every one, and the reason is §2.3's: a mask a reply
@@ -6921,6 +7492,123 @@ fn absolutise(path: &str) -> String {
     match std::fs::canonicalize(path) {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => path.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The three object mutation rows' shared pieces (§11.32)
+// ---------------------------------------------------------------------------------------------------
+
+/// `maxFrames`' default. **Provisional in the contract and measured here.**
+///
+/// §11.32 Q3 left the frame counts unmeasured and said so. The measurement this parcel owed is banked in
+/// `docs/2026-09-02-cr-spawn-mode.md` §17.2: the consumer sits at the game state's frame top, so a pause
+/// anywhere inside that frame's remaining work needs the *next* frame top to reach it. Two, not one,
+/// because from a mid-frame pause the first advanced frame may not reach a frame top.
+const OBJREQ_DEFAULT_MAX_FRAMES: u64 = 2;
+
+/// What the server writes into the mailbox for one request. Every field is written on every op — the
+/// engine ignores the ones its op does not read — so there is no partially-written mailbox to reason
+/// about, and a stale cell from a previous request can never be read as this one's.
+struct ObjReqRequest {
+    op: u8,
+    def: u32,
+    x: u16,
+    y: u16,
+    slot: u16,
+    place: u16,
+}
+
+/// What one exchange yields: the resolved cells (so the caller can read what the engine published), the
+/// status byte the cleared flag made valid, and how far the machine moved to get it.
+struct ObjReqAck {
+    mailbox: objreq::Mailbox,
+    status: u8,
+    frames_advanced: u64,
+}
+
+/// The record address a slot handle names, **in the same spelling `emulator/object_list` reports**.
+///
+/// The engine turns a handle into an address with `movea.w d1, a0` — a sign extension into
+/// `$FFFFxxxx`. This bus is 24 bits wide and the listing writes a RAM address as `$00FFxxxx`, which is
+/// what `object_list`'s `addr` carries and what `debug_read` accepts, so the high half is taken from
+/// **the layout's own base** rather than from a `$00FF` literal. Same address, one derivation, and the
+/// reply joins the decoder rows by string equality rather than by a client's arithmetic.
+///
+/// This was a live defect before it was a comment: sign-extending to a full `$FFFF9BA6` produced a
+/// `-32004` on the server's own read-back, *after* a successful spawn — a machine that had changed and
+/// a reply that said it had not.
+fn objreq_handle_addr(layout: &decoders::ObjectLayout, handle: u16) -> u32 {
+    (layout.slot_addr(0) & 0xFFFF_0000) | u32::from(handle)
+}
+
+/// Invert the layout's slot addressing: the pool index for a record address, or `None` where it does not
+/// land on one. The server does this so the client never does address arithmetic; where it cannot be
+/// answered the key is omitted rather than fabricated (the ⚙ group's rule (3)).
+fn objreq_slot_of(layout: &decoders::ObjectLayout, addr: u32) -> Option<u32> {
+    let base = layout.slot_addr(0);
+    let stride = layout.slot_bytes();
+    if stride == 0 {
+        return None;
+    }
+    // Both addresses are compared masked to the work-RAM window, because a listing writes a RAM address
+    // as `FFFFxxxx` and the bus decodes it mirrored — the same masking `debug_read` applies.
+    let off = (addr & 0x00FF_FFFF).checked_sub(base & 0x00FF_FFFF)?;
+    if off % stride != 0 {
+        return None;
+    }
+    let slot = off / stride;
+    (slot < layout.slot_count()).then_some(slot)
+}
+
+/// `framesAdvanced: 0` on a refusal that carries no count of its own.
+///
+/// Rule (5) puts `framesAdvanced` on every reply from these rows, success **and** failure, so a caller
+/// that is refused still knows where its machine ended up. A refusal raised before any advance really
+/// did advance zero frames, and zero is an answer.
+///
+/// **One refusal on these rows escapes this and it is not the handler's to reach:** §2.5's params
+/// closure fires in [`Engine::dispatch`], before any handler runs, so an undeclared param is a
+/// `-32602` with `unknownParams` and no `framesAdvanced`. That is one dispatcher shape shared by every
+/// row in the catalog, and giving it a per-row key would be worse than the gap; the gap is filed
+/// upstream rather than patched here.
+fn objreq_frames_default(mut e: RpcError) -> RpcError {
+    let mut data = match e.data.take() {
+        Some(Value::Object(m)) => m,
+        Some(other) => {
+            let mut m = Map::new();
+            m.insert("detail".into(), other);
+            m
+        }
+        None => Map::new(),
+    };
+    data.entry("framesAdvanced".to_string()).or_insert(json!(0));
+    e.with_data(Value::Object(data))
+}
+
+/// A world-pixel coordinate param: an integer, bounded by the engine's own 16-bit position cell, refused
+/// and **never clamped** outside it.
+///
+/// Always required — both rows that take a position require both halves, and `object_delete` names a
+/// thing rather than a place and never calls this. An optional spelling would be a default position,
+/// which is a value the caller did not choose arriving in the machine.
+fn objreq_pixel_param(params: &Value, field: &str) -> Result<u16, RpcError> {
+    match params.get(field) {
+        None => Err(RpcError::invalid_params(format!(
+            "`{field}` is required (world pixels)"
+        ))),
+        Some(v) => Ok(hex::parse_count(field, v, 0, 0xFFFF)? as u16),
+    }
+}
+
+/// An optional boolean param, refused rather than coerced when it is not one.
+fn objreq_bool_param(params: &Value, field: &str) -> Result<bool, RpcError> {
+    match params.get(field) {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(RpcError::invalid_params(format!(
+            "`{field}` must be a boolean"
+        ))),
     }
 }
 

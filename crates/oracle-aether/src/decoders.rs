@@ -663,6 +663,22 @@ impl<'a> DecodedRecord<'a> {
         out
     }
 
+    /// The record's world position in pixels, **decoded whether or not the slot is active**.
+    ///
+    /// [`to_json`](Self::to_json) omits `x`/`y` on an inactive slot and must go on doing so: there, an
+    /// omission is the honest answer to *what is in this slot*. This accessor exists for the one caller
+    /// that is answering a different question — `emulator/object_spawn`/`_move` re-read the record they
+    /// just wrote, know the game wrote those bytes, and owe the fragment a REQUIRED `x`/`y` even in the
+    /// rare case where the object removed itself inside the advanced frame. It is the same decode, at
+    /// the same layout-owned offsets, so the two cannot drift.
+    pub fn position(&self) -> (i64, i64) {
+        let spec = self.layout.spec;
+        (
+            signed(be(&self.bytes, spec.x_pixel_offset, 2), 2),
+            signed(be(&self.bytes, spec.y_pixel_offset, 2), 2),
+        )
+    }
+
     /// The absolute address `code` names, when the layout resolved the code bank.
     ///
     /// `code_addr` is an **offset**, not an address (`objcodebase.emp`: *"Every object routine's code_addr

@@ -73,6 +73,7 @@ pub mod decoders;
 pub mod engine;
 pub mod hex;
 pub mod host;
+pub mod objreq;
 pub mod outbound;
 pub mod png;
 pub mod rpc;
