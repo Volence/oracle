@@ -452,10 +452,32 @@ Objects tab, and the tab must say that in those words rather than showing an emp
 
 ### 5.4 P4/P5/P6 — Breakpoints, Watchpoints, Profiler — *one prerequisite, and it is the run loop*
 
+> ### ⚠ **THIS SUBSECTION WAS WRITTEN BEFORE PARCEL 2 LANDED, AND TWO OF ITS THREE COSTS WERE ALREADY PAID.**
+>
+> It is kept as written because its *conclusion* was right — the three panels share one run-loop change and
+> that change re-opens parcel 1's measurement — but it prices work parcel 2b had already done, and a reader
+> costing parcel 3 from this list would double-count it. What it gets wrong:
+>
+> * **"hosting the `Host` in `oracle-player`"** — done in parcel 2b. `oracle-aether` is an unconditional
+>   dependency of `oracle-player`, `crates/oracle-player/src/bus.rs` owns a `Host`, and `Host::call`
+>   (`crates/oracle-aether/src/host.rs:533`) is what the Memory and Objects tabs already talk through.
+> * **"threading the pause flag both ways"** — the outbound half shipped in 2b as `Bus::mirror_pause`, with
+>   four tests behind it. Parcel 3 added the inbound half and made the drain unconditional.
+> * **"merging held pads"** — *not done, and not this parcel's.* `Host::set_live_pads` / `Host::held` are
+>   still unwired in `oracle-player`; a client's `emulator/hold` does not compose with the keyboard there.
+>   Booked below as an open item rather than quietly closed.
+> * **The pacing re-measurement was the one cost this section priced correctly, and parcel 3 paid it.**
+>   See **§5.6**.
+>
+> The parcel-1 quotation ("hosting it would put the 4 ms pump budget inside the frame") is worth reading
+> against §5.6's measured answer: the drain's **median cost is 0.000 ms and its worst across 9,000 measured
+> iterations is 0.013 ms**. `HostConfig::pump_budget` is a *ceiling on a drain that has queued work*, and an
+> unserved player never queues any.
+
 All three ride the same seam: `Host::run_sinks(resume_pc)` returns the `(Observe<&mut Watchpoints>,
 Observe<&mut Profiler>, BreakStop)` triple the player's own run must carry, and the halt must come back
-through `break_observed` → `Host::record_break`. Today `Machine::step` runs
-`self.sys.run_frames_with_sink(1, &mut self.cap)` with no wrapper at all. Adding it means:
+through `break_observed` → `Host::record_break`. Before parcel 3 `Machine::step` ran
+`self.sys.run_frames_with_sink(1, &mut self.cap)` with no wrapper at all. Adding it meant:
 
 * hosting the `Host` in `oracle-player` (parcel 1 excluded this deliberately — pacing doc line 446: *"hosting
   it would put the 4 ms pump budget inside the frame that this parcel is trying to prove"*);
@@ -481,6 +503,574 @@ most of what a Sonic-engine debugger is used for.
 
 ---
 
+### 5.6 Parcel 3 — the run-loop seam, and the re-measurement it owed
+
+> ### ✅ **BUILT, on `parcel/panels-3-stopping`.** The seam only; the three tabs are the next parcel's.
+
+**What shipped.** `Machine::step` now carries `Bus::run_sinks(resume_pc)` on every emulated frame — the
+engine's own `Watchpoints` and `Profiler` wrapped in `Observe`, plus the breakpoint sink **bare** — and the
+halt returns through `break_observed` → `Bus::record_break`. `Bus::mirror_pause` drains once per iteration,
+**unconditionally**, after the frame; `Loop::iterate` adopts `Bus::is_paused()` at the **top**, before the
+governor's tick, which is what makes a halt stop the player rather than merely be recorded. The completed
+frame goes out through `Bus::publish`. Nothing is duplicated: there is one breakpoint list, one watch, one
+profiler and one layer mask, and they live on the `Host` (R2).
+
+The transport bar (pause / resume / step) is a **control, not a `Tab`**. `LAYOUT_VERSION` stays at **1** and
+no stored layout is discarded. Every gesture goes through `Host::call` and the bar renders the tool's own
+reply and its own refusal, branching on `Answer::reason()` — `emulator/step` against a running player is
+refused `-32005 machineRunning` by the handler, and that is the sentence a human sees.
+
+### 5.6.1 The measurement, retaken
+
+Same rig as `docs/2026-09-02-player-pacing-design.md` §4: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin`, a
+real audio device at gain 0.0, no window and no GPU. **Four separate process invocations, reported
+separately and never averaged.** BEFORE is the release binary built from `f2ddda9` (the parcel-2 tip),
+preserved and re-run in this same session so both halves are one sitting.
+
+**The condition of the machine, either side of every run.** `pgrep -c -f "[c]argo"` was **0** before and
+after all four — the peer `sigil` lane's `cargo test --release --workspace` had finished, and one earlier
+run taken while it was still going (load average 22.7) was **discarded rather than reported**. Everything
+else was the owner's live session: Vivaldi across three processes at ~46 %, Discord, `kwin_wayland`, Steam
+helpers throughout, plus what is named per run below. Load average **2.2–2.7 on 16 cores** for all four.
+
+| | **BEFORE 1** | **BEFORE 2** | **AFTER 1** | **AFTER 2** |
+|---|---|---|---|---|
+| **emulated frames/s** | **60.038** | **60.036** | **60.038** | **60.038** |
+| presented frames/s | 59.998 | 59.996 | 59.998 | 59.998 |
+| **frame period, median** | **16.665 ms** | **16.665 ms** | **16.666 ms** | **16.665 ms** |
+| frame period, p95 / p99 | 16.884 / 17.226 | 16.867 / 17.143 | 16.969 / 17.317 | 16.899 / 17.348 |
+| **frame period, WORST** | **22.591 ms** | **22.516 ms** | **23.536 ms** | **22.745 ms** |
+| governor rebases | 0 | 0 | 0 | 0 |
+| worst lateness | 6.451 ms | 6.438 ms | 10.334 ms | 7.683 ms |
+| iterations running 2 frames | 3 (0.067 %) | 3 (0.067 %) | 3 (0.067 %) | 3 (0.067 %) |
+| iterations running 0 frames | 0 | 0 | 0 | 0 |
+| **audio starvations, steady** | **0** | **0** | **0** | **0** |
+| **audio producer drops** | **0** | **0** | **0** | **0** |
+| leanest ring | 6702 (76.0 ms) | 6584 (74.6 ms) | 6584 (74.6 ms) | 6762 (76.7 ms) |
+| load on the box | browser + chat only | browser + chat only | one `sigil` at 98–100 % | one `sigil` at 78–95 % |
+
+Per-iteration cost, **medians**, milliseconds (n = 4500 each):
+
+```
+part            BEFORE 1  BEFORE 2  |  AFTER 1  AFTER 2
+emulate            2.653     2.744  |    2.694    2.744
+audio              0.001     0.001  |    0.001    0.001
+convert            0.056     0.056  |    0.035    0.035
+tex-upload         0.005     0.005  |    0.005    0.005
+ui-build           0.140     0.140  |    0.149    0.149
+tessellate         0.025     0.025  |    0.027    0.027
+bus-pump               —         —  |    0.000    0.000     <-- NEW: this parcel's own drain
+CPU TOTAL          2.854     2.946  |    2.887    2.937
+period            16.665    16.665  |   16.666   16.665
+```
+
+**Reading it, including the parts that moved.**
+
+* **The seam is free at the median and nearly free at the tail.** `bus-pump` — one `Host::set_paused` plus
+  one `Host::pump` per iteration — is **0.000 ms median, 0.001 ms p99, 0.003 / 0.013 ms worst** across
+  9,000 measured iterations. An unserved player queues nothing, so the drain is a `try_recv` on an empty
+  channel plus two ~1 KB `System` moves. `HostConfig::pump_budget`'s 4 ms is a ceiling on a drain that has
+  work; this one never does.
+* **`ui-build` rose 0.140 → 0.149 ms at the median, and that is attributable**: it is the transport bar —
+  two buttons, an armed-instruments label and the echo — drawn every frame. **+0.009 ms is 0.05 % of a
+  16.667 ms frame.** Named rather than absorbed.
+* **`convert` FELL, 0.056 → 0.035 ms, and this is reported unattributed.** It moved in the *opposite*
+  direction to the one a newly added `Bus::publish` call inside that bucket would push, and it lands back on
+  parcel 1's own documented 0.035–0.037 ms — so it is the BEFORE runs that are the outlier against the
+  historical figure, not the AFTER ones. The most likely mechanism is that these are two different
+  compilations (release, no LTO, 16 codegen units) and inlining around a 287 KB pixel conversion differs by
+  ~20 µs. **It is not claimed as a win.**
+* **`CPU TOTAL` at the median moved 2.854 / 2.946 → 2.887 / 2.937 — inside BEFORE's own between-run spread
+  of 0.092 ms.** Emulation is still ~93 % of the CPU frame.
+* **The tail moved slightly and it is named.** p99 is consistently ~0.15 ms higher after (17.14–17.23 →
+  17.32–17.35), and the worst frame 22.52 / 22.59 → 22.75 / 23.54. Both AFTER runs carried a `sigil`
+  process at 78–100 % of a core that neither BEFORE run did, which is the honest first explanation; no
+  bucket shows a matching increase, `bus-pump`'s own worst is 0.013 ms, and the design absorbed it — zero
+  rebases, zero steady starvations, zero producer drops, leanest ring unchanged at ~75 ms.
+* **The verdict: no material regression.** Emulated frame rate, median period, starvations, drops and the
+  fine trim's 2-frame rate are identical to three decimal places or exactly equal across all four runs.
+
+`--target-fps 0` remains the **CONTROL** and not a result; the report stamps any run made with it
+`GOVERNOR OFF` and nothing from it is a statement about the player.
+
+### 5.6.2 What parcel 3 deliberately did NOT do
+
+* ~~**No `Tab` variants**, so `LAYOUT_VERSION` is untouched at 1. Breakpoints, Watchpoints and Profiler
+  tabs are the next parcel's, and `Bus::read_instruments` is the borrow they draw from.~~
+  > ⚑ **SUPERSEDED by parcel 3-tabs (§5.7), and BOTH halves of the sentence changed.** The first half was
+  > true of parcel 3 and is no longer true of the branch that sits on it: three `Tab` variants shipped and
+  > `LAYOUT_VERSION` is **2**, and it is no longer an integer anybody bumps — it is `VOCABULARIES.len()`.
+  > The second half was **wrong when written**: `Bus::read_instruments` is `(&Watchpoints, &Profiler,
+  > bool)` and has never carried breakpoints, so it is the borrow *two* of the three tabs draw from. The
+  > Breakpoints tab draws from `Bus::read_breakpoints`, added as its sibling. §5.7 has the reason.
+* **Held pads are still not merged.** `Host::set_live_pads` / `Host::held` are unwired in `oracle-player`,
+  so a client's `emulator/hold` does not compose with the keyboard there (it does in `oracle-frontend`,
+  via `Bus::merge_held`). §5.4 listed this among parcel 3's costs; it is a real gap and it is booked here
+  rather than quietly closed. **§9.4 is its sibling and not the same defect**: that one is about a held set
+  the frontend *does* apply being invisible to the human; this one is about the player not applying it at
+  all, so a client's `hold` against the toolkit player does nothing whatsoever.
+* **The picture does not refresh after `emulator/step`.** A step advances one *instruction*, the run that
+  drew the retained frame is over, and `Host::publish_capture` is gated on `has_clients()` — which an
+  unserved player never satisfies, so `Host::framebuffer()` has nothing to pull. The retained frame is the
+  truthful last-drawn one; it updates on resume.
+
+### 5.7 Parcel 3-tabs — P4/P5/P6 themselves, on the seam
+
+> ### ✅ **BUILT, on `parcel/panels-3-tabs`** (`fe00618` the three tabs, `017e21b` the measurement fixture).
+> The panels §5.4 priced and §5.5 insisted on keeping together. `Tab` is now all eight of
+> `Screen | Pacing | Registers | Memory | Objects | Breakpoints | Watchpoints | Profiler`.
+
+**What shipped.** Three tabs, `crates/oracle-player/src/stopping.rs` as their one shared model — one module
+for three tabs for the reason `memory.rs` is one module for five spaces. Every panel body is a **direct
+read of the instrument the run loop itself feeds** (§4.4's hybrid, read half), and every gesture is a
+`(method, params)` pair dispatched through `Bus::call` and rendered by `memory::answer_line` (§4.4's write
+half), branching on `Answer::reason()` and colouring on `Answer::is_err()`. Nothing in `stopping.rs` or
+`ui.rs` composes a refusal sentence: the arming rules, the caps, the handle grammar and the param types are
+the handlers' own, and the panels inherit every one of them including the ones this design did not
+anticipate. Two such were caught by the tests rather than by memory — `emulator/run_frames` takes `frames`
+and not `n`, and it is `require_paused`.
+
+**⚑ Breakpoints are NOT in `read_instruments`, and §5.6.2's second half was wrong to say they were.**
+`Bus::read_instruments` is `(&Watchpoints, &Profiler, bool)` (`bus.rs:203`, over
+`engine.rs:1698`) and has never carried a breakpoint set. The distinction is not an accident of the
+signature, it is the seam's own vocabulary: **an instrument RECORDS and is lent to a run wrapped in
+`Observe`; a breakpoint HALTS and is lent bare** — that is exactly how §5.6's `run_sinks(resume_pc)` hands
+them over, `(Observe<&mut Watchpoints>, Observe<&mut Profiler>, BreakStop)`. So the Breakpoints tab gets a
+**sibling** rather than a fourth element: `Engine::read_breakpoints` (`engine.rs:1724`) →
+`Host::read_breakpoints` (`host.rs:463`) → `Bus::read_breakpoints` (`bus.rs:225`). All four reads are
+`&self`, which is the only reason `read_instruments` bundles three at all — a draw pass holds every one of
+them at once. The alternative, calling `emulator/breakpoint_list` on every repaint, is **route (b) on a
+60 Hz path**, and §4.4's whole line is that a repaint does not pay for it.
+
+**⚑ `Live` = Yes / Retained / Never, which is the panel-shaped answer to the trap `read_instruments`' own
+doc names.** *Armed is not derivable from the rows.* It is true of all three instruments and in **three
+separate mechanisms**, so no single fix covers it and no amount of correct row rendering would:
+
+* **Profiler** — `set_profiler {enabled:false}` disarms and **retains** the sample (protocol §11.16: arming
+  resets, disarming retains, reading never clears). A grid of hot routines from four minutes ago is
+  pixel-identical to a grid of hot routines from now.
+* **Watchpoints** — `watchpoint_clear` retires the watch and keeps its hits **on purpose** (the handler:
+  *"a destructive clear would let one client erase another's evidence"*). A hit log can outlive every watch
+  that could add to it.
+* **Breakpoints** — `breakpoint_set_enabled {enabled:false}` carries `hits` **across the toggle** (§6 of
+  the protocol: *"a client wanting a fresh count clears and re-adds"*). A disabled row reading 12,000 hits
+  fired 12,000 times and will not fire again.
+
+So a **full table says nothing about whether anything is still recording**. Each tab prints `Live` in words
+before it draws a row, and `Live::Never` **refuses to draw the table at all** — the Objects tab's rule, one
+instrument over: an empty grid where "never measured" belongs asserts that this ROM has no hot code.
+`Retained` and `Never` are a genuinely reachable pair and not a bool, which `stopping::tests` is red for.
+
+**`LAYOUT_VERSION` 1 → 2, and it stops being a number anybody remembers.** §6's box says *"bump it in the
+same change that touches `Tab`"* — a rule with nowhere to enforce it. It is now
+`VOCABULARIES.len()` (`layout.rs:56`), over an append-only table of the `Tab` vocabularies this player has
+shipped, spelled in serde's own alphabet because that is the text a `DockState<Tab>` writes into the RON.
+**Appending a row IS the bump**, so there is no second place to forget; what remains is changing `Tab` and
+appending nothing, and one test is red for exactly that. A version-1 layout is discarded by the version
+gate before `ron` sees the blob, proven on a real version-1 blob whose bytes are also shown to be readable
+under the current stamp — otherwise the test would pass on an unreadable blob and prove the wrong thing.
+
+**`--dock every-tab` — a measurement arrangement, not a layout.** `egui_dock` draws only a leaf's *active*
+tab, so a bench run against `initial_dock` executes **one** of the three panels that share a pane and would
+report it as the cost of adding three. `ui::every_tab_dock` puts all eight in leaves of their own: the
+worst case a user could arrange, and the only arrangement in which measuring N panels measures N panels.
+It neither reads nor writes a stored layout in either direction (`main.rs:910`), so a measured run can
+never inherit — or overwrite — the operator's own dock.
+
+**`--bench-arm` — a measurement fixture, refused outside a bench mode**, and the reason §5.7's numbers in
+§8 item 2 are not vacuous. The three tabs are **empty until a human arms something**, so a bench run
+against a fresh player draws three headlines and an add box; reporting that as *the cost of the
+Breakpoints, Watchpoints and Profiler panels* is the same vacuity as a parity test comparing `[]` against
+`[]`. The expensive parts of these bodies exist only once there is something to draw — sixteen breakpoint
+rows, a hit log, and a `BTreeMap` of routines the panel sorts on every repaint. Every arm goes through
+`Host::call` exactly as a click would, so **the fixture cannot reach a state a user could not**. Two
+choices shape what its numbers mean, and both are stated at the function:
+
+* **The breakpoints are armed DISABLED.** An enabled one at an address this ROM executes halts the player
+  and there is no run left to measure. Rows draw identically (the body branches on `enabled` only to pick a
+  word and a dimming), so the panel cost is unchanged — but `any_enabled()` is false, no `BreakStop` is
+  attached, and **this run does not price the halt sink.** That is §5.6's number and it lives in `emulate`.
+* **The watch is wide (64 KB of work RAM, writes) and the profiler is armed with `perFrame`**, which is
+  what puts real rows in front of the panels. Both attach a sink, so **`emulate` moves** — that is the
+  *instrument's* cost and not the panel's, and the bucket split is what keeps the two answers apart.
+
+⚑ **Loud on unmeasurable, in both directions.** `arm_for_measurement` reads the armed state back **off the
+instruments** rather than assuming its own calls landed, and `exit(2)`s with the counts if the panels would
+be empty: a refused arm must never become a quietly smaller number in a table. The test does the same and
+then runs eight real `iterate()` frames, asserting the hit log and the routine map are non-empty — without
+that, an armed-but-never-recording instrument satisfies every other assertion in it.
+
+`watch_wire_id` and `breakpoint_wire_id` are now `pub`. A panel reading the instrument directly still has
+to name a row back to a `clear`, and a `format!("w{}")` in `ui.rs` would be a second spelling of one fact —
+agreeing until the day it did not, in the one place where being wrong retires somebody else's watch.
+
+### 5.7.1 The panel-cost measurement — and the panel that does not fit in a frame
+
+> ### ⚑ **SUPERSEDED IN TWO PLACES by §5.7.2, and everything below is left standing as the measurement that
+> found the defect.**
+>
+> * **The residual of two is now a residual of ONE, and it is the Watchpoints hit log.** Not by argument —
+>   by two extra binaries, each carrying exactly one of the two fixes, run against the same configuration
+>   in the same sitting. Fixing the hit log alone recovers the whole 14.7 ms; fixing the Profiler alone
+>   recovers **nothing**. §5.7.1's own hypothesis, below, was right; its refusal to name the panel without
+>   evidence was also right, and §5.7.2 is that evidence.
+> * **`ui-build` in configuration C is 0.573 ms, not 15.220**, and the player holds 60 emulated fps with
+>   all eight tabs visible and both instruments armed. The numbers below are the state of
+>   `parcel/panels-3-tabs` at `d944286` and remain the honest record of it.
+> * **A second correction to this section's own rig**, on top of the one already boxed below:
+>   `pgrep -c -f "[c]argo"` **counts the watcher that runs it**, so a wait-for-quiet loop written around it
+>   can never see 0. See §5.7.2.
+
+**This is the measurement §8 item 2 booked as owed, taken for these three panels, and it does not say what
+this design predicted.** §5's claim that the panel bodies are cheap was *reasoning from size*. It holds
+everywhere it was tested but one: **the Watchpoints/Profiler pair, whose two bodies together cost 14.7 ms
+of a 16.667 ms frame** — 167× what the four other bodies added between them. Which of that pair it is, this
+measurement cannot say (below), so "one of them is wrong by two orders of magnitude" is as far as the
+evidence goes and further than any single panel may be named.
+
+**The rig is §5.6.1's, unchanged**: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin` (+ its 2,884-symbol
+`.lst`), a real audio device at gain 0.0, no window and no GPU, `--expect-screen 1281x803`. **Four separate
+process invocations, reported separately and never averaged.**
+
+**Why the comparison is inside this one binary and not against the seam tip.** `--dock every-tab` and
+`--bench-arm` were both added by *this* branch, so `e208a04` cannot be run with either. A BEFORE/AFTER
+across the two binaries would mix **three** changes — the arrangement, the arming, and the panels — and
+report their sum as "the panel cost". So all four configurations below are the *same* binary, and each
+neighbouring pair differs in exactly one thing:
+
+| | arrangement | armed | bodies actually drawn (egui_dock draws only a leaf's ACTIVE tab) |
+|---|---|---|---|
+| **A** | default | no | Screen, Pacing, Registers, **Breakpoints (empty)** |
+| **B** | `--dock every-tab` | no | all eight; the three stopping ones **empty** |
+| **C** | `--dock every-tab` | `--bench-arm` | all eight; the three stopping ones **with rows** |
+| **D** | default | `--bench-arm` | Screen, Pacing, Registers, **Breakpoints (16 rows)** |
+
+* **D − A** isolates **one** panel: only Breakpoints is drawn of the three, so arming moves that body and
+  nothing else in `ui-build`.
+* **C − B** is all three stopping bodies gaining their rows, at one arrangement.
+* **B − A** is four *more bodies* appearing (Memory, Objects, and the two empty stopping ones).
+* **D − A** in the `emulate` bucket is the **instruments'** cost, not a panel's — and it is the only pair
+  where that bucket is comparable, because A/B/D run ~1.00 emulated frames per iteration and **C runs
+  1.83**, so C's `emulate` covers nearly two frames and cannot be differenced against a one-frame column.
+
+**The condition of the machine.** `pgrep -c -f "[c]argo"` was **0 before and after all four** runs below,
+1-minute load average **2.0–4.0 on 16 cores**, everything else the owner's live session (Vivaldi ×3,
+Discord, `kwin_wayland`, Steam helpers, and a peer lane's `oracle-frontend` at ~20 % of one core).
+**Two further sittings were taken and are NOT tabled**: both ran with a peer `sigil` lane's
+`cargo test --release --workspace` and its corpus jobs on the box (`pgrep` = 1 throughout, load average
+9–21), which is the condition §5.6.1 discarded a run for. They are named here only because the finding
+below reproduced in both — `ui-build` medians of **16.356 ms** and **16.717 ms** for configuration C — and
+a result that survives a 5× swing in machine load is not a load artefact.
+
+> ⚑ **A correction to the rig, found by running it: `pgrep -c -f "[c]argo"` = 0 is NOT "the box is
+> quiet".** A peer lane's *compiled* binaries do not match that pattern. While waiting for a second clean
+> sitting, `pgrep` read **0** with two `sigil` processes at **98 % of a core each** and a 1-minute load
+> average of 5.1 — a machine the check calls idle and that would have cost ~2 cores of the 16. The check
+> is a *cargo* check, and it catches the peer's build; it does not catch the peer's run. Every run in the
+> table above also records `ps --sort=-pcpu` and `/proc/loadavg` for exactly this reason, and the four
+> tabled runs show nothing but the owner's session on them. **A future measurement should gate on the
+> load average as well as on `pgrep`** — this one did, which is why it has one clean sitting rather than
+> three.
+>
+> **A second clean sitting was attempted and NOT obtained**, and that is recorded rather than papered
+> over: a ten-minute wait for `pgrep` 0 *and* a 1-minute load average under 4.0 timed out with the peer
+> lane still on the box. So every figure tabled above is **one clean invocation per configuration**, and
+> the two deltas that live near the noise floor — `ui-build` D − A and `emulate` D − A — are qualified in
+> the readings below accordingly. The 14.7 ms is not one of them: it is 60× the largest spread any
+> configuration showed.
+
+Per-iteration cost, **medians**, milliseconds:
+
+```
+part                     A         B         C         D
+                    default  every-tab  every-tab   default
+                     no arm     no arm    ARMED      ARMED
+emulate               2.702     2.680      5.582     4.497
+audio                 0.001     0.001      0.002     0.001
+convert               0.036     0.035      0.071     0.053
+tex-upload            0.006     0.005      0.006     0.009
+ui-build              0.173     0.261     15.220     0.390     <-- the panels
+tessellate            0.036     0.051      0.071     0.074
+bus-pump              0.000     0.000      0.001     0.001
+CPU TOTAL             2.922     2.989     20.905     5.025
+period               16.664    16.664     38.672    16.669
+n (iterations)         4500      4500       2113      4465
+```
+
+| | **A** | **B** | **C** | **D** |
+|---|---|---|---|---|
+| **emulated frames/s** | **60.038** | **60.038** | **51.581** | **60.033** |
+| presented frames/s | 59.998 | 59.998 | **28.170** | 59.526 |
+| emulated frames per iteration | 1.000 | 1.000 | **1.830** | 1.008 |
+| frame period, median | 16.664 ms | 16.664 ms | **38.672 ms** | 16.669 ms |
+| frame period, WORST | 23.689 ms | 28.040 ms | 64.375 ms | 42.573 ms |
+| governor rebases | 0 | 0 | **1754** | 30 |
+| **audio starvations, steady** | **0** | **0** | **1353** | **2** |
+| audio producer drops | 0 | 0 | 0 | 0 |
+| leanest ring | 6820 (77.3 ms) | 6526 (74.0 ms) | 2940 (33.3 ms) | 2940 (33.3 ms) |
+| `ui-build` p95 / p99 | 0.306 / 0.382 | 0.366 / 0.475 | 16.873 / 23.277 | 1.600 / 2.714 |
+
+**⚑ The finding, stated before the arithmetic: one of these panels costs 91 % of a frame budget on its own,
+and the player misses real time drawing it.** Configuration C is not a stress test invented for the
+occasion — it is eight tabs visible with a watch and the profiler armed, which is a layout a human can
+build with the mouse and a state `--bench-arm` reaches only through `Host::call`. In it the machine runs
+**51.6 emulated frames a second instead of 60**, presents **28**, rebases the governor **1754 times**, and
+inserts **10.6 seconds of silence into a 75-second run**. Nothing else in the report moved: `bus-pump` is
+still 0.001 ms, `convert` and `tex-upload` are unchanged, and `producer DROPS` is 0.
+
+**The arithmetic, and what each delta may be called.**
+
+* **`ui-build` B − A = +0.088 ms.** Four more panel bodies — Memory, Objects, and the two empty stopping
+  ones — is **0.5 % of a frame**. §5's "these are cheap" is *confirmed* for the read-only panels. ⚠ One
+  caveat that must travel with this number: `every_tab_dock` gives each of eight leaves ~1/8 of the window,
+  so Memory's hex view and Objects' table lay out **fewer visible rows** than they would in a pane a human
+  had made big. **B − A is a lower bound for those two bodies at full size, not their cost.**
+* **`ui-build` D − A = +0.217 ms** — **the Breakpoints panel with sixteen rows**, isolated, in the shipped
+  default arrangement. 1.3 % of a frame for the whole body, add box and all. Cheap, as designed. ⚠ This
+  delta is at the edge of what one clean sitting resolves: the two discarded sittings put it at +0.100 and
+  **+0.001** ms, both with an inflated A to difference against. Read it as **≲0.2 ms**, and note that every
+  reading of it is under 2 % of a frame, which is the part that matters.
+* **`ui-build` C − B = +14.959 ms** — the three stopping bodies gaining their rows.
+* **Therefore (C − B) − (D − A) = +14.742 ms is Watchpoints + Profiler**, and **today's flags cannot split
+  that pair**: no arrangement draws one of them without the other, and `--bench-arm` arms all three
+  together. It is booked as a **residual of two**, not attributed to one. ⚑ *What it is not:* it is not
+  the instruments recording — that is `emulate`, below — and it is not the `Live` header, which is three
+  words.
+* **`emulate` D − A = +1.795 ms per emulated frame** is the **instruments'** cost: a 64 KB-wide work-RAM
+  write watch plus a `perFrame` profiler, feeding sinks on every access. ⚠ **It is the least stable number
+  here and it must not be quoted as a figure.** The two discarded sittings put the same delta at **+0.62**
+  and at **−1.82** ms — the second one *negative*, i.e. the armed run was the faster of that pair, with a
+  peer `sigil` at 98 % of a core during the unarmed half — and D's own `emulate` p95 is 9.635 ms against
+  A's 3.184. All that is established is that **`emulate` moves, upward, by something under two
+  milliseconds a frame, and that this is the instruments' cost and not a panel's.** A 64 KB write watch is
+  the expensive end of the instrument; nothing here prices a narrow one.
+
+**The hypothesis for the 14.7 ms, kept separate from the measurement.** `ui::Panels::watchpoints` draws the
+hit log as `for h in &view.hits { ui.monospace(format!(…7 fields…)) }` inside a plain
+`ScrollArea::vertical().max_height(220.0)` — a **non-virtualised** list, `show` rather than `show_rows`. The
+log is a ring of `EngineConfig::watch_ring_cap` = **4096** entries (`engine.rs:205`), which a 64 KB write
+watch fills in well under a second, and `stopping::watches` copies all 4096 out with `hits().to_vec()` on
+every repaint besides. 4096 rows × ~3.6 µs of `format!` + galley layout is ~14.7 ms, which is the size of
+the residual — but *consistency is not attribution*, and the Profiler's own suspect (it sorts the whole
+routine map every repaint before truncating to `TOP_ROUTINES` = 24) is untested for the same reason. **The
+split, and the fix, are the next parcel's**, and the fix is named here so it is not re-derived: `show_rows`
+with a fixed row height, which draws the ~10 rows a 220 px viewport can show.
+
+> ⚑ **This hypothesis was right, and §5.7.2 is the measurement of it.** The hit log was **14.779 ms** of
+> the 14.7; the Profiler's suspected sort was **0.027 ms** and never a contributor. The named fix —
+> `show_rows` — is what shipped, with the row height taken from the style rather than fixed by hand. The
+> paragraph is left standing because the discipline it demonstrates is the point: *consistency is not
+> attribution*, and the panel was not named until a binary that fixed one and not the other said so.
+
+**What this does NOT say.** It does not say the default player is slow: **configuration A is the shipped
+layout and it is 0.173 ms of `ui-build`**, and D — the shipped layout with instruments armed and a full
+Breakpoints table — holds 60.033 emulated fps with 2 steady starvations in 75 s. The regression is reachable
+by clicking a tab, not by launching the program.
+
+### 5.7.2 The retake — the residual of two was one panel, and it was the hit log
+
+**§5.7.1 could not split its residual because no flag drew one of the pair without the other. This retake
+does not split it with a flag; it splits it with the FIX.** Four release binaries were built from this
+branch and run back to back in one sitting:
+
+| binary | hit log virtualised (`show_rows`) | profiler selects before formatting |
+|---|---|---|
+| **BEFORE** (`d944286`) | no | no |
+| **HITLOG-ONLY** | **yes** | no |
+| **PROF-ONLY** | no | **yes** |
+| **AFTER** (`c7c9b5a`) | **yes** | **yes** |
+
+Each fix targets exactly one panel body, so `BEFORE − HITLOG-ONLY` is the Watchpoints hit log's cost and
+`BEFORE − PROF-ONLY` is the Profiler's, with no arrangement flag needed and nothing left over to guess at.
+All four are configuration **C** (`--dock every-tab --bench-arm`) so the *only* thing that differs between
+them is which body was made cheap. The four binaries were confirmed to be four distinct files before the
+sitting, and `AFTER` was rebuilt from a clean tree and compared byte-for-byte with the copy that was run —
+a measurement in which two of the "different" builds were the same file would look exactly like a fix that
+did nothing.
+
+**The rig is §5.7.1's, unchanged**: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin` (+ its 2,884-symbol
+`.lst`, auto-discovered), a real audio device at gain 0.0, no window and no GPU, `--expect-screen
+1281x803`. **Separate process invocations, reported separately and never averaged.**
+
+> ### ⚑ **A second correction to the rig, and it is worse than the first: `pgrep -c -f "[c]argo"` COUNTS THE WATCHER.**
+>
+> §5.7.1's box says the check is a *cargo* check that misses a peer's compiled binaries. That is true and
+> it is not the whole fault. `-f` matches the **whole command line**, so a wait-for-quiet loop whose own
+> text mentions `cargo` — as any loop that reports `cargo=$(…)` must — matches **itself**. Measured here:
+> at 13:26 the documented check read **3** while `pgrep -c -x cargo` and `pgrep -c -x rustc` both read
+> **0** and the box was genuinely idle; all three "cargo processes" were this session's own watchers. A
+> gate written on it waits forever and then reports that the box was never quiet — which is very close to
+> what §5.7.1's own "second clean sitting was attempted and NOT obtained" says happened.
+>
+> **`pgrep -x cargo` is the check.** `-x` matches the process *name*, so it cannot match a shell whose
+> command line merely mentions the word. Every run below records `pgrep -c -x cargo`, `pgrep -c -x rustc`,
+> `/proc/loadavg` and `ps --sort=-pcpu` on **both** sides of the run, and the `-f` reading is recorded
+> beside them so the two can be compared rather than argued about. The lesson is §5.7.1's own, one turn
+> further in: *a control must measure the string it names* — and a control that can match itself is not
+> measuring the box, it is measuring the measurement.
+
+**The condition of the machine, and what was discarded.** The four C runs were taken in one continuous
+clean stretch: `cargo -x` **0** and `rustc -x` **0** on both sides of every one, 1-minute load average
+**2.53 → 3.02** on 16 cores, nothing on the box but the owner's session (Vivaldi, Discord,
+`kwin_wayland`, a peer lane's `oracle-frontend` at ~23 % of one core). **Six further runs were taken and
+are DISCARDED**, named here rather than quietly dropped: a peer `sigil` lane's cargo job returned during
+`B-BEFORE` and stayed, putting `B-BEFORE`, `B-AFTER`, `D-AFTER`, `A-AFTER`, `C-AFTER2` and `C-BEFORE2` at
+load **4.9–8.7** with `cargo -x` 1–2. They were re-taken in a second sitting, below, behind a per-run
+quiet guard. One thing the discarded pair is worth for: `C-BEFORE2`, at load 7.53, put `ui-build` at
+**15.879 ms** — the defect reproduces at 2.5× the load, exactly as §5.7.1's two discarded sittings found,
+and it is not a load artefact.
+
+#### The split, at configuration C — medians, milliseconds
+
+```
+part            BEFORE   PROF-ONLY  HITLOG-ONLY   AFTER
+              (neither)  (profiler)  (hit log)   (both)
+emulate         5.670      5.840       2.837      2.890     <-- NOT comparable across the pair; see below
+audio           0.002      0.002       0.001      0.001
+convert         0.071      0.071       0.057      0.035
+tex-upload      0.006      0.006       0.005      0.005
+ui-build       15.379     15.436       0.600      0.573     <-- the panels
+tessellate      0.070      0.071       0.052      0.052
+bus-pump        0.001      0.001       0.000      0.000
+CPU TOTAL      21.145     21.363       3.507      3.510
+period         38.910     39.172      16.662     16.664
+n (iterations)   2113       2091        4500       4500
+```
+
+| | **BEFORE** | **PROF-ONLY** | **HITLOG-ONLY** | **AFTER** |
+|---|---|---|---|---|
+| **emulated frames/s** | **51.577** | **51.292** | **60.050** | **60.050** |
+| presented frames/s | 28.168 | 27.872 | 59.997 | 59.997 |
+| emulated frames per iteration | 1.831 | 1.841 | 1.001 | 1.001 |
+| frame period, median | 38.910 ms | 39.172 ms | **16.662 ms** | **16.664 ms** |
+| frame period, WORST | 53.084 ms | 53.011 ms | 28.308 ms | 28.692 ms |
+| worst lateness | 36.417 ms | 38.682 ms | 12.346 ms | 12.946 ms |
+| **governor rebases** | **1754** | **1756** | **0** | **0** |
+| **audio starvations, steady** | **1348** | **1368** | **0** | **0** |
+| inserted silence | 10.599 s | 10.958 s | 0.067 s | 0.067 s |
+| audio producer drops | 0 | 0 | 0 | 0 |
+| leanest ring | 1176 (13.3 ms) | 1176 (13.3 ms) | 6056 (68.7 ms) | 7232 (82.0 ms) |
+| `ui-build` p95 / p99 | 16.506 / 22.959 | 16.521 / 23.158 | 0.741 / 0.972 | 0.688 / 0.884 |
+| load average, before → after | 2.53 → 2.82 | 3.16 → 3.02 | 3.17 → 3.16 | 3.31 → 3.17 |
+| `cargo -x` / `rustc -x` | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+**⚑ The finding: the 14.7 ms was the Watchpoints hit log, all of it, and the Profiler was never in it.**
+
+* **`ui-build` BEFORE − HITLOG-ONLY = +14.779 ms.** Virtualising the hit log **alone** recovers the whole
+  regression: 51.577 → 60.050 emulated fps, 1754 → **0** governor rebases, 1348 → **0** steady audio
+  starvations, 10.6 s of inserted silence → 0.067 s. That is the Watchpoints panel's cost, isolated.
+* **`ui-build` BEFORE − PROF-ONLY = −0.057 ms.** Fixing the Profiler **alone** recovers **nothing** — the
+  sign is negative, which is to say the difference is noise, and the run is still 51.292 fps with 1756
+  rebases and 1368 starvations. **The Profiler was not a contributor and the ranking it does was never the
+  cost.**
+* **The Profiler's own cost, isolated the other way round** — HITLOG-ONLY − AFTER = **0.027 ms**, with the
+  expensive neighbour already out of the way. **0.16 % of a frame.** §5's reasoning-from-size claim is
+  *confirmed* for the Profiler body. ⚠ It is confirmed **at this ROM's routine count**, which this report
+  does not print and which is therefore not stated here; the body is `O(n)` in the sample either way now,
+  and it was the `O(n)` formatting rather than the sort that the fix removed.
+* **The two add up.** 14.779 + (−0.057) = 14.722 against BEFORE − AFTER = **14.806 ms** measured directly:
+  the parts agree with the whole to 0.084 ms, which is what a genuine partition looks like and what a
+  mis-attribution would not survive.
+* **`emulate` must NOT be differenced across this table.** BEFORE and PROF-ONLY run **1.83 emulated frames
+  per iteration** and HITLOG-ONLY and AFTER run **1.00**, so the BEFORE column's `emulate` covers nearly
+  two frames. Its apparent halving is the iteration getting shorter, not the emulator getting faster —
+  §5.7.1's own caveat about configuration C, and it applies within this table as well as across it.
+
+**What the fixes were, and that they changed nothing a human sees.** `crates/oracle-player/src/ui.rs`
+draws the hit log with `ScrollArea::show_rows` rather than `show` — the rows are uniform (every one is a
+single `ui.monospace` line), the height comes from `ui.text_style_height(&TextStyle::Monospace)` rather
+than a typed number and is passed **sans spacing** because `show_rows` adds `item_spacing.y` itself
+(egui 0.36.1 `scroll_area.rs:991`), and `stick_to_bottom` survives because `show_rows` sets the content
+height for the whole virtual list. `stopping::top_routines` ranks the bare `(addr, counts)` pairs with one
+`select_nth_unstable_by` and formats only the `TOP_ROUTINES` that survive; the answer is provably the old
+one because the row order is a **total** order over a `BTreeMap` keyed by address, and
+`the_top_selection_matches_a_full_sort_even_with_ties` re-derives the old algorithm and compares against
+it on a fixture whose 32-row tie group straddles the 24-row cut.
+
+#### The four configurations, re-taken — so `C − B` is the same subtraction §5.7.1 booked the defect with
+
+A **second sitting**, behind a per-run quiet guard, because the first lost B/D/A to the returning peer. Same
+binary throughout (`AFTER`) except `B-BEFORE`, which is there to check that this branch's B reproduces
+§5.7.1's B rather than being compared against a number from another day.
+
+```
+part                     A         B         C         D    |  B-BEFORE
+                    default  every-tab  every-tab   default  |  every-tab
+                     no arm     no arm    ARMED      ARMED   |    no arm
+emulate               2.754     2.733     2.890     2.907    |    2.738
+audio                 0.001     0.001     0.001     0.001    |    0.001
+convert               0.035     0.035     0.035     0.035    |    0.035
+tex-upload            0.005     0.005     0.005     0.006    |    0.005
+ui-build              0.167     0.250     0.573     0.225    |    0.260   <-- the panels
+tessellate            0.035     0.049     0.052     0.041    |    0.050
+bus-pump              0.000     0.000     0.000     0.000    |    0.000
+CPU TOTAL             2.969     3.031     3.510     3.182    |    3.061
+period               16.666    16.666    16.664    16.665    |   16.664
+n (iterations)         4500      4500      4500      4499    |    4498
+```
+
+| | **A** | **B** | **C** | **D** | | **C, §5.7.1** |
+|---|---|---|---|---|---|---|
+| **emulated frames/s** | **60.051** | **60.051** | **60.050** | **60.037** | | 51.581 |
+| presented frames/s | 59.998 | 59.997 | **59.997** | 59.984 | | 28.170 |
+| emulated frames per iteration | 1.001 | 1.001 | **1.001** | 1.001 | | 1.830 |
+| frame period, median | 16.666 ms | 16.666 ms | **16.664 ms** | 16.665 ms | | 38.672 ms |
+| frame period, WORST | 23.630 ms | 28.153 ms | 28.692 ms | 32.082 ms | | 64.375 ms |
+| **governor rebases** | **0** | **0** | **0** | **1** | | 1754 |
+| **audio starvations, steady** | **0** | **0** | **0** | **0** | | 1353 |
+| audio producer drops | 0 | 0 | 0 | 0 | | 0 |
+| leanest ring | 7584 (86.0 ms) | 6232 (70.7 ms) | 7232 (82.0 ms) | 5350 (60.7 ms) | | 2940 (33.3 ms) |
+| `ui-build` p95 / p99 | 0.249 / 0.350 | 0.323 / 0.454 | 0.688 / 0.884 | 0.499 / 0.997 | | 16.873 / 23.277 |
+| load, before → after | 3.09 → 3.75 | 2.80 → 2.14 | 3.31 → 3.17 | 2.14 → 4.83 | | 2.0–4.0 |
+| `cargo -x` / `rustc -x` | 0/0 both sides | 0/0 both sides | 0/0 both sides | 0/0 both sides | | — |
+
+**⚑ The player holds real time with every tab open and both instruments armed.** Configuration C — the one
+that was 51.6 emulated fps, 28 presented, 1754 rebases and 1353 steady starvations — is **60.050 emulated
+fps, 59.997 presented, 0 rebases and 0 steady starvations**, with the same eight bodies drawing the same
+rows. `ui-build` is **0.573 ms**, 3.4 % of a frame, against 15.220 ms and 91 %.
+
+**The arithmetic, recomputed against the same subtractions §5.7.1 used.**
+
+* **`ui-build` C − B = +0.323 ms**, against §5.7.1's **+14.959 ms**. The three stopping bodies gaining
+  their rows is **1.9 % of a frame**, down from 90 %.
+* **`ui-build` B − A = +0.083 ms**, against §5.7.1's +0.088. Four more bodies; unchanged by this parcel, as
+  it must be — neither fix touches Memory or Objects — and reproducing to 0.005 ms is a check on the
+  sitting, not a finding. §5.7.1's caveat still travels with it: `every_tab_dock` gives each leaf ~1/8 of
+  the window, so this is a **lower bound** for Memory and Objects at full size.
+* **`ui-build` D − A = +0.058 ms**, against §5.7.1's +0.217 (which that section already qualified as
+  **≲0.2 ms**, its two discarded sittings putting it at +0.100 and +0.001). This reading is inside that
+  band and adds no precision to it. ⚠ It also should not be read as a change: neither fix touches the
+  Breakpoints body, so **D and A are the same code before and after**, and the movement here is the noise
+  floor of a single sitting, which is what §5.7.1 said it was.
+* **Therefore `(C − B) − (D − A)` = +0.265 ms is Watchpoints + Profiler**, against §5.7.1's **+14.742 ms**
+  — **a 56× reduction**, and 1.6 % of a frame rather than 88 %.
+* **The two independent routes to the same number agree to 0.01 ms.** The residual route says the pair cost
+  `(C−B) − (D−A)` = (15.119 − 0.058) = **+15.061 ms** before the fixes, using this sitting's own
+  `B-BEFORE` = 0.260. The fix-isolation route says the fixes removed **14.806 ms** and left **0.265 ms**
+  behind, i.e. **15.071 ms** before. Two different subtractions over two different sittings, 0.010 ms
+  apart. That agreement is the reason the attribution above is stated as a measurement and not as a story
+  that fits.
+
+**The condition of the machine for this second sitting**, per run, both sides: A, B, C and D all read
+`cargo -x` **0** and `rustc -x` **0** before *and* after. Load averages are tabled above. Two tails are
+worth naming rather than smoothing: **`B-BEFORE` finished with a peer `rustc ×2` arriving in its last
+seconds** — its median 0.260 is the figure used and it reproduces §5.7.1's B (0.261) to 0.001 ms, but its
+`emulate` p99 of 6.715 ms against B's 3.197 is that peer and not the player. **`D-AFTER` ended at load
+4.83** with a peer `sigil` binary at 96 % of a core, which is where its `emulate` p95 of 5.309 ms and its
+single governor rebase come from. Neither tail touches a median this section leans on.
+
+⚠ **One respect in which the drawn output is not literally identical, stated rather than glossed.** A
+vertical `ScrollArea` has `auto_shrink.x = true` by default (`scroll_area.rs:397`, applied at `:1186`), so
+its width follows its content — and its content is now the ~10 visible rows instead of all 4096. Row
+widths vary by a few monospace characters (`{:#X}` on the hit value, `{:?}` on op and size), so the hit
+log's **vertical scrollbar can now sit a few characters further left or right as the log is scrolled**,
+where before it was pinned by the widest row in the whole ring. The rows themselves — text, order, count,
+scroll position, stick-to-bottom — are unchanged. The alternative, `auto_shrink([false, true])`, would
+pin the scrollbar to the panel's right edge, which is a *larger* departure from what ships today, so it
+was not taken.
+
+---
+
 ## 6. Layout persistence
 
 > ### ✅ **BUILT AND ON, as of the `parcel/layout-persist` branch.**
@@ -491,10 +1081,15 @@ most of what a Sonic-engine debugger is used for.
 > * **It is on.** `crates/oracle-player/src/layout.rs` is the whole of it: `save(storage, dock)` and
 >   `load(storage) -> (DockState<Tab>, Outcome)`. `main.rs` wires them into `eframe::App::save` and the
 >   `run_native` creation closure. `ui::initial_dock()` is now the **fallback**, not the layout.
-> * **The version integer is `LAYOUT_VERSION = 1`**, and it lives in its **own storage key**
+> * ~~**The version integer is `LAYOUT_VERSION = 1`**~~, and it lives in its **own storage key**
 >   (`oracle_player_dock_layout_version`) *beside* the blob (`oracle_player_dock_layout`) rather than
->   inside it — so a layout from another `Tab` vocabulary is refused before a deserializer sees it. Bump
->   it in the same change that touches `Tab`.
+>   inside it — so a layout from another `Tab` vocabulary is refused before a deserializer sees it.
+>   ~~Bump it in the same change that touches `Tab`.~~
+>   > ⚑ **SUPERSEDED by §5.7.** It is **2**, and it is no longer an integer at all: `LAYOUT_VERSION =
+>   > VOCABULARIES.len()` over an append-only table of the `Tab` vocabularies shipped so far. The struck
+>   > instruction was a rule with nowhere to enforce it — appending the row **is** the bump now. The
+>   > storage-key half of this bullet still stands exactly as written, and version 1 blobs are discarded
+>   > by it.
 > * **Discard wholesale, never migrate**, as designed below. Version mismatch, missing or junk version,
 >   corrupt bytes, truncation, an unknown tab name: one fallback path, the default layout, a line on
 >   stderr, nothing in the UI. No `Tab::Unknown(String)`.
@@ -565,7 +1160,7 @@ dependency list today is `oracle-core, eframe, egui, egui_dock, ringbuf, cpal` �
 
 | excluded | why |
 |---|---|
-| **P4-P6 (breakpoints / watchpoints / profiler)** | §5.4. One shared run-loop change that re-opens parcel 1's pacing measurement. Parcel 3. |
+| ~~**P4-P6 (breakpoints / watchpoints / profiler)**~~ | §5.4. One shared run-loop change that re-opens parcel 1's pacing measurement. Parcel 3. **No longer excluded — the seam shipped as parcel 3 (§5.6) and the three tabs shipped on top of it (§5.7). The run-loop change was made once and re-measured once, as §5.5 asked.** |
 | ~~**Layout persistence**~~ | §6. Turned on when the `Tab` enum stopped moving, which it did at `9c23365`. **No longer excluded — built; see §6's box.** |
 | **`scanlines` as anything but an action** | §2.3. 438 KB/frame. |
 | **A macro / input-timeline editor** (`press`, `play_input`, `hold`) | §2.2. Both are `require_paused`, so they are refused in the state a human would use them; a real timeline editor is a feature, not a panel. |
@@ -581,11 +1176,51 @@ dependency list today is `oracle-core, eframe, egui, egui_dock, ringbuf, cpal` �
 
 Everything I could not establish in this worktree, gathered, not smoothed.
 
-1. **Nothing here was compiled or run.** Docs-only parcel; the cargo lane is held. Every `~lines`, every
-   "≈10 lines", and the `Host::call` signature are *designs*, not builds.
-2. **The per-frame cost of every panel body proposed.** Parcel 1 measured a `ui` bucket against a 20-row
-   monospace grid. A 5-space hex view, a decoded object table and a sprite table are unmeasured. The design's
-   claim that they are cheap is reasoning from size, not measurement.
+1. ~~**Nothing here was compiled or run.** Docs-only parcel; the cargo lane is held. Every `~lines`, every
+   "≈10 lines", and the `Host::call` signature are *designs*, not builds.~~ **Overtaken by every parcel
+   since**: 2b/2c built the panels, parcel 3 the seam (§5.6), parcel 3-tabs the three stopping tabs
+   (§5.7) — all compiled, tested and measured. `Host::call` exists at `host.rs:533`. Struck here rather
+   than left standing, because a stale UNMEASURED row reads as a live one. *(Items 4 and 6 were likewise
+   answered by parcels 2b and 3 — see §5.4's box and §5.6.1 — and are left as written; they are those
+   parcels' rows to strike, not this one's.)*
+2. **The per-frame cost of every panel body proposed.** ~~Parcel 1 measured a `ui` bucket against a 20-row
+   monospace grid. A 5-space hex view, a decoded object table and a sprite table are unmeasured. The
+   design's claim that they are cheap is reasoning from size, not measurement.~~
+   > ⚑ **PARTLY MEASURED as of parcel 3-tabs — §5.7.1 — and the item stays OPEN.** The three stopping
+   > bodies were measured, and the reasoning-from-size claim is **falsified inside the Watchpoints /
+   > Profiler pair** — which of the two, the measurement cannot say. What is now measured, and what each
+   > number is:
+   >
+   > * **Breakpoints, with sixteen rows: ≲0.2 ms** (`+0.217 ms` of `ui-build` in the one clean sitting).
+   >   Isolated — the shipped default arrangement draws that body and neither of its neighbours.
+   > * ~~**Watchpoints + Profiler, with rows: +14.742 ms *together*, ~88 % of a frame budget.** A
+   >   **residual of two**: no arrangement `--dock` can build draws one without the other. **Splitting it
+   >   is still owed**, and so is the confirmation of §5.7.1's hypothesis about which body it is.~~
+   >   > ⚑ **SPLIT AND FIXED — §5.7.2.** It was **the Watchpoints hit log, all of it**, established by
+   >   > running two binaries each carrying exactly one of the two fixes: virtualising the hit log alone
+   >   > recovers **+14.779 ms** and 60 fps, fixing the Profiler alone recovers **−0.057 ms** — nothing.
+   >   > **Watchpoints, hit log at the 4096 ring cap, unvirtualised: +14.779 ms.** **Profiler, isolated
+   >   > with the hit log already cheap: +0.027 ms** — 0.16 % of a frame, so §5's reasoning-from-size
+   >   > claim is *confirmed* for that body. Both panels are now measured individually; this bullet is
+   >   > closed.
+   > * ~~**The whole eight-tab arrangement, armed: `ui-build` 15.220 ms median**, against 0.173 ms for the
+   >   shipped default arrangement unarmed. In that state the player **does not hold real time** (51.6
+   >   emulated fps, 1754 rebases, 1353 steady audio starvations). Measured, named, unfixed.~~
+   >   **Fixed and re-measured (§5.7.2): `ui-build` 0.573 ms in that same configuration, 60.050 emulated
+   >   fps, 0 rebases, 0 steady starvations.**
+   >
+   > **What is STILL unmeasured, and this item is not closed until it is:**
+   >
+   > * **Registers, Memory and Objects individually.** The only figure touching them is
+   >   `ui-build` B − A = **+0.088 ms for four bodies at once** (Memory, Objects, and two *empty* stopping
+   >   ones) at one-eighth of the window each — a **lower bound on two of them**, not a cost of either.
+   >   §5.6.1's `ui-build` 0.140 ms *included* the Registers body — parcel 2's `initial_dock` drew
+   >   Screen, Pacing and Registers, with Memory and Objects inactive behind Registers in their leaf —
+   >   but as part of a three-body total that was never differenced, so it is not this item's answer
+   >   either.
+   > * **The Sprites panel** (§2.1) has not been built, so its body cannot be measured at all.
+   > * **A human-sized pane.** Every figure here is from `every_tab_dock` or the default dock. A hex view
+   >   or an object table given half the window lays out more rows than either arrangement gave it.
 3. **The serialized byte size of a real `registers` / `object_list` / `object_slot` reply.** Only `scanlines`
    is derived (§2.3), and that derivation is arithmetic over the handler's `json!` shape, not a captured
    payload.

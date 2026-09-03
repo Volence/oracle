@@ -56,6 +56,7 @@ mod objects;
 mod pacing;
 mod report;
 mod stats;
+mod stopping;
 mod symbols;
 mod ui;
 
@@ -95,13 +96,23 @@ struct Args {
     /// arrangement so the bench can measure the design against its own absence
     /// ([`pacing::Governor::unpaced`]).
     target_fps: Option<f64>,
+    /// `--dock every-tab`. **A measurement arrangement, not a layout.** See [`ui::every_tab_dock`]:
+    /// `egui_dock` draws only a leaf's *active* tab, so measuring the cost of three panels that share a
+    /// pane measures one of them. In window mode it also **suppresses the restore and the save**, because
+    /// a bench arrangement written back over the operator's own layout would be this flag doing something
+    /// nobody asked it to.
+    dock_every_tab: bool,
+    /// `--bench-arm`. **A measurement fixture, refused outside a bench mode.** See
+    /// [`arm_for_measurement`]: the three stopping panels are empty until something is armed, so a
+    /// panel-cost run without this measures three headlines and calls it three panels.
+    bench_arm: bool,
 }
 
 fn usage() -> ! {
     loud(
         "usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]\n\
          \x20              [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]\n\
-         \x20              [--target-fps N]\n\
+         \x20              [--target-fps N] [--dock default|every-tab] [--bench-arm]\n\
          \n\
          --symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,\n\
          which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;\n\
@@ -109,7 +120,16 @@ fn usage() -> ! {
          \n\
          Both bench modes REQUIRE --expect-screen and force audio gain 0.0.\n\
          --target-fps 0 switches the GOVERNOR OFF. That is the control for the pacing design, not a\n\
-         playable mode; the report labels any run made with it.",
+         playable mode; the report labels any run made with it.\n\
+         \n\
+         --dock every-tab puts every tab in a leaf of its own, so every panel body runs on every\n\
+         frame. It is the arrangement the PANEL-COST measurement needs (egui_dock draws only a\n\
+         leaf's active tab, so tabs sharing a pane cost one body, not three) and it neither reads\n\
+         nor writes a stored layout.\n\
+         \n\
+         --bench-arm arms sixteen (disabled) breakpoints, a work-RAM write watch and the profiler,\n\
+         through the served surface, so the three stopping panels have ROWS to draw. Without it a\n\
+         panel-cost run measures three empty headlines. Bench modes only.",
     );
     std::process::exit(64);
 }
@@ -124,6 +144,8 @@ fn parse_args() -> Args {
         expect_screen: None,
         size: (1280.0, 800.0),
         target_fps: None,
+        dock_every_tab: false,
+        bench_arm: false,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -188,6 +210,21 @@ fn parse_args() -> Args {
                 a.target_fps = Some(next(i, &argv).parse().unwrap_or_else(|_| usage()));
                 i += 2;
             }
+            "--dock" => {
+                a.dock_every_tab = match next(i, &argv).as_str() {
+                    "default" => false,
+                    "every-tab" => true,
+                    other => {
+                        loud(&format!("unknown --dock {other} (default|every-tab)"));
+                        usage()
+                    }
+                };
+                i += 2;
+            }
+            "--bench-arm" => {
+                a.bench_arm = true;
+                i += 1;
+            }
             "-h" | "--help" => usage(),
             other => {
                 loud(&format!("unknown flag {other}"));
@@ -198,6 +235,14 @@ fn parse_args() -> Args {
     if a.rom.is_empty() {
         loud("--rom is required");
         usage();
+    }
+    if a.bench_arm && a.mode == Mode::Window {
+        loud(
+            "--bench-arm is a MEASUREMENT FIXTURE, not a feature: it arms sixteen breakpoints, a \
+             work-RAM watch and the profiler behind the human's back, and a player that did that at \
+             launch would be lying about who armed them. Use it with a bench mode.",
+        );
+        std::process::exit(64);
     }
     if a.mode != Mode::Window && a.expect_screen.is_none() {
         loud(
@@ -284,6 +329,18 @@ struct Loop {
     /// The Objects panel's state between repaints — which row is expanded, and nothing else. The pool
     /// itself is re-derived each repaint, never cached.
     objects: objects::ObjectsPanel,
+    /// **Whether this iteration advances the machine**, and nothing more.
+    ///
+    /// It is not a second copy of the bus's run state — it is re-read from [`bus::Bus::is_paused`] twice
+    /// per iteration and never written from a click. The transport bar changes the run state by asking the
+    /// *tool* (`emulator/pause`), and this follows whatever the tool did, so a refusal leaves it exactly
+    /// where it was without the bar having to know what a refusal means.
+    paused: bool,
+    /// The transport bar's echo of the last answer the bus gave it. Rendered verbatim; never composed.
+    transport: ui::Transport,
+    /// The three stopping tabs' boxes and their last answers. **What is armed is not here** — it is the
+    /// `Host`'s, read every repaint (R2).
+    stopping: stopping::Panel,
 }
 
 impl Loop {
@@ -320,6 +377,10 @@ impl Loop {
             symbols,
             mem: memory::MemoryPanel::default(),
             objects: objects::ObjectsPanel::default(),
+            // The player plays. This is the same `false` handed to `Bus::new` above, and the two are one
+            // fact: the bus was just told the loop is running, and the loop is.
+            paused: false,
+            transport: ui::Transport::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -346,6 +407,7 @@ impl Loop {
             latch: false,
             status: String::from("starting"),
             dock: ui::initial_dock(),
+            stopping: stopping::Panel::default(),
             tex: None,
         }
     }
@@ -362,6 +424,27 @@ impl Loop {
     /// toolkit to wait before the next repaint.
     fn iterate(&mut self, ctx: &egui::Context, root: &mut egui::Ui, now: Instant) -> pacing::Tick {
         self.iterations += 1;
+
+        // --- ⚑ Conflict 1, inbound: adopt the bus's run state, and do it FIRST. ---
+        //
+        // **One adoption, at the top, and it is load-bearing in both directions.** Three things move the
+        // engine's run flags behind this field's back, and all three land before the next iteration
+        // begins: a breakpoint halt applied by the drain at the bottom of the previous iteration, and
+        // `emulator/pause` / `emulator/resume` issued by the transport bar during the previous
+        // `build_ui`. Reading here is what makes every one of them take effect before the governor's tick
+        // below decides whether to run a frame.
+        //
+        // **Reading it later instead is the bug that hides.** `Bus::mirror_pause` calls
+        // `Host::set_paused(self.paused)`, which compares against the *engine's* flag — so an adoption
+        // that happens after the drain lets the drain mirror a stale `false` over a pause the bar just
+        // asked for, queue `free_run = true`, and resume a machine the human stopped. One iteration
+        // later the field would agree with the bus again and nothing would look wrong.
+        //
+        // Read from `Bus::is_paused` rather than tracked here: it consults `pending_free_run`, which a
+        // `Host::call` does not apply, and is the one truthful reading (bus.rs). This field is a cache of
+        // *that*, refreshed once per iteration — not a second opinion (R2).
+        self.paused = self.bus.is_paused();
+
         let tick = self.governor.tick(now);
 
         let mut cost = machine::StepCost::default();
@@ -372,16 +455,50 @@ impl Loop {
             self.last_frame_at = Some(now);
             self.frame_iterations += 1;
 
-            let keys = input::poll_pad(ctx);
-            // egui 0.36 spells this `egui_wants_keyboard_input` (the `egui_` prefix distinguishes egui's
-            // own focus from a hosting app's). It is true whenever a widget — a text field, a tab rename,
-            // a future memory-panel search box — is consuming typing.
-            let pad = input::decide(keys, ctx.egui_wants_keyboard_input(), &mut self.latch);
-            cost = self.machine.step(pad);
-            // `MAX_FRAMES_PER_ITER` is 2, so the bucket cannot overflow; clamp anyway rather than index
-            // out of bounds if that constant is ever raised.
-            self.frames_per_iter[cost.frames.min(2)] += 1;
+            // ⚑ A paused player owns its frame and does not advance the machine. The period, the upload
+            // and the UI below all still happen — a paused window is not a frozen one — but nothing here
+            // touches the clock, which is the whole content of the promise `Host::set_paused` makes to
+            // the bus below.
+            //
+            // A paused iteration is deliberately **absent** from `frames_per_iter` rather than counted as
+            // a 0. That bucket is "how many frames the AUDIO RING asked for", and `report` normalises it
+            // against its own sum — so a pause stays out of the fine trim's statistics instead of being
+            // reported as the governor running fast, which is what a 0 there means.
+            if !self.paused {
+                let keys = input::poll_pad(ctx);
+                // egui 0.36 spells this `egui_wants_keyboard_input` (the `egui_` prefix distinguishes
+                // egui's own focus from a hosting app's). It is true whenever a widget — a text field, a
+                // tab rename, a future memory-panel search box — is consuming typing.
+                let pad = input::decide(keys, ctx.egui_wants_keyboard_input(), &mut self.latch);
+                cost = self.machine.step(pad, &mut self.bus);
+                // `MAX_FRAMES_PER_ITER` is 2, so the bucket cannot overflow; clamp anyway rather than
+                // index out of bounds if that constant is ever raised.
+                self.frames_per_iter[cost.frames.min(2)] += 1;
+            }
         }
+
+        // --- ⚑ The drain: one bounded, non-blocking pump per iteration. ---
+        //
+        // **AFTER the frame, not before it, and the ordering is the halt path.** `Machine::step` latched
+        // any breakpoint halt through `Bus::record_break`, and a latch is applied at the top of the next
+        // `Host::pump` and nowhere else. Draining here applies it in the *same* iteration that observed
+        // it, so the adoption at the TOP of the next iteration already sees a paused bus and that
+        // iteration's tick runs no frame.
+        //
+        // Draining at the top instead — which is where parcel 2b's module doc predicted this call would
+        // move — would land *after* that adoption and leave the halt unapplied for the tick that follows
+        // it, so the player would run one extra frame past a breakpoint it had already stopped on. The
+        // *adoption* is what moved to the top; the drain stays here, behind the frame that latches into it.
+        //
+        // There is deliberately **no second `self.paused = ...` after this**. An earlier draft had one,
+        // and both it and the one at the top were then individually removable with every test still
+        // green — two lines, each covering for the other, which is how a redundancy passes for a
+        // safeguard. The adoption at the top is the one that is correct on its own, for both the halt and
+        // the transport bar, and it is now the only one.
+        let t_bus = Instant::now();
+        self.bus
+            .mirror_pause(self.machine.system_mut(), self.paused);
+        let bus_ms = ms(t_bus.elapsed());
 
         // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
         // texture already bound, which is both correct and free — uploading again would be 287 KB of
@@ -404,6 +521,11 @@ impl Loop {
         let t = Instant::now();
         self.build_ui(root);
         let ui_ms = ms(t.elapsed());
+        // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
+        // deliberately NOT a drain and applies neither pending change (host.rs) — so a pause or resume it
+        // just issued has already moved the engine's own flags. It is adopted at the TOP of the next
+        // iteration, before that iteration's tick decides whether to run a frame, which is why no frame
+        // slips through between the click and the pause taking effect.
 
         if tick.run {
             self.buckets.emulate.push(cost.emulate);
@@ -411,9 +533,10 @@ impl Loop {
             self.buckets.convert.push(cost.convert);
             self.buckets.upload.push(upload);
             self.buckets.ui.push(ui_ms);
+            self.buckets.bus.push(bus_ms);
             self.buckets
                 .cpu_total
-                .push(cost.emulate + cost.audio + cost.convert + upload + ui_ms);
+                .push(cost.emulate + cost.audio + cost.convert + upload + ui_ms + bus_ms);
         }
         tick
     }
@@ -450,11 +573,18 @@ impl Loop {
             symbols,
             mem,
             objects,
+            stopping,
+            transport,
             ..
         } = self;
         egui::Panel::top("bar").show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("oracle-player");
+                ui.separator();
+                // ⚑ A CONTROL, NOT A TAB. Things you *do* are controls; the `Tab` enum is for things you
+                // *look at*, and adding a variant here would also owe `layout::LAYOUT_VERSION` a bump and
+                // discard every stored layout on the owner's machine.
+                transport.bar(ui, machine, bus);
                 ui.separator();
                 ui.monospace(status.as_str());
             });
@@ -468,6 +598,7 @@ impl Loop {
                     bus,
                     mem,
                     objects,
+                    stopping,
                     governor,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),
@@ -489,12 +620,101 @@ impl Loop {
 ///
 /// **Why the frame rate from this mode is a real answer and the spike's was not.** The spike's paced mode
 /// invented a deadline for the measurement only; the real `eframe` mode had none, which is why it produced
+/// **Arm the three instruments, so a panel-cost measurement measures panels with rows in them.**
+///
+/// ⚑ *Why this exists at all.* The three stopping tabs are empty until a human arms something, so a bench
+/// run against a fresh player measures three headlines and an add box and reports it as *the cost of the
+/// Breakpoints, Watchpoints and Profiler panels*. That is the same vacuity as a parity test comparing `[]`
+/// against `[]`: it passes under any breakage and it answers a question nobody asked. The expensive parts
+/// of these bodies are the parts that only exist once there is something to draw — sixteen breakpoint rows,
+/// a hit log, and a `BTreeMap` of routines sorted every frame — so the measurement arms them.
+///
+/// **Every arm goes through `Host::call`**, exactly as a human's click would: this fixture cannot reach a
+/// state a user could not, and if a handler refuses, the run says so and continues rather than measuring a
+/// state it believes it is in and is not.
+///
+/// Two deliberate choices, both of which shape what the numbers mean:
+///
+/// * **The breakpoints are armed DISABLED.** An enabled breakpoint at an address this ROM executes would
+///   halt the player and there would be no run to measure. Disabled rows draw identically — the row body
+///   does not branch on `enabled` except to pick a word and a dimming — so the panel cost is the same and
+///   the machine keeps running. It also means `Breakpoints::any_enabled()` is false and no `BreakStop` is
+///   attached, so this run does not price the halt sink; that is the seam parcel's measurement and it is
+///   inside `emulate`, not `ui-build`.
+/// * **The watch is wide and the profiler is armed with `perFrame`**, which is what puts real rows in
+///   front of the panels. Both attach a sink to the run, so `emulate` will move. That is the *instrument's*
+///   cost and not the panel's, and the bucket split is exactly what keeps the two answers apart.
+fn arm_for_measurement(lp: &mut Loop) {
+    let Loop { bus, machine, .. } = lp;
+    let mut refused = 0usize;
+    let mut call = |method: &str, params: serde_json::Value| {
+        let a = bus.call(machine.system_mut(), method, &params);
+        if let bus::Answer::Err(e) = &a {
+            refused += 1;
+            loud(&format!(
+                "bench-arm: {method} REFUSED {} {}",
+                e.code, e.message
+            ));
+        }
+    };
+    for i in 0..16 {
+        call(
+            stopping::BREAKPOINT_ADD,
+            serde_json::json!({"addr": format!("0x{:06X}", 0x200 + i * 4), "enabled": false,
+                               "label": format!("bench{i}")}),
+        );
+    }
+    call(
+        stopping::WATCHPOINT_ADD,
+        serde_json::json!({"addr": "0xFF0000", "len": 0x10000u64, "space": "bus",
+                           "read": false, "write": true, "label": "bench-ram"}),
+    );
+    call(
+        stopping::SET_PROFILER,
+        serde_json::json!({"enabled": true, "perFrame": true, "callers": false}),
+    );
+
+    // **Loud on unmeasurable.** A fixture that armed nothing would leave three empty panels and the run
+    // would report their cost as though it had measured full ones — the silent wrong answer this whole
+    // flag exists to avoid. So the state is read back from the instruments themselves, not assumed from
+    // the calls having been made.
+    let breakpoints = bus.read_breakpoints().len();
+    let (watch, _, armed) = bus.read_instruments();
+    let watches = watch.watch_count();
+    if refused > 0 || breakpoints == 0 || watches == 0 || !armed {
+        loud(&format!(
+            "REFUSING TO MEASURE: --bench-arm armed {breakpoints} breakpoints, {watches} watches, \
+             profiler={armed} ({refused} refusals). The panels would be EMPTY and this run would report \
+             the cost of three headlines as the cost of three panels."
+        ));
+        std::process::exit(2);
+    }
+    loud(&format!(
+        "bench-arm: {breakpoints} breakpoints (disabled), {watches} watch, profiler armed with perFrame \
+         — the panels have rows"
+    ));
+}
+
+/// The display-independent pass: a bare `egui::Context`, no window, no GPU, no eframe, running the
+/// identical pipeline against the identical governor.
+///
+/// **Why the frame rate from this mode is a real answer and the spike's was not.** The spike's paced mode
+/// invented a deadline for the measurement only; the real `eframe` mode had none, which is why it produced
 /// 92.87 fps and 22.71 fps. Here the deadline *is the player's own governor*, the same object the window
 /// mode drives. What this mode cannot see is the backend's present cost, and that is why `bench-window`
 /// exists.
 fn run_bench_cpu(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let start = Instant::now();
     let mut lp = Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded);
+    if args.dock_every_tab {
+        // The measurement arrangement. Announced, because a run whose layout differs from the default
+        // must say so in its own output or its numbers get compared against ones taken under the other.
+        loud("dock: EVERY TAB IN ITS OWN LEAF — every panel body runs every frame (--dock every-tab)");
+        lp.dock = ui::every_tab_dock();
+    }
+    if args.bench_arm {
+        arm_for_measurement(&mut lp);
+    }
     let ctx = egui::Context::default();
     let screen =
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(args.size.0, args.size.1));
@@ -684,7 +904,10 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     // `--size`, which the `--expect-screen` guard cannot catch — it checks the *monitor*, not the window.
     // Pointing the bench at a per-process scratch file makes the measured modes read nothing and write
     // nothing that outlives them.
-    let persist = args.mode == Mode::Window;
+    // **`--dock every-tab` suppresses persistence in either direction**, and that is the flag being
+    // honest rather than a special case: it is a measurement arrangement, so restoring over it would
+    // defeat it and saving it would overwrite the operator's own layout with a bench rig.
+    let persist = args.mode == Mode::Window && !args.dock_every_tab;
     let mut app = App {
         lp: Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded),
         start,
@@ -700,6 +923,13 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         wanted_audio: args.audio,
         persist,
     };
+    if args.dock_every_tab {
+        loud("dock: EVERY TAB IN ITS OWN LEAF — layout persistence is OFF for this run (--dock every-tab)");
+        app.lp.dock = ui::every_tab_dock();
+    }
+    if args.bench_arm {
+        arm_for_measurement(&mut app.lp);
+    }
     let scratch = (!persist).then(|| {
         std::env::temp_dir().join(format!("oracle-player-bench-{}.ron", std::process::id()))
     });
@@ -744,5 +974,283 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     if let Err(e) = outcome {
         loud(&format!("eframe failed to start: {e}"));
         std::process::exit(3);
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------
+// ⚑ The shipped loop, driven — parcel 3
+// -------------------------------------------------------------------------------------------------------
+
+/// The seam's own tests live in [`crate::bus`] and drive `Machine::step` directly, which leaves one gap
+/// they cannot close: **they replicate `Loop::iterate`'s order rather than running it.** A `Loop` that
+/// stopped reading [`bus::Bus::is_paused`] back would leave every one of them green while the player ran
+/// straight through every breakpoint — the "both sides agree because neither side is the shipped one"
+/// shape this repo has paid for before.
+///
+/// So this drives the real [`Loop::iterate`], through the same bare `egui::Context` [`run_bench_cpu`] uses.
+///
+/// `oracle-aether` is `#![cfg(unix)]`, so this module is too.
+#[cfg(all(test, unix))]
+mod loop_tests {
+    use super::*;
+
+    /// `move.w (A0),D0` in the fixture ROM's inner loop — the same address `crate::bus`'s seam tests arm
+    /// at, and *checked* there against the ROM's own bytes rather than re-checked here.
+    const HOT_PC: u32 = 0x0000_020E;
+
+    /// ★ **The measurement fixture actually arms something**, and the panels it is measured through
+    /// actually have rows.
+    ///
+    /// This is the anti-vacuity gate for the *measurement* rather than for a test. If
+    /// [`arm_for_measurement`]'s calls were refused — a renamed param, a cap, a `require_paused` nobody
+    /// expected — the run would draw three empty panels and the report would name their cost as the cost
+    /// of three full ones. `arm_for_measurement` exits(2) on that in production; here it is checked, so
+    /// the failure is a red test rather than a silently smaller number in a table.
+    ///
+    /// **The third assertion:** the instruments are read back through the panels' own view functions and
+    /// asserted to be drawing rows — `Live::has_rows()` and a non-empty table. Asserting only that the
+    /// `Host::call`s succeeded would go green on a fixture that armed things the panels do not show.
+    #[test]
+    fn the_measurement_fixture_puts_rows_in_all_three_panels() {
+        let mut lp = a_loop();
+        arm_for_measurement(&mut lp);
+
+        let bp = stopping::breakpoints(lp.bus.read_breakpoints(), None);
+        assert_eq!(bp.rows.len(), 16, "the fixture should arm sixteen rows");
+        assert_eq!(
+            bp.armed, 0,
+            "the fixture's breakpoints must be DISABLED — an enabled one at an executed address halts \
+             the player and there is no run to measure"
+        );
+        assert!(
+            bp.live.has_rows(),
+            "an empty Breakpoints table measures nothing"
+        );
+
+        let (w, p, armed) = lp.bus.read_instruments();
+        let wv = stopping::watches(w);
+        assert_eq!(wv.watches.len(), 1);
+        assert!(wv.live.has_rows());
+        assert!(
+            armed,
+            "the profiler must be armed or its panel draws a headline and nothing else"
+        );
+        assert!(
+            p.per_frame_armed(),
+            "perFrame is what fills the per-frame ring"
+        );
+        assert_eq!(
+            stopping::profiler_live(p, armed),
+            stopping::Live::Yes,
+            "a measurement of the Profiler panel taken while it reads NEVER ARMED is a measurement of a \
+             paragraph of text"
+        );
+
+        // …and once the machine runs, the panels have rows that cost something to draw. Without this the
+        // three assertions above are satisfied by an armed instrument that never recorded anything.
+        let ctx = egui::Context::default();
+        for _ in 0..8 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+        }
+        let (w, p, armed) = lp.bus.read_instruments();
+        assert!(
+            !w.hits().is_empty(),
+            "the work-RAM watch recorded nothing in eight frames, so the hit log the Watchpoints panel \
+             is measured drawing is EMPTY"
+        );
+        assert!(
+            p.routine_count() > 0,
+            "the profiler recorded no routines, so the grid the Profiler panel is measured drawing is \
+             EMPTY — and its per-frame sort, the one thing here that is not O(1), is sorting nothing"
+        );
+        assert!(armed, "the run must not have disarmed the instrument");
+    }
+
+    fn a_loop() -> Loop {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        machine
+            .system_mut()
+            .set_pad(0, oracle_core::io::Pad::default());
+        // The governor is switched OFF, so every `iterate` owns its frame and this test never waits on a
+        // wall clock. That is the same switch the pacing CONTROL uses.
+        Loop::new(
+            machine,
+            Instant::now(),
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: None,
+                path: None,
+                fatal: None,
+            },
+        )
+    }
+
+    /// Drive the real loop `n` times and return `(emulated frames, iterations actually run)`.
+    ///
+    /// **The two are counted separately and neither is assumed from `n`**: `egui::Context::run_ui` may run
+    /// its callback more than once for a single call when a repaint is requested mid-frame, so `n` is a
+    /// lower bound on iterations and not an equality. Measured this the hard way — a first version
+    /// asserted `frames == n` and got 13 from 12.
+    fn drive(lp: &mut Loop, ctx: &egui::Context, n: usize) -> (u64, u64) {
+        let before = lp.machine.frames();
+        let iters_before = lp.iterations;
+        for _ in 0..n {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(raw, |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            // `TexturesDelta` panics on drop in debug while it holds unapplied deltas; there is no backend
+            // here, so they are discarded through the API's own escape hatch, exactly as `run_bench_cpu`
+            // does. Getting this wrong aborts the test with a message about textures.
+            let mut d = out.textures_delta;
+            d.clear();
+        }
+        (lp.machine.frames() - before, lp.iterations - iters_before)
+    }
+
+    /// ★ **The shipped loop stops running frames on a breakpoint, and keeps turning while stopped.**
+    ///
+    /// **The alternative green paths, ruled out:**
+    ///
+    /// 1. *The loop never ran at all* (a governor that owned no frames, an `iterate` that did nothing) —
+    ///    ruled out by the control: the same loop with nothing armed must advance the machine on every
+    ///    one of its iterations.
+    /// 2. *The loop stopped because it froze rather than paused* — ruled out by `iterations`, which must
+    ///    keep climbing after the halt. A frozen loop and a paused one both stop the clock; only one of
+    ///    them is correct, and this is what tells them apart.
+    #[test]
+    fn the_players_own_loop_stops_running_frames_on_a_breakpoint() {
+        const N: usize = 12;
+        let ctx = egui::Context::default();
+
+        // (1) THE CONTROL, first: with nothing armed **every** iteration advances the machine, so the
+        // shortfall asserted below is caused by the breakpoint and by nothing else about this fixture.
+        {
+            let mut lp = a_loop();
+            let (advanced, iters) = drive(&mut lp, &ctx, N);
+            assert!(iters >= N as u64, "the loop did not iterate at all");
+            assert_eq!(
+                advanced, iters,
+                "the unarmed loop skipped a frame on some iteration, so a shortfall below would not be \
+                 evidence of anything"
+            );
+            assert!(!lp.paused, "the unarmed loop paused itself");
+        }
+
+        let mut lp = a_loop();
+        // Armed through the bus, exactly as a client or the next parcel's panel would.
+        let armed = lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/breakpoint_add",
+            &serde_json::json!({"addr": format!("0x{HOT_PC:08X}")}),
+        );
+        assert!(!armed.is_err(), "arming the fixture breakpoint was refused");
+
+        let (advanced, iters) = drive(&mut lp, &ctx, N);
+        assert!(
+            advanced < iters,
+            "the shipped loop ran a frame on every one of its {iters} iterations with a breakpoint \
+             armed — it is not following `Bus::is_paused`, so the halt the bus recorded never reached \
+             the loop"
+        );
+        assert!(lp.paused, "the loop's own pause must have followed the bus");
+        assert_eq!(
+            lp.machine.system().cpu_regs().pc,
+            HOT_PC,
+            "the loop stopped somewhere other than the breakpoint"
+        );
+
+        // (2) Stopped, not frozen: the loop keeps iterating and the clock stands still.
+        let clock = lp.machine.system().scheduler().now();
+        let (advanced, iters) = drive(&mut lp, &ctx, 5);
+        assert!(
+            iters >= 5,
+            "the loop stopped turning altogether, which is a hang and not a pause"
+        );
+        assert_eq!(advanced, 0, "a paused loop must not advance the machine");
+        assert_eq!(
+            lp.machine.system().scheduler().now(),
+            clock,
+            "the emulated clock moved while the player was paused"
+        );
+    }
+
+    /// ★ **A pause the transport bar asked for survives the loop's own drain.**
+    ///
+    /// This is the hazard that nearly shipped uncovered, and it is a *silent* one. `Transport::issue`
+    /// calls `emulator/pause` through `Host::call`, which moves the engine's flags but is deliberately not
+    /// a drain. The loop's `Bus::mirror_pause` then calls `Host::set_paused(self.paused)` — comparing
+    /// against the engine's flag — so if `self.paused` is still the stale `false`, the very next drain
+    /// queues `free_run = true` and **resumes the machine the human just stopped**, with the button
+    /// flipping back to "pause" as if the click had never happened.
+    ///
+    /// `emulator/pause` is issued here between `drive` calls, which is the same position relative to the
+    /// next iteration's adoption that a click inside `build_ui` occupies.
+    ///
+    /// **The alternative green paths, ruled out:**
+    ///
+    /// 1. *The machine was already paused.* Ruled out by driving it first and asserting it advanced.
+    /// 2. *It stayed paused because the loop stopped running.* Ruled out by requiring the loop to keep
+    ///    iterating, and by resuming through the bus at the end and watching frames start again — a loop
+    ///    frozen for any other reason could not do that.
+    #[test]
+    fn a_pause_asked_for_through_the_bus_is_not_undone_by_the_next_drain() {
+        let ctx = egui::Context::default();
+        let mut lp = a_loop();
+
+        let (advanced, _) = drive(&mut lp, &ctx, 3);
+        assert!(
+            advanced > 0,
+            "the fixture must be running before it is paused"
+        );
+
+        // Exactly what `Transport::issue` does for the ⏸ button.
+        let a = lp
+            .bus
+            .call(lp.machine.system_mut(), ui::PAUSE, &serde_json::json!({}));
+        assert!(!a.is_err(), "emulator/pause was refused");
+        assert!(
+            lp.bus.is_paused(),
+            "the call must move the bus's own reading"
+        );
+
+        let (advanced, iters) = drive(&mut lp, &ctx, 6);
+        assert!(iters >= 6, "the loop stopped turning");
+        assert_eq!(
+            advanced, 0,
+            "the loop kept emulating after `emulator/pause` — its drain mirrored a stale `false` over \
+             the pause and queued `free_run = true`, resuming a machine the human stopped"
+        );
+        assert!(lp.paused, "and the loop's own field must agree");
+
+        // (2) …and it is a pause, not a wedge: resuming through the same surface starts frames again.
+        let a = lp
+            .bus
+            .call(lp.machine.system_mut(), ui::RESUME, &serde_json::json!({}));
+        assert!(!a.is_err(), "emulator/resume was refused");
+        let (advanced, _) = drive(&mut lp, &ctx, 3);
+        assert!(
+            advanced > 0,
+            "the player never resumed, so the zero above was a stuck loop rather than a pause"
+        );
     }
 }

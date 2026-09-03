@@ -1699,6 +1699,32 @@ impl Engine {
         (&self.watchpoints, &self.profiler, self.profiler_armed)
     }
 
+    /// **The breakpoint set, for a host that wants to *show* what is armed to stop it.**
+    ///
+    /// The sibling of [`read_instruments`](Engine::read_instruments), and separate from it rather than a
+    /// fourth element of that tuple for one reason: **a breakpoint is not an instrument.** The watch and
+    /// the profiler *record* and are lent to a run wrapped in [`Observe`]; this set *halts* and is lent
+    /// bare (see [`run_sinks`](Engine::run_sinks)). Both are shared borrows off `&self`, so a caller
+    /// needing all four live at once simply calls both — which is the thing two `&mut self` accessors
+    /// could not have done and the only reason `read_instruments` bundles three.
+    ///
+    /// R2's load-bearing case. This is the **same** `Breakpoints` `emulator/breakpoint_list`,
+    /// `emulator/breakpoint_add` and `emulator/breakpoint_clear` operate on, so a panel drawing from it
+    /// and a client reading the served row cannot disagree about what is armed. `&self` states the rest
+    /// in the type: a panel cannot arm, disarm or clear through this borrow — every one of those goes
+    /// back through [`Host::call`](crate::host::Host::call) and gets the handler's own refusal.
+    ///
+    /// **`hits` is not derivable from `enabled`, exactly as the profiler's armed flag is not derivable
+    /// from its accumulator.** Disabling a breakpoint retains its count (§6: *"a client wanting a fresh
+    /// count clears and re-adds"*), so a disabled row with 12,000 hits is a breakpoint that fired 12,000
+    /// times and is not firing now — and a reader shown only the count could not tell it from a live one.
+    ///
+    /// Safe outside a drain window: the set is engine state rather than `System` state, so it does not
+    /// answer for the placeholder machine.
+    pub fn read_breakpoints(&self) -> &Breakpoints {
+        &self.breakpoints
+    }
+
     /// Advance the machine `frames` whole frames through the screen capture **and the watch instrument**,
     /// then latch whatever frame the run completed.
     ///
@@ -6894,7 +6920,13 @@ pub const MAX_WAIT_TIMEOUT_MS: u64 = 300_000;
 /// §8 item 16 records this server having shipped a numeric handle once already, and a watch id is precisely
 /// the value §6 says cannot be an address or an index — one address may carry several watches, and the same
 /// number names four different things across the four spaces.
-fn watch_wire_id(id: WatchId) -> String {
+///
+/// **Public so an in-process panel spells a handle exactly once.** `oracle-player`'s Watchpoints tab reads
+/// the instrument directly (design §4.4: a 60 Hz body reads a shared derivation) and then has to name a row
+/// back to `emulator/watchpoint_clear`. A `format!("w{}", …)` written over there would be a second spelling
+/// of this one, agreeing until the day this changes — which is the drift R2 exists to prevent, in the one
+/// place where being wrong retires somebody else's watch.
+pub fn watch_wire_id(id: WatchId) -> String {
     format!("w{}", id.0)
 }
 
@@ -6904,7 +6936,11 @@ fn watch_wire_id(id: WatchId) -> String {
 /// address"* — an address is exactly the spelling the amendment was raised to abolish, because clearing by
 /// address is what silently disarmed another client's breakpoint at 1,691,410 hits. A prefixed non-number
 /// is what stops a client writing `{"breakpoint": "0x1234"}` and having it work by accident.
-fn breakpoint_wire_id(id: BreakpointId) -> String {
+///
+/// Public for [`watch_wire_id`]'s reason: the Breakpoints tab reads
+/// [`Engine::read_breakpoints`] directly and names its rows back to `emulator/breakpoint_set_enabled` and
+/// `emulator/breakpoint_clear` through **this** function, never through a second `format!` of its own.
+pub fn breakpoint_wire_id(id: BreakpointId) -> String {
     format!("b{}", id.0)
 }
 
