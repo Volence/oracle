@@ -1178,6 +1178,22 @@ the second window fails to bind **and** the first is still serving and still con
 unlinked the incumbent to make room passes the first half and fails the second — and that mutation was run,
 on disk, and does fail there.
 
+**The collision is not hypothetical, and it was live while this parcel was written.** Observed, without
+touching the process:
+
+```
+$ stat -c '%F %a %n' /run/user/1000/oracle.sock
+socket 600 /run/user/1000/oracle.sock          # created 12:20 today
+$ ps -eo pcpu,comm --sort=-pcpu | grep oracle-frontend
+ 22.3 oracle-frontend
+```
+
+So a `--aether` launch of the player on this box, right now, would print `aether: NOT serving — cannot bind
+the socket (another Aether server is already live on /run/user/1000/oracle.sock)` and carry on unserved,
+leaving his window untouched. That was **not** demonstrated by dialling his socket: `Server::bind`'s
+liveness probe is a connect, and connecting to an emulator this lane did not start is exactly the thing the
+standing invariants forbid. The behaviour is pinned by the test instead, against a server this process owns.
+
 A bind failure is never fatal. Someone who launched a game to play it is not stopped by a socket.
 
 #### Saying so out loud — and improving on the frontend's shape
@@ -1230,7 +1246,120 @@ nothing, so the drain is a `try_recv` on an empty channel."* A bound socket can 
 client makes `Bus::publish` copy a frame. Both premises die here, so the measurement was retaken rather
 than inherited.
 
-PLACEHOLDER_MEASUREMENT
+**The rig is §5.6.1's and §5.7.1's, unchanged**: `--mode bench-cpu`, 75 s, `aeon/s4.debug.bin` (+ its
+2,884-symbol `.lst`), a real audio device at gain 0.0, no window and no GPU, `WAYLAND_DISPLAY` and
+`XDG_SESSION_TYPE` unset. **Twelve separate process invocations, reported separately and never averaged**,
+from one release binary built at this branch's tip. `bench-window` was not run and is forbidden for this
+lane; the owner's screen was not touched.
+
+**Four configurations, because "served" is two different questions.** A brief that measured only
+served-with-nobody-attached would let that stand in for "served", and the interesting gate —
+`has_clients()` — is shut in exactly that case.
+
+| | what it is |
+|---|---|
+| **A** | **unserved** — no flag, today's behaviour. **The control.** |
+| **B** | `--socket /tmp/orb/s`, **nobody attached**. The socket exists; `has_clients()` is false. |
+| **C** | served, **one idle client** holding the connection and issuing nothing. `has_clients()` true. |
+| **D** | served, **one client polling `emulator/status` at 10 Hz** — 719 requests inside the 72 s it was up. |
+
+**The condition of the machine.** `pgrep -x cargo` and `pgrep -x rustc` were both **0** before every one of
+the twelve (checked with the `-x` forms; `pgrep -c -f "[c]argo"` counts its own watcher and reads 3 on an
+idle box). Everything else was the owner's live session throughout — Vivaldi, Discord, `kwin_wayland`,
+stremio, `next-server`, and **his own `oracle-frontend` at ~22 % of a core** — plus a peer lane's `sigil` at
+78–100 % and a `python3` at ~88 % for much of sittings 1 and 2. Load average **1.5–9.1 on 16 cores**,
+recorded per run below. **Sittings 1 and 2 are contaminated at the tail and sitting 3 is not**; that is
+argued rather than asserted, below.
+
+Per-invocation headline, and per-iteration cost at the **median**, milliseconds:
+
+| | **A1** | **B1** | **C1** | **D1** | **A2** | **B2** | **C2** | **D2** | **A3** | **B3** | **C3** | **D3** |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **emulated frames/s** | 60.024 | 59.926 | 59.631 | 60.044 | 60.042 | 59.956 | 60.051 | 60.040 | **60.048** | **60.039** | **60.038** | **60.038** |
+| presented frames/s | 59.891 | 59.526 | 58.671 | 59.911 | 59.962 | 59.156 | 59.918 | 59.973 | 59.981 | 59.865 | 59.998 | 59.998 |
+| **period, median** | 16.666 | 16.667 | 16.666 | 16.666 | 16.666 | 16.665 | 16.665 | 16.664 | 16.666 | 16.665 | 16.665 | 16.666 |
+| period, WORST | 39.4 | 89.9 | 85.9 | 30.9 | 36.8 | 72.4 | 31.3 | 43.7 | 26.9 | 35.7 | 28.9 | 23.0 |
+| governor rebases | 6 | 20 | 59 | 5 | 2 | 47 | 5 | 1 | 1 | 9 | **0** | **0** |
+| **audio starvations, steady** | 1 | 11 | 36 | 0 | 0 | 14 | 0 | 0 | **0** | **0** | **0** | **0** |
+| **audio producer drops** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** |
+| load avg at run's end | 3.96 | 9.11 | 7.18 | 2.89 | 1.50 | 5.57 | 5.44 | 3.30 | 7.37 | 6.21 | 4.15 | 3.17 |
+| | | | | | | | | | | | | |
+| emulate | 2.711 | 2.749 | 2.763 | 2.767 | 2.743 | 2.730 | 2.736 | 2.745 | 2.760 | 2.739 | 2.715 | 2.699 |
+| audio | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 |
+| **convert** | **0.035** | **0.036** | **0.092** | **0.092** | **0.035** | **0.036** | **0.092** | **0.092** | **0.036** | **0.036** | **0.093** | **0.092** |
+| tex-upload | 0.005 | 0.006 | 0.005 | 0.005 | 0.005 | 0.006 | 0.005 | 0.005 | 0.006 | 0.006 | 0.005 | 0.005 |
+| ui-build | 0.160 | 0.178 | 0.165 | 0.162 | 0.158 | 0.174 | 0.171 | 0.165 | 0.186 | 0.185 | 0.166 | 0.158 |
+| tessellate | 0.033 | 0.038 | 0.034 | 0.033 | 0.032 | 0.036 | 0.036 | 0.034 | 0.039 | 0.039 | 0.034 | 0.033 |
+| **bus-pump** | **0.000** | **0.001** | **0.000** | **0.000** | **0.000** | **0.000** | **0.000** | **0.000** | **0.001** | **0.001** | **0.000** | **0.000** |
+| CPU TOTAL | 2.922 | 2.982 | 3.042 | 3.031 | 2.951 | 2.955 | 3.010 | 3.014 | 2.996 | 2.969 | 2.986 | 2.956 |
+
+`bus-pump`, the other four statistics, milliseconds:
+
+| | A1 | B1 | C1 | D1 | A2 | B2 | C2 | D2 | A3 | B3 | C3 | D3 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| p95 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 | 0.002 | 0.001 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 |
+| p99 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 | 0.002 | 0.001 | 0.001 | 0.002 | 0.002 | 0.001 | 0.001 |
+| worst | 0.005 | 0.021 | 0.084 | 0.027 | 0.018 | 0.014 | 0.016 | 0.005 | 0.022 | 0.071 | 0.169 | 0.005 |
+
+#### Reading it
+
+**1. The one real, reproducible cost is `convert`, and it is `Bus::publish` becoming true.** The median
+goes **0.035–0.036 ms with no client → 0.092–0.093 ms with one**, in **all six** client-attached runs and
+in none of the six without. `bus.publish(&self.cap)` sits inside the `convert` bucket in
+`Machine::step`, and `Host::publish_capture` is gated on `has_clients()` — so this is exactly the gate
+§5.6.2 said an unserved player could never satisfy, opening, priced. **+0.057 ms is 0.34 % of a 16.667 ms
+frame.** It is charged only while somebody is attached; configuration B pays nothing.
+
+It reproduces to three decimal places across three sittings under three different loads, which is what
+makes it a finding rather than a sitting. Contrast §5.6.1's `convert` movement, which that section
+reported unattributed and explicitly did **not** claim: this one has a named mechanism, a gate that
+switches it, and a control on the other side of the switch.
+
+**2. `bus-pump` did NOT become expensive, and that contradicts the hypothesis this retake was ordered
+on.** The premise §5.6.1 rested on — *"an unserved player queues nothing, so the drain is a `try_recv` on
+an empty channel"* — is genuinely dead: configurations C and D queue. The **conclusion** survives anyway.
+`bus-pump` is 0.000–0.001 ms median and 0.001–0.002 ms at p99 in **every one of the twelve**, including
+the ones taking 719 requests, and its worst single iteration across all twelve is **0.169 ms** against
+`HostConfig::pump_budget`'s 4 ms ceiling. The reasoning is now: the drain is bounded and `try_recv`-only,
+and a 10 Hz client puts work in roughly one iteration in six, where `emulator/status` is a handful of
+field reads. **Reported as measured, not reconciled**: the retake was owed because the *reason* had
+expired, and the honest outcome is that the number had a second reason.
+
+**3. Nothing else moved.** Emulated frame rate, median period, producer drops and the 0-frame count are
+identical or within a thousandth across all twelve. `ui-build`'s 0.158–0.186 ms spread does not track
+configuration (A3 and B3 are the two highest, and B3 has no client at all); it tracks load.
+
+**4. The tails in sittings 1 and 2 are contamination, and the evidence is that they do not follow the
+configuration.** B — the *lightest* served configuration, with no client at all — has the worst tails in
+both of those sittings (20 and 47 rebases, 11 and 14 steady starvations, an 89.9 ms worst period), while
+D — the *heaviest* — is clean in both. That ordering is impossible as a configuration effect and exactly
+what a busy box produces: the load average at the end of B1 was 9.11 and at the end of D1 was 2.89, and
+`emulate`, which this parcel does not touch at all, moves with it (p99 10.2 ms in B1 against 4.8 ms in
+A1). **Sitting 3 is the comparable one** — all four configurations back to back at load 3.2–7.4, with
+**zero** steady starvations, zero drops, and 0–9 rebases across the four. The `convert` finding is the
+same there as in the two noisy sittings, which is the point of having taken three.
+
+**The verdict: no material regression, and one named, gated, sub-percent cost.**
+
+`--target-fps 0` remains the **CONTROL** and was not used here; nothing above was taken with the governor
+off.
+
+#### ⚑ UNMEASURED, named rather than implied
+
+* **A heavy client.** D polls `emulator/status` — a handful of field reads — at 10 Hz. A client running
+  `emulator/screenshot` (a whole framebuffer, serialised), `emulator/read_memory` over large ranges, or
+  `emulator/run_frames` against a paused window is a different load entirely, and **`bus-pump`'s
+  0.000 ms median is not a statement about it.** `HostConfig::pump_budget`'s 4 ms ceiling exists for that
+  case and was never approached here.
+* **More than one client.** Every served run had exactly one connection. `publish_capture` is one copy
+  regardless, but the accept path and the event fan-out are not exercised at *n* > 1.
+* **A client that moves the machine.** No run issued `run_frames`, `restore` or `reload_rom`, so nothing
+  here prices the `PumpReport` flags §5.8.2 books as dropped — and, being dropped, they have no cost to
+  price yet either way.
+* **The window.** `bench-cpu` has no window and no GPU by construction. Serving adds no draw work, and
+  the one new UI element (the `aether` status row) is one `ui.monospace` line inside `ui-build`, which
+  did not move outside its own between-run spread.
+
 
 ### 5.8.2 What `PLAYER-SERVE` deliberately did NOT do — two gaps, booked
 
