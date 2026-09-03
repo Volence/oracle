@@ -611,7 +611,7 @@ pub fn break_observed(brk: Option<BreakStop<'_>>) -> Option<u32> {
 
 /// What [`drain`] put back in step, for a caller that wants to say so and for the tests that prove it.
 ///
-/// Three booleans and not one, because they are three different repairs with three different triggers, and
+/// Four booleans and not one, because they are four different repairs with four different triggers, and
 /// a single "resynchronised" flag would let a test that meant to prove one of them pass on another.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Drained {
@@ -627,8 +627,17 @@ pub struct Drained {
     /// the picture was *invalidated* rather than redrawn — there is nothing to present and the window keeps
     /// what it has.
     pub picture: bool,
-    /// The symbol cache was re-derived from the engine's own listing, and the ROM path with it.
+    /// The symbol cache was re-derived from the engine's own listing.
+    ///
+    /// **No longer "and the ROM path with it"** — the two repairs were one branch until
+    /// `PLAYER-SYMBOLS-STALE` split them, because they stopped having one trigger. The path moves only
+    /// when the cartridge does ([`PumpReport::rom_changed`]); the listing also moves on its own
+    /// ([`PumpReport::symbols_changed`]), which is what `emulator/load_symbols` does.
     pub symbols: bool,
+    /// The window's cached ROM path was re-read from the engine because the cartridge was replaced. Its
+    /// own flag rather than a second reading of [`symbols`](Drained::symbols), for [`Drained`]'s stated
+    /// reason: a single flag would let a test that meant to prove one repair pass on the other.
+    pub rom_path: bool,
 }
 
 /// **The loop's one drain, and everything the drain's answer obliges the window to do.**
@@ -657,8 +666,25 @@ pub struct Drained {
 ///   equivalent at all before this parcel, and the one whose absence was visible: a client must pause this
 ///   player before it may run anything (§6's run-control state rule), and a paused player runs no frame of
 ///   its own, so *every* frame a client asks for was drawn where this window could not see it.
-/// * **`rom_changed`** — re-derive the symbol cache, and resynchronise the timeline as above. See the note
-///   below on why the second is not redundant even though it usually is.
+/// * **`rom_changed`** — re-read the cached ROM path, re-derive the symbol cache, and resynchronise the
+///   timeline as above. See the note below on why the last is not redundant even though it usually is.
+/// * **`symbols_changed`** — re-derive the symbol cache, **and nothing else**. This is the field
+///   `PLAYER-SYMBOLS-STALE` added, and the shape of the reaction is the argument for having added it:
+///   `emulator/load_symbols` replaces the listing against an unchanged cartridge, so exactly one of the
+///   four repairs above applies. Had the emitter bumped `rom_generation` instead — the obvious fix — this
+///   window would have dropped its scanline capture and rebuilt its audio clock for a listing change,
+///   which is the audible hiccup `Machine::resync_after_replacement` exists to *cure*.
+///
+/// # ⚑ The listing is re-derived on `rom_changed` too, and `emulator/reset` is why
+///
+/// `symbols_changed` is raised by every producer that replaces the listing, so `reload_rom` and `restore`
+/// are covered by it alone. `emulator/reset` is the one that is not: it **keeps** the listing (the image
+/// is unchanged, so the binding that survived boot survives it) and therefore raises no
+/// `symbols_changed` at all. The `|| report.rom_changed` re-derives on it anyway — a clone of the table
+/// the engine still holds, which is a no-op with a cost — because `rom_changed`'s own doc names a symbol
+/// listing among the things it obliges a caller to re-derive, and a window whose listing depended on this
+/// crate's reading of which producers happen to keep one is a window one handler change away from being
+/// wrong. Same trade, and the same reasoning, as the timeline note below.
 ///
 /// # ⚑ `rom_changed` drives the timeline repair too, and `emulator/reset` is why
 ///
@@ -695,24 +721,31 @@ pub fn drain(
             out.picture = machine.adopt_frame(width, rgb);
         }
     }
-    if report.rom_changed {
-        // Unconditional re-derivation rather than a drop, because the engine's answer covers both outcomes:
-        // `emulator/reload_rom` drops the listing when it no longer binds (D7) and keeps it when it does,
-        // and `emulator/reset` keeps it always. Cloning a table is not free, but this runs only when a
-        // cartridge was replaced, which is not a per-frame event.
+    if report.symbols_changed || report.rom_changed {
+        // Unconditional re-derivation rather than a drop, because the engine's answer covers every
+        // outcome: `emulator/load_symbols` installs a listing, `emulator/reload_rom` drops the listing
+        // when it no longer binds (D7) and keeps it when it does, and `emulator/reset` keeps it always.
+        // Cloning a table is not free, but this runs only when the listing or the cartridge was
+        // replaced, neither of which is a per-frame event.
         *symbols = bus.symbols().cloned();
-        // The path goes with it, and for the same reason: the status strip's `rom` row is a cached string
-        // this process was launched with, and after a reload it names a cartridge that is not loaded. The
-        // engine's copy is absolutised at the boundary, which is what §6's `romPath` means, so this is the
-        // same string `emulator/status` reports rather than a second spelling of it. `None` — an engine
-        // that was never told a path — leaves the launch string alone rather than blanking the row.
+        out.symbols = true;
+    }
+    if report.rom_changed {
+        // **The ROM path is the cartridge's, so it follows `rom_changed` and NOT `symbols_changed`** —
+        // the split this parcel made. The status strip's `rom` row is a cached string this process was
+        // launched with, and after a reload it names a cartridge that is not loaded; a listing change
+        // leaves it correct, and re-reading it there would be a repair with nothing to repair. The
+        // engine's copy is absolutised at the boundary, which is what §6's `romPath` means, so this is
+        // the same string `emulator/status` reports rather than a second spelling of it. `None` — an
+        // engine that was never told a path — leaves the launch string alone rather than blanking the
+        // row.
         if let Some(p) = bus.rom_path() {
             if *rom_path != p {
                 rom_path.clear();
                 rom_path.push_str(p);
             }
         }
-        out.symbols = true;
+        out.rom_path = true;
     }
     out
 }
@@ -1718,9 +1751,15 @@ pub mod pumped {
         timeline: usize,
         picture: usize,
         symbols: usize,
+        rom_path: usize,
         /// The report of the drain that saw the cartridge replaced, kept so a test can assert about the
         /// **flags** and not only about the repairs they produced.
         replacement: Option<PumpReport>,
+        /// The same, for the drain that saw the **listing** replaced. A second field rather than a reuse
+        /// of `replacement`, because telling the two apart is the whole of `PLAYER-SYMBOLS-STALE`: a
+        /// `load_symbols` must arrive with `symbols_changed` set and `rom_changed` clear, and one slot
+        /// holding whichever fired last could not witness that.
+        listing: Option<PumpReport>,
     }
 
     impl Totals {
@@ -1729,8 +1768,12 @@ pub mod pumped {
             self.timeline += usize::from(d.timeline);
             self.picture += usize::from(d.picture);
             self.symbols += usize::from(d.symbols);
+            self.rom_path += usize::from(d.rom_path);
             if d.report.rom_changed {
                 self.replacement = Some(d.report);
+            }
+            if d.report.symbols_changed {
+                self.listing = Some(d.report);
             }
         }
     }
@@ -2179,6 +2222,21 @@ pub mod pumped {
             Some(reloaded.display().to_string().as_str()),
             "and the engine must agree, or the row above was compared against the wrong thing"
         );
+        // **The D7 drop must also arrive as `symbols_changed`**, and this crate is not who needs it.
+        // Everything above is satisfied by `rom_changed` alone, so without this assertion the
+        // `reload_rom` half of `symbols_generation` is unwitnessed — and `oracle-frontend` has **no**
+        // `rom_changed` → listing branch at all: `symbols_changed` is its only symbol repair. A drop
+        // that raised only `rom_changed` would leave that window naming addresses out of a listing the
+        // engine discarded, which is this parcel's own defect one host over.
+        let dropped = totals.listing.expect(
+            "the reload's D7 drop did not raise symbols_changed, so a host that reads only \
+                     that flag never learns its listing is gone",
+        );
+        assert!(
+            dropped.rom_changed,
+            "a reload raised symbols_changed WITHOUT rom_changed — the two are documented as both \
+             moving here, and the ROM path repair hangs off the second"
+        );
 
         // --- the other half: a rom change that KEEPS the listing must keep the window's copy too. ---
         let table = SymbolTable::parse(LST).expect("parse the fixture listing");
@@ -2227,8 +2285,390 @@ pub mod pumped {
             launched.display().to_string(),
             "and a reset must not have moved the path either"
         );
+        // **And the reset raised NO `symbols_changed`**, which is the asymmetry that makes `drain`'s
+        // `symbols_changed || rom_changed` more than a tidy `||`. `reset` keeps the listing and so bumps
+        // no listing generation; `rom_changed` is the only term that re-derives here. If a future reset
+        // handler starts replacing the listing this flips, and the `||` becomes redundant rather than
+        // load-bearing — a change worth being told about rather than absorbing silently.
+        assert!(
+            totals.listing.is_none(),
+            "`emulator/reset` raised symbols_changed, so it is now replacing the listing its own \
+             handler says it keeps"
+        );
 
         let _ = std::fs::remove_file(&launched);
         let _ = std::fs::remove_file(&reloaded);
+    }
+
+    /// The listing the window is **launched** with — two rows, and it binds to the fixture ROM (no
+    /// `EndOfRom` row, so the D7 check is `Indeterminate::NoEndOfRomSymbol` and the listing is accepted
+    /// unverified because it is intact). Deliberately not [`LST`], whose `EndOfRom : 100` makes it
+    /// *Mismatch* on purpose — `emulator/load_symbols` refuses that one outright.
+    const LST_LAUNCHED: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+
+    2 symbols
+    0 unused symbols
+";
+
+    /// The listing a client **swaps in**. Three rows, so its symbol count differs from the launched
+    /// one's — the difference is what makes "the window's cache followed" an observation rather than two
+    /// identical numbers agreeing.
+    const LST_LOADED: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+ Player_2 : FFFF8D50 C |
+
+    3 symbols
+    0 unused symbols
+";
+
+    /// ★ **A client's `emulator/load_symbols` re-derives the window's symbol cache — with no cartridge
+    /// change anywhere in it.**
+    ///
+    /// `PLAYER-SYMBOLS-STALE`, end to end. `emulator/reload_rom` could be closed on the consumer side
+    /// alone because it already raised a flag; this one could not, because until this parcel it raised
+    /// **nothing**. The engine's listing was replaced, the window's clone was not, and every panel and
+    /// the status strip went on naming addresses out of a table `emulator/lookup_symbol` no longer
+    /// answers from — the same one-machine-two-answers drift as the reload case, reached by the route
+    /// with no signal on it.
+    ///
+    /// **The swap is listing→listing, not nothing→listing.** A window that started with no table would
+    /// let "the cache is now non-empty" stand in for "the cache was re-derived", and a `drain` that only
+    /// ever *filled* an empty cache would pass. Here the window is launched holding a two-row listing and
+    /// the client installs a three-row one; only a re-derivation produces `3`.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The window re-derives its cache every frame anyway.* Ruled out structurally and then checked:
+    ///    the client pauses this window before it sends anything, a paused window runs no
+    ///    `Machine::step`, and `machine.frames() == 0` is asserted at the end. The **control** below
+    ///    turns the loop twenty more times with a client that only handshakes and `totals.symbols`
+    ///    stays 0.
+    /// 2. *`rom_changed` did the work — the flag was reused after all.* The carried report is asserted
+    ///    `!rom_changed`, and `totals.rom_path == 0` says the cartridge branch was never entered. This is
+    ///    the assertion that distinguishes the signal that shipped from the one that was rejected; on the
+    ///    bump-`rom_generation` design the rest of this test is green and this line is red.
+    /// 3. *The two listings are the same, so any answer looks right.* Their counts are asserted to
+    ///    differ before anything is sent, on both the window's copy and the engine's.
+    /// 4. *The engine never took the new listing.* The reply's own `symbolCount` is checked, and
+    ///    `bus.symbols()` is read back.
+    #[test]
+    fn a_client_symbol_load_re_derives_the_windows_listing_without_touching_the_cartridge() {
+        let launched = SymbolTable::parse(LST_LAUNCHED).expect("parse the launched listing");
+        let loaded = SymbolTable::parse(LST_LOADED).expect("parse the loaded listing");
+        let (before, after) = (launched.len(), loaded.len());
+        assert!(
+            before > 0 && after > 0,
+            "a fixture listing parsed to nothing"
+        );
+        assert_ne!(
+            before, after,
+            "the two fixture listings hold the same number of symbols, so the count below cannot tell \
+             a re-derivation from a cache that never moved"
+        );
+
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        );
+        let lst = std::env::temp_dir().join(format!("pp-loaded-{stamp}.lst"));
+        std::fs::write(&lst, LST_LOADED).expect("write the fixture listing");
+        // A ROM path the window was launched with, so the cartridge half has something to *not* move.
+        let rom_path = std::env::temp_dir()
+            .join(format!("pp-cart-{stamp}.bin"))
+            .display()
+            .to_string();
+
+        let (mut machine, mut bus, socket) = served(
+            "loadsym",
+            MachineInfo {
+                rom_path: Some(rom_path.clone()),
+                symbols: Some(launched.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut cache = Cache {
+            symbols: Some(launched),
+            rom_path: rom_path.clone(),
+        };
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(before),
+            "the window must start out holding the launched listing"
+        );
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(before),
+            "and so must the engine, or the two were never in agreement to begin with"
+        );
+
+        let path = lst.display().to_string();
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/load_symbols", json!({ "path": path }))
+        });
+
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's symbol load never reached the window — the engine replaces its listing with \
+             no generation behind it, which is the defect",
+            // **Turn until the SIGNAL arrives, not until the repair happens.** `t.symbols > 0` — the
+            // spelling its sibling tests use, and the first draft of this one — is satisfied on the very
+            // first drain by a `drain` that re-derives unconditionally, which stops the loop before the
+            // client has connected and turns the vacuity mutation into a client-side read timeout
+            // instead of a named failure. Measured: that is exactly what it did. Waiting on the report
+            // flag makes the loop turn until the load really lands, so the *control* below is what
+            // catches an unconditional re-derivation, by name and with its own sentence.
+            |t, _| t.listing.is_some(),
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(
+            reply["symbolCount"],
+            json!(after),
+            "the engine refused or mis-parsed the listing, so anything below describes something else"
+        );
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(after),
+            "the engine is not holding the listing it said it accepted"
+        );
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(after),
+            "the window is still resolving names against the listing it was LAUNCHED with, which the \
+             engine has replaced — the panels and `emulator/lookup_symbol` now answer differently about \
+             one machine"
+        );
+        assert!(
+            paused,
+            "the window stopped being paused, so it may have moved on its own"
+        );
+        assert_eq!(
+            machine.frames(),
+            0,
+            "this loop ran a frame of its own, so nothing above is evidence of a reaction to the client"
+        );
+
+        let r = totals
+            .listing
+            .expect("the load must have arrived as symbols_changed");
+        assert!(
+            !r.rom_changed,
+            "`emulator/load_symbols` raised rom_changed. That is the OVER-SIGNAL this parcel rejected: \
+             the cache repair above would then be correct output for the wrong reason, and this window \
+             would ALSO have dropped its scanline capture and rebuilt its audio clock — an audible \
+             hiccup — because a client named a .lst file"
+        );
+        assert_eq!(
+            totals.rom_path, 0,
+            "the cartridge branch ran for a listing change, so the split between the two repairs is not \
+             holding"
+        );
+        assert_eq!(
+            totals.timeline, 0,
+            "the timeline was resynchronised for a command that advances no clock"
+        );
+        assert_eq!(
+            cache.rom_path, rom_path,
+            "the window's `rom` row moved on a gesture that replaced no cartridge"
+        );
+
+        // --- the control: the same rig, the same drains, no symbol load. ---
+        let launched = SymbolTable::parse(LST_LAUNCHED).expect("parse the launched listing");
+        let (mut machine, mut bus, socket) = served(
+            "loadsym-ctl",
+            MachineInfo {
+                rom_path: Some(rom_path.clone()),
+                symbols: Some(launched.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut cache = Cache {
+            symbols: Some(launched),
+            rom_path: rom_path.clone(),
+        };
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+        });
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the control's client never handshook",
+            |t, _| t.calls >= 1,
+        );
+        client.join().expect("the control client");
+        for _ in 0..20 {
+            totals.add(iterate(&mut machine, &mut bus, &mut cache, &mut paused));
+        }
+        assert_eq!(
+            totals.symbols, 0,
+            "the window re-derived its listing with no symbol load behind it — the re-derivation above \
+             is not evidence that the client caused it"
+        );
+        assert!(
+            totals.listing.is_none(),
+            "symbols_changed fired on a drain with nothing sent"
+        );
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(before),
+            "and the control's cache must still hold the launched listing"
+        );
+
+        let _ = std::fs::remove_file(&lst);
+    }
+
+    /// ★ **A client's `emulator/restore` puts the window's listing back too** — the third and last site
+    /// `symbols_generation` moves at, and the one no other test here reaches.
+    ///
+    /// A checkpoint carries its own symbol table (D7: the listing travels with the cartridge it was bound
+    /// to), so a restore can put a *different* listing back — including the one that was there before a
+    /// `load_symbols` replaced it. That is the reverse of the parcel's own case and it is just as silent:
+    /// the engine's listing goes back, the window's clone does not.
+    ///
+    /// **Witnessed here rather than assumed from the other two.** Everything a restore obliges *this*
+    /// crate to do is already driven by `rom_changed` — `restore` bumps that unconditionally — so the
+    /// listing bump is invisible from the player's own repairs. It is `oracle-frontend` that needs it:
+    /// that window has no `rom_changed` → listing branch at all, so a restore without this bump leaves it
+    /// resolving names out of the listing the client had swapped in and the machine no longer carries.
+    /// The assertion is on the **report flag**, which is the thing the other host reads.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The listing never moved, so of course it is back.* The middle of the test asserts the window
+    ///    and the engine both reached the three-row listing first; the restore then has to undo that.
+    /// 2. *`rom_changed` did it.* The window's repair would indeed be green either way — which is why the
+    ///    assertion is `restored.symbols_changed` on the drain that carried it, not the cache alone.
+    /// 3. *The window re-derives every frame.* It is paused throughout and `frames() == 0` at the end.
+    #[test]
+    fn a_client_restore_puts_the_windows_listing_back_and_says_so_on_the_flag() {
+        let launched = SymbolTable::parse(LST_LAUNCHED).expect("parse the launched listing");
+        let loaded = SymbolTable::parse(LST_LOADED).expect("parse the loaded listing");
+        let (before, after) = (launched.len(), loaded.len());
+        assert_ne!(
+            before, after,
+            "the two fixture listings must differ in size"
+        );
+
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        );
+        let lst = std::env::temp_dir().join(format!("pp-restore-{stamp}.lst"));
+        std::fs::write(&lst, LST_LOADED).expect("write the fixture listing");
+
+        let (mut machine, mut bus, socket) = served(
+            "restore-sym",
+            MachineInfo {
+                rom_path: None,
+                symbols: Some(launched.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut cache = Cache {
+            symbols: Some(launched),
+            rom_path: String::new(),
+        };
+
+        // Phase 1 — checkpoint the machine while it still carries the launched listing, then swap the
+        // listing out from under it. The client is handed back so the restore can use the same
+        // connection: a checkpoint is per-server, but reusing it keeps the two phases obviously ordered.
+        let path = lst.display().to_string();
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            let id = c.ok("emulator/checkpoint", json!({"label": "before the swap"}))["id"]
+                .as_str()
+                .expect("the checkpoint handle is a string")
+                .to_string();
+            c.ok("emulator/load_symbols", json!({ "path": path }));
+            (c, id)
+        });
+
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's symbol load never reached the window",
+            |t, _| t.listing.is_some(),
+        );
+        let (c, id) = client.join().expect("the first client phase");
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(after),
+            "phase 1 did not land, so the restore below would have nothing to undo"
+        );
+
+        // Phase 2 — go back. The engine's listing returns to the checkpointed one.
+        let client = std::thread::spawn(move || {
+            let mut c = c;
+            c.ok("emulator/restore", json!({ "id": id }))
+        });
+        let mut totals = Totals::default();
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's restore never reached the window",
+            |t, _| t.listing.is_some(),
+        );
+        client.join().expect("the second client phase");
+
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(before),
+            "the restore did not put the checkpointed listing back, so nothing below is about a restore"
+        );
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(before),
+            "the window is still holding the listing the client swapped in, which the machine it is now \
+             running does not carry"
+        );
+        let restored = totals.listing.expect(
+            "the restore did not raise symbols_changed, so a host that reads only that flag \
+                     (oracle-frontend does) never learns its listing went back",
+        );
+        assert!(
+            restored.rom_changed,
+            "a restore must raise rom_changed too — it replaces the whole machine"
+        );
+        assert_eq!(
+            machine.frames(),
+            0,
+            "this loop ran a frame of its own, so nothing above is evidence of a reaction to the client"
+        );
+
+        let _ = std::fs::remove_file(&lst);
     }
 }

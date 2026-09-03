@@ -2243,6 +2243,33 @@ fn main() {
                 "aether: the cartridge was replaced over the bus — save-state slots re-keyed",
             );
         }
+        if pumped.symbols_changed {
+            // A client's `emulator/load_symbols` (or a `reload_rom` that dropped the listing on the D7
+            // check) replaced the table the engine resolves against. This window holds its own clone —
+            // `dump_hits` symbolises watchpoint PCs out of it, and the lens panels name addresses from
+            // it — so without this it goes on naming addresses out of a listing the engine no longer
+            // has, while `emulator/lookup_symbol` answers from the new one. One machine, two answers:
+            // the D7 drift, arrived at over the bus instead of over a rebuild.
+            //
+            // Re-derived from the engine rather than re-read from disk, deliberately: the engine has
+            // already parsed and bound the listing the client named, and re-reading the path would be a
+            // second parse that can disagree with it. **The armed symbol watches are NOT re-armed** —
+            // `SymbolWatch::arm` re-seeds its baselines from live RAM, so doing it here would silently
+            // restart every watch's measurement on a gesture that changed no memory; the F5 path re-arms
+            // because it really did replace the machine.
+            symbols = bus.symbols().cloned();
+            notify(
+                &mut ov,
+                ACCENT,
+                match symbols.as_ref() {
+                    Some(t) => format!(
+                        "aether: symbol listing replaced over the bus — {} symbols",
+                        t.len()
+                    ),
+                    None => "aether: the symbol listing was dropped over the bus".to_string(),
+                },
+            );
+        }
         // Conflict 1's inbound half: `emulator/pause` / `emulator/resume` are the client's way of stopping
         // and starting *this* loop, and they only mean anything if the loop follows them.
         let bus_paused = bus.is_paused();

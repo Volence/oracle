@@ -34,6 +34,7 @@ pub struct Pumped {
     pub timeline_moved: bool,
     pub screen_changed: bool,
     pub rom_changed: bool,
+    pub symbols_changed: bool,
     pub frames_advanced: u64,
 }
 
@@ -190,6 +191,14 @@ impl Bus {
 
     pub fn pump(&mut self, _sys: &mut System) -> Pumped {
         Pumped::default()
+    }
+
+    /// Always `None`, and the run loop's `symbols_changed` branch is therefore unreachable in this build:
+    /// `pump` reports nothing, so nothing ever asks. It exists for the same reason every other no-op here
+    /// does — the loop has one shape, and a `#[cfg]` around the branch is how the two builds start
+    /// meaning different things.
+    pub fn symbols(&self) -> Option<&SymbolTable> {
+        None
     }
 
     pub fn set_machine_info(&mut self, _info: MachineInfo) {}
