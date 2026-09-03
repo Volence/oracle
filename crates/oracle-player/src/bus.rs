@@ -2540,4 +2540,135 @@ pub mod pumped {
 
         let _ = std::fs::remove_file(&lst);
     }
+
+    /// ★ **A client's `emulator/restore` puts the window's listing back too** — the third and last site
+    /// `symbols_generation` moves at, and the one no other test here reaches.
+    ///
+    /// A checkpoint carries its own symbol table (D7: the listing travels with the cartridge it was bound
+    /// to), so a restore can put a *different* listing back — including the one that was there before a
+    /// `load_symbols` replaced it. That is the reverse of the parcel's own case and it is just as silent:
+    /// the engine's listing goes back, the window's clone does not.
+    ///
+    /// **Witnessed here rather than assumed from the other two.** Everything a restore obliges *this*
+    /// crate to do is already driven by `rom_changed` — `restore` bumps that unconditionally — so the
+    /// listing bump is invisible from the player's own repairs. It is `oracle-frontend` that needs it:
+    /// that window has no `rom_changed` → listing branch at all, so a restore without this bump leaves it
+    /// resolving names out of the listing the client had swapped in and the machine no longer carries.
+    /// The assertion is on the **report flag**, which is the thing the other host reads.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *The listing never moved, so of course it is back.* The middle of the test asserts the window
+    ///    and the engine both reached the three-row listing first; the restore then has to undo that.
+    /// 2. *`rom_changed` did it.* The window's repair would indeed be green either way — which is why the
+    ///    assertion is `restored.symbols_changed` on the drain that carried it, not the cache alone.
+    /// 3. *The window re-derives every frame.* It is paused throughout and `frames() == 0` at the end.
+    #[test]
+    fn a_client_restore_puts_the_windows_listing_back_and_says_so_on_the_flag() {
+        let launched = SymbolTable::parse(LST_LAUNCHED).expect("parse the launched listing");
+        let loaded = SymbolTable::parse(LST_LOADED).expect("parse the loaded listing");
+        let (before, after) = (launched.len(), loaded.len());
+        assert_ne!(
+            before, after,
+            "the two fixture listings must differ in size"
+        );
+
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        );
+        let lst = std::env::temp_dir().join(format!("pp-restore-{stamp}.lst"));
+        std::fs::write(&lst, LST_LOADED).expect("write the fixture listing");
+
+        let (mut machine, mut bus, socket) = served(
+            "restore-sym",
+            MachineInfo {
+                rom_path: None,
+                symbols: Some(launched.clone()),
+                symbols_path: None,
+            },
+            true,
+        );
+        let mut cache = Cache {
+            symbols: Some(launched),
+            rom_path: String::new(),
+        };
+
+        // Phase 1 — checkpoint the machine while it still carries the launched listing, then swap the
+        // listing out from under it. The client is handed back so the restore can use the same
+        // connection: a checkpoint is per-server, but reusing it keeps the two phases obviously ordered.
+        let path = lst.display().to_string();
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            let id = c.ok("emulator/checkpoint", json!({"label": "before the swap"}))["id"]
+                .as_str()
+                .expect("the checkpoint handle is a string")
+                .to_string();
+            c.ok("emulator/load_symbols", json!({ "path": path }));
+            (c, id)
+        });
+
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's symbol load never reached the window",
+            |t, _| t.listing.is_some(),
+        );
+        let (c, id) = client.join().expect("the first client phase");
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(after),
+            "phase 1 did not land, so the restore below would have nothing to undo"
+        );
+
+        // Phase 2 — go back. The engine's listing returns to the checkpointed one.
+        let client = std::thread::spawn(move || {
+            let mut c = c;
+            c.ok("emulator/restore", json!({ "id": id }))
+        });
+        let mut totals = Totals::default();
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's restore never reached the window",
+            |t, _| t.listing.is_some(),
+        );
+        client.join().expect("the second client phase");
+
+        assert_eq!(
+            bus.symbols().map(|t| t.len()),
+            Some(before),
+            "the restore did not put the checkpointed listing back, so nothing below is about a restore"
+        );
+        assert_eq!(
+            cache.symbols.as_ref().map(|t| t.len()),
+            Some(before),
+            "the window is still holding the listing the client swapped in, which the machine it is now \
+             running does not carry"
+        );
+        let restored = totals.listing.expect(
+            "the restore did not raise symbols_changed, so a host that reads only that flag \
+                     (oracle-frontend does) never learns its listing went back",
+        );
+        assert!(
+            restored.rom_changed,
+            "a restore must raise rom_changed too — it replaces the whole machine"
+        );
+        assert_eq!(
+            machine.frames(),
+            0,
+            "this loop ran a frame of its own, so nothing above is evidence of a reaction to the client"
+        );
+
+        let _ = std::fs::remove_file(&lst);
+    }
 }
