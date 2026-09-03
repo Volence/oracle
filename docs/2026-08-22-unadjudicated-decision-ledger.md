@@ -484,3 +484,66 @@ derivation should stop sharing comment blanking at all is the same design questi
 for the whole runner (baseline 61/61 in 0.592s at uptime 4 days 21:27; final 73/73 at uptime 4 days
 21:39). No existing test was weakened or skipped; two stale docstrings that still carried the "shares no
 code with the table builder" over-claim were corrected.
+
+---
+
+## L-11 — Parcel 2a's two design calls: the panel/parcel split, and `Host::call` applying neither deferred run-state change · `SELF-RULED`
+
+**Reviewer: none.** Ruled by the oracle overseer on the ordinary model, the Fable seat being on HOLD per
+owner ruling 2 of 2026-08-22. Named here at the top per the 2026-08-27 hub rule that a substituted or
+self-ruled adjudication announces itself in the artifact a cold reader picks up. **Entered after the
+dispatch rather than at it** — the split was decided when the brief was written and the ledger entry was
+not; that is the standing rule missed by a few hours and is recorded rather than backdated.
+
+### (a) Parcel 2 was split 2a / 2b / 2c, and the transport bar moved out of 2a
+
+**Verdict.** `docs/2026-09-03-debug-panels-design.md` §5.5 recommends parcel 2 = P1 + P2 + P3 **plus the
+transport bar**. I shipped 2a as `Host::call` + P1 + the parity test only, and deferred the transport bar
+to sit with the Memory panel's gated writes.
+
+**Why.** The transport bar's `step` / `run_to` / writes are `require_paused`, so the bar requires the
+player's pause flag to be mirrored onto the bus (`Host::set_paused`). That is a run-loop coupling, and the
+design's own §4.3 item 4 says it "must be *designed*, not discovered". Discovering it inside a parcel
+whose other half is a register grid is how it gets discovered.
+
+**Alternatives considered.** (i) Ship §5.5 whole — rejected: the pause-mirroring lands as a side quest
+inside an unrelated parcel. (ii) Ship `Host::call` alone — rejected on this repo's own bar that *a merged
+serve is not a served method*: an entry point with no caller is unexercised. The parity test routing
+through `call` is what gave it a real consumer inside 2a.
+
+**What would have to be true for this to be wrong.** That pause-mirroring turns out to be trivial and
+independent of the run loop, making the split pure overhead — two merges and two verifications where one
+would have done. **The audit should re-run:** whether 2b's pause-mirroring actually touched the loop. If
+it did not, this call cost a merge cycle for nothing.
+
+### (b) `Host::call` applies neither `pending_free_run` nor `pending_break`
+
+**Verdict.** RATIFIED as the agent built and argued it, against the alternative of mirroring `pump`'s
+apply. Pinned by `call_leaves_the_deferred_run_state_changes_for_the_drain`.
+
+**The reasoning, which is the agent's and which I checked rather than accepted.** Both applies emit
+`emulator/stopped` / `resumed`, so a panel repainting at 60 Hz through `call` would mint run-control
+events as a side effect of drawing itself. And a second apply site adds an interleaving `pump`'s ordering
+comment does not cover: ordered `run ▸ record_break ▸ call ▸ set_paused ▸ pump`, the halt applies in
+`call` and `set_paused` — comparing against the now-halted engine — then queues `free_run = true` for the
+drain, which is a machine that stops on a breakpoint and silently resumes. That is precisely the
+believable wrong answer `pump`'s load-bearing ordering exists to prevent, reintroduced by duplicating the
+site.
+
+**The cost, named and not hidden.** Between a latch and the next drain, a `call` to a run-state-reporting
+method can answer with the pre-halt state. Bounded by one iteration, self-correcting at the next `pump`,
+and `Host::is_paused` (which already consults `pending_free_run`) is the truthful host-side reading
+meanwhile — so the panel is told to read *that*.
+
+**What would have to be true for this to be wrong.** That some caller legitimately needs `call` to see
+post-latch run state within the same iteration — a per-gesture command that must observe a halt the
+current frame latched. No such caller exists in 2a. **The audit should re-run:** the transport bar in 2b,
+which is the first plausible one, and whether its Step button reads a stale `running` for a frame.
+
+**Verified firsthand at merge**, not taken from the report: merged tree 66 legs / 2097 passed / 0 failed /
+6 ignored, exit 0, HEAD stable `31d3408` across the run, all seven new tests present **by name** in that
+run's own log; `fmt` 0; `clippy` 0/0. An independent mutation of my own — splitting the `A7 = SP` row into
+two single-key rows, applied and read back from disk — failed `the_shared_a7_sp_row_carries_both_keys_and_says_so`
+(`left: 0, right: 1`) **while the main parity test stayed green**, which establishes that the two tests
+have independent teeth rather than one being a restatement of the other. The agent's own M3 tripped both
+at once and could not have shown that.
