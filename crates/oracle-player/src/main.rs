@@ -375,6 +375,27 @@ impl Loop {
     /// toolkit to wait before the next repaint.
     fn iterate(&mut self, ctx: &egui::Context, root: &mut egui::Ui, now: Instant) -> pacing::Tick {
         self.iterations += 1;
+
+        // --- ⚑ Conflict 1, inbound: adopt the bus's run state, and do it FIRST. ---
+        //
+        // **One adoption, at the top, and it is load-bearing in both directions.** Three things move the
+        // engine's run flags behind this field's back, and all three land before the next iteration
+        // begins: a breakpoint halt applied by the drain at the bottom of the previous iteration, and
+        // `emulator/pause` / `emulator/resume` issued by the transport bar during the previous
+        // `build_ui`. Reading here is what makes every one of them take effect before the governor's tick
+        // below decides whether to run a frame.
+        //
+        // **Reading it later instead is the bug that hides.** `Bus::mirror_pause` calls
+        // `Host::set_paused(self.paused)`, which compares against the *engine's* flag — so an adoption
+        // that happens after the drain lets the drain mirror a stale `false` over a pause the bar just
+        // asked for, queue `free_run = true`, and resume a machine the human stopped. One iteration
+        // later the field would agree with the bus again and nothing would look wrong.
+        //
+        // Read from `Bus::is_paused` rather than tracked here: it consults `pending_free_run`, which a
+        // `Host::call` does not apply, and is the one truthful reading (bus.rs). This field is a cache of
+        // *that*, refreshed once per iteration — not a second opinion (R2).
+        self.paused = self.bus.is_paused();
+
         let tick = self.governor.tick(now);
 
         let mut cost = machine::StepCost::default();
@@ -410,16 +431,17 @@ impl Loop {
         // it, so `is_paused()` below is true before the governor's next tick and no further frame runs.
         // Draining at the top of `iterate` instead — which is where parcel 2b's module doc predicted this
         // call would move — would leave the halt unapplied across the following tick, and the player would
-        // run one extra frame past a breakpoint it had already stopped on.
+        // run one extra frame past a breakpoint it had already stopped on. The *adoption* is what moved to
+        // the top; the drain stays here, behind the frame that latches into it.
+        //
+        // There is deliberately **no second `self.paused = ...` after this**. An earlier draft had one,
+        // and both it and the one at the top were then individually removable with every test still
+        // green — two lines, each covering for the other, which is how a redundancy passes for a
+        // safeguard. The adoption at the top is the one that is correct on its own, for both the halt and
+        // the transport bar, and it is now the only one.
         let t_bus = Instant::now();
         self.bus
             .mirror_pause(self.machine.system_mut(), self.paused);
-        // Conflict 1's inbound half. Two things speak through this: a breakpoint halt, which `pump` just
-        // applied by clearing the run flags, and `emulator/pause` / `emulator/resume` from the transport
-        // bar. Read from the bus rather than tracked here — `Bus::is_paused` consults the pending change
-        // and is the one truthful reading (bus.rs), and a second copy of the run state in this struct is
-        // exactly the duplication R2 forbids.
-        self.paused = self.bus.is_paused();
         let bus_ms = ms(t_bus.elapsed());
 
         // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
@@ -444,11 +466,10 @@ impl Loop {
         self.build_ui(root);
         let ui_ms = ms(t.elapsed());
         // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
-        // deliberately NOT a drain and applies neither pending change (host.rs). So a pause or resume it
-        // just issued has already moved the *engine's* flags, and this is where the loop adopts it —
-        // without this line the next iteration's `mirror_pause` would mirror the stale local value and
-        // queue the click straight back out again.
-        self.paused = self.bus.is_paused();
+        // deliberately NOT a drain and applies neither pending change (host.rs) — so a pause or resume it
+        // just issued has already moved the engine's own flags. It is adopted at the TOP of the next
+        // iteration, before that iteration's tick decides whether to run a frame, which is why no frame
+        // slips through between the click and the pause taking effect.
 
         if tick.run {
             self.buckets.emulate.push(cost.emulate);
@@ -934,6 +955,66 @@ mod loop_tests {
             lp.machine.system().scheduler().now(),
             clock,
             "the emulated clock moved while the player was paused"
+        );
+    }
+
+    /// ★ **A pause the transport bar asked for survives the loop's own drain.**
+    ///
+    /// This is the hazard that nearly shipped uncovered, and it is a *silent* one. `Transport::issue`
+    /// calls `emulator/pause` through `Host::call`, which moves the engine's flags but is deliberately not
+    /// a drain. The loop's `Bus::mirror_pause` then calls `Host::set_paused(self.paused)` — comparing
+    /// against the engine's flag — so if `self.paused` is still the stale `false`, the very next drain
+    /// queues `free_run = true` and **resumes the machine the human just stopped**, with the button
+    /// flipping back to "pause" as if the click had never happened.
+    ///
+    /// `emulator/pause` is issued here between `drive` calls, which is the same position relative to the
+    /// next iteration's adoption that a click inside `build_ui` occupies.
+    ///
+    /// **The alternative green paths, ruled out:**
+    ///
+    /// 1. *The machine was already paused.* Ruled out by driving it first and asserting it advanced.
+    /// 2. *It stayed paused because the loop stopped running.* Ruled out by requiring the loop to keep
+    ///    iterating, and by resuming through the bus at the end and watching frames start again — a loop
+    ///    frozen for any other reason could not do that.
+    #[test]
+    fn a_pause_asked_for_through_the_bus_is_not_undone_by_the_next_drain() {
+        let ctx = egui::Context::default();
+        let mut lp = a_loop();
+
+        let (advanced, _) = drive(&mut lp, &ctx, 3);
+        assert!(
+            advanced > 0,
+            "the fixture must be running before it is paused"
+        );
+
+        // Exactly what `Transport::issue` does for the ⏸ button.
+        let a = lp
+            .bus
+            .call(lp.machine.system_mut(), ui::PAUSE, &serde_json::json!({}));
+        assert!(!a.is_err(), "emulator/pause was refused");
+        assert!(
+            lp.bus.is_paused(),
+            "the call must move the bus's own reading"
+        );
+
+        let (advanced, iters) = drive(&mut lp, &ctx, 6);
+        assert!(iters >= 6, "the loop stopped turning");
+        assert_eq!(
+            advanced, 0,
+            "the loop kept emulating after `emulator/pause` — its drain mirrored a stale `false` over \
+             the pause and queued `free_run = true`, resuming a machine the human stopped"
+        );
+        assert!(lp.paused, "and the loop's own field must agree");
+
+        // (2) …and it is a pause, not a wedge: resuming through the same surface starts frames again.
+        let a = lp
+            .bus
+            .call(lp.machine.system_mut(), ui::RESUME, &serde_json::json!({}));
+        assert!(!a.is_err(), "emulator/resume was refused");
+        let (advanced, _) = drive(&mut lp, &ctx, 3);
+        assert!(
+            advanced > 0,
+            "the player never resumed, so the zero above was a stuck loop rather than a pause"
         );
     }
 }
