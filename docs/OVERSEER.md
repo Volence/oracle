@@ -671,6 +671,32 @@ named consumer silently, in the direction that presents as a successful boot res
 window that never opened.
 
 
+## ⚑ OWNER RULING, 2026-09-03 — WHAT GETS A TAB IN THE DEBUG WINDOW (ORACLE-DEBUG-UI)
+
+**Witnessed directly in session, not relayed.** Put to him as an assessment, answered *"That's fine I agree
+with the assessment"*. It is the standing shape for every panel parcel; do not re-derive it.
+
+**Default: a capability served on the bus is reachable in the window, not only from a tool.** That is his
+standing "build out the tooling" directive arriving on the UI. But **a tab is not the right shape for all
+of them**, and the split is the ruling:
+
+* **Things you LOOK AT** — registers, memory, objects, breakpoints, profiler — **are tabs.**
+* **Things you DO** — reset, press, spawn, write — **are NOT tabs.** They are controls inside a panel or an
+  invoked command. A tab that is empty until used is a worse button. *(The spawn serve is the live example:
+  its surface is clicking a spot in the Screen panel, not an `object_spawn` tab.)*
+* **Things too expensive to show live** — `scanlines` is ~440 KB of JSON per frame — are **on demand**,
+  never a docked tab quietly costing frames.
+
+⚑ **And the half that is a correctness rule rather than taste: A PANEL MUST SHOW THE SAME ANSWER A TOOL
+GETS.** Prefer reading through the served surface over reaching into the emulator by a private route. This
+repo already carries the invariant that `pick.rs` and `emulator/pixel_attribution` *"must never disagree"*
+— routing panels through the same surface makes that true **by construction** instead of by vigilance, and
+it dogfoods our own contract. Cost: slightly more work per panel. Accepted.
+
+**Parcel-2 line items this settles:** layout persistence is one `serde` flag and is deliberately OFF until
+the placeholders are gone (saving a layout of placeholders buys a migration); `Tab::Registers` content is
+filler on purpose while the docking it exercises is real.
+
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
 **▶ NEW BAR, 2026-08-26 — A MERGED SERVE IS NOT A SERVED METHOD. THE CONSUMER REACHES A BINARY.**
