@@ -6687,7 +6687,7 @@
           },
           "x": {
             "type": "integer",
-            "description": "As emulator/object_spawn, including the echo-versus-re-read residue, which bites harder here: this row moves an object that may already have velocity."
+            "description": "As emulator/object_spawn: world pixels RE-READ from the record after `framesAdvanced` frames, never an echo of the accepted request (§11.32 addendum, 2026-09-03). The re-read matters more here than on spawn: this row moves an object that may already have velocity, so the value the caller sent is not where the object is."
           },
           "y": {
             "type": "integer",

@@ -20,9 +20,9 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = e04a94f259bdaffc38da85785eb0e3f48ad0bd1b
-    pin.blob     = 487af407cbb08e433aa1d5aa60ceaad1e73916e6
-    pin.bytes    = 345965
+    pin.revision = bd6af51a6647a93e4a0c4f6900bb8b895b9fa353
+    pin.blob     = cf40685488d8dc39a7ecb6b89ae797b3103f1f5f
+    pin.bytes    = 346137
 
 ## Current copy
 
