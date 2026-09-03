@@ -510,6 +510,149 @@ fn a_client_reset_reaches_the_player_as_a_rom_change() {
     assert!(calls >= 2, "initialize and the reset were both answered");
 }
 
+/// A minimal AS-dialect listing that binds to `testrom::build()` — the same spelling `symbols_path.rs`
+/// and `methods.rs` already load. No `EndOfRom` row, so the binding check returns
+/// `Indeterminate::NoEndOfRomSymbol` and the listing is accepted unverified because it is intact.
+const BINDING_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+
+    2 symbols
+    0 unused symbols
+";
+
+/// ★ **A client's `emulator/load_symbols` reaches a hosted player as `symbols_changed`, and as
+/// `rom_changed` NOT AT ALL.**
+///
+/// The emitter half of `PLAYER-SYMBOLS-STALE`. Before it, this command moved nothing any host could see:
+/// it replaces the listing `emulator/lookup_symbol` answers from, bumps no generation, and so appeared in
+/// no `PumpReport` field — leaving a host that caches the listing (both of ours do) resolving names out
+/// of a table the engine had discarded, with no signal to react to. Unlike `reload_rom`, this could not
+/// be fixed on the consumer side, because there was nothing there to consume.
+///
+/// **The second assertion is the parcel, not a nicety.** Bumping `rom_generation` was the obvious fix and
+/// it is the one rejected: `rom_changed` means *the machine was replaced*, and the two hosts that read it
+/// answer by dropping a scanline capture, rebuilding an audio clock and re-keying save-state slots. A
+/// listing change invalidates none of that. `assert!(!rom_changed)` is what tells the narrow signal apart
+/// from the wide one — without it this test passes just as green on the design it exists to reject.
+///
+/// **The alternative green paths, each ruled out by a named assertion:**
+///
+/// 1. *`symbols_changed` is set on every drain.* Ruled out by the **control**: twenty further drains after
+///    the load, with the client gone, and it never fires again.
+/// 2. *The load did not actually take.* The reply's `symbolCount` is checked against the listing's own
+///    rows, and `Host::symbols()` is read back for the same count.
+/// 3. *The engine already had a listing, so nothing moved.* Asserted `None` before the client is spawned.
+/// 4. *The initialize handshake raised it.* The control drains the handshake **first** and requires
+///    `symbols_changed` still false at that point, so the flag below belongs to `load_symbols`.
+#[test]
+fn a_client_load_symbols_reaches_the_player_as_a_symbols_change_and_not_a_rom_change() {
+    let socket = temp_socket("load-symbols-report");
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(oracle_core::testrom::build());
+    sys.reset();
+
+    let lst = std::env::temp_dir().join(format!(
+        "ah-binding-{}-{}.lst",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&lst, BINDING_LST).expect("write the fixture listing");
+
+    let mut host = Host::new(HostConfig::default());
+    host.set_machine_info(MachineInfo {
+        rom_path: Some("testrom".into()),
+        ..MachineInfo::default()
+    });
+    assert!(
+        host.symbols().is_none(),
+        "the fixture already had a listing, so a count below would witness nothing"
+    );
+    host.serve(Some(socket.clone())).expect("bind the socket");
+
+    // Drain the handshake FIRST, and require the flag still down. What follows is then attributable to
+    // the one command sent after this point.
+    let handshake_socket = socket.clone();
+    let shook = std::thread::spawn(move || {
+        let mut c = Client::connect_path(&handshake_socket);
+        c.handshake(false);
+        c
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut calls = 0;
+    while calls == 0 {
+        assert!(Instant::now() < deadline, "the handshake never landed");
+        let r = host.pump(&mut sys);
+        assert!(
+            !r.symbols_changed,
+            "a drain that answered only `initialize` raised symbols_changed, so the flag below says \
+             nothing about load_symbols"
+        );
+        calls += r.calls;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let mut c = shook.join().expect("the handshake thread");
+
+    let path = lst.display().to_string();
+    let client = std::thread::spawn(move || {
+        let reply = c.ok("emulator/load_symbols", json!({ "path": path }));
+        (c, reply)
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = None;
+    while seen.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "`emulator/load_symbols` never surfaced as symbols_changed — the handler replaces the \
+             listing without moving any generation, which is the defect this test exists for"
+        );
+        let r = host.pump(&mut sys);
+        if r.symbols_changed {
+            seen = Some(r);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let r = seen.expect("the drain that carried the load");
+    let (_c, reply) = client.join().expect("the client thread");
+
+    assert_eq!(
+        reply["symbolCount"],
+        json!(2),
+        "the listing did not load, so the flag above described something else"
+    );
+    assert_eq!(
+        host.symbols().map(|t| t.len()),
+        Some(2),
+        "the engine is not holding the listing it said it accepted"
+    );
+    assert!(
+        !r.rom_changed,
+        "loading symbols raised rom_changed — the OVER-SIGNAL this parcel exists to avoid. Every host \
+         reading that flag would now drop its scanline capture, rebuild its audio clock and re-key its \
+         save-state slots because a client named a .lst file"
+    );
+    assert!(
+        !r.screen_changed,
+        "loading symbols invalidated the picture, which it does not touch"
+    );
+
+    // --- the control: the same host, twenty more drains, nothing sent. ---
+    for _ in 0..20 {
+        let r = host.pump(&mut sys);
+        assert!(
+            !r.symbols_changed,
+            "symbols_changed fires on a drain with no command behind it, so the assertion above is not \
+             evidence that `load_symbols` caused it"
+        );
+    }
+
+    let _ = std::fs::remove_file(&lst);
+}
+
 // ---------------------------------------------------------------------------------------------------
 // The hosted breakpoint halt (`docs/2026-08-27-bp-hosted-halt.md`).
 //

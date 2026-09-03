@@ -68,6 +68,17 @@ pub struct Pumped {
     /// The cartridge was replaced (`emulator/reload_rom`, or a restore that may have). Anything derived from
     /// the ROM bytes is stale.
     pub rom_changed: bool,
+    /// **A client replaced the symbol listing** (`emulator/load_symbols`), or a cartridge change replaced
+    /// or dropped it. This window keeps its own clone of the listing — `dump_hits` symbolises watchpoint
+    /// PCs out of it and the panels resolve names against it — so a stale clone is the D7 drift with the
+    /// engine on the other side of it: `emulator/lookup_symbol` answering out of one listing while this
+    /// window names addresses out of another.
+    ///
+    /// **Not folded into [`rom_changed`](Pumped::rom_changed)**, whose reaction here re-keys every
+    /// save-state slot and puts a line in the overlay saying the cartridge was replaced. Loading symbols
+    /// replaces no cartridge, and a slot re-key for a listing change is a repair that invalidates work
+    /// nothing invalidated.
+    pub symbols_changed: bool,
     /// Whole emulated frames the drain advanced.
     pub frames_advanced: u64,
 }
@@ -312,8 +323,17 @@ impl Bus {
             timeline_moved: r.timeline_moved(),
             screen_changed: r.screen_changed,
             rom_changed: r.rom_changed,
+            symbols_changed: r.symbols_changed,
             frames_advanced: r.frames_advanced(),
         }
+    }
+
+    /// **The listing the engine resolves against right now**, for the loop to re-derive its own clone from
+    /// after [`Pumped::symbols_changed`]. `None` both when nothing was ever loaded and when a
+    /// `reload_rom` dropped one on the D7 check — the two are the same state to a caller, which is why
+    /// this returns the engine's answer rather than reporting a delta.
+    pub fn symbols(&self) -> Option<&SymbolTable> {
+        self.host.symbols()
     }
 
     /// Re-point the bus at a cartridge the *player* just swapped (F5). Without this `emulator/status` keeps

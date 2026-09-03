@@ -956,6 +956,26 @@ pub struct Engine {
     /// from the ROM bytes (a save-state fingerprint, a symbol listing) watches this so it cannot keep
     /// describing a cartridge that is no longer loaded.
     rom_generation: u64,
+    /// Bumped whenever [`symbols`](Engine::symbols) — **the listing this engine resolves against** — is
+    /// replaced, by any route: `emulator/load_symbols`, `emulator/reload_rom`'s D7 drop, an
+    /// `emulator/restore` bringing a slot's listing back, or an embedder calling
+    /// [`set_symbols`](Engine::set_symbols).
+    ///
+    /// **Separate from [`rom_generation`](Engine::rom_generation) because the two answer different
+    /// questions, and only one of them has a producer that moves the listing alone.**
+    /// `emulator/load_symbols` replaces the listing without touching the cartridge, the clock, the
+    /// picture or the ROM path; before this counter existed it moved *nothing* a host could see, so an
+    /// embedder holding a clone of the table went on resolving names against a listing this engine had
+    /// already discarded — the exact drift [`Engine::symbols`]' own doc warns about, reached by the one
+    /// route that raised no flag. Folding it into `rom_generation` would have told every host that the
+    /// **cartridge** moved, which for the two hosts that exist means dropping a scanline capture and
+    /// rebuilding an audio clock for a listing change.
+    ///
+    /// **It moves on every replacement, not only the lone-listing one**, so a host that reacts to this
+    /// and to nothing else is still correct: `reload_rom`'s drop and `restore`'s swap raise it too, even
+    /// though they raise `rom_generation` as well. A signal that were true only when no other signal
+    /// fired would be a signal nobody could read on its own.
+    symbols_generation: u64,
     /// **The display layer mask** (`emulator/get_layer_states` / `emulator/set_layer_enabled`).
     ///
     /// It lives *here*, on the engine, for the same reason [`watchpoints`](Engine::watchpoints) does, and
@@ -1335,6 +1355,7 @@ impl Engine {
             last_frame: None,
             screen_generation: 0,
             rom_generation: 0,
+            symbols_generation: 0,
             // Every layer drawn. `LayerMask::ALL` is the state in which every render path is byte-identical
             // to the code that ran before the mask existed, so a server nobody has masked anything on
             // behaves exactly as it did.
@@ -1443,6 +1464,12 @@ impl Engine {
         self.rom_generation
     }
 
+    /// How many times the resolved symbol listing has been replaced (see
+    /// [`Engine::symbols_generation`]).
+    pub fn symbols_generation(&self) -> u64 {
+        self.symbols_generation
+    }
+
     /// **The listing this engine resolves against right now** — the one `emulator/lookup_symbol` answers
     /// from, not a copy of what somebody handed in at startup.
     ///
@@ -1513,9 +1540,16 @@ impl Engine {
     /// Done at the boundary rather than in `status` so every route agrees: the binary
     /// ([`crate::main`]), the hosted embedder ([`crate::host`]), [`Engine::load_symbols`] and a
     /// checkpoint restore all arrive here or at an already-absolutised value.
+    /// **The generation moves here unconditionally**, including for a store that happens to install the
+    /// same listing again. The alternative — comparing tables and bumping only on a difference — would
+    /// make the signal depend on `SymbolTable` equality, which is a large derived comparison run on a
+    /// path where the answer changes nothing a host does: re-deriving a clone it already holds is
+    /// idempotent, and guessing "same listing, no need to say so" is the guess that eventually goes
+    /// wrong. `rom_generation` moves on the same argument in `restore`.
     pub fn set_symbols(&mut self, table: Option<SymbolTable>, path: Option<String>) {
         self.symbols = table.map(Arc::new);
         self.symbols_path = path.map(|p| absolutise(&p));
+        self.symbols_generation += 1;
     }
 
     /// One free-running frame, called by the server loop between command drains. Returns the pacing
@@ -5825,6 +5859,12 @@ impl Engine {
             ) {
                 self.symbols = None;
                 self.symbols_path = None;
+                // Not routed through `set_symbols` — that would re-run `absolutise` on a `None` to no
+                // effect and read as a store rather than a drop — so the counter is moved by hand. A
+                // host reacting to `symbols_generation` alone has to see this one: it is the drop that
+                // leaves an embedder's clone describing a listing the engine has discarded, which is
+                // the whole of D7.
+                self.symbols_generation += 1;
                 symbols_dropped = true;
             }
         }
@@ -5969,6 +6009,12 @@ impl Engine {
         // half-way through — the one outcome §6.1 rules out — in service of an invariant already held.
         // The debug assertion below is that reasoning, made checkable.
         self.symbols = symbols;
+        // …and the listing generation moves with it, unconditionally and for `rom_generation`'s reason
+        // one paragraph up: a slot captured before a `load_symbols` carries a different listing, one
+        // captured after carries the same one, and a host that has to guess which is a host that will
+        // eventually guess wrong. Not routed through `set_symbols` because the line below deliberately
+        // does not re-absolutise.
+        self.symbols_generation += 1;
         // **`symbols_path` is restored raw, and that is not a hole in §11.30's rule.** Both path fields
         // come back from the slot exactly as they went in, and they went in already resolved: every
         // store of either goes through [`Engine::set_symbols`] / [`Engine::set_rom_path`] or through

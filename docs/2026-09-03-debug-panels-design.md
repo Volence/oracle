@@ -1390,6 +1390,48 @@ defect.
 > | `screen_changed` | adopt `Host::framebuffer` onto the glass | same in effect, new code here |
 > | `rom_changed` | re-derive the two pieces of cartridge-derived cache — the symbol listing **and the ROM path** — from the engine; also drive the timeline repair | frontend re-derives a save-state fingerprint instead |
 >
+> > ### ⚑ **SUPERSEDED in one row by `PLAYER-SYMBOLS-STALE` (branch `parcel/symbols-signal`).** There are
+> > **seven** fields now, and `rom_changed`'s row above has been split in two.
+> >
+> > `PLAYER-PUMPREPORT` closed its gap on the consumer side because a signal already existed to react to.
+> > `emulator/load_symbols` had none: it replaces the listing the engine resolves against — the one
+> > `emulator/lookup_symbol` answers from — while moving no generation at all, so it appeared in **no**
+> > `PumpReport` field and both windows went on naming addresses out of a listing the engine had
+> > discarded. That is the same D7 drift `rom_changed` exists to prevent, arriving by the one route with
+> > nothing on it, and it could only be fixed at the emitter.
+> >
+> > | field | this window | `oracle-frontend` |
+> > |---|---|---|
+> > | `rom_changed` | re-read the cached **ROM path**; re-derive the listing (see below); drive the timeline repair | re-derive the save-state fingerprint |
+> > | `symbols_changed` *(new)* | re-derive the cached **symbol listing** from the engine, and nothing else | same — it caches a listing too (`dump_hits` symbolises watchpoint PCs out of it) |
+> >
+> > **The rejected design is the obvious one: bump `rom_generation` in `load_symbols`.** It produces the
+> > right cache repair and the wrong reason for it. `rom_changed` means *the machine was replaced*, and
+> > the consumers answer it by dropping a scanline capture, rebuilding an audio clock and re-keying every
+> > save-state slot — none of which a listing change invalidates. Reusing the flag would have made loading
+> > symbols mid-session produce an audible audio hiccup and a lost capture, and it would have read as
+> > working. The narrow signal costs one field on a struct two hosts share; that cost is the point of
+> > constraint 1 above, and both hosts pay it.
+> >
+> > **`symbols_generation` moves on *every* replacement of the listing, not only the lone-listing one** —
+> > `set_symbols`, `reload_rom`'s D7 drop and `restore`'s swap all bump it, so `reload_rom` and `restore`
+> > raise both flags. That redundancy is deliberate: a flag true only when no other flag fired could not
+> > be read on its own, and it is what lets the frontend fix *both* its stale-listing cases with one
+> > branch (it never re-derived the listing on `rom_changed` either — found on the way past).
+> > `emulator/reset` is the exception in the other direction: it keeps the listing and raises no
+> > `symbols_changed`, which is why `drain` still re-derives on `|| rom_changed` — the same
+> > written-though-usually-redundant trade as the timeline note below.
+> >
+> > **No contract change and no CR.** `rom_generation` is not wire-visible — it is
+> > `Engine::rom_generation()`, read only by `Host::pump` to compute a flag — and `grep -rin generation
+> > crates/oracle-aether/tests/contract/` returns nothing. `symbols_generation` is the same kind of thing.
+> >
+> > **`Host::set_machine_info` does not surface as a client's doing**, and the placement is what makes
+> > that true: `pump` snapshots the counter at its own top, and that setter runs on the host's thread
+> > *between* drains, so the frontend's F5 cartridge swap — which calls `set_symbols` — is invisible to
+> > the very next report. A window is not told about its own listing.
+>
+
 > **The answer to “is the right fix to do what the frontend does?” is no, in both directions.** One of the
 > frontend's reactions is meaningless here and one thing it never needed is required:
 >

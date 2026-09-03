@@ -149,6 +149,27 @@ pub struct PumpReport {
     ///
     /// Read it as "resynchronise", not as "re-read the ROM".
     pub rom_changed: bool,
+    /// **The symbol listing the engine resolves against was replaced** — and, unlike
+    /// [`rom_changed`](PumpReport::rom_changed), that is *all* that happened when this is the only flag
+    /// set. Nothing about the cartridge, the clock, the picture or the ROM path moved.
+    ///
+    /// A host that caches the listing (both of ours do — the panels and the status strips resolve names
+    /// against a clone rather than through a call) re-derives it from
+    /// [`Host::symbols`](Host::symbols). A host that does not cache it ignores this field.
+    ///
+    /// **Why this is not `rom_changed`.** `emulator/load_symbols` may be called at any time, against an
+    /// unchanged cartridge, and it replaces the listing wholesale. Raising `rom_changed` for it would
+    /// have been the cheap fix and the wrong signal: `rom_changed` means *the machine was replaced*, and
+    /// the two hosts that read it answer by dropping a scanline capture, rebuilding an audio clock and
+    /// re-keying save-state slots. A listing change invalidates none of those, so reusing the flag would
+    /// have produced the right cache repair by way of an audible audio resync and a discarded capture —
+    /// correct output for the wrong reason, and silent until somebody loaded symbols mid-session.
+    ///
+    /// **It is raised by every producer that replaces the listing, not only by the lone one.**
+    /// `emulator/reload_rom`'s D7 drop and `emulator/restore`'s swap set this *and* `rom_changed`, so a
+    /// host may react to this field alone and still be correct. That redundancy is deliberate: a flag
+    /// that were true only when no other flag fired could not be read on its own.
+    pub symbols_changed: bool,
     /// The drain ended on [`HostConfig::pump_budget`] rather than on an empty queue. Anything still queued
     /// is taken next iteration; nothing is ever lost. Note it does **not** promise that something *was*
     /// left over — an mpsc queue cannot be peeked, so this is honestly "stopped on the clock, not on the
@@ -614,6 +635,13 @@ impl Host {
         let mut report = PumpReport::default();
         let screen_gen = self.engine.screen_generation();
         let rom_gen = self.engine.rom_generation();
+        // Snapshotted here, *inside* `pump` and beside the other two, which is what keeps
+        // [`Host::set_machine_info`] from surfacing as a client's doing. That setter calls
+        // `Engine::set_symbols` and so moves the counter, but it is called from the host's own thread
+        // between drains — so the bump lands before this line reads it, and the comparison at the bottom
+        // sees no change. A window that swaps its own cartridge (the frontend's F5) therefore does not
+        // get told about its own listing.
+        let symbols_gen = self.engine.symbols_generation();
 
         self.engine.swap_system(sys);
         report.mclk_before = self.engine.mclk();
@@ -674,6 +702,7 @@ impl Host {
 
         report.screen_changed = self.engine.screen_generation() != screen_gen;
         report.rom_changed = self.engine.rom_generation() != rom_gen;
+        report.symbols_changed = self.engine.symbols_generation() != symbols_gen;
         report
     }
 
