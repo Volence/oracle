@@ -1,19 +1,24 @@
 {
-  "focus": "You played the new window and it felt fine; the panels can be built on it now.",
+  "focus": "Overnight: building the spawn feature and designing the real debug panels to the rule you set.",
   "inFlight": [
     {
-      "what": "Building the spawn/move/delete feature so tools can place objects in a running level, and checking the contract team's work against our real replies",
+      "what": "Building the spawn/move/delete feature, and checking the contract team's work against our real replies",
       "where": "branch worktree (spawn serve)",
+      "agent": true
+    },
+    {
+      "what": "Designing the real debug panels to your tab ruling: what becomes a tab, what becomes a button, what is fetched on demand",
+      "where": "branch worktree (panels design)",
       "agent": true
     }
   ],
   "blockedOnOwner": [],
-  "nextBoundary": "Now - everything landed and pushed, nothing running.",
+  "nextBoundary": "When both overnight agents report and land; not before, since a rotation would cost their branches.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
       "title": "You played the first version and it felt fine. Next: the actual debug panels, tabs and remembering your layout, built on a foundation you have now used.",
-      "state": "open",
+      "state": "doing",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI"
@@ -94,5 +99,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-03T04:11:09Z"
+  "updatedAt": "2026-09-03T04:27:09Z"
 }
