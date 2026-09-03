@@ -1,12 +1,12 @@
 {
-  "focus": "The register panel on your window now matches the tools; memory and objects are next.",
+  "focus": "Memory panel is in - five spaces, editable, by symbol name. Objects panel is the last of the three.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "Now - parcel 2a is merged, verified and pushed, nothing running.",
+  "nextBoundary": "Now - the memory panel is merged, verified and pushed, nothing running.",
   "queue": [
     {
       "id": "DEBUG-PANELS",
-      "title": "First panel done and on the window - registers, matching what the tools report. Next is the memory panel (needs the symbol table ported so you can type a name instead of an address), then objects.",
+      "title": "Registers and memory are done and on the window. Objects is the last of the three, and the symbol list it needs is already in.",
       "state": "next",
       "size": "L",
       "blockedBy": null,
@@ -69,9 +69,17 @@
       "state": "blocked",
       "size": "M",
       "blockedBy": "a live player window on your screen; runs only when none is open"
+    },
+    {
+      "id": "VRAM-WRITE-RULE-CR",
+      "title": "Video memory can be written while the game runs and the other three memory spaces cannot. Our emulator is following the written rules exactly; the rules are what look wrong. We thought this was already raised with the contract team - it is only deferred, so it needs raising properly.",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT"
     }
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-03T06:23:54Z"
+  "updatedAt": "2026-09-03T07:40:37Z"
 }
