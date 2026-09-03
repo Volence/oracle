@@ -1,5 +1,5 @@
 {
-  "focus": "Four parcels landed today; the debug window stops the emulator, obeys tools, is reachable, and no longer goes silent on a reset.",
+  "focus": "Five parcels landed today. The debug window stops the emulator, obeys tools, is reachable, keeps its sound through a reset and its names through a reload.",
   "inFlight": [],
   "blockedOnOwner": [],
   "nextBoundary": "Here. Everything merged, pushed and written down.",
@@ -95,15 +95,15 @@
       "title": "A tool can now ask the window what text is on screen, and the window never answers, because that one wire was never connected in this player. Nobody could ask before, so nobody noticed."
     },
     {
-      "id": "PLAYER-SYMBOLS-STALE",
+      "id": "FRONTEND-LOOP-UNTESTED",
       "state": "open",
-      "size": "S",
+      "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "A tool can swap the emulator's symbol listing and nothing tells the window, so the panels go on naming addresses from the old one. Found while fixing the same class for ROM reloads; this one has no signal to listen to yet."
+      "title": "The older window's entire reaction to a tool changing the machine sits inside its drawing loop, where no test can reach it - four separate behaviours now, none witnessed. Predates today's work; found because we kept adding to it."
     }
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-03T22:09:06Z"
+  "updatedAt": "2026-09-03T23:21:45Z"
 }
