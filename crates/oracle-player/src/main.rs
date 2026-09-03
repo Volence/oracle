@@ -49,6 +49,7 @@ mod audio;
 mod bus;
 mod device;
 mod input;
+mod layout;
 mod machine;
 mod memory;
 mod objects;
@@ -576,9 +577,27 @@ struct App {
     screen_seen: Option<(f32, f32)>,
     reported: bool,
     wanted_audio: bool,
+    /// **Whether this run may read or write persisted state at all.** True in window mode, false in
+    /// `bench-window` — see [`run_window`] for why a measured mode is kept hermetic.
+    persist: bool,
 }
 
 impl eframe::App for App {
+    /// Called by eframe on shutdown and on its own auto-save interval, and only because
+    /// `eframe/persistence` is on. Everything about the format lives in [`crate::layout`].
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.persist {
+            layout::save(storage, &self.lp.dock);
+        }
+    }
+
+    /// egui's own memory (window positions, collapsing headers, scroll offsets) rides the same switch as
+    /// the dock: a `bench-window` run must not inherit the operator's UI state, or its `ui` bucket is
+    /// measuring somebody's saved scroll position.
+    fn persist_egui_memory(&self) -> bool {
+        self.persist
+    }
+
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
 
@@ -657,7 +676,16 @@ impl eframe::App for App {
 
 fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let start = Instant::now();
-    let app = App {
+    // **Only the player persists.** `bench-window` is a measurement, and eframe's restore path is not
+    // symmetric with its save path: `persist_window` gates *writing* the window geometry
+    // (`eframe-0.36.1/src/native/epi_integration.rs:412`) but `load_window_settings` on the way in is not
+    // gated by it at all (`wgpu_integration.rs:1105`). So a bench run sharing the player's storage file
+    // would silently inherit whatever size the operator last dragged the window to and quietly ignore
+    // `--size`, which the `--expect-screen` guard cannot catch — it checks the *monitor*, not the window.
+    // Pointing the bench at a per-process scratch file makes the measured modes read nothing and write
+    // nothing that outlives them.
+    let persist = args.mode == Mode::Window;
+    let mut app = App {
         lp: Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded),
         start,
         deadline: if args.mode == Mode::BenchWindow {
@@ -670,18 +698,50 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         screen_seen: None,
         reported: false,
         wanted_audio: args.audio,
+        persist,
     };
+    let scratch = (!persist).then(|| {
+        std::env::temp_dir().join(format!("oracle-player-bench-{}.ron", std::process::id()))
+    });
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([args.size.0, args.size.1])
             .with_title("oracle-player"),
+        persist_window: persist,
+        persistence_path: scratch.clone(),
         ..Default::default()
     };
-    if let Err(e) = eframe::run_native(
+    let outcome = eframe::run_native(
         "oracle-player",
         opts,
-        Box::new(|_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
-    ) {
+        Box::new(move |cc| {
+            if persist {
+                // A public *field* on `CreationContext` (`epi.rs:64`), not the `storage()` accessor
+                // `Frame` carries — and `None` here whenever eframe could not open a storage file.
+                let (dock, outcome) = layout::load(cc.storage);
+                app.lp.dock = dock;
+                match outcome {
+                    layout::Outcome::Restored => loud("layout: restored from the last session"),
+                    layout::Outcome::Absent => {
+                        loud("layout: none stored yet — the default arrangement")
+                    }
+                    // Reported, never raised. A layout that will not load is not a question the user has
+                    // to answer; they get the default back and the reason goes to stderr with everything
+                    // else this process says.
+                    layout::Outcome::Discarded(why) => loud(&format!(
+                        "layout: stored layout DISCARDED ({why:?}), falling back to the default \
+                         arrangement. Nothing is wrong; the format this build reads is v{}.",
+                        layout::LAYOUT_VERSION
+                    )),
+                }
+            }
+            Ok(Box::new(app) as Box<dyn eframe::App>)
+        }),
+    );
+    if let Some(path) = scratch {
+        let _ = std::fs::remove_file(path);
+    }
+    if let Err(e) = outcome {
         loud(&format!("eframe failed to start: {e}"));
         std::process::exit(3);
     }

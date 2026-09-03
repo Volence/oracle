@@ -12,10 +12,21 @@ oracle-core = { path = "../oracle-core", features = ["synth"] }
 
 # The toolkit. These must NEVER appear in `oracle-core` or `oracle-frontend`; being a *member* of this
 # workspace does not put them there (a member's dependencies are its own), and `cargo tree -p oracle-core`
-# / `-p oracle-frontend` are gated on that in the design doc's reproduction section.
-eframe = "0.36"
+# / `-p oracle-frontend` are gated on that in the design doc's reproduction section. The two features below
+# are **layout persistence** (`src/layout.rs`, design §6), and the cost is exactly the one §9.2 quotes:
+#
+# * `eframe/persistence` is NOT an eframe default — it is `["egui-winit/serde", "egui/persistence", "ron",
+#   "serde"]`, so it brings `ron` into this crate's graph (and into `Cargo.lock`, which had none). It is
+#   what makes `App::save` get called and `CreationContext::storage` be `Some`, and it is also what gets
+#   the window's own geometry remembered rather than only the dock.
+# * `egui_dock/serde` is `["dep:serde", "egui/serde"]` and is what derives `Serialize`/`Deserialize` on
+#   `DockState<Tab>` (`egui_dock-0.21.1/src/dock_state/mod.rs:44`, with `translations` skipped).
+#
+# Neither touches `oracle-core`/`oracle-frontend`: `cargo tree -p oracle-core | grep -icE
+# 'egui|eframe|wgpu|winit'` is still 0, and so is `-p oracle-frontend`.
+eframe = { version = "0.36", features = ["persistence"] }
 egui = "0.36"
-egui_dock = "0.21"
+egui_dock = { version = "0.21", features = ["serde"] }
 
 # The SAME audio substrate `oracle-frontend` uses. `src/audio.rs` here is `#[path]`-included from
 # `crates/oracle-frontend/src/audio.rs`, byte for byte, so this crate needs exactly its two dependencies at
@@ -44,3 +55,12 @@ oracle-aether = { path = "../oracle-aether" }
 # The wire vocabulary. `Host::call` takes and returns `serde_json::Value`, so every panel that invokes a
 # command speaks it; it was dev-only for parcel 2a for the same reason `oracle-aether` was.
 serde_json = "1"
+
+# **Direct as of the layout-persistence parcel**, for one `#[derive]` on `ui::Tab` — a saved `DockState`
+# stores the tab values themselves, so the enum has to be (de)serializable for `egui_dock/serde` to mean
+# anything. `serde` was already in the graph transitively (via `serde_json`, `egui` and `eframe`); the
+# `derive` feature and the direct edge are what is new. The saved layout is **RON, not JSON**: a node that
+# has not been laid out yet holds `Rect::NOTHING`, i.e. `±f32::INFINITY`, which `serde_json` writes as
+# `null` and then refuses to read back as an `f32`. See `src/layout.rs`'s header and its
+# `the_default_layout_holds_non_finite_rects_which_is_why_this_is_ron` test.
+serde = { version = "1", features = ["derive"] }
