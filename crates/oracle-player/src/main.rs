@@ -56,6 +56,7 @@ mod objects;
 mod pacing;
 mod report;
 mod stats;
+mod stopping;
 mod symbols;
 mod ui;
 
@@ -95,13 +96,19 @@ struct Args {
     /// arrangement so the bench can measure the design against its own absence
     /// ([`pacing::Governor::unpaced`]).
     target_fps: Option<f64>,
+    /// `--dock every-tab`. **A measurement arrangement, not a layout.** See [`ui::every_tab_dock`]:
+    /// `egui_dock` draws only a leaf's *active* tab, so measuring the cost of three panels that share a
+    /// pane measures one of them. In window mode it also **suppresses the restore and the save**, because
+    /// a bench arrangement written back over the operator's own layout would be this flag doing something
+    /// nobody asked it to.
+    dock_every_tab: bool,
 }
 
 fn usage() -> ! {
     loud(
         "usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]\n\
          \x20              [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]\n\
-         \x20              [--target-fps N]\n\
+         \x20              [--target-fps N] [--dock default|every-tab]\n\
          \n\
          --symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,\n\
          which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;\n\
@@ -109,7 +116,12 @@ fn usage() -> ! {
          \n\
          Both bench modes REQUIRE --expect-screen and force audio gain 0.0.\n\
          --target-fps 0 switches the GOVERNOR OFF. That is the control for the pacing design, not a\n\
-         playable mode; the report labels any run made with it.",
+         playable mode; the report labels any run made with it.\n\
+         \n\
+         --dock every-tab puts every tab in a leaf of its own, so every panel body runs on every\n\
+         frame. It is the arrangement the PANEL-COST measurement needs (egui_dock draws only a\n\
+         leaf's active tab, so tabs sharing a pane cost one body, not three) and it neither reads\n\
+         nor writes a stored layout.",
     );
     std::process::exit(64);
 }
@@ -124,6 +136,7 @@ fn parse_args() -> Args {
         expect_screen: None,
         size: (1280.0, 800.0),
         target_fps: None,
+        dock_every_tab: false,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -186,6 +199,17 @@ fn parse_args() -> Args {
             }
             "--target-fps" => {
                 a.target_fps = Some(next(i, &argv).parse().unwrap_or_else(|_| usage()));
+                i += 2;
+            }
+            "--dock" => {
+                a.dock_every_tab = match next(i, &argv).as_str() {
+                    "default" => false,
+                    "every-tab" => true,
+                    other => {
+                        loud(&format!("unknown --dock {other} (default|every-tab)"));
+                        usage()
+                    }
+                };
                 i += 2;
             }
             "-h" | "--help" => usage(),
@@ -293,6 +317,9 @@ struct Loop {
     paused: bool,
     /// The transport bar's echo of the last answer the bus gave it. Rendered verbatim; never composed.
     transport: ui::Transport,
+    /// The three stopping tabs' boxes and their last answers. **What is armed is not here** — it is the
+    /// `Host`'s, read every repaint (R2).
+    stopping: stopping::Panel,
 }
 
 impl Loop {
@@ -359,6 +386,7 @@ impl Loop {
             latch: false,
             status: String::from("starting"),
             dock: ui::initial_dock(),
+            stopping: stopping::Panel::default(),
             tex: None,
         }
     }
@@ -524,6 +552,7 @@ impl Loop {
             symbols,
             mem,
             objects,
+            stopping,
             transport,
             ..
         } = self;
@@ -548,6 +577,7 @@ impl Loop {
                     bus,
                     mem,
                     objects,
+                    stopping,
                     governor,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),
@@ -575,6 +605,12 @@ impl Loop {
 fn run_bench_cpu(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let start = Instant::now();
     let mut lp = Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded);
+    if args.dock_every_tab {
+        // The measurement arrangement. Announced, because a run whose layout differs from the default
+        // must say so in its own output or its numbers get compared against ones taken under the other.
+        loud("dock: EVERY TAB IN ITS OWN LEAF — every panel body runs every frame (--dock every-tab)");
+        lp.dock = ui::every_tab_dock();
+    }
     let ctx = egui::Context::default();
     let screen =
         egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(args.size.0, args.size.1));
@@ -764,7 +800,10 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     // `--size`, which the `--expect-screen` guard cannot catch — it checks the *monitor*, not the window.
     // Pointing the bench at a per-process scratch file makes the measured modes read nothing and write
     // nothing that outlives them.
-    let persist = args.mode == Mode::Window;
+    // **`--dock every-tab` suppresses persistence in either direction**, and that is the flag being
+    // honest rather than a special case: it is a measurement arrangement, so restoring over it would
+    // defeat it and saving it would overwrite the operator's own layout with a bench rig.
+    let persist = args.mode == Mode::Window && !args.dock_every_tab;
     let mut app = App {
         lp: Loop::new(machine, start, args.target_fps, args.rom.clone(), loaded),
         start,
@@ -780,6 +819,10 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         wanted_audio: args.audio,
         persist,
     };
+    if args.dock_every_tab {
+        loud("dock: EVERY TAB IN ITS OWN LEAF — layout persistence is OFF for this run (--dock every-tab)");
+        app.lp.dock = ui::every_tab_dock();
+    }
     let scratch = (!persist).then(|| {
         std::env::temp_dir().join(format!("oracle-player-bench-{}.ron", std::process::id()))
     });

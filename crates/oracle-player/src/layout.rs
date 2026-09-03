@@ -1,7 +1,8 @@
 //! **Layout persistence** — the third clause of the toolkit player's own goal: *debug views live in panels
 //! that tab together, drag anywhere, and keep their layout between runs.* Tabs and drag shipped with parcel
 //! 1; this module is the "between runs" half, and it was deliberately held back until the [`Tab`] enum
-//! stopped moving (design §6). It has: `Screen | Pacing | Registers | Memory | Objects`, all five real.
+//! stopped moving (design §6). It has `Screen | Pacing | Registers | Memory | Objects` and, since the
+//! stopping parcel, `Breakpoints | Watchpoints | Profiler` — all eight real.
 //!
 //! # The shape, and why it is this shape
 //!
@@ -46,7 +47,41 @@ use egui_dock::DockState;
 /// The layout format's version. **Bump on any change to [`Tab`]** — see this module's header.
 ///
 /// 1: `Screen | Pacing | Registers | Memory | Objects`, the five-panel set parcel 2c finished.
-pub const LAYOUT_VERSION: u32 = 1;
+/// 2: the same five plus `Breakpoints | Watchpoints | Profiler`, the three stopping tabs.
+///
+/// **This is not a number anybody bumps.** It is [`VOCABULARIES`]' length: the version *is* the answer to
+/// "which tab vocabulary is this", so appending a row is the bump, and there is no second place to forget.
+/// What is left to get wrong — changing [`Tab`] and appending no row — is what
+/// `layout_version_is_the_last_row_of_the_tab_vocabulary` is red for.
+pub const LAYOUT_VERSION: u32 = VOCABULARIES.len() as u32;
+
+/// **Every [`Tab`] vocabulary this player has shipped, oldest first — append only.**
+///
+/// The entry at index `n` is version `n + 1`. The names are serde's, which is what a `DockState<Tab>`
+/// actually writes into the layout file (external tagging of unit variants — the literal text `Objects`
+/// sits in the RON), so this table is in the same alphabet as the thing it is versioning.
+///
+/// **Why a table rather than an `assert_eq!(LAYOUT_VERSION, 2)`.** A test that pins an integer against a
+/// second copy of the integer goes green the moment somebody edits both — which is one edit. Here
+/// [`LAYOUT_VERSION`] is this table's *length*, so appending a row **is** the bump; the only remaining
+/// slip is changing [`Tab`] and appending nothing, and that is what the test is red for. The one hole left
+/// is editing an existing row in place, which is not a slip — it is rewriting history on purpose, and the
+/// row's own `// version N` comment is aimed at whoever tries.
+pub const VOCABULARIES: &[&[&str]] = &[
+    // version 1 — parcel 2c's five. **Historical: never edit this row.**
+    &["Screen", "Pacing", "Registers", "Memory", "Objects"],
+    // version 2 — parcel 3's three stopping tabs added.
+    &[
+        "Screen",
+        "Pacing",
+        "Registers",
+        "Memory",
+        "Objects",
+        "Breakpoints",
+        "Watchpoints",
+        "Profiler",
+    ],
+];
 
 /// The storage key holding the RON-encoded `DockState<Tab>`.
 pub const LAYOUT_KEY: &str = "oracle_player_dock_layout";
@@ -476,6 +511,165 @@ mod tests {
         assert!(
             serde_json::from_str::<DockState<Tab>>(&json).is_err(),
             "serde_json round-tripped a layout with non-finite rects, which it should not be able to"
+        );
+    }
+
+    /// ★★ **The layout version is derived from the tab vocabulary, not remembered.**
+    ///
+    /// This is the gate for the easiest mistake in this parcel: changing the [`Tab`] enum and leaving
+    /// [`LAYOUT_VERSION`] naming the *old* vocabulary. A stored layout would then pass the version check,
+    /// reach `ron`, and fail on an unknown variant — the survivable-but-unintended [`Discard::Blob`] path
+    /// this module's header says the bump exists to avoid.
+    ///
+    /// Ways to be red, which is what makes it a gate rather than a restatement:
+    ///
+    /// 1. a `Tab` change with nothing appended to [`VOCABULARIES`] — today's names match no shipped row;
+    /// 2. a row appended that is not today's enum — the newest row and the enum disagree;
+    /// 3. a row repeated — two versions cannot stand for two different tab sets.
+    #[test]
+    fn layout_version_is_the_last_row_of_the_tab_vocabulary() {
+        let today: Vec<String> = Tab::ALL
+            .iter()
+            .map(|t| match serde_json::to_value(t).expect("a unit variant serialises") {
+                serde_json::Value::String(s) => s,
+                other => panic!(
+                    "a Tab no longer serialises as a bare name ({other}), so the layout file's alphabet \
+                     has changed and this table is in the wrong one"
+                ),
+            })
+            .collect();
+        let today: Vec<&str> = today.iter().map(String::as_str).collect();
+
+        let idx = VOCABULARIES
+            .iter()
+            .position(|v| *v == today.as_slice())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the `Tab` enum spells a vocabulary no shipped LAYOUT_VERSION stands for. Append it \
+                     to `VOCABULARIES` and set LAYOUT_VERSION to its 1-based index — every layout \
+                     already on disk names the old set and must be discarded, not parsed.\n  today: \
+                     {today:?}"
+                )
+            });
+        assert_eq!(
+            idx + 1,
+            VOCABULARIES.len(),
+            "the `Tab` enum spells vocabulary #{}, which is not the NEWEST row. LAYOUT_VERSION is this \
+             table's length ({LAYOUT_VERSION}), so a layout saved by this build would be stamped \
+             {LAYOUT_VERSION} while naming an older vocabulary — and on the next run it would pass the \
+             version gate and then fail inside `ron`, which is the accidental discard the version exists \
+             to prevent.",
+            idx + 1
+        );
+
+        for (i, v) in VOCABULARIES.iter().enumerate() {
+            assert!(
+                !VOCABULARIES[..i].contains(v),
+                "vocabulary #{} repeats an earlier one, so two LAYOUT_VERSIONs stand for the same tab \
+                 set and the position() above cannot tell them apart",
+                i + 1
+            );
+        }
+        // The anti-vacuity clause: this test would pass on an empty `Tab::ALL` matching an empty row.
+        assert!(
+            today.len() > 1 && !VOCABULARIES.is_empty(),
+            "Tab::ALL has {} entries — a degenerate vocabulary matches trivially",
+            today.len()
+        );
+    }
+
+    /// **What the bump buys, demonstrated on a real blob rather than asserted.**
+    ///
+    /// A layout saved by the previous build — the five-tab vocabulary, stamped with *its* version — is
+    /// refused by the version gate and never reaches `ron`. That is the whole reason
+    /// [`LAYOUT_VERSION`] moved, and it is checked against `VOCABULARIES`' own record of what the
+    /// previous version spelled rather than against a literal.
+    ///
+    /// ⚠ *If this went green for a reason other than the version gate firing, what would it be?* It would
+    /// be the blob failing to parse anyway — plausible here, because the blob genuinely names tabs this
+    /// build still has. That alternative is ruled out inside the test: with the current version stamped on
+    /// the identical bytes, the same blob **restores**.
+    #[test]
+    fn a_layout_from_the_previous_tab_vocabulary_is_discarded_by_the_version_gate() {
+        let previous = LAYOUT_VERSION
+            .checked_sub(1)
+            .filter(|p| *p >= 1)
+            .expect("there is no previous LAYOUT_VERSION for this gate to be tested against");
+        let old_vocab = VOCABULARIES[previous as usize - 1];
+        assert!(
+            !old_vocab.contains(&"Breakpoints"),
+            "the previous vocabulary already had the stopping tabs, so this test is about nothing"
+        );
+
+        // A layout built out of the previous vocabulary's tabs only — which is what a v1 file holds.
+        let mut dock = DockState::new(vec![Tab::Screen]);
+        dock.main_surface_mut().split_right(
+            egui_dock::NodeIndex::root(),
+            0.5,
+            vec![Tab::Registers, Tab::Memory],
+        );
+        let mut store = MemStorage::default();
+        eframe::set_value(&mut store, LAYOUT_KEY, &dock);
+        store.set_string(VERSION_KEY, previous.to_string());
+
+        let (got, outcome) = load(Some(&store));
+        assert_eq!(
+            outcome,
+            Outcome::Discarded(Discard::Version {
+                stored: Some(previous.to_string())
+            }),
+            "a layout stamped with the previous version must be refused BEFORE the deserializer"
+        );
+        assert_eq!(shape(&got), shape(&ui::initial_dock()));
+
+        // The control: those exact bytes are readable. Only the stamp was wrong.
+        store.set_string(VERSION_KEY, LAYOUT_VERSION.to_string());
+        let (got, outcome) = load(Some(&store));
+        assert_eq!(
+            outcome,
+            Outcome::Restored,
+            "the blob is unusable for some reason OTHER than its version stamp, so the assertion above \
+             proved nothing about the gate"
+        );
+        assert_eq!(shape(&got), shape(&dock));
+    }
+
+    /// The default layout carries every tab the enum has, and the measurement layout gives each one a leaf
+    /// of its own.
+    ///
+    /// The first half is why a new `Tab` is reachable at all: a variant nothing docks is a panel body no
+    /// human can open. The second is what makes the panel-cost measurement honest — `egui_dock` draws only
+    /// a leaf's *active* tab, so three tabs sharing a pane execute one body per frame.
+    #[test]
+    fn both_layouts_carry_every_tab_and_the_bench_layout_gives_each_its_own_leaf() {
+        for t in Tab::ALL {
+            assert!(
+                ui::initial_dock().main_surface().find_tab(&t).is_some(),
+                "{t:?} is in the Tab enum and in no default pane, so nothing can open it"
+            );
+        }
+
+        let bench = ui::every_tab_dock();
+        let surface = bench.main_surface();
+        let mut leaves: Vec<usize> = Vec::new();
+        for t in Tab::ALL {
+            let (node, _) = surface
+                .find_tab(&t)
+                .unwrap_or_else(|| panic!("{t:?} is missing from every_tab_dock()"));
+            assert!(
+                !leaves.contains(&node.0),
+                "{t:?} shares a leaf with another tab in every_tab_dock(); egui_dock draws only a leaf's \
+                 ACTIVE tab, so a bench run would execute one of the two bodies and report it as both"
+            );
+            leaves.push(node.0);
+        }
+        assert_eq!(leaves.len(), Tab::ALL.len());
+        // …and the arrangement is genuinely different from the default, or the flag does nothing.
+        assert_ne!(
+            shape(&bench),
+            shape(&ui::initial_dock()),
+            "every_tab_dock() produced the default layout, so `--dock every-tab` changes nothing and the \
+             AFTER measurement would be taken under the arrangement it was meant to replace"
         );
     }
 

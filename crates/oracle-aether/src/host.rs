@@ -450,6 +450,20 @@ impl Host {
         self.engine.read_instruments()
     }
 
+    /// **The breakpoint set**, forwarded — what is armed to stop this machine, for a host that shows it.
+    ///
+    /// Separate from [`read_instruments`](Host::read_instruments) rather than a fourth element of it, for
+    /// the reason [`Engine::read_breakpoints`](crate::engine::Engine::read_breakpoints) gives: a
+    /// breakpoint halts where an instrument records, and both are `&self` borrows, so a caller wanting
+    /// all four live at once calls both.
+    ///
+    /// The same set `emulator/breakpoint_list` pages and `emulator/breakpoint_add` grows. A host's panel
+    /// and a client's reply therefore cannot disagree about what is armed, and the shared borrow says in
+    /// the type that the panel cannot arm anything through it.
+    pub fn read_breakpoints(&self) -> &crate::breakpoints::Breakpoints {
+        self.engine.read_breakpoints()
+    }
+
     // ---------------------------------------------------------------- the picture (conflict 3)
 
     /// Hand the bus the frame the host's own run loop just drew, so `emulator/screenshot` and

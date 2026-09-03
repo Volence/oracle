@@ -42,8 +42,9 @@ use crate::machine::Machine;
 use crate::memory::{self, MemoryPanel};
 use crate::objects::{self, Objects, ObjectsPanel};
 use crate::pacing::Governor;
+use crate::stopping::{self, Live};
 use oracle_core::symbols::SymbolTable;
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// A docked tab.
 ///
@@ -69,6 +70,33 @@ pub enum Tab {
     /// The live object pool, the player slots as a section, and one addressed slot as a row expansion.
     /// Three served rows, one tab, for the same reason Memory is one tab.
     Objects,
+    /// The armed breakpoint set with hit counts, an add box and a per-row toggle. **Reads
+    /// [`Bus::read_breakpoints`], not `read_instruments`** — see that method for why breakpoints are not
+    /// one of the two instruments.
+    Breakpoints,
+    /// The armed watches, the retained hit log, and the three counters that make a negative finding
+    /// readable (`seen` / `matched` / `dropped`).
+    Watchpoints,
+    /// The cycle accountant: armed state, the sample's divisor, and the hottest routines.
+    Profiler,
+}
+
+impl Tab {
+    /// **Every variant, in the order the docs and the layout vocabulary list them.**
+    ///
+    /// Its completeness is guarded by `layout_version_is_the_index_of_todays_tab_vocabulary` in
+    /// [`crate::layout`], which is also what refuses a `Tab` change that forgets
+    /// [`crate::layout::LAYOUT_VERSION`].
+    pub const ALL: [Tab; 8] = [
+        Tab::Screen,
+        Tab::Pacing,
+        Tab::Registers,
+        Tab::Memory,
+        Tab::Objects,
+        Tab::Breakpoints,
+        Tab::Watchpoints,
+        Tab::Profiler,
+    ];
 }
 
 /// Everything the tab bodies touch. Held apart from the `DockState` so both can be borrowed at once.
@@ -86,6 +114,10 @@ pub struct Panels<'a> {
     /// and never cached — `emulator/load_symbols` can move the layout mid-session, so a cached one is
     /// stale by construction.
     pub objects: &'a mut ObjectsPanel,
+    /// The three stopping tabs' own state: what is typed into their add boxes and the last answer each
+    /// got. **Nothing about what is armed lives here** — that is the `Host`'s, read afresh every repaint
+    /// through [`Bus::read_breakpoints`] and [`Bus::read_instruments`] (R2).
+    pub stopping: &'a mut stopping::Panel,
     pub governor: &'a Governor,
     pub status: &'a str,
     /// The `--rom` argument as the human typed it. The strip absolutises it through the bus's own
@@ -106,6 +138,9 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Registers => "registers",
             Tab::Memory => "memory",
             Tab::Objects => "objects",
+            Tab::Breakpoints => "breakpoints",
+            Tab::Watchpoints => "watchpoints",
+            Tab::Profiler => "profiler",
         })
     }
 
@@ -116,6 +151,9 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Registers => "Registers",
             Tab::Memory => "Memory",
             Tab::Objects => "Objects",
+            Tab::Breakpoints => "Breakpoints",
+            Tab::Watchpoints => "Watchpoints",
+            Tab::Profiler => "Profiler",
         }
         .into()
     }
@@ -127,6 +165,9 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Registers => self.registers(ui),
             Tab::Memory => self.memory(ui),
             Tab::Objects => self.objects(ui),
+            Tab::Breakpoints => self.breakpoints(ui),
+            Tab::Watchpoints => self.watchpoints(ui),
+            Tab::Profiler => self.profiler(ui),
         }
     }
 }
@@ -608,6 +649,524 @@ impl Panels<'_> {
             }
         }
     }
+
+    // -----------------------------------------------------------------------------------------------
+    // ⚑ The three stopping tabs
+    //
+    // Every body below obeys design §4.4 in the same two moves: the TABLE is a direct read of the
+    // instrument the loop itself feeds, and every GESTURE is a `Host::call` whose answer is rendered by
+    // `memory::answer_line` and coloured by `Line::refused`. No panel here composes a refusal, branches on
+    // message prose, or keeps a second copy of what is armed.
+    // -----------------------------------------------------------------------------------------------
+
+    /// Make one gesture and keep the server's answer. **The whole of a panel's write path.**
+    ///
+    /// The `Answer` goes straight to [`memory::answer_line`], which is the sentence the tool would have
+    /// given a socket client, with `refused` carried beside it as the flag the colour is chosen from.
+    fn issue(&mut self, method: &str, params: &Value) -> memory::Line {
+        let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
+        memory::answer_line(&bus.call(sys, method, params))
+    }
+
+    /// The headline every stopping tab opens with: **is what follows live, or left over?**
+    ///
+    /// Drawn before any table, in the tab's own colour language: a retained view is not an error, so it is
+    /// not coloured like one, but it is emphasised, because a reader who misses it is reading a frozen
+    /// table as a moving one.
+    fn live_head(ui: &mut egui::Ui, live: Live, armed: &str, retained: &str) {
+        let text = live.sentence(armed, retained);
+        match live {
+            Live::Yes => ui.strong(text),
+            Live::Retained => ui.colored_label(ui.visuals().warn_fg_color, text),
+            Live::Never => ui.colored_label(ui.visuals().weak_text_color(), text),
+        };
+        ui.separator();
+    }
+
+    /// **The Breakpoints tab.** The armed set, an add box, a per-row toggle, a per-row ✕ and a clear-all.
+    ///
+    /// The table is [`Bus::read_breakpoints`] — the `Host`'s own list, the one
+    /// `emulator/breakpoint_list` pages — read fresh every repaint. The four gestures are
+    /// `breakpoint_add`, `breakpoint_set_enabled` and `breakpoint_clear` (twice), each through
+    /// `Host::call`, so the cap refusal, the unknown-handle refusal and the `all`-plus-handle refusal all
+    /// arrive in the handler's own words.
+    fn breakpoints(&mut self, ui: &mut egui::Ui) {
+        let view = stopping::breakpoints(self.bus.read_breakpoints(), self.symbols);
+
+        Self::live_head(
+            ui,
+            view.live,
+            &format!(
+                "{} of {} breakpoint{} armed — the machine will halt at {}",
+                view.armed,
+                view.rows.len(),
+                if view.rows.len() == 1 { "" } else { "s" },
+                if view.armed == 1 { "it" } else { "them" }
+            ),
+            &if view.rows.is_empty() {
+                "No breakpoint has been armed, so nothing here will stop the machine.".to_owned()
+            } else {
+                format!(
+                    "{} breakpoint{} held and every one of them disabled, carrying {} hit{} between them \
+                     from when they were armed.",
+                    view.rows.len(),
+                    if view.rows.len() == 1 { "" } else { "s" },
+                    view.retained_hits,
+                    if view.retained_hits == 1 { "" } else { "s" },
+                )
+            },
+        );
+
+        // --- add ---
+        let mut gesture: Option<(&'static str, Value)> = None;
+        ui.horizontal(|ui| {
+            ui.label("at");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stopping.bp_target)
+                    .desired_width(120.0)
+                    .hint_text("0x400 or a symbol"),
+            );
+            ui.label("label");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stopping.bp_label).desired_width(90.0),
+            );
+            if ui
+                .button("arm")
+                .on_hover_text(
+                    "emulator/breakpoint_add. A name goes to the server as `symbol` and the server \
+                     resolves it — the reply carries the address it landed on. A second add at an \
+                     occupied address is a SECOND breakpoint, never a duplicate error.",
+                )
+                .clicked()
+            {
+                match stopping::breakpoint_add_params(
+                    &self.stopping.bp_target,
+                    &self.stopping.bp_label,
+                ) {
+                    Ok(p) => gesture = Some((stopping::BREAKPOINT_ADD, p)),
+                    Err(why) => self.stopping.bp_note = Some(memory::Line::from_panel(why)),
+                }
+            }
+            if !view.rows.is_empty() {
+                ui.separator();
+                if ui
+                    .button("clear all")
+                    .on_hover_text(
+                        "emulator/breakpoint_clear {all:true} — EVERY breakpoint on this server, \
+                         including ones another client armed. It is a separate spelling from a handle \
+                         precisely because it is not the same gesture.",
+                    )
+                    .clicked()
+                {
+                    gesture =
+                        Some((stopping::BREAKPOINT_CLEAR, stopping::breakpoint_clear_all_params()));
+                }
+            }
+        });
+
+        // --- the table ---
+        if view.live.has_rows() {
+            ui.separator();
+            ui.monospace(format!(
+                "{:<5} {:<10} {:<8} {:>9}",
+                "id", "addr", "state", "hits"
+            ));
+            egui::ScrollArea::vertical()
+                .id_salt("breakpoint-rows")
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for r in &view.rows {
+                        ui.horizontal(|ui| {
+                            // The checkbox is `breakpoint_set_enabled`, the ONE writer of this field on
+                            // this bus. Its value is read from the row, never from a local mirror, so a
+                            // refused toggle simply leaves the box where the server left it.
+                            let mut on = r.enabled;
+                            if ui
+                                .checkbox(&mut on, "")
+                                .on_hover_text(
+                                    "emulator/breakpoint_set_enabled. `hits` is carried ACROSS the \
+                                     toggle — this surface never resets a count; a fresh one means \
+                                     clear and re-add.",
+                                )
+                                .changed()
+                            {
+                                gesture = Some((
+                                    stopping::BREAKPOINT_SET_ENABLED,
+                                    stopping::breakpoint_enable_params(&r.handle, on),
+                                ));
+                            }
+                            if ui.small_button("✕").clicked() {
+                                gesture = Some((
+                                    stopping::BREAKPOINT_CLEAR,
+                                    stopping::breakpoint_clear_params(&r.handle),
+                                ));
+                            }
+                            let text = egui::RichText::new(r.summary()).monospace();
+                            // A disabled row is dimmed, from `enabled` — the same field the word in the
+                            // row says. Two encodings of one fact, but the fact is the one a reader is
+                            // most likely to skim past, and neither is derived from the other's string.
+                            if r.enabled {
+                                ui.label(text);
+                            } else {
+                                ui.label(text.weak());
+                            }
+                        });
+                    }
+                });
+        }
+
+        if let Some((method, params)) = gesture {
+            self.stopping.bp_note = Some(self.issue(method, &params));
+        }
+        if let Some(note) = &self.stopping.bp_note {
+            ui.separator();
+            note_label(ui, note);
+        }
+    }
+
+    /// **The Watchpoints tab.** The armed watches, the retained hit log, and the aggregates.
+    ///
+    /// ⚑ **The hit log outliving its watch is the ordinary state here, not a corner.**
+    /// `emulator/watchpoint_clear` keeps a watch's hits deliberately, so one click turns a live trace into
+    /// a historical one with the rows unchanged. [`Live`] is the only thing on screen that can say which
+    /// it is.
+    ///
+    /// `seen` and `matched` are shown together and always: **`seen > 0, matched == 0` is a genuine
+    /// negative finding** and is indistinguishable from a silently-dropped watch unless both numbers are
+    /// in front of the reader. That is the instrument's own stated hazard, not a rule invented here.
+    fn watchpoints(&mut self, ui: &mut egui::Ui) {
+        let view = {
+            let (w, _, _) = self.bus.read_instruments();
+            stopping::watches(w)
+        };
+
+        Self::live_head(
+            ui,
+            view.live,
+            &format!(
+                "{} watch{} armed",
+                view.watches.len(),
+                if view.watches.len() == 1 { "" } else { "es" }
+            ),
+            &if view.hits.is_empty() && view.seen == 0 {
+                "No watch has been armed, so nothing has been recorded.".to_owned()
+            } else {
+                format!(
+                    "No watch is armed; {} recorded hit{} remain, kept on purpose when the watch was \
+                     cleared so one client cannot erase another's evidence.",
+                    view.hits.len(),
+                    if view.hits.len() == 1 { "" } else { "s" },
+                )
+            },
+        );
+
+        // --- add ---
+        let mut gesture: Option<(&'static str, Value)> = None;
+        let st = &mut *self.stopping;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("at");
+            ui.add(
+                egui::TextEdit::singleline(&mut st.w_target)
+                    .desired_width(110.0)
+                    .hint_text("0xFF0000 / symbol"),
+            );
+            ui.label("len");
+            ui.add(
+                egui::TextEdit::singleline(&mut st.w_len)
+                    .desired_width(60.0)
+                    .hint_text("bytes"),
+            )
+            .on_hover_text(
+                "A DECIMAL byte count. It goes on the wire as a JSON number: the handler reads it with \
+                 as_u64() and refuses a string outright, so \"0x10\" here is this panel's own refusal \
+                 rather than a -32602 for a shape the panel chose.",
+            );
+            egui::ComboBox::from_id_salt("watch-space")
+                .selected_text(stopping::WATCH_SPACES[st.w_space])
+                .show_ui(ui, |ui| {
+                    for (i, s) in stopping::WATCH_SPACES.iter().enumerate() {
+                        ui.selectable_value(&mut st.w_space, i, *s);
+                    }
+                });
+            ui.checkbox(&mut st.w_read, "read");
+            ui.checkbox(&mut st.w_write, "write")
+                .on_hover_text(
+                    "The op is these two BOOLEANS; `emulator/watchpoint_add` has no `op` param at all \
+                     (`op` is a key of its reply, saying what the pair became). Both unticked is refused \
+                     by the handler — a watch that can never match — and this panel lets it say so.",
+                );
+            ui.label("stopAfter");
+            ui.add(
+                egui::TextEdit::singleline(&mut st.w_stop_after)
+                    .desired_width(55.0)
+                    .hint_text("∞"),
+            )
+            .on_hover_text("Halt the run after this many matches. Empty means never halt.");
+            ui.label("label");
+            ui.add(egui::TextEdit::singleline(&mut st.w_label).desired_width(80.0));
+            if ui.button("arm").clicked() {
+                match stopping::watch_add_params(
+                    &st.w_target,
+                    &st.w_len,
+                    stopping::WATCH_SPACES[st.w_space],
+                    st.w_read,
+                    st.w_write,
+                    &st.w_stop_after,
+                    &st.w_label,
+                ) {
+                    Ok(p) => gesture = Some((stopping::WATCHPOINT_ADD, p)),
+                    Err(why) => st.w_note = Some(memory::Line::from_panel(why)),
+                }
+            }
+            if !view.watches.is_empty() && ui.button("clear all").clicked() {
+                gesture = Some((stopping::WATCHPOINT_CLEAR, stopping::watch_clear_all_params()));
+            }
+        });
+
+        ui.separator();
+        ui.monospace(format!(
+            "seen {}   matched {}   dropped {}",
+            view.seen, view.matched, view.dropped
+        ));
+        ui.small(
+            "`seen` counts every access the instrument looked at. seen > 0 with matched == 0 is a real \
+             negative finding — the range was watched and nothing touched it — and it is only \
+             distinguishable from a watch that never armed because both numbers are here.",
+        );
+        for c in &view.caveats {
+            ui.colored_label(ui.visuals().warn_fg_color, c);
+        }
+
+        // --- the armed watches ---
+        if !view.watches.is_empty() {
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .id_salt("watch-rows")
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    for row in &view.watches {
+                        let w = &row.report;
+                        ui.horizontal(|ui| {
+                            if ui
+                                .small_button("✕")
+                                .on_hover_text(
+                                    "emulator/watchpoint_clear. The watch goes; its recorded HITS stay, \
+                                     deliberately — a destructive clear would let one client erase \
+                                     another's evidence. The headline above changes to STOPPED.",
+                                )
+                                .clicked()
+                            {
+                                gesture = Some((
+                                    stopping::WATCHPOINT_CLEAR,
+                                    stopping::watch_clear_params(&row.handle),
+                                ));
+                            }
+                            ui.monospace(format!(
+                                "{:<4} {:?} {}..={}  {:?}  matched {}{}{}",
+                                row.handle,
+                                w.space,
+                                oracle_aether::hex::addr(*w.range.start()),
+                                oracle_aether::hex::addr(*w.range.end()),
+                                w.op,
+                                w.matched,
+                                match w.stop_after {
+                                    Some(n) => format!("  stopAfter {n}"),
+                                    None => String::new(),
+                                },
+                                if w.label.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("  ({})", w.label)
+                                }
+                            ));
+                        });
+                    }
+                });
+        }
+
+        // --- the hit log ---
+        if !view.hits.is_empty() {
+            ui.separator();
+            ui.strong(format!(
+                "hit log — {} retained{}",
+                view.hits.len(),
+                if view.dropped > 0 {
+                    format!(", {} dropped (a gap in `seq` marks them)", view.dropped)
+                } else {
+                    String::new()
+                }
+            ));
+            egui::ScrollArea::vertical()
+                .id_salt("watch-hits")
+                .max_height(220.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for h in &view.hits {
+                        ui.monospace(format!(
+                            "#{:<7} f{:<6} {} {:?} {:?} {:#X} pc {}",
+                            h.seq,
+                            h.frame,
+                            oracle_aether::hex::addr(h.addr),
+                            h.op,
+                            h.size,
+                            h.value,
+                            oracle_aether::hex::addr(h.pc),
+                        ));
+                    }
+                });
+        }
+
+        if let Some((method, params)) = gesture {
+            self.stopping.w_note = Some(self.issue(method, &params));
+        }
+        if let Some(note) = &self.stopping.w_note {
+            ui.separator();
+            note_label(ui, note);
+        }
+    }
+
+    /// **The Profiler tab.** Armed state, the sample's divisor, and the hottest routines.
+    ///
+    /// ⚑ **This is the tab the armed-vs-retained trap was written about.** `emulator/set_profiler
+    /// {enabled:false}` disarms and *keeps* the sample (§11.16), so a grid of hot routines from four
+    /// minutes ago is byte-identical to one from now. [`Live`] is drawn first, in words, and
+    /// [`Live::Never`] refuses to draw the grid at all — the Objects tab's rule: an empty table in place
+    /// of "never measured" asserts that this ROM has no hot code.
+    ///
+    /// **The figures are UNDIVIDED, and the divisor is beside them.** §11.16 puts the division in the
+    /// server, in `emulator/get_profiler_frames`, and a panel that divided here would be a second
+    /// implementation of it — one that would have to reproduce `perFrameExact` and every one of its
+    /// `*Total` partners to mean the same thing. Showing the totals and the frame count is the honest
+    /// read: it is what the server divides, and it is one derivation rather than two.
+    fn profiler(&mut self, ui: &mut egui::Ui) {
+        let view = {
+            let (_, p, armed) = self.bus.read_instruments();
+            stopping::profiler(p, armed, self.symbols)
+        };
+
+        Self::live_head(
+            ui,
+            view.live,
+            &format!(
+                "the accountant is armed. {} frame{} in the sample so far, {} routine{}, {} frame{} open \
+                 on the shadow stack",
+                view.frames,
+                if view.frames == 1 { "" } else { "s" },
+                view.routine_count,
+                if view.routine_count == 1 { "" } else { "s" },
+                view.open_frames,
+                if view.open_frames == 1 { "" } else { "s" },
+            ),
+            &if matches!(view.live, Live::Never) {
+                "The profiler has never been armed in this session, so there is no sample to show. This \
+                 is not `no hot code` — it is `nothing was measured`. Arm it below."
+                    .to_owned()
+            } else {
+                format!(
+                    "The sample of {} frame{} and {} routine{} below was retained when the accountant was \
+                     disarmed (§11.16: arming resets, disarming retains, reading never clears).",
+                    view.frames,
+                    if view.frames == 1 { "" } else { "s" },
+                    view.routine_count,
+                    if view.routine_count == 1 { "" } else { "s" },
+                )
+            },
+        );
+
+        // --- arm / disarm ---
+        let mut gesture: Option<Value> = None;
+        let st = &mut *self.stopping;
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut st.prof_per_frame, "perFrame");
+            ui.checkbox(&mut st.prof_callers, "callers");
+            if ui
+                .button(if view.armed { "disarm" } else { "arm" })
+                .on_hover_text(
+                    "emulator/set_profiler. ⚑ ARMING RESETS THE SAMPLE — every arming flag resets \
+                     together (§11.18), so ticking `callers` on a running measurement and re-arming \
+                     starts a FRESH sample under the lenses this click names, and the one you were \
+                     watching is gone. Disarming keeps it.",
+                )
+                .clicked()
+            {
+                gesture = Some(stopping::set_profiler_params(
+                    !view.armed,
+                    st.prof_per_frame,
+                    st.prof_callers,
+                ));
+            }
+            ui.weak(format!(
+                "lenses on the retained sample: perFrame {}   callers {}",
+                view.per_frame_armed, view.callers_armed
+            ));
+        });
+
+        // --- the rows ---
+        if view.live.has_rows() {
+            ui.separator();
+            ui.monospace(format!(
+                "frames in sample (the divisor `emulator/get_profiler_frames` uses)   {}",
+                view.frames
+            ));
+            ui.small(
+                "Every figure below is the UNDIVIDED sample total. The per-frame view is the server's \
+                 (`emulator/get_profiler_frames`), which divides these by the count above and reports \
+                 `perFrameExact` beside them; this panel shows what it divides rather than dividing a \
+                 second time.",
+            );
+            ui.separator();
+            ui.strong(format!(
+                "hottest routines — top {} of {}",
+                view.top.len(),
+                view.routine_count
+            ));
+            ui.monospace(format!(
+                "{:<10} {:>13} {:>13} {:>11} {:>9}  name",
+                "addr", "cycles", "self", "stall", "calls"
+            ));
+            egui::ScrollArea::vertical()
+                .id_salt("profiler-rows")
+                .max_height(280.0)
+                .show(ui, |ui| {
+                    for r in &view.top {
+                        let name = match &r.symbol {
+                            Some((n, 0)) => format!("  {n}"),
+                            Some((n, d)) => format!("  {n}+0x{d:X}"),
+                            None => String::new(),
+                        };
+                        ui.monospace(format!(
+                            "{:<10} {:>13} {:>13} {:>11} {:>9}{name}",
+                            r.addr_text,
+                            r.counts.cycles,
+                            r.counts.self_cycles,
+                            r.counts.stall_cycles,
+                            r.counts.calls
+                        ));
+                    }
+                });
+            if view.routine_count > view.top.len() {
+                ui.small(format!(
+                    "{} further routine{} in the sample are not drawn. The full list is \
+                     `emulator/get_profiler_frames`, whose `top` refuses a request above its cap rather \
+                     than clamping — so a client can always tell a full list from a clipped one.",
+                    view.routine_count - view.top.len(),
+                    if view.routine_count - view.top.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+            }
+        }
+
+        if let Some(params) = gesture {
+            self.stopping.prof_note = Some(self.issue(stopping::SET_PROFILER, &params));
+        }
+        if let Some(note) = &self.stopping.prof_note {
+            ui.separator();
+            note_label(ui, note);
+        }
+    }
 }
 
 /// A JSON scalar as the panel prints it: a string without its quotes, anything else as itself.
@@ -842,7 +1401,48 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
     let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
     let surface = dock.main_surface_mut();
     let [_, right] = surface.split_right(egui_dock::NodeIndex::root(), 0.68, vec![Tab::Pacing]);
-    surface.split_below(right, 0.45, vec![Tab::Registers, Tab::Memory, Tab::Objects]);
+    let [inspect, _] =
+        surface.split_below(right, 0.45, vec![Tab::Registers, Tab::Memory, Tab::Objects]);
+    // **The three stopping tabs get a pane of their own rather than a sixth, seventh and eighth title in
+    // the pane above.** They are one subject — *what will halt this machine, and what has it seen?* — and
+    // a human arming a breakpoint is usually about to watch the profiler or the hit log react to it. Six
+    // titles in one narrow pane would also make the Registers pane's tab bar the widest thing in the
+    // window, which is the layout answering a question nobody asked.
+    surface.split_below(
+        inspect,
+        0.5,
+        vec![Tab::Breakpoints, Tab::Watchpoints, Tab::Profiler],
+    );
+    dock
+}
+
+/// **Every tab in a leaf of its own** — the arrangement the panel-cost measurement runs under, and not a
+/// layout for a human.
+///
+/// `egui_dock` draws only the *active* tab of a leaf, so a bench run against [`initial_dock`] executes one
+/// panel body out of the three that share a pane and reports it as the cost of adding three. That is a
+/// measurement of the arrangement rather than of the panels. This function puts all eight in their own
+/// leaves, so every body runs on every frame: the worst case a user could arrange, and the only
+/// arrangement in which measuring N panels measures N panels.
+///
+/// Reachable only through `--dock every-tab`, which the window mode also honours — a flag whose effect a
+/// human cannot see for themselves is a flag whose effect is asserted rather than shown.
+pub fn every_tab_dock() -> egui_dock::DockState<Tab> {
+    let mut rest = Tab::ALL.iter().copied();
+    let first = rest.next().expect("Tab::ALL is never empty");
+    let mut dock = egui_dock::DockState::new(vec![first]);
+    let surface = dock.main_surface_mut();
+    let mut at = egui_dock::NodeIndex::root();
+    // Alternating right/below, so eight leaves stay roughly square rather than becoming eight slivers in
+    // one direction — a leaf too thin to lay out is a leaf whose body egui may skip.
+    for (i, tab) in rest.enumerate() {
+        let [_, next] = if i % 2 == 0 {
+            surface.split_right(at, 0.5, vec![tab])
+        } else {
+            surface.split_below(at, 0.5, vec![tab])
+        };
+        at = next;
+    }
     dock
 }
 

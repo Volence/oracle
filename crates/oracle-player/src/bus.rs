@@ -204,6 +204,28 @@ impl Bus {
         self.host.read_instruments()
     }
 
+    /// **What the Breakpoints tab reads** — the armed set, shared, from the one list the `Host` owns.
+    ///
+    /// ⚑ **This is not part of `read_instruments`, and the parcel-3 brief that said it was is the thing
+    /// source corrected.** `read_instruments` is `(&Watchpoints, &Profiler, bool)` and has never carried
+    /// breakpoints: a breakpoint *halts* and is lent to a run bare, where the two instruments *record* and
+    /// are lent wrapped in `Observe`. So the Breakpoints panel draws from here instead — and it is still a
+    /// direct read of a shared derivation (design §4.4), still one list rather than two (R2), and still a
+    /// borrow the panel cannot arm through. Both are `&self`, so a draw pass holds all four at once.
+    ///
+    /// The alternative considered and rejected was calling `emulator/breakpoint_list` every repaint. That
+    /// is route (b) on a 60 Hz path: a `serde_json` page built sixty times a second to render a table that
+    /// is already in memory, when §4.4's whole line is that a gesture pays for the tool's exact answer and
+    /// a repaint does not.
+    ///
+    /// **`hits` outlives `enabled`.** Disabling retains the count (§6 — a fresh count means clear and
+    /// re-add), so a row can read `disabled` beside a five-figure hit count, and that pairing is a fact
+    /// about the past rather than a live one. The panel says which, in words, for
+    /// [`read_instruments`](Bus::read_instruments)'s reason one instrument over.
+    pub fn read_breakpoints(&self) -> &oracle_aether::breakpoints::Breakpoints {
+        self.host.read_breakpoints()
+    }
+
     /// Hand the bus the frame the player's own run just drew, so `emulator/screenshot` and
     /// `emulator/state_hash {includeFramebuffer}` answer with what is on the glass rather than a post-hoc
     /// re-render of the VDP state — which, taken in V-Blank after the game has rewritten CRAM for the next
