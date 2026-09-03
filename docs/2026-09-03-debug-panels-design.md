@@ -1435,6 +1435,29 @@ defect.
 > > gets from `rom_changed` regardless. Those two assertions exist for the other host, and they say so.
 > > Ⓕ Runtime confirmation of the frontend's overlay line is a foreground follow-up.
 > >
+> > ✅ **SUPERSEDED 2026-09-03 by `FRONTEND-LOOP-UNTESTED` (branch `parcel/frontend-loop-testable`).** The
+> > limit above is closed: the harness that "this parcel does not build" now exists. The whole reaction —
+> > `timeline_moved`, `screen_changed`, `rom_changed`, `symbols_changed`, the inbound pause mirror and the
+> > layer-mask read-back — moved out of `fn main` into `crates/oracle-frontend/src/drain.rs`, one
+> > `drain::drain(sys, bus, Reaction { … })` that the run loop and eight tests both call. The tests drive a
+> > **real socket client** through the seam, because `Host::call` cannot stand in for one: `Host::pump`
+> > snapshots its generation counters at its own top and so deliberately does not report in-process changes
+> > (host.rs:640 — the same placement the `set_machine_info` paragraph below relies on). Behaviour is
+> > unchanged; this was a testability parcel.
+> >
+> > Two things the branch above turned out to be right about, now measured rather than argued:
+> > `a_client_reload_that_drops_the_listing_drops_the_windows_clone_too` goes **red** with the
+> > `symbols_changed` arm deleted (the pre-fix window), so the harness would have caught the defect this
+> > paragraph was written next to; and the redundancy this section calls deliberate is what that row
+> > exercises — the drop arrives as `rom_changed` **and** `symbols_changed` together, and the window
+> > follows the narrow one.
+> >
+> > What did **not** get lifted, and is said so in the code: the audio resynchronisation (`AudioState` owns
+> > a live `cpal::Stream`; the seam reports `Drained::resync_audio` and the loop performs it), the
+> > `println!` half of `notify` (the overlay half is asserted), and the present itself. Ⓕ Runtime
+> > confirmation of the overlay line is still a foreground follow-up — the toast *text* is now pinned by
+> > `Overlay::toasts`, but nothing here can prove it reached a human's glass.
+> >
 > > **`Host::set_machine_info` does not surface as a client's doing**, and the placement is what makes
 > > that true: `pump` snapshots the counter at its own top, and that setter runs on the host's thread
 > > *between* drains, so the frontend's F5 cartridge swap — which calls `set_symbols` — is invisible to
