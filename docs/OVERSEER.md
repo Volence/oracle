@@ -161,6 +161,34 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   server DISCONNECTED during this measurement — consistent with the same reap. Foreground runtime
   follow-ups are unavailable this session until a relaunch; a `/clear` does not fix it.
 
+**Registered 2026-09-04, from aeon answering the CR-J §11 flag:**
+
+- **CR-J §11 UNMEASURED FLAG — CLOSED, MEASURED, both halves.** aeon verified their side statically at
+  their `origin/master`: `Obj_Req_X/Y` on spawn go to `Load_Object` as *"integer, engine coords"*; on move
+  through `pixels_to_coord` into 16.16 `Sst.x_pos`; `Warp_Req_X/Y` clamp against `Player_Bound_Right` in the
+  same integer world-pixel space. **Ours measured live on `aeon/s4.debug.bin` at frame 240**, through a
+  channel neither lane authored — the SAT the emulated 68000 wrote: `object_list` slot 0 at world (256,256),
+  `Camera_X` (`0xFFA728`) = 96, `Camera_Y` (`0xFFA72C`) = 144, predicted dot (160,112); **SAT sprite 0 is a
+  2×2-cell sprite at (152,104), centre exactly (160,112)**, and `pixel_attribution(160,112)` names sprite 0
+  the winner. Static half read at `ba909f1`, `engine.rs:4742-4753`: `world = Camera_X + dot.x`, unbiased,
+  symbols resolved per call. **Anti-vacuity clause, and it is why the run counts: the camera was at (96,144),
+  not the origin** — a camera-space error would have shown; at (0,0) the identity is vacuous.
+  ⚠ **One asymmetry told to aeon rather than left implicit:** we read the camera as **unsigned** u16 and add
+  as u32, so we cannot express a negative world coordinate. Since their object path deliberately does NOT
+  clamp, an out-of-act click reaches them as a large positive, never as something obviously wrong.
+  The frontend comment at `bus.rs:405-408` still carries the flag as open and is now stale — fix it in the
+  next parcel that opens that file.
+
+- **▶ F-SPAWN-OUTSIDE-ACT — a real gap in SPAWN-PICKER as shipped, found by the peer we asked, not by us.**
+  aeon: the warp path clamps and **the object path deliberately does not**, because an out-of-act object is
+  culled by `RunObjects`' camera-distance test and does nothing, where an out-of-act *player* would reach
+  `SEC_VOID`. **Consequence for the picker: a click outside the act is acked as placed and the object is
+  silently culled** — no error, no refusal, nothing on screen. That is precisely the failure class the whole
+  refusal design exists against (*a refusal arrives as a sentence*), arriving through the one path that
+  returns success. **The fix is OURS, not a mailbox change**: we hold the click, so we refuse or clamp before
+  sending. Needs the act bounds by symbol to derive the test rather than guess it — **a named ask to aeon,
+  not yet filed**, deliberately (bar 18: file it when it becomes work, not because it is interesting).
+
 **Registered 2026-08-29, from aurora's relay of the owner's R8 question:**
 
 - **F-R8-LATE-REVISION** — a *copy-of-column-0* toggle for the R8 leftmost-partial-column quirk, so a
