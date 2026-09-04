@@ -105,6 +105,45 @@ over-conservative bus-arb clamp, and ours was the tick-accurate side then too. U
 urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 `docs/2026-08-18-tier1-bus-methods.md`.
 
+**Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed:**
+
+- **▶ CLOSED — THE TWO CR-B Z80 RUNTIME FOLLOW-UPS WERE NEVER OUR DEFECTS, AND THE BOOKING IS WHAT WAS
+  WRONG.** The acceptance-contract section booked two runtime demonstrations on 2026-08-22: the tail wrap
+  (`z80_write {addr:"0x3FFC", bytes:<8>}` → *"bytes 5–8 land at `$0000–$0003`"*) and the silent `len` clamp
+  (`z80_read {len:10000}` → `8192`, no error). **Both measured firsthand today against our own shipped
+  binary through the consumer's own spawn path, and both REFUSE LOUDLY:**
+  `-32004 the Z80 window is 0x0000-0x3FFF and this access ends at 0x00004004 — refused whole rather than
+  wrapped, because a wrapped write lands on 0x0000 and reports success`, and
+  `-32602 \`len\` = 10000 is outside 0..=8192`.
+  **The refusal was verified WHOLE, not partial** — `$1FFC-$1FFF` and `$0000-$0007` byte-identical to
+  baseline after the refused write — **and the probe was controlled**: a 4-byte write at `$3FFC` DID land at
+  `$1FFC`, so the unchanged reading is a measurement and not a blind probe (bar 16(d): for an absence the
+  control IS the measurement).
+  ⚑ **WHY THE BOOKING WAS WRONG, and it is this file's OWN bar firing on this file's own register.** The
+  entry never named an implementation. It was a claim about *"the server"* — and CR-B was reading
+  **`oracle-old`**, at `d629771`, as `engine.rs:4630,4643`'s own doc comments say in as many words
+  (*"the legacy server silently clamped 10000 to 8192"*; *"clobbered `$0000`, and replied success"*).
+  **Our server did not serve `emulator/z80_read`/`z80_write` AT ALL until `0f35ae1` (2026-08-29)**, whose
+  subject is literally *"bounded at both ends"* and which shipped a 228-line `tests/z80_window.rs`. So ours
+  was **built to refuse these**, with the legacy behaviour named as the thing being avoided.
+  **The register entry described legacy defects in words that read as ours, and a later session — this one —
+  spent probes on it.** That is exactly the two-implementer conflation this file already books a sweep for
+  (*"every claim about server behaviour either names its implementation or is a latent conflation"*), landing
+  on the register that was written to track the conflation. **The sweep is now owed against this file's own
+  follow-up register, not only against the recon/demand/CR docs it was scoped to.**
+  ⚠ **Do not read this as wasted work.** Nothing before today had confirmed the `0f35ae1` guards hold **in
+  the binary a consumer actually spawns** — the merged-serve bar's exact question, and the probes answer it
+  firsthand. What was wasted was the *reason* for running them.
+
+- **▶ AND THE SHAPE THAT MADE IT SURVIVE: A BOOKED DEFECT CAN BE CLOSED BY UNRELATED WORK, AND NOTHING
+  CLOSES THE BOOKING.** The guards landed 08-29 inside a parcel serving the Z80 pair; the follow-ups sat in
+  this register as open for six days afterwards, through several sessions that read this file at boot.
+  **A register entry has no reader who would meet the contradiction** — the code moved, the tests went green,
+  and the only artifact still asserting the defect was the one nobody re-derives. Same family as the queue-row
+  bar (*a row's justification ages like a precedent narrative*), one level lower and worse, because a
+  follow-up register is read as a to-do list rather than as a claim. **When a parcel serves a method, grep
+  this register for that method's name before writing the landing.**
+
 **Registered 2026-09-04, from the WAITFORBREAK landing:**
 
 - **F-HANDSHAKE-LOAD-TIMEOUT** — `tests/handshake.rs::initialize_advertises_a_generated_method_list_that_is_the_dispatch_table`
