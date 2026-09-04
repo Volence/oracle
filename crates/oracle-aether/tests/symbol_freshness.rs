@@ -158,10 +158,194 @@ fn lookup(c: &mut Client, name: &str) -> Option<Value> {
 }
 
 /// The caveat on a `reload_rom` reply, or `None` when the reply is quiet.
+///
+/// Used for `emulator/status` too since §11.34 — it is the same key, the same §2.4 string, and the same
+/// verdict from the same function, which is the whole of "one implementation, two consumers".
 fn caveat(reload: &Value) -> Option<String> {
     reload
         .get("caveat")
         .map(|c| c.as_str().expect("a caveat is a string (§2.4)").to_string())
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ §11.34 (CR-K) — the STANDING case, on `emulator/status`
+//
+// Everything above is the RELOAD edge, and closing it closed nothing that bites: a session that
+// connects once and runs for hours while the engine lane rebuilds **never calls `reload_rom` at all**.
+// Its table goes stale with no event and no observable. `emulator/status` is the method such a session
+// does call, and until CR-K its fragment declared no key that could carry the verdict — `symbolCount` is
+// a count, and a count is not an identity.
+//
+// The rows below keep the shape the reload rows established, for the reason stated at the top of this
+// file: the assertion is on `lookup_symbol`'s actual answer, with a control name that must resolve at
+// the same instant and an anti-vacuity clause after the correct action. What is NOT here is the *cost*
+// of serving the verdict on a per-frame method — that is measured in `engine.rs`'s own test module,
+// against a private counter, because a cache that silently does the work it claims to skip leaves every
+// row in this file green.
+// ---------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_standing_session_that_never_reloads_learns_from_status_that_its_listing_moved() {
+    let lst = write_lst("standing", LST_OLD);
+    let lst_abs = std::fs::canonicalize(&lst).expect("canonicalize the listing");
+
+    let h = spawn("symfresh-standing");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let loaded = c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+    assert_eq!(
+        loaded["symbolCount"],
+        json!(2),
+        "the premise: the OLD listing"
+    );
+    assert_eq!(
+        caveat(&c.ok("emulator/status", json!({}))),
+        None,
+        "OVER-FIRING CONTROL: before anything moves, status is quiet. A caveat emitted unconditionally \
+         satisfies every assertion below and carries no information."
+    );
+    assert!(
+        lookup(&mut c, "Level_Width").is_none(),
+        "the premise: the symbol the peer is about to publish is not in the old table yet"
+    );
+
+    // The peer lane rebuilds. **No reload, no load_symbols, no event — nothing at all happens on this
+    // connection.** This is the whole point: the session is doing what a long-lived session does.
+    std::fs::write(&lst, LST_REBUILT).expect("rewrite the listing");
+
+    let status = c.ok("emulator/status", json!({}));
+    // The misleading observables are untouched, and deliberately so: `symbolCount` still answers "how
+    // many rows do I hold", which is honest and is not the question.
+    assert_eq!(
+        status["symbolCount"],
+        json!(2),
+        "the count is unchanged — it was never the thing that could tell you"
+    );
+    assert_eq!(status["symbolsPath"], json!(lst_abs.display().to_string()));
+    let text = caveat(&status).unwrap_or_else(|| {
+        panic!("a status whose listing has moved past the table must SAY SO. Reply: {status}")
+    });
+    for needle in [
+        lst_abs.display().to_string().as_str(),
+        "2 row(s) held",
+        "3 row(s) in the file now",
+        "emulator/load_symbols",
+    ] {
+        assert!(
+            text.contains(needle),
+            "the caveat must name {needle:?} — what we hold, what the path holds now, and the fix. \
+             Got: {text}"
+        );
+    }
+
+    // ---- the independent channel: the observable that actually did the misleading ----
+    assert!(
+        lookup(&mut c, "Level_Width").is_none(),
+        "status is a verdict, not a re-read: the server is still serving the old table"
+    );
+    let control = lookup(&mut c, "Player_1").expect(
+        "CONTROL: a name in the held table must resolve at the same instant, or the probe above proves \
+         nothing",
+    );
+    assert_eq!(control["addr"], json!(PLAYER_1_OLD));
+
+    // ---- anti-vacuity: after the correct action, the symbol resolves AND status goes quiet ----
+    let reloaded = c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+    assert_eq!(reloaded["symbolCount"], json!(3));
+    let found = lookup(&mut c, "Level_Width").expect(
+        "ANTI-VACUITY: after re-reading the listing the new symbol must resolve. If it does not, every \
+         `is_none()` above passes on a build where nothing resolves at all.",
+    );
+    assert_eq!(found["addr"], json!("0x00000400"));
+    assert_eq!(
+        caveat(&c.ok("emulator/status", json!({}))),
+        None,
+        "ANTI-VACUITY, the other direction: the fix the caveat NAMES must actually silence it, or the \
+         sentence is advice that does not work"
+    );
+
+    let _ = std::fs::remove_file(&lst);
+}
+
+#[test]
+fn polling_status_against_an_unchanged_listing_stays_quiet() {
+    // The over-firing control for the polling path specifically. `status` is the method a UI calls every
+    // frame; a verdict that drifted loud after N calls — because a cache confused itself — would put a
+    // permanent false alarm on the glass of every session that changed nothing.
+    let lst = write_lst("poll", LST_OLD);
+
+    let h = spawn("symfresh-poll");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+
+    for i in 0..30 {
+        assert_eq!(
+            caveat(&c.ok("emulator/status", json!({}))),
+            None,
+            "call {i}: nothing has moved, so nothing is said"
+        );
+    }
+
+    // …and it is still capable of firing, which is what stops "quiet" from being a stuck answer.
+    std::fs::write(&lst, LST_MOVED).expect("rewrite the listing");
+    assert!(
+        caveat(&c.ok("emulator/status", json!({}))).is_some(),
+        "ANTI-VACUITY: after 30 quiet polls the verdict must still be live. A cache that latched quiet \
+         would be a way to be confidently stale about staleness."
+    );
+    // The independent channel: the server is still answering out of the OLD table.
+    let held = lookup(&mut c, "Player_1").expect("the held table still answers");
+    assert_eq!(held["addr"], json!(PLAYER_1_OLD));
+
+    let _ = std::fs::remove_file(&lst);
+}
+
+#[test]
+fn a_status_whose_listing_vanished_is_loud_and_stays_loud() {
+    // Loud on unmeasurable, on the polling path. A failed `stat` is not "unchanged", and the filter in
+    // front of the check must never turn "I could not look" into the silence that means "I looked".
+    let lst = write_lst("statusgone", LST_OLD);
+    let lst_abs = std::fs::canonicalize(&lst).expect("canonicalize");
+
+    let h = spawn("symfresh-statusgone");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+    assert_eq!(
+        caveat(&c.ok("emulator/status", json!({}))),
+        None,
+        "the premise: quiet while the file is there, and the cache is warm when it goes"
+    );
+
+    std::fs::remove_file(&lst).expect("delete the listing out from under the server");
+
+    for i in 0..5 {
+        let text = caveat(&c.ok("emulator/status", json!({}))).unwrap_or_else(|| {
+            panic!("call {i}: an unmeasurable freshness must be LOUD, not quiet")
+        });
+        assert!(
+            text.contains("could NOT be checked") && text.contains(&lst_abs.display().to_string()),
+            "call {i}: it must say it could not check, and name the path it could not read: {text}"
+        );
+    }
+    assert!(
+        lookup(&mut c, "Player_1").is_some(),
+        "CONTROL: the held table is unaffected; only our ability to check it is"
+    );
 }
 
 #[test]
@@ -424,6 +608,15 @@ fn a_table_with_no_recorded_path_is_reported_as_unchecked_never_as_fine() {
         "the premise: this server holds a table and no path for it"
     );
     assert_eq!(status["symbolCount"], json!(2), "…and the table is real");
+    // §11.34: `status` carries the same verdict, and this is the state the wire cannot construct. There
+    // is no file to stat, so nothing is remembered and nothing can be — every call re-derives it.
+    let from_status = caveat(&status).unwrap_or_else(|| {
+        panic!("a freshness that cannot be measured AT ALL must be loudest of all. Reply: {status}")
+    });
+    assert!(
+        from_status.contains("could NOT be checked at all"),
+        "{from_status}"
+    );
 
     let reload = c.ok(
         "emulator/reload_rom",

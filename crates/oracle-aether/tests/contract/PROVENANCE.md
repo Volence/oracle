@@ -20,27 +20,32 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = bbf3bf827c6909725cdce998bf26663a36cb9bfa
-    pin.blob     = d383daeb790bf73dfcfec4ae91de5471be62c30a
-    pin.bytes    = 347676
+    pin.revision = b447555add1e9fdd60aefa36f1078c6db5115452
+    pin.blob     = 3f758c40e3e8a240b0bb91dd1ff0d23530c46bb1
+    pin.bytes    = 348406
 
 ## Current copy
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`bbf3bf827c6909725cdce998bf26663a36cb9bfa`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor bbf3bf8 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `cb5a81c8` at the time). 67 method fragments; all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
-| Last commit that touched the schema | **`bbf3bf827c6909725cdce998bf26663a36cb9bfa`** — *"protocol 11.33 correction: stepped floor is 0, not 1 (a CPU halted on STOP retires nothing and absence means the count ran); stepped:0 vector flips to pass, -1 fail vector added"* (2026-09-04). |
-| Git blob | `d383daeb790bf73dfcfec4ae91de5471be62c30a` |
-| SHA-256 | `6bd2c2176f21513d3daffb3d681150818343beee45bc566378aea6467670f277` |
-| Bytes | 347676 |
+| Contract repo revision | **`b447555add1e9fdd60aefa36f1078c6db5115452`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor b447555add1e9fdd60aefa36f1078c6db5115452 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `3218ffd5` at the time). 67 method fragments (the `methods` object carries 68 keys, one of which is a `$comment`); all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. `methods["emulator/status"].result.properties` now carries 13 keys, `caveat` among them, which is the leaf §11.34 added and the only reason this re-vendor exists. |
+| Last commit that touched the schema | **`b447555add1e9fdd60aefa36f1078c6db5115452`** — *"protocol 11.34: CR-K adopted, emulator/status declares caveat (the standing symbol-freshness verdict); two vectors; CONTRACT-CAVEAT-DEFAULT booked n=2"* (2026-09-04). |
+| Git blob | `3f758c40e3e8a240b0bb91dd1ff0d23530c46bb1` |
+| SHA-256 | `e1fe40cf0c3555507c4d6e64b844fcb7aaa0c6e51c9c82fe441a0eb23a6d18d6` |
+| Bytes | 348406 |
 | Vendored on | 2026-09-04 |
 
-> **⚑ On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit, and that is a
-> coincidence rather than a simplification.** `bbf3bf8` both adjudicates the correction and writes these
-> bytes, so `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` and "the
-> commit the ruling is in" agree. On the re-vendor *before* this one they did **not** — see the retired
-> note below — so the recipe was run here too rather than skipped on the strength of them matching.
+> **⚑ On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit for the second time
+> running — still a coincidence, still not a simplification.** `b447555` both adjudicates §11.34 and
+> writes these bytes, so `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json`
+> and "the commit the ruling is in" agree. The recipe was **run** here rather than skipped on the strength
+> of them matching, exactly as the retired note below says it must be: two agreements in a row is how a
+> recipe stops being run.
+>
+> *(Retired, kept because it is the previous re-vendor's own reading and this one supersedes rather than
+> erases it.)* ~~On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit, and that is a
+> coincidence rather than a simplification.~~ That was `bbf3bf8`; it is now the pin one step back.
 >
 > *(Retired, kept because it is the reason the recipe is a recipe.)* ~~The pin is `8a930919`, NOT §11.33's
 > own adoption commit `3b43185e`.~~ `3b43185e` was the *correction* to §11.33 that removed the `caveat`
@@ -56,7 +61,7 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 > human reader the wrong revision. Every figure in the table above is therefore derived by parsing the
 > bytes actually written in this commit; none is carried over.
 
-**Taken from the object store at a committed revision**, `git show bbf3bf8:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `d383daeb…`, equal to `git rev-parse bbf3bf8:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show b447555:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `3f758c40…`, equal to `git rev-parse b447555:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
@@ -105,6 +110,43 @@ serve that needs the new schema.
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.34 (CR-K): `emulator/status` declares `caveat` (2026-09-04)
+
+The re-vendor below closed §11.33's correction. **This one is oracle's own CR**, filed and adopted the
+same day: `emulator/status` had no key that could carry the standing symbol-freshness verdict, so a
+session that connects once and runs for hours while a peer lane rebuilds went stale with **no event and no
+observable**. `reload_rom` already carried the verdict, but only a session that reloads ever sees it.
+§11.34 declares `status.result.caveat` — a §2.4 string. **Not adopted:** a structured `symbolFreshness`
+object, and a `caveat` that is an object is REFUSED (upstream's second vector).
+
+Figures **re-derived by parsing both copies** (`git cat-file blob d383dae…` for the previous one, so
+neither figure is read from a commit message or carried over):
+
+| | previous copy (`bbf3bf8`) | this copy (`b447555`) | delta |
+|---|---|---|---|
+| method fragments | 67 | **67** | unmoved |
+| fragments declaring / closing `params` / declaring `result` | 67 / 67 / 67 | **67 / 67 / 67** | 0 / 0 / 0 |
+| `$defs` | 19 | **19** | unmoved — none changed |
+| `anyMessage` / `handshake` / `events` | — | **byte-identical** | unmoved |
+| fragments whose JSON changed at all | — | **exactly one: `emulator/status`** | the change is as narrow as the ruling |
+| `emulator/status.result.properties` | 12 keys | **13 keys** | `+caveat` (`type`, `description`; 635 chars of description) |
+| `emulator/status.result.required` | `pc`, `sp`, `sr`, `frameToken`, `symbolCount`, `romBytes` | **unmoved** | `caveat` is OPTIONAL — quiet is a legal reply and must stay one |
+| bytes | 347676 | **348406** | +730 |
+
+⚑ **`emulator/status.result` closes through the harness, not through a keyword in the fragment.** The
+fragment carries `allOf: [{"$ref": "#/$defs/replyFields"}]` and neither `additionalProperties` nor
+`unevaluatedProperties`; `schema_conformance.rs` injects `unevaluatedProperties: false` when it validates,
+which is §8 item 20's closure. So *"the key is declared"* and *"the closure admits it"* are the same fact
+here, and the previous copy would have REFUSED a `status` reply carrying `caveat`. That is exactly why the
+serve and this re-vendor land in one commit and never one before the other.
+
+**What this re-vendor's green witnesses, and the one line it flips.** Exactly one bit: a `status` reply
+carrying a `caveat` string was **refused** by the previous copy and is **accepted** by this one, and a
+`caveat` that is an object is refused by both. It cannot witness that the key is ever *emitted*, cannot
+witness that the sentence is true, and cannot witness that quiet means anything — all three are
+`tests/symbol_freshness.rs`'s, which anchors on `lookup_symbol`'s actual answer rather than on our own
+verdict.
 
 ### What this re-vendor adopted — §11.33's **correction**: `stepped`'s floor is 0 (2026-09-04)
 
