@@ -6229,9 +6229,11 @@ impl Engine {
             // `reload_rom`'s fragment declares `reloaded`/`queued`/`path`/`romBytes`/`symbolsDropped`/
             // `diagnostic`/`caveat` and nothing else. `caveat` is a §2.4 string and this is an
             // explanation, not a datum a client branches on — the same reasoning `load_symbols` records
-            // for its addressless-row note. The structured verdict on `emulator/status`, where
-            // `romFreshness`'s symmetric home would be, is BLOCKED pending a CR: that fragment declares
-            // no `caveat` at all, so there is no legal spelling of it there.
+            // for its addressless-row note. The verdict on `emulator/status`, where `romFreshness`'s
+            // symmetric home would be, is BLOCKED pending a CR: that fragment declares no `caveat` and
+            // no `diagnostic` at all, so there is no legal spelling of it there. Filed as
+            // `docs/proposed/2026-09-04-cr-k-symbol-freshness.md` — and the standing case is the one
+            // that needs it, since a session that never reloads goes stale with no observable at all.
             //
             // Mutually exclusive with the drop caveat by construction: a dropped table is not a table
             // whose freshness can be asked about.
