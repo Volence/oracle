@@ -12,15 +12,15 @@
   "queue": [
     {
       "id": "WAITFORBREAK-INSTANT-TIMEOUT",
-      "state": "next",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A tool that asks the emulator to stop and then waits ten seconds for it can be told 'it never stopped' after waiting ZERO milliseconds, with the game still running. That is a wrong answer, not a slow one, and another team's automated checks are built on exactly that ask-then-wait sequence \u2014 to them it looks like the breakpoint simply never fired. Caught under load; passes on a quiet machine, which is why nothing had seen it."
+      "title": "A tool that asks the emulator to stop and waits ten seconds can be told 'it never stopped' after waiting ZERO milliseconds, with the game still running \u2014 a wrong answer, not a slow one. Real and worth fixing on its own merits; the other team turns out NOT to depend on it, so it sits behind the things you asked for tonight."
     },
     {
       "id": "PANELS-NAV",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -143,5 +143,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:55:58Z"
+  "updatedAt": "2026-09-04T00:59:26Z"
 }

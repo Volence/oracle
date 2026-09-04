@@ -61,8 +61,14 @@ moved with them.)*
    **AEON OBLIGATION — SCOPE WAS WRONG, and the correction makes it bigger.** Item 7 recorded it
    as a dated heads-up before serving `emulator/wait_for_break`, because their gates send
    `timeout_ms`. **The survey found it covers THREE methods, not one, and I verified it firsthand
-   at `origin/master` (not their working tree):** both scripts run an **arm → wait → clear** flow —
-   `raster_source_gate.py:161/168/173` and `snapshot_poison_gate.py:62/64/68` call
+   at `origin/master` (not their working tree):** ⚠ **STALE AS OF 2026-09-04 AND IT COST A MIS-RANKING —
+   RE-MEASURED AT THEIR `origin/master`: `raster_source_gate.py` has ZERO `wait_for_break` hits, and
+   `snapshot_poison_gate.py`'s single hit is a COMMENT saying `emulator/run_to` replaced the arm/resume/wait
+   triple.** The live call sites are `tools/evict_witness.py`, `tools/parallax_hscroll_probe.py`,
+   `tools/raster_frame_epoch_probe.py` and the `aether_instance.py` client seam — none in the effects-gate
+   lane. The original text below was true when written and is kept because a session that cites it must see
+   that a verified-firsthand booking about a peer's tree still expired: ~~both scripts run an **arm → wait →
+   clear** flow — `raster_source_gate.py:161/168/173` and `snapshot_poison_gate.py:62/64/68` call~~
    `emulator/breakpoint_add {addr}` → `emulator/wait_for_break {timeout_ms}` →
    `emulator/breakpoint_clear {all:true}`.
    **Consequence, and it is the load-bearing one: the migration CANNOT be piecemeal.** Serving
