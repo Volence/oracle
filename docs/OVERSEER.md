@@ -343,7 +343,38 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   The frontend comment at `bus.rs:405-408` still carries the flag as open and is now stale — fix it in the
   next parcel that opens that file.
 
-- **▶ F-SPAWN-OUTSIDE-ACT — a real gap in SPAWN-PICKER as shipped, found by the peer we asked, not by us.**
+- **✔ F-SPAWN-OUTSIDE-ACT — CLOSED 2026-09-04 (`parcel/spawn-outside-act`), window-side, refused not clamped.**
+  `Bus::spawn_at` now reads `Level_Width`/`Level_Height` **by name, per call, independently of each other**
+  between the world join and the mailbox write, and a click outside `[0,w) × [0,h)` never reaches the
+  server. **Refuse over clamp**, and the reason is this file's own re-read rule: a clamp moves the object
+  away from where the person clicked and then reports success with coordinates, and since §11.32's addendum
+  makes the reply's `x`/`y` a re-read, that success line reads *plausibly correct* about an object sitting
+  at the level edge for reasons nothing on the glass explains. A smaller lie of the same family as the
+  defect. **Three refusals, three facts** — `outsideAct`, `actExtentUnknown` (the listing cannot answer, so
+  the window says **it cannot check** rather than guessing the act is infinite — the `arm`-refuses-with-no-
+  archetypes precedent applied to a measurement), `noActLoaded` (`0×0` is the boot-cleared reading aeon
+  documents, *not* an act of no size, and "outside the level" is the wrong sentence on a title screen).
+  Each carries its own remedy so the glass gets the next action rather than a truncated essay; `code` stays
+  `None`, so the reader is still told the refusal is the window's.
+  **The trap was made a test rather than a comment.** The fixture carries `Player_Bound_Right`/`_Bottom` at
+  aeon's own insets *beside* the extent, so the wrong symbol **resolves**; the row
+  `the_strip_between_the_player_clamp_and_the_act_edge_is_legal_placement_space` clicks into the strip and
+  demands a placement. Mutation M3 (point `act_bounds` at the clamp edges) is red on it with the sentence
+  *"a placement between Player_Bound_Right (1000) and Level_Width (1024) is LEGAL and renders"*. Without
+  that row the mutation is invisible to a test suite that only ever clicks far outside.
+  ⚑ **THREE-SURFACE GAP, A DECISION AND NOT AN OMISSION — the debug window's palette is still exposed.**
+  `oracle-player`'s command line (`palette.rs::resolve`) reaches **every** row of `METHODS` by name,
+  `emulator/object_spawn` included, and dispatches typed params straight through `Bus::call`. Nothing in
+  this parcel touches that path: the check lives in `oracle-frontend`, a different crate, behind a
+  gesture the palette does not make. Closing it needs either a per-method precondition hook in the palette
+  or the server refusal — and the latter is a **contract** question (aeon's unclamped mailbox is
+  deliberate), deliberately out of this parcel's scope. **Book it; do not assume it fell out of this.**
+  ⚠ The `bus.rs:405-408` CR-J stale-flag note above is still open — this parcel opened that file but the
+  flag is about `object_at`'s world space, not the extent, and rewording it was not this parcel's claim.
+
+  *Original booking, kept for the reasoning:*
+
+- **F-SPAWN-OUTSIDE-ACT — a real gap in SPAWN-PICKER as shipped, found by the peer we asked, not by us.**
   aeon: the warp path clamps and **the object path deliberately does not**, because an out-of-act object is
   culled by `RunObjects`' camera-distance test and does nothing, where an out-of-act *player* would reach
   `SEC_VOID`. **Consequence for the picker: a click outside the act is acked as placed and the object is
