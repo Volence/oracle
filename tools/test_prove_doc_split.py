@@ -28,6 +28,17 @@ The failure modes covered, one class each:
                            original line.  Green when honest, red when the
                            original copy was actually dropped.  Naive
                            remove-by-content gets both of these wrong.
+  MarkdownTableRowAtACut   a markdown table row is the last line kept before a
+                           cut.  Nothing is torn, so the verdict must be GREEN:
+                           a row ends in '|' and so could never end a sentence,
+                           which made every such correct cut a false DISPROVED.
+  TornSentenceBesideATable the control on that fix.  A genuinely torn sentence
+                           next to a table must STILL be red -- an over-broad
+                           "not a sentence" would re-hide the 09-02 defect.
+  VerdictCarriesBothHeadingNumbers
+                           the verdict states the heading-aware AND the
+                           heading-blind figure and which one gated, so a lane
+                           reading only the gated number cannot miss the other.
   Unmeasurable             a missing / unreadable / undecidable input FAILS with
                            a named cause and exit 2 -- never a skip, never a 0,
                            never rendered as "0 problems found".
@@ -412,6 +423,305 @@ class DerivedCutPoints(ToolCase):
         self.assertIn("1a ORIGINAL lines ABSENT after split: 0", r.stdout)
         self.assertIn("tokens LOST                         : 0", r.stdout)
         self.assertIn("RESULT: PASS", r.stdout)
+
+
+class MarkdownTableRowAtACut(ToolCase):
+    """The sigil lane's false DISPROVED, reproduced.
+
+    A markdown table row ends in '|'.  '|' is neither stripped as trailing
+    decoration nor terminal punctuation, so a CONTENT row could never end a
+    sentence anywhere in any document, and the separator-row escape (the
+    fullmatch on pure markup) does not cover it, because a content row is not
+    pure markup.  At a cut the pairing is new, so the ORIGINAL cross-check does
+    not subtract it either: a correct cut whose last kept line was a table row
+    was always DISPROVED.
+
+    The asymmetry is the tell that this was an oversight rather than a rule:
+    begins_sentence()'s STARTERS already contains "|", so the identical row on
+    the AFTER side of the same seam was always accepted.
+
+    WHY SKIPPING TABLE ROWS LOSES NOTHING: a table damaged by a split loses
+    LINES, and line loss is PROOF 1's job (a mangled cell is PROOF 2's).
+    PROOF 3 exists for PROSE torn mid-sentence, and a table row has no sentence
+    to tear.  That is the argument against "restoring" this check later.
+    """
+
+    # The literal line from sigil 7fb76ba:docs/OVERSEER.md:104.  A paraphrase
+    # would not prove the reported instance closed, so the row is pinned here
+    # and a test below asserts the fixture really carries it.
+    SIGIL_ROW = "| *(none)* | — | — | — | — |"
+
+    DOC = ("# Doc\n"
+           "\n"
+           "## Table section\n"
+           "\n"
+           "| a | b | c | d | e |\n"
+           "|---|---|---|---|---|\n"
+           + SIGIL_ROW + "\n"
+           "\n"
+           "## Moved section\n"
+           "\n"
+           "Body of the moved section, a complete sentence.\n")
+
+    def fixture(self, headings=False):
+        o = self.write("ORIG.md", self.DOC)
+        # A clean cut: the whole table stays, the whole moved section leaves.
+        # Nothing is torn; every line is present exactly once.
+        b = self.write("boot.md",
+                       "# Doc\n"
+                       "\n"
+                       "## Table section\n"
+                       "\n"
+                       "| a | b | c | d | e |\n"
+                       "|---|---|---|---|---|\n"
+                       + self.SIGIL_ROW + "\n")
+        f = self.write("ref.md",
+                       "## Moved section\n"
+                       "\n"
+                       "Body of the moved section, a complete sentence.\n")
+        args = ["--original", o, "--output", b, "--output", f, "--no-new"]
+        if headings:
+            args.append("--headings")
+        return args
+
+    def test_the_fixture_carries_the_literally_reported_row(self):
+        """Guards the fixture itself: the reported instance, not a paraphrase."""
+        self.assertIn("| *(none)* | — | — | — | — |", self.DOC)
+
+    def test_the_reported_case_is_proved(self):
+        r = self.run_tool(*self.fixture(), expect=0)
+        self.assertIn("VERDICT: PROVED", r.stdout)
+        self.assertNotIn("FAILED:", r.stdout)
+
+    def test_neither_the_edge_nor_the_derived_cut_flags_the_row(self):
+        """Both of the places the predicate is applied to a BEFORE side."""
+        r = self.run_tool(*self.fixture(), expect=0)
+        self.assertNotIn("EDGE CUT", r.stdout)
+        self.assertNotIn("[BAD]", r.stdout)
+        self.assertIn("failing the predicate: 0", r.stdout)
+
+    def test_it_is_proved_under_headings_too(self):
+        """The rescue is not a side effect of --headings: no heading is
+        involved on the before side at all."""
+        r = self.run_tool(*self.fixture(headings=True), expect=0)
+        self.assertIn("VERDICT: PROVED", r.stdout)
+
+    def test_the_after_side_was_already_accepted(self):
+        """States the asymmetry as an assertion, so a later edit that drops
+        '|' from STARTERS is caught here rather than in a lane's gate."""
+        sys.path.insert(0, str(TOOL.parent))
+        import prove_doc_split as P
+        self.assertTrue(P.begins_sentence(self.SIGIL_ROW))
+        self.assertTrue(P.make_ends_sentence(False)(self.SIGIL_ROW))
+
+
+class TornSentenceBesideATable(ToolCase):
+    """The control on that fix: the suppression must not be over-broad.
+
+    The 2026-09-02 defect -- a bullet truncated mid-sentence with its
+    continuation in the other file -- must STILL be caught when it happens next
+    to a table.  If "not a sentence" is allowed to grow, that defect becomes
+    invisible again, which is the one way this fix could do harm.
+    """
+
+    DOC = ("# Doc\n"
+           "\n"
+           "## Table section\n"
+           "\n"
+           "| a | b |\n"
+           "|---|---|\n"
+           "| *(none)* | — |\n"
+           "\n"
+           "- The rule is long enough to wrap, and so it ends with a comma,\n"
+           "  continuing on this second line to a full stop.\n"
+           "\n"
+           "## Moved section\n"
+           "\n"
+           "Body of the moved section, a complete sentence.\n")
+
+    def fixture(self):
+        o = self.write("ORIG.md", self.DOC)
+        b = self.write("boot.md",
+                       "# Doc\n"
+                       "\n"
+                       "## Table section\n"
+                       "\n"
+                       "| a | b |\n"
+                       "|---|---|\n"
+                       "| *(none)* | — |\n"
+                       "\n"
+                       "- The rule is long enough to wrap, and so it ends with a comma,\n")
+        f = self.write("ref.md",
+                       "  continuing on this second line to a full stop.\n"
+                       "\n"
+                       "## Moved section\n"
+                       "\n"
+                       "Body of the moved section, a complete sentence.\n")
+        return ["--original", o, "--output", b, "--output", f, "--no-new"]
+
+    # The truncated half.  Named once, because the assertions below must quote
+    # the whole flagged line and not merely find this text somewhere in stdout.
+    TORN = "- The rule is long enough to wrap, and so it ends with a comma,"
+    TAIL = "  continuing on this second line to a full stop."
+
+    def test_the_torn_bullet_is_still_red_and_quoted(self):
+        r = self.run_tool(*self.fixture(), expect=1)
+        self.assertIn("VERDICT: DISPROVED", r.stdout)
+        self.assertIn(self.TORN, r.stdout)
+        self.assertIn(self.TAIL.strip(), r.stdout)
+
+    def test_the_BEFORE_side_is_what_flags_it(self):
+        """This is the assertion that bites on an over-broad fix.
+
+        The earlier draft of this class asserted only that the torn text
+        appeared in stdout and that the run was red.  Both survive a poisoned
+        `is_table_row` that returns True for EVERY line: the run still reds off
+        the AFTER side (ref.md starts with a lowercase continuation) and the
+        derived cut still PRINTS the torn line, as '[OK ]'.  So the class was
+        passing for the wrong reason and could not have caught the very
+        regression it exists to catch.  Proven by poison, 2026-09-04.
+
+        The assertion that actually bites is the boot.md EDGE CUT, which names
+        the BEFORE side: under that poison the edge count drops 2 -> 1 and this
+        line is gone.  The derived cut stays [BAD] even poisoned, because the
+        AFTER side of that same join fails independently -- so it is asserted
+        as context, not relied on.  The class below removes that crutch
+        entirely.
+        """
+        r = self.run_tool(*self.fixture(), expect=1)
+        self.assertIn(f"EDGE CUT [boot.md] ends mid-sentence: {self.TORN!r}",
+                      r.stdout)
+        self.assertIn("[BAD] DIVERGENCE", r.stdout)
+        self.assertIn("failing the predicate: 1", r.stdout)
+
+    def test_a_tear_only_the_before_side_can_see_is_still_red(self):
+        """The strongest form of the control: the BEFORE side is the ONLY
+        reason this split is red.
+
+        Same tear, but the orphaned continuation begins with a capital, so
+        begins_sentence() accepts it and the after side reports nothing.  Every
+        red here comes from the sentence predicate applied to a line that sits
+        in a document full of table rows.  Poison is_table_row to return True
+        for every line and this fixture goes PROVED -- the 09-02 defect,
+        invisible again -- so this test is what stands between the two.
+        """
+        doc = ("# Doc\n"
+               "\n"
+               "## Table section\n"
+               "\n"
+               "| a | b |\n"
+               "|---|---|\n"
+               "| *(none)* | — |\n"
+               "\n"
+               "- The rule is long enough to wrap, and so it ends with a comma,\n"
+               "  Sonic then continues on this second line to a full stop.\n")
+        o = self.write("ORIG2.md", doc)
+        b = self.write("boot2.md",
+                       "# Doc\n"
+                       "\n"
+                       "## Table section\n"
+                       "\n"
+                       "| a | b |\n"
+                       "|---|---|\n"
+                       "| *(none)* | — |\n"
+                       "\n"
+                       "- The rule is long enough to wrap, and so it ends with a comma,\n")
+        f = self.write("ref2.md",
+                       "  Sonic then continues on this second line to a full stop.\n")
+        r = self.run_tool("--original", o, "--output", b, "--output", f,
+                          "--no-new", expect=1)
+        self.assertIn("VERDICT: DISPROVED", r.stdout)
+        self.assertIn(f"EDGE CUT [boot2.md] ends mid-sentence: {self.TORN!r}",
+                      r.stdout)
+        self.assertIn("failing the predicate: 1", r.stdout)
+        # ... and nothing was flagged on the after side, so there is no other
+        # check that could have carried this red.
+        self.assertNotIn("starts mid-sentence", r.stdout)
+
+    def test_the_older_proofs_are_blind_to_it_here_too(self):
+        """The 09-02 signature again: lines and tokens all account for."""
+        r = self.run_tool(*self.fixture(), expect=1)
+        self.assertIn("1a ORIGINAL lines ABSENT after split: 0", r.stdout)
+        self.assertIn("tokens LOST                         : 0", r.stdout)
+
+    def test_the_table_row_in_the_same_document_is_not_what_reds_it(self):
+        """Every cut quoted must be about the bullet, never about the table."""
+        r = self.run_tool(*self.fixture(), expect=1)
+        quoted = [l for l in r.stdout.splitlines()
+                  if "EDGE CUT" in l or l.strip().startswith(("before:", "after :"))]
+        self.assertTrue(quoted, r.stdout)
+        self.assertFalse([l for l in quoted if "*(none)*" in l],
+                         "the table row must not appear as a flagged cut:\n"
+                         + "\n".join(quoted))
+
+
+class VerdictCarriesBothHeadingNumbers(ToolCase):
+    """Defect 2: the verdict was gated on ONE of two printed numbers.
+
+    A lane reading only the gated figure can accept a cut whose other flagged
+    sites are not heading-adjacent and never learn there were more.  So the
+    verdict itself carries BOTH figures and says which gated and why.
+    """
+
+    DOC = ("# Doc\n\n## A\n\nBody A ends here.\n\n## B\n\nBody B ends here.\n"
+           "\n## C\n\nBody C ends here.\n\n## D\n\nBody D ends here.\n")
+
+    def fixture(self, headings):
+        o = self.write("ORIG.md", self.DOC)
+        # boot takes original non-blank lines 1,2,6,8,9; ref takes 3,4,5,7.
+        # That puts two heading-to-heading seams in boot that the original
+        # never had: heading-BLIND flags both, heading-AWARE flags neither.
+        b = self.write("boot.md",
+                       "# Doc\n\n## A\n\n## C\n\n## D\n\nBody D ends here.\n")
+        f = self.write("ref.md",
+                       "Body A ends here.\n\n## B\n\nBody B ends here.\n"
+                       "\nBody C ends here.\n")
+        args = ["--original", o, "--output", b, "--output", f, "--no-new"]
+        if headings:
+            args.append("--headings")
+        return args
+
+    def verdict_note(self, out):
+        lines = out.splitlines()
+        got = [l for l in lines
+               if "heading-aware" in l and "heading-blind" in l and "GATED" in l]
+        self.assertEqual(len(got), 1,
+                         "expected exactly one verdict-adjacent line carrying "
+                         "both figures and naming the gate; got:\n" + out)
+        idx = lines.index(got[0])
+        verdicts = [i for i, l in enumerate(lines) if l.startswith("VERDICT:")]
+        self.assertEqual(len(verdicts), 1, out)
+        self.assertLessEqual(abs(idx - verdicts[0]), 1,
+                             "the note must sit beside the VERDICT line, not "
+                             "hundreds of lines above it")
+        return got[0]
+
+    def test_both_values_are_stated_beside_the_verdict(self):
+        r = self.run_tool(*self.fixture(headings=True), expect=0)
+        note = self.verdict_note(r.stdout)
+        self.assertIn("heading-aware 0", note)
+        self.assertIn("heading-blind 2", note)
+
+    def test_the_note_says_which_gated_and_why(self):
+        r = self.run_tool(*self.fixture(headings=True), expect=0)
+        note = self.verdict_note(r.stdout)
+        self.assertIn("heading-aware GATED", note)
+        self.assertIn("--headings", note)
+
+    def test_the_ungated_figure_is_the_larger_one_and_is_not_hidden(self):
+        """The whole point: PROVED, and the reader still sees the 2."""
+        r = self.run_tool(*self.fixture(headings=True), expect=0)
+        self.assertIn("VERDICT: PROVED", r.stdout)
+        self.assertIn("heading-blind 2", self.verdict_note(r.stdout))
+
+    def test_the_same_two_values_appear_when_the_other_number_gates(self):
+        """Without --headings the blind number gates; both figures are still
+        carried, with the same values, and the note names the other gate."""
+        r = self.run_tool(*self.fixture(headings=False), expect=1)
+        note = self.verdict_note(r.stdout)
+        self.assertIn("heading-aware 0", note)
+        self.assertIn("heading-blind 2", note)
+        self.assertIn("heading-blind GATED", note)
 
 
 class Unmeasurable(ToolCase):
