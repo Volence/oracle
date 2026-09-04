@@ -128,6 +128,13 @@ pub struct Status {
     /// [`LayerMask`], the very one `emulator/set_layer_enabled` moves, so the badge cannot say a layer is
     /// hidden that the renderer is still drawing.
     pub layers: LayerMask,
+    /// **The standing statement that spawn mode is armed**, already worded by
+    /// [`Mode::badge`](crate::spawn::Mode::badge), or `None` when a left-click means what it always meant.
+    ///
+    /// Carried as the finished sentence rather than as the mode, for the reason `layers` is carried as the
+    /// core's own mask rather than a frontend notion of one: the thing that decides what a click does and
+    /// the thing that says so on the glass must be one derivation, not two that agree today.
+    pub spawn: Option<String>,
 }
 
 /// The overlay's own state: the live toasts and whether the persistent status line is showing.
@@ -274,6 +281,11 @@ impl Overlay {
             draw_paused_banner(&mut c, area, px);
         }
         self.draw_toasts(&mut c, area, px, margin);
+        // **Last, and that ordering is the point.** This badge is a *standing* statement and the toasts
+        // above it are transients; a mode that changes what a left-click does must not be readable-in-two-
+        // seconds-time, so where the two overlap the permanent one wins the pixels. Every other surface
+        // here is drawn back-to-front by depth; this one is drawn last by *lifetime*.
+        self.draw_spawn_badge(&mut c, area, st, px);
     }
 
     /// **What [`draw`](Self::draw) just put on the glass, as text** — the overlay's half of
@@ -289,11 +301,13 @@ impl Overlay {
     /// # Which surfaces are here, and which are not
     ///
     /// The **status line** and the **toasts** — the two surfaces whose text has no other reader on the bus.
-    /// Not the **layer badge** and not the **PAUSED banner**: the contract's `kind` enum has no value for
-    /// either, so there is nowhere on the wire to put them, and inventing one is a contract edit rather than
-    /// a handler decision. Both are already answerable structurally — `emulator/get_layer_states` for the
-    /// badge, `emulator/status`'s run state for the banner — which is why the enum can reasonably omit them.
-    /// Recorded here rather than left as an unexplained gap between what `draw` paints and what this returns.
+    /// Not the **layer badge**, not the **PAUSED banner** and not the **spawn badge**: the contract's
+    /// `kind` enum has no value for any of them, so there is nowhere on the wire to put them, and inventing
+    /// one is a contract edit rather than a handler decision. All three are already answerable structurally
+    /// — `emulator/get_layer_states` for the layer badge, `emulator/status`'s run state for the banner, and
+    /// for the spawn badge nothing on the wire needs to ask, because spawn mode is a fact about *this
+    /// window's mouse* and changes nothing a client can observe. Recorded here rather than left as an
+    /// unexplained gap between what `draw` paints and what this returns.
     ///
     /// # Order
     ///
@@ -397,6 +411,71 @@ impl Overlay {
             return;
         };
         c.fill_rect(r.x as i32, r.y as i32, r.w, r.h, 0x0000_0000, 210);
+        c.text((r.x + pad) as i32, (r.y + pad) as i32, scale, ACCENT, &text);
+    }
+
+    /// **The standing statement that spawn mode is armed**, or `None` when it is not — text and geometry
+    /// in one place, exactly as [`layer_badge`](Self::layer_badge) keeps them.
+    ///
+    /// # Why this is a correctness requirement and not decoration
+    ///
+    /// Verbatim the layer badge's argument, one mode over and with a larger blast radius. A mask changes
+    /// what the picture *is*; spawn mode changes **what a left-click does**. With no standing statement
+    /// that it is on, the person who armed it will forget, click to arm a watch, and read the object that
+    /// appears as the game doing something. A toast cannot carry this — toasts expire and the mode does
+    /// not — so it is drawn on **every** frame the mode is armed and on none where it is not.
+    ///
+    /// It carries the whole sentence [`crate::spawn::Mode::badge`] built, including which archetype is
+    /// selected, because "spawn mode is on" sends you hunting for what it will place and
+    /// `SPAWN: ObjDef_Ring (1/9)` does not. (The adopted rule out of aurora's *"what are the purple
+    /// boxes"*: a feature that works and communicates nothing has not shipped.)
+    ///
+    /// # Where it sits, and what it cannot collide with
+    ///
+    /// **Bottom-right**, the one corner of the picture nothing else claims: the status line and the layer
+    /// badge share the top band, the `PAUSED` banner is centred, and the toasts stack up from the
+    /// bottom-**left**. A wide toast can still reach across into it, which is why [`Self::draw`] paints
+    /// this last of everything — see the note there.
+    ///
+    /// The fit rule is the layer badge's, deliberately: step the scale down to 1 before giving up, and
+    /// **never truncate**, because `SPAWN: ObjDef_Ri` names an archetype that does not exist. A picture
+    /// with no room for it at scale 1 gets nothing.
+    fn spawn_badge(
+        area: Rect,
+        px: usize,
+        spawn: Option<&str>,
+    ) -> Option<(String, Rect, usize, usize)> {
+        let text = spawn?.to_string();
+        let margin = (2 * px).max(4);
+        let pad_for = |p: usize| 2 * p;
+        let scale = (1..=px).rev().find(|&p| {
+            font::text_width(&text) * p + 2 * pad_for(p) + 2 * margin <= area.w
+                && font::GLYPH_H * p + 2 * pad_for(p) + 2 * margin <= area.h
+        })?;
+        let pad = pad_for(scale);
+        let w = font::text_width(&text) * scale + 2 * pad;
+        let h = font::GLYPH_H * scale + 2 * pad;
+        Some((
+            text,
+            Rect {
+                x: area.x + area.w - margin - w,
+                y: area.y + area.h - margin - h,
+                w,
+                h,
+            },
+            scale,
+            pad,
+        ))
+    }
+
+    /// Paint the badge described by [`spawn_badge`](Self::spawn_badge). Amber and fully opaque, unlike its
+    /// neighbours: it is drawn over the toasts on purpose (see [`Self::draw`]), and a `PANEL_ALPHA` panel
+    /// there would let a toast glyph read through the one statement that is not allowed to be ambiguous.
+    fn draw_spawn_badge(&self, c: &mut font::Canvas, area: Rect, st: &Status, px: usize) {
+        let Some((text, r, scale, pad)) = Self::spawn_badge(area, px, st.spawn.as_deref()) else {
+            return;
+        };
+        c.fill_rect(r.x as i32, r.y as i32, r.w, r.h, 0x0000_0000, 255);
         c.text((r.x + pad) as i32, (r.y + pad) as i32, scale, ACCENT, &text);
     }
 
@@ -897,6 +976,7 @@ mod tests {
             aspect: "4:3",
             layers: LayerMask::ALL,
             native: (320, 224),
+            spawn: None,
         }
     }
 
@@ -999,6 +1079,165 @@ mod tests {
         assert!(
             Overlay::layer_badge(area, px, LayerMask::ALL).is_none(),
             "an all-on mask has nothing to state"
+        );
+    }
+
+    /// Pixels inside the spawn badge's rectangle that differ from `GROUND`.
+    fn spawn_ink(buf: &[u32], w: usize, area: Rect, spawn: Option<&str>) -> usize {
+        let px = Overlay::font_scale(area.h.max(1));
+        let Some((_, r, _, _)) = Overlay::spawn_badge(area, px, spawn) else {
+            return 0;
+        };
+        (r.y..r.y + r.h)
+            .flat_map(|y| (r.x..r.x + r.w).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[y * w + x] != GROUND)
+            .count()
+    }
+
+    /// **Spawn mode is stated on screen for as long as it is armed, and never when it is not.**
+    ///
+    /// The layer badge's claim, one mode over and with more at stake: a mask changes what the picture *is*
+    /// and spawn mode changes **what a left-click does**. Asserted after every toast has aged out and with
+    /// F3 off, because those are the two states in which "the user was told" is otherwise pure assertion —
+    /// and because the toast that announced the arm is exactly the thing that cannot be the statement.
+    ///
+    /// Planting the defect: delete the `draw_spawn_badge` call at the bottom of [`Overlay::draw`], or make
+    /// it conditional on `self.showing_status()`, and the armed case below fails with *"an armed spawn
+    /// mode must be stated on screen…"*. Verified.
+    #[test]
+    fn spawn_mode_is_stated_on_screen_for_as_long_as_it_is_armed() {
+        let (w, h) = (960, 672);
+        let mut o = Overlay::new();
+        o.push("SPAWN MODE ON - PLACING ObjDef_Ring", ACCENT);
+        present_frames(&mut o, false, TOAST_FRAMES + 60);
+        assert_eq!(o.toasts().count(), 0, "the transient half must be gone");
+        assert!(!o.showing_status(), "and F3 must be off");
+
+        let mut st = status();
+        let armed = "SPAWN: ObjDef_Ring (1/9)";
+        let mut buf = vec![GROUND; w * h];
+        o.draw(&mut buf, w, h, whole(w, h), &st);
+        assert_eq!(
+            spawn_ink(&buf, w, whole(w, h), Some(armed)),
+            0,
+            "a disarmed window must claim nothing - a click there still arms a watch"
+        );
+
+        st.spawn = Some(armed.to_string());
+        let mut buf = vec![GROUND; w * h];
+        o.draw(&mut buf, w, h, whole(w, h), &st);
+        assert!(
+            spawn_ink(&buf, w, whole(w, h), st.spawn.as_deref()) > 0,
+            "an armed spawn mode must be stated on screen even with the status line off and every \
+             toast expired"
+        );
+    }
+
+    /// **The standing statement outlives the transient that overlaps it.**
+    ///
+    /// The one collision this badge has: toasts stack up from the bottom-left and a wide one reaches
+    /// across into the bottom-right corner. [`Overlay::draw`] paints the badge **after** the toasts for
+    /// exactly this reason — where a permanent statement and an expiring one want the same pixels, the
+    /// permanent one wins, because the failure it prevents (reading a placed object as the game doing
+    /// something) outlasts the toast by definition.
+    ///
+    /// # Why this is a pixel-identity check and not an ink count
+    ///
+    /// It **was** an ink count (`spawn_ink(..) > 0`), and moving `draw_spawn_badge` above `draw_toasts`
+    /// left it green: the toast's own panel and glyphs are themselves non-`GROUND` pixels in that
+    /// rectangle, so the count could not tell the badge's ink from the thing painted over it. An
+    /// applied-and-still-green mutation is a defect in the check. So the claim is stated as what it
+    /// actually is — **the badge's rectangle must be exactly what the badge alone paints there** — and
+    /// the reference is a second render with no toast at all rather than a colour picked by hand.
+    ///
+    /// Planting the defect: move `draw_spawn_badge` above `draw_toasts` in [`Overlay::draw`] and this
+    /// fails on *"…the toast is painting over the standing statement"*. Verified.
+    #[test]
+    fn the_spawn_badge_survives_a_toast_wide_enough_to_reach_it() {
+        let (w, h) = (640usize, 448usize);
+        let area = whole(w, h);
+        let px = Overlay::font_scale(h);
+        let armed = "SPAWN: ObjDef_Ring (1/9)";
+        let (_, badge, _, _) =
+            Overlay::spawn_badge(area, px, Some(armed)).expect("the badge must form at 640x448");
+
+        let mut st = status();
+        st.spawn = Some(armed.to_string());
+
+        // The reference: the badge with nothing under it.
+        let mut alone = vec![GROUND; w * h];
+        Overlay::new().draw(&mut alone, w, h, area, &st);
+
+        let mut o = Overlay::new();
+        // A toast wide enough to reach the badge's columns — the newest toast is the bottom row, which
+        // is the row the badge sits in.
+        o.push("X".repeat(200), ERROR);
+        let (_, _, rendered) = o
+            .visible_toasts(area, px, (2 * px).max(4))
+            .into_iter()
+            .find(|(i, _, _)| *i == 0)
+            .expect("the newest toast is on screen");
+        let pad = 2 * px;
+        let toast_right =
+            area.x + (2 * px).max(4) + font::text_width(rendered.as_ref()) * px + 2 * pad;
+        assert!(
+            toast_right > badge.x,
+            "the fixture must actually pose the collision this row is named for: the toast ends at \
+             {toast_right} and the badge starts at {}",
+            badge.x
+        );
+
+        let mut over = vec![GROUND; w * h];
+        o.draw(&mut over, w, h, area, &st);
+
+        // …and the badge's own rectangle must be untouched by it, pixel for pixel.
+        let differing = (badge.y..badge.y + badge.h)
+            .flat_map(|y| (badge.x..badge.x + badge.w).map(move |x| y * w + x))
+            .filter(|&i| over[i] != alone[i])
+            .count();
+        assert_eq!(
+            differing,
+            0,
+            "the toast is painting over the standing statement: {differing} of {} pixels in the \
+             badge's rectangle differ from what the badge alone puts there",
+            badge.w * badge.h
+        );
+        // And the reference itself must not be blank, or the comparison above is two empty rectangles.
+        assert!(
+            spawn_ink(&alone, w, area, st.spawn.as_deref()) > 0,
+            "the reference render must actually contain a badge"
+        );
+    }
+
+    /// The badge carries **the whole sentence**, never a truncation, and never leaves the picture.
+    ///
+    /// `SPAWN: ObjDef_Ri` names an archetype that does not exist — the `PAUSED_WORD` rule ("PAU is not a
+    /// pause indicator") applied to a longer string, which is why the scale steps down instead of the text
+    /// being cut, exactly as the layer badge does.
+    #[test]
+    fn the_spawn_badge_never_truncates_the_archetype_it_names() {
+        let area = whole(960, 672);
+        let px = Overlay::font_scale(area.h);
+        for text in [
+            "SPAWN: ObjDef_Ring (1/9)",
+            "SPAWN: ObjDef_SomeVeryLongArchetypeName (12/137)",
+        ] {
+            let (got, r, scale, pad) = Overlay::spawn_badge(area, px, Some(text))
+                .expect("an armed badge must have a form");
+            assert_eq!(got, text, "the badge must carry the sentence it was given");
+            assert_eq!(
+                r.w,
+                font::text_width(&got) * scale + 2 * pad,
+                "the rect must hold the WHOLE text: {got:?}"
+            );
+            assert!(
+                r.x + r.w <= area.x + area.w && r.y + r.h <= area.y + area.h,
+                "the badge escaped the picture: {r:?} in {area:?}"
+            );
+        }
+        assert!(
+            Overlay::spawn_badge(area, px, None).is_none(),
+            "a disarmed mode has nothing to state"
         );
     }
 

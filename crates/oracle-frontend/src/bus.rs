@@ -24,6 +24,7 @@
 //! no-ops with the same surface — which is why the run loop calls into it unconditionally and has no
 //! `#[cfg]` of its own.
 
+use crate::spawn;
 use oracle_aether::breakpoints::BreakStop;
 use oracle_aether::host::{Host, HostConfig};
 use oracle_core::bus::Observe;
@@ -33,6 +34,7 @@ use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::Watchpoints;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// What the bus should know about the loaded cartridge — the ROM's path, and the listing bound to it (D7).
@@ -341,6 +343,136 @@ impl Bus {
     /// stale-symbol hazard D7 exists to prevent.
     pub fn set_machine_info(&mut self, info: MachineInfo) {
         self.host.set_machine_info(info.into());
+    }
+
+    // ---------------------------------------------------------------- spawn mode (LIVE-OBJECTS)
+
+    /// **Every archetype a click could place**, out of the listing this engine resolves against.
+    ///
+    /// One `Host::call` to `emulator/lookup_symbol`'s bounded prefix search — the row §11.32 §9.1 names
+    /// as already being the archetype catalogue, which is why no catalogue row was proposed. Nothing is
+    /// hard-coded here and nothing is cached: `load_symbols` may be called at any point after the
+    /// handshake, so the list is read at the moment the mode is armed and the mode is disarmed whenever
+    /// the machine's listing changes.
+    ///
+    /// Every failure comes back as the server's own words (`-32012` *you forgot to load symbols* against
+    /// `-32013` *this build has no such name* is exactly the distinction a person hits here, and §8.2
+    /// keeps them apart on purpose).
+    pub fn archetypes(&mut self, sys: &mut System) -> Result<spawn::Archetypes, spawn::Refusal> {
+        let v = self.call(
+            sys,
+            "emulator/lookup_symbol",
+            json!({"name": spawn::ARCHETYPE_PREFIX}),
+        )?;
+        // The exact branch: a symbol literally named `ObjDef_`. Vanishingly unlikely and handled anyway,
+        // because the alternative is an empty list from a reply that found something.
+        if v["exact"] == json!(true) {
+            let name = v["name"].as_str().unwrap_or_default().to_string();
+            return Ok(spawn::Archetypes {
+                total: 1,
+                names: vec![name],
+            });
+        }
+        let page = &v["otherMatches"];
+        let names: Vec<String> = page["items"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // `total` from the envelope, not from `names.len()` — the two differ exactly when the search was
+        // cut, which is the case the note exists for.
+        let total = page["total"].as_u64().unwrap_or(names.len() as u64) as usize;
+        Ok(spawn::Archetypes { names, total })
+    }
+
+    /// **Place `archetype` where the window was clicked.**
+    ///
+    /// Two calls, because the click is in *screen* dots and the mailbox wants *world* pixels:
+    ///
+    /// 1. `emulator/object_at`, whose `world{x,y}` is `Camera_X`/`Camera_Y` plus the dot (§11.26 M3, and
+    ///    the join §11.32 §11 names as the GUI's one extra dependency). It is a pure read and needs no
+    ///    pause.
+    /// 2. `emulator/object_spawn { defSymbol, x, y }`, which is where the pause requirement, the mailbox
+    ///    handshake and all five engine refusals live.
+    ///
+    /// **The `world` half is refused rather than guessed.** §11.26 makes `worldSource` a field precisely
+    /// so its absence is not inferred from a missing `world`, and a build without the camera symbols gets
+    /// a sentence instead of a coordinate — a spawn at the raw dot would land somewhere plausible and
+    /// wrong, which is the failure class this whole row is written against.
+    ///
+    /// **UNMEASURED, and named rather than assumed** (§11.32 §11's own flag): that `object_at`'s world
+    /// space is the same flat world-pixel space `Obj_Req_X`/`Y` want. Aeon states it is *"the same
+    /// convention as `Warp_Req_X/Y`"*; nothing in this repo has confirmed the two agree against a running
+    /// game, and if they do not, this needs a conversion that no CR has specified.
+    pub fn spawn_at(
+        &mut self,
+        sys: &mut System,
+        archetype: &str,
+        dot: (u16, u16),
+    ) -> Result<spawn::Placed, spawn::Refusal> {
+        let (dx, dy) = dot;
+        let at = self.call(sys, "emulator/object_at", json!({"x": dx, "y": dy}))?;
+        let source = at["worldSource"].as_str().unwrap_or("unavailable");
+        let world = match (source, at["world"]["x"].as_u64(), at["world"]["y"].as_u64()) {
+            ("camera", Some(x), Some(y)) => (x as u32, y as u32),
+            _ => {
+                return Err(spawn::Refusal::local(format!(
+                    "this build cannot turn a click into a world position (object_at answered \
+                     worldSource={source:?}): `Camera_X` and `Camera_Y` are not both in the loaded \
+                     listing, and spawning at the raw screen dot ({dx},{dy}) would place the object \
+                     somewhere plausible and wrong"
+                )))
+            }
+        };
+        let placed = self.call(
+            sys,
+            "emulator/object_spawn",
+            json!({"defSymbol": archetype, "x": world.0, "y": world.1}),
+        )?;
+        Ok(spawn::Placed {
+            handle: placed["handle"].as_str().unwrap_or_default().to_string(),
+            addr: placed["addr"].as_str().unwrap_or_default().to_string(),
+            slot: placed["slot"].as_i64(),
+            asked: world,
+            now: (
+                placed["x"].as_i64().unwrap_or_default(),
+                placed["y"].as_i64().unwrap_or_default(),
+            ),
+            frames_advanced: placed["framesAdvanced"].as_u64().unwrap_or_default(),
+            caveat: placed["caveat"].as_str().map(str::to_string),
+        })
+    }
+
+    /// One synchronous in-process dispatch, with the error translated into this crate's vocabulary and
+    /// **nothing else** — the message is moved, never rewritten.
+    ///
+    /// [`Host::call`](oracle_aether::host::Host::call) rather than the drain: the drain is the socket
+    /// clients' path and is bounded so one of them cannot freeze the window, whereas a call the window
+    /// makes of itself is its own frame time to spend. D15's *"an in-process GUI is a consumer of the same
+    /// registry, not a second server"*, taken literally.
+    ///
+    /// Private, and only per-**gesture** callers reach it. A panel body repainting through here would be
+    /// the arrangement `Host::call`'s own doc warns about; the per-frame readers in this crate go to the
+    /// core directly, exactly as [`crate::pick`] does.
+    fn call(
+        &mut self,
+        sys: &mut System,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, spawn::Refusal> {
+        let (result, _stamp) = self.host.call(sys, method, &params);
+        result.map_err(|e| spawn::Refusal {
+            code: Some(e.code),
+            reason: e
+                .data
+                .as_ref()
+                .and_then(|d| d["reason"].as_str())
+                .map(str::to_string),
+            message: e.message,
+        })
     }
 }
 
@@ -733,5 +865,589 @@ mod tests {
 
         drop(peer);
         let _ = std::fs::remove_file(&path);
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Spawn mode, end to end, against a machine that really consumes the mailbox
+    // -------------------------------------------------------------------------------------------
+
+    /// **The window's click, the server's handler, and a 68000 that actually answers.**
+    ///
+    /// # Why this fixture is a program and not a stub
+    ///
+    /// The property under test is not "the window and the server agree" — a parity test between two
+    /// consumers of one derivation is **structurally blind to a defect in the derivation**: break the
+    /// shared thing and both move together, agree perfectly, and are both wrong. So the fixture is a
+    /// 68000 program that implements aeon's side of the `Obj_Req_*` protocol (the same test double
+    /// `oracle-aether/tests/object_mutation.rs` uses, reduced to the spawn path), and it **copies what it
+    /// saw into a witness area at the moment it observed the flag**. Every row below therefore asserts
+    /// *the machine consumed a spawn request carrying the world position the click mapped to* BEFORE it
+    /// asserts anything about the sentence the window printed.
+    ///
+    /// The addresses here are the fixture's own, deliberately not aeon's: the server resolves every cell
+    /// by name on every call, so a test that reused a real build's numbers could pass against a server
+    /// that had them baked in — which is the property `protocol.md` §11.32 §8 exists for.
+    #[cfg(feature = "aether")]
+    mod spawn_picker {
+        use super::*;
+        use crate::spawn;
+        use oracle_aether::objreq;
+        use oracle_core::symbols::SymbolTable;
+
+        // --- the fixture's memory map -----------------------------------------------------------
+        const POOL_BASE: u32 = 0x00FF_8000;
+        const SST: u32 = 0x50;
+        const NUM_PLAYERS: u32 = 2;
+        const NUM_DYNAMIC: u32 = 40;
+        const NUM_SYSTEM: u32 = 8;
+        const NUM_EFFECTS: u32 = 16;
+        const NUM_TOTAL: u32 = NUM_PLAYERS + NUM_DYNAMIC + NUM_SYSTEM + NUM_EFFECTS;
+        const OBJ_CODE_BASE: u32 = 0x0001_0000;
+
+        /// The mailbox, in the engine's declaration order and at its declared widths.
+        const MB: u32 = 0x00FF_9600;
+        const MB_DEF: u32 = MB;
+        const MB_X: u32 = MB + 4;
+        const MB_Y: u32 = MB + 6;
+        const MB_SLOT: u32 = MB + 8;
+        const MB_PLACE: u32 = MB + 10;
+        const MB_OP: u32 = MB + 12;
+        const MB_STATUS: u32 = MB + 13;
+        const MB_FLAG: u32 = MB + 14;
+
+        /// Cells the test drives and the double reads. Never named to the server.
+        const SCRIPT_STATUS: u32 = 0x00FF_9700;
+        const SCRIPT_HANDLE: u32 = 0x00FF_9702;
+        const DEAF: u32 = 0x00FF_9704;
+
+        /// **What the double saw at the moment it observed the flag set.** This is the anchor: it is
+        /// written by the *emulated machine*, so nothing on the server side can fake it.
+        const W_DEF: u32 = 0x00FF_9710;
+        const W_X: u32 = 0x00FF_9714;
+        const W_Y: u32 = 0x00FF_9716;
+        const W_OP: u32 = 0x00FF_971C;
+
+        /// The camera, which is what turns a screen dot into a world pixel (§11.26).
+        const CAMERA_X: u32 = 0x00FF_9800;
+        const CAMERA_Y: u32 = 0x00FF_9802;
+
+        /// The archetype a click places, and where its record says the object ended up. The two positions
+        /// are deliberately different: the request asks for one and the record holds the other, which is
+        /// the only way to tell §11.32's ruled **re-read** from an echo of the request.
+        const OBJ_DEF_RING: u32 = 0x0001_2340;
+        const CAM: (u32, u32) = (100, 200);
+        const DOT: (u16, u16) = (10, 20);
+        const RECORD_AT: (u16, u16) = (7, 9);
+
+        fn dynamic_slot(n: u32) -> u32 {
+            NUM_PLAYERS + n
+        }
+        fn slot_addr(slot: u32) -> u32 {
+            POOL_BASE + slot * SST
+        }
+
+        // --- the 68000 double -------------------------------------------------------------------
+
+        const ROM_LEN: usize = 0x300;
+        const CODE: u32 = 0x0000_0200;
+
+        fn put_word(rom: &mut [u8], at: u32, w: u16) {
+            rom[at as usize] = (w >> 8) as u8;
+            rom[at as usize + 1] = (w & 0xFF) as u8;
+        }
+        fn put_long(rom: &mut [u8], at: u32, l: u32) {
+            put_word(rom, at, (l >> 16) as u16);
+            put_word(rom, at + 2, (l & 0xFFFF) as u16);
+        }
+
+        struct Asm {
+            rom: Vec<u8>,
+            pc: u32,
+        }
+        impl Asm {
+            fn op(&mut self, w: u16) -> &mut Self {
+                put_word(&mut self.rom, self.pc, w);
+                self.pc += 2;
+                self
+            }
+            fn long(&mut self, l: u32) -> &mut Self {
+                put_long(&mut self.rom, self.pc, l);
+                self.pc += 4;
+                self
+            }
+            /// `MOVE.<sz> (src).l, (dst).l`
+            fn mov(&mut self, size_op: u16, src: u32, dst: u32) -> &mut Self {
+                self.op(size_op).long(src).long(dst)
+            }
+            fn tst_b(&mut self, addr: u32) -> &mut Self {
+                self.op(0x4A39).long(addr)
+            }
+            fn clr_b(&mut self, addr: u32) -> &mut Self {
+                self.op(0x4239).long(addr)
+            }
+            fn br(&mut self, opcode_hi: u16, target: u32) -> &mut Self {
+                let disp = target as i64 - (self.pc as i64 + 2);
+                assert!(
+                    (-128..=127).contains(&disp),
+                    "short branch out of range: {disp}"
+                );
+                self.op(opcode_hi | ((disp as i8) as u8 as u16))
+            }
+        }
+
+        const MOVE_B: u16 = 0x13F9;
+        const MOVE_W: u16 = 0x33F9;
+        const MOVE_L: u16 = 0x23F9;
+        const BRA_S: u16 = 0x6000;
+        const BEQ_S: u16 = 0x6700;
+        const BNE_S: u16 = 0x6600;
+
+        /// aeon's consumer, reduced to the protocol and nothing else:
+        ///
+        /// ```text
+        /// loop:  tst.b  DEAF          ; scripted deafness — the mailboxNotConsumed case
+        ///        bne.s  loop
+        ///        tst.b  Obj_Req_Flag  ; the only thing that starts a consumption
+        ///        beq.s  loop
+        ///        <copy Def/X/Y/Op into the witness area>
+        ///        move.w SCRIPT_HANDLE, Obj_Req_Slot     ; publish the handle …
+        ///        move.b SCRIPT_STATUS, Obj_Req_Status   ; … then the status …
+        ///        clr.b  Obj_Req_Flag                    ; … and the flag LAST. The ack.
+        ///        bra.s  loop
+        /// ```
+        fn consumer_rom() -> Vec<u8> {
+            let mut a = Asm {
+                rom: vec![0u8; ROM_LEN],
+                pc: CODE,
+            };
+            put_long(&mut a.rom, 0x0000, 0x00FF_FFFE); // initial SSP
+            put_long(&mut a.rom, 0x0004, CODE); // initial PC
+            a.op(0x46FC).op(0x2700); // move.w #$2700, SR
+            let loop_top = a.pc;
+            a.tst_b(DEAF).br(BNE_S, loop_top);
+            a.tst_b(MB_FLAG).br(BEQ_S, loop_top);
+            a.mov(MOVE_L, MB_DEF, W_DEF);
+            a.mov(MOVE_W, MB_X, W_X);
+            a.mov(MOVE_W, MB_Y, W_Y);
+            a.mov(MOVE_B, MB_OP, W_OP);
+            a.mov(MOVE_W, SCRIPT_HANDLE, MB_SLOT);
+            a.mov(MOVE_B, SCRIPT_STATUS, MB_STATUS);
+            a.clr_b(MB_FLAG);
+            a.br(BRA_S, loop_top);
+            assert!(a.pc < ROM_LEN as u32, "the double outgrew its ROM");
+            a.rom
+        }
+
+        // --- the listing ------------------------------------------------------------------------
+
+        /// The rows this fixture's build declares, **computed** rather than transcribed, so the pool the
+        /// server decodes and the pool the double writes into cannot drift apart.
+        fn rows() -> Vec<(String, u32)> {
+            let player = POOL_BASE;
+            let dynamic = player + NUM_PLAYERS * SST;
+            let system = dynamic + NUM_DYNAMIC * SST;
+            let effect = system + NUM_SYSTEM * SST;
+            vec![
+                ("Object_RAM".into(), player),
+                ("Player_1".into(), player),
+                ("Player_2".into(), player + SST),
+                ("Dynamic_Slots".into(), dynamic),
+                ("System_Slots".into(), system),
+                ("Effect_Slots".into(), effect),
+                ("Object_RAM_End".into(), player + NUM_TOTAL * SST),
+                ("ObjCodeBase".into(), OBJ_CODE_BASE),
+                // The eight mailbox cells, in the engine's declaration order.
+                ("Obj_Req_Def".into(), MB_DEF),
+                ("Obj_Req_X".into(), MB_X),
+                ("Obj_Req_Y".into(), MB_Y),
+                ("Obj_Req_Slot".into(), MB_SLOT),
+                ("Obj_Req_Place".into(), MB_PLACE),
+                ("Obj_Req_Op".into(), MB_OP),
+                ("Obj_Req_Status".into(), MB_STATUS),
+                ("Obj_Req_Flag".into(), MB_FLAG),
+                // The click→world join.
+                ("Camera_X".into(), CAMERA_X),
+                ("Camera_Y".into(), CAMERA_Y),
+                // Two archetypes, so the cycle has somewhere to go.
+                ("ObjDef_Ring".into(), OBJ_DEF_RING),
+                ("ObjDef_Spring".into(), OBJ_DEF_RING + 0x20),
+            ]
+        }
+
+        fn listing(rows: &[(String, u32)]) -> String {
+            let mut s = String::from("  Symbol Table (* = unused):\n\n");
+            for (name, addr) in rows {
+                s.push_str(&format!(" {name} : {addr:X} C |\n"));
+            }
+            s.push_str(&format!("\n{:>4} symbols\n", rows.len()));
+            s
+        }
+
+        fn table(rows: &[(String, u32)]) -> SymbolTable {
+            SymbolTable::parse(&listing(rows)).expect("the fixture's listing must parse")
+        }
+
+        // --- the harness ------------------------------------------------------------------------
+
+        struct Fix {
+            bus: Bus,
+            sys: System,
+        }
+
+        impl Fix {
+            fn poke(&mut self, addr: u32, value: u64, width: u32) {
+                self.bus
+                    .call(
+                        &mut self.sys,
+                        "emulator/write_memory",
+                        json!({"addr": format!("0x{addr:08X}"), "value": value, "width": width}),
+                    )
+                    .unwrap_or_else(|e| panic!("write_memory {addr:08X}: {}", e.message));
+            }
+
+            /// One 16-bit cell, read back through the server so the reading and the writing use the same
+            /// address space the handler does.
+            fn peek16(&mut self, addr: u32) -> u16 {
+                let r = self
+                    .bus
+                    .call(
+                        &mut self.sys,
+                        "emulator/read_memory",
+                        json!({"addr": format!("0x{addr:08X}"), "len": 2}),
+                    )
+                    .unwrap_or_else(|e| panic!("read_memory {addr:08X}: {}", e.message));
+                let s = r["bytes"].as_str().expect("bytes");
+                u16::from_str_radix(&s[2..6], 16).expect("hex")
+            }
+
+            fn peek8(&mut self, addr: u32) -> u8 {
+                (self.peek16(addr & !1) >> if addr & 1 == 0 { 8 } else { 0 }) as u8
+            }
+        }
+
+        /// A window whose machine runs the double, whose bus resolves against the fixture's listing, and
+        /// whose VDP is showing a picture (without one there is no dot to click).
+        fn fixture(rows: Vec<(String, u32)>) -> Fix {
+            let mut sys = System::new(0x5EED);
+            sys.load_rom(consumer_rom());
+            sys.reset();
+            // Display on, H40 — `emulator/object_at` refuses a dot outside the active display, and a
+            // machine straight out of reset has no active display at all.
+            {
+                let v = sys.vdp_mut();
+                v.control_write(0x8000 | (0x01 << 8) | 0x74, 0);
+                v.control_write(0x8000 | (0x0C << 8) | 0x81, 0);
+            }
+            let bus = Bus::start(
+                None,
+                MachineInfo {
+                    symbols: Some(table(&rows)),
+                    ..MachineInfo::default()
+                },
+            );
+            // Kick the machine off its reset vector so the double is inside its poll loop before the
+            // first request lands. Nothing here depends on the count.
+            sys.run_frames(1);
+            let mut f = Fix { bus, sys };
+            // `System::new` seeds work RAM with a pattern rather than zeroes, so every script cell is
+            // written explicitly. A non-zero `DEAF` parks the double in its own spin loop and reaches
+            // every row here as `mailboxNotConsumed` — measured the hard way in the aether suite.
+            f.poke(DEAF, 0, 1);
+            f.poke(SCRIPT_STATUS, u64::from(objreq::OK), 1);
+            f.poke(
+                SCRIPT_HANDLE,
+                u64::from(slot_addr(dynamic_slot(0)) & 0xFFFF),
+                2,
+            );
+            f.poke(MB_FLAG, 0, 1);
+            f.poke(CAMERA_X, u64::from(CAM.0), 2);
+            f.poke(CAMERA_Y, u64::from(CAM.1), 2);
+            // Seat a live record where the handle points, at a position the request does NOT ask for.
+            let a = slot_addr(dynamic_slot(0));
+            f.poke(a, 0x27DE, 2); // code_addr — non-zero IS the activity test
+            f.poke(a + 2, u64::from(RECORD_AT.0), 2);
+            f.poke(a + 6, u64::from(RECORD_AT.1), 2);
+            // The witness area, cleared, so "the double wrote nothing" is distinguishable from "the seed
+            // happened to look like a spawn".
+            for c in [W_DEF, W_DEF + 2, W_X, W_Y, W_OP] {
+                f.poke(c, 0, 2);
+            }
+            f
+        }
+
+        /// The world pixel the click maps to, **computed from the fixture's own camera and dot** rather
+        /// than pinned, so a change to either moves the expectation with it.
+        fn expected_world() -> (u32, u32) {
+            (CAM.0 + u32::from(DOT.0), CAM.1 + u32::from(DOT.1))
+        }
+
+        /// ## ★ A click places an object, and **the machine is what says so**.
+        ///
+        /// # Why the first four assertions are not about the window at all
+        ///
+        /// This row pairs the picker against the served method, and such a pair is blind to a defect in
+        /// what they share: stub the exchange and both sides fall silent together, agreeing perfectly.
+        /// So the anchor is the **witness area** — bytes the emulated 68000 wrote when it saw the flag go
+        /// up — and it is checked before a single field of the reply is read. Break `objreq_exchange`'s
+        /// mailbox write (or the world join above it) and the witness stays zero and this goes red on
+        /// *"the machine never consumed a spawn request"*, which is the failure a green agreement between
+        /// two silent halves would have hidden.
+        ///
+        /// # And why the positions differ
+        ///
+        /// The request asks for `expected_world()`; the record the handle points at holds `RECORD_AT`.
+        /// §11.32's 2026-09-03 addendum rules the reply's `x`/`y` a **re-read after the frame advance,
+        /// not an echo**, so only one of those two numbers can be the right answer — against a stationary
+        /// object the two agree and the row would prove nothing.
+        #[test]
+        fn a_click_in_spawn_mode_places_an_object_and_the_machine_witnesses_it() {
+            let mut f = fixture(rows());
+
+            // The mode arms out of the listing, not out of a constant in this crate.
+            let found = f
+                .bus
+                .archetypes(&mut f.sys)
+                .expect("the fixture's listing names two ObjDef_ archetypes");
+            let mut mode = spawn::Mode::new();
+            let name = mode
+                .arm(found.names.clone())
+                .expect("two archetypes are enough to arm")
+                .to_string();
+            assert!(
+                found.names.contains(&"ObjDef_Ring".to_string())
+                    && found.names.contains(&"ObjDef_Spring".to_string()),
+                "the search must find both: {:?}",
+                found.names
+            );
+
+            let placed = f
+                .bus
+                .spawn_at(&mut f.sys, &name, DOT)
+                .unwrap_or_else(|e| panic!("the click was refused: {}", e.message));
+
+            // ---- (1) THE ANCHOR. Not agreement — the machine actually consumed a spawn request. ----
+            assert_eq!(
+                f.peek8(W_OP),
+                objreq::OP_SPAWN,
+                "the machine never consumed a spawn request: the witness op is {:#04X}, so nothing \
+                 reached the mailbox and every agreement below would be two silences shaking hands",
+                f.peek8(W_OP)
+            );
+            let (wx, wy) = expected_world();
+            assert_eq!(
+                (u32::from(f.peek16(W_X)), u32::from(f.peek16(W_Y))),
+                (wx, wy),
+                "the machine was asked for the wrong place: the click's dot {DOT:?} under camera \
+                 {CAM:?} is world {wx},{wy}"
+            );
+            assert_eq!(
+                ((u32::from(f.peek16(W_DEF)) << 16) | u32::from(f.peek16(W_DEF + 2))),
+                OBJ_DEF_RING,
+                "the archetype the machine was handed is not the one the mode named"
+            );
+            assert_eq!(
+                f.peek8(MB_FLAG),
+                0,
+                "the double must have acked by clearing the flag last"
+            );
+
+            // ---- (2) …and only now, what the window says about it. ----
+            assert_eq!(placed.asked, (wx, wy));
+            assert_eq!(
+                placed.now,
+                (i64::from(RECORD_AT.0), i64::from(RECORD_AT.1)),
+                "the reply's x/y are a RE-READ of the record, not an echo of the request"
+            );
+            assert_eq!(placed.slot, Some(i64::from(dynamic_slot(0))));
+            assert!(placed.frames_advanced >= 1, "{placed:?}");
+
+            let line = placed.terminal(&name);
+            assert!(line.contains("ObjDef_Ring"), "{line:?}");
+            assert!(
+                line.contains(&format!("({wx}, {wy})")),
+                "the sentence must say where the click asked for: {line:?}"
+            );
+            assert!(
+                line.contains(&format!("({}, {})", RECORD_AT.0, RECORD_AT.1)),
+                "…and where the record now reads: {line:?}"
+            );
+            assert!(
+                line.contains("not a confirmation of where you clicked"),
+                "…and which of the two is which: {line:?}"
+            );
+        }
+
+        /// ## ★ **A click on a running machine is refused, in the server's words, with a key to press.**
+        ///
+        /// §11.32 §7.1 makes `paused` a precondition of all three rows, and the paused-frame discipline is
+        /// the whole reason a placement UI is safe to have. This row is what makes it *legible*: the
+        /// server's `machineRunning` message reaches the terminal verbatim, and the glass gets a sentence
+        /// naming the key that fixes it.
+        ///
+        /// Planting the defect: return `Ok` instead of `Err` from `Bus::call`'s `map_err`, or drop the
+        /// `machineRunning` arm from `Refusal::remedy`, and this goes red rather than the click quietly
+        /// doing nothing — which is exactly what a picker that swallowed refusals would look like.
+        #[test]
+        fn a_click_while_the_machine_is_running_is_refused_and_names_the_key_that_pauses_it() {
+            let mut f = fixture(rows());
+            // The window's pause state IS the bus's free-run state (conflict 1), and it lands at the top
+            // of the next drain — so this is the real path a playing window is on, not a poked flag.
+            f.bus.set_paused(false);
+            f.bus.pump(&mut f.sys);
+
+            let e = f
+                .bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .expect_err("a running machine must refuse the write");
+            assert_eq!(e.reason.as_deref(), Some("machineRunning"), "{e:?}");
+            assert_eq!(e.code, Some(-32005), "{e:?}");
+
+            // **The message is the SERVER'S, byte for byte.** Taken from a raw `Host::call` beside the
+            // translated one rather than from a literal here: a phrase copied off `require_paused` into
+            // this file would pin the wording of a function it does not own, and would go green against a
+            // `Bus::call` that had started summarising. Comparing against the dispatch itself is what
+            // makes "verbatim" a checked property of the translation rather than of my transcription.
+            let (raw, _) = f.bus.host.call(
+                &mut f.sys,
+                "emulator/object_spawn",
+                &json!({"defSymbol": "ObjDef_Ring", "x": 1, "y": 1}),
+            );
+            let raw =
+                raw.expect_err("the raw dispatch must refuse too, or this comparison is empty");
+            assert_eq!(
+                (e.message.as_str(), e.code),
+                (raw.message.as_str(), Some(raw.code)),
+                "the window must carry the server's refusal unchanged, not a summary of it"
+            );
+
+            // The anchor for this row: the refusal happened BEFORE anything was written, so the machine
+            // saw no request at all. A refusal that had already poked the mailbox would be the worst of
+            // both — an error reply and an armed request that fires minutes later (§7.3).
+            assert_eq!(
+                f.peek8(W_OP),
+                0,
+                "a refused click must not have reached the mailbox"
+            );
+
+            let line = e.terminal("ObjDef_Ring", Some("Space"));
+            assert!(
+                line.contains(&e.message),
+                "the server's own words must survive: {line:?}"
+            );
+            assert!(line.contains("nothing was placed"), "{line:?}");
+            assert_eq!(
+                e.toast(Some("Space")),
+                "SPAWN REFUSED — press Space to pause this window, then click the spot again",
+                "the glass must carry the next action, in this window's vocabulary"
+            );
+
+            // Pausing again is all it takes — the remedy the sentence offers is the real one.
+            f.bus.set_paused(true);
+            f.bus.pump(&mut f.sys);
+            f.bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .expect("the same click lands once the machine is paused");
+        }
+
+        /// ## ★ **A build with no mailbox refuses by name, and writes nothing.**
+        ///
+        /// §11.32 §8's safety property, reaching the window: the release shape of aeon's RAM carries no
+        /// `Obj_Req_*` symbol at all, so an offset-based implementation would work beautifully against
+        /// every DEBUG build and corrupt game RAM against every release build, silently, reporting
+        /// success. The refusal is the feature.
+        #[test]
+        fn a_listing_without_the_mailbox_refuses_by_name_and_touches_nothing() {
+            // Every row except the eight mailbox cells — a release ROM, as far as these rows can tell.
+            let rows: Vec<_> = rows()
+                .into_iter()
+                .filter(|(n, _)| !n.starts_with("Obj_Req_"))
+                .collect();
+            let mut f = fixture(rows);
+
+            let e = f
+                .bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .expect_err("a build with no mailbox must refuse");
+            assert_eq!(
+                e.code,
+                Some(-32013),
+                "the client's next question is 'why not', and -32013 vs -32012 is the answer: {e:?}"
+            );
+            assert!(
+                e.message.contains("Obj_Req_"),
+                "the refusal must name what is missing: {:?}",
+                e.message
+            );
+            assert_eq!(
+                f.peek8(W_OP),
+                0,
+                "nothing may be written to a build that has no mailbox to write to"
+            );
+            assert!(
+                e.terminal("ObjDef_Ring", Some("Space"))
+                    .contains("nothing was placed"),
+                "and it must never read as a success"
+            );
+        }
+
+        /// ## ★ **No camera means no click**, and the window says so rather than spawning at the dot.
+        ///
+        /// §11.26 makes `worldSource` a field precisely so its absence is a stated fact rather than an
+        /// inference. A window that fell back to the raw screen dot would place the object somewhere
+        /// plausible and wrong — a confident wrong answer, which is indistinguishable from a right one.
+        #[test]
+        fn a_build_without_the_camera_symbols_refuses_rather_than_spawning_at_the_screen_dot() {
+            let rows: Vec<_> = rows()
+                .into_iter()
+                .filter(|(n, _)| !n.starts_with("Camera_"))
+                .collect();
+            let mut f = fixture(rows);
+
+            let e = f
+                .bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .expect_err("no camera, no world position");
+            assert_eq!(e.code, None, "this refusal is the window's own: {e:?}");
+            assert!(
+                e.message.contains("Camera_X") && e.message.contains("unavailable"),
+                "the refusal must name what it could not read: {:?}",
+                e.message
+            );
+            assert_eq!(
+                f.peek8(W_OP),
+                0,
+                "nothing may reach the mailbox when the position is unknown"
+            );
+        }
+
+        /// ## ★ **A refused arm leaves the mode off, and blames the right thing.**
+        ///
+        /// The two ways this can fail are not the same fact and must not read the same: *I forgot to load
+        /// symbols* (`-32012`) against *this build has no archetypes* (`-32013`). §8.2 keeps them apart on
+        /// the wire and this row keeps them apart on the glass.
+        #[test]
+        fn arming_against_a_listing_with_no_archetypes_refuses_and_leaves_a_click_alone() {
+            let rows: Vec<_> = rows()
+                .into_iter()
+                .filter(|(n, _)| !n.starts_with("ObjDef_"))
+                .collect();
+            let mut f = fixture(rows);
+
+            let e = f
+                .bus
+                .archetypes(&mut f.sys)
+                .expect_err("a listing with no ObjDef_ must refuse");
+            assert_eq!(e.code, Some(-32013), "{e:?}");
+            assert!(
+                e.message.contains(spawn::ARCHETYPE_PREFIX),
+                "the refusal must name the prefix that found nothing: {:?}",
+                e.message
+            );
+            // …and the mode stays off, so a click still means what it always meant.
+            let mut mode = spawn::Mode::new();
+            assert!(!mode.is_armed());
+            assert_eq!(mode.badge(), None);
+            assert!(mode.arm(Vec::new()).is_err());
+        }
     }
 }

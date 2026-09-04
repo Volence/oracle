@@ -82,6 +82,11 @@ pub struct Reaction<'a> {
     /// The window's pause state. Written to the bus before the drain and read back after it, because
     /// `emulator/pause` is a client's way of stopping *this* loop.
     pub paused: &'a mut bool,
+    /// **Spawn mode.** Its archetype list was read out of the listing that was loaded at arm time, so a
+    /// listing that is replaced or dropped under it leaves it holding names that no longer resolve — or,
+    /// worse, names that resolve to *different addresses*. Disarmed by the reaction below rather than
+    /// left to go stale; see [`drain`]'s `symbols_changed` arm.
+    pub spawn: &'a mut crate::spawn::Mode,
 }
 
 /// What one [`drain`] left for its caller: the single effect the seam declines to perform itself, and the
@@ -174,6 +179,26 @@ pub fn drain(sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Drained {
                 None => "aether: the symbol listing was dropped over the bus".to_string(),
             },
         );
+        // **Spawn mode is disarmed by a listing change**, and it says so.
+        //
+        // Its archetype list is a set of *names* read out of the listing that was loaded when it armed,
+        // and `emulator/object_spawn {defSymbol}` re-resolves each one at call time. A replaced listing
+        // therefore does not make a click fail — it makes it succeed against a **different address**,
+        // which is the silent-corruption shape §11.32 §8 refuses on the wire and which this window would
+        // otherwise walk straight into. Of the symbols `s4.lst` and `s4.debug.lst` share, 92.6% name a
+        // different address (`Engine::load_symbols`'s own measurement), so this is the common case rather
+        // than a corner.
+        //
+        // Silently, if it was never armed: a window that announced a mode change to somebody who had not
+        // set the mode is noise. The message only appears where something was actually retracted.
+        if r.spawn.is_armed() {
+            r.spawn.disarm();
+            crate::notify(
+                r.ov,
+                ACCENT,
+                "spawn mode disarmed — the symbol listing changed, so its archetypes may now name                  different addresses",
+            );
+        }
     }
     // Conflict 1's inbound half: `emulator/pause` / `emulator/resume` are the client's way of stopping and
     // starting *this* loop, and they only mean anything if the loop follows them.
@@ -241,6 +266,7 @@ mod tests {
         rom_fp: u64,
         symbols: Option<SymbolTable>,
         paused: bool,
+        spawn: crate::spawn::Mode,
     }
 
     impl Win {
@@ -254,6 +280,7 @@ mod tests {
                 rom_fp,
                 symbols,
                 paused,
+                spawn: crate::spawn::Mode::new(),
             }
         }
 
@@ -271,6 +298,7 @@ mod tests {
                     rom_fp: &mut self.rom_fp,
                     symbols: &mut self.symbols,
                     paused: &mut self.paused,
+                    spawn: &mut self.spawn,
                 },
             )
         }
@@ -619,6 +647,80 @@ mod tests {
         assert!(
             !win.said("cartridge was replaced"),
             "a listing change must not be reported as a cartridge change: {:?}",
+            win.toasts()
+        );
+
+        drop(bus);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ## ★ **A listing change disarms spawn mode, and says why.**
+    ///
+    /// The hazard is not that a click would fail. Spawn mode holds archetype **names**, and
+    /// `emulator/object_spawn {defSymbol}` re-resolves each one at call time — so a replaced listing
+    /// makes the next click *succeed against a different address*. Of the symbols `s4.lst` and
+    /// `s4.debug.lst` share, 92.6% name a different address (`Engine::load_symbols`'s own measurement,
+    /// which is why a mismatched listing is refused rather than degraded), so this is the common case
+    /// and not a corner.
+    ///
+    /// **Alternative green ruled out:** the mode is armed *and asserted armed* before the call, so the
+    /// disarm at the end cannot be a mode that was never on.
+    ///
+    /// Planting the defect: delete the `if r.spawn.is_armed()` block from [`drain`]'s `symbols_changed`
+    /// arm and this fails on *"a listing change must retract the mode…"*. Verified.
+    #[test]
+    fn a_listing_change_disarms_spawn_mode_rather_than_leaving_it_naming_stale_addresses() {
+        let dir = scratch("spawn-disarm");
+        let rom = dir.join("game.bin");
+        let lst = dir.join("game.lst");
+        std::fs::write(&rom, rom_with_appendix(0x8000)).unwrap();
+        std::fs::write(&lst, listing_for(0x8000)).unwrap();
+
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(std::fs::read(&rom).unwrap());
+        sys.reset();
+
+        let path = sock("spawn-disarm");
+        let mut bus = Bus::start(
+            Some(Some(path.clone())),
+            MachineInfo {
+                rom_path: Some(rom.display().to_string()),
+                symbols: None,
+                symbols_path: None,
+            },
+        );
+        let mut win = Win::new(save_state::rom_fingerprint(sys.rom()), None, true);
+        // Armed through the mode's own entry point, over names it could plausibly have discovered.
+        win.spawn
+            .arm(vec!["ObjDef_Ring".into(), "ObjDef_Spring".into()])
+            .expect("the fixture must arm, or the disarm below proves nothing");
+        assert!(win.spawn.is_armed(), "the control: the mode starts armed");
+        assert!(win.spawn.badge().is_some(), "…and is stating so on screen");
+
+        let mut peer = connected(&path, &mut win, &mut sys, &mut bus);
+        call(
+            &mut peer,
+            &mut win,
+            &mut sys,
+            &mut bus,
+            "emulator/load_symbols",
+            json!({"path": lst.display().to_string()}),
+        );
+
+        assert!(
+            !win.spawn.is_armed(),
+            "a listing change must retract the mode — its archetype names now resolve against a \
+             listing nobody armed against, and the next click would place the WRONG object with a \
+             clean success"
+        );
+        assert_eq!(
+            win.spawn.badge(),
+            None,
+            "…and the standing statement must go with it, or the glass claims a mode that is off"
+        );
+        assert!(
+            win.said("spawn mode disarmed"),
+            "a mode that switched itself off without saying so is worse than one that stayed on: {:?}",
             win.toasts()
         );
 

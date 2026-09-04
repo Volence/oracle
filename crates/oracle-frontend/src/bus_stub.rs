@@ -202,7 +202,40 @@ impl Bus {
     }
 
     pub fn set_machine_info(&mut self, _info: MachineInfo) {}
+
+    // ---------------------------------------------------------------- spawn mode (LIVE-OBJECTS)
+
+    /// **Spawn mode cannot arm in this build, and it says why.**
+    ///
+    /// Not a shrug and not an empty list: an empty list would travel up to
+    /// [`spawn::Mode::arm`](crate::spawn::Mode::arm) and be reported as *this build's listing names no
+    /// archetype*, which is a true-sounding sentence about the wrong thing entirely. The reason a click
+    /// places nothing here is that the whole capability layer — the mailbox rows, `object_at`, and
+    /// `lookup_symbol` with it — is compiled out, and that is what the reader is told.
+    pub fn archetypes(
+        &mut self,
+        _sys: &mut System,
+    ) -> Result<crate::spawn::Archetypes, crate::spawn::Refusal> {
+        Err(crate::spawn::Refusal::local(NO_BUS))
+    }
+
+    /// The served build's [`spawn_at`](crate::bus::Bus::spawn_at) twin. Unreachable — the mode cannot arm
+    /// here, so no click can reach this — and kept so the run loop is one shape.
+    pub fn spawn_at(
+        &mut self,
+        _sys: &mut System,
+        _archetype: &str,
+        _dot: (u16, u16),
+    ) -> Result<crate::spawn::Placed, crate::spawn::Refusal> {
+        Err(crate::spawn::Refusal::local(NO_BUS))
+    }
 }
+
+/// Why nothing can be spawned from this binary. One constant, so the two refusals above cannot start
+/// giving different reasons for the same fact.
+const NO_BUS: &str =
+    "this binary was built without the `aether` feature, so it has no object-mutation \
+                      rows to spawn through — rebuild with it to place objects";
 
 /// The served build's [`break_observed`](crate::bus::break_observed) twin, and in this build it is a
 /// function that can only answer `None` — [`Bus::run_sinks`] never hands out a sink, so the argument is
@@ -229,6 +262,29 @@ mod tests {
         assert!(
             !NOT_SERVING.contains("--aether"),
             "this build cannot serve, so offering the flag as a remedy would be a lie: {NOT_SERVING:?}"
+        );
+    }
+
+    /// **A click in this build refuses for the right reason.** The failure mode this guards is the one
+    /// named on [`Bus::archetypes`]: an empty list would surface as *this listing has no archetypes*,
+    /// which is a plausible sentence about the wrong cause and would send the reader to their symbol file.
+    #[test]
+    fn a_build_with_no_bus_blames_the_build_and_not_the_symbol_listing() {
+        let mut b = Bus::default();
+        let mut sys = System::new(0x5EED);
+        let e = b
+            .archetypes(&mut sys)
+            .expect_err("this build cannot list archetypes");
+        assert!(e.message.contains("aether"), "{:?}", e.message);
+        assert!(
+            !e.message.contains(crate::spawn::ARCHETYPE_PREFIX),
+            "the reason is the build, not a missing prefix: {:?}",
+            e.message
+        );
+        assert_eq!(
+            b.spawn_at(&mut sys, "ObjDef_Ring", (10, 10)).unwrap_err(),
+            e,
+            "both halves must give one reason"
         );
     }
 
