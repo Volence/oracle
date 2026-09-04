@@ -1,5 +1,5 @@
 {
-  "focus": "Eight parcels landed today. Every panel now opens from a menu \u2014 though we still do not know why your tab titles did not work.",
+  "focus": "Nine parcels landed today, including a contract obligation to the suite. Next is making an armed breakpoint visible on screen.",
   "inFlight": [],
   "blockedOnOwner": [],
   "nextBoundary": "Here. Everything merged, pushed and written down.",
@@ -13,6 +13,14 @@
       "title": "If a panel group was COLLAPSED on your screen rather than merely behind another tab, the new menu cannot expand it either \u2014 the library keeps that control private. This is the live hypothesis for why you could not open those tabs, and one answer from you settles whether it matters."
     },
     {
+      "id": "F-ATTR-CAVEAT-PANEL",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The colour warning we just built reaches a tool but not the window: the panel's own colour lookup has no clock to compare against, so it cannot tell whether the picture may disagree. Same answer, two surfaces, and only one of them says it."
+    },
+    {
       "id": "WAITFORBREAK-INSTANT-TIMEOUT",
       "state": "open",
       "size": "M",
@@ -22,7 +30,7 @@
     },
     {
       "id": "ARMED-STATE-VISIBLE",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -64,14 +72,6 @@
       "title": "Video memory can be written while the game runs and the other three memory spaces cannot. Our emulator is following the written rules exactly; the rules are what look wrong. Needs raising with the contract team; gates nothing.",
       "state": "open",
       "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
-      "id": "ATTR-RGB-LATCH",
-      "title": "Ruled a contract obligation, not a UI parcel: the colour reply must say - ONLY when it can matter, never always - that the picture on screen may disagree with it, plus four test cases the contract names us as the author of. Queued next; goes one at a time because two builds at once corrupt each other's results here.",
-      "state": "next",
-      "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
     },
@@ -134,7 +134,7 @@
       "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Now also: any note that says 'oracle' as if it were ONE emulator, in prose about measurements. There are two, they disagree by a line, and a measurement whose instrument is unnamed is unreadable. The boot doc is already clean; the risk is the dated notes a peer might cite."
     }
   ],
-  "awaiting": "one question when you are next at the window: when you could not open those tabs, could you SEE their titles in the little bars above the panels? If the panes were collapsed rather than just behind each other, the menu I just built may not reach your case either.",
+  "awaiting": "one question when you are next at the window: when you could not open those tabs, could you SEE their titles in the little bars above the panels? Not a blocker \u2014 it decides whether there is a second defect behind the one I fixed.",
   "atBoundary": true,
-  "updatedAt": "2026-09-04T02:38:29Z"
+  "updatedAt": "2026-09-04T03:25:23Z"
 }
