@@ -369,9 +369,45 @@ STARTERS = ("#", "-", "*", ">", "|", "```",
             "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.")
 
 
+def is_table_row(t: str) -> bool:
+    """A markdown table row -- '| cell | cell |', separator rows included.
+
+    Lives here as a named predicate rather than inline in ends_sentence because
+    it classifies the SHAPE OF A LINE, which is the same question STARTERS
+    answers on the after side; keeping the pair adjacent is what makes the
+    asymmetry below visible in one screen.
+
+    WHY THE SENTENCE PREDICATE MUST SKIP THESE, AND WHY THAT LOSES NOTHING.
+    A table row ends in '|'.  '|' is not in TRAIL, so it is never stripped, and
+    it is not terminal punctuation -- so a CONTENT row could not end a sentence
+    anywhere, in any document, and every correct cut whose last kept line was a
+    table row was reported DISPROVED.  (The pure-markup escape below rescues
+    only SEPARATOR rows: '|---|---|' is all markup, a content row is not.)  The
+    original cross-check does not rescue it either, because at a cut the pairing
+    is new and so is not subtracted as pre-existing.
+
+    Nothing is lost by skipping them: a table DAMAGED by a split loses LINES,
+    and line loss is PROOF 1's job (a mangled cell is PROOF 2's).  PROOF 3
+    exists for PROSE torn mid-sentence, and a table row has no sentence to tear.
+    That is the reason not to "restore" this check later.
+
+    There is deliberately NO --headings-style opt-out.  --headings exists
+    because a reader can honestly disagree about whether a title ends a
+    sentence; there is no reading under which a table row does, so a flag would
+    only offer lanes a knob whose other position is always wrong.
+
+    begins_sentence() already accepts a table row via STARTERS' "|": the after
+    side of a seam has always been fine and only the before side was not, which
+    is what marks this an oversight rather than a missing rule.
+    """
+    return t.startswith("|") and t.endswith("|") and t.count("|") >= 2
+
+
 def make_ends_sentence(heading_aware: bool):
     def ends_sentence(s: str) -> bool:
         t = s.rstrip()
+        if is_table_row(t.lstrip()):
+            return True
         if heading_aware and t.lstrip().startswith("#"):
             # A markdown heading is a title, not a sentence. It has no terminal
             # punctuation by convention and cannot be "cut in half", so scoring
@@ -728,8 +764,24 @@ def main(argv=None) -> int:
                             f"sentence-boundary predicate")
 
     # ---------------- VERDICT ----------------
+    # The verdict carries BOTH heading figures, not just the gated one. A lane
+    # that reads only the gated number can accept a cut whose other flagged
+    # sites are not heading-adjacent and never learn there were more -- that is
+    # a real sighting, not a hypothetical (1 aware vs 6 blind, sigil, 2026-09-04).
+    # Which number gates is NOT changed here; it is only made impossible to miss.
+    aware_intro, _, _, aware_edges = results[True]
+    blind_intro, _, _, blind_edges = results[False]
+    if args.headings:
+        gated = ("heading-aware GATED (--headings: a heading is a title, "
+                 "not a torn sentence)")
+    else:
+        gated = ("heading-blind GATED (no --headings: every line is held to "
+                 "the predicate)")
     print()
     print("=" * 92)
+    print(f"PROOF 3 seams introduced: heading-aware {len(aware_intro)} / "
+          f"heading-blind {len(blind_intro)} "
+          f"(edge cuts {len(aware_edges)} / {len(blind_edges)}) -- {gated}")
     if failures:
         print(f"VERDICT: DISPROVED - {len(failures)} failing check(s)")
         for f in failures:
