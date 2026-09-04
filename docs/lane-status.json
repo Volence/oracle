@@ -40,7 +40,7 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "The symbol file every client loads carries 746 build-time constants and not one is reachable from anything we serve \u2014 we read the addresses out of it and walk past the constants. Consumers currently hardcode them or infer them from where things sit in memory, which is the guess we just refused to ship. Found because a ring count needed one."
+      "title": "The symbol file every client loads carries 746 build-time constants and not one is reachable from anything we serve. KNOWN LIMIT, measured before anyone starts: the file holds only the constants harvested from source \u2014 the handful that vary per game are absent entirely, so this parser will NOT produce them and a ring ceiling still will not arrive with it. That half is a toolchain change in another repo."
     },
     {
       "id": "PANELS-COMMAND-PALETTE",
@@ -135,5 +135,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:49:41Z"
+  "updatedAt": "2026-09-04T00:50:53Z"
 }
