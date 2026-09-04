@@ -1,14 +1,8 @@
 {
-  "focus": "You said the window is great and the panels need cleaning up; the nav and the cleanup go together since they touch the same file.",
-  "inFlight": [
-    {
-      "what": "The screen-text parcel is still building; separately your demo window is live on your display, stopped at a breakpoint, waiting for you to press Step.",
-      "where": "branch parcel/player-screen-text",
-      "agent": true
-    }
-  ],
+  "focus": "Seven parcels landed today. Next is the nav you asked for \u2014 so every panel can actually be opened.",
+  "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "When the screen-text parcel lands; the contract obligation on the colour reply is queued straight after it.",
+  "nextBoundary": "Here. Everything merged, pushed and written down.",
   "queue": [
     {
       "id": "WAITFORBREAK-INSTANT-TIMEOUT",
@@ -133,14 +127,6 @@
       "blockedBy": "a live player window on your screen; runs only when none is open"
     },
     {
-      "id": "PLAYER-SCREEN-TEXT",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "A tool can now ask the window what text is on screen, and the window never answers, because that one wire was never connected in this player. Nobody could ask before, so nobody noticed."
-    },
-    {
       "id": "PEER-CLAIMS-SWEEP",
       "state": "open",
       "size": "S",
@@ -149,6 +135,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-04T01:01:06Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-04T01:35:05Z"
 }
