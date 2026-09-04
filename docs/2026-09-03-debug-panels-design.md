@@ -204,6 +204,12 @@ natural home is an existing panel rather than one of its own, the row names the 
 **Sixteen methods → seven tabs**: Registers, Memory, Sprites, Objects, Profiler, Breakpoints, Watchpoints.
 Sprites is the one §5 puts last and folds into Memory under a thinner parcel.
 
+> ⚑ **This table says which tab a method lives in and never says how a human OPENS that tab** — and that
+> omission shipped. `egui_dock` draws only each leaf's active tab, so most of these panels were behind
+> another title with no menu, no tab list and no other affordance in the window. **See §5.9**, which is
+> the correction and the nav that closes it. Read as a rule: *a row in this table is not a reachable
+> surface until something outside the dock can bring it forward.*
+
 ### 2.2 Controls — things you do
 
 | method | control, and where |
@@ -1567,6 +1573,97 @@ defect.
 
 ---
 
+### 5.9 `PANELS-NAV` — the docking design never said how a panel gets OPENED
+
+> ### ⚑ **The gap this section closes is in §2.1, not in any panel's code.**
+>
+> §2.1 partitions the surface into *things you look at* (tabs) and *things you do* (controls) and then
+> §5.1–§5.7 build eight tabs. **Not one line of this document, before this one, says how a human brings a
+> tab to the front.** The design took it as given that a tab in the layout is a tab you can reach — and
+> the layout it chose is the one in which that is false for most of them.
+
+**The measurement.** `egui_dock` draws only each leaf's **active** tab. `ui::initial_dock()` puts
+Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so **four of the
+eight panel bodies do not run on a given frame** and their titles sit behind other titles. This document
+already knew that fact and used it twice — §5.7.1 built `--dock every-tab` because a panel-cost
+measurement taken under the default layout measures the *arrangement*; `crate::screen`'s header cites it
+to argue what `emulator/screen_text` may report. Both uses treat it as a measurement hazard. **Neither
+noticed it is a usability defect**, and the window shipped with no menu, no tab list and no other
+affordance anywhere.
+
+> ⚑ **Four, and this document and `screen.rs` both said six.** `screen.rs:12` states *"six of the eight
+> panel bodies do not run on a given frame"*; the `PANELS-NAV` brief repeated it, and so did the first
+> draft of this section. The count is **four**: `egui_dock` draws one body per **leaf**, and the default
+> layout has four leaves — `[Screen]`, `[Pacing]`, `[Registers, Memory, Objects]`, `[Breakpoints,
+> Watchpoints, Profiler]`. The six counts every tab that shares a pane, but two of those six — `Registers`
+> and `Breakpoints` — are their own leaf's active tab and do run. It is now **measured**, in
+> `nav::tests::the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured`, which derives
+> the expectation from the leaf count rather than restating a figure, so a rearranged default cannot
+> strand a number in prose again. Nothing in either argument turned on which number it was — the figure
+> had simply been copied twice before anyone counted.
+
+The owner found it on his first look, in one sentence: *"It's feeling fine, there's no way to open any of
+those tabs though. Actually our command line would be sick for this I think as well as a traditional
+nav."* Nothing was broken. The panels were behind other panels.
+
+> ⚠ **What is NOT established, and it should be said rather than smoothed.** `egui_dock` draws *every*
+> tab of a leaf in that leaf's tab bar, so in principle the four hidden panels had clickable titles and
+> were not literally unreachable. Why the owner could not open them — a tab bar too narrow for three
+> titles and scrolling, panes too small to notice, or simply nothing that reads as a way in — is a
+> question about pixels on his screen, and **no window is opened from this row**, so it is not answered
+> here. The report stands on its own either way: a person looking at the window could not find the
+> panels. A menu that names all eight in one list repairs that whatever the pixel-level cause was, and
+> unlike a tab bar it does not depend on a pane being wide enough to read.
+
+*(This is the docking design's own doing rather than an accident of implementation: the default dock was
+chosen so that layout persistence would have something visible to persist, and that same choice is the
+arrangement that hides the panels the demo was about.)*
+
+**What shipped — `crates/oracle-player/src/nav.rs`.** A `panels` menu button in the top bar.
+
+| decision | the argument |
+|---|---|
+| **Outside the dock, not a ninth `Tab`.** | A nav that lived in the `DockState` could itself be hidden behind another tab — the escape hatch behind the door it opens. It would also owe `LAYOUT_VERSION` a bump under §6's rule and discard every layout already on the owner's disk, to buy a strictly worse nav. It sits in `Panel::top("bar")` beside the transport bar, on §2.1's own partition: **opening a panel is something you *do*.** |
+| **The saved layout is untouched by the nav's existence.** | The nav holds no state — `nav::entries` re-derives what it shows from the `DockState` every repaint. The `Tab` vocabulary is unchanged, so `VOCABULARIES` gets **no new row** and a layout saved by the previous build still loads. Its *effects* (a focus, a reopen) are saved like any drag, which is right: reopening a panel is a layout change the user made. `layout.rs`'s `a_layout_the_nav_rearranged_round_trips_through_storage` is that claim checked. |
+| **Focus, never a second copy.** | The owner's tabs were **open and behind other tabs**. Pushing a second copy is the fix that looks right: `egui_dock` holds two `Screen` tabs happily, both draw, and the user's layout grows a tab per click. `nav::reveal` finds the tab first and returns `Reveal::Focused`; only a tab that is **not in the dock at all** is pushed, as `Reveal::Reopened`. |
+| **A reopened tab lands with its neighbours.** | Read out of `ui::initial_dock()` — the pane-mates the default layout keeps it with — rather than restated in `nav.rs`. Rearranging the default moves this with it. With no surviving pane-mate (as `Screen`, which is alone by default, always has) it goes to the focused leaf. |
+| **A menu, not eight buttons.** | Eight always-visible titles beside the app name, the transport buttons and the status line would be the widest thing in the window at the moment the window is narrowest. The **button's label is on the glass at all times**, which is the property the defect was about. |
+| **Three states, not a checkbox.** | `Showing` / `Hidden` / `Closed`. *Behind another tab* and *not in your layout at all* are different facts with different remedies, and the nav is the only place a human can tell them apart. `Closed` is said in the word `(closed)` rather than by a mark, because a highlight cannot say it. |
+
+**The gate, and why it is not a count.** `every_tab_the_player_ships_is_reachable_from_the_nav` enumerates
+**the shipped tab vocabulary** — `layout::VOCABULARIES`' newest row, a table of serde *names* in another
+module — and for each member asserts (a) the nav offers exactly one entry, (b) from a dock where that tab
+is provably `Hidden`, the entry's action makes it `Showing` **without changing the occurrence count**, and
+(c) from a dock where it has been removed, the action puts back exactly one and brings it forward.
+
+The expectation comes from the vocabulary table; the nav is built by mapping over `Tab::ALL` in
+`nav::entries`. **A nav test reading its expectations from the list the nav is built from proves
+nothing**, so the two sources are deliberately different artifacts in different alphabets — and a **third**
+is asserted equal to both: serde's derive, interrogated by handing the deserializer a name that is not a
+variant and reading back the list it recites. That third ruler earns its place; it closes a hole the
+`LAYOUT_VERSION` gate has and this document did not know about:
+
+> ⚑ **`layout_version_is_the_last_row_of_the_tab_vocabulary` measures "today's vocabulary" *through*
+> `Tab::ALL`.** A variant added to the `Tab` enum and forgotten in that array is therefore invisible to
+> it — and would be a panel with a body, a place in the default dock, and no nav row. §5.7's claim that
+> the table "is what is left to get wrong" was one step short. `Tab::ALL` is now the thing under test
+> rather than the ruler.
+
+**Booked, not fixed.** `F-NAV-COLLAPSED-LEAF` — `reveal` does not *expand* a leaf the user collapsed. A
+collapsed leaf keeps its tab bar (`egui_dock` gives it exactly `tab_bar_height`), so a tab inside one is
+visible and focusing it is honest; expanding it is not reachable from outside the crate, because
+`Tree::node_update_collapsed` — which repairs the ancestor splits' `collapsed_leaf_count` and
+`fully_collapsed` — is `pub(crate)` in `egui_dock-0.21.1`, and setting `LeafNode::collapsed = false`
+without it leaves the parent counters overstated.
+
+**Deliberately not built.** The owner's *"our command line would be sick for this"* is a **separate,
+later** surface, and this row is the traditional nav he asked for beside it. A command line over the
+method registry is a different design with a different gate (it would address the 56 methods, not the
+eight tabs); nothing here forecloses it, and the `nav::reveal` seam is what a `panels <name>` command
+would call.
+
+---
+
 ## 6. Layout persistence
 
 > ### ✅ **BUILT AND ON, as of the `parcel/layout-persist` branch.**
@@ -1836,6 +1933,25 @@ So `emulator/object_at` — the method the owner's ruling points at as the Scree
 today reachable **only** by a raw socket client. Parcel 2's Screen-tab click would be its first real consumer.
 The defect is in `oracle-old`, not here; I am reporting it, not fixing it, and it strengthens the case for P3
 and the click handler rather than weakening anything.
+
+### 9.6b This document's own tab/control partition had a hole in it, and the owner found it
+
+§2.1 lists sixteen methods against seven tabs and §5 builds eight of them; §2.2 lists the controls. The
+partition is sound and the panels work. **What neither half asks is how a tab is brought to the front**,
+and the default layout this document chose is the one in which six of eight are behind another title. The
+fact was known here — §5.7.1 built `--dock every-tab` around it — and was filed as a *measurement* hazard
+rather than a usability one. A design that argues which pane a panel lives in and never argues how the
+pane is reached has answered the smaller half of the question. **§5.9 is the correction**, and the rule it
+leaves is in §2.1's box.
+
+Two smaller things fell out of writing it, both worth having:
+
+* **`Tab::ALL` was a ruler and is now also a subject.** The `LAYOUT_VERSION` gate derives "today's
+  vocabulary" through that array, so a variant added to `Tab` and left out of it is invisible to the very
+  test §5.7 introduced to make `Tab` changes loud. Serde's derive is now asked directly, in `nav.rs`.
+* **`Tab`'s title strings were written twice** — once in `egui_dock::TabViewer::title`, once nowhere else
+  until a nav needed them. They are now `Tab::title()`, one expression, so the name in the menu and the
+  name on the tab bar cannot become two names for one panel.
 
 ### 9.6 Two smaller ones, for the record
 

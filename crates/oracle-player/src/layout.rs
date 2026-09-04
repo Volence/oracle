@@ -673,6 +673,83 @@ mod tests {
         );
     }
 
+    /// **A layout the panel nav rearranged is saved and restored like any other.**
+    ///
+    /// [`crate::nav::reveal`] is the one thing besides a drag that mutates the `DockState`, and it is
+    /// reached from a control drawn *outside* the dock — so the question "does the nav corrupt what gets
+    /// saved?" is a real one and not a formality. Both of its outcomes are exercised: a tab closed and
+    /// reopened (which pushes into a leaf), and a hidden tab focused (which moves `active` and the
+    /// focused leaf, the two fields `shape()` reads last).
+    ///
+    /// ⚠ *If this went green for a reason other than the round trip working, what would it be?* It would
+    /// be the nav having changed nothing, so that the layout saved is the default and the comparison is
+    /// default-against-default — the vacuity [`the_layout_under_test_is_not_the_default`] exists to
+    /// refuse. Ruled out inside this test: the navigated layout is asserted different from
+    /// [`ui::initial_dock`]'s before it is saved.
+    #[test]
+    fn a_layout_the_nav_rearranged_round_trips_through_storage() {
+        let mut dock = ui::initial_dock();
+        let path = dock.find_tab(&Tab::Objects).expect("docked by default");
+        dock.remove_tab(path).expect("the tab just found");
+        assert_eq!(
+            crate::nav::reveal(&mut dock, Tab::Objects),
+            crate::nav::Reveal::Reopened
+        );
+        assert_eq!(
+            crate::nav::reveal(&mut dock, Tab::Memory),
+            crate::nav::Reveal::Focused
+        );
+        assert_ne!(
+            shape(&dock),
+            shape(&ui::initial_dock()),
+            "the nav left the default layout untouched, so saving it proves nothing"
+        );
+
+        let mut store = MemStorage::default();
+        save(&mut store, &dock);
+        let (got, outcome) = load(Some(&store));
+        assert_eq!(outcome, Outcome::Restored);
+        assert_eq!(shape(&got), shape(&dock));
+        // Every tab is still reachable after the round trip — a saved layout that lost a tab would still
+        // restore, and the nav would then be reopening it every session.
+        for t in Tab::ALL {
+            assert_eq!(
+                crate::nav::occurrences(&got, t),
+                crate::nav::occurrences(&dock, t),
+                "{t:?} did not survive the round trip in the same number"
+            );
+        }
+    }
+
+    /// **The nav owes [`VOCABULARIES`] nothing, and this is where that is checked rather than asserted in
+    /// prose.** The panel menu is drawn outside the `DockState` and adds no [`Tab`] variant, so the
+    /// stored layout's alphabet is unchanged and no row is appended. If a future nav ever *does* become a
+    /// tab, `layout_version_is_the_last_row_of_the_tab_vocabulary` goes red — which is the whole point of
+    /// that table. Here the claim is the narrow one: today's vocabulary is still version
+    /// [`LAYOUT_VERSION`] and still the eight-panel row, so a layout saved by the previous build of this
+    /// player still loads.
+    #[test]
+    fn the_panel_nav_did_not_change_the_tab_vocabulary() {
+        assert_eq!(
+            VOCABULARIES.last().copied(),
+            Some(
+                [
+                    "Screen",
+                    "Pacing",
+                    "Registers",
+                    "Memory",
+                    "Objects",
+                    "Breakpoints",
+                    "Watchpoints",
+                    "Profiler",
+                ]
+                .as_slice()
+            ),
+            "the newest vocabulary is not the eight panels the nav row shipped against; if a Tab was \
+             added, this row is now a historical claim and should be moved, not edited"
+        );
+    }
+
     /// [`rearranged`] is written against a particular starting layout, and a silently restructured
     /// [`ui::initial_dock`] would make it degenerate rather than fail. This pins the two facts it uses:
     /// there is a `Screen` leaf to split under, and `Objects` starts in the same pane as `Registers` so
