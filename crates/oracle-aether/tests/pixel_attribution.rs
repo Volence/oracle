@@ -735,10 +735,13 @@ fn rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer() {
 /// non-conformant, not merely unhelpful — because both engines in this suite rebuild CRAM every vblank,
 /// which would make "a completed frame exists" fire on every reply after the first.
 ///
-/// **The fixture's silence is measured, not assumed**: `oracle_core::testrom` writes no CRAM at all, so
-/// after `run_frames` the only writes to the entry are the fixture's own hand-posed ones at mclk 0 —
-/// before any line of any frame drew. The `assert_ne!` on the sibling row is what proves this fixture
-/// *can* produce the other answer.
+/// **The fixture's silence is measured, not assumed.** `machine_with_plane_cell` poses VRAM and the
+/// registers by hand and writes **no CRAM at all** — the winning colour is an untouched entry — and
+/// `oracle_core::testrom` writes none either, which was checked by probe across 1, 2 and 5 frames before
+/// this row was written. So the stamp here is genuinely "never written", not "written early enough".
+/// The row that proves this fixture *can* produce the other answer is its pair,
+/// `a_cram_write_after_the_line_drew_makes_the_reply_say_so_and_name_the_path`, which reaches the
+/// disclosing state from this identical setup with one `emulator/write_cram`.
 #[test]
 fn the_caveat_is_absent_when_nothing_wrote_the_entry_since_its_line_drew() {
     let h = spawn_system("pa-cav-quiet", machine_with_plane_cell(), 1024);
