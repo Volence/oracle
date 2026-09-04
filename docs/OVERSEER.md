@@ -45,18 +45,28 @@ moved with them.)*
    `schema_conformance.rs:6,222` and the `resolve_target` `oneOf` divergence (**both folded into
    the in-flight `run_to_scanline` parcel** — remove from here once that lands), and a proposed
    **error-surface gate** — since no fragment declares error conditions, a suite validating only
-   replies is blind to every error obligation.
+   replies is blind to every error obligation. ⚑ **The gate is still a proposal; the defect that
+   demonstrated it is not.** The unenforced `count` bounds below were fixed by the CR-STEP-SHORTFALL
+   parcel (`step.rs`'s two refusal rows now assert them from the wire), so the standing argument for
+   the gate must be carried on its own merits again — **one method's refusals being covered by hand
+   is not the gate**, and nothing systematic yet reads a `params` fragment and asks the server to
+   refuse what falls outside it.
    **FOREGROUND runtime follow-ups, never a subagent** (the emulator MCP deadlocks from background
-   agents): the `step` frame-budget truncation (**STILL LIVE — needs a CR, not a probe**); ~~the `write_vram` SAT-cache desync~~ (**CLOSED 09-04**); and ~~**two new
+   agents): ~~the `step` frame-budget truncation~~ (**CLOSED 2026-09-04 by the CR-STEP-SHORTFALL
+   parcel — the CR was raised, adjudicated upstream as §11.33, and served; no probe was ever spent
+   on it**); ~~the `write_vram` SAT-cache desync~~ (**CLOSED 09-04**); and ~~**two new
    ones from CR-B** — the tail wrap (`z80_write {addr:"0x3FFC", bytes:<8>}` then read `$0000`;
    predicted from source: bytes 5–8 land at `$0000–$0003`) and the silent `len` clamp
    (`z80_read {len:10000}` → `8192`, no error)~~ ⚑ **BOTH CLOSED 2026-09-04 — AND THEY WERE NEVER
    OURS.** Measured firsthand against the binary a consumer spawns: both refuse LOUDLY and WHOLE,
    with a control proving the probe could see a write. CR-B was reading **`oracle-old`**; we did not
    serve the Z80 pair until `0f35ae1` (08-29), built to refuse exactly these. The booking never named
-   an implementation. **`step` and `write_vram` above are UNTOUCHED and may carry the same defect —
-   check which server each was read against before spending a probe.** Detail in the 2026-09-04
-   register entry.
+   an implementation. ~~**`step` and `write_vram` above are UNTOUCHED and may carry the same defect —
+   check which server each was read against before spending a probe.**~~ **Both are now closed and
+   neither cost a probe: `write_vram` on 09-04, and `step` by the CR-STEP-SHORTFALL parcel the same
+   day. `step`'s entry was never a which-server question — it named a contract SHAPE gap binding any
+   conformant server, which is why it survived the conflation the other three did not.** Detail in
+   the 2026-09-04 register entry.
    ⚠ **ATTEMPTED 2026-08-22 evening and correctly
    ABANDONED, not deferred for convenience:** my MCP client found no socket in my own
    `$XDG_RUNTIME_DIR` (`Errno 2` — a *failing lookup*, which says nothing about the world, bar
@@ -114,9 +124,15 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 
 **Registered 2026-09-04, from reading the ADOPTED §11.33 text instead of the relay's summary of it:**
 
-- **▶ LIVE CONFORMANCE DEFECT — `emulator/step` DOES NOT ENFORCE EITHER OF `count`'s BOUNDS, AND ITS OWN
-  COMMENT CLAIMS IT TRANSCRIBES THEM.** Found because §11.33's table row mentions a `count` ceiling the
-  CR summary did not, so the adopted text was read rather than the relay.
+- **▶ ~~LIVE~~ CLOSED 2026-09-04 by the CR-STEP-SHORTFALL parcel — `emulator/step` DID NOT ENFORCE EITHER
+  OF `count`'s BOUNDS, AND ITS OWN COMMENT CLAIMED IT TRANSCRIBED THEM.** Found because §11.33's table row
+  mentions a `count` ceiling the CR summary did not, so the adopted text was read rather than the relay.
+  **Fixed:** `hex::parse_count("count", v, 0, u64::MAX)` → `(…, 1, 1_000_000)`, the comment rewritten to
+  carry the archaeology instead of the superseded claim, and both ends asserted **from the wire** by
+  `tests/step.rs::count_zero_is_refused_because_the_fragments_floor_is_one` and
+  `::a_count_above_the_fragments_ceiling_is_refused_not_clamped` — the second with a control proving
+  `1000000` itself is still accepted, so a handler that refused everything cannot pass it. Both proved
+  red-first by reverting the bounds on disk.
   **The fragment WE ALREADY VENDOR** (`tests/contract/bus-protocol.schema.json`, clean at `872bebb`) says
   `count`: `minimum: 1`, `maximum: 1000000`, and its own description says *"a value outside is REFUSED with
   `-32602`, never clamped … Zero was refused rather than clamped because the two servers disagreed on it and
@@ -132,20 +148,35 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   no default, because §6's row states none … Registered as a defect (audit D-02)."* `0a4313e` closed D-02
   via §11.24 and the bound became `≥1 / def 1 / ≤1000000`. **So the re-vendor landed and the server did
   not move with it — for ten days.**
-  ⚠ **A TEST ENSHRINES THE SUPERSEDED READING, AND IT IS A TRAP FOR THE IMPLEMENTER.**
-  `tests/step.rs::count_zero_retires_nothing_and_moves_no_clock` asserts `count: 0` is a **legal request**,
+  ⚠ **A TEST ENSHRINED THE SUPERSEDED READING, AND IT WAS A TRAP FOR THE IMPLEMENTER.**
+  `tests/step.rs::count_zero_retires_nothing_and_moves_no_clock` asserted `count: 0` is a **legal request**,
   under a doc comment saying *"The fragment's `minimum` is `0`, so a zero count is a legal request"*; the
-  neighbouring `an_omitted_count_is_one_instruction…` cites D-02's *"no minimum above 0 and no ceiling"*.
-  **Both were correct when written and are now assertions against a superseded contract.** They must be
-  UPDATED, not obeyed — an agent that meets a red row here and "fixes" the handler back would restore the
-  defect while making the suite green.
+  neighbouring `an_omitted_count_is_one_instruction…` cited D-02's *"no minimum above 0 and no ceiling"*.
+  **Both were correct when written and were assertions against a superseded contract.** They were
+  UPDATED, not obeyed — an agent that met a red row there and "fixed" the handler back would have restored
+  the defect while making the suite green.
+  ⚑ **AND THERE WERE FOUR, NOT TWO — the third was invisible to a grep for the rot's own words.**
+  `step_reports_the_bare_label_and_the_displacement_beside_it` used `count: 0` as a *device*, to read the
+  symbol fields at the current pc without moving — literally the *"status call spelt wrong"* the amended
+  fragment names — while saying nothing about bounds anywhere in its text. It now reaches the same exact
+  hit by stepping the `jsr` at `PROF_MID`. `a_negative_or_non_numeric_count_is_refused` carried the rot in
+  its doc comment only (*"the fragment types it `integer, minimum 0`"*), and `count_is_not_a_step_family_param`
+  was checked and is clean. **A superseded contract is used, not only cited** — grep the assertions for the
+  superseded VALUE as well as the doc comments for its reasoning.
   ⚑ **The durable shape, and it is the sharpest thing this session found: handler, comment and test were
   MUTUALLY CONSISTENT and all three wrong.** Nothing in this repo could surface it, because every artifact
   agreed with every other and the only disagreeing party was a vendored JSON file nobody re-reads against
   the code. **A re-vendor is a SILENT contract change unless something checks the server against the new
   text** — that is bar 8's shared frame with the frame supplied by a document instead of by a person.
   ▶ **Folded into the CR-STEP-SHORTFALL parcel** — same handler, same fragment, and serving `stepped` while
-  leaving the bounds unenforced would ship a method half-conformant to the row being amended.
+  leaving the bounds unenforced would ship a method half-conformant to the row being amended. **Landed
+  there, in one commit with the serve and the re-vendor.**
+  ⚑ **MEASURED, and it is the register's own claim turned into a number: the conformance suite stayed
+  FULLY GREEN with the whole `stepped` feature deleted.** With the emission stubbed out on disk,
+  `tests/schema_conformance.rs` reported **23 passed, 0 failed** while `tests/step.rs` went red on four
+  rows. The key is optional and `required` names only `pc`, so the schema can witness that `stepped` is
+  *declared* and never that it is *emitted* — the same blindness as the `count` bounds, pointed the other
+  way, and now recorded with a run behind it rather than an argument.
 
 - **⚑ AND IT IS THE FIRST DEMONSTRATED INSTANCE OF A BLINDNESS THIS FILE HAD ONLY PROPOSED.** The
   acceptance section carries *"a proposed **error-surface gate** — since no fragment declares error
@@ -167,7 +198,8 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   served the Z80 pair at all. **`write_vram`'s SAT-cache desync** was closed by the 08-27 parcel via
   `Vdp::poke_vram`. All three verified firsthand against the binary a consumer spawns, each with a control
   proving the probe could see the effect it was looking for.
-  **`step`'s frame-budget truncation is NOT closed with them** — see the live entry below.
+  **`step`'s frame-budget truncation was NOT closed with them** — it closed on its own terms later the
+  same day; see the entry below.
   *(Measurements, archaeology and the restore proofs: `OVERSEER-LOG.md`, 2026-09-04.)*
 
   **⚑ THE BAR, and it is this file's own two-implementer rule landing on this file's own register.** Every
@@ -182,20 +214,38 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   contradiction.** Operational form: **when a parcel serves a method, grep this register for that method's
   name before writing the landing.**
 
-- **▶ STILL LIVE, AND DIFFERENT IN KIND — `step` FRAME-BUDGET TRUNCATION. Do not close it with the three
-  above, and DO NOT SPEND A PROBE ON IT.** Not a which-server defect: a **contract shape** gap binding any
-  conformant server. `count` has no ceiling while every advance primitive is frame-bounded
-  (`max_run_frames` 3600), so an over-large `count` stops early and **the fragment gives the reply no key to
-  say so** — no `stepped`, no `reached`, `caveat` declared ABSENT so emitting one fails §8 item 20's closure.
-  Visible only on `emulator/stopped`'s `deadlineReached`. **Needs a CR — `stepped`, or a `count` ceiling, or
-  permission to carry `caveat`; any one closes it and the current row closes none.** A demonstration adds
-  nothing a CR reader needs.
+- **▶ ~~STILL LIVE~~ CLOSED 2026-09-04 — `step` FRAME-BUDGET TRUNCATION.** Never a which-server defect: a
+  **contract shape** gap binding any conformant server. `count` had no ceiling while every advance
+  primitive is frame-bounded (`max_run_frames` 3600), so an over-large `count` stopped early and **the
+  fragment gave the reply no key to say so** — no `stepped`, no `reached`, `caveat` declared ABSENT so
+  emitting one fails §8 item 20's closure. Visible only on `emulator/stopped`'s `deadlineReached`.
+  **The route was a CR, and it went the whole way: raised as CR-STEP-SHORTFALL offering the three shapes
+  this entry named (`stepped`, a `count` ceiling, or permission to carry `caveat`), adjudicated by the hub
+  as `empyrean` §11.33 — ADOPTED WITH ONE SHAPE CHOSEN, `stepped`? on `emulator/step`'s result — and served
+  here in the CR-STEP-SHORTFALL parcel with the re-vendor in the same commit.** No probe was ever spent on
+  it, exactly as this entry said none was needed.
+  ⚑ **What the closure was worth beyond the key.** Reading the ADOPTED §11.33 text rather than the relay's
+  summary of it turned up a **second, live** defect on the same handler — `count`'s bounds unenforced for
+  ten days (the entry above) — which nothing in this repo could have surfaced, because handler, comment and
+  test all agreed with each other and only the vendored fragment disagreed. The lesson generalises past
+  this row: **a register entry that names a contract gap is worth re-reading against the current contract,
+  not only against the current code.**
+  ⚑ **`stepped` is still not fully expressible, and that is carried open rather than closed quietly.** The
+  adopted fragment types it `minimum: 1`, so a step that retired **nothing** — a CPU already halted on
+  `STOP` — has no legal spelling: `0` is refused and absence is the one reading §11.33 says never means a
+  shortfall. This server omits the key there and leaves `deadlineReached` as the channel. **Owed upstream
+  as a `minimum: 0` amendment**; noted at the handler and in `tests/contract/PROVENANCE.md`.
   ⚑ **Why THIS one survived honestly while the other three rotted: it is documented AT THE HANDLER**
   (`engine.rs:3040-3053`, in `step`'s own doc comment, naming the CR it argues for). **A perishable claim
   decays where nobody re-reads it.** That cuts against this file's standing bar that the worst place for a
   perishable claim is a code comment — **both are true, and the distinguishing variable is whether the claim
   is ABOUT THE CODE IT SITS BESIDE.** A comment describing its own function is met by the next editor; a
   comment citing a ruling made elsewhere is not.
+  ⚑ **AND THE SAME HANDLER PROVED THE OTHER HALF OF THAT RULE IN THE SAME BREATH.** Six lines below the
+  comment that survived honestly sat *"`minimum: 0` is the fragment's floor and `u64::MAX` is its stated
+  absence of a ceiling. Neither is a policy this server chose; both are transcribed"* — a comment citing a
+  ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
+  the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
 
 **Registered 2026-09-04, from the WAITFORBREAK landing:**
 
