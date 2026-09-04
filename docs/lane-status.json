@@ -131,10 +131,10 @@
       "state": "open",
       "size": "S",
       "blockedBy": null,
-      "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Their repo had the same shape pointing back at us, and had even CORRECTED it in one file while a tool went on carrying the old version. Find ours outside the boot doc, where nobody re-reads them."
+      "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Now also: any note that says 'oracle' as if it were ONE emulator, in prose about measurements. There are two, they disagree by a line, and a measurement whose instrument is unnamed is unreadable. The boot doc is already clean; the risk is the dated notes a peer might cite."
     }
   ],
   "awaiting": "one question when you are next at the window: when you could not open those tabs, could you SEE their titles in the little bars above the panels? If the panes were collapsed rather than just behind each other, the menu I just built may not reach your case either.",
   "atBoundary": true,
-  "updatedAt": "2026-09-04T02:35:49Z"
+  "updatedAt": "2026-09-04T02:38:29Z"
 }
