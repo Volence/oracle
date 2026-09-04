@@ -1,4 +1,4 @@
-//! **The boot read is bounded — gated here, because the ruling had no gate anywhere in this repo.**
+//! **The boot read is bounded — gated here, against the ruled bound, with ONE constant.**
 //!
 //! WHY THIS FILE EXISTS. The suite ruled on 2026-09-02T17:45:03Z that `docs/OVERSEER.md` — the file
 //! every overseer session reads whole at boot — stays under the boot-read bound, and that **each
@@ -13,8 +13,7 @@
 //! ⚠ AND THE BOOT DOC ALREADY SAID SO. `docs/OVERSEER.md:28` has carried the heading
 //! **"## The boot read is bounded (100,000 B, gated)"** while nothing in this repo gated it — the
 //! claim and the fact had come apart, and no artifact could tell them apart, which is the same
-//! failure as a vacuous check wearing a green result. That heading becomes true at this commit,
-//! which is why this parcel does not edit it.
+//! failure as a vacuous check wearing a green result.
 //!
 //! THE RULING, read at a committed revision and never through the sibling working-tree path (that
 //! path is a peer's live tree and is not a citable revision):
@@ -22,8 +21,25 @@
 //! ```text
 //! git -C ../empyrean fetch -q origin
 //! git -C ../empyrean show origin/main:docs/OVERSEER-PROTOCOL.md   # "The boot read is bounded"
-//! git -C ../empyrean show origin/main:docs/OVERSEER.md            # line 412, the 09-02T17:45:03Z ruling
 //! ```
+//!
+//! **CARD 7 IS ANSWERED, AND THE RATCHET IS GONE (2026-09-04).** This file used to carry a second
+//! constant, `RATCHET_BYTES`, pinned at the measured 128,776 B: the file was over the ruled bound,
+//! the residual was live rulings interleaved with narrative, and the protocol names that residual
+//! as *the owner's parcel* — so asserting the ruled bound would have failed the build permanently
+//! on a question only he could answer. He answered it at 2026-09-04T15:38:47Z, one call for all six
+//! lanes (hub card 7, his words *"7. Sounds fine"*): **the bound stays at 100,000 B, is never
+//! raised, and the boot file is SPLIT BY WHEN A RULE IS READ** — a rule that matters only at a
+//! specific later moment (how to dispatch, how to review, how to land) moves to a reference file
+//! the lane opens at that moment. Oracle's cut moved "The bars" and "Ops" to
+//! `docs/OVERSEER-REFERENCE.md`, taking the boot read from 128,776 B to 89,424 B.
+//!
+//! So the ratchet's own instruction — *"THE DAY CARD 7 IS ANSWERED: delete `RATCHET_BYTES` and
+//! point the gate at `BOOT_READ_BOUND_BYTES`. One constant."* — is executed here, and the test that
+//! forced the day to arrive did its job before being retired: on the split commit it failed with
+//! *"is now 89,424 bytes, within the ruled 100,000 — but RATCHET_BYTES is 128,776, which is LOOSER
+//! than the bound"*. That is the whole reason it existed; see the note on
+//! `ratchet_is_never_looser_than_the_ruled_bound` below for why it is not replaced in kind.
 //!
 //! **BYTES ONLY.** The protocol's own warning, verbatim: *"Judge by bytes. Unwrapping a
 //! multi-kilobyte one-line bullet into prose RAISES the line count while cutting bytes ... so the
@@ -31,9 +47,15 @@
 //! reported as a **residual** and is never asserted. Anything gating on lines punishes the fix.
 //!
 //! **The bound is named ONCE.** It is stated in the protocol as prose, so it cannot be computed
-//! from an artifact. Every expectation in this file — the verdict text, the fixtures, both
-//! directions of the two-directional test — is derived from that one name. Nothing here re-types
-//! the number.
+//! from an artifact. Every expectation in this file — the verdict text, the status line, the
+//! fixtures, both directions of the two-directional test — is derived from that one name. Nothing
+//! here re-types the number, and there is no second number for it to disagree with.
+//!
+//! **This gate can fail, and it is failable in the direction that matters.** It is not report-only.
+//! A check that cannot fail is green by construction, so its presence and its absence read the
+//! same — which is exactly the property that let the *missing* gate go unnoticed here. Today the
+//! file is 10,576 B under; the day someone adds 10,577 B of prose to the boot read, this goes red
+//! with the split procedure printed in the failure.
 //!
 //! WHERE THIS LIVES AND WHY. It is a `tests/` file in `oracle-aether`, so `cargo test --workspace`
 //! — the run this repo actually performs at every landing — picks it up with **zero registration**.
@@ -44,21 +66,19 @@
 //! (`schema_conformance.rs` vendors and pins empyrean's schema; `mcp_tool_sweep.rs` walks docs).
 //! `oracle-core` was rejected: its charter is "deterministic, no-I/O" emulation and this is repo
 //! hygiene. The file needs no dependency beyond `std`, so no manifest changed.
-//!
-//! ⚠ If `docs/OVERSEER.md` is ever edited, [`RATCHET_BYTES`] moves with it — down freely, up only
-//! with a loud statement of why. That is the ratchet, and it is the whole point.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------------------------
-// THE RULED BOUND — the one and only place the number is written.
+// THE RULED BOUND — the one and only place a number is written. There is no second one.
 //
 // empyrean `docs/OVERSEER-PROTOCOL.md`, section "The boot read is bounded", read at `origin/main`
 // on 2026-09-04: *"`docs/OVERSEER.md` is the boot read, and it stays under about 900 lines /
 // 100 KB."* 100 KB is read as 100,000 bytes — the decimal reading, and the stricter of the two
 // (the KiB reading would be 102,400). The hub's own 09-02T17:45:03Z measurements are stated
-// against 100,000 B, which settles the reading.
+// against 100,000 B, which settles the reading. Reaffirmed by the owner 2026-09-04T15:38:47Z:
+// the bound stays here and is never raised; an over-long file is SPLIT, by when a rule is read.
 //
 // If the suite ever restates the bound, change it HERE and nowhere else.
 const BOOT_READ_BOUND_BYTES: u64 = 100_000;
@@ -66,43 +86,6 @@ const BOOT_READ_BOUND_BYTES: u64 = 100_000;
 /// The protocol's "about 900 lines". **Reported beside the bytes, never asserted** — see the
 /// module note on why gating this would punish a correct fix.
 const BOOT_READ_LINES_GUIDE: usize = 900;
-
-/// THE RATCHET, in force until the owner answers the suite-wide **card 7** (split the standing
-/// rules into a second boot file, or raise the bound — one call for all six lanes).
-///
-/// ⚠ **Card 7 is NOT in this repo, and it is not this repo's queue item 7** (ours is closed and in
-/// the log — a reader who goes looking locally finds the wrong thing). It is a card on the hub's
-/// status. Read it at a committed revision:
-///
-/// ```text
-/// git -C ../empyrean show origin/main:docs/OVERSEER-LOG.md   # 2026-09-04T12:43:53Z, 12:44:39Z, 13:26:52Z
-/// ```
-///
-/// The 13:26:52Z entry is the ruling this file executes, and it carries oracle's own figure:
-/// *"oracle installs the RATCHET form now, pinned at its measured size, failing on growth, printing
-/// the distance to 100,000 B, aeon 882f79aa the reference; it decides nothing the owner is asked
-/// and stops the regrowth."* Same entry: 128,776 B, "was 95,398 on 09-02, 118,762 at 10:5xZ ...
-/// regrowth ~33 KB in two days" — which is the growth this ratchet exists to stop.
-///
-/// **Why this is not the ruled bound yet.** `docs/OVERSEER.md` is over 100,000 B and the residual
-/// is live rulings interleaved with narrative, which the protocol names as *the owner's parcel*:
-/// "report the residual bytes to him rather than trimming a ruling to hit a number; the bound
-/// exists to make the boot read cheap, not to make rulings disappear." Asserting the ruled bound
-/// today would fail this repo's build permanently on a question only he can answer.
-///
-/// **Why it is not report-only either.** A check that cannot fail is green by construction, so its
-/// presence and its absence read the same — which is exactly the property that let the *missing*
-/// gate go unnoticed here. Replacing an absent gate with an unfailable one changes what a reader
-/// sees and not what is true. So the ratchet pins the MEASURED size, is failable today by growth,
-/// and the distance to the ruled bound prints beside the verdict on every run, pass or fail.
-///
-/// **Measured on this worktree at 2026-09-04, byte-identical to `main:docs/OVERSEER.md`:**
-/// 128,776 bytes, 1,550 lines.
-///
-/// THE DAY CARD 7 IS ANSWERED: delete `RATCHET_BYTES` and point the gate at
-/// [`BOOT_READ_BOUND_BYTES`]. One constant. `ratchet_is_never_looser_than_the_ruled_bound` below
-/// is what forces that day to arrive rather than pass unnoticed.
-const RATCHET_BYTES: u64 = 128_776;
 
 /// The boot read itself. `CARGO_MANIFEST_DIR` is this crate inside *this* worktree, so the gate
 /// measures the tree it is running in — never a sibling checkout, never a peer's live working tree.
@@ -142,55 +125,50 @@ fn commas(n: u64) -> String {
     out
 }
 
-/// Signed variant, for the two figures that can legitimately go negative: headroom under the
-/// ratchet, and the residual over the ruled bound once the file is compliant.
-fn commas_i64(n: i64) -> String {
-    if n < 0 {
-        format!("-{}", commas(n.unsigned_abs()))
-    } else {
-        commas(n as u64)
-    }
-}
-
 /// The one-line status emitted on EVERY run, pass or fail.
 ///
+/// Built as a `String` rather than printed inline **so a test can read it**. The status line is the
+/// artifact a human actually sees from this gate on a green run; leaving it untested would make the
+/// only human-visible output the one thing nothing checks.
+///
+/// The distance to the bound is said in the direction it points — "10,576 UNDER" or "1,000 OVER" —
+/// never as a signed number. A figure whose sign carries the meaning is a figure that gets misread.
+fn status_line(size_bytes: u64, lines: usize) -> String {
+    let against_bound = if over_bound(size_bytes) {
+        format!(
+            "{} OVER — SPLIT IT",
+            commas(size_bytes - BOOT_READ_BOUND_BYTES)
+        )
+    } else {
+        format!("{} UNDER", commas(BOOT_READ_BOUND_BYTES - size_bytes))
+    };
+    format!(
+        "[boot-read gate] docs/OVERSEER.md = {} B | ruled bound {} ({}) | \
+         residual {} lines vs guide ~{} (NOT gated)\n",
+        commas(size_bytes),
+        commas(BOOT_READ_BOUND_BYTES),
+        against_bound,
+        commas(lines as u64),
+        BOOT_READ_LINES_GUIDE,
+    )
+}
+
 /// Written straight to fd 2 rather than through `eprintln!` **on purpose**: libtest captures the
 /// print macros and replays them only for failing tests, which would make the pass case silent —
 /// and a silent pass is indistinguishable from no gate at all, the very defect this file exists to
 /// end. A direct `stderr()` write bypasses that capture.
 fn announce(size_bytes: u64, lines: usize) {
-    let headroom = RATCHET_BYTES as i64 - size_bytes as i64;
-    let residual = size_bytes as i64 - BOOT_READ_BOUND_BYTES as i64;
-    // Said in the direction it actually points. The day this file comes inside the bound, the
-    // status line is the artifact someone reads to know card 7 can be closed — "-1,000 OVER" would
-    // bury that, and a number whose sign carries the meaning is a number that gets misread.
-    let against_bound = if over_bound(size_bytes) {
-        // "hub card 7", not "card 7": this repo's own queue item 7 is closed and in the log, so a
-        // bare number sends the reader to the wrong document.
-        format!("{} OVER, awaiting hub card 7", commas_i64(residual))
-    } else {
-        format!(
-            "{} UNDER — the ruled bound is MET, delete the ratchet",
-            commas_i64(-residual)
-        )
-    };
-    let line = format!(
-        "[boot-read gate] docs/OVERSEER.md = {} B | ratchet {} ({} headroom) | \
-         ruled bound {} ({}) | residual {} lines vs guide ~{} (NOT gated)\n",
-        commas(size_bytes),
-        commas(RATCHET_BYTES),
-        commas_i64(headroom),
-        commas(BOOT_READ_BOUND_BYTES),
-        against_bound,
-        commas(lines as u64),
-        BOOT_READ_LINES_GUIDE,
-    );
-    let _ = std::io::stderr().write_all(line.as_bytes());
+    let _ = std::io::stderr().write_all(status_line(size_bytes, lines).as_bytes());
 }
 
 /// The actionable verdict for a file that is over the ruled bound. Every number in it is derived
 /// from [`BOOT_READ_BOUND_BYTES`]; the line figure is labelled as a residual so no later hand
 /// mistakes it for something the gate checks.
+///
+/// The procedure it prints is the CURRENT one — the owner's 2026-09-04 ruling, split by *when a
+/// rule is read*. The older "measure before pointer-ising a bar / move the dated tail" ordering it
+/// used to print is still in the protocol and still correct for the log split; it is not what a
+/// reader of THIS failure needs first, now that the reference file exists to receive the content.
 fn verdict(path: &Path, size_bytes: u64, lines: usize) -> String {
     let over = size_bytes - BOOT_READ_BOUND_BYTES;
     format!(
@@ -200,16 +178,21 @@ fn verdict(path: &Path, size_bytes: u64, lines: usize) -> String {
          \x20 Read it at a committed revision, never through the sibling path:\n\
          \x20   git -C ../empyrean fetch -q origin\n\
          \x20   git -C ../empyrean show origin/main:docs/OVERSEER-PROTOCOL.md\n\
-         \x20 The fix is that section's split procedure, IN ITS ORDER:\n\
-         \x20   1. move the dated tail whole to docs/OVERSEER-LOG.md;\n\
-         \x20   2. MEASURE before pointer-ising any bar — only lines a grep finds verbatim in\n\
-         \x20      origin/main:docs/OVERSEER-PROTOCOL.md qualify (a bar that CITED the protocol and\n\
-         \x20      wrote local precedent under it looks identical in a listing and is not a duplicate);\n\
-         \x20   3. move closed history around a live rule to the log VERBATIM, keeping the rule.\n\
+         \x20 THE BOUND IS NEVER RAISED (owner, 2026-09-04T15:38:47Z, one call for all six lanes).\n\
+         \x20 SPLIT BY WHEN A RULE IS READ, never by size:\n\
+         \x20   - what a fresh session needs to ACT AT BOOT stays here — scope, queue, resume\n\
+         \x20     brief, the standing rulings that change what it does first;\n\
+         \x20   - a rule read only at a specific later moment (how to dispatch, how to review\n\
+         \x20     returned work, how to land) goes to docs/OVERSEER-REFERENCE.md, which the boot\n\
+         \x20     file names by path;\n\
+         \x20   - closed dated history goes to docs/OVERSEER-LOG.md and is not read at boot.\n\
          \x20 Live repo-specific rulings interleaved with narrative are the OWNER'S parcel — report\n\
          \x20 the residual rather than trimming a ruling to hit this number.\n\
-         \x20 Prove any split lossless by set-difference over every non-blank original line before\n\
-         \x20 committing.\n\
+         \x20 PROVE THE SPLIT LOSSLESS AT A UNIT BELOW THE ONE YOU CUT AT: reassemble and diff,\n\
+         \x20 then count TOKENS, then check at every seam that the retained side still ends a\n\
+         \x20 sentence and the moved side still begins one — run from BOTH files. A 2026-09-02\n\
+         \x20 split reported itself lossless with lines accounted for and diff exit 0, and had cut\n\
+         \x20 34 sentences in half: every cut was INSIDE the unit its proof counted.\n\
          \x20 JUDGE BY BYTES: unwrapping a one-line bullet raises the line count while cutting bytes,\n\
          \x20 so the line figure above can move the wrong way under a correct fix. It is reported,\n\
          \x20 never asserted.",
@@ -284,13 +267,12 @@ fn boot_read_exists_and_is_measurable() {
     );
 }
 
-/// **THE GATE, in its ratchet form.** The boot read may not GROW past the measured size, and the
-/// distance to the ruled bound is reported either way.
+/// **THE GATE.** The boot read stays within the ruled bound. One constant, asserted directly.
 ///
-/// This is failable today, by growth, which is the live risk while card 7 is open: content gets
-/// added by people who do not know the file is over.
+/// This is failable, today, in the live direction: content gets added to the boot read by people
+/// who do not know what it costs every session that boots after them.
 #[test]
-fn boot_read_does_not_grow_past_the_ratchet() {
+fn boot_read_is_within_the_ruled_bound() {
     let path = boot_read();
     let (size_bytes, lines) = measure(&path).unwrap_or_else(|e| {
         panic!(
@@ -302,43 +284,79 @@ fn boot_read_does_not_grow_past_the_ratchet() {
     announce(size_bytes, lines);
 
     assert!(
-        size_bytes <= RATCHET_BYTES,
-        "\n{}\n\nGREW by {} bytes past the ratchet of {}.\nThe boot read is already over the \
-         suite-ruled bound and is waiting on the owner: the suite-wide card 7 on the HUB's status, \
-         NOT this repo's queue item 7 (ours is closed and in the log). Read it with\n  git -C \
-         ../empyrean show origin/main:docs/OVERSEER-LOG.md   # 2026-09-04T12:43:53Z, 13:26:52Z\n\
-         Do not add to the boot read: put the content in docs/OVERSEER-LOG.md instead. If you \
-         SHRANK the file and want the new floor held, lower RATCHET_BYTES in this file to the new \
-         measurement and say so.",
+        !over_bound(size_bytes),
+        "\n{}\n\nDo not raise the bound and do not trim a live ruling to fit. Move the content: a \
+         rule read at ONE LATER MOMENT belongs in docs/OVERSEER-REFERENCE.md, closed dated history \
+         belongs in docs/OVERSEER-LOG.md, and what is left is what a fresh session needs to act at \
+         boot.",
         verdict(&path, size_bytes, lines),
-        commas(size_bytes - RATCHET_BYTES),
-        commas(RATCHET_BYTES),
     );
 }
 
-/// **The ratchet may only ever move down.** If the file ever reaches the ruled bound, a ratchet
-/// sitting ABOVE that bound would silently permit regrowth straight back into breach — so this
-/// fails the moment the ratchet becomes the weaker of the two, which is the day someone should be
-/// deleting it.
-// The comparison inside is between two constants, which clippy flags — but its REACHABILITY is not
-// constant: it is reached only when the measured file has come within the ruled bound. That is the
-// design of a ratchet, and folding the comparison away at compile time would delete the trigger.
-#[allow(clippy::assertions_on_constants)]
+// RETIRED 2026-09-04: `ratchet_is_never_looser_than_the_ruled_bound`.
+//
+// It compared `RATCHET_BYTES` against `BOOT_READ_BOUND_BYTES` and fired the moment the file came
+// inside the bound, so that a local pin left sitting ABOVE the bound could not silently permit
+// regrowth back into breach. It fired, exactly once, on the split commit — *"is now 89,424 bytes,
+// within the ruled 100,000 — but RATCHET_BYTES is 128,776, which is LOOSER than the bound"* — and
+// that failure is what deleted the ratchet.
+//
+// It is NOT re-pointed at something else, because its question no longer exists: it asked whether
+// two constants disagreed, and there is now one constant. A test kept alive past its question
+// becomes a test that cannot fail, which is the defect this whole file was written to end. The
+// regrowth risk it hedged is now carried directly by `boot_read_is_within_the_ruled_bound`, which
+// goes red at 100,001 B with no second number able to soften it.
+//
+// What its removal DID expose is that nothing covered the human-visible status line, in either
+// direction. `status_line_says_which_side_of_the_bound_we_are_on` below covers that, and is a new
+// test for a real gap rather than the old one wearing a new name.
+
+/// **The status line is the only thing a human sees on a green run** — so it is checked, in both
+/// states, against the one bound.
+///
+/// The over-case cannot be observed on the real file (it is compliant, and must stay so), which is
+/// exactly why it is exercised on a derived size instead of left to chance.
 #[test]
-fn ratchet_is_never_looser_than_the_ruled_bound() {
-    let path = boot_read();
-    let (size_bytes, _) = measure(&path)
-        .unwrap_or_else(|e| panic!("cannot read the boot read at {}: {e}", path.display()));
-    if !over_bound(size_bytes) {
+fn status_line_says_which_side_of_the_bound_we_are_on() {
+    // A synthetic distance, not today's measurement: a fixture pinned to the real file's current
+    // headroom would go red on any edit to a document this test does not govern.
+    const GAP: u64 = 2_500;
+    let under = status_line(BOOT_READ_BOUND_BYTES - GAP, 1_056);
+    assert!(
+        under.contains("2,500 UNDER"),
+        "under the bound, the distance must be reported as UNDER: {under}"
+    );
+    // Not a bare `contains("OVER")` — the path `docs/OVERSEER.md` is in the line, and the naive
+    // form of this assertion failed on the filename the first time it ran. The two markers below
+    // are the ones that only the over-case can produce.
+    assert!(
+        !under.contains(" OVER"),
+        "a compliant file must not report a distance as OVER: {under}"
+    );
+    assert!(
+        !under.contains("SPLIT IT"),
+        "a compliant file must not be told to split: {under}"
+    );
+
+    let over = status_line(BOOT_READ_BOUND_BYTES + 1, 1_056);
+    assert!(
+        over.contains("1 OVER"),
+        "over the bound, the distance must be reported as OVER: {over}"
+    );
+    assert!(
+        over.contains("SPLIT IT"),
+        "the over-case must name the remedy, not just the number: {over}"
+    );
+
+    // Both states quote the ruled bound, and there is no second bound to quote.
+    for line in [&under, &over] {
         assert!(
-            RATCHET_BYTES <= BOOT_READ_BOUND_BYTES,
-            "{} is now {} bytes, within the ruled {} — but RATCHET_BYTES is {}, which is LOOSER \
-             than the bound and would permit regrowth into breach. The residual is settled: delete \
-             RATCHET_BYTES and assert BOOT_READ_BOUND_BYTES directly.",
-            path.display(),
-            commas(size_bytes),
-            commas(BOOT_READ_BOUND_BYTES),
-            commas(RATCHET_BYTES),
+            line.contains(&commas(BOOT_READ_BOUND_BYTES)),
+            "the status line must quote the ruled bound: {line}"
+        );
+        assert!(
+            line.contains("NOT gated"),
+            "the line residual must be labelled as ungated wherever it is printed: {line}"
         );
     }
 }
@@ -392,12 +410,25 @@ fn bound_check_is_two_directional() {
         "the line count must be reported as a residual, never as something gated"
     );
     assert!(
+        text.contains("OVERSEER-REFERENCE.md"),
+        "the verdict must name where a rule read at a later moment goes"
+    );
+    assert!(
         text.contains("OVERSEER-LOG.md"),
-        "the verdict must name where the content goes"
+        "the verdict must name where closed history goes"
     );
     assert!(
         text.contains("OWNER'S parcel"),
         "the verdict must say that live rulings are not the agent's to trim"
+    );
+    assert!(
+        text.contains("NEVER RAISED"),
+        "the verdict must say the bound is not the thing to change — that is the ruling"
+    );
+    assert!(
+        text.contains("TOKENS"),
+        "the verdict must tell the next splitter to prove it below the unit it cut at; a \
+         line-and-md5 proof is what let 34 half-sentences through"
     );
 }
 
@@ -416,9 +447,10 @@ fn gate_never_asserts_the_line_count() {
          the gate is bytes only"
     );
 
-    // And the real file's own residual is over the guide today, which is exactly the state the
-    // protocol says is by design, not by neglect. If this ever stops being true the assertion
-    // below is the reminder that the residual is a REPORT, not a target.
+    // The real file's own residual is still over the guide after the split (1,056 vs ~900) while
+    // being comfortably under the byte bound — which is the protocol's own point, made by this
+    // repo's own file. If this ever stops being true the assertion below is the reminder that the
+    // residual is a REPORT, not a target.
     let (_, lines) = measure(&boot_read()).expect("boot read unmeasurable");
     assert!(
         lines > 0,
