@@ -20,30 +20,33 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 8a9309194ce67144a2efb532323947f623b64f96
-    pin.blob     = 41ec64709e9dd63e38b11b10f759ff4a3335410d
-    pin.bytes    = 347476
+    pin.revision = bbf3bf827c6909725cdce998bf26663a36cb9bfa
+    pin.blob     = d383daeb790bf73dfcfec4ae91de5471be62c30a
+    pin.bytes    = 347676
 
 ## Current copy
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`8a9309194ce67144a2efb532323947f623b64f96`** (2026-09-04) — *not* `origin/main`'s tip (`7498dd2` at adoption), and that is deliberate: it is the last commit that **touched this file**, derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip, and `git merge-base --is-ancestor 8a930919 origin/main` was **run**, not assumed (it exited 0). 67 method fragments; all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
-| Last commit that touched the schema | **`8a9309194ce67144a2efb532323947f623b64f96`** — *"protocol: section 11.33, CR-STEP-SHORTFALL adjudicated: stepped? on emulator/step's result (the instructions actually retired); four vectors; two mutations"* (2026-09-04). |
-| Git blob | `41ec64709e9dd63e38b11b10f759ff4a3335410d` |
-| SHA-256 | `9d065dcb6312eb825a009bea4d8b63b2fc592e92ab522385afc536d312954442` |
-| Bytes | 347476 |
+| Contract repo revision | **`bbf3bf827c6909725cdce998bf26663a36cb9bfa`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor bbf3bf8 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `cb5a81c8` at the time). 67 method fragments; all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
+| Last commit that touched the schema | **`bbf3bf827c6909725cdce998bf26663a36cb9bfa`** — *"protocol 11.33 correction: stepped floor is 0, not 1 (a CPU halted on STOP retires nothing and absence means the count ran); stepped:0 vector flips to pass, -1 fail vector added"* (2026-09-04). |
+| Git blob | `d383daeb790bf73dfcfec4ae91de5471be62c30a` |
+| SHA-256 | `6bd2c2176f21513d3daffb3d681150818343beee45bc566378aea6467670f277` |
+| Bytes | 347676 |
 | Vendored on | 2026-09-04 |
 
-> **⚑ The pin is `8a930919`, NOT §11.33's own adoption commit `3b43185e`, and that is the recipe rather
-> than a preference.** `3b43185e` is the *correction* to §11.33 — it removes the `caveat` fail-vector that
-> could not be one, since the harness closes pass vectors only — and it touches `contract/protocol.md` and
-> `contract/schema/tests/vectors.json` **and not this file**. `git log -1 --format=%H origin/main --
-> contract/schema/bus-protocol.schema.json` answers `8a930919`, and the two revisions resolve this path to
-> **the same blob** `41ec6470…`, so pinning the tip-of-the-ruling would have named a commit that never
-> wrote these bytes. Both were confirmed ancestors of `origin/main` by running
-> `git merge-base --is-ancestor`, not by assuming.
+> **⚑ On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit, and that is a
+> coincidence rather than a simplification.** `bbf3bf8` both adjudicates the correction and writes these
+> bytes, so `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` and "the
+> commit the ruling is in" agree. On the re-vendor *before* this one they did **not** — see the retired
+> note below — so the recipe was run here too rather than skipped on the strength of them matching.
+>
+> *(Retired, kept because it is the reason the recipe is a recipe.)* ~~The pin is `8a930919`, NOT §11.33's
+> own adoption commit `3b43185e`.~~ `3b43185e` was the *correction* to §11.33 that removed the `caveat`
+> fail-vector which could not be one, and it touched `contract/protocol.md` and
+> `contract/schema/tests/vectors.json` **and not this file**; `git log -1 …` answered `8a930919`, so
+> pinning the tip-of-the-ruling would have named a commit that never wrote those bytes.
 >
 > ⚑ **The table this replaces was STALE, and the stale half was the half no gate reads.** It described
 > blob `487af407…` / revision `e04a94f…` / 345965 bytes while the pin block above said
@@ -53,7 +56,7 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 > human reader the wrong revision. Every figure in the table above is therefore derived by parsing the
 > bytes actually written in this commit; none is carried over.
 
-**Taken from the object store at a committed revision**, `git show 8a930919:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `41ec6470…`, equal to `git rev-parse 8a930919:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show bbf3bf8:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `d383daeb…`, equal to `git rev-parse bbf3bf8:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
@@ -103,6 +106,53 @@ serve that needs the new schema.
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
 
+### What this re-vendor adopted — §11.33's **correction**: `stepped`'s floor is 0 (2026-09-04)
+
+The re-vendor below shipped `stepped` with `minimum: 1` and this file reported, in its own words, that
+one real state therefore had no legal spelling. **The contract lane closed that within the hour**
+(`bbf3bf8`), and this copy is the closure: `step.result.stepped.minimum` is `0`, and the description now
+says *"a CPU already halted on STOP retires nothing, and absence means the count ran, so 0 is the only
+legal spelling of that state"*. Upstream also flipped its `stepped: 0` vector from fail to pass and added
+a `stepped: -1` fail vector in its place. **Additive in §11.18's sense** — a value formerly refused is now
+accepted, nothing formerly accepted is refused — which is why the freshness gate goes red on the **blob
+alone** and no structural row below moves.
+
+Figures **re-derived by parsing both copies** (`git cat-file blob` for the previous one, so neither figure
+is read from a commit message or carried over):
+
+| | previous copy (`8a930919`) | this copy (`bbf3bf8`) | delta |
+|---|---|---|---|
+| method fragments | 67 | **67** | unmoved |
+| fragments declaring / closing `params` / declaring `result` | 67 / 67 / 67 | **67 / 67 / 67** | 0 / 0 / 0 |
+| `$defs` | 19 | **19** | unmoved |
+| `emulator/step.result` properties | `pc`, `stepped`, `symbol`, `symbolDisp` | **same four** | unmoved — this is a leaf *value* change, not a shape change |
+| `emulator/step.result.stepped.minimum` | `1` | **`0`** | the one leaf with teeth |
+| `emulator/step.result.stepped.description` | 1012 chars | **1212 chars** | +200, the correction's own prose |
+| `emulator/step.$comment` | *"…a bounded server says how many instructions actually retired…"* | **byte-identical** | unmoved |
+| `emulator/step.params.count` | `minimum: 1`, `maximum: 1000000` | **unmoved** | the *request* floor is untouched, and that is the point of the correction: `count`'s floor bounds a request, `stepped` reports what happened |
+| bytes | 347476 | **347676** | +200 |
+
+> ⚑ **One figure upstream's own additivity paragraph under-counts, noted rather than corrected here.**
+> §11.33's correction says *"fragment leaf changed: `step.result.stepped.minimum` (1 → 0)"* — one leaf.
+> Parsing both blobs shows **two**: `minimum` and `description`. A description is a leaf whose change
+> carries no validation force, so nothing follows from it, but this table states the measured number
+> rather than the narrated one. (Upstream's *"68 method fragments"* is likewise the raw `methods` key
+> count, which includes the `$comment` key; excluding `$`-keys, as this file has always done, gives 67.)
+
+**What this re-vendor's green witnesses, and the one line it flips.** Exactly one bit: a reply carrying
+`stepped: 0` was **refused** by the previous copy and is **accepted** by this one. It still cannot witness
+that the key is ever emitted (it is optional, and `required` names only `pc`), still cannot witness
+`stepped ≤ count`, and still cannot witness the `count` refusals — all three remain `tests/step.rs`'s.
+
+**And serving the corrected floor found the hole was in this server, not only in the fragment** — see
+[the superseded note below](#one-value-the-fragment-cannot-carry-superseded) and `engine.rs`'s `fn step`.
+The premise everyone had been reasoning from, *"a CPU halted on `STOP` retires nothing"*, was **false of
+this server**: a `Stopped` CPU still turns the crank and the core delivered a retire per idle slice, which
+the tally counted. Measured on the wire at the `STOP` at `$288` of `testrom::build_trap_on_frame`:
+`step {count: 1000000}` answered **`stepped: 1000000` with `pc` unmoved**. `minimum: 1` had never been
+what stood between this row and an honest answer — it had hidden that the answer was wrong in the
+*opposite* direction, on the loudest value it could take.
+
 ### What this re-vendor adopted — §11.33, `stepped` on `emulator/step` (2026-09-04)
 
 Landed **with** the serve, in one commit, for the reason the §11.32 box below states in general and this
@@ -150,12 +200,35 @@ Figures **re-derived by parsing the previous copy and this one**, never read fro
   something checks the server against the new text.** The refusals are asserted from the wire in
   `tests/step.rs`, which is where that blindness is covered.
 
-**One value the fragment cannot carry, reported rather than papered over.** `stepped` is `minimum: 1`, so
-a `step` whose run retired **nothing** — a CPU already halted on `STOP` retires no instruction for the
-whole frame budget — has no legal spelling: `0` is refused by the fragment and absence is the one reading
-§11.33 says never means a shortfall. This server omits the key in that case, as the lesser of two wrongs,
-and leaves `stopped`'s `deadlineReached` as the honest channel. Owed upstream as a `minimum: 0` amendment;
-the handler carries the same note at the `if retired >= 1` that implements it.
+<a id="one-value-the-fragment-cannot-carry-superseded"></a>
+**One value the fragment cannot carry, reported rather than papered over.** *(Written 2026-09-04 at the
+serve. **SUPERSEDED the same day** — see the correction box above — but kept verbatim, because the
+sequence "we found it → we refused to paper over it → upstream fixed it within the hour" is the record,
+and a deleted hole cannot show that a lane's refusal to fake green is what closed it.)*
+
+> `stepped` is `minimum: 1`, so a `step` whose run retired **nothing** — a CPU already halted on `STOP`
+> retires no instruction for the whole frame budget — has no legal spelling: `0` is refused by the
+> fragment and absence is the one reading §11.33 says never means a shortfall. This server omits the key
+> in that case, as the lesser of two wrongs, and leaves `stopped`'s `deadlineReached` as the honest
+> channel. Owed upstream as a `minimum: 0` amendment; the handler carries the same note at the
+> `if retired >= 1` that implements it.
+
+**No longer owed, and closed rather than dropped.** `bbf3bf8` set the floor to `0`; the `if retired >= 1`
+guard is gone and `stepped` is now emitted unconditionally. **Two of the paragraph's own claims did not
+survive contact with a measurement**, and both are worth more than the fix:
+
+* *"a CPU already halted on `STOP` retires no instruction for the whole frame budget"* — **false of this
+  server when written.** The core delivers a retire for every `Stopped` idle slice and the tally counted
+  them, so that state produced `stepped == count`, not an omission. The premise was true of the *hardware*
+  and false of the *implementation*, and nothing in the parcel that wrote it had run the case.
+* *"leaves `stopped`'s `deadlineReached` as the honest channel"* — the event was honest, but the **reply
+  was not silent**, as the paragraph assumed; it was loudly wrong. A hole that is described as an absence
+  and is really a wrong value is the more dangerous of the two, because absence at least has a documented
+  reading and `stepped: 1000000` has none.
+
+The fix is in `StepStop::on_step_retire`: an idle slice ([`StepRetire::idle`], added to the core for this)
+counts toward neither the tally nor the goal, so a halted CPU now runs out its frame budget and answers
+`stepped: 0` with `deadlineReached: true` — reply and event telling one story.
 
 ### What this re-vendor adopted — §11.32, the three object MUTATION rows (2026-09-03)
 

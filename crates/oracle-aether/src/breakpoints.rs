@@ -254,6 +254,7 @@ mod tests {
             supervisor: true,
             cycles: 4,
             stall_cycles: 0,
+            idle: false,
         }
     }
 

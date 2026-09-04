@@ -97,6 +97,25 @@ pub struct StepRetire {
     /// consequences the CPU never caused — a call graph would open a frame for a `JSR` that was preempted
     /// before it decoded, and never close it.
     pub executed: bool,
+    /// Whether the step was a **`Stopped`/`Halted` idle slice** — the processor waiting for an interrupt
+    /// or a reset, doing nothing and able to do nothing.
+    ///
+    /// **A strictly narrower question than [`executed`](StepRetire::executed), and the two must not be
+    /// conflated.** `executed` is `false` for three unlike things: an exception entry, an aborted
+    /// instruction, and an idle slice. The first two are instruction-shaped units — they stack a frame,
+    /// move the PC, cost their real pinned cycles — and a consumer counting §3's step unit counts them. An
+    /// idle slice is a *progress device*: a nominal, deliberately unpinned cost so a run loop advances, on
+    /// which the same stale `pc` retires over and over and nothing observable changes but the clock.
+    ///
+    /// **What it is for, and why it is not inferable without it.** A consumer reporting "instructions
+    /// actually retired" (`protocol.md` §11.33's `stepped`, via `oracle-aether`'s `StepStop`) must not
+    /// count these: a `step {count: 1000000}` on a CPU halted on `STOP` otherwise answers `stepped:
+    /// 1000000` with the PC unmoved, which is the exact wrong output §11.33 was adopted to prevent. The
+    /// only other way to tell an idle slice from an exception entry at this boundary is to compare
+    /// `cycles` against `STOPPED_IDLE_SLICE` — pinning a behavioural distinction to a constant whose own
+    /// doc says it is not pinned. Hence a flag, set at the two `CpuState` arms that produce it and nowhere
+    /// else.
+    pub idle: bool,
     /// The active stack pointer (A7) **after** the step committed — what a shadow stack matches a return
     /// against, and what makes an `RTS` distinguishable from a `move.l/rts` dispatch that never pushed.
     ///
@@ -3520,6 +3539,7 @@ mod tests {
             cycles: 16,
             stall_cycles: 4,
             executed: true,
+            idle: false,
         }
     }
 

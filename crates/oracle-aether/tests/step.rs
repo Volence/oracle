@@ -363,9 +363,14 @@ fn a_bounded_step_reports_the_instructions_it_actually_retired() {
     let stepped = short["stepped"]
         .as_u64()
         .unwrap_or_else(|| panic!("a bounded step MUST carry `stepped` (§11.33): {short}"));
+    // `>= 1` is this ROW's premise, not the fragment's floor any more: since `bbf3bf8` the fragment types
+    // `stepped` as `minimum: 0`, and `0` has its own row below. What must hold *here* is that a running
+    // CPU under a frame bound retired something before the bound cut it off — a `0` on THIS fixture would
+    // mean the machine never advanced, which is a different defect from the shortfall being measured.
     assert!(
         stepped >= 1,
-        "the fragment types `stepped` as `minimum: 1`: {short}"
+        "this fixture's CPU is running, so a bounded step must have retired something before the bound: \
+         {short}"
     );
     assert!(
         stepped < ASKED,
@@ -439,6 +444,161 @@ fn stepped_is_not_a_step_family_result_key() {
         r.get("stepped").is_some(),
         "`emulator/step` is the row §11.33 amends and must carry the key: {r}"
     );
+}
+
+/// **`stepped: 0` — the state that had no legal spelling, and the wrong answer that was hiding behind
+/// its absence.**
+///
+/// §11.33's correction (`empyrean` `bbf3bf8`) moved the floor from 1 to 0 because *"a CPU already halted
+/// on STOP retires nothing, and absence means the count ran, so 0 is the only legal spelling of that
+/// state"*. This is that state, served.
+///
+/// **What running it actually found, which is why the row exists at all.** The premise everyone had
+/// reasoned from — the server *omits* the key here — was false. A `Stopped` CPU still turns the crank and
+/// the core delivered a retire per nominal idle slice; the `stepped` tally counted them, so this fixture
+/// answered **`stepped: 1000000` with the PC unmoved**: the reply claiming the whole count ran on a
+/// machine that had retired nothing and could not. `minimum: 1` had never been what stood between this
+/// row and an honest answer. `StepStop::on_step_retire` now excludes idle slices from the tally *and*
+/// from the goal, which is also why the run below ends on its frame bound rather than on a turn where the
+/// processor did nothing.
+///
+/// # Why this fixture and not a planted opcode
+///
+/// `testrom::build_trap_on_frame(1)` faults on its first VBlank into a handler that ends in
+/// `stop #$2700` at [`testrom::TRAP_HANDLER_STOP_ADDR`]. Mask 7 makes the halt **permanent** — no
+/// interrupt this machine raises exceeds it, and only a reset restarts the processor — so the state is
+/// stable across as many steps as this row wants to take, which a `stop` with a lower mask (the
+/// `IdleInRoutine` fixture's `#$2000`) would not be.
+///
+/// # The witnesses, and why none of them is the reply agreeing with itself
+///
+/// * **That the CPU is really halted**: `sr` read back over `emulator/status` equals
+///   [`testrom::TRAP_HANDLER_STOP_SR`], the immediate the fixture's own `stop` loads. SR takes that value
+///   only by that instruction executing. This is machine state, authored by the CPU, not by `step`.
+/// * **That the run genuinely happened**: `mclk` strictly advances across the zero-retire step. `0` here
+///   means "this run retired nothing", never "no run occurred" — and those are the two readings the whole
+///   §11.33 argument turns on.
+/// * **That the machine did not move**: `pc` is unchanged, which is what makes `stepped: 0` the *true*
+///   answer rather than merely a legal one.
+/// * **That the event channel agrees**: `deadlineReached: true`. Reply and event tell one story — the
+///   run ended on its bound having retired nothing.
+///
+/// # Anti-vacuity
+///
+/// A server that had simply dropped `stepped`, or that always answered `0`, would satisfy every
+/// assertion above. So the row steps the `stop` **itself** first, on the same server and the same method,
+/// and requires `stepped: 1` for it. That single instruction is the control: it is the last thing this
+/// CPU ever executes, and the reply must count it.
+#[test]
+fn a_step_on_a_cpu_halted_on_stop_reports_stepped_zero() {
+    // Two frames: enough for the fixture to fault on its first VBlank and reach the handler, and small
+    // enough that a run which retires nothing burns the budget in milliseconds instead of at the engine's
+    // 600-frame clamp. The budget is a fixture parameter here, never an expectation — nothing below reads
+    // it.
+    const BUDGET: u64 = 2;
+    let h = spawn_with_frame_budget(
+        "st-stopped-zero",
+        testrom::build_trap_on_frame(1),
+        1024,
+        BUDGET,
+    );
+    let mut c = Client::connect(&h);
+    c.handshake(true);
+
+    // Park ON the `stop`, at testrom's own exported address — not one this server was observed to reach.
+    park_at(&mut c, testrom::TRAP_HANDLER_STOP_ADDR);
+
+    // THE CONTROL, and it runs before the halt exists: one real instruction must count as one.
+    let executed = c.ok("emulator/step", json!({ "count": 1 }));
+    assert_eq!(
+        executed["stepped"],
+        json!(1),
+        "ANTI-VACUITY: the `stop` itself is a real instruction and must be counted, or every `0` below \
+         is satisfied by a server that dropped the key or hard-codes zero: {executed}"
+    );
+
+    // The machine's own account of what that instruction did — SR is the CPU's, not the reply's.
+    let halted = c.ok("emulator/status", json!({}));
+    assert_eq!(
+        halted["sr"],
+        json!(format!("0x{:04X}", testrom::TRAP_HANDLER_STOP_SR)),
+        "setup: SR must hold the immediate the fixture's `stop` loads, which is what proves the CPU is \
+         halted rather than merely parked at that address: {halted}"
+    );
+
+    // Both ends of the fragment's `count` range, because a shortfall is measured against `count` and a
+    // server deriving `stepped` from it would answer differently for the two.
+    for count in [1u64, 1_000_000] {
+        let before = pc_of(&mut c);
+        let mclk_before = halted_mclk(&mut c);
+
+        let (r, events) = call_watching_events(&mut c, "emulator/step", json!({ "count": count }));
+
+        // PRESENT and `0`. Asserted as two separate things on purpose: absence is the reading §11.33 says
+        // never means a shortfall, so "no key" and "the key says zero" are opposite answers here, and a
+        // single `r["stepped"] == json!(0)` would quietly accept `null` for a missing key.
+        assert!(
+            r.get("stepped").is_some(),
+            "count={count}: a halted CPU retires nothing, and ABSENCE means the count ran — the one \
+             reading §11.33 forbids. The key must be present: {r}"
+        );
+        assert_eq!(
+            r["stepped"],
+            json!(0),
+            "count={count}: the CPU is halted on `STOP`, so the honest count is 0 — this is the exact \
+             value the `minimum: 1` floor refused, and the value this server answered `{count}` for \
+             before idle slices stopped counting as retires: {r}"
+        );
+
+        // The machine did not move — so `0` is true, not merely legal.
+        assert_eq!(
+            r["pc"],
+            json!(hex(testrom::TRAP_HANDLER_STOP_ADDR)),
+            "count={count}: a halted CPU's PC stays on the `stop`: {r}"
+        );
+        assert_eq!(
+            before,
+            testrom::TRAP_HANDLER_STOP_ADDR,
+            "count={count}: and it was there before the step too"
+        );
+
+        // ...but the run DID happen. This is the assertion that separates "retired nothing" from "never
+        // ran", which is the distinction the whole key exists to make.
+        let mclk_after = halted_mclk(&mut c);
+        assert!(
+            mclk_after > mclk_before,
+            "count={count}: `stepped: 0` must mean the run retired nothing, NOT that no run occurred — \
+             the master clock has to have advanced: {mclk_before} -> {mclk_after}"
+        );
+
+        // And the event channel's own account agrees: the bound ended it.
+        let stopped = events
+            .iter()
+            .find(|e| e["method"] == json!("emulator/stopped"))
+            .unwrap_or_else(|| panic!("count={count}: a step emits `stopped`: {events:?}"));
+        assert_eq!(
+            stopped["params"]["deadlineReached"],
+            json!(true),
+            "count={count}: nothing retired, so the step condition was never met and the run ended on \
+             its frame bound. Reply and event must tell one story: {stopped}"
+        );
+
+        // Still halted, so the next iteration starts from the same state rather than from whatever the
+        // last one left.
+        let after = c.ok("emulator/status", json!({}));
+        assert_eq!(
+            after["sr"],
+            json!(format!("0x{:04X}", testrom::TRAP_HANDLER_STOP_SR)),
+            "count={count}: mask 7 means nothing can wake this CPU, so it is still halted: {after}"
+        );
+    }
+}
+
+/// The `mclk` stamp `emulator/status` carries, as a `u64` — the machine coordinate D11 puts on every
+/// reply, read here as the independent "did the run actually happen" witness.
+fn halted_mclk(c: &mut Client) -> u64 {
+    let s = c.ok("emulator/status", json!({}));
+    s["mclk"].as_u64().expect("status.mclk is an integer")
 }
 
 // ---------------------------------------------------------------------------------------------------

@@ -3247,7 +3247,7 @@ impl Cpu68000 {
         // it. Consume a nominal idle so `run_until` still advances; the halt cadence is not pinned (Yacht's
         // HALTED STATE is `?(0/0)` `(n-)*`, explicitly unbounded).
         if self.state == CpuState::Halted {
-            return StepOutcome::not_executed(STOPPED_IDLE_SLICE);
+            return StepOutcome::idle_slice(STOPPED_IDLE_SLICE);
         }
         // Trace (a boundary event pended by the PREVIOUS instruction) outranks decoding the next instruction
         // (M68000UM §6.2.3 group-1 order; the interrupt arm joins here in A4). A `Stopped` CPU (after `STOP`)
@@ -3263,7 +3263,7 @@ impl Cpu68000 {
             } else {
                 // Remain stopped, consuming a nominal idle slice so `run_until` (Push C) makes progress. This
                 // per-poll idle cost is NOT pinned (no Yacht STOP-wait entry) — a progress device, not timing.
-                return StepOutcome::not_executed(STOPPED_IDLE_SLICE);
+                return StepOutcome::idle_slice(STOPPED_IDLE_SLICE);
             }
         }
         if self.trace_pending {
@@ -3315,12 +3315,13 @@ impl Cpu68000 {
         StepOutcome {
             cycles,
             executed: !suppresses_trace,
+            idle: false,
         }
     }
 }
 
-/// What one turn of the CPU crank produced: its cost, and whether it ran the instruction at `pc`.
-/// See [`Cpu68000::step_reporting`].
+/// What one turn of the CPU crank produced: its cost, whether it ran the instruction at `pc`, and whether
+/// it was an idle slice rather than work of any kind. See [`Cpu68000::step_reporting`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StepOutcome {
     /// CPU cycles consumed.
@@ -3328,14 +3329,36 @@ pub struct StepOutcome {
     /// `false` when the instruction at `pc` did not execute — an exception entry, an idle slice, or an
     /// aborted instruction.
     pub executed: bool,
+    /// `true` **only** for a `Stopped`/`Halted` idle slice: a turn of the crank on which the processor did
+    /// nothing at all and could not, because it is waiting for an interrupt or a reset.
+    ///
+    /// **Not the same question as [`executed`](StepOutcome::executed), and that is the whole reason it
+    /// exists.** `executed` is `false` on three different kinds of turn: an exception entry, an aborted
+    /// instruction, and an idle slice. The first two are *instruction-shaped units* — they stack a frame,
+    /// move the PC, change the SR, cost their real pinned cycles — and §3's step unit counts them. An idle
+    /// slice is none of that: [`STOPPED_IDLE_SLICE`] is a progress device so `run_until` advances, it
+    /// retires the same stale `pc` forever, and nothing observable changes but the clock. A consumer that
+    /// tried to tell those apart from `executed` alone would have to guess from `cycles`, which pins a
+    /// behavioural distinction to an unpinned timing constant.
+    pub idle: bool,
 }
 
 impl StepOutcome {
-    /// The step cost `cycles` but ran no instruction.
+    /// The step cost `cycles` but ran no instruction — an exception entry or an aborted instruction.
     fn not_executed(cycles: u32) -> Self {
         Self {
             cycles,
             executed: false,
+            idle: false,
+        }
+    }
+
+    /// The step was a `Stopped`/`Halted` idle slice: no instruction, and no work of any other shape either.
+    fn idle_slice(cycles: u32) -> Self {
+        Self {
+            cycles,
+            executed: false,
+            idle: true,
         }
     }
 }

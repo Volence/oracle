@@ -1232,11 +1232,18 @@ struct StepStop {
     /// right one and a far better answer than a confident wrong `pc`.
     lost_track: bool,
     fired: bool,
-    /// Instructions this run retired, counted on **every** retire the core delivers and independently of
-    /// [`goal`](StepStop::goal). This is what `emulator/step` reports as §11.33's `stepped`, and the reason
-    /// it is a separate tally rather than `count - remaining` is that the latter is the handler's own
-    /// arithmetic wearing a witness's clothes: it can only ever agree with what the handler already
-    /// believes. This one comes off the CPU.
+    /// Instructions this run retired, counted on every retire the core delivers **that was a unit of work**
+    /// and independently of [`goal`](StepStop::goal). This is what `emulator/step` reports as §11.33's
+    /// `stepped`, and the reason it is a separate tally rather than `count - remaining` is that the latter
+    /// is the handler's own arithmetic wearing a witness's clothes: it can only ever agree with what the
+    /// handler already believes. This one comes off the CPU.
+    ///
+    /// **The one retire it does not count is a `Stopped`/`Halted` idle slice** ([`StepRetire::idle`]), and
+    /// that exclusion was measured rather than reasoned. Before it, a `step {count: 1000000}` on a CPU
+    /// halted on `STOP` at `$288` of `testrom::build_trap_on_frame` answered `stepped: 1000000` with `pc`
+    /// unmoved at `0x00000288` — the reply saying the whole count ran on a machine that had retired
+    /// nothing and could not retire anything, which is the precise output §11.33 was adopted to prevent.
+    /// See [`Engine::step`] for how that measurement reached this field.
     retired: u64,
 }
 
@@ -1335,6 +1342,38 @@ impl BusEventSink for StepStop {
         // is the truthful answer, and hiding it behind the guard would make `stepped` disagree with `pc`.
         // (It does not, in fact, on `StepGoal::Instructions`: `step {count: 2}` retires exactly 2, which is
         // pinned from the wire in `tests/step.rs`.)
+        //
+        // **An idle slice is not a retire, and `executed` is the wrong flag to ask.** `executed: false`
+        // covers exception entries, aborted instructions AND idle slices; the first two are §3's
+        // "instruction-shaped unit" and count (see the `remaining` arm below, which says so). A
+        // `Stopped`/`Halted` idle slice is not: it is the core's progress device, retiring the same stale
+        // `pc` at a cost its own doc declines to pin. `StepRetire::idle` is the core's own flag for exactly
+        // that arm, added with this line because the alternative was inferring it from `cycles`.
+        //
+        // **This returns before the goal too, and that is the point rather than a side effect.** An idle
+        // slice must not consume `Instructions(remaining)` either: if it did, `step {count: 1}` on a halted
+        // CPU would "meet its condition" on a turn where the processor did nothing, the run would report
+        // `deadlineReached: false`, and reply and event would then disagree — the reply saying `stepped: 0`
+        // (nothing ran) while the event said the step condition was met. Skipping both keeps them one
+        // story: nothing retires, the run ends on its frame bound, `deadlineReached` is `true`, and
+        // `stepped` is `0`. The price is that a `step` on a permanently halted CPU spends its whole frame
+        // budget before answering — paid deliberately, because the alternative is a fast wrong answer, and
+        // the answer it produces says on both channels exactly why it took the time.
+        //
+        // **It reaches `step_over`/`step_out` too, and it should.** §11.33 amends neither row, but all
+        // three share this sink, so on a halted CPU all three now run out the budget and report
+        // `deadlineReached: true` with `pc` unmoved, where before they returned at once on the first idle
+        // slice as though their condition had been met. That is the same correction wearing the other two
+        // rows' clothes: "the frame the call opened closed again" was no truer of a halted processor than
+        // "one instruction retired" was.
+        //
+        // What it does NOT reach is the `OverCall` arm below that fires when the first step did not
+        // execute. That arm is about a `JSR`/`BSR` preempted before it decoded, and it is guarded by the
+        // *pending* opcode having been a call — which a `Stopped` CPU's never is, since its `pc` sits on
+        // the `STOP` itself. So no early return here can suppress it.
+        if r.idle {
+            return;
+        }
         self.retired = self.retired.saturating_add(1);
         if self.fired {
             return;
@@ -3114,16 +3153,28 @@ impl Engine {
         // absence carry two meanings for a client that cannot tell a bounding server from a non-bounding
         // one. `retired` is the CPU's own retire tally, not this handler's arithmetic on `count`.
         //
-        // The one value it cannot carry: the fragment types `stepped` as `minimum: 1`, so a run that
-        // retired NOTHING is inexpressible. That is reachable in principle — a CPU already halted on a
-        // `STOP` retires no instruction for the whole frame budget — and absence then reads as "the count
-        // ran", which is the one thing §11.33 says absence never means. Omitting is still the lesser of
-        // the two wrongs, because emitting `0` is a reply the adopted fragment refuses outright; the
-        // honest channel in that case remains `stopped`'s `deadlineReached`. Carried openly rather than
-        // papered over with a `max(1)`, and owed upstream as a `minimum: 0` amendment.
-        if retired >= 1 {
-            out["stepped"] = json!(retired);
-        }
+        // **The zero-retire hole, and its closure — the original reading first, because the sequence is
+        // the record.** Serving this row on 2026-09-04 found that the adopted fragment typed `stepped` as
+        // `minimum: 1`, so a run that retired NOTHING was inexpressible: a CPU already halted on `STOP`
+        // retires no instruction for the whole frame budget, and absence then reads as "the count ran",
+        // which is the one thing §11.33 says absence never means. Rather than paper over it with a
+        // `max(1)`, this handler omitted the key on that path, said so here, and the gap was raised
+        // upstream. **The contract lane closed it the same day** (empyrean `bbf3bf8`): the floor is now
+        // `minimum: 0`, *"a CPU already halted on STOP retires nothing, and absence means the count ran,
+        // so 0 is the only legal spelling of that state"*, and §11.33 carries the correction in its own
+        // text. So the guard that stood here is gone and the key is unconditional, which is also what
+        // §11.33's SHOULD asks for.
+        //
+        // **What that closure exposed, measured on the wire and NOT what the omission had assumed.** The
+        // premise above — that a halted CPU makes `retired` zero — was false of this server. A `Stopped`
+        // CPU still turns the crank, and the core delivers a retire for each nominal idle slice; the tally
+        // counted them, so `step {count: 1000000}` on the `STOP` at `$288` of
+        // `testrom::build_trap_on_frame` answered **`stepped: 1000000` with `pc` unmoved** — not `0`, and
+        // not an omission either. The old `minimum: 1` had therefore never been what stood between this
+        // row and an honest answer; it had merely hidden that the answer was wrong in the other
+        // direction, on the loudest possible value. [`StepStop::on_step_retire`] now excludes idle slices
+        // from both the tally and the goal, which is what makes the `0` below reachable at all.
+        out["stepped"] = json!(retired);
         Ok(out)
     }
 

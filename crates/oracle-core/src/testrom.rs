@@ -148,8 +148,8 @@ pub fn build() -> Vec<u8> {
     put_word(&mut rom, 0x280, 0x33FC); // move.w #imm, (xxx).l
     put_word(&mut rom, 0x282, 0xDEAD); //   #$DEAD
     put_long(&mut rom, 0x284, 0x00FF_8004); //   $00FF8004
-    put_word(&mut rom, 0x288, 0x4E72); // stop #imm
-    put_word(&mut rom, 0x28A, 0x2700); //   #$2700
+    put_word(&mut rom, TRAP_HANDLER_STOP_ADDR, 0x4E72); // stop #imm
+    put_word(&mut rom, TRAP_HANDLER_STOP_ADDR + 2, TRAP_HANDLER_STOP_SR); //   #$2700
 
     // --- INT_H: sentinel then RTE ---
     put_word(&mut rom, 0x2A0, 0x33FC); // move.w #imm, (xxx).l
@@ -234,6 +234,24 @@ pub fn build_pad_log() -> Vec<u8> {
 /// for an engine's fault handler (Aeon vectors all sixteen TRAPs plus the reserved vectors at a single
 /// `ErrorTrap`, and routes `raise_exception` to its MD Debugger blob).
 pub const TRAP_HANDLER_ADDR: u32 = ILLEGAL_H;
+
+/// The address of the `stop #imm` that ends [`TRAP_HANDLER_ADDR`]'s body — four words past the handler's
+/// head, after its `move.w #$DEAD,($00FF8004).l` sentinel.
+///
+/// Exported because it is the only **permanently halted** CPU any fixture in this file reaches, and that
+/// is a state with consumers: `protocol.md` §11.33's `stepped` names "a CPU already halted on `STOP`" as
+/// the case whose only legal answer is `0`, and `oracle-aether`'s `tests/step.rs` parks here to serve it.
+/// Permanent because of [`TRAP_HANDLER_STOP_SR`] — mask 7, so no interrupt this machine can raise exceeds
+/// it, and only a reset would restart the processor.
+pub const TRAP_HANDLER_STOP_ADDR: u32 = 0x0000_0288;
+
+/// The immediate that the `stop` at [`TRAP_HANDLER_STOP_ADDR`] loads into SR: supervisor, trace off,
+/// **interrupt mask 7**.
+///
+/// This is the witness that the halt really happened, and it is a machine fact rather than a reply: SR
+/// takes this exact value only by that instruction executing. Reading it back over the wire after a step
+/// distinguishes "the CPU is stopped" from "the run never happened".
+pub const TRAP_HANDLER_STOP_SR: u16 = 0x2700;
 
 /// Build a ROM that runs normally and then **faults on a chosen frame** — the positive control for a
 /// fault-watching runner.
@@ -1209,7 +1227,18 @@ mod tests {
         assert_eq!(rd_word(&rom, 0x212), 0x30C0, "move.w D0,(A0)+");
         assert_eq!(rd_word(&rom, 0x214), 0x51C9, "dbra D1");
         assert_eq!(rd_word(&rom, 0x218), 0x6000, "bra.w");
+        // Spelled with the literal address on the left and the exported constant on the right, so this
+        // row still fails if `TRAP_HANDLER_STOP_ADDR` is moved without moving the instruction.
         assert_eq!(rd_word(&rom, 0x288), 0x4E72, "stop");
+        assert_eq!(
+            TRAP_HANDLER_STOP_ADDR, 0x288,
+            "TRAP_HANDLER_STOP_ADDR names the `stop`"
+        );
+        assert_eq!(
+            rd_word(&rom, TRAP_HANDLER_STOP_ADDR as usize + 2),
+            TRAP_HANDLER_STOP_SR,
+            "…and TRAP_HANDLER_STOP_SR is the immediate it loads (mask 7 — nothing wakes it)"
+        );
         assert_eq!(rd_word(&rom, 0x2A8), 0x4E73, "rte");
     }
 
