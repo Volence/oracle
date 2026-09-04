@@ -801,10 +801,10 @@ stop_reasons! {
 /// greater than this") — and that machinery is untouched by the wire type. [`Checkpoint::wire_id`] is
 /// the one place the two representations meet.
 /// **A cheap identity for the file at `symbols_path`** — the filter that keeps
-/// [`Engine::stale_symbols_caveat_now`] off the parse on the frame-rate path.
+/// [`Engine::listing_freshness_now`] off the parse on the frame-rate path.
 ///
 /// Every field is one `stat(2)`'s worth of metadata and none of them reads a byte of the file. See
-/// [`Engine::stale_symbols_caveat_now`] for the measurement, and for the two things this **cannot** see.
+/// [`Engine::listing_freshness_now`] for the measurement, and for the two things this **cannot** see.
 ///
 /// `ctime` is the field with teeth: `utimes()` lets a restore choose `mtime` but always sets `ctime` to
 /// now, so `cp -p` / `tar -x` / `rsync -t` putting an older listing back is visible here even though it
@@ -842,6 +842,157 @@ impl ListingStat {
     }
 }
 
+/// **Why the freshness question could not be answered** — the three ways [`ListingFreshness`] lands in
+/// [`ListingFreshness::Unmeasurable`], kept apart as data rather than as three sentences.
+///
+/// Each arm carries exactly what its sentence needs and nothing more, so both consumers — the `caveat`
+/// `emulator/status` serves and the clause a symbol miss appends — are *derived* from the state. Neither
+/// is parsed back out of the other.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Unmeasurable {
+    /// A table is held with **no recorded path**. A hosted embedder's [`crate::host::MachineInfo`] and a
+    /// checkpoint restore both reach this state; `emulator/load_symbols` never can.
+    NoPath,
+    /// There is a path and it cannot be read now — deleted, renamed, permissions.
+    Unreadable { path: String, err: String },
+    /// There is a path, it reads, and it is no longer a listing — a truncated write, a build in flight.
+    Unparseable { path: String, err: String },
+}
+
+impl Unmeasurable {
+    /// The short clause that reads *inside* a sentence: "… could NOT be checked (**{this}**) …".
+    fn clause(&self) -> String {
+        match self {
+            Self::NoPath => "this server holds no path for it".to_string(),
+            Self::Unreadable { path, err } => format!("{path} cannot be read now ({err})"),
+            Self::Unparseable { path, err } => {
+                format!("{path} no longer parses as a listing ({err})")
+            }
+        }
+    }
+}
+
+/// **Is the listing this server holds still the file at `symbols_path`? — as a TYPE, not as a sentence.**
+///
+/// [`Engine::listing_freshness`] used to answer `Option<String>`, where `Some` covered *both* "the file
+/// moved past the table" *and* "I could not look at all". That was enough for the two consumers it had:
+/// `emulator/status` and `emulator/reload_rom` both say the sentence and stop, and the sentence itself
+/// distinguishes the two states for the human reading it.
+///
+/// It stopped being enough when a **symbol miss** became a consumer, because a miss wants a *different
+/// remedy per state*: reload the listing / stop chasing staleness and check the spelling / neither, since
+/// nothing was measured. Recovering the state by matching on the sentence's own words is the defect this
+/// repo keeps re-fixing — a matcher over another rule's wording reclassifies silently the moment that
+/// wording is edited, and it fails **green**. So the three states are a type, and every sentence is
+/// derived from the state rather than parsed back into one.
+///
+/// The fourth state — *no table at all* — is deliberately **not** an arm here. It is `Option::None` from
+/// the producing functions, because it is not a freshness answer: §4 keeps `-32012` ("you forgot
+/// `load_symbols`") distinct from `-32013` ("that name is not in the table"), and a server with no
+/// listing has nothing that can be stale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ListingFreshness {
+    /// The file at `path` re-read and re-parsed to **exactly** the `rows` rows held. The one quiet state.
+    Current { path: String, rows: usize },
+    /// The file at `path` parses, and to something other than what is held.
+    Stale {
+        path: String,
+        held_rows: usize,
+        disk_rows: usize,
+    },
+    /// The check could not be made. Never rendered as [`Current`](Self::Current) — see
+    /// [`Engine::listing_freshness`].
+    Unmeasurable { held_rows: usize, why: Unmeasurable },
+}
+
+impl ListingFreshness {
+    /// **The `caveat` string `emulator/status` and `emulator/reload_rom` serve** — `None` only for
+    /// [`Current`](Self::Current).
+    ///
+    /// Byte-for-byte the sentences those two methods have emitted since §11.34 (CR-K). Introducing the
+    /// type changed how the state is *carried*; it did not change one word either method says.
+    fn caveat(&self) -> Option<String> {
+        match self {
+            Self::Current { .. } => None,
+            Self::Stale {
+                path,
+                held_rows,
+                disk_rows,
+            } => Some(format!(
+                "the symbol listing was NOT dropped, and that is not the same as current: {path} has \
+                 been rewritten since it was loaded and no longer describes the table this server is \
+                 resolving against ({held_rows} row(s) held, {disk_rows} row(s) in the file now). A \
+                 name the new build added will not resolve, and a name whose address moved will resolve \
+                 to the old one — silently, and looking exactly like an answer. `symbolsDropped: false` \
+                 says only that the held table still binds to the image's shape. Re-read it: \
+                 emulator/load_symbols."
+            )),
+            Self::Unmeasurable { held_rows, why } => Some(match why {
+                Unmeasurable::NoPath => format!(
+                    "the {held_rows}-row symbol listing was kept, but this server holds no path for it, \
+                     so whether it has been rebuilt since it was loaded could NOT be checked at all. \
+                     `symbolsDropped: false` says only that the held table still binds to the image's \
+                     shape, which is a filter and not a proof."
+                ),
+                Unmeasurable::Unreadable { path, err } => format!(
+                    "the {held_rows}-row symbol listing was kept, but {path} cannot be read now \
+                     ({err}), so whether it has been rebuilt since it was loaded could NOT be checked. \
+                     `symbolsDropped: false` says only that the held table still binds to the image's \
+                     shape, which is a filter and not a proof."
+                ),
+                Unmeasurable::Unparseable { path, err } => format!(
+                    "the {held_rows}-row symbol listing was kept, but {path} no longer parses as a \
+                     listing ({err}), so whether the table this server holds is still what that path \
+                     describes could NOT be checked. `symbolsDropped: false` says only that the held \
+                     table still binds to the image's shape, which is a filter and not a proof."
+                ),
+            }),
+        }
+    }
+
+    /// **The clause a `-32013` appends — one sentence per state, and three different sentences.**
+    ///
+    /// `F-LOOKUP-MISS-SAYS-NOTHING` booked a *static* hint ("if you rebuilt, reload the listing") on the
+    /// grounds that a real verdict meant a listing re-parse on every failed lookup, and failed lookups
+    /// are a hot path when a person is guessing at names. §11.34 (CR-K) removed that grounds:
+    /// [`Engine::listing_freshness_now`] is a `stat(2)`-gated door in front of the same verdict, 222 ns
+    /// while the file is untouched, and **a failed lookup does not invalidate it** (the cache key is the
+    /// path, the file's identity and `symbols_generation`, none of which a lookup touches). So the
+    /// sentence can be TRUE instead of generic:
+    ///
+    /// * [`Stale`](Self::Stale) — the booked case, and the only one where "reload it" is the remedy.
+    /// * [`Current`](Self::Current) — the booked sentence would be **actively misleading** here, because
+    ///   we know the reader did *not* rebuild. Saying the listing is current is strictly more useful: it
+    ///   stops them chasing a staleness theory and sends them to check the name.
+    /// * [`Unmeasurable`](Self::Unmeasurable) — "I could not look" must never render as "I looked and it
+    ///   is fine", so it says which, and says that the absence is not evidence either way.
+    fn miss_clause(&self) -> String {
+        match self {
+            Self::Current { path, rows } => format!(
+                "The listing was re-checked just now: {path} still parses to exactly the {rows} row(s) \
+                 held, so the table is CURRENT and this name is genuinely not in it — check the \
+                 spelling or the build, not the freshness of the listing."
+            ),
+            Self::Stale {
+                path,
+                held_rows,
+                disk_rows,
+            } => format!(
+                "The listing is STALE: {path} has been rewritten since it was loaded ({held_rows} \
+                 row(s) held, {disk_rows} row(s) in the file now), so a name the new build added is \
+                 absent here even while it sits in the file. If you rebuilt, reload the listing: \
+                 emulator/load_symbols."
+            ),
+            Self::Unmeasurable { held_rows, why } => format!(
+                "Whether the {held_rows}-row listing is still current could NOT be checked ({why}), so \
+                 this absence is not evidence that the name does not exist — a stale table has not been \
+                 ruled out.",
+                why = why.clause()
+            ),
+        }
+    }
+}
+
 /// One remembered freshness verdict, and everything that has to still be true for it to be reusable.
 ///
 /// All four fields are part of the key except `verdict`: the **path** (a different listing is a different
@@ -851,10 +1002,10 @@ struct SymbolFreshness {
     path: String,
     generation: u64,
     stat: ListingStat,
-    /// The answer [`Engine::stale_symbols_caveat`] gave — quiet (`None`) *and* loud are both cached. A
-    /// cache that remembered only the quiet answers would re-parse a 357 KB listing every frame for
-    /// exactly as long as a session was in the state the caveat exists to report.
-    verdict: Option<String>,
+    /// The answer [`Engine::listing_freshness`] gave — quiet ([`ListingFreshness::Current`]) *and* loud
+    /// are both cached. A cache that remembered only the quiet answers would re-parse a 357 KB listing
+    /// every frame for exactly as long as a session was in the state the caveat exists to report.
+    verdict: ListingFreshness,
 }
 
 struct Checkpoint {
@@ -1085,7 +1236,7 @@ pub struct Engine {
     /// fired would be a signal nobody could read on its own.
     symbols_generation: u64,
     /// **The last symbol-freshness verdict and the file identity it was computed against**, or `None`
-    /// when nothing may be reused. See [`Engine::stale_symbols_caveat_now`] for why a cache exists here
+    /// when nothing may be reused. See [`Engine::listing_freshness_now`] for why a cache exists here
     /// at all and exactly how narrow its claim is.
     symbol_freshness: Option<SymbolFreshness>,
     /// **How many times the FULL freshness check has actually read and parsed the listing.**
@@ -2597,7 +2748,7 @@ impl Engine {
     /// conformant server would accept. The omission looks like a transcription gap rather than a decision
     /// (every other addr-or-symbol row in the catalog carries the alternation), and it is reported upward
     /// rather than repaired locally.
-    fn resolve_exclusive_target(&self, params: &Value) -> Result<u32, RpcError> {
+    fn resolve_exclusive_target(&mut self, params: &Value) -> Result<u32, RpcError> {
         if params.get("addr").is_some() && params.get("symbol").is_some() {
             return Err(RpcError::invalid_params(
                 "`addr` and `symbol` are alternatives — pass exactly one. Both were given, and the two \
@@ -2609,7 +2760,7 @@ impl Engine {
         self.resolve_target(params)
     }
 
-    fn resolve_displaced_target(&self, params: &Value) -> Result<u32, RpcError> {
+    fn resolve_displaced_target(&mut self, params: &Value) -> Result<u32, RpcError> {
         let base = self.resolve_exclusive_target(params)?;
         let Some(v) = params.get("disp") else {
             return Ok(base);
@@ -2643,16 +2794,21 @@ impl Engine {
         Ok(sum as u32)
     }
 
-    fn resolve_target(&self, params: &Value) -> Result<u32, RpcError> {
+    fn resolve_target(&mut self, params: &Value) -> Result<u32, RpcError> {
         if let Some(name) = params.get("symbol") {
             let Some(name) = name.as_str() else {
                 return Err(RpcError::invalid_params("`symbol` must be a string"));
             };
-            let table = self.symbols.as_ref().ok_or_else(no_symbols)?;
-            return table.address_of(name).ok_or_else(|| {
-                RpcError::new(code::SYMBOL_NOT_FOUND, format!("no symbol named {name}"))
-                    .with_data(json!({"symbol": name}))
-            });
+            // The `Arc` is cloned rather than borrowed so the table's borrow of `self` ends here: the
+            // freshness clause below needs `&mut self` for its cache, and an `Arc` bump is the cheapest
+            // honest way to say "this lookup does not hold the engine open".
+            let table = self.symbols.clone().ok_or_else(no_symbols)?;
+            let Some(addr) = table.address_of(name) else {
+                let e = RpcError::new(code::SYMBOL_NOT_FOUND, format!("no symbol named {name}"))
+                    .with_data(json!({"symbol": name}));
+                return Err(self.with_symbol_freshness(e));
+            };
+            return Ok(addr);
         }
         let Some(a) = params.get("addr") else {
             return Err(RpcError::invalid_params(
@@ -2883,11 +3039,11 @@ impl Engine {
         // standard one layer up.
         //
         // ⚑ **The COST is the design**, and it is why this goes through
-        // [`Engine::stale_symbols_caveat_now`] rather than straight to `stale_symbols_caveat`: this is
+        // [`Engine::listing_freshness_now`] rather than straight to `listing_freshness`: this is
         // the cheapest and most-called method on the bus, a polling client may call it every frame, and
         // the full check is a 2.566 ms read-and-parse of a 357 KB listing — 15.4% of a core at 60 Hz.
         // Every figure and every hole in the filter is stated there.
-        if let Some(stale) = self.stale_symbols_caveat_now() {
+        if let Some(stale) = self.listing_freshness_now().and_then(|f| f.caveat()) {
             out["caveat"] = json!(stale);
         }
         Ok(out)
@@ -5131,7 +5287,18 @@ impl Engine {
         self.require_paused(method)?;
         // Resolved BY NAME, individually, on every call — never an offset from another cell (§11.32 J5).
         // A build missing any name is refused here, before anything is written anywhere.
-        let mailbox = objreq::resolve(self.symbols.as_deref())?;
+        //
+        // The `-32013` it can raise already says the second thing out loud — *this build has no
+        // live-object mailbox; it is a DEBUG-shape interface* — and that sentence answers the reader's
+        // "why not" for a RELEASE ROM. It cannot answer the other reality with the same symptom: a debug
+        // build whose mailbox this server's table predates. The freshness clause separates those two,
+        // and on a current listing it turns "the mailbox is absent" into "the mailbox is absent and the
+        // listing is not why", which is the stronger version of the sentence already here.
+        //
+        // Two statements rather than a `map_err` chain: the first borrows `self.symbols`, the second
+        // needs `&mut self` for the freshness cache.
+        let mailbox = objreq::resolve(self.symbols.as_deref());
+        let mailbox = mailbox.map_err(|e| self.with_symbol_freshness(e))?;
         mailbox.assert_layout()?;
 
         let max_frames = match params.get("maxFrames") {
@@ -5544,7 +5711,7 @@ impl Engine {
     /// `def` **or** `defSymbol`, exactly one — the `addr`|`symbol` pattern with the spellings
     /// deliberately not borrowed (§11.32 Q5: `addr` on a spawn row reads as *where to put it*, which is
     /// `x`/`y`).
-    fn objreq_def_param(&self, params: &Value) -> Result<u32, RpcError> {
+    fn objreq_def_param(&mut self, params: &Value) -> Result<u32, RpcError> {
         match (params.get("def"), params.get("defSymbol")) {
             (Some(_), Some(_)) => Err(RpcError::invalid_params(
                 "exactly one of `def` (hex string) and `defSymbol` (name) — both were given",
@@ -5558,11 +5725,17 @@ impl Engine {
                 let Some(name) = name.as_str() else {
                     return Err(RpcError::invalid_params("`defSymbol` must be a string"));
                 };
-                let table = self.symbols.as_ref().ok_or_else(no_symbols)?;
-                table.address_of(name).ok_or_else(|| {
-                    RpcError::new(code::SYMBOL_NOT_FOUND, format!("no symbol named {name}"))
-                        .with_data(json!({"defSymbol": name}))
-                })
+                // Cloned for `resolve_target`'s reason: the freshness clause wants `&mut self`.
+                let table = self.symbols.clone().ok_or_else(no_symbols)?;
+                match table.address_of(name) {
+                    Some(addr) => Ok(addr),
+                    None => {
+                        let e =
+                            RpcError::new(code::SYMBOL_NOT_FOUND, format!("no symbol named {name}"))
+                                .with_data(json!({"defSymbol": name}));
+                        Err(self.with_symbol_freshness(e))
+                    }
+                }
             }
         }
     }
@@ -5935,19 +6108,27 @@ impl Engine {
     }
 
     fn lookup_symbol(&mut self, params: &Value) -> Result<Value, RpcError> {
-        let table = self.symbols.as_ref().ok_or_else(no_symbols)?;
+        // Cloned for `resolve_target`'s reason — the freshness clause on the miss paths below needs
+        // `&mut self`, and this table is read all the way to the end of the function.
+        let table = self.symbols.clone().ok_or_else(no_symbols)?;
         let limit = self.config.max_symbol_matches;
 
         // address -> nearest preceding label + displacement (§4).
         if let Some(a) = params.get("addr") {
             let addr = hex::parse_addr("addr", a)?;
-            let r = table.resolve(addr).ok_or_else(|| {
-                RpcError::new(
+            // The freshness clause belongs on THIS branch too, even though the query is an address
+            // rather than a name. "No symbol at or before X" is an answer about the *table's contents*,
+            // and a rebuild that added a label below X changes it — so a stale listing is as plausible a
+            // cause here as on the name branch, and the reader has the same two theories to choose
+            // between.
+            let Some(r) = table.resolve(addr) else {
+                let e = RpcError::new(
                     code::SYMBOL_NOT_FOUND,
                     format!("no symbol at or before {}", hex::addr(addr)),
                 )
-                .with_data(json!({"addr": hex::addr(addr)}))
-            })?;
+                .with_data(json!({"addr": hex::addr(addr)}));
+                return Err(self.with_symbol_freshness(e));
+            };
             // §4, rewritten 2026-08-15: `name` is the **identifying** spelling on every branch and it
             // MUST round-trip. This branch used to emit `Resolution`'s `Display` — the *readable* name
             // with a `+$hex` displacement glued on — which meant the one field D7 exists to make reliable
@@ -6049,11 +6230,15 @@ impl Engine {
         all.sort_by_key(|s| (s.addr, s.name.clone()));
         all.dedup_by(|a, b| a.name == b.name && a.addr == b.addr);
         if all.is_empty() {
-            return Err(RpcError::new(
+            // **The site the field report landed on** (§11.34 / CR-K's step 3): this is the exact
+            // refusal a lane read as "the peer never published their symbol", for a symbol that was
+            // sitting in the listing on disk.
+            let e = RpcError::new(
                 code::SYMBOL_NOT_FOUND,
                 format!("no symbol named or prefixed {name}"),
             )
-            .with_data(json!({"name": name})));
+            .with_data(json!({"name": name}));
+            return Err(self.with_symbol_freshness(e));
         }
         let total = all.len();
         // **One** item shape, not one per branch (§4/CR-14). This branch used to emit `demangled`
@@ -6216,11 +6401,11 @@ impl Engine {
     }
 
     /// **The freshness verdict, with the file re-read at most once per observable change to it** —
-    /// [`Engine::stale_symbols_caveat`]'s answer, served on a path that can be called every frame.
+    /// [`Engine::listing_freshness`]'s answer, served on a path that can be called every frame.
     ///
     /// ## Why the uncached form could not be wired into `status` as it stood
     ///
-    /// `stale_symbols_caveat` re-reads and re-parses the listing at question time, which was the right
+    /// `listing_freshness` re-reads and re-parses the listing at question time, which was the right
     /// call for `emulator/reload_rom`: a reload is rare and already reads a whole ROM. `emulator/status`
     /// is the opposite — the cheapest, most-called method on this bus, and a UI or a polling client may
     /// call it every frame. **Measured on this repo's machine** (release build, page cache warm, aeon's
@@ -6278,7 +6463,7 @@ impl Engine {
     /// the OLD fingerprint against a verdict derived from the NEW bytes, the next call sees a
     /// fingerprint that moved, and re-checks. The failure mode is one wasted parse instead of a
     /// permanently stale quiet.
-    fn stale_symbols_caveat_now(&mut self) -> Option<String> {
+    fn listing_freshness_now(&mut self) -> Option<ListingFreshness> {
         // No table, nothing that can be stale — the same early answer the full check gives, taken here
         // so the no-symbols case does not even stat.
         self.symbols.as_ref()?;
@@ -6288,7 +6473,7 @@ impl Engine {
             if cached.generation == self.symbols_generation && cached.path == p {
                 // The ONLY short-circuit in this function, and it fires only on a positive identity.
                 if ListingStat::of(p).is_some_and(|now| now == cached.stat) {
-                    return cached.verdict.clone();
+                    return Some(cached.verdict.clone());
                 }
             }
         }
@@ -6296,13 +6481,15 @@ impl Engine {
         // See "taken BEFORE the read" above: this must not move below the check.
         let stat = path.as_deref().and_then(ListingStat::of);
         self.symbol_freshness_checks += 1;
-        let verdict = self.stale_symbols_caveat();
-        self.symbol_freshness = match (path, stat) {
-            (Some(p), Some(stat)) => Some(SymbolFreshness {
+        let verdict = self.listing_freshness();
+        self.symbol_freshness = match (path, stat, verdict.clone()) {
+            // The `Some(v)` arm cannot fail here — the no-table case returned above — but it is matched
+            // rather than unwrapped so that "there is no verdict" can only ever mean "remember nothing".
+            (Some(p), Some(stat), Some(v)) => Some(SymbolFreshness {
                 path: p,
                 generation: self.symbols_generation,
                 stat,
-                verdict: verdict.clone(),
+                verdict: v,
             }),
             // Unmeasurable: remember nothing, so the next call measures again rather than repeating a
             // verdict it has no way to invalidate.
@@ -6314,7 +6501,7 @@ impl Engine {
     /// **Is the listing this server holds still the listing at `symbols_path`?** — the symbol half of
     /// the ROM-freshness question, and the reason `F-RELOAD-KEEPS-STALE-SYMBOLS` was a defect.
     ///
-    /// ⚑ **Callers go through [`Engine::stale_symbols_caveat_now`], not through here.** This is the one
+    /// ⚑ **Callers go through [`Engine::listing_freshness_now`], not through here.** This is the one
     /// implementation of the verdict; that is the one implementation of *when it is safe to reuse one*.
     /// Both `emulator/status` and `emulator/reload_rom` take the same door, so the two can never answer
     /// one client differently about one file in one millisecond.
@@ -6339,7 +6526,7 @@ impl Engine {
     /// ⚑ **That last clause was `reload_rom`'s argument, and it does not carry to `emulator/status`**
     /// (§11.34, CR-K), which is the cheapest method on this bus and may be polled every frame. The
     /// answer was not to remember a digest after all — it was to keep this measurement exactly as it is
-    /// and put a `stat(2)` in front of it: see [`Engine::stale_symbols_caveat_now`], which is the door
+    /// and put a `stat(2)` in front of it: see [`Engine::listing_freshness_now`], which is the door
     /// both callers now use. **2.566 ms per call becomes 222 ns** while the file is untouched, and the
     /// four-routes objection above never arises, because nothing is threaded through any route.
     ///
@@ -6350,51 +6537,75 @@ impl Engine {
     /// It says nothing about whether the listing describes the loaded ROM — [`Engine::load_symbols`]'s
     /// own caveat is the standard held to here, and `validate_against_rom` is a filter, not a proof. A
     /// quiet verdict means "the file has not moved past the table", never "the table is right".
-    fn stale_symbols_caveat(&self) -> Option<String> {
+    fn listing_freshness(&self) -> Option<ListingFreshness> {
         let held = self.symbols.as_ref()?;
         let held_rows = held.symbols().len();
+        let unmeasurable =
+            |why: Unmeasurable| Some(ListingFreshness::Unmeasurable { held_rows, why });
         let Some(path) = self.symbols_path.as_deref() else {
-            return Some(format!(
-                "the {held_rows}-row symbol listing was kept, but this server holds no path for it, so \
-                 whether it has been rebuilt since it was loaded could NOT be checked at all. \
-                 `symbolsDropped: false` says only that the held table still binds to the image's \
-                 shape, which is a filter and not a proof."
-            ));
+            return unmeasurable(Unmeasurable::NoPath);
         };
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
-                return Some(format!(
-                    "the {held_rows}-row symbol listing was kept, but {path} cannot be read now ({e}), \
-                     so whether it has been rebuilt since it was loaded could NOT be checked. \
-                     `symbolsDropped: false` says only that the held table still binds to the image's \
-                     shape, which is a filter and not a proof."
-                ))
+                return unmeasurable(Unmeasurable::Unreadable {
+                    path: path.to_string(),
+                    err: e.to_string(),
+                })
             }
         };
         let on_disk = match SymbolTable::parse(&text) {
             Ok(t) => t,
             Err(e) => {
-                return Some(format!(
-                    "the {held_rows}-row symbol listing was kept, but {path} no longer parses as a \
-                     listing ({e}), so whether the table this server holds is still what that path \
-                     describes could NOT be checked. `symbolsDropped: false` says only that the held \
-                     table still binds to the image's shape, which is a filter and not a proof."
-                ))
+                return unmeasurable(Unmeasurable::Unparseable {
+                    path: path.to_string(),
+                    err: e.to_string(),
+                })
             }
         };
         if on_disk.symbols() == held.symbols() {
-            return None;
+            return Some(ListingFreshness::Current {
+                path: path.to_string(),
+                rows: held_rows,
+            });
         }
-        let disk_rows = on_disk.symbols().len();
-        Some(format!(
-            "the symbol listing was NOT dropped, and that is not the same as current: {path} has been \
-             rewritten since it was loaded and no longer describes the table this server is resolving \
-             against ({held_rows} row(s) held, {disk_rows} row(s) in the file now). A name the new \
-             build added will not resolve, and a name whose address moved will resolve to the old one \
-             — silently, and looking exactly like an answer. `symbolsDropped: false` says only that \
-             the held table still binds to the image's shape. Re-read it: emulator/load_symbols."
-        ))
+        Some(ListingFreshness::Stale {
+            path: path.to_string(),
+            held_rows,
+            disk_rows: on_disk.symbols().len(),
+        })
+    }
+
+    /// **Append the freshness clause to a symbol-miss refusal — one implementation, every site.**
+    ///
+    /// `F-LOOKUP-MISS-SAYS-NOTHING`: a `-32013` that says only *"not found"* leaves the reader with two
+    /// live theories (the name is wrong / the listing is behind the build) and no way to choose. This
+    /// chooses, from a measurement — see [`ListingFreshness::miss_clause`] for the three sentences and
+    /// why the *quiet* one is worth as much as the loud one.
+    ///
+    /// ⚑ **It fires for [`code::SYMBOL_NOT_FOUND`] and for nothing else.** §4 keeps `-32012` ("you
+    /// forgot `load_symbols`") deliberately distinct from `-32013` ("that name is not in the table"),
+    /// and a server with no table has no listing that could be stale — the code check is what stops this
+    /// parcel from quietly blurring the two.
+    ///
+    /// The prefix is trimmed of a trailing `.` before the clause is joined on, because the sites'
+    /// messages disagree about whether they end in one (`no symbol named Foo` does not;
+    /// [`objreq::resolve`](crate::objreq::resolve)'s does) and `..` in a user-facing sentence reads as a
+    /// bug in the server.
+    fn with_symbol_freshness(&mut self, e: RpcError) -> RpcError {
+        if e.code != code::SYMBOL_NOT_FOUND {
+            return e;
+        }
+        // Unreachable from a real `-32013`, which is by construction raised against a table that IS
+        // loaded — left as a no-op rather than a panic, since the worst case is the message we had.
+        let Some(freshness) = self.listing_freshness_now() else {
+            return e;
+        };
+        let head = e.message.trim_end().trim_end_matches('.');
+        RpcError {
+            message: format!("{head}. {}", freshness.miss_clause()),
+            ..e
+        }
     }
 
     fn reload_rom(&mut self, params: &Value) -> Result<Value, RpcError> {
@@ -6464,13 +6675,13 @@ impl Engine {
                 "the loaded symbol listing no longer binds to this ROM image and was dropped; load \
                  the listing for the new build before resolving anything."
             );
-        } else if let Some(stale) = self.stale_symbols_caveat_now() {
+        } else if let Some(stale) = self.listing_freshness_now().and_then(|f| f.caveat()) {
             // **The other half of D7, and the half that had no observable.** The drop path above only
             // fires on `RomBinding::Mismatch` — a listing for a different build *shape*. A newer build of
             // the SAME shape passes that check, so the table is kept whole and `symbolsDropped: false`
             // goes out truthfully and is read as "your symbols are fine". It is not that claim: it is
             // "I did not drop them", and the two came apart the first time a peer lane published new
-            // symbols into a rebuilt listing. See [`Engine::stale_symbols_caveat`].
+            // symbols into a rebuilt listing. See [`Engine::listing_freshness`].
             //
             // **Carried in the EXISTING `caveat` key, deliberately.** A `symbolFreshness` object beside
             // `symbolsDropped` is the shape that matches `romFreshness` and it is contract surface: §8
@@ -8978,7 +9189,7 @@ mod tests {
             before, after,
             "the fingerprint must have MOVED. If it did not, this filesystem's timestamp granularity \
              is coarser than the gap between the two writes above (ext4 and tmpfs are nanosecond; FAT \
-             is 2 s) — which is the hole `stale_symbols_caveat_now` names, and on such a filesystem \
+             is 2 s) — which is the hole `listing_freshness_now` names, and on such a filesystem \
              the short-circuit really is blind to a same-size rewrite inside one tick."
         );
 
@@ -9094,6 +9305,173 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&p);
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // ⚑ `F-LOOKUP-MISS-SAYS-NOTHING` — the freshness clause on a `-32013`.
+    //
+    // The wire-visible half (three states, three sentences, at two independent call sites) lives in
+    // `tests/symbol_freshness.rs`. What lives HERE is the half that file cannot see: the private
+    // `symbol_freshness_checks` counter, which is the only way to tell a stat-gated door from a door
+    // that re-parses a 357 KB listing on every guessed name and produces the identical sentences.
+    // -----------------------------------------------------------------------------------------------
+
+    /// `lookup_symbol`'s refusal message for a name that is not there, with the code checked rather
+    /// than assumed — `-32012` would mean the fixture never loaded and every assertion downstream
+    /// would be witnessing nothing.
+    fn miss_message(e: &mut Engine, name: &str) -> String {
+        let err = e
+            .lookup_symbol(&json!({ "name": name }))
+            .expect_err("the fixture listings contain no such name");
+        assert_eq!(
+            err.code,
+            code::SYMBOL_NOT_FOUND,
+            "the absence under test is -32013, not -32012 (no table): {}",
+            err.message
+        );
+        err.message
+    }
+
+    /// **The hot-path claim, as a number a test can fail on.** Failed lookups are what a person
+    /// generates while guessing at names, so the clause is only affordable if a miss reuses the cached
+    /// verdict. Fifty misses must read and parse the listing exactly ONCE.
+    ///
+    /// This is the row that would have caught the design being wrong: if a miss invalidated the
+    /// freshness cache, every guess would cost the full 2.566 ms check and the feature would be a
+    /// hot-path regression wearing a helpful sentence.
+    #[test]
+    fn fifty_failed_lookups_parse_the_listing_once() {
+        let p = fresh_path("missparse");
+        std::fs::write(&p, FRESH_A).expect("write fixture");
+        let mut e = engine_holding(&p);
+
+        assert_eq!(
+            e.symbol_freshness_checks, 0,
+            "the premise: nothing has been checked before the first miss"
+        );
+        let first = miss_message(&mut e, "Nope_0");
+        for i in 1..50 {
+            let m = miss_message(&mut e, &format!("Nope_{i}"));
+            assert!(
+                m.contains("is CURRENT"),
+                "miss {i} must still carry the measured clause, not a cheaper generic one: {m}"
+            );
+        }
+        assert_eq!(
+            e.symbol_freshness_checks, 1,
+            "50 failed lookups, ONE read-and-parse. Anything above 1 means a miss invalidates the \
+             freshness cache, and a person guessing at names would pay 2.566 ms a guess."
+        );
+        assert!(first.contains("is CURRENT"), "{first}");
+
+        // ANTI-VACUITY: a HIT does not pay for a clause it never emits. Without this, a build that
+        // computed the clause eagerly at the top of `lookup_symbol` would satisfy everything above.
+        e.lookup_symbol(&json!({ "name": "EntryPoint" }))
+            .expect("EntryPoint is in the fixture");
+        assert_eq!(
+            e.symbol_freshness_checks, 1,
+            "a successful lookup asks the freshness question at all only if the clause is computed \
+             eagerly, which it must not be"
+        );
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// **THE CONTROL: the three states must say three DIFFERENT things.**
+    ///
+    /// A clause that collapsed to one string — "if you rebuilt, reload the listing", the sentence this
+    /// parcel was booked with — would satisfy any test that merely looks for *some* sentence, at every
+    /// site, in every state. So the three real states are driven end to end on one engine and the three
+    /// messages are compared to each other. The distinguishing words are asserted too, because three
+    /// strings can differ merely by quoting three different names.
+    #[test]
+    fn the_three_freshness_states_say_three_different_things_on_one_miss() {
+        let p = fresh_path("threestates");
+        std::fs::write(&p, FRESH_A).expect("write fixture");
+        let mut e = engine_holding(&p);
+
+        // 1. CURRENT — the file still parses to exactly the rows held.
+        let current = miss_message(&mut e, "Nope");
+        assert!(
+            current.contains("is CURRENT") && current.contains("genuinely not in it"),
+            "a current listing must say so, so the reader stops chasing a staleness theory: {current}"
+        );
+        assert!(
+            !current.contains("reload the listing"),
+            "and it must NOT hand out the reload remedy, which is the booked static sentence being \
+             wrong in this state: {current}"
+        );
+
+        // 2. STALE — the file has moved past the table.
+        std::fs::write(&p, FRESH_A_MOVED).expect("rewrite the listing");
+        let stale = miss_message(&mut e, "Nope");
+        assert!(
+            stale.contains("is STALE") && stale.contains("emulator/load_symbols"),
+            "the booked case: say it moved, and name the remedy: {stale}"
+        );
+
+        // 3. UNMEASURABLE — the file is gone, so nothing was measured.
+        std::fs::remove_file(&p).expect("delete the listing out from under the server");
+        let unmeasurable = miss_message(&mut e, "Nope");
+        assert!(
+            unmeasurable.contains("could NOT be checked")
+                && unmeasurable.contains("not evidence that the name does not exist"),
+            "loud on unmeasurable: 'I could not look' must never render as 'I looked and it is fine': \
+             {unmeasurable}"
+        );
+        assert!(
+            !unmeasurable.contains("is CURRENT"),
+            "…and above all it must not claim the listing is current: {unmeasurable}"
+        );
+
+        assert_ne!(current, stale, "CONTROL: current and stale must differ");
+        assert_ne!(
+            stale, unmeasurable,
+            "CONTROL: stale and unmeasurable must differ"
+        );
+        assert_ne!(
+            current, unmeasurable,
+            "CONTROL: current and unmeasurable must differ"
+        );
+
+        // ANTI-VACUITY: put the file back and the CURRENT sentence returns, so the three above are
+        // states of one engine and not three one-way doors.
+        std::fs::write(&p, FRESH_A).expect("restore the listing");
+        assert!(miss_message(&mut e, "Nope").contains("is CURRENT"));
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// **§4's line holds: `-32012` gains nothing.** A server with no table has no listing that could be
+    /// stale, and a freshness clause on "you forgot `load_symbols`" would start it reading like "that
+    /// name is not in the table" — the exact distinction §4 keeps two codes for.
+    #[test]
+    fn a_server_with_no_table_still_answers_the_no_symbols_error_unchanged() {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+
+        let err = e
+            .lookup_symbol(&json!({ "name": "Nope" }))
+            .expect_err("no table is loaded");
+        assert_eq!(
+            err.code,
+            code::NO_SYMBOLS_LOADED,
+            "still -32012, not -32013: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("is CURRENT")
+                && !err.message.contains("is STALE")
+                && !err.message.contains("could NOT be checked"),
+            "no freshness clause belongs on -32012: {}",
+            err.message
+        );
+        assert_eq!(
+            e.symbol_freshness_checks, 0,
+            "and it does not even ask the question"
+        );
     }
 
     /// A server with no listing at all never even stats. `symbolCount: 0` with no path is not a

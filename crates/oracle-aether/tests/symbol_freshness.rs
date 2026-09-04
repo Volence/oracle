@@ -637,3 +637,258 @@ fn a_table_with_no_recorded_path_is_reported_as_unchecked_never_as_fine() {
 
     let _ = std::fs::remove_file(&rom);
 }
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ `F-LOOKUP-MISS-SAYS-NOTHING` — the refusal itself carries the verdict
+//
+// Everything above puts the verdict on `status` and on `reload_rom`. Both are methods a session has to
+// think to call: the field sighting at the top of this file is a session that called `reload_rom`,
+// read `symbolsDropped: false`, and then met `-32013 no symbol named or prefixed Level_Width` with
+// nothing beside it. The refusal is where the confusion happens, so the refusal is where the sentence
+// belongs.
+//
+// The row was BOOKED as static text — "if you rebuilt, reload the listing" — on the grounds that a real
+// verdict meant a re-parse on every failed lookup. §11.34 (CR-K) retired that grounds, so these rows
+// assert on the TRUE sentence for the state the server is actually in, and the state is constructed
+// each time rather than described.
+//
+// Three guards, the same three the rows above use, plus one this parcel needs on its own:
+//
+// * a **control name** that resolves at the same instant the missing one does not;
+// * an **anti-vacuity clause** — the state is put back and the sentence changes back;
+// * **`the_three_states_say_three_different_things_at_every_site`**, the control that the states differ
+//   at all. A clause that collapsed to one string would satisfy every "contains a sentence" assertion
+//   in this file, at every site, in every state — which is precisely how this parcel would ship broken.
+// ---------------------------------------------------------------------------------------------------
+
+/// The `-32013` message for a name that is not in the table, with the code checked rather than assumed.
+///
+/// Panics if the name unexpectedly RESOLVES, rather than skipping the assertions below.
+fn miss_message(c: &mut Client, name: &str) -> String {
+    let v = c.call("emulator/lookup_symbol", json!({ "name": name }));
+    let e = v
+        .get("error")
+        .unwrap_or_else(|| panic!("{name} must not resolve; the reply was {v}"));
+    assert_eq!(
+        e["code"],
+        json!(-32013),
+        "the absence under test is SYMBOL_NOT_FOUND; -32012 (no table) would mean the fixture never \
+         loaded: {e}"
+    );
+    e["message"]
+        .as_str()
+        .expect("a JSON-RPC message is a string")
+        .to_string()
+}
+
+/// The same absence reached through a **second, independent** call site: `emulator/read_memory`'s
+/// `symbol` param goes through `Engine::resolve_target`, not through `lookup_symbol`.
+///
+/// This is the R1 pair's third clause. Two sites agreeing proves only that they agree — so each site is
+/// separately made to change its sentence when the state changes, which is what proves the shared
+/// derivation is doing the work rather than two constants happening to match.
+fn read_memory_miss_message(c: &mut Client, name: &str) -> String {
+    let v = c.call(
+        "emulator/read_memory",
+        json!({ "symbol": name, "len": "1" }),
+    );
+    let e = v
+        .get("error")
+        .unwrap_or_else(|| panic!("{name} must not resolve; the reply was {v}"));
+    assert_eq!(e["code"], json!(-32013), "{e}");
+    e["message"]
+        .as_str()
+        .expect("a JSON-RPC message is a string")
+        .to_string()
+}
+
+/// **State 2 — quiet. The listing is current, so the name really is not there.**
+///
+/// The booked sentence ("if you rebuilt, reload the listing") would be *actively misleading* here: the
+/// server has just measured that the file has not moved, so it knows the reader did not rebuild.
+/// Saying so is the more useful answer — it retires the staleness theory and sends them to the name.
+#[test]
+fn a_miss_against_a_current_listing_says_the_listing_is_current() {
+    let lst = write_lst("misscurrent", LST_OLD);
+
+    let h = spawn("symfresh-misscurrent");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+
+    assert!(
+        lookup(&mut c, "Player_1").is_some(),
+        "CONTROL: a name that IS in the listing resolves at the same instant"
+    );
+
+    let m = miss_message(&mut c, "Level_Width");
+    assert!(
+        m.contains("no symbol named or prefixed Level_Width"),
+        "the original sentence is kept, not replaced: {m}"
+    );
+    assert!(
+        m.contains("is CURRENT") && m.contains("genuinely not in it"),
+        "a current listing must say so: {m}"
+    );
+    assert!(
+        !m.contains("reload the listing"),
+        "and must NOT offer the reload remedy, which is the booked static text being wrong in exactly \
+         this state: {m}"
+    );
+
+    // ANTI-VACUITY: rebuild the listing under the server and the same call says something else.
+    std::fs::write(&lst, LST_REBUILT).expect("rebuild the listing");
+    let after = miss_message(&mut c, "Nope_Not_Here");
+    assert!(
+        after.contains("is STALE"),
+        "ANTI-VACUITY: with the file moved, the sentence must change: {after}"
+    );
+
+    let _ = std::fs::remove_file(&lst);
+}
+
+/// **State 1 — the booked case. The listing moved past the table; name the remedy.**
+///
+/// This reproduces the field sighting exactly: `Level_Width` is published into the listing on disk and
+/// the server is still resolving against the table it loaded before that.
+#[test]
+fn a_miss_against_a_rebuilt_listing_says_it_is_stale_and_names_the_remedy() {
+    let lst = write_lst("missstale", LST_OLD);
+
+    let h = spawn("symfresh-missstale");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+
+    std::fs::write(&lst, LST_REBUILT).expect("the peer lane publishes Level_Width");
+
+    let m = miss_message(&mut c, "Level_Width");
+    assert!(
+        m.contains("is STALE") && m.contains("emulator/load_symbols"),
+        "the sentence that would have saved the lane an hour: say it moved, and name the remedy: {m}"
+    );
+    assert!(
+        m.contains("2 row(s) held") && m.contains("3 row(s) in the file now"),
+        "and say by how much, from the real counts: {m}"
+    );
+    assert!(
+        lookup(&mut c, "Player_1").is_some(),
+        "CONTROL: the held table still answers, so this is a real absence and not a broken probe"
+    );
+
+    // ANTI-VACUITY: the remedy the sentence names must actually work.
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+    assert!(
+        lookup(&mut c, "Level_Width").is_some(),
+        "ANTI-VACUITY: after the advice is followed, the name resolves"
+    );
+
+    let _ = std::fs::remove_file(&lst);
+}
+
+/// **State 3 — loud on unmeasurable. "I could not look" must never render as "I looked and it is
+/// fine".**
+///
+/// The pathless table is the sharpest form: there is no file to stat at all, so the server cannot even
+/// begin the check.
+#[test]
+fn a_miss_whose_freshness_cannot_be_checked_says_so_rather_than_claiming_it_is_fine() {
+    let h = serve_with_a_pathless_table("symfresh-missunmeasurable");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let status = c.ok("emulator/status", json!({}));
+    assert_eq!(
+        status["symbolsPath"],
+        json!(null),
+        "the premise: a table is held and no path for it"
+    );
+
+    let m = miss_message(&mut c, "Level_Width");
+    assert!(
+        m.contains("could NOT be checked")
+            && m.contains("this server holds no path for it")
+            && m.contains("not evidence that the name does not exist"),
+        "it must say it could not look, say why, and say what that costs the answer: {m}"
+    );
+    assert!(
+        !m.contains("is CURRENT"),
+        "above all it must not claim the listing is current: {m}"
+    );
+    assert!(
+        lookup(&mut c, "Player_1").is_some(),
+        "CONTROL: the held table still answers; only our ability to check it is in question"
+    );
+}
+
+/// **THE CONTROL — the three states differ, and they differ AT EVERY SITE.**
+///
+/// Without this row, a build whose clause collapsed to one string (the booked static text, say) passes
+/// every "contains a sentence" assertion above. It is also the R1 pair's third clause: the two call
+/// sites are not merely compared to each other — each is independently made to move through all three
+/// states, so agreement between them cannot come from two frozen constants.
+#[test]
+fn the_three_states_say_three_different_things_at_every_site() {
+    let lst = write_lst("missdiffer", LST_OLD);
+
+    let h = spawn("symfresh-missdiffer");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+
+    // Site A: emulator/lookup_symbol. Site B: emulator/read_memory {symbol} — a different resolver.
+    let a_current = miss_message(&mut c, "Nope");
+    let b_current = read_memory_miss_message(&mut c, "Nope");
+
+    std::fs::write(&lst, LST_MOVED).expect("rewrite the listing, same row count");
+    let a_stale = miss_message(&mut c, "Nope");
+    let b_stale = read_memory_miss_message(&mut c, "Nope");
+
+    std::fs::remove_file(&lst).expect("delete the listing out from under the server");
+    let a_unmeasurable = miss_message(&mut c, "Nope");
+    let b_unmeasurable = read_memory_miss_message(&mut c, "Nope");
+
+    for (site, current, stale, unmeasurable) in [
+        ("lookup_symbol", &a_current, &a_stale, &a_unmeasurable),
+        ("read_memory", &b_current, &b_stale, &b_unmeasurable),
+    ] {
+        assert_ne!(current, stale, "{site}: current and stale must differ");
+        assert_ne!(stale, unmeasurable, "{site}: stale and unmeasurable differ");
+        assert_ne!(
+            current, unmeasurable,
+            "{site}: current and unmeasurable differ"
+        );
+        assert!(current.contains("is CURRENT"), "{site}: {current}");
+        assert!(stale.contains("is STALE"), "{site}: {stale}");
+        assert!(
+            unmeasurable.contains("could NOT be checked"),
+            "{site}: {unmeasurable}"
+        );
+    }
+
+    // The two sites keep their OWN opening sentence — the shared clause is appended to each site's
+    // words, never a replacement for them. A helper that overwrote the message would leave the
+    // difference-assertions above green while destroying what the refusal was about.
+    assert!(
+        a_current.starts_with("no symbol named or prefixed Nope."),
+        "{a_current}"
+    );
+    assert!(
+        b_current.starts_with("no symbol named Nope."),
+        "{b_current}"
+    );
+
+    let _ = std::fs::remove_file(&lst);
+}
