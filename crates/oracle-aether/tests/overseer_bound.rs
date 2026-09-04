@@ -10,6 +10,12 @@
 //! (it is cheap and already built) but nobody trims by hand for it"* — so this is compliance with a
 //! standing rule, not new instrument work.
 //!
+//! ⚠ AND THE BOOT DOC ALREADY SAID SO. `docs/OVERSEER.md:28` has carried the heading
+//! **"## The boot read is bounded (100,000 B, gated)"** while nothing in this repo gated it — the
+//! claim and the fact had come apart, and no artifact could tell them apart, which is the same
+//! failure as a vacuous check wearing a green result. That heading becomes true at this commit,
+//! which is why this parcel does not edit it.
+//!
 //! THE RULING, read at a committed revision and never through the sibling working-tree path (that
 //! path is a peer's live tree and is not a citable revision):
 //!
@@ -61,8 +67,22 @@ const BOOT_READ_BOUND_BYTES: u64 = 100_000;
 /// module note on why gating this would punish a correct fix.
 const BOOT_READ_LINES_GUIDE: usize = 900;
 
-/// THE RATCHET, in force until the owner answers the suite-wide card 7 (split the standing rules
-/// into a second boot file, or raise the bound — one call for all six lanes).
+/// THE RATCHET, in force until the owner answers the suite-wide **card 7** (split the standing
+/// rules into a second boot file, or raise the bound — one call for all six lanes).
+///
+/// ⚠ **Card 7 is NOT in this repo, and it is not this repo's queue item 7** (ours is closed and in
+/// the log — a reader who goes looking locally finds the wrong thing). It is a card on the hub's
+/// status. Read it at a committed revision:
+///
+/// ```text
+/// git -C ../empyrean show origin/main:docs/OVERSEER-LOG.md   # 2026-09-04T12:43:53Z, 12:44:39Z, 13:26:52Z
+/// ```
+///
+/// The 13:26:52Z entry is the ruling this file executes, and it carries oracle's own figure:
+/// *"oracle installs the RATCHET form now, pinned at its measured size, failing on growth, printing
+/// the distance to 100,000 B, aeon 882f79aa the reference; it decides nothing the owner is asked
+/// and stops the regrowth."* Same entry: 128,776 B, "was 95,398 on 09-02, 118,762 at 10:5xZ ...
+/// regrowth ~33 KB in two days" — which is the growth this ratchet exists to stop.
 ///
 /// **Why this is not the ruled bound yet.** `docs/OVERSEER.md` is over 100,000 B and the residual
 /// is live rulings interleaved with narrative, which the protocol names as *the owner's parcel*:
