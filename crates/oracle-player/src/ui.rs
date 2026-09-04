@@ -2290,6 +2290,23 @@ mod bus_parity {
         )
     }
 
+    /// **A real, quiet [`crate::stopping::Halting`]** for a fixture with a bus and nothing armed.
+    ///
+    /// `None` for that field is the *loud* "no bus to ask" row, not the quiet one — so a fixture that
+    /// passed `None` because it did not care would be asserting against a strip carrying an alarm. Every
+    /// strip built in this module has a bus, so every one of them asks it.
+    fn quiet_halting(machine: &Machine, bus: &Bus) -> Option<crate::stopping::Halting> {
+        let (watch, _, _) = bus.read_instruments();
+        Some(crate::stopping::Halting::of(
+            bus.read_breakpoints(),
+            bus.last_break(),
+            watch,
+            bus.is_paused(),
+            machine.system().scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
+            None,
+        ))
+    }
+
     /// `"0x0000B000"` → `0xB000`. The bus spells values as hex strings (D9 category 1); the panel carries
     /// them as numbers, so the comparison has to cross that boundary explicitly rather than by matching
     /// two strings and calling it agreement.
@@ -2726,7 +2743,7 @@ mod bus_parity {
             None,
             Some(bus.held_pads()),
             Some(bus.aether_status()),
-            None,
+            quiet_halting(&machine, &bus),
         );
         let quiet_rows = quiet.rows();
         assert_eq!(
@@ -2753,7 +2770,7 @@ mod bus_parity {
             None,
             Some(bus.held_pads()),
             Some(bus.aether_status()),
-            None,
+            quiet_halting(&machine, &bus),
         )
         .rows();
         assert_eq!(
@@ -2784,16 +2801,17 @@ mod bus_parity {
         );
 
         // --- (3) NOT measured: loud, and distinguishable from both states above ---
-        // Only the HELD field is unmeasured here. The aether field is still asked, deliberately: this
-        // test's subject is the held row displacing nothing, and blinding a second field as well would
-        // move a row below it and make the displacement equality fail for an unrelated reason.
+        // Only the HELD field is unmeasured here. The aether and halting fields are still asked,
+        // deliberately: this test's subject is the held row displacing nothing, and blinding a second
+        // field as well would add a row ABOVE it and make the displacement equality fail for an
+        // unrelated reason.
         let blind_rows = StatusStrip::of(
             &machine,
             "testrom",
             None,
             None,
             Some(bus.aether_status()),
-            None,
+            quiet_halting(&machine, &bus),
         )
         .rows();
         assert_eq!(
@@ -2824,6 +2842,118 @@ mod bus_parity {
                 assert_ne!(value, "0", "`{label}` renders an unmeasurable as a bare 0");
             }
         }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // ARMED-STATE-VISIBLE — the strip says what can halt this window, and it is the bar's sentence
+    // -------------------------------------------------------------------------------------------
+
+    /// ★ **The halting row leads the strip, is absent when there is nothing to say, and is loud when
+    /// nobody asked.**
+    ///
+    /// The incident was a halted window with nothing on it that said so. The transport bar carries the
+    /// primary alarm — it cannot be hidden behind a tab — and this row is the long form beside the
+    /// registers a reader will be staring at while they work out what happened. Both are
+    /// [`crate::stopping::Halting`]'s own two sentences, so there is nothing for them to word differently.
+    ///
+    /// **The alternative green paths ruled out:**
+    ///
+    /// 1. *The row is always drawn, so "it appears when armed" is vacuous.* Ruled out by the quiet strip,
+    ///    whose labels must equal `BASE_LABELS` exactly.
+    /// 2. *The row is constant.* Ruled out by requiring the armed sentence to differ from the quiet one
+    ///    **and** by the `assert_ne!` against `Halting::headline` alone — the raw derivation — which
+    ///    catches a `halt_row` that dropped the way out and kept the alarm.
+    /// 3. *`None` (no bus to ask) renders as "nothing is armed"* — the unmeasurable drawn as a
+    ///    measurement. Ruled out explicitly, exactly as the held and aether rows rule it out.
+    #[test]
+    fn the_halting_row_leads_the_strip_and_carries_the_same_two_sentences_the_bar_does() {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut bus = idle_bus(&mut machine);
+
+        // --- (1) asked, nothing armed: no row at all. ---
+        let quiet = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            Some(bus.held_pads()),
+            Some(bus.aether_status()),
+            quiet_halting(&machine, &bus),
+        );
+        assert_eq!(
+            quiet.halt_row(),
+            None,
+            "nothing is armed and nothing has halted, so a permanent all-clear row would be one more \
+             line a reader learns to skip"
+        );
+        assert_eq!(
+            labels(&quiet.rows()),
+            BASE_LABELS,
+            "the quiet strip must be the strip that shipped"
+        );
+
+        // --- (3) NOT asked: a loud row, never silence and never "nothing is armed". ---
+        let blind = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            Some(bus.held_pads()),
+            Some(bus.aether_status()),
+            None,
+        );
+        let (label, unmeasured) = blind
+            .halt_row()
+            .expect("no bus to ask is a row, not an absence");
+        assert_eq!(label, HALTING_LABEL);
+        assert!(
+            unmeasured.contains("NOT MEASURED"),
+            "an unmeasurable must say which: {unmeasured}"
+        );
+
+        // --- (2) armed: the row, first, and it is the derivation's own two sentences. ---
+        let a = bus.call(
+            machine.system_mut(),
+            crate::stopping::BREAKPOINT_ADD,
+            &crate::stopping::breakpoint_add_params("0x20E", "").expect("a hex target"),
+        );
+        assert!(!a.is_err(), "arming must land");
+        let h = quiet_halting(&machine, &bus).expect("there is a bus");
+        let head = h.headline().expect("armed says so");
+        let advice = h.advice().expect("…and offers the way out");
+        let armed = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            Some(bus.held_pads()),
+            Some(bus.aether_status()),
+            quiet_halting(&machine, &bus),
+        );
+        let rows = armed.rows();
+        assert_eq!(
+            rows[0].0, HALTING_LABEL,
+            "a halted or armed window is the loudest thing the strip has to say, so it goes first: {:?}",
+            labels(&rows)
+        );
+        assert_eq!(rows.len(), BASE_LABELS.len() + 1, "exactly one row more");
+        assert_eq!(
+            &labels(&rows)[1..],
+            BASE_LABELS,
+            "the halting row must displace the rest, not replace any of them"
+        );
+        assert!(
+            rows[0].1.contains(&head) && rows[0].1.contains(&advice),
+            "the strip must carry the SAME sentences the bar draws, not a second wording: {}",
+            rows[0].1
+        );
+        // 2: not a constant, and not the headline alone.
+        assert_ne!(
+            rows[0].1, unmeasured,
+            "an armed window rendered identically to one with no bus to ask"
+        );
+        assert_ne!(
+            rows[0].1, head,
+            "the agreement above is two copies of one untouched value: the row is the headline with the \
+             way out DROPPED, which is the half the incident actually needed"
+        );
     }
 
     // -------------------------------------------------------------------------------------------

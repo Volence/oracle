@@ -958,13 +958,13 @@ pub struct Engine {
     breakpoints: Breakpoints,
     /// **The last breakpoint halt this engine actually performed** — see [`LastBreak`].
     ///
-    /// Written in exactly one place, [`halt_on_breakpoint`](Engine::halt_on_breakpoint), and only on the
-    /// branch that really halted. That is the whole reason it is here rather than latched by the run
-    /// driver at the point the sink is observed: a host sees a `BreakStop` fire, but between that
-    /// observation and the drain that applies it a client can clear the breakpoint, and then
-    /// [`Breakpoints::record_halt`] answers `None` and **no halt happens**. A record kept on the
-    /// observation would report a stop that never occurred, which is a believable wrong answer rather
-    /// than a missing one.
+    /// Written through one function, [`latch_break`](Engine::latch_break), from the two places a
+    /// breakpoint is credited with stopping this machine — and only on the branch that really halted.
+    /// That is the whole reason it is here rather than latched by the run driver at the point the sink is
+    /// observed: a host sees a `BreakStop` fire, but between that observation and the drain that applies
+    /// it a client can clear the breakpoint, and then [`Breakpoints::record_halt`] answers `None` and
+    /// **no halt happens**. A record kept on the observation would report a stop that never occurred,
+    /// which is a believable wrong answer rather than a missing one.
     ///
     /// Engine state, not machine state, so it survives `swap_system` and is readable outside a
     /// [`Host::pump`](crate::host::Host::pump) drain window — which is what lets a 60 Hz panel body read
@@ -1686,17 +1686,9 @@ impl Engine {
         self.free_run = false;
         self.running = false;
         let pc = self.sys.cpu_regs().pc;
-        // **Latched here and nowhere else**, on the branch that really halted and *after* `record_halt`
-        // agreed there was still something armed to halt on. See [`Engine::last_break`] for why the run
-        // driver's own observation is the wrong place. `ordinal` counts halts rather than reading them off
-        // the set: `record_halt` bumps `hits` on *every* enabled breakpoint at the address, so a summed
-        // `hits` over two breakpoints stacked at one address says `2` for one stop.
-        self.last_break = Some(LastBreak {
-            id,
-            pc,
-            frame: self.sys.scheduler().now() / MCLK_PER_FRAME,
-            ordinal: self.last_break.map_or(0, |b| b.ordinal) + 1,
-        });
+        // Latched *after* `record_halt` agreed there was still something armed to halt on — see
+        // [`Engine::last_break`] for why the run driver's own observation is the wrong place.
+        self.latch_break(id, pc, self.sys.scheduler().now() / MCLK_PER_FRAME);
         let mut extra = Map::new();
         // §11.21's M2 clarification (ii): `breakpoint` is REQUIRED on the handle shape whenever
         // `reason` is `breakpoint`, and MUST NOT appear otherwise — the same if/then the schema
@@ -1716,6 +1708,35 @@ impl Engine {
     /// Safe outside a drain window: engine state, not `System` state.
     pub fn last_break(&self) -> Option<LastBreak> {
         self.last_break
+    }
+
+    /// **Record one halt that really happened.** One spelling, called from the *two* places a breakpoint
+    /// is credited with stopping this machine, and there are two because there are two run drivers:
+    ///
+    /// * [`halt_on_breakpoint`](Engine::halt_on_breakpoint) — the free-run step and the hosted player's
+    ///   loop, by way of [`Host::record_break`](crate::host::Host::record_break).
+    /// * [`attribute`](Engine::attribute) — **every bounded run a client drives**: `run_frames`, `press`,
+    ///   `run_to`, `run_to_scanline`, `step`/`step_over`/`step_out`. Those never touch
+    ///   `halt_on_breakpoint`; they count the firing in `attribute` and emit the event from
+    ///   `emit_run_stop` and its siblings.
+    ///
+    /// **Latching in only the first would have been worse than not latching at all.** A client's
+    /// `emulator/run_to` that lands on a breakpoint would leave this reporting some earlier halt, and a
+    /// window deriving *"the machine is stopped and its last breakpoint halt was 4,000 frames ago, so
+    /// something else stopped it"* from a stale record would state the opposite of the truth in a
+    /// confident sentence — the one failure class this whole surface exists to remove. This function is
+    /// the reason that cannot happen by omission at a third site: adding a run driver means calling it.
+    ///
+    /// `ordinal` counts **halts**, and is deliberately not a sum of the set's `hits`:
+    /// [`Breakpoints::record_halt`] bumps `hits` on every enabled breakpoint at the address, so two
+    /// stacked on one address would make a single stop read as two.
+    fn latch_break(&mut self, id: BreakpointId, pc: u32, frame: u64) {
+        self.last_break = Some(LastBreak {
+            id,
+            pc,
+            frame,
+            ordinal: self.last_break.map_or(0, |b| b.ordinal) + 1,
+        });
     }
 
     // ---------------------------------------------------------------- the screen path
@@ -2006,6 +2027,14 @@ impl Engine {
             .then_some(observed)
             .flatten()
             .and_then(|(_, addr)| self.breakpoints.record_halt(addr));
+        // **The second of the two halt sites** (see [`latch_break`](Engine::latch_break)). Gated on
+        // `broke_at`, which is exactly the condition every caller of this reads to emit
+        // `reason: "breakpoint"` — so the record and the event this run sends a client are one decision.
+        // `record` rather than `self.sys`: the run's own stop coordinate, whose `frame` is the same
+        // `mclk / MCLK_PER_FRAME` the D11 stamp uses.
+        if let Some(id) = broke_at {
+            self.latch_break(id, record.pc, record.frame);
+        }
         let stopped_by = (record.fired() && !predicate_fired && broke_at.is_none())
             .then(|| self.watch_wanting_stop())
             .flatten();

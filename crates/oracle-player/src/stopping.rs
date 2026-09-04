@@ -1478,6 +1478,553 @@ mod tests {
         assert_eq!(p["write"], json!(false));
     }
 
+    // -----------------------------------------------------------------------------------------------
+    // ARMED-STATE-VISIBLE — what can halt the game, that it did, and the way out
+    // -----------------------------------------------------------------------------------------------
+
+    /// The address the fixture ROM's inner loop runs on every pass (`testrom`'s `INNER`, `move.w (A0),
+    /// D0`). A breakpoint here halts within the first emulated frame and **halts again on every resume**,
+    /// which is the incident's own shape rather than a convenient one-shot.
+    const HOT: &str = "0x20E";
+
+    /// **One iteration of the player's real loop**, in `Loop::iterate`'s order: adopt the bus's run state
+    /// at the top, run a frame only if not paused, drain at the bottom.
+    ///
+    /// Written out rather than approximated with a bare `Host::call`, because the ordering *is* the halt
+    /// path: `Machine::step` latches the observation through `Bus::record_break` and only the drain
+    /// applies it. A test that armed a breakpoint and then called `emulator/run_frames` would exercise
+    /// the engine's own run driver and never touch the arrangement the window actually uses.
+    fn iterate(machine: &mut Machine, bus: &mut Bus, paused: &mut bool) {
+        *paused = bus.is_paused();
+        if !*paused {
+            machine.step([oracle_core::io::Pad::default(); 2], bus);
+        }
+        let mut symbols = None;
+        let mut rom_path = String::new();
+        crate::bus::drain(machine, bus, &mut symbols, &mut rom_path, *paused);
+    }
+
+    /// Run the player's loop until the machine stops, or give up. Returns whether it stopped.
+    fn run_until_halted(machine: &mut Machine, bus: &mut Bus, paused: &mut bool) -> bool {
+        for _ in 0..8 {
+            iterate(machine, bus, paused);
+            if bus.is_paused() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn halting_now(machine: &Machine, bus: &Bus) -> Halting {
+        let (watch, _, _) = bus.read_instruments();
+        Halting::of(
+            bus.read_breakpoints(),
+            bus.last_break(),
+            watch,
+            bus.is_paused(),
+            machine.system().scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
+            None,
+        )
+    }
+
+    /// ★ **The incident, reproduced and then read back off the surface that was silent for it.**
+    ///
+    /// A breakpoint is armed at an address the ROM runs constantly, the *player's own loop* is driven —
+    /// not `emulator/run_frames`, which is a different run driver — and the window is asked what it can
+    /// say. It must say all three things the queue row demands: that something is armed, that it just
+    /// halted, and how to get out. Then the machine is resumed and halted **again**, because the failure
+    /// was a repeating halt and a surface that reports the first one and goes quiet reproduces it.
+    ///
+    /// **Alternative green paths ruled out, in order:**
+    ///
+    /// 1. *Nothing actually halted and the sentences are decoration.* Ruled out by asserting the bus is
+    ///    stopped and that `LastBreak` exists before a single string is looked at.
+    /// 2. *The headline is a constant.* Ruled out by comparing the halted headline against the armed-and-
+    ///    running headline taken from the same fixture, and requiring them to differ.
+    /// 3. *The count is the same number twice.* Ruled out by requiring `ordinal` to have RISEN across the
+    ///    second halt and the headline to carry the new figure.
+    #[test]
+    fn a_breakpoint_that_halts_the_players_own_loop_is_said_out_loud_and_offers_the_way_out() {
+        let (mut machine, mut bus) = rig();
+        let mut paused = false;
+
+        // Armed and running: the alarm is already up, before anything has halted. This is the state a
+        // reader needs in order NOT to be surprised later, and it is also alternative-green-path 2's
+        // control.
+        let a = bus.call(
+            machine.system_mut(),
+            BREAKPOINT_ADD,
+            &breakpoint_add_params(HOT, "hot").expect("a hex target"),
+        );
+        let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
+        let armed_only = halting_now(&machine, &bus);
+        assert_eq!(armed_only.armed, 1);
+        assert!(armed_only.last.is_none(), "nothing has halted yet");
+        let running_head = armed_only
+            .headline()
+            .expect("an armed breakpoint must be stated while the machine is still running");
+        assert!(
+            running_head.contains("ARMED") && running_head.contains("0x0000020E"),
+            "the running-and-armed line must name what is armed and where: {running_head}"
+        );
+
+        // 1: the halt is real, through the window's own loop.
+        assert!(
+            run_until_halted(&mut machine, &mut bus, &mut paused),
+            "an armed breakpoint on the fixture ROM's inner loop must halt the player's own frame run"
+        );
+        let h = halting_now(&machine, &bus);
+        let first = h
+            .last
+            .expect("the engine must have recorded the halt it performed");
+        assert_eq!(first.ordinal, 1, "the first halt is the first halt");
+        assert!(
+            h.halted_here(),
+            "the machine is stopped and has not completed a frame since the halt, so this IS why"
+        );
+
+        let head = h.headline().expect("a halted window must say so");
+        let advice = h.advice().expect("…and must say how to get out");
+        assert!(
+            head.contains("HALTED") && head.contains(&handle) && head.contains("0x0000020E"),
+            "the headline must name the state, the handle and the address: {head}"
+        );
+        assert!(
+            head.contains("1 halt") && head.contains("still armed"),
+            "…and that it is still armed, or a reader does not know resuming will stop again: {head}"
+        );
+        assert!(
+            advice.contains(BREAKPOINT_SET_ENABLED) && advice.contains(crate::ui::RESUME),
+            "the way out must name the calls it makes: {advice}"
+        );
+        // 2: not a constant.
+        assert_ne!(
+            head, running_head,
+            "the halted headline is the same string as the armed-and-running one, so the sentence is \
+             two copies of one untouched value and says nothing about the halt"
+        );
+
+        // 3: THE REPEATING CASE. Resume, and it halts again — the surface must report the second one.
+        let a = bus.call(machine.system_mut(), crate::ui::RESUME, &json!({}));
+        assert!(!a.is_err(), "resume: {}", ok_or_err(&a));
+        assert!(
+            run_until_halted(&mut machine, &mut bus, &mut paused),
+            "the breakpoint is still armed, so the resumed machine must halt again — if it did not, the \
+             repeating case this parcel exists for is not being exercised"
+        );
+        let h2 = halting_now(&machine, &bus);
+        let second = h2.last.expect("a second halt");
+        assert_eq!(
+            second.ordinal, 2,
+            "the halt count must RISE; a surface that latched the first halt and stopped counting goes \
+             quiet exactly when the window is re-freezing every resume"
+        );
+        let head2 = h2.headline().expect("still halted, still said");
+        assert!(head2.contains("2 halts"), "{head2}");
+        assert_ne!(
+            head2, head,
+            "the second halt rendered identically to the first: the count on the glass is not moving, \
+             which is the failure mode that reads as a dead window"
+        );
+    }
+
+    /// ★ **The way out actually works, through the server, and destroys nothing.**
+    ///
+    /// [`release_gestures`] is driven through real `Host::call`s from a genuinely halted machine, and the
+    /// machine must then run again. The gentleness is asserted too: disabling is not clearing, so the row
+    /// and its `hits` have to survive — this button is pressed by somebody who does not yet know what is
+    /// wrong, and losing another client's breakpoints for them would be a second incident.
+    ///
+    /// **Alternative green paths ruled out:**
+    ///
+    /// 1. *Nothing was armed, so "nothing is armed afterwards" is vacuous.* Ruled out by asserting
+    ///    `any_enabled()` before the release.
+    /// 2. *The release cleared everything, which also disarms.* Ruled out by asserting the row survives
+    ///    with its `hits` intact.
+    /// 3. *The resume did not actually restart the machine.* Ruled out by running another iteration and
+    ///    requiring the emulated clock to have moved.
+    #[test]
+    fn the_release_disarms_through_the_server_resumes_and_keeps_every_row() {
+        let (mut machine, mut bus) = rig();
+        let mut paused = false;
+        let a = bus.call(
+            machine.system_mut(),
+            BREAKPOINT_ADD,
+            &breakpoint_add_params(HOT, "hot").expect("a hex target"),
+        );
+        let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
+        assert!(run_until_halted(&mut machine, &mut bus, &mut paused));
+
+        let h = halting_now(&machine, &bus);
+        // 1: there is something to disarm.
+        assert!(
+            bus.read_breakpoints().any_enabled(),
+            "nothing is armed, so the assertions below would pass over an empty world"
+        );
+        let hits_before: u64 = bus.read_breakpoints().iter().map(|b| b.hits).sum();
+        assert!(hits_before > 0, "the halt must have been counted");
+
+        let gestures = release_gestures(&h);
+        assert_eq!(
+            gestures.len(),
+            2,
+            "one disarm per armed handle, then the resume: {gestures:?}"
+        );
+        assert_eq!(gestures[0].0, BREAKPOINT_SET_ENABLED);
+        assert_eq!(
+            gestures[0].1,
+            json!({"breakpoint": handle, "enabled": false})
+        );
+        assert_eq!(gestures[1].0, crate::ui::RESUME);
+        for (method, params) in &gestures {
+            let a = bus.call(machine.system_mut(), method, params);
+            assert!(!a.is_err(), "{method} refused: {}", ok_or_err(&a));
+        }
+
+        assert!(
+            !bus.read_breakpoints().any_enabled(),
+            "the release left something armed, so the window would halt again on the next frame"
+        );
+        // 2: gentle, not destructive.
+        assert_eq!(
+            bus.read_breakpoints().len(),
+            1,
+            "the release CLEARED the breakpoint. It must disable it — the person pressing this does not \
+             know what is wrong yet, and another client's rows are not theirs to destroy"
+        );
+        assert_eq!(
+            bus.read_breakpoints().iter().map(|b| b.hits).sum::<u64>(),
+            hits_before,
+            "§6 carries `hits` across the toggle, so a disarm must not move the count"
+        );
+
+        // 3: the machine really runs again.
+        let mclk_before = machine.system().scheduler().now();
+        iterate(&mut machine, &mut bus, &mut paused);
+        assert!(
+            machine.system().scheduler().now() > mclk_before,
+            "the release reported success and the machine is still frozen"
+        );
+        assert!(
+            !halting_now(&machine, &bus).can_halt(),
+            "nothing is armed any more, so the alarm must stand down"
+        );
+    }
+
+    /// **Release resumes only when a breakpoint is why the machine stopped**, and says which button it is.
+    ///
+    /// A human who paused the window and then pressed a button about breakpoints did not ask to be
+    /// resumed. The label and the behaviour are one decision ([`Halting::release_label`]) for
+    /// [`crate::ui::Transport::toggle`]'s reason — `emulator/screen_text` reports the label, so a button
+    /// that read *release* while issuing only a disarm would be wrong in public.
+    ///
+    /// **⚑ The third assertion.** The two rows are agreement, not correctness: a `release_label` that
+    /// ignored its argument satisfies both. So the two states are asserted to produce **different**
+    /// answers.
+    #[test]
+    fn release_resumes_only_when_a_breakpoint_is_why_the_machine_is_stopped() {
+        let (mut machine, mut bus) = rig();
+        let mut paused = false;
+        bus.call(
+            machine.system_mut(),
+            BREAKPOINT_ADD,
+            &breakpoint_add_params(HOT, "").expect("a hex target"),
+        );
+        assert!(run_until_halted(&mut machine, &mut bus, &mut paused));
+
+        let halted = halting_now(&machine, &bus);
+        assert_eq!(halted.release_label(), (RELEASE_LABEL, true));
+        assert!(release_gestures(&halted)
+            .iter()
+            .any(|(m, _)| *m == crate::ui::RESUME));
+
+        // The same set, the same halt record — but the machine has since advanced past it, which is what
+        // a human pausing later looks like. Built by hand rather than by driving the loop, so the ONLY
+        // thing that differs is the fact under test.
+        let paused_by_hand = Halting {
+            frames_since: Some(200),
+            ..halting_now(&machine, &bus)
+        };
+        assert_eq!(paused_by_hand.release_label(), (DISARM_LABEL, false));
+        assert!(
+            !release_gestures(&paused_by_hand)
+                .iter()
+                .any(|(m, _)| *m == crate::ui::RESUME),
+            "a button about breakpoints must not resume a machine a human deliberately paused"
+        );
+        assert_ne!(
+            halted.release_label(),
+            paused_by_hand.release_label(),
+            "the agreement above is two copies of one untouched value: `release_label` ignored its own \
+             state and would offer the same button in both"
+        );
+        // …and the headline says which, rather than claiming the breakpoint stopped it.
+        let head = paused_by_hand.headline().expect("still armed, still said");
+        assert!(
+            head.contains("something else stopped it"),
+            "a stop the breakpoint cannot account for must be named as one: {head}"
+        );
+    }
+
+    /// **Every call the way out makes is a method the registry carries**, checked against `METHODS`.
+    ///
+    /// A typo here is a button whose only outcome is `-32601` on a window that is already frozen. The
+    /// alternative green path — an `is_served` that answers `true` for everything — is ruled out in the
+    /// same test.
+    #[test]
+    fn every_release_gesture_names_a_served_method() {
+        let (mut machine, mut bus) = rig();
+        bus.call(
+            machine.system_mut(),
+            BREAKPOINT_ADD,
+            &breakpoint_add_params(HOT, "").expect("a hex target"),
+        );
+        let h = Halting {
+            frames_since: Some(0),
+            stopped: true,
+            last: Some(oracle_aether::engine::LastBreak {
+                id: oracle_aether::breakpoints::BreakpointId(1),
+                pc: 0x20E,
+                frame: 0,
+                ordinal: 1,
+            }),
+            ..halting_now(&machine, &bus)
+        };
+        let gestures = release_gestures(&h);
+        assert!(!gestures.is_empty(), "an empty sequence names nothing");
+        for (m, _) in &gestures {
+            assert!(
+                memory::is_served(m),
+                "the release sequence offers {m}, which the METHODS registry does not carry"
+            );
+        }
+        assert!(
+            !memory::is_served("emulator/breakpoint_set_enabled_but_spelled_wrong"),
+            "`is_served` answered true for a method that cannot exist, so the loop witnesses nothing"
+        );
+    }
+
+    /// ★ **The panel's armed set and `emulator/breakpoint_list` are one answer** (§4.4 R2/R3), and
+    /// [`Halting`] really filters rather than echoing.
+    ///
+    /// The fixture holds **three** breakpoints of which **two** are armed, which is what makes the third
+    /// assertion possible: a `Halting` that simply copied the list would carry three handles and agree
+    /// with `breakpoint_list`'s row count perfectly.
+    ///
+    /// **Alternative green paths ruled out:**
+    ///
+    /// 1. *Both sides are empty.* Ruled out by requiring a non-empty armed set.
+    /// 2. *The derivation did nothing.* Ruled out by the `assert_ne!` against the served list's own
+    ///    handles — the raw input — with the disabled row named in the failure message.
+    /// 3. *The handles are spelled by this panel rather than by the server.* Ruled out by taking the
+    ///    expected handles out of the **reply**, never from `breakpoint_wire_id` a second time.
+    #[test]
+    fn the_armed_set_the_window_names_is_the_one_breakpoint_list_serves() {
+        let (mut machine, mut bus) = rig();
+        for (target, enabled) in [("0x20E", true), ("0x204", true), ("0x218", false)] {
+            let a = bus.call(
+                machine.system_mut(),
+                BREAKPOINT_ADD,
+                &breakpoint_add_params(target, "").expect("a hex target"),
+            );
+            let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
+            if !enabled {
+                let a = bus.call(
+                    machine.system_mut(),
+                    BREAKPOINT_SET_ENABLED,
+                    &breakpoint_enable_params(&handle, false),
+                );
+                assert!(!a.is_err(), "{}", ok_or_err(&a));
+            }
+        }
+
+        // The tool's own answer, in process, through `Host::call` — D15's "a consumer of the same
+        // registry, not a second server".
+        let a = bus.call(machine.system_mut(), "emulator/breakpoint_list", &json!({}));
+        let reply = ok(&a).clone();
+        let rows = reply["breakpoints"]
+            .as_array()
+            .expect("breakpoint_list serves an array");
+        let served_armed: Vec<String> = rows
+            .iter()
+            .filter(|r| r["enabled"] == json!(true))
+            .map(|r| r["breakpoint"].as_str().expect("a handle").to_owned())
+            .collect();
+        let served_all: Vec<String> = rows
+            .iter()
+            .map(|r| r["breakpoint"].as_str().expect("a handle").to_owned())
+            .collect();
+
+        let h = halting_now(&machine, &bus);
+        // 1: there is something to compare.
+        assert_eq!(served_armed.len(), 2, "the fixture must arm two: {reply}");
+        assert_eq!(
+            h.armed_handles, served_armed,
+            "the window's armed set and `emulator/breakpoint_list`'s have DRIFTED"
+        );
+        assert_eq!(h.armed, served_armed.len());
+        // 2 — ⚑ the third assertion: the shared derivation actually did something. A `Halting` that
+        // echoed the list would satisfy every row above.
+        assert_ne!(
+            h.armed_handles, served_all,
+            "the agreement above is two copies of one untouched value: `Halting` carried every \
+             breakpoint the server holds, including the DISABLED one, so nothing filtered on `enabled` \
+             and the window would raise an alarm about a breakpoint that cannot halt anything"
+        );
+        assert_eq!(
+            served_all.len(),
+            3,
+            "…and there really is a third row: {reply}"
+        );
+    }
+
+    /// **[`Live`] and [`Halting`] agree on the one bit they share, and on nothing else.**
+    ///
+    /// `breakpoints_live` is `any_enabled()` — the predicate `Engine::run_sinks` attaches the halting sink
+    /// on — and [`Halting::can_halt`] must be the same fact or one of the two surfaces is lying about
+    /// whether the machine can be stopped. What they do *not* share is asserted too: `Live` cannot
+    /// distinguish a stopped machine from a running one, which is why this parcel did not reuse it.
+    #[test]
+    fn breakpoints_live_agrees_with_halting_on_armed_and_answers_a_different_question_otherwise() {
+        let (mut machine, mut bus) = rig();
+        let empty = halting_now(&machine, &bus);
+        assert_eq!(breakpoints_live(bus.read_breakpoints()), Live::Never);
+        assert!(!empty.can_halt());
+
+        let a = bus.call(
+            machine.system_mut(),
+            BREAKPOINT_ADD,
+            &breakpoint_add_params(HOT, "").expect("a hex target"),
+        );
+        let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
+        assert_eq!(breakpoints_live(bus.read_breakpoints()), Live::Yes);
+        assert!(halting_now(&machine, &bus).can_halt());
+
+        let a = bus.call(
+            machine.system_mut(),
+            BREAKPOINT_SET_ENABLED,
+            &breakpoint_enable_params(&handle, false),
+        );
+        assert!(!a.is_err(), "{}", ok_or_err(&a));
+        assert_eq!(breakpoints_live(bus.read_breakpoints()), Live::Retained);
+        assert!(!halting_now(&machine, &bus).can_halt());
+
+        // ⚑ The third assertion, and the argument for a second type. `Live` is identical for a running
+        // machine and a halted one — it is a statement about the TABLE — so the two states below share a
+        // `Live` and must not share a headline.
+        let running = Halting {
+            stopped: false,
+            ..halting_now(&machine, &bus)
+        };
+        let stopped = Halting {
+            stopped: true,
+            frames_since: Some(0),
+            last: Some(oracle_aether::engine::LastBreak {
+                id: oracle_aether::breakpoints::BreakpointId(1),
+                pc: 0x20E,
+                frame: 0,
+                ordinal: 9,
+            }),
+            ..halting_now(&machine, &bus)
+        };
+        assert_ne!(
+            running.headline(),
+            stopped.headline(),
+            "a running window and a halted one produced the same sentence, which is exactly what `Live` \
+             would have done and the reason this is a separate derivation"
+        );
+        assert!(
+            stopped
+                .headline()
+                .expect("halted says so")
+                .contains("9 halts"),
+            "the halt count must reach the glass"
+        );
+    }
+
+    /// **Watches are counted honestly and are NOT reported as things that freeze this window.**
+    ///
+    /// `Engine::run_sinks` lends the watch wrapped in `Observe`, so a `stopAfter` cannot end one of the
+    /// player's 1-frame runs. It *does* end a commanded run, which is a real surprise and gets its own
+    /// clause — but a watch alone must never raise the halting alarm, because the reader would then go
+    /// looking at the wrong instrument, which is what happened.
+    #[test]
+    fn a_stopafter_watch_is_named_as_a_commanded_run_hazard_and_never_as_a_frozen_window() {
+        let (mut machine, mut bus) = rig();
+        let params = watch_add_params("0xFF0000", "2", "bus", false, true, "1", "trap")
+            .expect("valid panel input");
+        let a = bus.call(machine.system_mut(), WATCHPOINT_ADD, &params);
+        assert!(!a.is_err(), "{}", ok_or_err(&a));
+
+        let h = halting_now(&machine, &bus);
+        assert_eq!(h.stopping_watches, 1, "the watch carries stopAfter");
+        assert!(
+            !h.can_halt(),
+            "a watch cannot halt the player's own frame run — `Observe` drops its stop"
+        );
+        assert_eq!(
+            h.headline(),
+            None,
+            "a watch alone must NOT raise the halting alarm: it sends a reader hunting an instrument \
+             that is not stopping anything"
+        );
+
+        // …but once a breakpoint is armed, the watch's own hazard is spelled out beside it.
+        bus.call(
+            machine.system_mut(),
+            BREAKPOINT_ADD,
+            &breakpoint_add_params(HOT, "").expect("a hex target"),
+        );
+        let h = halting_now(&machine, &bus);
+        let advice = h.advice().expect("armed, so there is advice");
+        assert!(
+            advice.contains("stopAfter") && advice.contains("step"),
+            "the watch's real hazard — it ends a COMMANDED run — must be named: {advice}"
+        );
+    }
+
+    /// **A clipped list of armed addresses says it is clipped**, and the way out is built from the
+    /// complete one.
+    ///
+    /// The display cap and the gesture list are different fields on purpose: a `release` that disarmed
+    /// only the four breakpoints the bar had room to name would leave the window halting on the fifth,
+    /// which is the same silent-partial-success this module refuses everywhere else.
+    #[test]
+    fn the_named_addresses_are_capped_for_display_and_the_way_out_is_not() {
+        let (mut machine, mut bus) = rig();
+        let n = NAMED_ADDRS + 2;
+        for i in 0..n {
+            let a = bus.call(
+                machine.system_mut(),
+                BREAKPOINT_ADD,
+                &breakpoint_add_params(&format!("0x{:X}", 0x200 + i * 2), "")
+                    .expect("a hex target"),
+            );
+            assert!(!a.is_err(), "{}", ok_or_err(&a));
+        }
+        let h = halting_now(&machine, &bus);
+        assert_eq!(h.armed, n);
+        assert_eq!(h.armed_at.len(), NAMED_ADDRS);
+        assert_eq!(h.more_addrs, n - NAMED_ADDRS);
+        assert_eq!(
+            h.armed_handles.len(),
+            n,
+            "the way out must cover every armed handle, not the ones the bar had room for"
+        );
+        let head = h.headline().expect("armed");
+        assert!(
+            head.contains(&format!("+{} more", n - NAMED_ADDRS)),
+            "a clipped list that does not say it is clipped reads as complete: {head}"
+        );
+        assert_eq!(
+            release_gestures(&h)
+                .iter()
+                .filter(|(m, _)| *m == BREAKPOINT_SET_ENABLED)
+                .count(),
+            n
+        );
+    }
+
     fn ok_or_err(a: &Answer) -> String {
         match a {
             Answer::Ok(v) => v.to_string(),
