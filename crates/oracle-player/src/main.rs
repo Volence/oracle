@@ -619,15 +619,16 @@ impl Loop {
         // `-32005 noDisplay` ("there is no window") until the next present, which is exactly the false
         // answer the method exists to prevent. The skip belongs one level up, and this is that level.
         //
-        // `has_glyph` is asked of the **live `egui::Context`** — the drawing path's own predicate, through
-        // the family that drew each run (`screen::Run::mono`). A hand-written table of characters this
-        // build cannot draw would be a second opinion about a font, and the wrong one first.
+        // **Missing glyphs are asked of the live `egui::Context`**, through the family that drew each run
+        // (`screen::Run::mono`). A hand-written table of characters this build cannot draw would be a
+        // second opinion about a font, and the wrong one first.
         //
-        // ⚑ **…and the predicate is NOT `Fonts::has_glyph`, which is the obvious answer and is wrong.**
+        // ⚑ **But NOT through `Fonts::has_glyph`, which is the obvious call and is wrong here.**
         // `screen::Glyphs` carries the measurement: on egui 0.36 `has_glyph` calls the letter `A`
         // undrawable in the monospace family and `▶` undrawable in the proportional one, on a build that
-        // draws both — 26 invented hollow boxes on this bar. The atlas rectangle a glyph samples cannot
-        // lie that way, so that is what is compared.
+        // draws both — 26 invented hollow boxes on this bar. What it actually answers is *"is this char
+        // owned by the same face as `◻`?"*. The atlas rectangle a glyph samples cannot lie that way,
+        // because it IS what the renderer reads, so that is what is compared.
         if self.bus.is_serving() {
             let mut glyphs = screen::Glyphs::new(ctx);
             let surfaces =
