@@ -1,9 +1,17 @@
 {
-  "focus": "Seven parcels landed today. Next is the nav you asked for \u2014 so every panel can actually be opened.",
+  "focus": "Eight parcels landed today. Every panel now opens from a menu \u2014 though we still do not know why your tab titles did not work.",
   "inFlight": [],
   "blockedOnOwner": [],
   "nextBoundary": "Here. Everything merged, pushed and written down.",
   "queue": [
+    {
+      "id": "F-NAV-COLLAPSED-LEAF",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "If a panel group was COLLAPSED on your screen rather than merely behind another tab, the new menu cannot expand it either \u2014 the library keeps that control private. This is the live hypothesis for why you could not open those tabs, and one answer from you settles whether it matters."
+    },
     {
       "id": "WAITFORBREAK-INSTANT-TIMEOUT",
       "state": "open",
@@ -11,14 +19,6 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "A tool that asks the emulator to stop and waits ten seconds can be told 'it never stopped' after waiting ZERO milliseconds, with the game still running \u2014 a wrong answer, not a slow one. Real and worth fixing on its own merits; the other team turns out NOT to depend on it, so it sits behind the things you asked for tonight."
-    },
-    {
-      "id": "PANELS-NAV",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "You could not open half the tabs, and they were not broken: the window only draws the front tab of each group and there is no menu anywhere. A visible nav that lists every panel \u2014 built from the window's own list of panels, so it cannot go stale when someone adds one."
     },
     {
       "id": "ARMED-STATE-VISIBLE",
@@ -134,7 +134,7 @@
       "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Their repo had the same shape pointing back at us, and had even CORRECTED it in one file while a tool went on carrying the old version. Find ours outside the boot doc, where nobody re-reads them."
     }
   ],
-  "awaiting": null,
+  "awaiting": "one question when you are next at the window: when you could not open those tabs, could you SEE their titles in the little bars above the panels? If the panes were collapsed rather than just behind each other, the menu I just built may not reach your case either.",
   "atBoundary": true,
-  "updatedAt": "2026-09-04T01:35:05Z"
+  "updatedAt": "2026-09-04T02:35:49Z"
 }
