@@ -2723,7 +2723,7 @@ contract-wide question and not one more per-method amendment.
 reader who would meet the contradiction* — was demonstrated on the bullet itself inside one day. Left
 struck rather than deleted, per this file's rule.
 
-**Anchored on the independent channel.** `tests/symbol_freshness.rs` (4 rows) never asserts our verdict
+**Anchored on the independent channel.** `tests/symbol_freshness.rs` (5 rows) never asserts our verdict
 against our own state: each constructs the real situation and asserts on **`lookup_symbol`'s actual
 answer**, with a control name that must resolve at the same instant the missing one does not, and an
 anti-vacuity clause requiring the symbol to resolve after `load_symbols`. The row-count case

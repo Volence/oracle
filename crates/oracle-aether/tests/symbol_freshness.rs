@@ -29,7 +29,10 @@
 
 mod common;
 
-use common::{spawn, Client};
+use common::{spawn, temp_socket, Client};
+use oracle_aether::engine::EngineConfig;
+use oracle_aether::server::{Machine, Server, ServerConfig, ServerHandle};
+use oracle_core::system::System;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -108,6 +111,30 @@ fn write_lst(tag: &str, body: &str) -> PathBuf {
     let p = temp_path(tag, "lst");
     std::fs::write(&p, body).expect("write the listing fixture");
     p
+}
+
+/// A server holding a symbol table with **no recorded path** — the state an embedder reaches through
+/// `host::MachineInfo`, and one `emulator/load_symbols` can never produce. Lifted from
+/// `symbols_path.rs`'s `serve_with_symbols`, which needed the same seam for the same reason: the
+/// launch boundary is the only way to install a table the wire could not have installed.
+fn serve_with_a_pathless_table(tag: &str) -> ServerHandle {
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(oracle_core::testrom::build());
+    sys.reset();
+    let mut machine = Machine::new(sys);
+    machine.symbols =
+        Some(oracle_core::symbols::SymbolTable::parse(LST_OLD).expect("parse the fixture listing"));
+    machine.symbols_path = None;
+    Server::bind(ServerConfig {
+        socket_path: temp_socket(tag),
+        engine: EngineConfig {
+            free_run_pace: None,
+            ..EngineConfig::default()
+        },
+        event_queue_cap: 1024,
+    })
+    .expect("bind aether socket")
+    .spawn(machine)
 }
 
 /// `lookup_symbol`, returning the result on a hit and `None` on `-32013`.
@@ -374,6 +401,45 @@ fn a_listing_that_vanished_is_reported_as_unchecked_never_as_fine() {
     assert!(
         lookup(&mut c, "Player_1").is_some(),
         "CONTROL: the held table is unaffected; only our ability to check it is"
+    );
+
+    let _ = std::fs::remove_file(&rom);
+}
+
+#[test]
+fn a_table_with_no_recorded_path_is_reported_as_unchecked_never_as_fine() {
+    // The third unmeasurable, and the only one the wire cannot construct: `emulator/load_symbols`
+    // always records a path, so a table with none arrives through the launch boundary — the binary, or
+    // a hosted embedder's `MachineInfo`. Without this row the branch is dead code that reads as covered.
+    let rom = write_rom("pathless");
+
+    let h = serve_with_a_pathless_table("symfresh-pathless");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    let status = c.ok("emulator/status", json!({}));
+    assert_eq!(
+        status["symbolsPath"],
+        json!(null),
+        "the premise: this server holds a table and no path for it"
+    );
+    assert_eq!(status["symbolCount"], json!(2), "…and the table is real");
+
+    let reload = c.ok(
+        "emulator/reload_rom",
+        json!({ "path": rom.display().to_string() }),
+    );
+    assert_eq!(reload["symbolsDropped"], json!(false));
+    let text = caveat(&reload).unwrap_or_else(|| {
+        panic!("a freshness that cannot be measured AT ALL must be loudest of all. Reply: {reload}")
+    });
+    assert!(
+        text.contains("could NOT be checked at all"),
+        "the caveat must say it could not check, and say why: {text}"
+    );
+    assert!(
+        lookup(&mut c, "Player_1").is_some(),
+        "CONTROL: the held table still answers; only our ability to check it is in question"
     );
 
     let _ = std::fs::remove_file(&rom);

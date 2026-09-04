@@ -6107,7 +6107,7 @@ impl Engine {
         let Some(path) = self.symbols_path.as_deref() else {
             return Some(format!(
                 "the {held_rows}-row symbol listing was kept, but this server holds no path for it, so \
-                 whether it has been rebuilt since it was loaded could not be checked at all. \
+                 whether it has been rebuilt since it was loaded could NOT be checked at all. \
                  `symbolsDropped: false` says only that the held table still binds to the image's \
                  shape, which is a filter and not a proof."
             ));
