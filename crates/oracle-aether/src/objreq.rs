@@ -309,6 +309,13 @@ impl Mailbox {
 ///
 /// The `-32013` message says the second thing out loud, because the client's next question is always
 /// *why not*, and *this build has no live-object mailbox; it is a DEBUG-shape interface* is the answer.
+///
+/// ⚑ That answer covers a **release** ROM and not the other reality with the same symptom — a debug
+/// build whose mailbox the loaded listing predates. `Engine::objreq_exchange` therefore appends
+/// `Engine::with_symbol_freshness`'s clause to what this returns, which separates the two;
+/// `F-LOOKUP-MISS-SAYS-NOTHING`. The clause is joined on by the caller rather than composed here so
+/// there is exactly one implementation of it across all five `-32013` sites — and because this function
+/// takes a table, not the engine that knows where the table came from.
 pub fn resolve(table: Option<&SymbolTable>) -> Result<Mailbox, RpcError> {
     let Some(table) = table else {
         return Err(RpcError::new(
