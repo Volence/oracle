@@ -683,6 +683,18 @@ const WAIT_POLL: Duration = Duration::from_millis(2);
 /// approximately zero milliseconds — a wrong answer, not a slow one, and one that load makes *more*
 /// likely because scheduling pressure is what widens the gap between the state change and its publication.
 ///
+/// **Measured, not reasoned.** `tests/hosted.rs`'s `a_halted_window_resumes_past_its_own_breakpoint` — the
+/// only test in that file that issues an `emulator/resume` immediately before a wait, and the only one
+/// that ever went red — was run 30 times against the whole hosted suite under a loaded machine
+/// (~300 spinners, load average ~250, 16 cores). Pre-fix: **7 of 30 red**, every one of them at the
+/// *second* wait, every one with the same reply on the wire —
+/// `{"frame":2,"mclk":1792182,"running":true,"timeoutReached":true,"waitedMs":0}` against
+/// `timeoutMs: 10000`. Post-fix, identical load and run count: **0 of 30**. With the transport
+/// reconciliation alone and `Host::pump`'s publish ordering put back the way it was: **0 of 30** — so this
+/// loop, not the ordering, is what closes it; the ordering fix keeps the stamp honest for its other reader
+/// and saves this loop a round trip. Unloaded, the pre-fix tree passed 30 of 30, which is why the defect
+/// spent two lane-log entries booked as a flake.
+///
 /// (`Host::pump` used to publish at the *end* of a drain, after the reply to the `resume` that changed the
 /// state had already gone out; `engine_loop` has always published before its reply. That ordering is now
 /// the same on both drivers — but an ordering invariant in another file is not a guarantee this method can
