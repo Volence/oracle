@@ -40,6 +40,22 @@
 //! the parity guard below now runs over masked states so that is an assertion rather than a precondition.
 //! See [`resolve`] for the whole argument and `docs/2026-08-27-gui-layers.md` for the parcel.
 //!
+//! ## When the colour on screen may not be the colour behind the answer
+//!
+//! An answer names a tile, a palette and a CRAM entry, and every one of those describes the palette **as
+//! it stands now**. A game that repaints a colour after the raster has already drawn that line leaves the
+//! two genuinely different, and a panel that reported the live palette without saying so would be telling
+//! a reader something true in a way they cannot help but read as false — the same failure the mask clause
+//! exists to prevent, one field over.
+//!
+//! So an answer carries `protocol.md` §11.27's colour caveat, in a clause beside the mask's, and it is the
+//! **same sentence `emulator/pixel_attribution` sends on the wire, from the same function**
+//! ([`oracle_core::render::cram_divergence_caveat`]) — not a second rule written for the window. The
+//! rule fires only when the colour can actually differ; silence here is a measurement, not an optimism.
+//! `resolve`'s `now_mclk` argument is what makes the comparison possible, and its doc says why the clock
+//! has to come from the caller. `bus_parity`'s `the_panel_and_the_bus_carry_the_same_colour_caveat` is
+//! what stops the two surfaces drifting apart again.
+//!
 //! ## What this panel does NOT claim to know: which game *object* a sprite is
 //!
 //! A sprite answer names the **SAT index** — the hardware's own name for it — and stops there. It would be
