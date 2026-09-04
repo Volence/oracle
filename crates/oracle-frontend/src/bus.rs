@@ -1302,6 +1302,24 @@ mod tests {
             assert_eq!(e.reason.as_deref(), Some("machineRunning"), "{e:?}");
             assert_eq!(e.code, Some(-32005), "{e:?}");
 
+            // **The message is the SERVER'S, byte for byte.** Taken from a raw `Host::call` beside the
+            // translated one rather than from a literal here: a phrase copied off `require_paused` into
+            // this file would pin the wording of a function it does not own, and would go green against a
+            // `Bus::call` that had started summarising. Comparing against the dispatch itself is what
+            // makes "verbatim" a checked property of the translation rather than of my transcription.
+            let (raw, _) = f.bus.host.call(
+                &mut f.sys,
+                "emulator/object_spawn",
+                &json!({"defSymbol": "ObjDef_Ring", "x": 1, "y": 1}),
+            );
+            let raw =
+                raw.expect_err("the raw dispatch must refuse too, or this comparison is empty");
+            assert_eq!(
+                (e.message.as_str(), e.code),
+                (raw.message.as_str(), Some(raw.code)),
+                "the window must carry the server's refusal unchanged, not a summary of it"
+            );
+
             // The anchor for this row: the refusal happened BEFORE anything was written, so the machine
             // saw no request at all. A refusal that had already poked the mailbox would be the worst of
             // both — an error reply and an armed request that fires minutes later (§7.3).
