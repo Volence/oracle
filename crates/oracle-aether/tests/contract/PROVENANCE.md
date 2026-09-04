@@ -20,32 +20,34 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = b447555add1e9fdd60aefa36f1078c6db5115452
-    pin.blob     = 3f758c40e3e8a240b0bb91dd1ff0d23530c46bb1
-    pin.bytes    = 348406
+    pin.revision = 49623f0b0eaad489bce53ce719400e24e0a4018f
+    pin.blob     = ed2f3f66624dbbbad379a1f2222f7f6b3648ceeb
+    pin.bytes    = 349117
 
 ## Current copy
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`b447555add1e9fdd60aefa36f1078c6db5115452`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor b447555add1e9fdd60aefa36f1078c6db5115452 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `3218ffd5` at the time). 67 method fragments (the `methods` object carries 68 keys, one of which is a `$comment`); all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. `methods["emulator/status"].result.properties` now carries 13 keys, `caveat` among them, which is the leaf §11.34 added and the only reason this re-vendor exists. |
-| Last commit that touched the schema | **`b447555add1e9fdd60aefa36f1078c6db5115452`** — *"protocol 11.34: CR-K adopted, emulator/status declares caveat (the standing symbol-freshness verdict); two vectors; CONTRACT-CAVEAT-DEFAULT booked n=2"* (2026-09-04). |
-| Git blob | `3f758c40e3e8a240b0bb91dd1ff0d23530c46bb1` |
-| SHA-256 | `e1fe40cf0c3555507c4d6e64b844fcb7aaa0c6e51c9c82fe441a0eb23a6d18d6` |
-| Bytes | 348406 |
+| Contract repo revision | **`49623f0b0eaad489bce53ce719400e24e0a4018f`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 49623f0b0eaad489bce53ce719400e24e0a4018f origin/main` was **run**, not assumed (it exited 0; `origin/main` was `72269ef1` at the time). 67 method fragments (the `methods` object carries 68 keys, one of which is a `$comment`); all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The whole delta from the copy this replaces is **one string**: `methods["emulator/object_spawn"].params.properties.x.description` gains the act bound, the three refusal reasons and the `Player_Bound_*` trap; `y.description` still reads *"See x."*; no type, bound, key or vector changed. That single leaf is the only reason this re-vendor exists. |
+| Last commit that touched the schema | **`49623f0b0eaad489bce53ce719400e24e0a4018f`** — *"protocol 11.35: CR-L adopted, object_spawn refuses a placement outside the loaded act (three reasons, section 8 item 26); x/y descriptions carry the act bound"* (2026-09-04). |
+| Git blob | `ed2f3f66624dbbbad379a1f2222f7f6b3648ceeb` |
+| SHA-256 | `c5e22af883332e1e7cd34e6e7c86895c12aae11a99de653227e0126f147e6f98` |
+| Bytes | 349117 |
 | Vendored on | 2026-09-04 |
 
-> **⚑ On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit for the second time
-> running — still a coincidence, still not a simplification.** `b447555` both adjudicates §11.34 and
-> writes these bytes, so `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json`
-> and "the commit the ruling is in" agree. The recipe was **run** here rather than skipped on the strength
-> of them matching, exactly as the retired note below says it must be: two agreements in a row is how a
-> recipe stops being run.
+> **⚑ The recipe and the tip-of-the-ruling gave DIFFERENT commits this time, after two re-vendors where
+> they agreed — which is exactly what the note below said would eventually happen.** `origin/main` was
+> `72269ef1` when this was taken; the ruling for §11.35 is at `49623f0b`; and
+> `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` answered `49623f0b`.
+> Here the recipe and the ruling happen to name the same commit *again* while the **tip** does not, so a
+> pin taken from "whatever `origin/main` is now" would have named `72269ef1`, a commit that never wrote
+> these bytes. The recipe was run, not skipped.
 >
 > *(Retired, kept because it is the previous re-vendor's own reading and this one supersedes rather than
-> erases it.)* ~~On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit, and that is a
-> coincidence rather than a simplification.~~ That was `bbf3bf8`; it is now the pin one step back.
+> erases it.)* ~~On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit for the second
+> time running — still a coincidence, still not a simplification.~~ That was `b447555`; it is now the pin
+> one step back.
 >
 > *(Retired, kept because it is the reason the recipe is a recipe.)* ~~The pin is `8a930919`, NOT §11.33's
 > own adoption commit `3b43185e`.~~ `3b43185e` was the *correction* to §11.33 that removed the `caveat`
@@ -53,15 +55,21 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 > `contract/schema/tests/vectors.json` **and not this file**; `git log -1 …` answered `8a930919`, so
 > pinning the tip-of-the-ruling would have named a commit that never wrote those bytes.
 >
-> ⚑ **The table this replaces was STALE, and the stale half was the half no gate reads.** It described
-> blob `487af407…` / revision `e04a94f…` / 345965 bytes while the pin block above said
-> `cf40685488…` / `bd6af51a…` / 346137, and the vendored file hashed to `cf40685488…` at 346137 — so the
-> **pin** was right and the **prose** was describing the re-vendor *before* last. `schema_conformance.rs`
-> parses the `pin.*` markers and nothing at all reads this table, so the file was green while telling any
-> human reader the wrong revision. Every figure in the table above is therefore derived by parsing the
-> bytes actually written in this commit; none is carried over.
+> ⚑ **A table here was STALE once, and the stale half was the half no gate reads.** It described blob
+> `487af407…` / revision `e04a94f…` / 345965 bytes while the pin block said `cf40685488…` / `bd6af51a…` /
+> 346137, and the vendored file hashed to `cf40685488…` at 346137 — so the **pin** was right and the
+> **prose** was describing the re-vendor *before* last. `schema_conformance.rs` parses the `pin.*` markers
+> and nothing at all reads this table, so the file was green while telling any human reader the wrong
+> revision. Every figure in the table above is therefore derived by parsing the bytes actually written in
+> this commit; none is carried over, and **both halves were updated in this commit** rather than the pin
+> alone.
+>
+> ⚑ **This re-vendor landed in the SAME COMMIT as the serve it describes.** A fragment that moves ahead of
+> the server is a silent contract change — it happened here once, ten days ahead, with handler, comment
+> and tests all agreeing with each other while only the JSON disagreed. §11.35's live half (§8 item 26,
+> the four suite cases) is in this commit too.
 
-**Taken from the object store at a committed revision**, `git show b447555:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `3f758c40…`, equal to `git rev-parse b447555:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show 49623f0b:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `ed2f3f66…`, equal to `git rev-parse 49623f0b:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
@@ -110,6 +118,45 @@ serve that needs the new schema.
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.35 (CR-L): `object_spawn`'s `x`/`y` carry the ACT bound (2026-09-04)
+
+The re-vendor below adopted §11.34. **This one is oracle's own CR too**, raised out of
+`F-SPAWN-OUTSIDE-ACT`: `emulator/object_spawn` accepted coordinates inside the engine's 16-bit position
+cell but **outside the loaded act**, wrote the mailbox and answered success — and the engine then culled
+the object on camera distance, so the caller was told a thing happened that did not. §11.35 adopts both
+halves separately: the fragment states the act bound beside the cell bound and names the three refusal
+reasons, and §8 **item 26** carries the live obligation, because a document schema structurally cannot
+witness a duty to refuse.
+
+Figures **re-derived by parsing both copies** (`git cat-file blob 3f758c40…` for the previous one, so
+neither figure is read from a commit message or carried over):
+
+| | previous copy (`b447555`) | this copy (`49623f0b`) | delta |
+|---|---|---|---|
+| method fragments | 67 | **67** | unmoved |
+| fragments declaring / closing `params` / declaring `result` | 67 / 67 / 67 | **67 / 67 / 67** | 0 / 0 / 0 |
+| `$defs` | 19 | **19** | unmoved — byte-identical |
+| `$schema` / `$id` / `title` / `description` / `anyMessage` / `handshake` / `events` | — | **byte-identical** | unmoved |
+| fragments whose JSON changed at all | — | **exactly one: `emulator/object_spawn`** | the change is as narrow as the ruling |
+| `object_spawn.params` keys / `required` | 9 / `["x","y"]` | **9 / `["x","y"]`** | unmoved |
+| `object_spawn.params.properties.x` non-description keys | `type` `integer`, `minimum` 0, `maximum` 65535 | **unmoved** | the cell bound is untouched; the act bound is a *behavioural* bound no keyword can carry |
+| `object_spawn.params.properties.x.description` | 193 chars | **904 chars** | +711 |
+| `object_spawn.params.properties.y.description` | `"See x."` | **`"See x."`** | unmoved |
+| `object_spawn.result` | — | **byte-identical** | a refusal has no result shape |
+| bytes | 348406 | **349117** | +711 — *the same +711*, so the description string is provably the whole delta |
+
+**What this re-vendor's green witnesses: nothing.** Not one bit flips. The only edit is a `description`,
+which no validator reads, so every reply that validated against the previous copy validates against this
+one and vice versa — and that is precisely why landing it alone would have been a silent contract change.
+The obligation it documents is held by `tests/object_mutation.rs`'s four item-26 rows
+(`a_spawn_outside_the_act_is_refused_by_reason_and_never_reaches_the_machine`,
+`a_listing_without_the_act_extent_says_it_cannot_check_rather_than_guessing`,
+`a_boot_cleared_extent_is_no_act_loaded_rather_than_a_placement_outside_one`, and the accept-between
+control `the_strip_between_the_player_clamp_and_the_act_edge_is_legal_placement_space`), which land in
+this same commit. The fourth is the one that matters: `Player_Bound_Right`/`_Bottom` are the player's
+**inset** clamp edges, and a server that read them as the act bounds would refuse legal placements while
+looking correct on every far-outside click.
 
 ### What this re-vendor adopted — §11.34 (CR-K): `emulator/status` declares `caveat` (2026-09-04)
 

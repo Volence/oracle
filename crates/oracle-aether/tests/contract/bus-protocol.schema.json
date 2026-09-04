@@ -6519,7 +6519,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 65535,
-            "description": "World PIXELS, not the engine's fixed-point word (D9 category 2, the decodedSlot convention). Bounded by the engine's own 16-bit position cell; out of range is -32602, refused and never clamped."
+            "description": "World PIXELS, not the engine's fixed-point word (D9 category 2, the decodedSlot convention). Bounded by the engine's own 16-bit position cell; out of range is -32602, refused and never clamped. ALSO bounded by the LOADED ACT (section 11.35, oracle CR-L, 2026-09-04): the valid box is [0, Level_Width) x [0, Level_Height), both resolved by name per call; outside it the server MUST refuse -32602 before any write, with error.data.reason one of outsideAct (outside a known extent), actExtentUnknown (the listing cannot answer; the server says it cannot check rather than treating the act as infinite), noActLoaded (both symbols read 0, the absence of an act). A schema cannot witness this refusal; it is a section 8 conformance obligation. Player_Bound_Right/_Bottom are NOT the act bounds (inset player clamp edges; objects are unclamped and a placement between them and Level_Width is legal and renders)."
           },
           "y": {
             "type": "integer",
