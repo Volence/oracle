@@ -296,6 +296,10 @@ mod bus;
 #[cfg(not(feature = "aether"))]
 #[path = "bus_stub.rs"]
 mod bus;
+// **The window's whole reaction to a client changing the machine**, lifted out of the run loop so that a
+// test can reach it — `FRONTEND-LOOP-UNTESTABLE`. It lived inline here until a `rom_changed` branch was
+// found by hand to leave the cached symbol listing stale, with nothing in this crate able to catch it.
+mod drain;
 // Display geometry — aspect handling, the window-sized presentation blit, and the exact click inverse.
 mod present;
 // The window's desktop identity: the embedded Oracle icon and its WM class.
@@ -2209,97 +2213,36 @@ fn main() {
         // screen this iteration gets the frame just drawn, not the one before it) and *before* the present
         // (so a client-driven run reaches the glass without a frame of lag).
         //
-        // Nothing here can stall: the drain only ever `try_recv`s, every socket write happens on a connection
-        // thread, and events go into per-connection queues that drop oldest-first rather than wait. A client
-        // that stops reading stalls its own reader thread and nothing else. The two length bounds are the
-        // bus's: `HOSTED_MAX_RUN_FRAMES` caps one command, `pump_budget` caps one drain.
-        bus.set_paused(paused);
-        let pumped = bus.pump(&mut sys);
-        if pumped.timeline_moved {
-            // A client advanced (or rewound) the machine behind the loop's back. That is the same class of
-            // event as a save-state load, and it needs the same two repairs: audio belongs to a timeline
-            // that has moved, and the capture is holding lines from before the jump.
-            draws += pumped.frames_advanced;
-            cap.clear();
-            #[cfg(feature = "audio")]
+        // **The body of it lives in [`drain`], and that is the point.** It used to be written out here,
+        // where no test in this crate could reach it — `fn main` needs a `minifb::Window` — and on
+        // 2026-09-03 that cost a real defect: the `rom_changed` branch re-keyed the save-state slots and
+        // never touched the cached symbol listing, so after a reload that dropped the listing this window
+        // named addresses out of a table the engine had discarded. It was found by a person reading the
+        // code. `drain::drain` is one call that both this loop and `drain.rs`'s tests make, so a branch
+        // with no consumer is now something a test can notice.
+        let drained = drain::drain(
+            &mut sys,
+            &mut bus,
+            drain::Reaction {
+                ov: &mut ov,
+                draws: &mut draws,
+                cap: &mut cap,
+                buf: &mut buf,
+                width: &mut width,
+                rom_fp: &mut rom_fp,
+                symbols: &mut symbols,
+                paused: &mut paused,
+            },
+        );
+        // The one effect the seam reports instead of performing: `AudioState` owns a live `cpal::Stream`
+        // and the producer half of an SPSC ring, neither of which a test may construct, so the decision
+        // ("did the timeline move?") is made where it can be examined and the device work happens here.
+        #[cfg(feature = "audio")]
+        if drained.resync_audio {
             resync_audio(audio.as_mut());
         }
-        if pumped.screen_changed {
-            // The bus's advancing calls run their own scanline capture (this loop's is not attached to
-            // them), so the frame they drew lives there. Pull it in; `None` means the run drew no complete
-            // frame, in which case the retained image stays up exactly as it does for a 0-frame iteration.
-            if let Some(w) = bus.present_frame(&mut buf) {
-                width = w;
-            }
-        }
-        if pumped.rom_changed {
-            // `emulator/reload_rom` (or a restore that brought a different cartridge back) changed the bytes
-            // under us. Re-derive the save-state fingerprint or every slot written for the previous image
-            // would silently load into this one.
-            rom_fp = save_state::rom_fingerprint(sys.rom());
-            notify(
-                &mut ov,
-                ACCENT,
-                "aether: the cartridge was replaced over the bus — save-state slots re-keyed",
-            );
-        }
-        if pumped.symbols_changed {
-            // A client's `emulator/load_symbols` (or a `reload_rom` that dropped the listing on the D7
-            // check) replaced the table the engine resolves against. This window holds its own clone —
-            // `dump_hits` symbolises watchpoint PCs out of it, and the lens panels name addresses from
-            // it — so without this it goes on naming addresses out of a listing the engine no longer
-            // has, while `emulator/lookup_symbol` answers from the new one. One machine, two answers:
-            // the D7 drift, arrived at over the bus instead of over a rebuild.
-            //
-            // Re-derived from the engine rather than re-read from disk, deliberately: the engine has
-            // already parsed and bound the listing the client named, and re-reading the path would be a
-            // second parse that can disagree with it. **The armed symbol watches are NOT re-armed** —
-            // `SymbolWatch::arm` re-seeds its baselines from live RAM, so doing it here would silently
-            // restart every watch's measurement on a gesture that changed no memory; the F5 path re-arms
-            // because it really did replace the machine.
-            symbols = bus.symbols().cloned();
-            notify(
-                &mut ov,
-                ACCENT,
-                match symbols.as_ref() {
-                    Some(t) => format!(
-                        "aether: symbol listing replaced over the bus — {} symbols",
-                        t.len()
-                    ),
-                    None => "aether: the symbol listing was dropped over the bus".to_string(),
-                },
-            );
-        }
-        // Conflict 1's inbound half: `emulator/pause` / `emulator/resume` are the client's way of stopping
-        // and starting *this* loop, and they only mean anything if the loop follows them.
-        let bus_paused = bus.is_paused();
-        if bus_paused != paused {
-            paused = bus_paused;
-            notify(
-                &mut ov,
-                ACCENT,
-                if paused {
-                    "aether: paused by a client"
-                } else {
-                    "aether: resumed by a client"
-                },
-            );
-        }
-
-        // --- The display layer mask, read back AFTER the drain and applied to the picture. ---
-        //
-        // Read from the bus rather than kept here, because there is exactly one mask and it lives on the
-        // engine: a client's `emulator/set_layer_enabled` and this window's palette toggles move the same
-        // field, so a mask set over the socket reaches the glass on this very iteration and the two can
-        // never describe different pictures. Read *after* `pump` for that reason — before it, a client's
-        // change would show up a frame late.
-        //
-        // `is_all()` is the whole gate: with nothing hidden, not one line of this runs and the presented
-        // picture is byte-for-byte the captured frame the loop has always shown.
-        let layers = bus.layers();
-        if !layers.is_all() {
-            width = blit_masked(sys.vdp(), layers, &mut buf);
-        }
+        #[cfg(not(feature = "audio"))]
+        let _ = drained.resync_audio; // no device to resynchronise in this build
 
         // --- Configured symbol watches: sample, and say what moved. ---
         //
@@ -2492,7 +2435,7 @@ fn main() {
             // The mask that drew the frame being presented, not a fresh read — the badge is a caption
             // for the picture underneath it, and one that could describe a mask set a microsecond ago
             // by a socket client, over a frame drawn before it, would be a caption for something else.
-            layers,
+            layers: drained.layers,
         };
         ov.draw(&mut screen, win_w, win_h, present_view, &status);
 
