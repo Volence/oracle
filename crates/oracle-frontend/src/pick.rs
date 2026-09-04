@@ -54,7 +54,7 @@
 //! blob-rebase [`TILE_SPACE`] guards against, one level up, so it gets the same answer: name what we can
 //! derive, and leave the join to whoever can make it soundly.
 
-use oracle_core::render::{sprite_tile_at, Layer, LayerMask};
+use oracle_core::render::{cram_divergence_caveat, sprite_tile_at, Layer, LayerMask};
 use oracle_core::vdp::Vdp;
 
 /// The clause every answer carries when a display layer is hidden, or `None` when none is.
@@ -150,14 +150,27 @@ fn tile_range(tile: u16) -> (u32, u32) {
 /// only that, is what keeps the join theirs to make.
 const TILE_SPACE: &str = "VRAM-absolute";
 
-/// Assemble the answer: the sentence, then the mask clause if there is one, then the detail.
+/// Assemble the answer: the sentence, then whatever clauses this dot earned, then the detail.
 ///
-/// One function so no caller can drop the mask clause on a path that happens not to think about masks —
-/// which is precisely how the invariant this parcel closes went unasserted in the first place.
-fn describe(headline: String, mask: LayerMask, detail: String) -> (String, String) {
-    let headline = match mask_clause(mask) {
-        Some(c) => format!("{headline} ({c})"),
-        None => headline,
+/// One function so no caller can drop a clause on a path that happens not to think about it — which is
+/// precisely how the mask invariant went unasserted in the first place, and the reason the **colour**
+/// clause joins here rather than getting a mechanism of its own.
+///
+/// The clauses are a list because a dot can earn both: a masked picture whose palette entry was also
+/// repainted after its line drew is two separate things a reader has to be told, and dropping either
+/// because the other fired would be a silent choice made on the reader's behalf. Order is fixed — mask
+/// first, because it says *which picture this is about* and the colour clause is about that picture.
+fn describe(
+    headline: String,
+    mask: LayerMask,
+    colour: Option<String>,
+    detail: String,
+) -> (String, String) {
+    let clauses: Vec<String> = [mask_clause(mask), colour].into_iter().flatten().collect();
+    let headline = if clauses.is_empty() {
+        headline
+    } else {
+        format!("{headline} ({})", clauses.join("; "))
     };
     let description = format!("{headline} — {detail}");
     (headline, description)
@@ -184,8 +197,32 @@ fn describe(headline: String, mask: LayerMask, detail: String) -> (String, Strin
 ///
 /// The bus-parity guard below now runs over masked states as well as the default, so "this panel and
 /// `emulator/pixel_attribution` never disagree" is an assertion rather than a precondition nobody checks.
-pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask) -> Pick {
+///
+/// # `now_mclk` is a parameter, for the same reason `Vdp::poke_cram`'s `at_mclk` is
+///
+/// §11.27's colour-staleness rule (below) is a comparison against **the machine's now**, and this panel
+/// has no clock of its own. The obvious source, [`Vdp::now_mclk`], is the wrong one: it is the instant the
+/// VDP last did *guest-driven* work, so on a machine paused after a quiet stretch it is arbitrarily stale
+/// and would date a write before the line it must be reported as landing after — the exact hazard
+/// [`Vdp::poke_cram`]'s doc comment already argues out, one function over. So the caller passes
+/// `sys.scheduler().now()`, which is the same instant `emulator/pixel_attribution` stamps its own verdict
+/// with. A second clock here would be a second implementation of the rule wearing a parameter's clothes,
+/// and the parity guard reads this value **back off the engine** rather than assembling its own, exactly
+/// as it does for `mask`.
+pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pick {
     let attr = vdp.pixel_attribution_masked(x, y, mask);
+    // §11.27's caveat, from `oracle-core` — the SAME function `emulator/pixel_attribution` calls, because
+    // D15 forbids this panel asking the bus and a re-derivation here is how the two would drift (contract
+    // §8 item 19, the `sprite_tile_at` precedent one field over). Computed once, before the match, so no
+    // winner arm can be the one that forgets it: every winner resolves a `cram_index`, so every winner's
+    // colour can go stale, and a caveat that fired only on backdrop dots would be the same unasserted
+    // precondition the mask clause used to be.
+    //
+    // `None` here is a **fact**, not a default: the rule fires only when the colour genuinely can differ,
+    // and a panel that warned on every answer would be the unconditional shape §11.27 forbids in terms —
+    // both engines in this suite rebuild CRAM every vblank, so it would fire on every click after the
+    // first frame and become noise a reader learns to skip.
+    let colour = cram_divergence_caveat(vdp.cram_written_mclk(attr.cram_index), y, now_mclk);
     match attr.winner {
         Layer::Sprite(index) => {
             // `sprites_decoded` reads the same cached Y/size/link and VRAM X/attribute the renderer's walk
@@ -197,6 +234,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask) -> Pick {
                         "That dot is a sprite, but sprite {index} is out of range — nothing to watch"
                     ),
                     mask,
+                    colour,
                     format!("pixel ({x},{y}): sprite {index} is out of range"),
                 );
                 return Pick {
@@ -256,6 +294,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask) -> Pick {
             let (headline, description) = describe(
                 format!("That dot is sprite {index}, {drawn_from}."),
                 mask,
+                colour,
                 format!(
                     "sprite {index} at ({},{}) {}x{} cells, base ${:03X}, pal {}{flips}{} — {tile_note}, \
                      SAT entry @ VRAM ${sat_lo:04X}-${sat_hi:04X}",
@@ -286,6 +325,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask) -> Pick {
                     attr.cram_index
                 ),
                 mask,
+                colour,
                 format!(
                     "backdrop at ({x},{y}) — CRAM entry {} (palette {}, colour {}) @ CRAM ${:02X}-${:02X}",
                     attr.cram_index,
@@ -319,6 +359,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask) -> Pick {
                 let (headline, description) = describe(
                     format!("That dot is {plane}, but the VDP reported no cell for it."),
                     mask,
+                    colour,
                     format!("pixel ({x},{y}) is {plane}, but the VDP reported no cell"),
                 );
                 return Pick {
@@ -335,6 +376,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask) -> Pick {
                     cell.tile
                 ),
                 mask,
+                colour,
                 format!(
                     "{plane} tile ${:03X} (pal {}{}) @ VRAM ${lo:04X}-${hi:04X} — click ({x},{y})",
                     cell.tile,
@@ -370,6 +412,17 @@ mod tests {
     const SAT_BASE: u16 = 0xB000;
     /// Screen position of the fixture sprite (both axes), i.e. the SAT fields are this + 128.
     const SPRITE_AT: u16 = 64;
+
+    /// The machine instant every fixture below is answered at, and it is chosen to make §11.27's colour
+    /// clause **silent** so the rows that are about tiles, masks and spaces measure only those.
+    ///
+    /// Two frames elapsed, so a completed frame exists and the pre-first-frame arm does not fire; and no
+    /// fixture here ever writes CRAM — every entry's stamp is `None` — so the ordinary arm cannot fire
+    /// either. Both halves are load-bearing, and the wire suite reached the same conclusion the same way
+    /// (`oracle-aether`'s `tests/pixel_attribution.rs` runs a frame before every quiet set, for exactly
+    /// this reason). `the_panel_stays_silent_when_the_colour_cannot_have_changed` is the row that asserts
+    /// the silence rather than assuming it, so this constant cannot quietly start disclosing.
+    const QUIET_NOW: u64 = 2 * oracle_core::vdp::MCLK_PER_FRAME;
 
     /// A blank VDP, driven only through its **public ports** — no private-field pokes are available from this
     /// crate, and using the real write path is better anyway: it is what keeps the SAT cache write-through
@@ -524,7 +577,7 @@ mod tests {
     #[test]
     fn clicking_a_sprite_arms_its_tile_and_its_sat_entry() {
         let v = vdp_with_sprite(2, 2, false, false);
-        let pick = resolve(&v, 70, 70, LayerMask::ALL);
+        let pick = resolve(&v, 70, 70, LayerMask::ALL, QUIET_NOW);
         assert_eq!(
             pick.targets.len(),
             2,
@@ -568,7 +621,7 @@ mod tests {
     fn clicking_the_backdrop_arms_its_palette_entry() {
         let mut v = vdp_with_sprite(1, 1, false, false);
         set_reg(&mut v, 0x07, 0x25); // backdrop = CRAM entry $25
-        let pick = resolve(&v, 8, 8, LayerMask::ALL); // well away from the sprite at (64,64)
+        let pick = resolve(&v, 8, 8, LayerMask::ALL, QUIET_NOW); // well away from the sprite at (64,64)
         assert_eq!(pick.targets.len(), 1);
         let t = &pick.targets[0];
         assert_eq!(t.space, Space::Cram);
@@ -600,7 +653,7 @@ mod tests {
         write_vram(&mut v, 0xC000, &[(1 << 13) | 0x055]);
         write_vram(&mut v, 0x055 * 32, &[0x3333; 16]);
 
-        let pick = resolve(&v, 2, 2, LayerMask::ALL);
+        let pick = resolve(&v, 2, 2, LayerMask::ALL, QUIET_NOW);
         assert_eq!(pick.targets.len(), 1);
         assert_eq!(
             (pick.targets[0].lo, pick.targets[0].hi),
@@ -661,13 +714,40 @@ mod tests {
         use oracle_core::system::System;
         use serde_json::{json, Value};
 
-        /// An engine whose machine shows `v`.
+        /// An engine whose machine shows `v`, parked at [`QUIET_NOW`].
+        ///
+        /// The clock is set rather than left where `reset` put it because §11.27's caveat is a comparison
+        /// against the machine's now: a freshly reset machine has **no completed frame**, so every reply
+        /// from one carries the pre-first-frame arm and the quiet rows below would be measuring a
+        /// disclosure instead of the thing they are named for. Advancing the scheduler — rather than
+        /// running frames — is what keeps the engine's VDP byte-identical to the `v` the panel is handed,
+        /// which is the precondition every assertion in this module rests on.
         fn engine_showing(v: &Vdp) -> Engine {
             let mut sys = System::new(0x5EED);
             sys.load_rom(oracle_core::testrom::build());
             sys.reset();
             *sys.vdp_mut() = v.clone();
+            let now = sys.scheduler().now();
+            assert!(
+                now <= QUIET_NOW,
+                "reset already left the clock at {now}, past QUIET_NOW — the fixture cannot park it \
+                 there by advancing, and a wrapped clock would pose a different question entirely"
+            );
+            sys.scheduler_mut().advance(QUIET_NOW - now);
             Engine::new(sys, EngineConfig::default(), Subscribers::new())
+        }
+
+        /// The machine's now, **read back off the engine** rather than assembled here — the same move the
+        /// mask rows make with `e.layers()`, and for the same reason: the claim under test is that the
+        /// panel answers with the server's own coordinate, so a second clock built in the test would
+        /// assert agreement between two things the test itself kept in step.
+        ///
+        /// `mclk` is the §2.2 envelope stamp, i.e. the exact value `emulator/pixel_attribution` passes to
+        /// the shared rule.
+        fn now_of(e: &Engine) -> u64 {
+            e.stamp()["mclk"]
+                .as_u64()
+                .expect("the §2.2 stamp carries the machine's mclk")
         }
 
         /// `"0x0000B000"` → `0xB000`. The bus spells addresses as hex strings (D9 category 1); the panel
@@ -697,7 +777,7 @@ mod tests {
                         for dx in 0..usize::from(w) * 8 {
                             let (x, y) = (SPRITE_AT + dx as u16, SPRITE_AT + dy as u16);
                             let r = attribution(&mut e, x, y);
-                            let p = resolve(&v, x, y, LayerMask::ALL);
+                            let p = resolve(&v, x, y, LayerMask::ALL, now_of(&e));
 
                             assert_eq!(r["winner"]["layer"], json!("sprite"), "({x},{y})");
                             assert_eq!(r["winner"]["spriteIndex"], json!(0), "({x},{y})");
@@ -748,7 +828,7 @@ mod tests {
 
             // The one opaque plane-A cell.
             let r = attribution(&mut e, 2, 2);
-            let p = resolve(&v, 2, 2, LayerMask::ALL);
+            let p = resolve(&v, 2, 2, LayerMask::ALL, now_of(&e));
             assert_eq!(r["winner"]["layer"], json!("planeA"));
             assert_eq!(p.targets[0].lo, addr_of(&r["cell"]["tileAddr"]));
             assert_eq!(p.targets[0].hi, addr_of(&r["cell"]["tileAddr"]) + 31);
@@ -757,7 +837,7 @@ mod tests {
 
             // Everywhere else is backdrop.
             let r = attribution(&mut e, 200, 100);
-            let p = resolve(&v, 200, 100, LayerMask::ALL);
+            let p = resolve(&v, 200, 100, LayerMask::ALL, now_of(&e));
             assert_eq!(r["winner"]["layer"], json!("backdrop"));
             assert_eq!(r["cramIndex"], json!(0x25));
             assert_eq!(p.targets[0].space, Space::Cram);
@@ -880,7 +960,7 @@ mod tests {
                 );
 
                 let r = attribution(&mut e, 70, 70);
-                let p = resolve(&v, 70, 70, mask);
+                let p = resolve(&v, 70, 70, mask, now_of(&e));
 
                 assert_eq!(
                     r["winner"]["layer"],
@@ -930,7 +1010,7 @@ mod tests {
         fn the_answer_says_a_layer_is_hidden_and_says_it_only_then() {
             let (v, _, _) = vdp_with_four_answers();
 
-            let plain = resolve(&v, 70, 70, LayerMask::ALL);
+            let plain = resolve(&v, 70, 70, LayerMask::ALL, QUIET_NOW);
             assert!(
                 !plain.headline.contains("hidden"),
                 "an unmasked answer must not mention a mask: {:?}",
@@ -944,7 +1024,7 @@ mod tests {
 
             let mut e = engine_showing(&v);
             hide(&mut e, &["sprites", "planeA"]);
-            let masked = resolve(&v, 70, 70, e.layers());
+            let masked = resolve(&v, 70, 70, e.layers(), now_of(&e));
             // Every hidden layer, by the wire's own name — not "a mask is set", which sends the reader
             // hunting for which one.
             for name in ["sprites", "planeA"] {
@@ -984,7 +1064,7 @@ mod tests {
             for hidden in [&[][..], &["sprites"][..], &["sprites", "planeA"][..]] {
                 let mut e2 = engine_showing(&v);
                 hide(&mut e2, hidden);
-                let p = resolve(&v, 70, 70, e2.layers());
+                let p = resolve(&v, 70, 70, e2.layers(), now_of(&e2));
                 assert!(
                     p.headline.contains("tile $"),
                     "this fixture's first three steps all name a tile: {:?}",
@@ -1011,9 +1091,208 @@ mod tests {
             );
             // The backdrop names no tile, and must therefore claim no space either.
             hide(&mut e, &["sprites", "planeA", "planeB"]);
-            let p = resolve(&v, 70, 70, e.layers());
+            let p = resolve(&v, 70, 70, e.layers(), now_of(&e));
             assert!(!p.headline.contains("tile $"), "{:?}", p.headline);
             assert!(!p.headline.contains(TILE_SPACE), "{:?}", p.headline);
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // §11.27's colour-staleness caveat, on both surfaces
+        // -----------------------------------------------------------------------------------------
+
+        /// The colour the window is *asked about* at a dot, under `mask` — the CRAM entry whose write
+        /// stamp §11.27's rule reads.
+        ///
+        /// Taken from the core rather than restated, so a fixture change cannot leave this test poking an
+        /// entry nobody's dot resolves to and calling the resulting silence a pass.
+        fn entry_at(v: &Vdp, x: u16, y: u16, mask: LayerMask) -> u8 {
+            v.pixel_attribution_masked(x, y, mask).cram_index
+        }
+
+        /// **The panel carries §11.27's caveat, in the wire's exact words, for every winner.**
+        ///
+        /// This is the parcel. `emulator/pixel_attribution` has disclosed colour staleness since
+        /// 2026-09-03; the window resolved the same dot and said nothing, so the same question had two
+        /// answers and only one of them was honest. The fix is not the panel calling the bus — D15
+        /// forbids it and `Host::pump` would make a synchronous question wait a frame — it is
+        /// [`cram_divergence_caveat`] living in `oracle-core` with both consumers reading it.
+        ///
+        /// # Why this row is a gate and not merely an agreement
+        ///
+        /// A parity test between two consumers of one derivation is **structurally blind to a defect in
+        /// the derivation**: break the shared function and both sides move together, agree perfectly, and
+        /// are both wrong. So the first assertion is not about agreement at all — it is that the WIRE
+        /// discloses here, i.e. that this fixture actually poses divergence. Stub
+        /// `cram_divergence_caveat` to `None` and that assertion fails; without it, the stub is green and
+        /// this row witnesses two silences shaking hands.
+        ///
+        /// # Why all four winners
+        ///
+        /// Every winner resolves a `cram_index`, so every winner's colour can go stale — and the panel
+        /// computes the clause once, before the `match`, precisely so no arm can be the one that forgets
+        /// it. A row that only ever clicked a backdrop dot would leave that structure unasserted, which is
+        /// the shape of the mask defect this module already closed once.
+        #[test]
+        fn the_panel_and_the_bus_carry_the_same_colour_caveat() {
+            let (v, _, _) = vdp_with_four_answers();
+            for hidden in [
+                &[][..],
+                &["sprites"][..],
+                &["sprites", "planeA"][..],
+                &["sprites", "planeA", "planeB"][..],
+            ] {
+                // The mask first, off the engine, so the entry we repaint is the one THIS picture asks
+                // about rather than the one the unmasked picture would.
+                let mask = {
+                    let mut e = engine_showing(&v);
+                    hide(&mut e, hidden);
+                    e.layers()
+                };
+                let entry = entry_at(&v, 70, 70, mask);
+
+                // Repaint that entry **at the machine's own now**. No arithmetic is restated here: the
+                // last completed frame's line 70 necessarily drew strictly before now, so a write stamped
+                // now is a write that line did not carry — §11.27's trigger, posed by construction.
+                let mut stale = v.clone();
+                stale.poke_cram(entry, 0x0EEE, QUIET_NOW);
+
+                let mut e = engine_showing(&stale);
+                hide(&mut e, hidden);
+                let r = attribution(&mut e, 70, 70);
+
+                // (1) THE ANCHOR. Not agreement — correctness. If the shared rule stops disclosing, this
+                // is what goes red; the two `contains` below would stay green on two empty answers.
+                let caveat = r["caveat"].as_str().unwrap_or_else(|| {
+                    panic!(
+                        "COULD NOT MEASURE, hiding {hidden:?}: CRAM entry {entry} was repainted at the \
+                         machine's now, which is after line 70 of the last completed frame drew — if \
+                         the WIRE is silent here then the shared rule has stopped disclosing and every \
+                         agreement asserted below is vacuous. Reply: {r}"
+                    )
+                });
+                assert!(
+                    caveat.contains("emulator/scanlines"),
+                    "hiding {hidden:?}: §11.27's second pinned property — the caveat must name the \
+                     reconciliation path, on whichever surface a person reads it: {caveat}"
+                );
+
+                // (2) The panel says the same thing, in the same words, from the same clock.
+                let p = resolve(&stale, 70, 70, mask, now_of(&e));
+                assert!(
+                    p.description.contains(caveat),
+                    "hiding {hidden:?}: the bus discloses and the window does not — the two have \
+                     DRIFTED.\n  bus:   {caveat}\n  panel: {}",
+                    p.description
+                );
+                // (3) …and on the human-facing line, not buried in the detail. The mask clause set this
+                // precedent (`the_answer_says_a_layer_is_hidden_and_says_it_only_then`) and the colour
+                // clause joins it rather than inventing a quieter second channel.
+                assert!(
+                    p.headline.contains(caveat),
+                    "hiding {hidden:?}: the caveat must ride on the sentence a person reads: {}",
+                    p.headline
+                );
+                // The disclosure rides BESIDE the answer, never instead of it — the ruling's own red
+                // vector, restated for the panel: the click still resolves something armable.
+                assert!(
+                    !p.targets.is_empty(),
+                    "hiding {hidden:?}: a caveat must not displace the answer: {p:?}"
+                );
+            }
+        }
+
+        /// **And it goes quiet when the colour cannot have changed.** The negative half is the whole
+        /// reason §11.27's rule is a measurement: an unconditional caveat is forbidden in terms, and
+        /// both engines in this suite rebuild CRAM every vblank, so a panel that always warned would fire
+        /// on every click after the first frame and become a string readers learn to skip.
+        ///
+        /// This also pins [`QUIET_NOW`] itself: every other row in this module answers at that instant and
+        /// silently assumes it discloses nothing. Here that assumption is the assertion.
+        #[test]
+        fn the_panel_stays_silent_when_the_colour_cannot_have_changed() {
+            let (v, _, _) = vdp_with_four_answers();
+            let mut e = engine_showing(&v);
+            let r = attribution(&mut e, 70, 70);
+            assert!(
+                r.get("caveat").is_none(),
+                "the fixture writes no CRAM and a frame has completed, so the wire must be silent — a \
+                 caveat here is the unconditional shape §11.27 forbids: {r}"
+            );
+            let p = resolve(&v, 70, 70, LayerMask::ALL, now_of(&e));
+            for tell in [
+                "palette entry was written",
+                "emulator/scanlines",
+                "no frame",
+            ] {
+                assert!(
+                    !p.description.contains(tell),
+                    "the window must be silent too — found {tell:?} in: {}",
+                    p.description
+                );
+            }
+            // The negative half of the negative half: silence must be *the rule's* silence, not the
+            // panel having no wiring at all. Same dot, same everything, one repainted entry — and the
+            // clause appears. If this pair ever answers the same way, the row above is untested.
+            let mut stale = v.clone();
+            stale.poke_cram(entry_at(&v, 70, 70, LayerMask::ALL), 0x0EEE, QUIET_NOW);
+            let p2 = resolve(&stale, 70, 70, LayerMask::ALL, now_of(&e));
+            assert!(
+                p2.description.contains("emulator/scanlines"),
+                "the panel is silent here too, which means it is silent unconditionally — the clause is \
+                 not wired in at all: {}",
+                p2.description
+            );
+        }
+
+        /// **The panel reads the caller's clock, not the VDP's.**
+        ///
+        /// [`Vdp::now_mclk`] is the instant the VDP last did *guest-driven* work and is the trap this
+        /// signature exists to avoid: on a machine paused after a quiet stretch it is arbitrarily stale,
+        /// and a panel that reached for it would date a write before the line it must be reported as
+        /// landing after — silence exactly where the disclosure is owed. The fixtures here never drive
+        /// the VDP with a clock, so `now_mclk` is 0 while the machine's now is [`QUIET_NOW`]: the two
+        /// answers are different, and this pins which one the panel gives.
+        #[test]
+        fn the_panel_answers_at_the_clock_it_is_given_not_the_vdps() {
+            let (v, _, _) = vdp_with_four_answers();
+            let mut stale = v.clone();
+            stale.poke_cram(entry_at(&v, 70, 70, LayerMask::ALL), 0x0EEE, QUIET_NOW);
+            assert_eq!(
+                stale.now_mclk(),
+                0,
+                "COULD NOT MEASURE: the fixture's VDP clock is no longer distinguishable from the \
+                 machine's, so this row cannot tell the two sources apart"
+            );
+
+            let mut e = engine_showing(&stale);
+            let served = attribution(&mut e, 70, 70);
+            assert!(
+                served.get("caveat").is_some(),
+                "the fixture must pose divergence at the machine's now: {served}"
+            );
+
+            // At the VDP's own (stale, zero) clock the rule takes its pre-first-frame arm — a different
+            // sentence entirely. Passing that value would look like a working panel and answer a
+            // question about a machine that has not run.
+            let at_vdp_clock = resolve(&stale, 70, 70, LayerMask::ALL, stale.now_mclk());
+            assert!(
+                at_vdp_clock.description.contains("no frame"),
+                "sanity: at mclk 0 the rule is in its pre-first-frame arm: {}",
+                at_vdp_clock.description
+            );
+            let at_machine_clock = resolve(&stale, 70, 70, LayerMask::ALL, now_of(&e));
+            assert!(
+                at_machine_clock.description.contains("palette entry was written"),
+                "and at the machine's now it is in the ordinary arm — the panel must be answering with \
+                 the clock its caller passed: {}",
+                at_machine_clock.description
+            );
+            assert!(
+                at_machine_clock
+                    .description
+                    .contains(served["caveat"].as_str().expect("a caveat string")),
+                "…which is the wire's answer, verbatim"
+            );
         }
     }
 }

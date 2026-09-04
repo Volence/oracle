@@ -1628,9 +1628,18 @@ impl Vdp {
     /// for why those two are distinguished rather than sharing a zero.
     ///
     /// This is the raw datum, not the verdict: §11.27's rule compares it against when line `y` of the
-    /// last completed frame was drawn, and that comparison lives with the reply that discloses it
-    /// (`oracle-aether`'s `cram_divergence`) rather than here, so the VDP stays a machine and does not
-    /// acquire an opinion about a bus method.
+    /// last completed frame was drawn, and that comparison is
+    /// [`render::cram_divergence_caveat`](crate::render::cram_divergence_caveat) — a free function, so
+    /// the VDP stays a machine and does not acquire an opinion about what a caller should be warned of.
+    ///
+    /// **That home moved on 2026-09-04 and this sentence moved with it.** The comparison shipped inside
+    /// `oracle-aether`, "with the reply that discloses it", which was right while
+    /// `emulator/pixel_attribution` was its only consumer. The player's click panel
+    /// (`oracle-frontend`'s `pick::resolve`) is now the second, it may not reach the bus for the answer
+    /// (D15), and it links `oracle-aether` only under an optional feature — so a verdict living there
+    /// would vanish from the window in a `--no-default-features` build. It is in `oracle-core` because
+    /// both consumers link `oracle-core` unconditionally; it is still not on `Vdp`, because the reason
+    /// for that was never about which crate.
     ///
     /// # Panics
     ///
