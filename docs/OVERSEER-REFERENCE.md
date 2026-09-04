@@ -207,7 +207,7 @@ finished item **leaves** the queue — `done` is not a state, it is an absence.
   discards without noticing.
 - **Never record an approval whose granting act you have not seen — cite the ruling, not a status
   field** *(2026-08-22, from empyrean, who found it in their own doc; see the Fable-seat audit in
-  The role above, which is this lane's instance)*. Boot docs are snapshots that age while logs
+  The role, in `OVERSEER.md`, which is this lane's instance)*. Boot docs are snapshots that age while logs
   accumulate, and an owner ruling lands in the middle where head-and-tail reading never sees it —
   so **grep the history for an item before putting it to the owner OR funding work off it.** Both
   directions are failures: re-asking a settled question wastes his time, and acting on a

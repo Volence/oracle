@@ -18,7 +18,7 @@ call**: see owner ruling 2 below, and the substituted-reviewer rule under the 20
 for how adjudications run meanwhile. *(The 2026-08-22 provenance audit of the seat's original
 ratification is closed and moot by that ruling's own words; moved verbatim to `OVERSEER-LOG.md`
 2026-09-03. The standing rule it produced — never record an approval whose granting act you have
-not seen — is live, and lives in the bars.)* Verify every gate firsthand before accepting a slice;
+not seen — is live, and lives in the bars, now in `docs/OVERSEER-REFERENCE.md`.)* Verify every gate firsthand before accepting a slice;
 make the design rulings (delegated by the owner — pick best, record why); merge and push. The owner's standing
 directives: **a legacy surface or demand spec is the compatibility floor, never the design
 ceiling** (run a visible better-approach pass on every request), and **instrument co-development
