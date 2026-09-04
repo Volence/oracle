@@ -186,8 +186,33 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   silently culled** — no error, no refusal, nothing on screen. That is precisely the failure class the whole
   refusal design exists against (*a refusal arrives as a sentence*), arriving through the one path that
   returns success. **The fix is OURS, not a mailbox change**: we hold the click, so we refuse or clamp before
-  sending. Needs the act bounds by symbol to derive the test rather than guess it — **a named ask to aeon,
-  not yet filed**, deliberately (bar 18: file it when it becomes work, not because it is interesting).
+  sending. The refusal test needs the act bounds by symbol.
+  **ACT BOUNDS — ANSWERED BY AEON BEFORE THE ASK WAS FILED, and their answer contains the trap.**
+  ⚠ **DO NOT USE `Player_Bound_Right`/`Player_Bound_Bottom` AS ACT BOUNDS.** They are the PLAYER's clamp
+  edges and are **inset** (`level_width − PBOUND_RIGHT_MARGIN`, `level_height − SCREEN_HEIGHT`), and objects
+  are deliberately unclamped — so an object between `Player_Bound_Right` and the true `level_width` is
+  **legal and renders**. Refusing there would refuse legitimate placements **and look right**, because the
+  refusals would cluster at the edge where a person half-expects them. It is the symbol a grep for "the
+  bounds" finds first (the warp path clamps against it). There is also **no `Player_Bound_Left`/`_Top`** —
+  the low edge is a literal `0` in `clamp_and_publish`, so half the box has no name at all.
+  **The class, sharper than this file's existing name-is-not-behaviour bar: the most dangerous wrong symbol
+  is the one whose wrongness is SHAPED LIKE CORRECTNESS.** A wrong answer that fails where failures are
+  expected reads as the feature working.
+  **The real quantity:** `level_width = Act.grid_w << SECTION_SIZE_SHIFT` (=11, ×2048), same for height;
+  valid box `[0,w) × [0,h)`. Reaching it live means `Current_Act_Ptr`, **which aeon's own source calls
+  flaky** and which they declined to hand over as an interface on that basis.
+  ▶ **RULED, and filed with them: aeon publishes `Level_Width`/`Level_Height` as two derived RAM words in
+  `Player_BoundsInit`** (which already computes both before subtracting the margins). Resolved BY NAME per
+  call, exactly as `Camera_X` is. Chosen over the pointer chase because the pointer would make our
+  correctness depend on a cell they distrust **and the failure would be invisible from our side** — a bad
+  pointer yields a plausible box and our refusal then passes on garbage. **Symbol absence is loud; a bad
+  pointer is not.**
+  **⚑ MEGA-ACT CEILING — recorded because it names which side cracks first.** `level_width`/`level_height`
+  word-wrap above `$FFFF` px (grid > 31 sections), held today by a build-time `ensure` capping the grid at
+  `$8000`. That `ensure` is what makes our **unsigned u16** camera read safe — a property of the current
+  constraint, not of the design. If it is relaxed for a mega-act, **aeon's word stores break before our u32
+  arithmetic does.** Nothing to do; written down so a future session here does not find the dependency by
+  having it break.
 
 **Registered 2026-08-29, from aurora's relay of the owner's R8 question:**
 
