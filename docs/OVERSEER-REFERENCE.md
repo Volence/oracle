@@ -23,7 +23,8 @@ cannot protect a read that already happened.
 
 ## The bars (house methods — each earned by a measured failure; do not thin)
 
-**▶ PARKED, NOT IN FORCE (moratorium above; parked at the hub in `OVERSEER-PENDING-BARS.md`) — A PARITY
+**▶ PARKED, NOT IN FORCE (the moratorium is the owner's CUT THE CEREMONY ruling, in `docs/OVERSEER.md`
+— it never uses the word; parked at the hub in `OVERSEER-PENDING-BARS.md`) — A PARITY
 PAIR IS STRUCTURALLY BLIND TO A DEFECT IN THE DERIVATION IT SHARES. ASSERT THE SHARED DERIVATION DID
 SOMETHING.** Found by this seat probing parcel 2b, where the defence
 already existed and is the reason the probe is a bar rather than a bug. R1 ("one derivation, two
@@ -68,7 +69,8 @@ code.** Caught by aeon against this seat, same day. I reported the straddle fix 
 the anchor could not carry any of it: the code is `4111c88` under merge `51143a5`, tests `68461a7`.
 They cited the code SHAs in their booking instead. **The failure mode is that it hardens invisibly** —
 a peer transcribes the anchor into their prose, and a later reader who checks it finds a docs diff
-where a guarantee was promised. This is the same family as the provenance audit above (*cite the
+where a guarantee was promised. This is the same family as the provenance audit named in `The role`,
+in `docs/OVERSEER.md` (*cite the
 ruling, not a status field*): the citation must be the artifact that actually contains the thing.
 Practical check before sending: `git show --stat <sha>` and confirm the files named are the ones the
 claim is about.
