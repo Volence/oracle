@@ -40,7 +40,7 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "The symbol file every client loads carries 746 build-time constants and not one is reachable from anything we serve. KNOWN LIMIT, measured before anyone starts: the file holds only the constants harvested from source \u2014 the handful that vary per game are absent entirely, so this parser will NOT produce them and a ring ceiling still will not arrive with it. That half is a toolchain change in another repo."
+      "title": "The symbol file every client loads carries hundreds of build-time constants and not one is reachable from anything we serve. Read them as LINES IN THE FILE, never as symbols, and never pin how many there are \u2014 the count differs between the debug and release builds of the same game. The handful that vary per game are absent from the file entirely; that half is a toolchain change another lane has now booked."
     },
     {
       "id": "PANELS-COMMAND-PALETTE",
@@ -135,5 +135,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:50:53Z"
+  "updatedAt": "2026-09-04T00:54:20Z"
 }
