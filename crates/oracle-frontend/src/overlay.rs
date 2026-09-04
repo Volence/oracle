@@ -1141,8 +1141,17 @@ mod tests {
     /// permanent one wins, because the failure it prevents (reading a placed object as the game doing
     /// something) outlasts the toast by definition.
     ///
+    /// # Why this is a pixel-identity check and not an ink count
+    ///
+    /// It **was** an ink count (`spawn_ink(..) > 0`), and moving `draw_spawn_badge` above `draw_toasts`
+    /// left it green: the toast's own panel and glyphs are themselves non-`GROUND` pixels in that
+    /// rectangle, so the count could not tell the badge's ink from the thing painted over it. An
+    /// applied-and-still-green mutation is a defect in the check. So the claim is stated as what it
+    /// actually is — **the badge's rectangle must be exactly what the badge alone paints there** — and
+    /// the reference is a second render with no toast at all rather than a colour picked by hand.
+    ///
     /// Planting the defect: move `draw_spawn_badge` above `draw_toasts` in [`Overlay::draw`] and this
-    /// fails — the toast's panel repaints over the badge's columns. Verified.
+    /// fails on *"…the toast is painting over the standing statement"*. Verified.
     #[test]
     fn the_spawn_badge_survives_a_toast_wide_enough_to_reach_it() {
         let (w, h) = (640usize, 448usize);
@@ -1154,26 +1163,49 @@ mod tests {
 
         let mut st = status();
         st.spawn = Some(armed.to_string());
+
+        // The reference: the badge with nothing under it.
+        let mut alone = vec![GROUND; w * h];
+        Overlay::new().draw(&mut alone, w, h, area, &st);
+
         let mut o = Overlay::new();
-        // A toast wide enough to reach the badge's columns - the newest toast is the bottom row, which is
-        // the row the badge sits in.
+        // A toast wide enough to reach the badge's columns — the newest toast is the bottom row, which
+        // is the row the badge sits in.
         o.push("X".repeat(200), ERROR);
-        let bottom = o
+        let (_, _, rendered) = o
             .visible_toasts(area, px, (2 * px).max(4))
             .into_iter()
             .find(|(i, _, _)| *i == 0)
             .expect("the newest toast is on screen");
+        let pad = 2 * px;
+        let toast_right =
+            area.x + (2 * px).max(4) + font::text_width(rendered.as_ref()) * px + 2 * pad;
         assert!(
-            font::text_width(bottom.2.as_ref()) * px + 2 * (2 * px) + (2 * px).max(4)
-                > area.w - badge.w,
-            "the fixture must actually pose the collision this row is named for"
+            toast_right > badge.x,
+            "the fixture must actually pose the collision this row is named for: the toast ends at \
+             {toast_right} and the badge starts at {}",
+            badge.x
         );
 
-        let mut buf = vec![GROUND; w * h];
-        o.draw(&mut buf, w, h, area, &st);
+        let mut over = vec![GROUND; w * h];
+        o.draw(&mut over, w, h, area, &st);
+
+        // …and the badge's own rectangle must be untouched by it, pixel for pixel.
+        let differing = (badge.y..badge.y + badge.h)
+            .flat_map(|y| (badge.x..badge.x + badge.w).map(move |x| y * w + x))
+            .filter(|&i| over[i] != alone[i])
+            .count();
+        assert_eq!(
+            differing,
+            0,
+            "the toast is painting over the standing statement: {differing} of {} pixels in the \
+             badge's rectangle differ from what the badge alone puts there",
+            badge.w * badge.h
+        );
+        // And the reference itself must not be blank, or the comparison above is two empty rectangles.
         assert!(
-            spawn_ink(&buf, w, area, st.spawn.as_deref()) > 0,
-            "the standing statement must survive a toast that reaches its corner"
+            spawn_ink(&alone, w, area, st.spawn.as_deref()) > 0,
+            "the reference render must actually contain a badge"
         );
     }
 
