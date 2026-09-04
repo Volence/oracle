@@ -847,6 +847,21 @@ fn a_breakpoint_halts_the_playing_window_exactly_once() {
 ///
 /// The second halt is not a defect — `HOT_PC` is a tight loop, so re-entering it *is* a real second hit,
 /// and `hits: 2` is the honest count.
+///
+/// # ★ This test was the only witness to `wait_for_break`'s instant-timeout defect ★
+///
+/// It was twice booked as a load-sensitive flake (`docs/lane-log.jsonl`, 2026-09-03 and 2026-09-04) and it
+/// was not flaky: it was the **only** test in this file that issues an `emulator/resume` immediately
+/// before a wait, which is exactly the window in which the published run stamp is stale. The failure was
+/// always the *second* `assert_eq!` below, always with
+/// `{"running":true,"timeoutReached":true,"waitedMs":0}` against a ten-second budget — a wait that never
+/// waited. Reproduced 7 times in 30 whole-suite runs on a loaded machine (load average ~250) and 0 times
+/// in 30 unloaded; 0 in 30 under the same load after the fix. See `server::dispatch_call`.
+///
+/// **Its assertion is deliberately left as `timeoutReached == false`.** That is the right check *here*,
+/// where the machine genuinely does halt; the discriminator that separates a wrong timeout from an honest
+/// one is `waitedMs`, and it is asserted in `a_breakpoint_the_rom_never_reaches_does_not_halt_the_window`
+/// — the one place a timeout is the expected answer — and unit-tested directly in `server::wait_tests`.
 #[test]
 fn a_halted_window_resumes_past_its_own_breakpoint() {
     assert_hot_pc_is_the_stirring_loop();
@@ -907,6 +922,17 @@ fn a_breakpoint_the_rom_never_reaches_does_not_halt_the_window() {
     assert!(
         w.get("pc").is_none(),
         "…and a PC sampled off a still-moving machine names an instruction that has gone: {w}"
+    );
+    // **The timeout must have taken time.** `timeoutReached: true` on its own is also what the
+    // instant-timeout defect produces: the connection thread exits its poll on a stale published
+    // `running: false` and the engine, re-reading the live flag, calls that a timeout — a *wrong* answer
+    // dressed as this one, and the only thing on the wire that tells them apart is the clock. It is
+    // checked here rather than only in `server`'s unit tests because this is the socket the consumer uses.
+    assert!(
+        w["waitedMs"].as_u64().unwrap_or(0) >= 250,
+        "the wait expired after {} ms against a 250 ms budget — the caller asked to wait and was told \
+         the wait was over without one having happened: {w}",
+        w["waitedMs"]
     );
     p.expect_progress(5, "the player keeps running through a cold breakpoint");
     assert!(mclk(&mut c) > before, "the window must still be emulating");

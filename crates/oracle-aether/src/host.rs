@@ -689,6 +689,18 @@ impl Host {
                     let result = self.engine.dispatch(&method, &params);
                     let stamp = self.engine.stamp();
                     report.calls += 1;
+                    // **Published BEFORE the reply, and the order is the whole of `wait_for_break`'s
+                    // instant-timeout defect.** A client that has this reply in hand can send its next
+                    // request immediately, and if that request is `emulator/wait_for_break` its
+                    // connection thread polls exactly this stamp to decide whether to wait at all.
+                    // Publishing at the end of the drain instead let a `resume` be *answered* while the
+                    // stamp still carried `running: false` from the halt before it — so the wait exited
+                    // after ~0 ms and the engine, re-reading the live flag, replied
+                    // `{"timeoutReached": true}` to a caller who had asked for ten seconds. That is a
+                    // wrong answer, not a slow one, and peer load widened the window rather than
+                    // creating it. `engine_loop` has always published in this order; this is the same
+                    // order on the second run driver.
+                    self.publish_stamp();
                     // The reply goes into a channel the connection thread owns; if that thread has gone
                     // away the send fails and is dropped. Nothing here waits on a socket.
                     let _ = reply.send(crate::server::CallResult { result, stamp });
@@ -710,17 +722,27 @@ impl Host {
             }
         }
         report.mclk_after = self.engine.mclk();
-        // Published while the real machine is still swapped in, so the cached stamp a connection thread uses
-        // for envelope-level errors is at most one host iteration stale rather than the placeholder's zero.
-        self.ctx
-            .shared
-            .store(report.mclk_after, self.engine.is_running());
+        // The end-of-drain publication, which the per-reply one above does not replace: this is the one
+        // that carries the *frame the player just ran* into the stamp, on the overwhelmingly common
+        // iteration where no command arrived at all.
+        self.publish_stamp();
         self.engine.swap_system(sys);
 
         report.screen_changed = self.engine.screen_generation() != screen_gen;
         report.rom_changed = self.engine.rom_generation() != rom_gen;
         report.symbols_changed = self.engine.symbols_generation() != symbols_gen;
         report
+    }
+
+    /// Publish the machine coordinate a connection thread reads without a round trip — the cached stamp on
+    /// envelope-level errors, and the run state `emulator/wait_for_break` polls.
+    ///
+    /// **Must be called inside a drain window**, like everything that reads the clocks: outside one the
+    /// engine holds the placeholder `System` and this would publish `mclk 0`.
+    fn publish_stamp(&self) {
+        self.ctx
+            .shared
+            .store(self.engine.mclk(), self.engine.is_running());
     }
 
     /// Stop accepting, hang up on every client, and unlink the socket. Idempotent; also runs on drop.
@@ -759,6 +781,7 @@ mod tests {
     use super::*;
     use oracle_core::scanline_capture::Retain;
     use serde_json::{json, Value};
+    use std::sync::Arc;
 
     fn booted() -> System {
         let mut sys = System::new(0x5EED);
@@ -1596,6 +1619,94 @@ mod tests {
             h.pending_break,
             Some(0x0000_1234),
             "the halt that stopped the machine is the first one, not the last"
+        );
+    }
+
+    /// **A reply that changed the run state must not reach a client before the stamp says so.**
+    ///
+    /// This is the mechanism behind `emulator/wait_for_break`'s instant-timeout defect, tested at the seam
+    /// where it lives. The connection thread does not ask the engine whether the machine is running — it
+    /// polls [`crate::server::SharedStamp`], the snapshot this drain publishes. So the moment a client can
+    /// send its *next* request is the moment that snapshot has to be true, and that moment is
+    /// `reply.send`, not the end of the drain: a client holding the reply to `emulator/resume` can put
+    /// `emulator/wait_for_break` on the wire immediately, and a stamp still carrying the previous halt's
+    /// `running: false` makes the wait exit after ~0 ms and be answered `{"timeoutReached": true}`.
+    ///
+    /// `server::engine_loop` has always published before its reply; this drain is the second run driver,
+    /// and it did not.
+    ///
+    /// **How this reads the ordering.** A recorder thread blocks on the reply channel and samples the
+    /// published run state the instant it is woken — the mpsc channel is the happens-before edge, so a
+    /// stamp published before the send is *guaranteed* visible and the green direction has no race in it.
+    /// The red direction needs the sample to land before the end-of-drain publication, so the second
+    /// queued command is a 120-frame run: hundreds of milliseconds of window in which the old ordering is
+    /// caught. `pump_budget` is raised for the same reason — the default 4 ms would defer that second
+    /// command to the next drain and close the window.
+    ///
+    /// Planting the defect: delete the `self.publish_stamp()` call above `reply.send` in
+    /// [`Host::pump`]. The recorder then samples `true` — the run state from before the `pause` it is
+    /// holding the reply to.
+    #[test]
+    fn a_state_changing_reply_is_not_sent_before_the_stamp_says_so() {
+        let mut h = Host::new(HostConfig {
+            // The window this test needs is the second command's duration; the default 4 ms budget would
+            // defer it to the next drain and there would be no window at all.
+            pump_budget: Duration::from_secs(60),
+            ..HostConfig::default()
+        });
+        let mut sys = booted();
+
+        // Get the bus free-running and *published* as such, so the stale reading the defect produces is a
+        // real previous value rather than the never-written default.
+        h.set_paused(false);
+        h.pump(&mut sys);
+        assert!(
+            h.ctx.shared.is_running(),
+            "the arrangement: the published stamp must say the machine is running before the pause \
+             below, or a stale reading is indistinguishable from the default"
+        );
+
+        // Two commands in one drain. The first changes the run state and is the one whose reply we watch;
+        // the second is only there to hold the drain open long enough for a late publication to be seen.
+        let (tx_pause, rx_pause) = mpsc::channel();
+        h.tx.send(EngineMsg::Call {
+            method: "emulator/pause".into(),
+            params: json!({}),
+            reply: tx_pause,
+        })
+        .expect("queue the pause");
+        let (tx_run, _rx_run) = mpsc::channel();
+        h.tx.send(EngineMsg::Call {
+            method: "emulator/run_frames".into(),
+            params: json!({"frames": HOSTED_MAX_RUN_FRAMES}),
+            reply: tx_run,
+        })
+        .expect("queue the run");
+
+        let stamp = Arc::clone(&h.ctx.shared);
+        let recorder = std::thread::spawn(move || {
+            let r = rx_pause.recv().expect("the drain answered the pause");
+            // Sampled the instant the reply arrives — which is the instant a real client could send its
+            // next request.
+            (r.result.is_ok(), stamp.is_running())
+        });
+
+        h.pump(&mut sys);
+        let (ok, seen_running) = recorder.join().expect("recorder");
+
+        assert!(ok, "emulator/pause must succeed on a free-running bus");
+        assert!(
+            !seen_running,
+            "the reply to `emulator/pause` reached the client while the published stamp still said \
+             `running: true`. A client that sends `emulator/wait_for_break` on the strength of this \
+             reply has its wait decided by a snapshot from before the state change — which is exactly \
+             how a ten-second wait comes back `timeoutReached` in under a millisecond. Publish before \
+             the reply, as `server::engine_loop` does."
+        );
+        assert!(
+            h.is_paused(),
+            "and the pause really landed, so the reading above is about ordering and not about a \
+             no-op"
         );
     }
 }
