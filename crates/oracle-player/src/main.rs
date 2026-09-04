@@ -1566,7 +1566,9 @@ mod loop_tests {
                 v["surfaces"][1]["unrenderable"],
                 serde_json::json!([]),
                 "{what}: this build draws every character of its own top bar — a hollow box here is \
-                 the F-FONT-* defect class, measured with egui's own `has_glyph`: {line:?}"
+                 the F-FONT-* defect class, measured from the atlas rectangle each glyph samples \
+                 (`screen::Glyphs`; egui's own `has_glyph` reports 25 boxes here that are not there): \
+                 {line:?}"
             );
             assert_eq!(
                 v["surfaces"][1]["truncated"],
