@@ -197,8 +197,9 @@ fixture at one dot** so that each differs from its partner in the write stamp an
 | `a_reply_before_the_first_completed_frame_discloses_and_still_answers` | §11.27's second trigger, and §11.3's power-on sentence |
 | `rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer` | the anti-fix pin, now also asserting the divergence is audible |
 
-Plus five unit rows on the rule as arithmetic (`engine.rs`), where the `>=` boundary and the vblank-write
-case can be stated exactly rather than posed approximately.
+Plus five unit rows on the rule as arithmetic (then in `engine.rs`, now in `oracle_core::render` — see
+§7), where the `>=` boundary and the vblank-write case can be stated exactly rather than posed
+approximately.
 
 ### The vacuity that had to be designed out
 
@@ -221,14 +222,100 @@ that never disagree out loud."* They now disagree out loud, on the reply, naming
 * **Runtime confirmation on a real ROM is NOT done here.** These are wire and unit rows against posed
   fixtures; nobody has driven `color_1536.bin` — the ROM that reproduced the original finding, 55 of 55 rows
   — through the caveat. That is a foreground want, not a background one.
-* **The player's click panel does not carry this clause yet, and that is a decision rather than an
-  oversight.** The three surfaces are the plain Aether bus, MCP, and the window. The bus is done; MCP needs
-  nothing, because the caveat is an ordinary result key and `oracle_mcp.py` relays the reply rather than
-  whitelisting its keys. The **window** is the gap: `pick::resolve` answers a click from `(&Vdp, x, y,
-  mask)` and has no clock, while §11.27's rule is a comparison against the machine's `now` — so carrying it
-  there means threading the scheduler's instant into the panel path and through the panel/bus parity
-  assertion that guards it. There is a precedent for the shape (the layer-mask clause already rides on the
-  panel's human-facing line, not only on a wire caveat), so this is a bounded follow-up and not a design
-  question. **Booked as `F-ATTR-CAVEAT-PANEL`.** Until it lands, a person clicking a dot in the window can
-  see a colour the glass never showed and get no warning, which is exactly aeon's complaint one surface
-  over.
+* ~~**The player's click panel does not carry this clause yet.**~~ **Landed 2026-09-04 as
+  `F-ATTR-CAVEAT-PANEL` — see §7 below.**
+
+---
+
+## 7. F-ATTR-CAVEAT-PANEL, 2026-09-04 — the window carries it too, from the wire's own function
+
+§6 left the third surface open: the bus disclosed and the window did not, so the same question had two
+answers and only one of them was honest. The owner's standing ruling on the debug window
+(`docs/OVERSEER.md`, "WHAT GETS A TAB IN THE DEBUG WINDOW") is that **a panel must show the same answer a
+tool gets**.
+
+### Parity is not the panel calling the bus
+
+D15 (`contract/protocol.md:238`) is explicit that an in-process GUI *"reads the method registry directly,
+in-process; it does not open a socket to itself"*, and our `Host::pump` would make it worse — a click would
+enqueue a command and wait a frame to answer what it can answer synchronously. Parity is **one
+implementation under two consumers, plus an assertion that says so**, which is exactly the move
+`sprite_tile_at` made one field over (contract §8 item 19).
+
+### Where the rule lives now, and why it is `oracle-core`
+
+`cram_divergence_caveat` moved from a private free function in `oracle-aether::engine` to a `pub fn` in
+`oracle_core::render`, beside `sprite_tile_at` and beside `PixelAttribution`, the struct it annotates.
+
+`oracle-core` rather than `oracle-aether` is a **correctness** call and not packaging: `oracle-aether` is an
+**optional** dependency of `oracle-frontend` (its `aether` feature), because the player is deliberately
+buildable with no control surface at all. A caveat sourced from there would silently vanish from the window
+in a `--no-default-features` build — a hole that opens on a feature flag, which is worse than one that opens
+always, because nothing red ever names it. Measured, not assumed: `cargo tree -p oracle-frontend
+--no-default-features -e normal` contains no `oracle-aether`, and that build compiles with the clause intact.
+
+It stays a **free function** rather than a `Vdp` method for the reason `Vdp::cram_written_mclk`'s own doc
+gives — the VDP stays a machine and does not acquire an opinion about what a caller should be warned of.
+That reasoning survives the move untouched; what changed is only that the opinion now has two readers, so it
+can no longer live inside either of them. **That comment was itself the stale ruling this parcel had to
+resolve rather than route around**: it said the comparison lived in `oracle-aether` "with the reply that
+discloses it", which was true with one consumer and false with two (and it named a function,
+`cram_divergence`, that never existed under that spelling). A stale rule inside a comment outlives every doc
+that recorded it, because nobody re-reads a comment to check whether the rule it cites still holds.
+
+### One wording change, and it is the price of sharing the sentence
+
+The string is shown to a person **verbatim on both surfaces** (§2.4 rule 2), so it may not name one
+consumer's result key. `` `rgb` is the LIVE colour by contract `` was a dangling reference in a window that
+reports no `rgb` — the "purple boxes" failure with correct arithmetic under it. Both arms now say *"the
+colour reported here"*, with *"(`rgb` on the wire; protocol.md §11.3)"* keeping the bus client's signpost.
+§11.27's two pinned properties are untouched: it still names `emulator/scanlines`, and it is still prose.
+
+### The panel
+
+`pick::resolve` takes `now_mclk` and its callers pass `sys.scheduler().now()` — the same instant the handler
+stamps its own verdict with, and deliberately **not** `Vdp::now_mclk`, which is the instant the VDP last did
+*guest-driven* work and on a paused machine is arbitrarily stale: it would date a write **before** the line
+it must be reported as landing after, i.e. silence exactly where the disclosure is owed. That is the argument
+`Vdp::poke_cram`'s doc already makes about its own `at_mclk`, one function over.
+
+The clause joins the **existing** per-answer mechanism rather than inventing a second one: `describe` now
+assembles a *list* of clauses (mask first, then colour) onto the human-facing headline, because a dot can
+earn both and dropping either would be a silent choice made on the reader's behalf. The verdict is computed
+**once, before the `match`**, so no winner arm can be the one that forgets it — every winner resolves a
+`cram_index`, so every winner's colour can go stale.
+
+### Rows added, and the red-first evidence
+
+Three rows in `crates/oracle-frontend/src/pick.rs`'s `bus_parity` module (runner: `cargo test -p
+oracle-frontend --bins`), plus the five unit rows moved into `oracle_core::render`'s tests so the rule's
+witness lives in the crate **both** consumers link rather than in one of the two.
+
+| mutation, applied on disk | what went red |
+|---|---|
+| **A** — `cram_divergence_caveat` stubbed to `return None` (the *shared* derivation) | `the_panel_and_the_bus_carry_the_same_colour_caveat` at its **COULD NOT MEASURE** anchor; also `the_panel_stays_silent…`, `the_panel_answers_at_the_clock…`, 2 rows in `oracle-core`, and 4 wire rows in `oracle-aether` |
+| **B** — panel drops the clause (`describe` ignores `colour`) | *"the bus discloses and the window does not — the two have DRIFTED"* and *"the clause is not wired in at all"* |
+| **C** — panel emits the clause unconditionally | *"the window must be silent too — found `palette entry was written` in: …"* |
+| **D** — panel reads `vdp.now_mclk()` instead of the caller's clock | *"the panel must be answering with the clock its caller passed"* (it took the pre-first-frame arm) and the DRIFTED assertion |
+
+**Mutation A is the one that matters.** A parity test between a panel and a handler that share a derivation
+is *structurally blind* to a defect in the derivation they share: break it and both sides move together,
+agreeing perfectly and both wrong. So the first assertion in the parity row is not about agreement at all —
+it is that the **wire** discloses, i.e. that the fixture actually poses divergence. Under the stub, that
+assertion is what fails; without it, the stub would be green and the row would witness two silences shaking
+hands.
+
+`engine_showing` now parks the clock at `QUIET_NOW` (two frames elapsed) rather than leaving it where `reset`
+put it — a freshly reset machine has **no completed frame**, so every reply from one carries the
+pre-first-frame arm and the quiet rows would have been measuring a disclosure. The clock is **advanced, not
+run**, so the engine's VDP stays byte-identical to the one the panel is handed, which is the precondition
+every assertion in the module rests on. `now_of(&e)` reads the §2.2 stamp back **off the engine**, the same
+move the mask rows make with `e.layers()`, so no second clock assembled inside the test can fake the
+agreement.
+
+### Still owed after this
+
+* **Runtime confirmation on a real ROM is still not done**, and this parcel does not change that. Nobody has
+  clicked a dot in a running window and read the clause; `color_1536.bin` has never been driven through
+  either surface. Foreground want, tagged, not attempted from a background agent.
+
