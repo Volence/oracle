@@ -115,6 +115,130 @@ pub const ERR_OWNED: u8 = 5;
 /// that can disagree with the machine.
 pub const CART_WINDOW_END: u32 = 0x0040_0000;
 
+/// The two derived RAM words that carry **the act's true pixel extent**, and the only two this server
+/// will accept as the answer to *is this placement inside the level* (§11.35, CR-L).
+///
+/// aeon published them for exactly this join, and their declaration states the box: *"the act's TRUE
+/// pixel extent — the valid world box is `[0, Level_Width) × [0, Level_Height)`"*. They are written by
+/// `Player_BoundsInit` from the values it holds **before** it subtracts its margins, and they exist in
+/// both the release and the DEBUG shape — which is why a build with no `Obj_Req_*` mailbox can still
+/// answer this question.
+///
+/// ⚠ **`Player_Bound_Right` / `Player_Bound_Bottom` are NOT these.** They are the *player's* clamp
+/// edges, inset by `PBOUND_RIGHT_MARGIN` and `SCREEN_HEIGHT`; objects are deliberately unclamped, so a
+/// placement between `Player_Bound_Right` and `Level_Width` is **legal and renders**. A server that
+/// read the clamp edges would refuse real placements *and look correct doing it*, because the refusals
+/// would cluster at an edge where a refusal is half expected — and it is the symbol a grep for "the
+/// bounds" finds first, since the warp path clamps against it. There is no `Player_Bound_Left`/`_Top`
+/// at all: the low edge of the box is a literal `0`.
+///
+/// ⚑ **Resolved by name, per call, independently of each other, never cached** — the rule §11.26 was
+/// amended to impose on `Camera_X`. Measured on this box: `Level_Width` is `$FFFFBABE` in `s4.lst` and
+/// `$FFFFE95C` in `s4.debug.lst`, ~11 KB apart, so a cached address does not fault in the other build
+/// shape — it returns a number, and a number is what this check compares against.
+pub const LEVEL_WIDTH_SYMBOL: &str = "Level_Width";
+/// See [`LEVEL_WIDTH_SYMBOL`].
+pub const LEVEL_HEIGHT_SYMBOL: &str = "Level_Height";
+
+/// **The act's pixel extent, as read out of the machine on this call.** Never a constant: the one act
+/// measured on this box reads `$1800 × $1800` (6144), and that is *one act's value*, not the engine's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActExtent {
+    /// `Level_Width`, in world pixels. The box is half-open: `width` itself is **outside**.
+    pub width: u32,
+    /// `Level_Height`, in world pixels.
+    pub height: u32,
+}
+
+impl ActExtent {
+    /// Whether a world pixel is inside `[0, width) × [0, height)` — aeon's own words for the box.
+    ///
+    /// Half-open, and that is load-bearing at exactly one pixel per axis: `x == width` is the first
+    /// column that is not in the act. The low edge needs no test — `x`/`y` arrive as unsigned 16-bit
+    /// params and a negative world pixel cannot be represented.
+    pub fn contains(&self, x: u32, y: u32) -> bool {
+        x < self.width && y < self.height
+    }
+
+    /// Whether these are the boot-cleared zeroes rather than a measurement.
+    ///
+    /// aeon's declaration: both words are *"boot-cleared with all Work RAM, so both read 0 until an act
+    /// init has run"*. Either axis reading `0` is therefore **not an act of no size** — it is the
+    /// absence of an act, and it gets its own sentence, because *"outside the level"* is a confusing
+    /// thing to be told on a title screen. (Item 26 names the both-zero case; a half-zero extent is the
+    /// same absence with one word already written, and answering `outsideAct` for it would be the same
+    /// wrong sentence.)
+    pub fn no_act_loaded(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// **The refusal for a placement outside a KNOWN act extent.**
+    ///
+    /// It says what the engine would have done, because that is the whole reason this refusal exists:
+    /// aeon's `RunObjects` culls an out-of-act object on camera distance and does *nothing* — no error,
+    /// no refusal, nothing on screen. Before this rail the row acked such a request as placed. A caller
+    /// told only "refused" will reasonably assume the server is being fussy; one told the object would
+    /// have been silently culled knows the refusal is the useful half.
+    pub fn outside(&self, x: u32, y: u32) -> RpcError {
+        RpcError::invalid_params(format!(
+            "world ({x}, {y}) is outside the loaded act, whose extent is {} x {} pixels — the valid box \
+             is [0, {}) x [0, {}), read just now from `{LEVEL_WIDTH_SYMBOL}` and \
+             `{LEVEL_HEIGHT_SYMBOL}`. An object placed there is culled by the engine on camera distance \
+             with no error and nothing on screen, so this is refused BEFORE anything is written rather \
+             than acked and thrown away. Refused and never clamped: a clamp would report success at a \
+             position the caller did not choose.",
+            self.width, self.height, self.width, self.height
+        ))
+        .with_data(json!({
+            "reason": "outsideAct",
+            "x": x,
+            "y": y,
+            "actWidth": self.width,
+            "actHeight": self.height,
+        }))
+    }
+
+    /// **The refusal for a build whose listing cannot answer where the act ends.**
+    ///
+    /// The third option, and the one §11.35 adopts: not silently permitting (which is the defect
+    /// itself, restored), not silently refusing (the row works perfectly inside a level and a silent
+    /// refusal would read as a broken method), but **saying the check could not be made**. A
+    /// measurement that cannot be taken is not a measurement of zero — the `arm`-refuses-with-no-
+    /// archetypes precedent, applied to an extent.
+    ///
+    /// Both names or neither: half an extent is not a smaller measurement, and the half that *did*
+    /// resolve is the more dangerous of the two, because a check on one axis looks like a check.
+    pub fn unmeasurable(missing: &[&str]) -> RpcError {
+        RpcError::invalid_params(format!(
+            "this server cannot tell whether this placement is inside the act: {} not in the loaded \
+             listing, so there is no measurement to check it against. An object placed outside the act \
+             is culled by the engine with no error and nothing on screen, and a request sent unchecked \
+             would be acked as placed and then vanish — so this refuses rather than treating the act as \
+             infinite.",
+            match missing {
+                [one] => format!("`{one}` is"),
+                _ => format!("`{LEVEL_WIDTH_SYMBOL}` and `{LEVEL_HEIGHT_SYMBOL}` are"),
+            }
+        ))
+        .with_data(json!({
+            "reason": "actExtentUnknown",
+            "missing": missing,
+        }))
+    }
+
+    /// **The refusal for a boot-cleared extent** — which is the absence of an act, not an act of no
+    /// size.
+    pub fn no_act() -> RpcError {
+        RpcError::invalid_params(format!(
+            "`{LEVEL_WIDTH_SYMBOL}` and `{LEVEL_HEIGHT_SYMBOL}` read 0, which is what they hold until an \
+             act has initialised — there is no act for an object to be inside of, and anything placed \
+             now would be culled the moment objects run. This is deliberately NOT `outsideAct`: there is \
+             no level edge to be outside of yet, and saying so would send the caller hunting for one."
+        ))
+        .with_data(json!({"reason": "noActLoaded"}))
+    }
+}
+
 /// The resolved mailbox: one address per [`CELLS`] entry, in that order.
 #[derive(Debug)]
 pub struct Mailbox {

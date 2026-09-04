@@ -5343,6 +5343,23 @@ impl Engine {
             ))
             .with_data(json!({"def": hex::addr(def)})));
         }
+        // The second rail, beside it and for the same reason (§11.35, CR-L): a placement outside the
+        // LOADED ACT is refused BEFORE any write. aeon's `RunObjects` culls an out-of-act object on
+        // camera distance and does nothing — no error, no refusal, nothing on screen — so without this
+        // the row answers success for a request whose effect is knowably invisible. Three reasons,
+        // never collapsed, because they are three different facts about the machine and only one of
+        // them is about where the caller asked for.
+        //
+        // **This lives in the handler, not in a surface.** The game window, the debug palette and every
+        // Aether client reach this one function; a per-surface check closes one and leaves the others
+        // open, which is option B and what §11.35 declined.
+        let extent = self.objreq_act_extent()?;
+        if extent.no_act_loaded() {
+            return Err(objreq::ActExtent::no_act());
+        }
+        if !extent.contains(u32::from(x), u32::from(y)) {
+            return Err(extent.outside(u32::from(x), u32::from(y)));
+        }
         let layout = decoders::derive(self.symbols.as_deref())?;
         let ack = self.objreq_exchange(
             "emulator/object_spawn",
@@ -5488,6 +5505,40 @@ impl Engine {
             ack.frames_advanced,
             &layout,
         )))
+    }
+
+    /// **The act's pixel extent, resolved BY NAME and read out of the machine on this call** (§11.35).
+    ///
+    /// ⚑ The two symbols are resolved **independently**, each by its own name, and neither address is
+    /// kept between calls. They are adjacent in every listing seen so far and that is a fact about a
+    /// declaration order this server does not own; reading the pair as one 4-byte word off the first
+    /// would work right up until aeon inserted a field. They also *move between build shapes* —
+    /// `$FFFFBABE` in `s4.lst`, `$FFFFE95C` in `s4.debug.lst` — so a cached address returns a plausible
+    /// number in the other shape rather than faulting.
+    ///
+    /// **No table at all is `-32012`, not `actExtentUnknown`.** §4 requires a client to be able to tell
+    /// *you forgot `load_symbols`* from *that name does not exist*, and this rail is not the place to
+    /// erase that distinction: the caller's next action differs.
+    fn objreq_act_extent(&self) -> Result<objreq::ActExtent, RpcError> {
+        let table = self.symbols.as_deref().ok_or_else(no_symbols)?;
+        let width_addr = table.address_of(objreq::LEVEL_WIDTH_SYMBOL);
+        let height_addr = table.address_of(objreq::LEVEL_HEIGHT_SYMBOL);
+        let (Some(width_addr), Some(height_addr)) = (width_addr, height_addr) else {
+            // Both or neither. The half that resolved is the more dangerous of the two, because a check
+            // on one axis looks like a check.
+            let missing: Vec<&str> = [
+                (objreq::LEVEL_WIDTH_SYMBOL, width_addr),
+                (objreq::LEVEL_HEIGHT_SYMBOL, height_addr),
+            ]
+            .into_iter()
+            .filter_map(|(name, a)| a.is_none().then_some(name))
+            .collect();
+            return Err(objreq::ActExtent::unmeasurable(&missing));
+        };
+        Ok(objreq::ActExtent {
+            width: u32::from(self.read_u16(width_addr)?),
+            height: u32::from(self.read_u16(height_addr)?),
+        })
     }
 
     /// `def` **or** `defSymbol`, exactly one — the `addr`|`symbol` pattern with the spellings

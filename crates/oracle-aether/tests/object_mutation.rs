@@ -75,6 +75,27 @@ const W_SLOT: u32 = 0x00FF_9718;
 const W_PLACE: u32 = 0x00FF_971A;
 const W_OP: u32 = 0x00FF_971C;
 
+/// **The act extent, and the two symbols that are the wrong answer to the same question** (§11.35).
+///
+/// All four are in this fixture because [`the_strip_between_the_player_clamp_and_the_act_edge_is_legal_placement_space`]
+/// needs both pairs present: a build carrying only the extent cannot tell an implementation that reads
+/// `Level_Width` from one that reads `Player_Bound_Right`, because the wrong symbol would simply fail to
+/// resolve and every case would look the same. With both here the substitution **succeeds** — and lands
+/// about 24 pixels short, near an edge, which is exactly how that defect would reach production.
+const LEVEL_WIDTH: u32 = 0x00FF_9810;
+const LEVEL_HEIGHT: u32 = 0x00FF_9812;
+const PLAYER_BOUND_RIGHT: u32 = 0x00FF_9814;
+const PLAYER_BOUND_BOTTOM: u32 = 0x00FF_9816;
+
+/// The act every fixture in this file is in. Big enough that every pre-existing row's coordinates
+/// (the largest is `(4444, 3333)`) sit comfortably inside it, so the new rail is invisible to them.
+const ACT: (u32, u32) = (0x2000, 0x2000); // 8192 x 8192
+
+/// aeon's own insets, so the strip between the player's clamp and the act's edge is real here:
+/// `right = level_width − PBOUND_RIGHT_MARGIN`, `bottom = level_height − SCREEN_HEIGHT`.
+const PBOUND_RIGHT_MARGIN: u32 = 24;
+const SCREEN_HEIGHT: u32 = 224;
+
 /// The dynamic pool's first slot, and the handle that names it.
 fn dynamic_slot(n: u32) -> u32 {
     NUM_PLAYERS + n
@@ -192,7 +213,11 @@ fn consumer_rom() -> Vec<u8> {
 // Harness
 // ---------------------------------------------------------------------------------------------------
 
-/// The object-pool rows every layout needs, computed rather than listed.
+/// The object-pool rows every layout needs, computed rather than listed — **plus the act-extent rows**,
+/// because since §11.35 a spawn cannot be checked without them and they are in the *release* shape too
+/// (aeon writes both words in `Player_BoundsInit`, outside any `if DEBUG` block). A listing that names
+/// the pool but not the mailbox is what a release ROM looks like from here, and it still answers where
+/// the act ends.
 fn pool_rows() -> Vec<(String, u32)> {
     let player = POOL_BASE;
     let dynamic = player + NUM_PLAYERS * SST;
@@ -207,6 +232,11 @@ fn pool_rows() -> Vec<(String, u32)> {
         ("Effect_Slots".into(), effect),
         ("Object_RAM_End".into(), player + NUM_TOTAL * SST),
         ("ObjCodeBase".into(), OBJ_CODE_BASE),
+        // The act extent (the right answer) beside the player clamp (the wrong one that resolves).
+        ("Level_Width".into(), LEVEL_WIDTH),
+        ("Level_Height".into(), LEVEL_HEIGHT),
+        ("Player_Bound_Right".into(), PLAYER_BOUND_RIGHT),
+        ("Player_Bound_Bottom".into(), PLAYER_BOUND_BOTTOM),
     ]
 }
 
@@ -261,6 +291,7 @@ fn fixture(tag: &str) -> Fixture {
     let mut rows = pool_rows();
     rows.extend(mailbox_rows());
     load_listing(&mut c, tag, &rows);
+    seat_act(&mut c);
     script(&mut c, 0, 0);
     Fixture { _h: h, c }
 }
@@ -273,6 +304,7 @@ fn fixture_without_mailbox(tag: &str) -> Fixture {
     c.handshake(false);
     c.ok("emulator/pause", json!({}));
     load_listing(&mut c, tag, &pool_rows());
+    seat_act(&mut c);
     poke(&mut c, DEAF, 0, 1);
     Fixture { _h: h, c }
 }
@@ -306,6 +338,51 @@ fn script(c: &mut Client, status: u8, handle: u32) {
     poke(c, DEAF, 0, 1);
     poke(c, SCRIPT_STATUS, u64::from(status), 1);
     poke(c, SCRIPT_HANDLE, u64::from(handle & 0xFFFF), 2);
+}
+
+/// **Put the machine in an act**, with the player's inset clamp edges written beside the true extent.
+///
+/// Written every time for the same reason `DEAF` is: `System::new` seeds work RAM with a pattern rather
+/// than zeroes, so an unwritten extent word is whatever the seed put there — and since §11.35 every
+/// spawn in this file is checked against these two words.
+///
+/// The clamp edges are seeded at aeon's own margins rather than at some arbitrary smaller number, so
+/// the strip between them and the act's edge is the real one and a server that read them would land
+/// ~24 px short instead of failing to resolve anything.
+fn seat_act(c: &mut Client) {
+    poke(c, LEVEL_WIDTH, u64::from(ACT.0), 2);
+    poke(c, LEVEL_HEIGHT, u64::from(ACT.1), 2);
+    poke(
+        c,
+        PLAYER_BOUND_RIGHT,
+        u64::from(ACT.0 - PBOUND_RIGHT_MARGIN),
+        2,
+    );
+    poke(c, PLAYER_BOUND_BOTTOM, u64::from(ACT.1 - SCREEN_HEIGHT), 2);
+}
+
+/// **Zero the witness area**, so "the machine saw nothing" is a fact about *this* call rather than
+/// about the seed pattern `System::new` left there.
+fn clear_witness(c: &mut Client) {
+    for (addr, width) in [
+        (W_DEF, 4),
+        (W_X, 2),
+        (W_Y, 2),
+        (W_SLOT, 2),
+        (W_PLACE, 2),
+        (W_OP, 1),
+    ] {
+        poke(c, addr, 0, width);
+    }
+}
+
+/// **What the emulated 68000 wrote when it saw the mailbox flag** — the whole witness in one read.
+///
+/// This is the anchor a "no write" assertion must stand on. The reply is the *served side's own account
+/// of itself*, so a mutation that changed which op reached the machine while leaving the reply correct
+/// would pass an assertion made on `error.data`. These bytes were written by the machine.
+fn witness(c: &mut Client) -> Vec<u8> {
+    peek(c, W_DEF, W_OP + 1 - W_DEF)
 }
 
 /// Make a slot hold a live record at a known position, so a re-read has something to find that the
@@ -879,6 +956,243 @@ fn an_archetype_pointer_outside_the_cart_window_never_reaches_the_machine() {
         data["framesAdvanced"],
         json!(1),
         "this one reached the machine — which is what makes it a different refusal from the pre-flight"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------
+// 5b. §8 item 26 — a spawn outside the loaded act is refused, BY REASON, before any write (§11.35, CR-L)
+//
+// Four rows, and the fourth is the one that catches the failure shaped like correctness. Item 26's own
+// words: a placement between `Player_Bound_Right` and `Level_Width` MUST be accepted, "the control that
+// catches an implementation clamping against the player's inset edges, which looks correct on every
+// far-outside click".
+//
+// **Every "no write" here is anchored on the WITNESS AREA, not on the reply.** The reply is the served
+// side's own account of itself; a mutation that changed what reached the machine while leaving the reply
+// correct would sail past an assertion made on `error.data`. The witness bytes are written by the
+// emulated 68000 when it observes the mailbox flag, they are cleared first so the claim is about *this*
+// call rather than about the seed, and they are read BEFORE any field of the refusal is looked at.
+// ---------------------------------------------------------------------------------------------------
+
+/// ## Item 26, case 1 — **`x >= Level_Width` or `y >= Level_Height` is `-32602 outsideAct`, and the
+/// machine never sees it.**
+///
+/// The bound is half-open, which is load-bearing at exactly one pixel per axis: `Level_Width` itself is
+/// the first column that is not in the act, so both edge coordinates are exercised rather than only a
+/// comfortably-far-outside pair.
+#[test]
+fn a_spawn_outside_the_act_is_refused_by_reason_and_never_reaches_the_machine() {
+    let mut f = fixture("outside");
+    for (x, y, what) in [
+        (ACT.0, 1, "the first column outside the act"),
+        (1, ACT.1, "the first row outside the act"),
+        (ACT.0 + 5000, ACT.1 + 5000, "far outside on both axes"),
+    ] {
+        clear_witness(&mut f.c);
+        script(&mut f.c, 0, slot_addr(dynamic_slot(0)) & 0xFFFF);
+        let hash_before = f.c.ok("emulator/memory_hash", ram_window())["hash"].clone();
+        let v = f.c.call(
+            "emulator/object_spawn",
+            json!({"def": "0x00000200", "x": x, "y": y, "subtype": 9}),
+        );
+
+        // THE ANCHOR, read before anything the server said about itself.
+        assert_eq!(
+            witness(&mut f.c),
+            vec![0u8; 13],
+            "{what}: the emulated machine WROTE the payload of a request that had to be refused before \
+             any write — the reply's own account of itself cannot see this"
+        );
+        assert_eq!(
+            f.c.ok("emulator/memory_hash", ram_window())["hash"],
+            hash_before,
+            "{what}: an act-bounds refusal moved work RAM"
+        );
+
+        assert!(
+            v.get("result").is_none(),
+            "{what}: ({x}, {y}) came back as a RESULT — acked as placed and then silently culled is the \
+             whole defect: {v}"
+        );
+        let (code, message, data) = err_of(&v["error"]);
+        assert_eq!(code, -32602, "{what}");
+        assert_eq!(data["reason"], json!("outsideAct"), "{what}");
+        assert_eq!(
+            data["framesAdvanced"],
+            json!(0),
+            "{what}: nothing ran, and rule (5) wants that said out loud"
+        );
+        assert!(
+            message.contains("culled"),
+            "{what}: the refusal must say what the engine would have done, or it reads as fussiness: \
+             {message}"
+        );
+    }
+}
+
+/// ## Item 26, case 2 — **a listing that cannot answer where the act ends says it CANNOT CHECK**, and
+/// never treats the act as infinite.
+///
+/// Both names or neither: dropping only `Level_Height` must refuse too. Half an extent is not a smaller
+/// measurement, and the half that resolved is the more dangerous one, because a check on a single axis
+/// looks like a check.
+///
+/// A build with **no table at all** is deliberately a different answer (`-32012`), and
+/// [`the_rows_are_advertised_even_where_no_symbol_table_is_loaded`] holds that: §4 requires a client to
+/// be able to tell *you forgot `load_symbols`* from *that name is not there*.
+#[test]
+fn a_listing_without_the_act_extent_says_it_cannot_check_rather_than_guessing() {
+    for missing in ["Level_Width", "Level_Height"] {
+        let mut f = fixture(&format!("noextent-{missing}"));
+        let mut rows: Vec<_> = pool_rows()
+            .into_iter()
+            .filter(|(n, _)| n != missing)
+            .collect();
+        rows.extend(mailbox_rows());
+        load_listing(&mut f.c, "noextent-filtered", &rows);
+        clear_witness(&mut f.c);
+        script(&mut f.c, 0, slot_addr(dynamic_slot(0)) & 0xFFFF);
+        let v = f.c.call(
+            "emulator/object_spawn",
+            json!({"def": "0x00000200", "x": 1, "y": 1}),
+        );
+
+        assert_eq!(
+            witness(&mut f.c),
+            vec![0u8; 13],
+            "{missing}: nothing may reach the mailbox when the act's extent is unknown"
+        );
+
+        assert!(
+            v.get("result").is_none(),
+            "{missing}: an unmeasurable extent was treated as INFINITE — which is the defect, restored: \
+             {v}"
+        );
+        let (code, message, data) = err_of(&v["error"]);
+        assert_eq!(code, -32602, "{missing}");
+        assert_eq!(data["reason"], json!("actExtentUnknown"), "{missing}");
+        assert_eq!(
+            data["missing"],
+            json!([missing]),
+            "{missing}: the refusal must name what it could not resolve"
+        );
+        assert!(
+            message.contains("cannot tell"),
+            "{missing}: it must say the CHECK failed, not that the placement was out of bounds — those \
+             are different facts and only one of them is about where the caller asked for: {message}"
+        );
+    }
+}
+
+/// ## Item 26, case 3 — **`0 × 0` is `noActLoaded`, the absence of an act, and never `outsideAct`.**
+///
+/// aeon's declaration: both words are boot-cleared with all Work RAM and read 0 until an act init has
+/// run. Telling somebody on a title screen that their placement is *outside the level* sends them
+/// hunting for an edge that does not exist yet.
+#[test]
+fn a_boot_cleared_extent_is_no_act_loaded_rather_than_a_placement_outside_one() {
+    let mut f = fixture("noact");
+    poke(&mut f.c, LEVEL_WIDTH, 0, 2);
+    poke(&mut f.c, LEVEL_HEIGHT, 0, 2);
+    clear_witness(&mut f.c);
+    script(&mut f.c, 0, slot_addr(dynamic_slot(0)) & 0xFFFF);
+    let v = f.c.call(
+        "emulator/object_spawn",
+        json!({"def": "0x00000200", "x": 1, "y": 1}),
+    );
+
+    assert_eq!(
+        witness(&mut f.c),
+        vec![0u8; 13],
+        "nothing may reach the mailbox when there is no act to place into"
+    );
+
+    assert!(
+        v.get("result").is_none(),
+        "a boot-cleared extent placed: {v}"
+    );
+    let (code, message, data) = err_of(&v["error"]);
+    assert_eq!(code, -32602);
+    assert_eq!(data["reason"], json!("noActLoaded"));
+    assert_ne!(
+        data["reason"],
+        json!("outsideAct"),
+        "'outside the level' is the wrong sentence when there is no level"
+    );
+    assert!(
+        message.contains("until an act has initialised"),
+        "the refusal must explain the zero rather than report it: {message}"
+    );
+}
+
+/// ## ★ Item 26, case 4 — **the strip between `Player_Bound_Right` and `Level_Width` is legal placement
+/// space, and MUST be accepted.**
+///
+/// # The trap this row exists for
+///
+/// `Player_Bound_Right` / `Player_Bound_Bottom` are the symbols a grep for "the bounds" finds first,
+/// they are authoritative for a real question (the *warp* path clamps against them), and they are **not**
+/// the act extent: aeon insets them by `PBOUND_RIGHT_MARGIN` and `SCREEN_HEIGHT`. Objects are
+/// deliberately unclamped, so the strip between `Player_Bound_Right` and `Level_Width` is legal and
+/// renders.
+///
+/// A server that read the clamp edges would refuse in that strip — near an edge, where a refusal is
+/// half expected — and would look correct doing it. It would survive review, and every one of the three
+/// rows above would stay green, because they all place far outside both. This is the failure shaped like
+/// correctness, and only a placement deliberately aimed into the strip catches it.
+///
+/// # Planting the defect
+///
+/// Point `Engine::objreq_act_extent` at `Player_Bound_Right`/`Player_Bound_Bottom` instead. Only this row
+/// goes red, and it goes red for the structural reason: a legal placement refused.
+#[test]
+fn the_strip_between_the_player_clamp_and_the_act_edge_is_legal_placement_space() {
+    let mut f = fixture("strip");
+    let slot = dynamic_slot(4);
+    seat_record(&mut f.c, slot, 7, 9);
+    script(&mut f.c, 0, slot_addr(slot) & 0xFFFF);
+
+    // Inside the act on both axes, outside the PLAYER's clamp on both axes. Derived from the fixture's
+    // act and aeon's own margins, so nothing here is a transcribed coordinate.
+    let (x, y) = (ACT.0 - PBOUND_RIGHT_MARGIN / 2, ACT.1 - SCREEN_HEIGHT / 2);
+    assert!(
+        x > ACT.0 - PBOUND_RIGHT_MARGIN && y > ACT.1 - SCREEN_HEIGHT,
+        "the fixture must actually put this placement in the strip, or the row is vacuous"
+    );
+    assert!(
+        x < ACT.0 && y < ACT.1,
+        "…and still inside the act, or it is testing the opposite thing"
+    );
+
+    clear_witness(&mut f.c);
+    let v = f.c.call(
+        "emulator/object_spawn",
+        json!({"def": "0x00000200", "x": x, "y": y}),
+    );
+    assert!(
+        v.get("result").is_some(),
+        "a placement between Player_Bound_Right ({}) and Level_Width ({}) is LEGAL and renders — \
+         refusing it rejects real placements while looking correct: {}",
+        ACT.0 - PBOUND_RIGHT_MARGIN,
+        ACT.0,
+        v["error"]
+    );
+
+    // …and the machine was handed the pixel that was asked for, not a clamped one. A server that
+    // clamped instead of refusing would satisfy the line above and fail here.
+    let w = |c: &mut Client, a: u32| {
+        let b = peek(c, a, 2);
+        u32::from(u16::from_be_bytes([b[0], b[1]]))
+    };
+    assert_eq!(
+        (w(&mut f.c, W_X), w(&mut f.c, W_Y)),
+        (x, y),
+        "the strip pixel reached the mailbox altered — refused OR clamped, never silently moved"
+    );
+    assert_eq!(
+        peek(&mut f.c, W_OP, 1)[0],
+        1,
+        "and it reached it as a SPAWN"
     );
 }
 
