@@ -32,7 +32,15 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The Objects tab dumps its pool layout as a paragraph of raw JSON and pads its table with empty rows. Ship the readable half, and answer your rings question ON the panel: rings never take an object slot, so a rings count goes beside the object count with the one-sentence why. The ceiling for that count is stated as unknown rather than guessed unless the toolchain can tell us it \u2014 a confident wrong number is worse than an honest gap."
+      "title": "The Objects tab dumps its pool layout as a paragraph of raw JSON and pads its table with empty rows. Ship the readable half, and answer your rings question ON the panel: rings never take an object slot, so a rings count goes beside the object count with the one-sentence why. The ceiling stays stated-unknown until aeon exports it \u2014 a confident wrong number is worse than an honest gap."
+    },
+    {
+      "id": "SERVE-EQUATES",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "The symbol file every client loads carries 746 build-time constants and not one is reachable from anything we serve \u2014 we read the addresses out of it and walk past the constants. Consumers currently hardcode them or infer them from where things sit in memory, which is the guess we just refused to ship. Found because a ring count needed one."
     },
     {
       "id": "PANELS-COMMAND-PALETTE",
@@ -127,5 +135,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:47:53Z"
+  "updatedAt": "2026-09-04T00:49:41Z"
 }
