@@ -3,6 +3,12 @@
 **Date:** 2026-08-30 · **By:** oracle overseer, foreground · **Outcome:** no server change; an anti-fix pin,
 a doc note, and a CR to draft
 
+> **Updated 2026-09-03 — §6 below closes this out.** The CR §3 asks for was raised as **CR-G**, adjudicated
+> ADOPT WITH CHANGES, and is now `protocol.md` **§11.27**. The server half shipped on
+> `parcel/attr-rgb-caveat`. §§0–5 are left exactly as written on 2026-08-30: they are the record of a
+> near-miss, and the one useful thing about a near-miss is what it looked like from inside. §5's "Owed"
+> list is discharged item by item in §6 — **including the one item there that turned out to be wrong.**
+
 ## 0. The short version
 
 aeon reported that `emulator/pixel_attribution` returns the right `cramIndex` and the **wrong `rgb`** on a
@@ -111,3 +117,107 @@ properties worth writing as properties:
 * Draft the caveat CR.
 * **Do not re-attempt the framebuffer fix.** If a future session believes attribution should agree with the
   picture, the contract change is the work, not the server change — and F-SCANLINE-INDEX is where it lives.
+
+## 6. What landed, 2026-09-03 — CR-G is §11.27 and the server now discloses
+
+**The ruling changed the CR's emission rule, and the change was the right one.** §3 above proposed emitting
+the caveat *"when the divergence is possible (a completed frame exists to disagree with)"*. The hub refused
+that half and said why: **both engines in this suite rebuild CRAM every vblank**, so "a completed frame
+exists" is true on every reply after the first frame. That is not a conditional caveat, it is
+`emulator/read_memory`'s constant debug string wearing a new label — the exact pathology §2.4's advisory
+names, in a document this lane had read. The ratified rule is a **measurement**:
+
+> a server emits the caveat when the CRAM entry at `cramIndex` has been written since line `y` of the last
+> completed frame was drawn, or when no frame has completed; it is absent otherwise.
+
+**So the item in §5's "Owed" list that said "draft the caveat CR" is discharged, and the shape §3 drafted
+was corrected on its way through.** Worth recording plainly: this lane got the hazard right and the
+*trigger* wrong, in the direction that would have produced a field nobody reads.
+
+### The measurement we could make, and the one we did not have to settle for
+
+§11.27 permits a fallback — *"a server that cannot yet stamp per-entry writes MAY emit on any CRAM write
+since the line drew (coarser, still conditional) and MUST NOT emit unconditionally."* The first question was
+therefore about this engine and not about taste: **can Oracle stamp per-entry CRAM writes?**
+
+**It can, and cheaply.** There are exactly **two** places in the whole tree that store a CRAM byte —
+`Vdp::write_target`'s `Target::Cram` arm (every guest path funnels through it: data port timed and untimed,
+DMA 68k→CRAM, DMA fill, fill-trigger) and `Vdp::poke_cram` (the `emulator/write_cram` debug poke). Both
+already know the entry index. So per-entry costs one `[Option<u64>; 64]` and one store more than the coarse
+rule would, and the coarse rule would disclose on entries nobody touched. **We implement the precise form.**
+
+The stamp is currency-neutral by construction: `state_hash` and `export_state` read only VRAM/CRAM/VSRAM/regs,
+so neither can see it. It is written unconditionally on the store path (never gated on a capture being armed),
+so an instrumented machine stays byte-identical to a plain one. The save-state container's layout fingerprint
+is derived from a power-on snapshot, so it moves on its own and stale states are refused cleanly.
+
+`poke_cram` takes its instant as a **parameter** rather than reading `Vdp::now_mclk`. `now_mclk` is when the
+VDP last did *guest-driven* work; a debug poke is not guest-driven, and on a machine paused after a quiet
+stretch that value can be arbitrarily stale — it would date the poke *before* the line it must be reported as
+landing after. The caller knows the machine's real now and passes it. Same reasoning as the pre-existing rule
+that a poke must not fabricate a capture clock.
+
+### The sentinel that was wrong, caught by asking the vacuity question
+
+The first draft stored the stamp as a bare `u64` with `0` for "never written", on the argument that 0 could
+only satisfy the rule's comparison when the line also drew at mclk 0. **It can: line 0 of frame 0**, which any
+caller can ask for as soon as one frame has completed. Every untouched palette entry disclosed at that
+coordinate — the unconditional shape §11.27 forbids, arrived at by arithmetic rather than by intent, and
+green on every other row in the file. `Option<u64>` now distinguishes the two, and
+`a_never_written_entry_is_silent_for_every_line_of_every_frame` pins both sides (`None` silent at that cell,
+`Some(0)` disclosing, or the arm is untested).
+
+This is the second time on this arc that the wrong answer looked exactly like the right one. The first was
+the framebuffer fix, which passed every gate the server owned. This one passed thirteen of fourteen rows.
+
+### What is pinned, and where
+
+**Four wire vectors** (`docs/proposed/2026-08-30-cr-g-vectors.json`, merged upstream into
+`contract/schema/tests/vectors.json` as cases 241–244). Re-run against the vendored fragment on 2026-09-03,
+closed with `unevaluatedProperties: false` per §8 item 20: **4/4 agree**, with controls confirming the
+validator refuses a non-string `caveat` and an undeclared key rather than accepting everything.
+
+⚑ **Two of the four vectors §11.27's text names are not in that file, and the substitution is correct.** The
+clause names *"a caveat that names no method (red)"* and *"a pre-first-frame reply carrying it (valid)"*.
+Neither is expressible as a **document**: `caveat` is `type: string`, so a string naming nothing is valid
+JSON against the fragment, and a pre-first-frame reply is byte-identical in shape to case 241. The merged
+file substitutes two red vectors a schema genuinely can judge (a structured `caveat`; a reply that discloses
+*instead of* answering, i.e. no `rgb`) and moves the two live properties to conformance rows — which is
+§11.27's own instruction for the "required when applicable" half. **Those two properties are now asserted on
+the wire**, so nothing was dropped; it moved to the instrument that can see it.
+
+**Five conformance rows** (`crates/oracle-aether/tests/pixel_attribution.rs`), built as **pairs over one
+fixture at one dot** so that each differs from its partner in the write stamp and in nothing else:
+
+| row | what it measures |
+|---|---|
+| `the_caveat_is_absent_when_nothing_wrote_the_entry_since_its_line_drew` | the absence half, and the anti-vacuity control for the rest |
+| `a_cram_write_after_the_line_drew_makes_the_reply_say_so_and_name_the_path` | disclosure, `emulator/scanlines` named, `rgb` still present |
+| `the_caveat_is_per_entry_so_repainting_an_unrelated_colour_stays_silent` | **which rule is in force** — red under the coarse fallback |
+| `a_reply_before_the_first_completed_frame_discloses_and_still_answers` | §11.27's second trigger, and §11.3's power-on sentence |
+| `rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer` | the anti-fix pin, now also asserting the divergence is audible |
+
+Plus five unit rows on the rule as arithmetic (`engine.rs`), where the `>=` boundary and the vblank-write
+case can be stated exactly rather than posed approximately.
+
+### The vacuity that had to be designed out
+
+A caveat test that never arranges a qualifying write proves only that the key is **absent** — which is also
+what a server that never emits produces, i.e. the state this repo was in before today. Every row above has a
+partner that differs in the write stamp, and the per-entry row is the one that distinguishes the implemented
+rule from the coarse fallback §11.27 also permits: under the fallback it is red at its first assertion.
+
+### What did NOT change, and must not
+
+`rgb` is still the **live** colour. §11.3's pin stands, the anti-fix pin stands, and **F-SCANLINE-INDEX is
+untouched** — closing the divergence is still that follow-up. §11.27 makes the divergence *audible*, which is
+what aeon actually asked for: *"a caller with one instrument cannot detect disagreement between two fields
+that never disagree out loud."* They now disagree out loud, on the reply, naming where to go.
+
+### Still owed
+
+* Tell aeon the caveat has shipped and what triggers it — §5's first bullet, now with something concrete to
+  point at.
+* **Runtime confirmation on a real ROM is NOT done here.** These are wire and unit rows against posed
+  fixtures; nobody has driven `color_1536.bin` — the ROM that reproduced the original finding, 55 of 55 rows
+  — through the caveat. That is a foreground want, not a background one.
