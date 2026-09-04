@@ -42,6 +42,7 @@ use crate::machine::Machine;
 use crate::memory::{self, MemoryPanel};
 use crate::objects::{self, Objects, ObjectsPanel};
 use crate::pacing::Governor;
+use crate::screen;
 use crate::stopping::{self, Live};
 use oracle_core::io::Pad;
 use oracle_core::symbols::SymbolTable;
@@ -1614,6 +1615,18 @@ pub const PAUSE: &str = "emulator/pause";
 pub const RESUME: &str = "emulator/resume";
 pub const STEP: &str = "emulator/step";
 
+/// **The bar's own labels, as constants**, because [`crate::screen`] reports the bar over
+/// `emulator/screen_text` and a label written twice is a window and a tool describing one button
+/// differently. Nothing here is a *copy* of what the bar draws — these are the strings the bar draws.
+pub const PAUSE_LABEL: &str = "⏸ pause";
+pub const RESUME_LABEL: &str = "▶ resume";
+pub const STEP_LABEL: &str = "⏭ step";
+
+/// The name in the top bar's left corner, and the window manager's title for this window
+/// (`ViewportBuilder::with_title` in `main.rs`). One string for both, so the title `screen_text` reports
+/// and the label a human reads cannot become two different names for one program.
+pub const APP_NAME: &str = "oracle-player";
+
 /// One answer the bus gave a transport gesture, kept for display until the next one replaces it.
 ///
 /// The `text` is the **server's own words**, assembled from `code` and `message` and nothing else — no
@@ -1630,6 +1643,22 @@ pub struct Echo {
     /// Whether this was a refusal. **This is what the bar colours on**, never the shape of `text`: a
     /// refusal that reads like a success is the one rendering mistake a debug surface cannot afford.
     pub refused: bool,
+}
+
+impl Echo {
+    /// **The line the bar puts on the glass for this answer**, and the only place it is spelled.
+    ///
+    /// [`Transport::bar`] passes this to `ui.colored_label` and hands the same string to
+    /// [`crate::screen`], so a client reading `emulator/screen_text` gets the characters a human is
+    /// looking at rather than a second rendering of the same `Echo`. The colour is not in it — colour is
+    /// not text, and `refused` is the field that carries it.
+    pub fn line(&self) -> String {
+        let reason = match &self.reason {
+            Some(r) => format!(" [{r}]"),
+            None => String::new(),
+        };
+        format!("{}: {}{}", self.method, self.text, reason)
+    }
 }
 
 /// The transport bar's state between repaints: the last answer, and nothing else.
@@ -1652,28 +1681,36 @@ impl Transport {
     /// bar inherits every refusal the tool already knows how to give, including ones nobody here
     /// anticipated: `emulator/step` against a free-running machine is refused `-32005 machineRunning` by
     /// `require_stopped`, and that sentence is the server's, arrives here whole, and is shown whole.
-    pub fn bar(&mut self, ui: &mut egui::Ui, machine: &mut Machine, bus: &mut Bus) {
+    /// **Returns the [`screen::Run`]s it just drew**, for `emulator/screen_text` (§11.29). Handing them
+    /// back is deliberately not the same as offering a helper both this and [`crate::screen`] could call:
+    /// there is no second expression to drift, and the snapshot cannot exist before the bar has drawn it,
+    /// which is the ordering `Host::set_screen_text` demands of its caller.
+    pub fn bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        machine: &mut Machine,
+        bus: &mut Bus,
+    ) -> Vec<screen::Run> {
         // The bus's reading, every frame, never a field of ours.
         let paused = bus.is_paused();
+        let mut drew = Vec::new();
 
         // ⚑ Pause and resume are ONE button, because they are one question ("is it running?") and two
         // buttons would let a human ask for the state it is already in — whose honest answer from the
         // tool is a success that changes nothing, which reads as a broken button.
-        let (label, method) = if paused {
-            ("▶ resume", RESUME)
-        } else {
-            ("⏸ pause", PAUSE)
-        };
+        let (label, method) = Self::toggle(paused);
         if ui.button(label).clicked() {
             self.issue(machine, bus, method);
         }
+        drew.push(screen::Run::label(label));
 
         // Step is offered unconditionally, and while running it is REFUSED rather than hidden. A hidden
         // button teaches nothing; the refusal names the state and the remedy in the tool's own words, and
         // it is the same sentence a socket client gets for the same mistake.
-        if ui.button("⏭ step").clicked() {
+        if ui.button(STEP_LABEL).clicked() {
             self.issue(machine, bus, STEP);
         }
+        drew.push(screen::Run::label(STEP_LABEL));
 
         // **What is armed to stop this machine**, read from the instruments the loop itself feeds — one
         // count, not a list, because the lists are the next parcel's three tabs. It belongs on the
@@ -1684,13 +1721,10 @@ impl Transport {
         // cannot disagree about how many watches exist.
         let (watch, _, profiler_armed) = bus.read_instruments();
         let watches = watch.watch_count();
-        if watches > 0 || profiler_armed {
+        if let Some(armed) = Self::armed(watches, profiler_armed) {
             ui.separator();
-            ui.weak(format!(
-                "{watches} watch{} · profiler {}",
-                if watches == 1 { "" } else { "es" },
-                if profiler_armed { "on" } else { "off" }
-            ));
+            ui.weak(&armed);
+            drew.push(screen::Run::after_sep(armed));
         }
 
         if let Some(e) = &self.last {
@@ -1700,16 +1734,43 @@ impl Transport {
             } else {
                 ui.visuals().weak_text_color()
             };
-            let reason = match &e.reason {
-                Some(r) => format!(" [{r}]"),
-                None => String::new(),
-            };
-            ui.colored_label(colour, format!("{}: {}{}", e.method, e.text, reason))
-                .on_hover_text(
-                    "the bus's own reply, verbatim. The bracketed word is `error.data.reason`, the \
-                     discriminant clients branch on — never the message text.",
-                );
+            let line = e.line();
+            ui.colored_label(colour, &line).on_hover_text(
+                "the bus's own reply, verbatim. The bracketed word is `error.data.reason`, the \
+                 discriminant clients branch on — never the message text.",
+            );
+            drew.push(screen::Run::after_sep(line));
         }
+        drew
+    }
+
+    /// **The play/pause button's label and the method it issues**, for a given run state.
+    ///
+    /// A function rather than an expression inside [`bar`](Self::bar) because [`crate::screen`] reports
+    /// the label over the wire, and the pair must move together: a label that said `pause` while the
+    /// button issued `emulator/resume` is the one defect a readback of the bar could not distinguish from
+    /// a correct window.
+    pub fn toggle(paused: bool) -> (&'static str, &'static str) {
+        if paused {
+            (RESUME_LABEL, RESUME)
+        } else {
+            (PAUSE_LABEL, PAUSE)
+        }
+    }
+
+    /// **What is armed to stop this machine**, or `None` when the bar draws nothing there.
+    ///
+    /// `None` rather than an empty string, for [`StatusStrip::held_row`]'s reason one screen up: a row
+    /// that is *absent* and a row that is *blank* are different facts on the glass, and `screen_text`
+    /// must not make them one artifact.
+    pub fn armed(watches: usize, profiler_armed: bool) -> Option<String> {
+        (watches > 0 || profiler_armed).then(|| {
+            format!(
+                "{watches} watch{} · profiler {}",
+                if watches == 1 { "" } else { "es" },
+                if profiler_armed { "on" } else { "off" }
+            )
+        })
     }
 
     /// Make one call and keep its answer.
@@ -1747,6 +1808,97 @@ mod transport_tests {
             None,
         );
         (machine, bus)
+    }
+
+    /// ★ **The label and the method move together**, which is the pair `emulator/screen_text` makes
+    /// readable and therefore the pair that can now be *wrong in public*.
+    ///
+    /// A bar whose button said `⏸ pause` while it issued `emulator/resume` is a window lying to a human
+    /// and, since `PLAYER-SCREEN-TEXT`, to every client reading the glass. [`Transport::toggle`] is the one
+    /// place the pairing exists, so this is the one place it can be checked.
+    ///
+    /// **⚑ The third assertion.** The two rows above are agreement, not correctness: a `toggle` that
+    /// ignored its argument and returned one constant satisfies "the label matches the method" perfectly.
+    /// So the two run states are asserted to produce **different** answers — against the raw input, not
+    /// against each other.
+    #[test]
+    fn the_transport_label_and_the_method_it_issues_are_one_decision() {
+        assert_eq!(Transport::toggle(false), (PAUSE_LABEL, PAUSE));
+        assert_eq!(Transport::toggle(true), (RESUME_LABEL, RESUME));
+        assert_ne!(
+            Transport::toggle(false),
+            Transport::toggle(true),
+            "the agreement above is two copies of the same untouched value: a `toggle` that ignored the \
+             run state would satisfy both rows and offer `pause` to a stopped machine forever"
+        );
+        assert!(
+            !PAUSE_LABEL.contains(RESUME_LABEL) && !RESUME_LABEL.contains(PAUSE_LABEL),
+            "the two labels must stay distinguishable by substring — the wire test in `main.rs` reads \
+             them out of one composed line and asserts one is present and the other is not"
+        );
+    }
+
+    /// **The armed summary is ABSENT when nothing is armed, never blank.**
+    ///
+    /// `None` and `Some(String::new())` reach the glass as the same nothing, and reach
+    /// `emulator/screen_text` as the same nothing too — but only one of them is honest, and the difference
+    /// is the one [`StatusStrip::held_row`] already turns on. The plural and the profiler word are checked
+    /// because both are *derived* from the counts rather than fixed, and a summary that said
+    /// `1 watches` is the kind of wrong that survives review forever.
+    #[test]
+    fn the_armed_summary_is_absent_when_nothing_is_armed_and_agrees_with_itself_when_something_is()
+    {
+        assert_eq!(
+            Transport::armed(0, false),
+            None,
+            "a bar with nothing armed draws no summary at all"
+        );
+        assert_eq!(
+            Transport::armed(1, false).as_deref(),
+            Some("1 watch · profiler off")
+        );
+        assert_eq!(
+            Transport::armed(2, true).as_deref(),
+            Some("2 watches · profiler on")
+        );
+        // The profiler alone is enough to draw the row — the condition is an `or`, and a `>0` on watches
+        // alone would hide the one fact a human arming a profiler most wants confirmed.
+        assert_eq!(
+            Transport::armed(0, true).as_deref(),
+            Some("0 watches · profiler on")
+        );
+    }
+
+    /// **The echo line is spelled once**, and it carries the reason as a *discriminant* rather than prose.
+    ///
+    /// The third assertion is the `assert_ne!` against the reason-less line: without it, an
+    /// [`Echo::line`] that dropped `reason` entirely would pass every "contains" check above it.
+    #[test]
+    fn the_echo_line_carries_the_servers_own_words_and_its_reason_in_brackets() {
+        let plain = Echo {
+            method: PAUSE,
+            text: String::from("ok {}"),
+            reason: None,
+            refused: false,
+        };
+        assert_eq!(plain.line(), "emulator/pause: ok {}");
+
+        let refused = Echo {
+            method: STEP,
+            text: String::from("-32005 the machine is running"),
+            reason: Some(String::from("machineRunning")),
+            refused: true,
+        };
+        assert_eq!(
+            refused.line(),
+            "emulator/step: -32005 the machine is running [machineRunning]"
+        );
+        assert_ne!(
+            refused.line(),
+            format!("{}: {}", refused.method, refused.text),
+            "the agreement above is two copies of the same untouched value: the reason vanished from \
+             the line a human and a client both read"
+        );
     }
 
     /// **Every button names a method the registry actually carries.**

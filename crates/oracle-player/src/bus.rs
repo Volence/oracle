@@ -296,10 +296,14 @@ impl Bus {
     //
     // `#[cfg(test)]` states in the type system what a paragraph would only ask for: a future gate on any
     // of them does not compile until somebody deliberately removes the attribute. That matters here more
-    // than usual — `oracle-frontend` gates two behaviours on its own `is_serving()`, and this crate
-    // deliberately gates none, because [`ServeOutcome`] carries *why* (`NotAsked` and `Failed` are
-    // different facts a `bool` collapses) and a second weaker spelling of one state is the drift R2
-    // exists to prevent.
+    // than usual — `oracle-frontend` gates two behaviours on its own `is_serving()`, because
+    // [`ServeOutcome`] carries *why* (`NotAsked` and `Failed` are different facts a `bool` collapses) and
+    // a second weaker spelling of one state is the drift R2 exists to prevent.
+    //
+    // ⚑ **Two of the three are still `#[cfg(test)]`; [`is_serving`](Bus::is_serving) is not, as of
+    // `PLAYER-SCREEN-TEXT`.** The attribute did exactly the job it was written for: removing it was a
+    // deliberate edit with a reason attached, which is the review the paragraph above asked for. The
+    // reason is on the method.
 
     /// What [`Bus::new`] did about the socket. Our stored copy.
     #[cfg(test)]
@@ -327,12 +331,30 @@ impl Bus {
     /// answers exactly one question — *can something outside this process attach* — and the only correct
     /// uses of it are ones where the answer to that question is the point.
     ///
-    /// ⚑ **Nothing in this crate gates on it**, unlike `oracle-frontend`, which has two call sites for
-    /// its own. See the block above [`serve_outcome`](Bus::serve_outcome) for why, and for why this is
-    /// `#[cfg(test)]`.
-    #[cfg(test)]
+    /// ⚑ **This crate now has exactly ONE gate on it**, and its shape is the argument for allowing it:
+    /// `Loop::iterate` skips composing the `emulator/screen_text` snapshot when nothing is bound. That is
+    /// a skip of *work nobody could read* — with no socket there is no client, so the answer is
+    /// unobservable, not degraded — and it is the same one `oracle-frontend` makes at the same place.
+    ///
+    /// It is deliberately **not** `has_clients()`. `Host::set_screen_text`'s doc rules on that directly:
+    /// gating the push on attachment leaves a client that connects mid-session reading `-32005 noDisplay`
+    /// — *there is no window* — until the next present, which is a false answer to the question the method
+    /// exists to answer truthfully. Serving-versus-attached is the one distinction that makes the skip
+    /// safe, and it is why the two predicates below are separate methods rather than one.
+    ///
+    /// No *behaviour a human sees* is gated on this, which was the paragraph's real subject: the picture,
+    /// the panels, the transport bar and every in-process gesture work identically in an unserved player.
     pub fn is_serving(&self) -> bool {
         self.host.is_serving()
+    }
+
+    /// **Hand the bus what this window's top bar just put on the glass** (`emulator/screen_text`, §11.29).
+    ///
+    /// A one-line delegation, and the only reason it exists here rather than at the call site is that
+    /// [`Bus`] owns the `Host`. See [`crate::screen`] for what the snapshot contains and what it refuses
+    /// to claim, and `Loop::iterate` for why the push is after `build_ui` and not before it.
+    pub fn set_screen_text(&mut self, surfaces: Vec<oracle_aether::engine::ScreenSurface>) {
+        self.host.set_screen_text(surfaces);
     }
 
     /// **What this window says about its bus right now**, for the status strip.
