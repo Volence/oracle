@@ -125,6 +125,26 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   between the two reads, and **nothing available now can distinguish those** — which is why it was not
   relayed to the hub as a shared-machine hazard. Recorded as a caught relay, not as a finding.
 
+- **F-SHIM-SOCKDIR-RESIDUE — the PROCESS half did not reproduce; the FILESYSTEM half did, and it is the
+  real finding.** aeon relayed (via the hub, ~08:20Z 2026-09-04) 13 leaked `oracle-aether` processes on
+  `/tmp/oracle-mcp-*` sockets, oldest 2026-08-28, ~38 MB. **Re-measured here minutes later: ZERO
+  processes** — `ps -C oracle-aether` empty, `pgrep -x` 0, against a working control (`pgrep -x zsh` = 20),
+  so the empty result is a measurement and not a broken pattern (bar 16(d)). The one `pgrep -f` hit was
+  **this lane's own subagent mid-build** and was gone on the next command: reaping by pattern would have
+  killed our own in-flight parcel, which is the shared-machine hazard arriving from the direction nobody
+  warns about. **Second relayed count in one day that did not reproduce** ([[F-TMP-RESIDUE]] was 9,675 vs 4).
+  ⚑ **But the artifact proves a real gap the process count was standing in for: 50 `/tmp/oracle-mcp-*`
+  dirs, 50 socket files, ZERO listeners (`ss -lxp`), spanning 2026-08-27 to 2026-09-03.** Nothing reaps a
+  shim's socket dir when its child dies. Disk cost is **200 K total**, not 38 MB — that figure was
+  process RSS, a different quantity, so the two reads are not in conflict about the same thing.
+  **Ruled: nothing to reap** (a 200 K write against another lane's possible live path is the wrong trade),
+  **and the shim-reaps-on-disconnect question is booked, not fixed** — the shim is
+  `oracle-old/linux-port/mcp/oracle_mcp.py`, and `oracle-old` is reference-only with the cutover existing
+  to delete it. Revival: the cutover replacing the shim, or `/tmp` pressure becoming real.
+  ⚠ **Ops fact for this session, and it is the vintage bar pointing at us:** our own `mcp__oracle__*`
+  server DISCONNECTED during this measurement — consistent with the same reap. Foreground runtime
+  follow-ups are unavailable this session until a relaunch; a `/clear` does not fix it.
+
 **Registered 2026-08-29, from aurora's relay of the owner's R8 question:**
 
 - **F-R8-LATE-REVISION** — a *copy-of-column-0* toggle for the R8 leftmost-partial-column quirk, so a
