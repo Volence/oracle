@@ -42,7 +42,8 @@
 
 use oracle_aether::decoders::{self, DecodedRecord, ObjectLayout};
 use oracle_aether::engine;
-use oracle_aether::rpc::RpcError;
+use oracle_aether::hex;
+use oracle_aether::rpc::{code, RpcError};
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use serde_json::{json, Map, Value};
@@ -282,6 +283,177 @@ pub fn object_slot(
 }
 
 // ---------------------------------------------------------------------------------------------------
+// Rings — the question this tab kept provoking, answered where it is asked
+// ---------------------------------------------------------------------------------------------------
+
+/// The two symbols this derivation reads, named once each.
+///
+/// A **symbol name** is not a hardcoded address: it is the same kind of fact `AEON_SST.base_symbols`
+/// holds when it names `Object_RAM`. Every *number* below is measured from the listing at run time.
+const RING_BUFFER: &str = "Ring_Buffer";
+const RING_COUNT: &str = "Ring_Count";
+
+/// **Why the ring buffer's capacity is not on this panel**, stated in full because an absent number
+/// invites the reader to supply one.
+///
+/// The span is derivable and is shown. Turning a span in *bytes* into a ceiling in *rings* needs the
+/// entry size, and `RING_BUFFER_ENTRY_SIZE` is published by the listing only in its `Equate Table` —
+/// a section [`SymbolTable::parse`] recognises and deliberately consumes **without keeping the values**
+/// (`F-EQUATES-NAMESPACE`, an unruled decision). So the divisor is not a number this process can read,
+/// and the one thing worse than the gap would be closing it with a constant typed in here: an entry size
+/// written into this crate is a fact about one build, which is exactly what the rest of this file refuses
+/// to hold.
+///
+/// [`rings_ceiling_is_unknown_because_equate_values_are_not_ingested`] pins the *reason* rather than the
+/// sentence, so the day equates become readable this goes red and asks for the division to be finished.
+pub const CEILING_UNKNOWN: &str =
+    "ceiling unknown — the span above is measured, but converting it to a number of rings needs \
+     RING_BUFFER_ENTRY_SIZE, which the listing publishes only as an equate and which the symbol table \
+     deliberately does not ingest (F-EQUATES-NAMESPACE). No entry size is guessed here.";
+
+/// The one sentence this panel owes the reader about rings, beside the object count.
+pub const RINGS_WHY: &str =
+    "Rings never occupy an object slot — they live in their own buffer, so a full ring buffer does not \
+     consume the pool and a ring is never one of the objects counted above.";
+
+/// What the panel can say about rings, measured the same way everything else on this tab is.
+pub struct RingsView {
+    /// `Ring_Buffer`, where the buffer starts.
+    pub buffer_addr: u32,
+    /// `Ring_Count`, the live entry count — and, being the next symbol in memory, the buffer's end.
+    pub count_addr: u32,
+    /// `Ring_Count − Ring_Buffer`: the buffer's whole span in bytes.
+    ///
+    /// ⚑ **This is only the span because the two symbols are adjacent**, and that adjacency is a fact
+    /// about the loaded listing rather than an assumption — a third symbol between them would make the
+    /// subtraction meaningless and put a confident wrong number on screen. Checked at derive time by
+    /// [`rings`], not asserted here.
+    pub span_bytes: u32,
+    /// The width of `Ring_Count` itself, **measured** as the gap to the next symbol above it — the same
+    /// technique `derive` uses for the record stride, for the same reason.
+    pub count_width: u32,
+    /// The live value read out of `Ring_Count`.
+    pub count: u32,
+}
+
+impl RingsView {
+    /// The rings line as the header shows it — **a string, so it can be asserted on.**
+    ///
+    /// Same reason [`Row::summary`] is a method here rather than a `format!` in the renderer: a panel
+    /// this crate cannot screenshot is only checkable at the seam where it becomes text.
+    pub fn summary(&self) -> String {
+        format!(
+            "rings   {} live   buffer {}..{} (${:X} bytes)   Ring_Count is {} byte{}",
+            self.count,
+            hex::addr(self.buffer_addr),
+            hex::addr(self.count_addr),
+            self.span_bytes,
+            // Shown because it is what makes the count readable at all: the width was MEASURED from the
+            // next symbol, not assumed, and reading two bytes where the listing declares one would fold
+            // `Ring_HighWater` into the count and report a plausible number.
+            self.count_width,
+            if self.count_width == 1 { "" } else { "s" },
+        )
+    }
+}
+
+/// The smallest symbol address strictly above `addr`, i.e. where whatever lives at `addr` must end.
+///
+/// [`SymbolTable::symbols`] is address-sorted, so the first hit is the nearest.
+fn next_symbol_above(table: &SymbolTable, addr: u32) -> Option<u32> {
+    table.symbols().iter().map(|s| s.addr).find(|a| *a > addr)
+}
+
+/// **The ring buffer, read out of the listing** — or the sentence saying which symbol did not answer.
+///
+/// Its own `Result`, like the player section's, because a listing can locate the object table and say
+/// nothing about rings; that is a gap in one line of this panel and not a reason to lose the tab.
+pub fn rings(symbols: Option<&SymbolTable>, sys: &System) -> Result<RingsView, RpcError> {
+    let Some(table) = symbols else {
+        // The same refusal `decoders::derive` opens with, and unreachable from the panel for the same
+        // reason: no listing is already a whole-tab state above this point.
+        return Err(RpcError::new(
+            code::NO_SYMBOLS_LOADED,
+            "no symbol table is loaded, so the ring buffer cannot be located",
+        ));
+    };
+    let (Some(buffer_addr), Some(count_addr)) =
+        (table.address_of(RING_BUFFER), table.address_of(RING_COUNT))
+    else {
+        return Err(RpcError::new(
+            code::NO_SYMBOLS_LOADED,
+            format!(
+                "the loaded listing does not name both `{RING_BUFFER}` and `{RING_COUNT}`, so the ring \
+                 buffer cannot be measured — refusing rather than reporting a ring count from a guessed \
+                 address"
+            ),
+        ));
+    };
+
+    // ⚑ **The adjacency check, and the whole reason `span_bytes` means anything.** `Ring_Count` is the
+    // buffer's end ONLY while nothing else lives between the two. If some third symbol is in there, the
+    // subtraction is measuring an unrelated region and the honest answer is to refuse it.
+    let Some(span_bytes) = count_addr.checked_sub(buffer_addr).filter(|s| *s > 0) else {
+        return Err(RpcError::new(
+            code::NO_SYMBOLS_LOADED,
+            format!(
+                "`{RING_COUNT}` ({}) does not lie above `{RING_BUFFER}` ({}), so the span between them \
+                 is not the ring buffer",
+                hex::addr(count_addr),
+                hex::addr(buffer_addr)
+            ),
+        ));
+    };
+    match next_symbol_above(table, buffer_addr) {
+        Some(next) if next == count_addr => {}
+        other => {
+            return Err(RpcError::new(
+                code::NO_SYMBOLS_LOADED,
+                format!(
+                    "`{RING_COUNT}` is not the next symbol after `{RING_BUFFER}` in this listing — {} \
+                     comes first — so `{RING_COUNT} − {RING_BUFFER}` spans more than the ring buffer \
+                     and is not reported as its size",
+                    other.map_or_else(
+                        || "nothing at all".to_string(),
+                        |a| format!("a symbol at {}", hex::addr(a))
+                    ),
+                ),
+            ));
+        }
+    }
+
+    // The count's own width, measured the same way. Refused rather than assumed: reading two bytes where
+    // the listing declares one would fold `Ring_HighWater` into the count and report a plausible number.
+    let count_width = match next_symbol_above(table, count_addr).and_then(|n| n.checked_sub(count_addr))
+    {
+        Some(w @ (1 | 2 | 4)) => w,
+        other => {
+            return Err(RpcError::new(
+                code::NO_SYMBOLS_LOADED,
+                format!(
+                    "`{RING_COUNT}`'s width is measured as the gap to the next symbol above it, and \
+                     this listing makes that {} — not a 1-, 2- or 4-byte scalar, so the value is not \
+                     read",
+                    other.map_or("unbounded".to_string(), |w| format!("{w} bytes")),
+                ),
+            ));
+        }
+    };
+    // `debug_read` — the same function `emulator/read_memory` resolves through, and the same one every
+    // object record on this tab is read with.
+    let (bytes, _) = engine::debug_read(sys, count_addr, count_width as usize)?;
+    let count = bytes.iter().fold(0u32, |acc, b| (acc << 8) | u32::from(*b));
+
+    Ok(RingsView {
+        buffer_addr,
+        count_addr,
+        span_bytes,
+        count_width,
+        count,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------------
 // What the tab draws for one repaint
 // ---------------------------------------------------------------------------------------------------
 
@@ -298,17 +470,71 @@ pub enum Objects {
 }
 
 /// A derived layout and everything under it.
+///
+/// ⚑ **The `layout` object's own fields, not the object.** This used to carry `layout` as a
+/// [`serde_json::Value`] and the header rendered it with `{}`, which put a line of raw JSON —
+/// `{"baseAddr":"0x00FF8000","detectedBy":"symbol",…}` — across the top of the tab. Every fact in it was
+/// already worth showing; none of them was readable in that spelling. So the facts are carried as facts
+/// and the header spells them, which is the same information and not a subset: `detectedBy` is the one
+/// key dropped, and it is `"symbol"` unconditionally on this server (there is no configured-base path),
+/// so rendering it would have been a constant dressed as a finding.
 pub struct Pool {
-    /// `layout` exactly as every reply carries it.
-    pub layout_json: Value,
     pub engine: &'static str,
     pub slot_count: u32,
     pub slot_bytes: u32,
+    /// `layout.baseAddr` — where the table starts.
+    pub base_addr: u32,
+    /// `layout.detectedFrom` — **which symbol answered** for that base.
+    pub detected_from: &'static str,
+    /// `layout.pools[]`, or `None` when the listing does not partition the table. `None` here is the
+    /// same fact `players` refuses on, and the header says so rather than omitting the line.
+    pub partition: Option<Vec<decoders::Pool>>,
     pub total: usize,
     pub objects: Vec<Row>,
     /// The player section, or **its own refusal**: a listing can locate the table and still not partition
     /// it, and "which slots are players" is then unanswerable while the pool table above is fine.
     pub players: Result<PlayerView, RpcError>,
+    /// The ring buffer, or its own refusal — for the same reason, one line further down: a listing that
+    /// names the object table need not name the ring buffer, and that is a missing line rather than a
+    /// missing tab.
+    pub rings: Result<RingsView, RpcError>,
+}
+
+impl Pool {
+    /// The two layout lines the header shows, **as strings rather than as a `Value`**.
+    ///
+    /// This is the readable half of what used to be one `ui.monospace` line ending in a whole JSON
+    /// object. Returned as text so a test can assert both halves of the fix: that the facts are all still
+    /// here, and that no `{"key":` survives into the header.
+    pub fn layout_lines(&self) -> Vec<String> {
+        vec![
+            format!(
+                "engine {}   table {}   {} slots × ${:X} bytes   base from {}",
+                self.engine,
+                hex::addr(self.base_addr),
+                self.slot_count,
+                self.slot_bytes,
+                self.detected_from,
+            ),
+            match &self.partition {
+                Some(ps) => format!(
+                    "pools    {}",
+                    ps.iter()
+                        .map(|p| format!(
+                            "{} {}..{}",
+                            p.name,
+                            p.first_slot,
+                            p.first_slot + p.slot_count
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("   ")
+                ),
+                // Said, not omitted: this is the same missing partition the player section refuses on,
+                // and a header that skipped the line would leave that refusal looking like a bug.
+                None => "pools    — this listing does not partition the table".to_string(),
+            },
+        ]
+    }
 }
 
 impl Objects {
@@ -321,11 +547,15 @@ impl Objects {
             Ok(v) => v,
         };
         let players = player_state(symbols, sys);
+        let rings = rings(symbols, sys);
         Objects::Pool(Pool {
-            layout_json: list.layout.to_json(),
+            rings,
             engine: list.layout.engine(),
             slot_count: list.layout.slot_count(),
             slot_bytes: list.layout.slot_bytes(),
+            base_addr: list.layout.base_addr(),
+            detected_from: list.layout.detected_from(),
+            partition: list.layout.pools().map(<[_]>::to_vec),
             total: list.total,
             objects: list.objects,
             players,

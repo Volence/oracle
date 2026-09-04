@@ -260,6 +260,33 @@ impl ObjectLayout {
         self.pools.as_ref()?.iter().find(|p| p.name == name)
     }
 
+    /// Where the table starts, as [`to_json`](Self::to_json)'s `baseAddr` carries it.
+    ///
+    /// Published for the same reason [`field_names`](Self::field_names) was: a second renderer needs the
+    /// fact, and its only other route to it is re-parsing `to_json`'s output — which would make a panel's
+    /// header depend on a wire spelling rather than on the layout, and would break silently the day a key
+    /// is renamed. Spelled by [`hex::addr`] at the point of display, never re-formatted here.
+    pub fn base_addr(&self) -> u32 {
+        self.base_addr
+    }
+
+    /// **Which symbol actually answered** for the base — `to_json`'s `detectedFrom`.
+    ///
+    /// Load-bearing in a header rather than decoration: `Object_RAM` and `Player_1` name one address, and
+    /// which of them was read is the difference between "the listing marks this region" and "the listing
+    /// only names its first occupant".
+    pub fn detected_from(&self) -> &'static str {
+        self.detected_from
+    }
+
+    /// Every pool of the partition, or `None` when the listing does not partition the table at all.
+    ///
+    /// `None` is the same fact [`player_pool`](Self::player_pool) refuses on, handed to a renderer that
+    /// wants to show the whole partition rather than ask about one pool.
+    pub fn pools(&self) -> Option<&[Pool]> {
+        self.pools.as_deref()
+    }
+
     /// The player pool, or the refusal `emulator/player_state` owes when the partition is unavailable.
     ///
     /// Same call as [`derive`]'s about the base address, one level down: the row cannot say which slots

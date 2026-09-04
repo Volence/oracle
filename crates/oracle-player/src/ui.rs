@@ -565,14 +565,35 @@ impl Panels<'_> {
             Objects::Pool(p) => p,
         };
 
-        ui.monospace(format!(
-            "engine {}   slots {}   record ${:X} bytes   layout {}",
-            pool.engine, pool.slot_count, pool.slot_bytes, pool.layout_json
-        ));
+        // The layout, as facts rather than as its own JSON. Every value on these lines is a key of the
+        // `layout` object the three ⚙ rows serve — the same answer, spelled for a human. Composed in
+        // `objects` rather than here so the strings are reachable from a test.
+        for line in pool.layout_lines() {
+            ui.monospace(line);
+        }
+
+        // --- rings, beside the object count, because that is where the question gets asked ---
+        match &pool.rings {
+            Ok(r) => {
+                ui.monospace(r.summary());
+                ui.small(objects::RINGS_WHY);
+                // The gap, stated. An absent ceiling with no sentence is an invitation to divide the
+                // span by a remembered entry size.
+                ui.small(objects::CEILING_UNKNOWN);
+            }
+            // A ring line this listing cannot supply is one missing line, and it says which symbol was
+            // missing — never a `0`, which would read as "no rings are loaded".
+            Err(e) => {
+                ui.monospace("rings   —");
+                ui.small(format!("rings unavailable — {} {}", e.code, e.message));
+            }
+        }
+
         ui.small(
             "Every address here is read out of the loaded listing — the base from Object_RAM/Player_1, \
-             the stride from Player_2 − Player_1, the count from Object_RAM_End. Nothing is hardcoded, \
-             because an object-table address is a fact about one build.",
+             the stride from Player_2 − Player_1, the count from Object_RAM_End, the ring buffer from \
+             Ring_Count − Ring_Buffer. Nothing is hardcoded, because an object-table address is a fact \
+             about one build.",
         );
         ui.separator();
 
