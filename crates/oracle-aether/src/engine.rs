@@ -6074,6 +6074,80 @@ impl Engine {
         Ok(json!({ "deferred": false }))
     }
 
+    /// **Is the listing this server holds still the listing at `symbols_path`?** — the symbol half of
+    /// the ROM-freshness question, and the reason `F-RELOAD-KEEPS-STALE-SYMBOLS` was a defect.
+    ///
+    /// Returns `None` only when the file at `symbols_path` parses to *exactly* the rows already held —
+    /// the one state that is quiet. Every other state, including "could not check", returns a sentence,
+    /// because **loud on unmeasurable beats a plausible answer**: "I could not look" must never render
+    /// as "I looked and it is fine".
+    ///
+    /// ## Why this measures rather than remembers
+    ///
+    /// The obvious alternative is to digest the listing at load time and compare digests later. It was
+    /// rejected: symbols reach this engine by four routes — [`Engine::load_symbols`], the binary's
+    /// `--symbols`, a hosted embedder's [`crate::host::MachineInfo`], and a checkpoint restore — and only
+    /// the first ever sees the file's *text*. A remembered digest would have to be threaded through all
+    /// four, and the three that could not supply one would each need a "no digest" state that is
+    /// indistinguishable on the wire from the real unmeasurable. Re-reading the path at question time
+    /// costs one parse of a file this server has already shown it can parse (aeon's `s4.debug.lst` is
+    /// 357 KB / 6,690 lines) on an operation that already reads a whole ROM and resets the machine, and
+    /// it gives every route the same answer for the same reason.
+    ///
+    /// ## What the verdict does NOT claim
+    ///
+    /// Equality here is over the parsed symbol ROWS, and it answers exactly one question: *would
+    /// resolving a name against the file give a different answer than resolving it against what I hold?*
+    /// It says nothing about whether the listing describes the loaded ROM — [`Engine::load_symbols`]'s
+    /// own caveat is the standard held to here, and `validate_against_rom` is a filter, not a proof. A
+    /// quiet verdict means "the file has not moved past the table", never "the table is right".
+    fn stale_symbols_caveat(&self) -> Option<String> {
+        let held = self.symbols.as_ref()?;
+        let held_rows = held.symbols().len();
+        let Some(path) = self.symbols_path.as_deref() else {
+            return Some(format!(
+                "the {held_rows}-row symbol listing was kept, but this server holds no path for it, so \
+                 whether it has been rebuilt since it was loaded could not be checked at all. \
+                 `symbolsDropped: false` says only that the held table still binds to the image's \
+                 shape, which is a filter and not a proof."
+            ));
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                return Some(format!(
+                    "the {held_rows}-row symbol listing was kept, but {path} cannot be read now ({e}), \
+                     so whether it has been rebuilt since it was loaded could NOT be checked. \
+                     `symbolsDropped: false` says only that the held table still binds to the image's \
+                     shape, which is a filter and not a proof."
+                ))
+            }
+        };
+        let on_disk = match SymbolTable::parse(&text) {
+            Ok(t) => t,
+            Err(e) => {
+                return Some(format!(
+                    "the {held_rows}-row symbol listing was kept, but {path} no longer parses as a \
+                     listing ({e}), so whether the table this server holds is still what that path \
+                     describes could NOT be checked. `symbolsDropped: false` says only that the held \
+                     table still binds to the image's shape, which is a filter and not a proof."
+                ))
+            }
+        };
+        if on_disk.symbols() == held.symbols() {
+            return None;
+        }
+        let disk_rows = on_disk.symbols().len();
+        Some(format!(
+            "the symbol listing was NOT dropped, and that is not the same as current: {path} has been \
+             rewritten since it was loaded and no longer describes the table this server is resolving \
+             against ({held_rows} row(s) held, {disk_rows} row(s) in the file now). A name the new \
+             build added will not resolve, and a name whose address moved will resolve to the old one \
+             — silently, and looking exactly like an answer. `symbolsDropped: false` says only that \
+             the held table still binds to the image's shape. Re-read it: emulator/load_symbols."
+        ))
+    }
+
     fn reload_rom(&mut self, params: &Value) -> Result<Value, RpcError> {
         self.require_paused("emulator/reload_rom")?;
         let path = match params.get("path") {
@@ -6141,6 +6215,27 @@ impl Engine {
                 "the loaded symbol listing no longer binds to this ROM image and was dropped; load \
                  the listing for the new build before resolving anything."
             );
+        } else if let Some(stale) = self.stale_symbols_caveat() {
+            // **The other half of D7, and the half that had no observable.** The drop path above only
+            // fires on `RomBinding::Mismatch` — a listing for a different build *shape*. A newer build of
+            // the SAME shape passes that check, so the table is kept whole and `symbolsDropped: false`
+            // goes out truthfully and is read as "your symbols are fine". It is not that claim: it is
+            // "I did not drop them", and the two came apart the first time a peer lane published new
+            // symbols into a rebuilt listing. See [`Engine::stale_symbols_caveat`].
+            //
+            // **Carried in the EXISTING `caveat` key, deliberately.** A `symbolFreshness` object beside
+            // `symbolsDropped` is the shape that matches `romFreshness` and it is contract surface: §8
+            // item 20's closure rejects any result key the fragment does not declare, and
+            // `reload_rom`'s fragment declares `reloaded`/`queued`/`path`/`romBytes`/`symbolsDropped`/
+            // `diagnostic`/`caveat` and nothing else. `caveat` is a §2.4 string and this is an
+            // explanation, not a datum a client branches on — the same reasoning `load_symbols` records
+            // for its addressless-row note. The structured verdict on `emulator/status`, where
+            // `romFreshness`'s symmetric home would be, is BLOCKED pending a CR: that fragment declares
+            // no `caveat` at all, so there is no legal spelling of it there.
+            //
+            // Mutually exclusive with the drop caveat by construction: a dropped table is not a table
+            // whose freshness can be asked about.
+            out["caveat"] = json!(stale);
         }
         Ok(out)
     }
