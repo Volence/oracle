@@ -1,14 +1,8 @@
 {
-  "focus": "Building the debug window's command line, so every tool the emulator serves is reachable from the window.",
-  "inFlight": [
-    {
-      "what": "The command palette for the debug window",
-      "where": "branch parcel/panels-command-palette",
-      "agent": true
-    }
-  ],
+  "focus": "The debug window has a command line now; next is the step fix the contract team just ruled on.",
+  "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "When the palette agent returns and its gate is verified on the merged tree.",
+  "nextBoundary": "Here - palette landed and pushed, nothing running.",
   "queue": [
     {
       "id": "F-SPAWN-OUTSIDE-ACT",
@@ -49,14 +43,6 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "The symbol file every tool loads carries hundreds of build-time constants and not one is reachable from anything we serve. It now has TWO named consumers found this week, both from outside the original argument: our own Objects tab cannot turn the ring buffer's measured span into a maximum ring count because the divisor is one of these constants, and the engine team has just shown that the cheap workaround for the out-of-level click check is unavailable for the same reason. Promoted on that, not on a fresh argument."
-    },
-    {
-      "id": "PANELS-COMMAND-PALETTE",
-      "state": "doing",
-      "size": "L",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Your command line for the debug window. Deliberately after the nav: build the shortcut before the signposted route and the route ends up designed around the shortcut."
     },
     {
       "id": "SCHEMA-DRIFT-NIGHTLY",
@@ -154,9 +140,17 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "Our contract checks read replies only, so they are blind to every duty to REFUSE a bad request. This was a proposal for weeks; today it has a real defect it would have caught, found by hand. Do not re-argue it from principles - it has an observation now."
+    },
+    {
+      "id": "F-FRONTEND-PALETTE-BUS",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The GAME window has its own command line, but it can only run the window's own 30 hand-written actions - it cannot reach anything the emulator serves. The mirror image of what just shipped in the debug window. Not a row to add: it needs a free-text argument mode the current design lacks."
     }
   ],
   "awaiting": "One read-back when you surface, nothing blocking: by 'clicking a spot in the Screen panel' for spawn, did you mean the GAME window (where it works now) or the debug-tabs window? The hub ruled the game window closes it and I am proceeding on that. Also still parked for a look: the breakpoint alarm + release button, whether you could SEE those tab titles, and whether the colour-staleness sentence reads right on glass.",
-  "atBoundary": false,
-  "updatedAt": "2026-09-04T10:04:13Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-04T10:25:08Z"
 }
