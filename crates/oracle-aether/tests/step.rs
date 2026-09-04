@@ -36,12 +36,18 @@
 
 mod common;
 
-use common::{spawn_with, Client};
+use common::{spawn_with, spawn_with_frame_budget, Client};
 use oracle_core::testrom::{self, ProfilerShape, PROF_DISPATCH, PROF_LEAF, PROF_MID, PROF_TARGET};
 use serde_json::{json, Value};
 
 /// The three rows this file covers, so every sweep below is over the set rather than a sampled two.
 const STEP_METHODS: [&str; 3] = ["emulator/step", "emulator/step_over", "emulator/step_out"];
+
+/// The fixture the frame-budget rows run on. The same shape [`two_level`] uses, named separately because
+/// those rows spawn their own servers (they need a budget [`two_level`] cannot set) and must be reading
+/// the *identical* ROM for the replica comparison in
+/// [`a_bounded_step_reports_the_instructions_it_actually_retired`] to mean anything.
+const SHORTFALL_SHAPE: ProfilerShape = ProfilerShape::TwoLevel;
 
 fn hex(addr: u32) -> String {
     format!("0x{addr:08X}")
@@ -163,50 +169,118 @@ fn step_count_retires_exactly_that_many_instructions() {
     );
 }
 
-/// **An omitted `count` is one instruction** — and the default is *this server's*, because the contract
-/// has none.
+/// **An omitted `count` is one instruction, and since §11.24 the contract says so too.**
 ///
-/// Audit D-02: §6's row states no default, no minimum above 0 and no ceiling, where every sibling count in
-/// the catalog spells its bounds out. `1` is the only reading that matches the siblings and the word
-/// "step", but it is a choice, so two conformant servers could disagree about `{}`. Pinned here so the
-/// choice is visible and cannot drift silently while the defect is open upstream.
+/// This used to be a *choice*: audit D-02 recorded that §6's row stated no default, no minimum above 0 and
+/// no ceiling, where every sibling count in the catalog spells its bounds out, so two conformant servers
+/// could disagree about `{}`. §11.24 (`empyrean` `0a4313e`, 2026-08-25) closed D-02 and wrote
+/// `≥1 / default 1 / ≤1000000` into the fragment. The behaviour asserted here did not move; what moved is
+/// that it is now **transcribed** rather than invented, and this row is the transcription's witness.
 #[test]
-fn an_omitted_count_is_one_instruction_and_that_default_is_ours_not_the_contracts() {
+fn an_omitted_count_is_one_instruction_which_is_now_the_fragments_own_default() {
     let (_h, mut c) = two_level("st-default");
     park_at(&mut c, PROF_LEAF);
     let r = c.ok("emulator/step", json!({}));
     assert_eq!(
         r["pc"],
         json!(hex(PROF_LEAF + 2)),
-        "an omitted count steps once (D-02: the contract states no default; this is ours)"
+        "an omitted count steps once (§11.24 wrote `default 1` into the fragment)"
+    );
+    assert_eq!(
+        r["stepped"],
+        json!(1),
+        "and the default is what `stepped` reports, not the absent param"
     );
 }
 
-/// **`count: 0` retires nothing, and is a real answer rather than an error.**
+/// **`count: 0` is REFUSED, not obeyed** — the fragment's floor is `1` and a value outside is never
+/// clamped.
 ///
-/// The fragment's `minimum` is `0`, so a zero count is a legal request and means what it says: a caller
-/// establishing where the machine already is without moving it. Both halves are asserted — the PC must not
-/// move *and* the clock must not either, because a "zero" step that still ran one instruction and returned
-/// to the same PC would pass the first check alone on any loop.
+/// ⚑ **This row asserted the opposite until 2026-09-04, and it was right when it was written.** Until
+/// §11.24 the fragment really did say `minimum: 0`, so this test's ancestor
+/// (`count_zero_retires_nothing_and_moves_no_clock`) pinned a zero step as *"a real answer — a caller
+/// establishing where the machine already is, without moving it"*. `0a4313e` replaced that floor with `1`
+/// and the description with *"Zero was refused rather than clamped because the two servers disagreed on it
+/// and a step of nothing is a status call spelt wrong"*; the re-vendor landed here and neither the handler
+/// nor this test moved with it, for ten days, all three mutually consistent and all three wrong.
+///
+/// So the assertion is inverted, and the second half of the old one is kept and put to a new use: a
+/// refusal must also leave the machine **untouched**, because a server that refused after running would
+/// pass a code check alone.
 #[test]
-fn count_zero_retires_nothing_and_moves_no_clock() {
+fn count_zero_is_refused_because_the_fragments_floor_is_one() {
     let (_h, mut c) = two_level("st-zero");
     park_at(&mut c, PROF_LEAF);
     let before = c.ok("emulator/status", json!({}));
-    let r = c.ok("emulator/step", json!({"count": 0}));
+    let e = c.err("emulator/step", json!({"count": 0}));
     assert_eq!(
-        r["pc"],
+        e["code"],
+        json!(-32602),
+        "count 0 is below the fragment's `minimum: 1` and must be refused, never clamped: {e}"
+    );
+    let after = c.ok("emulator/status", json!({}));
+    assert_eq!(
+        after["pc"],
         json!(hex(PROF_LEAF)),
-        "count 0 must leave the pc where it was"
+        "a refused step must not have moved the pc"
     );
     assert_eq!(
-        r["mclk"], before["mclk"],
-        "count 0 must not advance the machine either"
+        after["mclk"], before["mclk"],
+        "a refused step must not have advanced the machine either"
     );
 }
 
-/// `count` is refused when it is not a non-negative integer — the fragment types it `integer, minimum 0`,
-/// and D9 makes a count a JSON number.
+/// **`count` above the fragment's ceiling is REFUSED, not clamped** — the other end of the same bound.
+///
+/// `maximum: 1000000` arrived with §11.24 alongside the floor, and the fragment's description binds a
+/// server to a refusal at *both* ends: *"a value outside is REFUSED with `-32602`, never clamped"*. This
+/// server accepted `1000001` and ran it for ten days.
+///
+/// The ceiling is written out here rather than read from the vendored JSON on purpose. A test that parsed
+/// the fragment for its expectation would agree with the fragment however the fragment changed, which is
+/// the same shape as asserting a reply against itself — the value below is the contract's number, and a
+/// re-vendor that moved it should make this row red and force a reading of the new text.
+///
+/// The largest **accepted** value is asserted in the same row as the anti-vacuity control: without it,
+/// a handler that refused every `count` at all would pass the refusal half perfectly. That control runs on
+/// a **one-frame** engine ([`common::spawn_with_frame_budget`]) because `1000000` instructions against the
+/// default budget is 600 frames of emulation per assertion; the request is accepted and bounded, which is
+/// exactly what a legal-but-large `count` is supposed to do.
+#[test]
+fn a_count_above_the_fragments_ceiling_is_refused_not_clamped() {
+    let h = spawn_with_frame_budget(
+        "st-ceiling",
+        testrom::build_profiler(SHORTFALL_SHAPE),
+        1024,
+        1,
+    );
+    let mut c = Client::connect(&h);
+    c.handshake(true);
+    let before = c.ok("emulator/status", json!({}));
+    for bad in [json!(1_000_001u64), json!(2_000_000u64), json!(u64::MAX)] {
+        let e = c.err("emulator/step", json!({ "count": bad }));
+        assert_eq!(
+            e["code"],
+            json!(-32602),
+            "count {bad} is above the fragment's `maximum: 1000000` and must be refused: {e}"
+        );
+    }
+    let after = c.ok("emulator/status", json!({}));
+    assert_eq!(
+        after["mclk"], before["mclk"],
+        "a refused step must not have advanced the machine"
+    );
+    // The control: 1000000 is INSIDE the bound, so it must be accepted. A handler that refused
+    // everything would satisfy the loop above and fail here.
+    let r = c.ok("emulator/step", json!({"count": 1_000_000u64}));
+    assert!(
+        r.get("pc").is_some(),
+        "the ceiling value itself is a legal request: {r}"
+    );
+}
+
+/// `count` is refused when it is not a positive integer — the fragment types it
+/// `integer, minimum 1, maximum 1000000`, and D9 makes a count a JSON number.
 #[test]
 fn a_negative_or_non_numeric_count_is_refused() {
     let (_h, mut c) = two_level("st-badcount");
@@ -218,6 +292,153 @@ fn a_negative_or_non_numeric_count_is_refused() {
             "count {bad} should be refused, got {e}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// `stepped` — §11.33 (CR-STEP-SHORTFALL)
+// ---------------------------------------------------------------------------------------------------
+
+/// **A completed step reports `stepped` equal to `count`, anchored on where the machine actually is.**
+///
+/// The expectation is derived from `testrom.rs`, not from the reply: [`PROF_LEAF`] is assembled as two
+/// `nop`s (2 bytes each) followed by an `rts`, so from `PROF_LEAF` a two-instruction step must land at
+/// `PROF_LEAF + 4`. That address is the witness `stepped` is checked against — a `stepped` that agreed
+/// with the handler's own arithmetic and nothing else would be two spellings of one belief.
+#[test]
+fn a_completed_step_reports_stepped_equal_to_count() {
+    let (_h, mut c) = two_level("st-stepped-exact");
+    park_at(&mut c, PROF_LEAF);
+    let r = c.ok("emulator/step", json!({"count": 2}));
+    assert_eq!(
+        r["pc"],
+        json!(hex(PROF_LEAF + 4)),
+        "two steps from PROF_LEAF retire both `nop`s (testrom.rs assembles them at +0 and +2)"
+    );
+    assert_eq!(
+        r["stepped"],
+        json!(2),
+        "the run was not bounded, so `stepped` is the whole count: {r}"
+    );
+}
+
+/// **THE row this parcel exists for: a step the frame budget cuts short says how far it actually got, and
+/// the number is checked against the machine rather than against the server that reported it.**
+///
+/// §11.33: *"a server that bounds a step MUST emit `stepped` whenever it is less than `count`"*, and
+/// *"`stepped` is never greater than `count`; the schema cannot express that across params and result, and
+/// the gate does not check it, so the server must."* Neither half is visible to the conformance suite —
+/// `stepped` is optional, so a server emitting nothing stays green, and a cross-field bound between a
+/// `params` object and a `result` object has nowhere to live in a per-method fragment.
+///
+/// **Why the assertion is not "the reply agrees with the reply".** A row that checked `stepped` against
+/// anything this handler computed would pass just as happily if both sides were stubbed, because they
+/// would be one side. So the number is fed back to a **second, independently spawned machine** — same ROM,
+/// same seed, same reset, but a frame budget large enough that its own step is *not* bounded — and that
+/// machine is asked to retire exactly `stepped` instructions. If the first server told the truth, the
+/// replica must arrive at the identical `pc` **and the identical `mclk`**, because the two executed the
+/// same instruction stream from the same state. Nothing about that agreement is authored by the reply
+/// under test: it is the emulated CPU's own answer to "run this many instructions".
+///
+/// `mclk` is asserted as well as `pc` because the fixture spins on the V counter, and a spin loop makes
+/// `pc` alias — several different retire counts land on the same instruction. The clock does not alias.
+///
+/// **Anti-vacuity.** The run must genuinely fall short: `stepped < count` is asserted, so a build where
+/// the budget never bound would fail here rather than pass silently. The one-frame budget is what makes
+/// that reachable in milliseconds; at the engine's real 600-frame clamp the same event needs minutes.
+#[test]
+fn a_bounded_step_reports_the_instructions_it_actually_retired() {
+    const ASKED: u64 = 1_000_000;
+
+    // The server under test: one frame of budget, so `ASKED` cannot possibly retire inside it.
+    let bounded = spawn_with_frame_budget(
+        "st-short-bounded",
+        testrom::build_profiler(SHORTFALL_SHAPE),
+        1024,
+        1,
+    );
+    let mut bc = Client::connect(&bounded);
+    bc.handshake(true);
+    let (short, events) = call_watching_events(&mut bc, "emulator/step", json!({ "count": ASKED }));
+
+    let stepped = short["stepped"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("a bounded step MUST carry `stepped` (§11.33): {short}"));
+    assert!(
+        stepped >= 1,
+        "the fragment types `stepped` as `minimum: 1`: {short}"
+    );
+    assert!(
+        stepped < ASKED,
+        "ANTI-VACUITY: this row is only a shortfall test if the run really fell short. \
+         stepped={stepped}, count={ASKED} — if these are equal the frame budget never bound and \
+         the assertion below could not fail: {short}"
+    );
+
+    // The event channel's own account of the same fact, which is what §11.33 says a reply-only client
+    // could never see. It must agree that the bound is what ended the run.
+    let stopped = events
+        .iter()
+        .find(|e| e["method"] == json!("emulator/stopped"))
+        .unwrap_or_else(|| panic!("a step emits `stopped`: {events:?}"));
+    assert_eq!(
+        stopped["params"]["deadlineReached"],
+        json!(true),
+        "the run ended on its frame bound, which is the condition `stepped < count` reports: {stopped}"
+    );
+
+    // The independent witness: a second machine, told to retire exactly the number the first reported,
+    // on a budget that will not bound it. Where it lands is the CPU's answer, not the reply's.
+    let replica = spawn_with_frame_budget(
+        "st-short-replica",
+        testrom::build_profiler(SHORTFALL_SHAPE),
+        1024,
+        600,
+    );
+    let mut rc = Client::connect(&replica);
+    rc.handshake(true);
+    let echoed = rc.ok("emulator/step", json!({ "count": stepped }));
+    assert_eq!(
+        echoed["stepped"],
+        json!(stepped),
+        "the replica's own step was not bounded, so it retired the whole count: {echoed}"
+    );
+    assert_eq!(
+        echoed["pc"], short["pc"],
+        "retiring exactly `stepped` instructions from the same reset state must reach the same \
+         instruction the bounded run stopped at — a fabricated `stepped` lands somewhere else"
+    );
+    assert_eq!(
+        echoed["mclk"], short["mclk"],
+        "...and at the same master clock, which is the half a spin loop cannot alias"
+    );
+}
+
+/// **`stepped` is `emulator/step`'s key alone.** §11.33: *"`step_over` and `step_out` take no count and
+/// stop on a condition, so a shortfall there is the condition not firing"* — the two rows are explicitly
+/// **not amended**, and their fragments do not declare the key.
+///
+/// The trap this guards is a one-line one: all three rows return through `Engine::halt_result`, so setting
+/// `stepped` there instead of in `step` would put it on all three. The schema would catch it — both
+/// fragments close `result` with `unevaluatedProperties: false` — but only as an opaque validation failure
+/// somewhere in the file, so the intent is asserted here in its own words.
+#[test]
+fn stepped_is_not_a_step_family_result_key() {
+    let (_h, mut c) = two_level("st-stepped-family");
+    park_at(&mut c, PROF_MID);
+    for m in ["emulator/step_over", "emulator/step_out"] {
+        let r = c.ok(m, json!({}));
+        assert!(
+            r.get("stepped").is_none(),
+            "{m} is NOT amended by §11.33 and its fragment declares no `stepped`: {r}"
+        );
+    }
+    // The control: the row that IS amended does carry it, so this test cannot pass by the server having
+    // dropped the key everywhere.
+    let r = c.ok("emulator/step", json!({}));
+    assert!(
+        r.get("stepped").is_some(),
+        "`emulator/step` is the row §11.33 amends and must carry the key: {r}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -530,6 +751,11 @@ fn step_omits_the_symbol_fields_entirely_when_nothing_resolves() {
 ///
 /// The exact hit is asserted too: at `PROF_LEAF` itself the displacement is `0`, present rather than
 /// omitted, because `0` is the answer and not the absence of one.
+///
+/// **The exact hit used to be spelled `count: 0`** — a step of nothing, read for its symbol fields — which
+/// is precisely what the fragment calls *"a status call spelt wrong"* and what §11.24 refused. It is now
+/// reached by stepping the `jsr` at [`PROF_MID`], which lands *on* the label. Same two assertions, one
+/// fewer superseded request.
 #[test]
 fn step_reports_the_bare_label_and_the_displacement_beside_it() {
     let (_h, mut c) = two_level("st-sym");
@@ -546,9 +772,11 @@ fn step_reports_the_bare_label_and_the_displacement_beside_it() {
         json!({ "path": path.to_str().unwrap() }),
     );
 
-    // Park one instruction short so the step lands ON the label: an exact hit, disp 0.
-    park_at(&mut c, PROF_LEAF);
-    let exact = c.ok("emulator/step", json!({"count": 0}));
+    // Park one instruction short so the step lands ON the label: an exact hit, disp 0. `PROF_MID + 0` is
+    // `jsr (LEAF).w`, so one step from there enters the callee at `PROF_LEAF` exactly.
+    park_at(&mut c, PROF_MID);
+    let exact = c.ok("emulator/step", json!({"count": 1}));
+    assert_eq!(exact["pc"], json!(hex(PROF_LEAF)), "setup: {exact}");
     assert_eq!(exact["symbol"], json!("Leaf"), "{exact}");
     assert_eq!(
         exact["symbolDisp"],

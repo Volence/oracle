@@ -159,9 +159,65 @@ behaviour in the tree.
 3. **`lookup_symbol` caveat overwrite confirmed and deliberately NOT fixed** — conformant, real
    loss. *Wrong if:* "conformant" is the wrong bar for a known information loss.
 4. **F-STEP-FRAME-BOUND:** the 600-frame bound is **server policy and undiscoverable** — no contract
-   key exists for it. Rides the D-02 CR.
+   key exists for it. ~~Rides the D-02 CR.~~ ⚑ **ANSWERED 2026-09-04 by §11.33, and the answer is that
+   the bound STAYS undiscoverable on purpose.** CR-STEP-SHORTFALL offered a `count` ceiling as one of
+   its three shapes — the shape that would have made the budget a contract fact — and the hub declined
+   it: *"a frame budget is a server constant and a contract that names it either pins every
+   implementation to one number or invents a negotiation for one method."* What ships instead is
+   `stepped`, which makes the bound's **effect** discoverable per call without making the bound itself
+   negotiable. The finding is closed; the undiscoverability is now a ruling rather than a gap.
 
 ---
+
+## L-04 — D-02 / D-03 CR text · ~~`UNADJUDICATED`~~ **ADJUDICATED — in two parts, 2026-08-26 and 2026-09-04** (original kept below)
+
+**Ruled by the hub** under the owner's standing delegation, and this entry's whole subject is now closed:
+
+* **D-02 and D-03 — `empyrean` `0a4313e` (2026-08-25), `protocol.md` §11.24.** `count` became
+  **`≥1 / default 1 / ≤1000000`**, refused at both ends and never clamped; `step_over`/`step_out` got
+  `step`'s `pc`/`symbol?`/`symbolDisp?`, which is D-03 exactly as this entry proposed it.
+* **The `reached` half — `empyrean` `8a930919`/`3b43185e` (2026-09-04), §11.33**, raised from this lane as
+  **CR-STEP-SHORTFALL** and adopted as **`stepped`?** on `emulator/step`'s result: the instructions
+  actually retired. Served here in the CR-STEP-SHORTFALL parcel. Both revisions verified reachable from
+  empyrean `origin/main` by running `merge-base --is-ancestor`, and `--stat` checked against what they are
+  cited for (⚑ `3b43185e` carries `protocol.md` and `vectors.json` but **not** the schema; `8a930919` is
+  the commit that wrote the schema bytes).
+
+**Outcome, decision by decision against the banked text — and ONE OF OURS WAS RULED AGAINST:**
+
+1. *`count? (≥0, def 1, ≤ maxStepCount)`, refused above the ceiling rather than clamped* — **the refusal
+   stood, the ceiling's spelling did not.** §11.24 pins a **literal 1000000** rather than a negotiated
+   `maxStepCount`, on the same argument §11.33 later used to decline a frame ceiling: a contract that names
+   a server constant either pins every implementation to one number or invents a negotiation for one
+   method. Our proposal invented the negotiation; the ruling took the number.
+2. ⚑ **"*floor stays 0 against the audit's `≥1`* (zero is definitional for a count and is a useful *where
+   am I without moving the machine* probe)" — REJECTED, and the audit was right.** §11.24's own words:
+   *"Zero was refused rather than clamped because the two servers disagreed on it and a step of nothing is
+   a status call spelt wrong."* **That is the sharper reading and it was available to us**: we had already
+   observed the two servers disagreeing and treated the disagreement as evidence that zero needed a
+   defined meaning, when it was evidence that zero needed to stop being a step. The "useful probe" argument
+   was ours and it was answered by a method that already exists — `emulator/status` is the probe, and
+   `step {count: 0}` was that call spelt wrong. Measured cost of getting this backwards: `tests/step.rs`
+   carried a row *asserting* the zero step legal, and a second row that **used** it as a device, and the
+   handler passed `parse_count(…, 0, u64::MAX)` for ten days after §11.24 landed.
+3. *`reached` on the result, because "did my 10,000 steps happen?" is the case the result cannot express* —
+   ⚑ **the DEFECT stood and the SHAPE was replaced, for the better.** §11.33 declined `reached` (a boolean
+   answering "did it finish") in favour of **`stepped`** (a number answering "how far did it get"), and
+   declined `caveat` as *"the worse spelling of the same fact — a string a client must parse to learn a
+   count"*. A caller who reads `stepped: 10670` against `count: 10000` learns everything `reached: false`
+   would have told them **and where the machine is**, which is the question `reached` leaves open.
+
+⚑ **AND THE L-02 LESSON REPEATED HERE, WORD FOR WORD, IN THE SAME FILE.** L-02 closed on the finding that
+*"most of CR-B was already ruled on 2026-08-26, by an audit pass that never named the CR"*, and prescribed:
+**name the CR in the amendment that takes it.** D-02 and D-03 were ruled on by that same 08-26 audit pass,
+and **this entry did not learn it either** — for ten days, while a lane read this ledger at boot. So the
+prescription is not sufficient on its own, because it binds the *author of the amendment*, who is upstream
+and has no reason to know this file exists. The half that binds **us**: ⚑ **an entry naming a defect ID
+(`D-02`) is a claim about the CURRENT contract, and it must be re-derived against the contract, not merely
+re-read.** The cheap form is mechanical — grep the vendored fragment for the row the entry is about before
+trusting the entry. Here that would have taken one command and saved ten days of a live conformance defect.
+
+*(Original entry follows, unaltered.)*
 
 ## L-04 — D-02 / D-03 CR text · `UNADJUDICATED` (not yet drafted as a CR)
 

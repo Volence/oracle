@@ -1169,6 +1169,21 @@ struct OpenFrame {
     supervisor: bool,
 }
 
+/// What one `step*` run ended up doing: where it stopped, and how much it actually got through.
+///
+/// The second field exists because §11.33 (CR-STEP-SHORTFALL) made the shortfall a *reply* fact rather than
+/// an event-only one, and a `u32` return could not carry it. `step_over`/`step_out` read only `pc` — §11.33
+/// deliberately does not amend those rows — but the tally is collected for every goal, because it is the
+/// machine's own retire count and costs nothing to keep.
+struct StepRun {
+    /// The instruction about to execute when the run stopped.
+    pc: u32,
+    /// Instructions the CPU actually retired during this run, counted from the core's retire callback.
+    /// Equal to the requested `count` on a completed `emulator/step`, and **less** when a breakpoint, a
+    /// watchpoint or the frame budget ended it first.
+    retired: u64,
+}
+
 /// What a step-shaped run is waiting for.
 enum StepGoal {
     /// `emulator/step` — retire this many more instructions, then stop. Counted down on **retires**, never
@@ -1217,19 +1232,28 @@ struct StepStop {
     /// right one and a far better answer than a confident wrong `pc`.
     lost_track: bool,
     fired: bool,
+    /// Instructions this run retired, counted on **every** retire the core delivers and independently of
+    /// [`goal`](StepStop::goal). This is what `emulator/step` reports as §11.33's `stepped`, and the reason
+    /// it is a separate tally rather than `count - remaining` is that the latter is the handler's own
+    /// arithmetic wearing a witness's clothes: it can only ever agree with what the handler already
+    /// believes. This one comes off the CPU.
+    retired: u64,
 }
 
 impl StepStop {
     fn new(goal: StepGoal) -> Self {
-        // `count: 0` is a legal request (the fragment's `minimum` is 0) and it means what it says: retire
-        // nothing. Firing before the first boundary is how "nothing" is spelled, and it is a real answer —
-        // a caller establishing where the machine already is, without moving it.
+        // `StepGoal::Instructions(0)` is no longer reachable from the wire: §11.24 gave `count` a `minimum`
+        // of 1 and `emulator/step` refuses 0 with -32602 rather than treating it as "retire nothing" (the
+        // fragment: *"a step of nothing is a status call spelt wrong"*). The arm is kept because the type
+        // still admits the value and a run that fires only at the first boundary would otherwise retire one
+        // instruction for a goal of zero — a silent off-by-one waiting for the next caller of this type.
         let fired = matches!(goal, StepGoal::Instructions(0));
         Self {
             goal,
             opened: Vec::new(),
             lost_track: false,
             fired,
+            retired: 0,
         }
     }
 
@@ -1305,6 +1329,13 @@ impl BusEventSink for StepStop {
     fn on_event(&mut self, _event: BusEvent) {}
 
     fn on_step_retire(&mut self, r: StepRetire) {
+        // Counted BEFORE the `fired` guard, so the tally is "what the CPU retired during this run" rather
+        // than "what this sink was still interested in". If the run loop ever delivered a retire after the
+        // stop was requested, that instruction really did execute and `pc` really is past it — reporting it
+        // is the truthful answer, and hiding it behind the guard would make `stepped` disagree with `pc`.
+        // (It does not, in fact, on `StepGoal::Instructions`: `step {count: 2}` retires exactly 2, which is
+        // pinned from the wire in `tests/step.rs`.)
+        self.retired = self.retired.saturating_add(1);
         if self.fired {
             return;
         }
@@ -1935,11 +1966,16 @@ impl Engine {
     /// caller in any `src/` for that reason. `run_frames_with_sink` is additionally the only entry point
     /// that maintains the private frame anchor an early stop has to re-anchor, so bypassing it would corrupt
     /// every subsequent `run_frames`.
-    fn advance_stepping(&mut self, max_frames: u64, goal: StepGoal) -> Advanced {
+    /// Returns the attribution alongside **the run's own retire tally** — the second half is what §11.33's
+    /// `stepped` is built on, and it is deliberately not folded into [`Advanced`]: the other three advancing
+    /// shapes have no instruction counter to put there, and a field that is `0` for them would be
+    /// indistinguishable from "this run retired nothing", which is a real answer for a halted CPU.
+    fn advance_stepping(&mut self, max_frames: u64, goal: StepGoal) -> (Advanced, u64) {
         let mut stop = StepStop::new(goal);
         let (record, broke_at) = self.advance_with(max_frames, &mut stop);
         let fired = stop.fired;
-        self.attribute(record, fired, broke_at)
+        let retired = stop.retired;
+        (self.attribute(record, fired, broke_at), retired)
     }
 
     /// [`advance_until`](Engine::advance_until) for `emulator/run_to_scanline` (§6 line 855): the same run,
@@ -3029,40 +3065,66 @@ impl Engine {
         Ok(out)
     }
 
-    /// **§6 line 851 — `emulator/step`.** `count`? → `pc`, `symbol`?, `symbolDisp`?
+    /// **§6 line 851 — `emulator/step`.** `count`? → `pc`, `stepped`?, `symbol`?, `symbolDisp`?
     ///
-    /// `count` is served **exactly as the fragment writes it**: `integer, minimum 0`, no default, no
-    /// ceiling. Every sibling count in the catalog states its bounds (`run_frames.frames? (≥1, def 1)`,
-    /// `press.frames? (1-1000, def 2)`, `run_to.maxFrames? (≥1, def 600)`); this one states none, and the
-    /// fragment says so deliberately — inventing a bound here would make the schema the author of a
-    /// constraint the contract never agreed. It is registered upstream as **audit D-02**, and this server
-    /// reports the defect rather than repairing it locally.
+    /// `count` is served **exactly as the fragment writes it**: `integer, minimum 1, maximum 1000000`,
+    /// default 1. The fragment's own description spells out what a server owes those bounds — *"a value
+    /// outside is REFUSED with `-32602`, never clamped … Zero was refused rather than clamped because the
+    /// two servers disagreed on it and a step of nothing is a status call spelt wrong"* — so both ends are
+    /// a refusal here, and neither is clamped.
     ///
-    /// Two consequences of that, both visible from here and neither hidden:
+    /// **This row was wrong for ten days and the archaeology is the lesson, not the fix.** Until §11.24
+    /// (`empyrean` `0a4313e`, 2026-08-25) the fragment really did read `minimum: 0` with no ceiling and no
+    /// default, registered upstream as **audit D-02**, and the comment that used to sit on the parse call
+    /// said so accurately. `0a4313e` closed D-02; the re-vendor landed here and **the handler did not move
+    /// with it**, so handler, comment and test stayed mutually consistent and all three wrong. Nothing in
+    /// this repo could surface that: a `params` fragment describes what a conformant *client* sends, and a
+    /// server's duty to **refuse** what falls outside it is behaviour a document schema is structurally
+    /// blind to. The bounds are asserted from the wire in `tests/step.rs`, which is the only place that
+    /// blindness is covered.
     ///
-    /// * **The default is this server's invention, because the contract has none.** An omitted `count` has
-    ///   to mean *something*, and `1` is the only reading that matches what every sibling spells out and
-    ///   what the word "step" means. But it is a choice, so two conformant servers could disagree about
-    ///   `{}` — which is the half of D-02 a client hits first.
-    /// * **A step still runs inside a frame bound**, because an unbounded count is an unbounded run wearing
-    ///   a different name, and the core refuses those on principle (*"an unbounded `run_until` that silently
-    ///   hangs is strictly worse than a hand-tuned frame budget"*). A count too large to retire inside the
-    ///   bound stops early — and `step`'s result has **no key that can say so**, no `reached`, and a
-    ///   `caveat` the fragment declares absent. The `stopped` event carries `deadlineReached` and is the
-    ///   only place the shortfall is visible. That is the CR this method's experience argues for.
+    /// **The default is still this server's, but the contract now agrees with it.** §11.24 wrote `default 1`
+    /// into the fragment, so `{}` stepping once is no longer a coin-flip between two conformant servers —
+    /// it is transcribed like the bounds are.
+    ///
+    /// **A step runs inside a frame bound, and now says so.** An unbounded count is an unbounded run
+    /// wearing a different name, and the core refuses those on principle (*"an unbounded `run_until` that
+    /// silently hangs is strictly worse than a hand-tuned frame budget"*), so a `count` too large to retire
+    /// inside [`run_step`](Engine::run_step)'s budget stops early. §11.33 (CR-STEP-SHORTFALL, raised from
+    /// this handler's own experience) adopted **`stepped`** for exactly that: see `run_step` for what is
+    /// counted and [`halt_result`](Engine::halt_result) for why the key is attached here rather than there.
     fn step(&mut self, params: &Value) -> Result<Value, RpcError> {
         self.require_paused("emulator/step")?;
-        // `minimum: 0` is the fragment's floor and `u64::MAX` is its stated absence of a ceiling. Neither is
-        // a policy this server chose; both are transcribed.
+        // `1` and `1_000_000` are the fragment's floor and ceiling verbatim (§11.24). Neither is a policy
+        // this server chose; both are transcribed — and unlike the comment this replaces, that is now true.
+        // `parse_count` renders both ends as -32602, which is the refusal the description names.
         let count = match params.get("count") {
             None => 1,
-            Some(v) => hex::parse_count("count", v, 0, u64::MAX)?,
+            Some(v) => hex::parse_count("count", v, 1, 1_000_000)?,
         };
-        let pc = self.run_step(StepGoal::Instructions(count));
+        let StepRun { pc, retired } = self.run_step(StepGoal::Instructions(count));
         // No `caveat`, and that is the fragment's word rather than an omission: it declares the key ABSENT
         // (the `sprites` precedent) because a step has no weaker-answer condition §6 names. §8 item 20's
-        // closure would reject one, and the suite applies that closure to every reply.
-        Ok(self.halt_result(pc))
+        // closure would reject one, and the suite applies that closure to every reply. §11.33 chose
+        // `stepped` over `caveat` for the same reason: the shortfall is a number, not prose.
+        let mut out = self.halt_result(pc);
+        // §11.33: "a server that bounds a step MUST emit `stepped` whenever it is less than `count`, and
+        // SHOULD emit it always". This server bounds, so it takes the SHOULD: the count is reported on
+        // every reply, whatever ended the run, because the alternative — emit it only when short — makes
+        // absence carry two meanings for a client that cannot tell a bounding server from a non-bounding
+        // one. `retired` is the CPU's own retire tally, not this handler's arithmetic on `count`.
+        //
+        // The one value it cannot carry: the fragment types `stepped` as `minimum: 1`, so a run that
+        // retired NOTHING is inexpressible. That is reachable in principle — a CPU already halted on a
+        // `STOP` retires no instruction for the whole frame budget — and absence then reads as "the count
+        // ran", which is the one thing §11.33 says absence never means. Omitting is still the lesser of
+        // the two wrongs, because emitting `0` is a reply the adopted fragment refuses outright; the
+        // honest channel in that case remains `stopped`'s `deadlineReached`. Carried openly rather than
+        // papered over with a `max(1)`, and owed upstream as a `minimum: 0` amendment.
+        if retired >= 1 {
+            out["stepped"] = json!(retired);
+        }
+        Ok(out)
     }
 
     /// **§6 — `emulator/step_over`.** No params → `pc`, `symbol`?, `symbolDisp`?
@@ -3088,7 +3150,12 @@ impl Engine {
             ControlFlow::Call => StepGoal::OverCall,
             _ => StepGoal::Instructions(1),
         };
-        let pc = self.run_step(goal);
+        // `.pc` and not the whole [`StepRun`]: §11.33 amends `emulator/step` alone — *"`step_over` and
+        // `step_out` take no count and stop on a condition, so a shortfall there is the condition not
+        // firing"* — and these two rows' fragments do not declare `stepped`, so §8 item 20's closure would
+        // reject it. That is also why the key is set in `step` rather than inside `halt_result`, which all
+        // three share.
+        let pc = self.run_step(goal).pc;
         Ok(self.halt_result(pc))
     }
 
@@ -3106,7 +3173,12 @@ impl Engine {
             sp0: regs.a7(),
             supervisor: regs.supervisor(),
         };
-        let pc = self.run_step(goal);
+        // `.pc` and not the whole [`StepRun`]: §11.33 amends `emulator/step` alone — *"`step_over` and
+        // `step_out` take no count and stop on a condition, so a shortfall there is the condition not
+        // firing"* — and these two rows' fragments do not declare `stepped`, so §8 item 20's closure would
+        // reject it. That is also why the key is set in `step` rather than inside `halt_result`, which all
+        // three share.
+        let pc = self.run_step(goal).pc;
         Ok(self.halt_result(pc))
     }
 
@@ -3135,8 +3207,16 @@ impl Engine {
 
     /// The run all three `step*` rows share: advance under a [`StepGoal`], then report the halt.
     ///
-    /// Returns the PC the machine stopped at, which is `emulator/step`'s whole result and is what the
-    /// `stopped` event carries for all three.
+    /// Returns the PC the machine stopped at — what the `stopped` event carries for all three — and the
+    /// number of instructions the run actually retired.
+    ///
+    /// **The retire tally is the machine's, not this function's.** It is incremented from
+    /// [`StepStop::on_step_retire`], the core's own retire callback, and never derived from `count` or from
+    /// anything the handler already knows. That is the point: a `stepped` computed by subtracting a
+    /// remaining-counter would agree with the reply for the same reason a stubbed derivation makes two
+    /// sides agree — because they are one side. Only [`StepGoal::Instructions`] consumes it, but every goal
+    /// counts, so `step_over`/`step_out` could report the same number if a row ever asked for it (§11.33
+    /// explicitly does not amend them).
     ///
     /// **The `stopped` reason is `step` for all three methods.** §3 pins that explicitly — *"`step` covers
     /// `step`, `step_over` and `step_out` because those three share one stop condition"* — so neither
@@ -3147,14 +3227,14 @@ impl Engine {
     /// and when it does the step's condition was *not* met. Calling that a completed `step` would be the
     /// knowing mislabel §8 item 13 names, so the halt is attributed to the watch exactly as `run_to` and
     /// `run_frames` attribute theirs.
-    fn run_step(&mut self, goal: StepGoal) -> u32 {
+    fn run_step(&mut self, goal: StepGoal) -> StepRun {
         // The bound is a server policy and it has to be: none of the three rows takes a param that could
         // carry one, and their params objects are closed, so there is nowhere for a caller to put a budget.
         // `run_to`'s own default is the precedent for the number.
         let max_frames = self.config.max_run_frames.min(600);
         self.running = true;
         self.emit_resumed();
-        let run = self.advance_stepping(max_frames, goal);
+        let (run, retired) = self.advance_stepping(max_frames, goal);
         self.running = false;
         let pc = self.sys.cpu_regs().pc;
         let mut extra = Map::new();
@@ -3167,13 +3247,14 @@ impl Engine {
             extra.insert("watch".into(), json!(watch_wire_id(id)));
             self.emit_stopped(StopReason::Watchpoint, pc, extra);
         } else {
-            // `true` when the run ended on its frame bound rather than on the step condition (D12) — the
-            // only channel on which a short step is visible at all, since none of the three results has a
-            // key for it. `run_to` spells its complement the same way.
+            // `true` when the run ended on its frame bound rather than on the step condition (D12). It was
+            // the ONLY channel on which a short step was visible until §11.33 gave `emulator/step`'s reply
+            // `stepped`; it is still the only one for `step_over`/`step_out`, which §11.33 does not amend.
+            // `run_to` spells its complement the same way.
             extra.insert("deadlineReached".into(), json!(!run.predicate_fired));
             self.emit_stopped(StopReason::Step, pc, extra);
         }
-        pc
+        StepRun { pc, retired }
     }
 
     // `pause`/`resume` are the wire spelling of exactly one state change, so they share

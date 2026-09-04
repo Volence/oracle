@@ -20,32 +20,40 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = bd6af51a6647a93e4a0c4f6900bb8b895b9fa353
-    pin.blob     = cf40685488d8dc39a7ecb6b89ae797b3103f1f5f
-    pin.bytes    = 346137
+    pin.revision = 8a9309194ce67144a2efb532323947f623b64f96
+    pin.blob     = 41ec64709e9dd63e38b11b10f759ff4a3335410d
+    pin.bytes    = 347476
 
 ## Current copy
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`e04a94f259bdaffc38da85785eb0e3f48ad0bd1b`** (2026-09-03) — *not* `origin/main`'s tip (`02ea386` at adoption), and that is deliberate: it is the last commit that **touched this file**, derived with `git log -1 -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip, and `git merge-base --is-ancestor e04a94f origin/main` was **run**, not assumed (it exited 0). 67 fragments; all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
-| Last commit that touched the schema | **`e04a94f259bdaffc38da85785eb0e3f48ad0bd1b`** — *"§11.32 addendum: object_spawn/move replies re-read x/y after the frame advance, never echo (oracle's ruling); schema descriptions name the moment"* (2026-09-03). |
-| Git blob | `487af407cbb08e433aa1d5aa60ceaad1e73916e6` |
-| SHA-256 | `0638548c7317a421773fda71ba966832764c68d499d1fef9f9a9dd6eaa13b996` |
-| Bytes | 345965 |
-| Vendored on | 2026-09-03 |
+| Contract repo revision | **`8a9309194ce67144a2efb532323947f623b64f96`** (2026-09-04) — *not* `origin/main`'s tip (`7498dd2` at adoption), and that is deliberate: it is the last commit that **touched this file**, derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from the tip, and `git merge-base --is-ancestor 8a930919 origin/main` was **run**, not assumed (it exited 0). 67 method fragments; all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy**, never carried over from the table this replaced. |
+| Last commit that touched the schema | **`8a9309194ce67144a2efb532323947f623b64f96`** — *"protocol: section 11.33, CR-STEP-SHORTFALL adjudicated: stepped? on emulator/step's result (the instructions actually retired); four vectors; two mutations"* (2026-09-04). |
+| Git blob | `41ec64709e9dd63e38b11b10f759ff4a3335410d` |
+| SHA-256 | `9d065dcb6312eb825a009bea4d8b63b2fc592e92ab522385afc536d312954442` |
+| Bytes | 347476 |
+| Vendored on | 2026-09-04 |
 
-> **⚑ The revision this pins is `e04a94f`, NOT the `21c78d2` the parcel was briefed with.** `21c78d2` is
-> the merge that landed the three CR-J fragments; `e04a94f` is the §11.32 **addendum** that lands on top
-> of it and rewrites `object_spawn.result.x`/`.y`'s descriptions from *"neither §11.32 nor CR-J §9 says
-> whether the reply echoes … or re-reads"* to *"AS READ FROM THE OBJECT'S RECORD AFTER `framesAdvanced`
-> FRAMES — never an echo"*. Vendoring `21c78d2` would have pinned a copy whose own text says the question
-> this lane already ruled on is open. Derived, not assumed: `git log -1 --format=%H origin/main --
-> contract/schema/bus-protocol.schema.json` answered `e04a94f`, which is the recipe below working
-> exactly as written.
+> **⚑ The pin is `8a930919`, NOT §11.33's own adoption commit `3b43185e`, and that is the recipe rather
+> than a preference.** `3b43185e` is the *correction* to §11.33 — it removes the `caveat` fail-vector that
+> could not be one, since the harness closes pass vectors only — and it touches `contract/protocol.md` and
+> `contract/schema/tests/vectors.json` **and not this file**. `git log -1 --format=%H origin/main --
+> contract/schema/bus-protocol.schema.json` answers `8a930919`, and the two revisions resolve this path to
+> **the same blob** `41ec6470…`, so pinning the tip-of-the-ruling would have named a commit that never
+> wrote these bytes. Both were confirmed ancestors of `origin/main` by running
+> `git merge-base --is-ancestor`, not by assuming.
+>
+> ⚑ **The table this replaces was STALE, and the stale half was the half no gate reads.** It described
+> blob `487af407…` / revision `e04a94f…` / 345965 bytes while the pin block above said
+> `cf40685488…` / `bd6af51a…` / 346137, and the vendored file hashed to `cf40685488…` at 346137 — so the
+> **pin** was right and the **prose** was describing the re-vendor *before* last. `schema_conformance.rs`
+> parses the `pin.*` markers and nothing at all reads this table, so the file was green while telling any
+> human reader the wrong revision. Every figure in the table above is therefore derived by parsing the
+> bytes actually written in this commit; none is carried over.
 
-**Taken from the object store at a committed revision**, `git show e04a94f:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `487af407…`, equal to `git rev-parse e04a94f:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show 8a930919:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `41ec6470…`, equal to `git rev-parse 8a930919:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
@@ -94,6 +102,60 @@ serve that needs the new schema.
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.33, `stepped` on `emulator/step` (2026-09-04)
+
+Landed **with** the serve, in one commit, for the reason the §11.32 box below states in general and this
+row states in the sharpest possible form: the key is **optional**, so a re-vendor ahead of the serve is
+green against a server that emits nothing, and a serve ahead of the re-vendor is red for a good reason —
+`emulator/step`'s `result` is closed with `unevaluatedProperties: false`, so `stepped` on the wire against
+the previous copy fails §8 item 20's closure. One commit is the only ordering with no window.
+
+**The CR is this lane's own**, raised 2026-09-04 out of `emulator/step`'s handler doc, and the hub
+adjudicated it under standing delegation, choosing `stepped` over the two alternatives the CR offered (a
+`count` ceiling, or permission to carry `caveat`). This lane serves the SHOULD as well as the MUST: §11.33
+requires the key only when it is short, and this server emits the retired count on **every** `step` reply,
+because a client that cannot tell a bounding server from a non-bounding one cannot read absence at all.
+
+Figures **re-derived by parsing the previous copy and this one**, never read from a commit message:
+
+| | previous copy (`bd6af51a`) | this copy (`8a930919`) | delta |
+|---|---|---|---|
+| method fragments | 67 | **67** | unmoved — §11.33 is additive *inside* a row, not a new row |
+| fragments declaring / closing `params` / declaring `result` | 67 / 67 / 67 | **67 / 67 / 67** | 0 / 0 / 0 |
+| `$defs` | 19 | **19** | unmoved — `stepped` is an inline `integer`, not a new `$def` |
+| `emulator/step.result` properties | `pc`, `symbol`, `symbolDisp` | **`pc`, `stepped`, `symbol`, `symbolDisp`** | **+1**: `stepped` (`type: integer`, `minimum: 1`, `description`) |
+| `emulator/step.$comment` | ends at *"caveat is declared ABSENT (the sprites precedent)"* | **same, plus the §11.33 sentence** | 1 leaf changed |
+| bytes | 346137 | **347476** | +1339 |
+
+**What this re-vendor's green does and does not witness — and on this row the "does not" is most of it.**
+
+* It witnesses that `stepped` is **declared**, which is the only thing the closure can prove: before these
+  bytes, a reply carrying `stepped` was refused by `unevaluatedProperties: false`; after them it is
+  accepted. That is a real, measurable flip and it is exactly one bit wide.
+* It witnesses `minimum: 1`, so a server that emitted `stepped: 0` is red.
+* **It cannot witness that the key is ever emitted.** `stepped` is optional and `required` names only
+  `pc`, so a server that deleted the whole feature stays green here. `tests/step.rs` is the only thing
+  that holds the emission, and it anchors on the machine rather than on the reply — see
+  `a_bounded_step_reports_the_instructions_it_actually_retired`.
+* **It cannot witness `stepped ≤ count`.** §11.33 says so itself: *"the schema cannot express that across
+  params and result, and the gate does not check it, so the server must."* A cross-field invariant between
+  a `params` object and a `result` object has nowhere to live in a per-method fragment. That obligation is
+  held by `tests/step.rs` alone.
+* **It cannot witness the `count` bounds either**, and that is the other half of this parcel. `minimum: 1`
+  / `maximum: 1000000` on `count` arrived in the **previous** copy but one (§11.24, `0a4313e`, 2026-08-25)
+  and this server ignored both for ten days while every gate stayed green — because a `params` fragment
+  describes what a conformant **client sends**, and a server's duty to **refuse** what falls outside it is
+  behaviour a document schema is structurally blind to. **A re-vendor is a silent contract change unless
+  something checks the server against the new text.** The refusals are asserted from the wire in
+  `tests/step.rs`, which is where that blindness is covered.
+
+**One value the fragment cannot carry, reported rather than papered over.** `stepped` is `minimum: 1`, so
+a `step` whose run retired **nothing** — a CPU already halted on `STOP` retires no instruction for the
+whole frame budget — has no legal spelling: `0` is refused by the fragment and absence is the one reading
+§11.33 says never means a shortfall. This server omits the key in that case, as the lesser of two wrongs,
+and leaves `stopped`'s `deadlineReached` as the honest channel. Owed upstream as a `minimum: 0` amendment;
+the handler carries the same note at the `if retired >= 1` that implements it.
 
 ### What this re-vendor adopted — §11.32, the three object MUTATION rows (2026-09-03)
 
