@@ -114,69 +114,42 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 
 **Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed:**
 
-- **▶ CLOSED — THE TWO CR-B Z80 RUNTIME FOLLOW-UPS WERE NEVER OUR DEFECTS, AND THE BOOKING IS WHAT WAS
-  WRONG.** The acceptance-contract section booked two runtime demonstrations on 2026-08-22: the tail wrap
-  (`z80_write {addr:"0x3FFC", bytes:<8>}` → *"bytes 5–8 land at `$0000–$0003`"*) and the silent `len` clamp
-  (`z80_read {len:10000}` → `8192`, no error). **Both measured firsthand today against our own shipped
-  binary through the consumer's own spawn path, and both REFUSE LOUDLY:**
-  `-32004 the Z80 window is 0x0000-0x3FFF and this access ends at 0x00004004 — refused whole rather than
-  wrapped, because a wrapped write lands on 0x0000 and reports success`, and
-  `-32602 \`len\` = 10000 is outside 0..=8192`.
-  **The refusal was verified WHOLE, not partial** — `$1FFC-$1FFF` and `$0000-$0007` byte-identical to
-  baseline after the refused write — **and the probe was controlled**: a 4-byte write at `$3FFC` DID land at
-  `$1FFC`, so the unchanged reading is a measurement and not a blind probe (bar 16(d): for an absence the
-  control IS the measurement).
-  ⚑ **WHY THE BOOKING WAS WRONG, and it is this file's OWN bar firing on this file's own register.** The
-  entry never named an implementation. It was a claim about *"the server"* — and CR-B was reading
-  **`oracle-old`**, at `d629771`, as `engine.rs:4630,4643`'s own doc comments say in as many words
-  (*"the legacy server silently clamped 10000 to 8192"*; *"clobbered `$0000`, and replied success"*).
-  **Our server did not serve `emulator/z80_read`/`z80_write` AT ALL until `0f35ae1` (2026-08-29)**, whose
-  subject is literally *"bounded at both ends"* and which shipped a 228-line `tests/z80_window.rs`. So ours
-  was **built to refuse these**, with the legacy behaviour named as the thing being avoided.
-  **The register entry described legacy defects in words that read as ours, and a later session — this one —
-  spent probes on it.** That is exactly the two-implementer conflation this file already books a sweep for
-  (*"every claim about server behaviour either names its implementation or is a latent conflation"*), landing
-  on the register that was written to track the conflation. **The sweep is now owed against this file's own
-  follow-up register, not only against the recon/demand/CR docs it was scoped to.**
-  ⚠ **Do not read this as wasted work.** Nothing before today had confirmed the `0f35ae1` guards hold **in
-  the binary a consumer actually spawns** — the merged-serve bar's exact question, and the probes answer it
-  firsthand. What was wasted was the *reason* for running them.
+- **▶ THREE OF THE FOUR FOREGROUND RUNTIME FOLLOW-UPS WERE STALE, AND ONE WAS NEVER OURS AT ALL.**
+  Closed 2026-09-04 by measuring them the moment a lane-owned instrument existed. **The two CR-B Z80 rows**
+  (tail wrap, silent `len` clamp) described **`oracle-old`** — CR-B's actual subject, at `d629771` — while
+  the booking said only *"the server"*; ours has refused both since `0f35ae1` (08-29), the commit that first
+  served the Z80 pair at all. **`write_vram`'s SAT-cache desync** was closed by the 08-27 parcel via
+  `Vdp::poke_vram`. All three verified firsthand against the binary a consumer spawns, each with a control
+  proving the probe could see the effect it was looking for.
+  **`step`'s frame-budget truncation is NOT closed with them** — see the live entry below.
+  *(Measurements, archaeology and the restore proofs: `OVERSEER-LOG.md`, 2026-09-04.)*
 
-- **▶ ALSO CLOSED — `write_vram` SAT-CACHE DESYNC. Third of the four, same shape.** Resolved by the
-  2026-08-27 `write_vram` parcel (`docs/2026-08-27-write-vram.md` §5) and never struck here. The survey's
-  claim was TRUE of `vram_mut()` — a bare-array hatch with no SAT write-through — but **the bus does not use
-  it**: `Vdp::poke_vram` was added with the same store and the same cached-half mirror, and
-  `engine.rs:3626` calls it. **Verified live today rather than from the doc**: wrote `0x0100` over sprite 0's
-  Y word at `satBase 0xB800`, and `emulator/sprites` reported `y: 128` with **`cacheDivergence: false`** —
-  the desync would have shown the OLD `y: 104` and `cacheDivergence: true`. Restored byte-identical
-  (`00E8 0501 A3F8 0118`, read back and compared). The anti-drift row `vram_poke_matches_the_port_path`
-  (`vdp.rs:2780`) is what keeps the duplicated SAT arithmetic honest.
+  **⚑ THE BAR, and it is this file's own two-implementer rule landing on this file's own register.** Every
+  one of the three read as a defect in OUR server because **the entry never named an implementation**, and a
+  later session spent probes on them. The conflation sweep this file already books was scoped to the
+  recon/demand/CR docs; **it is now owed against the follow-up register too**, which is worse exposure,
+  because a register is read as a to-do list rather than as a claim and so is never re-derived.
 
-- **▶ STILL LIVE, AND DIFFERENT IN KIND — `step` FRAME-BUDGET TRUNCATION. Do not close it with the other
-  three, and DO NOT SPEND A PROBE ON IT.** It is **not** a which-server defect: it is a **contract shape**
-  gap that binds any conformant server. `step`'s `count` has no ceiling while every advance primitive is
-  frame-bounded (`max_run_frames` default 3600), so an over-large `count` stops early and **the fragment
-  gives the reply no key to say so** — no `stepped`, no `reached`, and `caveat` declared ABSENT, so emitting
-  one would fail §8 item 20's closure. The shortfall is visible only on `emulator/stopped`'s
-  `deadlineReached`.
-  **It needs a CR — `stepped` in the result, or a `count` ceiling, or permission to carry `caveat`; any one
-  closes it, the current row closes none — and a demonstration adds nothing a CR reader needs.**
+  **⚑ AND THE SECOND BAR: A BOOKED DEFECT CAN BE CLOSED BY UNRELATED WORK, AND NOTHING CLOSES THE BOOKING.**
+  Two of the three were fixed by parcels that were not about them, six and eight days before anyone noticed,
+  through several sessions that read this file at boot. **A register entry has no reader who would meet the
+  contradiction.** Operational form: **when a parcel serves a method, grep this register for that method's
+  name before writing the landing.**
+
+- **▶ STILL LIVE, AND DIFFERENT IN KIND — `step` FRAME-BUDGET TRUNCATION. Do not close it with the three
+  above, and DO NOT SPEND A PROBE ON IT.** Not a which-server defect: a **contract shape** gap binding any
+  conformant server. `count` has no ceiling while every advance primitive is frame-bounded
+  (`max_run_frames` 3600), so an over-large `count` stops early and **the fragment gives the reply no key to
+  say so** — no `stepped`, no `reached`, `caveat` declared ABSENT so emitting one fails §8 item 20's closure.
+  Visible only on `emulator/stopped`'s `deadlineReached`. **Needs a CR — `stepped`, or a `count` ceiling, or
+  permission to carry `caveat`; any one closes it and the current row closes none.** A demonstration adds
+  nothing a CR reader needs.
   ⚑ **Why THIS one survived honestly while the other three rotted: it is documented AT THE HANDLER**
-  (`engine.rs:3040-3053`, in `step`'s own doc comment, naming the CR it argues for). The three stale ones
-  lived only in this register. **A perishable claim decays where nobody re-reads it; a claim beside the code
-  it describes is met by everyone who touches that code.** That cuts directly against this file's own
-  standing bar that the worst place for a perishable claim is a code comment — **both are true, and the
-  distinguishing variable is whether the claim is about the code it sits beside.** A comment describing its
-  own function is read by the next editor; a comment citing a ruling made elsewhere is not.
-
-- **▶ AND THE SHAPE THAT MADE IT SURVIVE: A BOOKED DEFECT CAN BE CLOSED BY UNRELATED WORK, AND NOTHING
-  CLOSES THE BOOKING.** The guards landed 08-29 inside a parcel serving the Z80 pair; the follow-ups sat in
-  this register as open for six days afterwards, through several sessions that read this file at boot.
-  **A register entry has no reader who would meet the contradiction** — the code moved, the tests went green,
-  and the only artifact still asserting the defect was the one nobody re-derives. Same family as the queue-row
-  bar (*a row's justification ages like a precedent narrative*), one level lower and worse, because a
-  follow-up register is read as a to-do list rather than as a claim. **When a parcel serves a method, grep
-  this register for that method's name before writing the landing.**
+  (`engine.rs:3040-3053`, in `step`'s own doc comment, naming the CR it argues for). **A perishable claim
+  decays where nobody re-reads it.** That cuts against this file's standing bar that the worst place for a
+  perishable claim is a code comment — **both are true, and the distinguishing variable is whether the claim
+  is ABOUT THE CODE IT SITS BESIDE.** A comment describing its own function is met by the next editor; a
+  comment citing a ruling made elsewhere is not.
 
 **Registered 2026-09-04, from the WAITFORBREAK landing:**
 
