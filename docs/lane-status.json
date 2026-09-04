@@ -1,9 +1,39 @@
 {
-  "focus": "The armed-breakpoint alarm and its release button are landed. Next is the tool that says a stop never happened when it did.",
-  "inFlight": [],
+  "focus": "Building the debug window's command line, so every tool the emulator serves is reachable from the window.",
+  "inFlight": [
+    {
+      "what": "The command palette for the debug window",
+      "where": "branch parcel/panels-command-palette",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [],
-  "nextBoundary": "Here \u2014 armed-state landed and pushed, nothing running.",
+  "nextBoundary": "When the palette agent returns and its gate is verified on the merged tree.",
   "queue": [
+    {
+      "id": "F-SPAWN-OUTSIDE-ACT",
+      "state": "next",
+      "size": "S",
+      "blockedBy": null,
+      "project": "LIVE-OBJECTS",
+      "title": "Clicking to place an object OUTSIDE the level silently does nothing: the game accepts it, then quietly throws the object away, and the window still says 'placed'. Found by the engine team answering a question we asked. The fix is ours - refuse the click before sending it - and they have offered to publish the two level-size values we need to know where the edge is."
+    },
+    {
+      "id": "F-SPAWN-PICKER-PANEL-SURFACE",
+      "state": "open",
+      "size": "M",
+      "project": "LIVE-OBJECTS",
+      "blockedBy": null,
+      "title": "Click-to-place shipped in the GAME window. Your ruling said 'the Screen panel', a tab in the separate debug-tabs window, which cannot receive a click at all today. The hub ruled in your place that the game window closes this; it stays open only as a fresh parcel if you say you meant the tabs window."
+    },
+    {
+      "id": "F-HANDSHAKE-LOAD-TIMEOUT",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "A second test fails only when the machine is heavily loaded \u2014 a different cause from the one just fixed, and present before tonight. Booked rather than called a flake, because this repo has now twice written off a load-sensitive failure as noise and been wrong about the very same test."
+    },
     {
       "id": "F-NAV-COLLAPSED-LEAF",
       "state": "open",
@@ -13,42 +43,18 @@
       "title": "If a panel group was COLLAPSED on your screen rather than merely behind another tab, the new menu cannot expand it either \u2014 the library keeps that control private. This is the live hypothesis for why you could not open those tabs, and one answer from you settles whether it matters."
     },
     {
-      "id": "F-ATTR-CAVEAT-PANEL",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The colour warning we just built reaches a tool but not the window: the panel's own colour lookup has no clock to compare against, so it cannot tell whether the picture may disagree. Same answer, two surfaces, and only one of them says it."
-    },
-    {
-      "id": "WAITFORBREAK-INSTANT-TIMEOUT",
+      "id": "SERVE-EQUATES",
       "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A tool that asks the emulator to stop and waits ten seconds can be told 'it never stopped' after waiting ZERO milliseconds, with the game still running \u2014 a wrong answer, not a slow one. Real and worth fixing on its own merits; the other team turns out NOT to depend on it, so it sits behind the things you asked for tonight."
-    },
-    {
-      "id": "PANELS-CLEANUP",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The Objects tab dumps its pool layout as a paragraph of raw JSON and pads its table with empty rows. Ship the readable half, and answer your rings question ON the panel: rings never take an object slot, so a rings count goes beside the object count with the one-sentence why. The ceiling stays stated-unknown until aeon exports it \u2014 a confident wrong number is worse than an honest gap."
-    },
-    {
-      "id": "SERVE-EQUATES",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The symbol file every client loads carries hundreds of build-time constants and not one is reachable from anything we serve. Read them as LINES IN THE FILE, never as symbols, and never pin how many there are \u2014 the count differs between the debug and release builds of the same game. The handful that vary per game are absent from the file entirely; that half is a toolchain change another lane has now booked."
+      "title": "The symbol file every tool loads carries hundreds of build-time constants and not one is reachable from anything we serve. It now has TWO named consumers found this week, both from outside the original argument: our own Objects tab cannot turn the ring buffer's measured span into a maximum ring count because the divisor is one of these constants, and the engine team has just shown that the cheap workaround for the out-of-level click check is unavailable for the same reason. Promoted on that, not on a fresh argument."
     },
     {
       "id": "PANELS-COMMAND-PALETTE",
-      "state": "open",
+      "state": "doing",
       "size": "L",
-      "blockedBy": "the nav landing first",
+      "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "Your command line for the debug window. Deliberately after the nav: build the shortcut before the signposted route and the route ends up designed around the shortcut."
     },
@@ -124,9 +130,25 @@
       "size": "S",
       "blockedBy": null,
       "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Now also: any note that says 'oracle' as if it were ONE emulator, in prose about measurements. There are two, they disagree by a line, and a measurement whose instrument is unnamed is unreadable. The boot doc is already clean; the risk is the dated notes a peer might cite."
+    },
+    {
+      "id": "CR-STEP-SHORTFALL",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Ask the debugger for a huge number of instructions and it quietly stops early, with no way in the answer to say it did fewer than asked. Ours documents this honestly at the code; the fix is a small change to the shared contract, not to us."
+    },
+    {
+      "id": "REGISTER-WHICH-SERVER-SWEEP",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Our own follow-up list describes faults without saying WHICH of the two emulators has them. Three entries turned out to be about the old one and cost this session real work today. A sweep of that list is now owed - it was previously scoped only to the design docs."
     }
   ],
-  "awaiting": "two things when you are next at the window, neither blocking: (1) with a breakpoint armed, does the new top-bar alarm and its release button look right \u2014 nobody has seen it on glass yet; (2) still open from last night, when you could not open those tabs, could you SEE their titles?",
-  "atBoundary": true,
-  "updatedAt": "2026-09-04T04:23:55Z"
+  "awaiting": "One read-back when you surface, nothing blocking: by 'clicking a spot in the Screen panel' for spawn, did you mean the GAME window (where it works now) or the debug-tabs window? The hub ruled the game window closes it and I am proceeding on that. Also still parked for a look: the breakpoint alarm + release button, whether you could SEE those tab titles, and whether the colour-staleness sentence reads right on glass.",
+  "atBoundary": false,
+  "updatedAt": "2026-09-04T09:58:18Z"
 }
