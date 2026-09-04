@@ -6645,7 +6645,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 65535,
-            "description": "New position, world PIXELS. As emulator/object_spawn."
+            "description": "New position, world PIXELS. As emulator/object_spawn for UNITS AND SPACE (pixels, D9 category 2, the 16-bit cell bound refused -32602) and NOT for the act bound: section 11.35's outside-the-act refusal applies to spawn only; this row's NO CLAMP fact in its $comment wins here, a move outside the act is a real, reversible state change to an addressable object and is accepted (corrected 2026-09-04 after 11.35 gave the misreading a citation; oracle's finding)."
           },
           "y": {
             "type": "integer",
