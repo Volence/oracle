@@ -2653,3 +2653,86 @@ stay in the head; this is the measurement record they were derived from.)*
   bar (*a row's justification ages like a precedent narrative*), one level lower and worse, because a
   follow-up register is read as a to-do list rather than as a claim. **When a parcel serves a method, grep
   this register for that method's name before writing the landing.**
+
+---
+
+## 2026-09-04 — `F-RELOAD-KEEPS-STALE-SYMBOLS`: a kept table is not a current one, and half the fix needs a CR
+
+**The sighting, and what it nearly cost.** A peer lane published `Level_Width`/`Level_Height`;
+`emulator/reload_rom` answered `reloaded: true`, **`symbolsDropped: false`**; `emulator/lookup_symbol`
+then answered `-32013 no symbol named or prefixed Level_Width` for a symbol confirmed by grep in the
+listing on disk. A control lookup (`Player_Bound_Right`) resolving is the only thing that established
+that as a real absence rather than a broken probe. A session that stopped at `symbolsDropped: false`
+would have filed a false defect **against the peer's landing**.
+
+**The mechanism.** `reload_rom` drops the listing only on `RomBinding::Mismatch` — a different build
+*shape*. A newer build of the same shape passes, so the table is kept whole. And `load_symbols`'s own
+caveat already says why that check could never have saved us: *"the deb2 appendix probe is a filter,
+not a proof: Match means 'not obviously wrong', never 'proven right'"*. Same-shape-newer-build is
+exactly the gap the filter cannot see.
+
+**⚑ The durable shape, and it is the sharper half.** `symbolsDropped: false` is the wrong observable.
+It truthfully reports *"I did not drop them"* and is read as *"they are fine"*. Third instance banked
+here of one family — `F-BANNER-INVITES-A-PIN` (a published method count read as a freshness signal),
+the ROM-freshness banner's own reason for existing, and now this. **A field that CORRELATES with the
+property a reader wants, standing in for it, reads exactly like a real check until the correlation
+breaks — and the break is silent, because the field never stopped being true.**
+
+**The build** (`parcel/reload-symbol-freshness`): `Engine::stale_symbols_caveat` re-reads
+`symbols_path` at question time and compares parsed symbol ROWS against the held table. Quiet in
+exactly one state; loud in every other, **including the unmeasurable ones**.
+
+- **Measure, don't remember.** A load-time digest was rejected on a structural ground, not a taste one:
+  symbols reach this engine by four routes (`load_symbols`, the binary's `--symbols`, a hosted
+  `MachineInfo`, a checkpoint restore) and **only the first ever sees the file's text**. Three of four
+  would need a "no digest" state indistinguishable on the wire from the real unmeasurable.
+- **Auto-re-read rejected on the merits.** It substitutes our judgement for a caller who may have
+  deliberately loaded a listing that is not the one beside the ROM (`s4.lst` vs `s4.debug.lst` disagree
+  on 92.6% of shared symbols), and a re-read that FAILS leaves only two moves — keep the stale table
+  silently (the defect) or drop it silently (a reload that ends with no symbols, worse).
+- **The verdict claims only what the probe supports.** Row equality answers *would resolving against
+  the file differ from resolving against what I hold*, never *the table is right for this ROM*.
+
+**⚑ CORRECTION TO THE PARCEL'S PREMISE — `romFreshness` IS NOT IN THIS REPO.** It lives in the MCP
+shim, `oracle-old/linux-port/mcp/oracle_mcp.py` (merged `shim/rom-freshness`, oracle-old `58b6f81`),
+is `status`-only, and its own landing note already booked the follow-up by name: **"F-SYMFRESH:
+symbol-file staleness unchecked"** (`docs/lane-log.jsonl:24`, 2026-08-27). So "make it symmetric with
+`romFreshness`" is not a local edit — the ROM half is a *client-side* check by a consumer that can
+poll, and the symbol half has to be answerable by the *server* because only the server knows which
+listing it holds. The symmetry argument survives; the location premise did not.
+
+**⚑ CONTRACT: half legal, half blocked, and the split is the finding.** §8 item 20's closure is
+`unevaluatedProperties: false` applied **at the top level of every result** (`tests/common/schema.rs`,
+`fn closed`). `reload_rom`'s fragment declares `caveat`; `emulator/status`'s declares **neither
+`caveat` nor `diagnostic`**. So the reload verdict shipped with no CR and the standing verdict has **no
+legal spelling at all** — filed as `docs/proposed/2026-09-04-cr-k-symbol-freshness.md`. And the
+standing case is the one that matters most: a session that connects once and never reloads goes stale
+with **no observable whatsoever**, which is precisely why the ROM half recomputes on every `status`.
+
+**⚑ AND THE PATTERN THAT MAKES IT A CONTRACT DEFECT RATHER THAN TWO ACCIDENTS.** This is the *second*
+row in a fortnight where the honest answer existed and the fragment gave the reply no key to carry it —
+`step`'s frame-budget shortfall was the first. Both are the same shape: **a method whose result
+fragment declares no free-text key cannot report anything its designers did not foresee**, and every
+such gap therefore costs a full CR round-trip before the truth can be told. Worth raising as a
+contract-wide question and not one more per-method amendment.
+
+**⚑ STRUCK, IN PLACE — the `step` bullet above is stale by hours.** It says the shortfall has "no
+`stepped`, no `reached`". ~~no `stepped`~~: `stepped` was **adopted 2026-09-04 as §11.33
+(CR-STEP-SHORTFALL)**, is in the vendored fragment, and is **served** at `engine.rs:3177`
+(`9f49e31`, then `ac43e14` moving its floor to 0). The bullet's own lesson — *a register entry has no
+reader who would meet the contradiction* — was demonstrated on the bullet itself inside one day. Left
+struck rather than deleted, per this file's rule.
+
+**Anchored on the independent channel.** `tests/symbol_freshness.rs` (5 rows) never asserts our verdict
+against our own state: each constructs the real situation and asserts on **`lookup_symbol`'s actual
+answer**, with a control name that must resolve at the same instant the missing one does not, and an
+anti-vacuity clause requiring the symbol to resolve after `load_symbols`. The row-count case
+(`a_listing_whose_addresses_moved_fires_even_though_the_row_count_did_not`) exists to forbid a
+`symbolCount` shortcut, which would call a moved-address listing current and then serve confidently
+wrong addresses.
+
+**Red-first, three mutations, each shown applied on disk before its run and each restored from the
+committed baseline:** the check disabled → 3 red / 1 green (and the failure printed the pre-fix wire
+reply verbatim: `reloaded: true, symbolsDropped: false`, no caveat — the exact artifact that misled the
+seat); the caveat made unconditional → the quiet control alone red; row comparison weakened to a count
+comparison → the moved-address row alone red.
