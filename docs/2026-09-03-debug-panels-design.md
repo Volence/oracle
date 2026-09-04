@@ -1963,3 +1963,87 @@ Two smaller things fell out of writing it, both worth having:
   correctly SHA-anchored historical measurement at `6031020`, and is *not* an error. It reads as a current
   fact on a skim. The surface is 56 at `420c76d`. This is, pleasingly, the same entry that argues a published
   total is the wrong observable — which is why nothing in this design keys on one.
+
+### 9.7 `ARMED-STATE-VISIBLE` — the mirror rule's second instance, and a summary that named the innocent parties
+
+§9.4 raised the mirror image of the owner's ruling: **a served capability that changes what the window does
+must be visible in the window.** `hold` was its first instance. This is its second, and it cost a night.
+
+**The incident.** A breakpoint was left armed. It halted the machine. The machine stayed halted, and
+**nothing on the glass said so or offered a way out** — so the window read as a dead one and had to be
+released by hand by somebody who happened to know what a breakpoint was. The requirement that came out of
+it is three clauses long: *anything armed that can halt the game has to say it is armed, say it just
+halted, and give you the way out.*
+
+#### ⚑ The finding that reframes it: the bar's "armed" summary named the two instruments that cannot stop
+#### this window, and omitted the one that can
+
+`Transport::bar` already carried a line, captioned in source as *"what is armed to stop this machine"*. It
+counted **watches and the profiler**. It never mentioned breakpoints. In this window those are exactly
+backwards, and it is not an accident of the panel — it is what `Engine::run_sinks` does, on purpose:
+
+* the **breakpoint** sink is lent to the player's per-frame run **bare**, so its stop reaches
+  `run_frames_with_sink` and ends the run mid-frame. It halts the game.
+* the **watch** and the **profiler** are lent wrapped in `Observe`, *because* a watch's `stopAfter` is a
+  level (`matched >= n` stays true forever) and a bare one would end every 1-frame run the window makes.
+  `Observe` drops the halt and keeps the observations.
+
+So on the night the window froze, the only line on the bar about arming was describing the two instruments
+that were innocent. `Transport::armed` is renamed `Transport::recording`, the word is in the string it
+draws, and a test forbids it ever saying `stop`/`halt`/`armed` again. A watch's real hazard — it *does* end
+a **commanded** run (`step`, a client's `run_frames`) — is kept, as its own clause, beside the alarm rather
+than inside it.
+
+#### What shipped
+
+* **`stopping::Halting`** — one derivation, three consumers: the top bar, the status strip's new first row,
+  and the Breakpoints tab's own head. Pure reads of the `Host`'s own set and instruments (§4.4 route (a));
+  nothing dispatches at 60 Hz.
+* **Not `Live`.** `Live` answers *is this table fresh* — the right question for the three tabs, and the
+  wrong one here. `Halting` answers *can the machine be stopped, was it, and how do I start it again*. They
+  share exactly one bit (`Live::Yes` for breakpoints is `any_enabled()`), and a test pins that bit and then
+  shows what they do not share: a running window and a halted one have the same `Live` and must not have
+  the same sentence.
+* **`Engine::last_break` / `LastBreak {id, pc, frame, ordinal}`**, forwarded through `Host` and `Bus`.
+  Latched by one private `Engine::latch_break`, from the **two** places a breakpoint is credited with
+  stopping this machine — `halt_on_breakpoint` (the free-run step and the hosted loop) and
+  `Engine::attribute` (**every bounded run a client drives**: `run_frames`, `press`, `run_to`,
+  `run_to_scanline`, `step`/`step_over`/`step_out`, none of which touch `halt_on_breakpoint`).
+* **The repeating case is a LEVEL and a COUNT, never an edge.** The failure was a halt that re-fired on
+  every resume; a surface that reported *"it just halted"* and then went quiet reproduces it, because a
+  window that has gone quiet is exactly the one that reads as dead. `ordinal` cannot go quiet.
+* **"Stopped *because of* a breakpoint" is derived, not guessed.** `frames_since == Some(0)` means the
+  machine has not completed a frame since the halt, so nothing has run that could have stopped it for
+  another reason. A human pausing 200 frames later reads `Some(200)` and gets a different sentence which
+  says so out loud, rather than a confident wrong one.
+* **The way out is a CONTROL, not a tab** (the standing ruling: things you look at are tabs, things you
+  *do* are not) and it is on the **top bar**, not in a panel. `egui_dock` draws only each leaf's active
+  tab, so an alarm that lived only in the Registers strip would be invisible to a reader staring at a
+  frozen Screen tab — §9.6b's hole, in the one place it would cost the most. `release_gestures` is one
+  `emulator/breakpoint_set_enabled {enabled:false}` per armed handle and then `emulator/resume`, each
+  through `Host::call` (D15), one at a time, stopping at the first refusal in the handler's own words.
+
+Two decisions inside that gesture are worth keeping:
+
+* **Disable, not `breakpoint_clear {all:true}`.** The tab already offers the destructive gesture. This
+  button is pressed by somebody who does not yet know why their window is frozen, which is the worst
+  possible moment to remove another client's breakpoints and their `hits`. Disabling stops the halting —
+  the whole complaint — retains every row and count (§6 carries `hits` across the toggle), and is undone by
+  re-ticking a box.
+* **It resumes only when a breakpoint is why the machine stopped.** A button about breakpoints must not
+  restart a machine a human deliberately paused. The label and the behaviour are one decision
+  (`Halting::release_label`), for `Transport::toggle`'s reason: `emulator/screen_text` reports the label,
+  so a button reading *release* while issuing only a disarm would be wrong in public.
+
+#### ⚑ Two things this window still cannot say, named rather than papered over
+
+1. **Why a machine is stopped when no breakpoint accounts for it.** The window can say *"a breakpoint is
+   not why"* (that is `frames_since`), but there is no engine-side record of a `pause`, a `run_frames`
+   deadline or a `stopAfter` watch stop, so it cannot say which of those it *was*. Closing it means a
+   `last_stop: (StopReason, pc, frame)` beside `last_break` — the same latch, generalised over
+   `emit_stopped`. Not done here; it is a wider change than this row bought, and the honest hedge is on
+   the glass in the meantime.
+2. **Runtime confirmation.** Everything above is proven by tests driving `Machine::step` + `bus::drain`,
+   which is the player's real loop — but nobody has *looked* at the bar with a breakpoint armed. The
+   colours, the width of the halted line on a real top bar, and the `screen_text` readback of the release
+   button are unwitnessed on glass.
