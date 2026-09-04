@@ -3967,6 +3967,96 @@ mod tests {
         v.control_write(0x0000, arm); // high half, disarm the toggle
     }
 
+    /// **§11.27's per-entry write stamp, on the GUEST path.** `write_target`'s CRAM arm is the store site
+    /// every guest route funnels through — data port timed and untimed, DMA 68k→CRAM, DMA fill, the fill
+    /// trigger — and the caveat on `emulator/pixel_attribution` is a comparison against what it records.
+    ///
+    /// **This test exists because the server-side rows could not reach it.** The wire conformance rows in
+    /// `oracle-aether` drive their writes through `emulator/write_cram`, i.e. through
+    /// [`poke_cram`](Vdp::poke_cram) — the *other* store site. Deleting the stamp from this arm left all
+    /// of them green. So the arm is pinned here, where a guest write can actually be posed.
+    ///
+    /// Three properties, and the third is the one a shared helper would break: the stamp is **per entry**
+    /// (a write to entry 0 does not date entry 1), it is the **write's own** instant rather than the
+    /// arming control's, and an entry nobody has written reads `None` rather than a clock.
+    #[test]
+    fn a_guest_cram_write_stamps_that_entry_and_only_that_entry() {
+        let mut v = fresh();
+        arm_cram_write(&mut v, 0);
+        for e in 0..64u8 {
+            assert_eq!(
+                v.cram_written_mclk(e),
+                None,
+                "entry {e}: arming a write is not writing one — an untouched entry has no instant, \
+                 and `None` is not `Some(0)` (the caveat's rule distinguishes them at line 0 of \
+                 frame 0)"
+            );
+        }
+
+        let m = 100 * MCLK_PER_LINE + 1775;
+        v.data_write_at(0x0EEE, m); // lands in entry 0; autoinc leaves the address on entry 1
+        assert_eq!(
+            v.cram_written_mclk(0),
+            Some(m),
+            "the written entry carries the WRITE's instant, not the arming control's (mclk 0)"
+        );
+        for e in 1..64u8 {
+            assert_eq!(
+                v.cram_written_mclk(e),
+                None,
+                "entry {e} was not written; a stamp here would make the caveat fire on colours \
+                 nobody touched, which is the coarse rule §11.27 lets a server fall back to and \
+                 NOT the one this server implements"
+            );
+        }
+
+        // The autoincrement moved the address on, so the next write dates a different entry.
+        let m2 = m + 4 * MCLK_PER_LINE;
+        v.data_write_at(0x0888, m2);
+        assert_eq!(v.cram_written_mclk(1), Some(m2), "entry 1, its own instant");
+        assert_eq!(
+            v.cram_written_mclk(0),
+            Some(m),
+            "and entry 0 keeps ITS instant — the stamps are per entry, not a single last-write clock"
+        );
+    }
+
+    /// **The poke path stamps too, and takes its instant from the caller.** `emulator/write_cram` is a
+    /// debug poke with no instruction behind it, so [`poke_cram`](Vdp::poke_cram) cannot read a clock off
+    /// the machine the way the guest path does — see its own note on why `now_mclk` would be the wrong
+    /// one. What it must not do is skip the stamp: a repaint of an entry the raster already drew is
+    /// exactly the divergence §11.27 exists to disclose.
+    ///
+    /// It also must not advance `now_mclk`. That value belongs to guest-driven work; moving it here would
+    /// relocate the *next* guest write's stamp, and a debugger poke must not change what the machine
+    /// reports about the machine.
+    #[test]
+    fn a_poke_stamps_the_entry_with_the_callers_instant_and_moves_nothing_else() {
+        let mut v = fresh();
+        assert_eq!(v.cram_written_mclk(7), None);
+        let before_now = v.now_mclk();
+
+        v.poke_cram(7, 0x0EEE, 12_345);
+        assert_eq!(
+            v.cram_written_mclk(7),
+            Some(12_345),
+            "the poke's stamp is the instant the CALLER passed — the only honest source, since a poke \
+             has no instruction to take one from"
+        );
+        assert_eq!(
+            v.cram_written_mclk(6),
+            None,
+            "and its neighbours are untouched"
+        );
+        assert_eq!(v.cram_written_mclk(8), None);
+        assert_eq!(
+            v.now_mclk(),
+            before_now,
+            "a poke is not VDP work: advancing `now_mclk` here would relocate the next GUEST write's \
+             stamp, which is a debugger changing what the machine reports about itself"
+        );
+    }
+
     /// A bus-timed CRAM data-port write carries its own instant into the VDP: `data_write_at(w, m)` leaves
     /// the VDP's notion of "now" at `m`, which is the clock the CRAM choke runs under. The write is checked
     /// to have actually landed, so the stamp is the stamp of a write that happened.
