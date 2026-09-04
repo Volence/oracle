@@ -1656,11 +1656,74 @@ visible and focusing it is honest; expanding it is not reachable from outside th
 `fully_collapsed` — is `pub(crate)` in `egui_dock-0.21.1`, and setting `LeafNode::collapsed = false`
 without it leaves the parent counters overstated.
 
-**Deliberately not built.** The owner's *"our command line would be sick for this"* is a **separate,
-later** surface, and this row is the traditional nav he asked for beside it. A command line over the
-method registry is a different design with a different gate (it would address the 56 methods, not the
-eight tabs); nothing here forecloses it, and the `nav::reveal` seam is what a `panels <name>` command
-would call.
+~~**Deliberately not built.**~~ **BUILT — see §5.9.** The owner's *"our command line would be sick for
+this"* is a **separate, later** surface, and this row is the traditional nav he asked for beside it. A
+command line over the method registry is a different design with a different gate (it would address the
+~~56~~ methods, not the eight tabs); nothing here forecloses it, and the `nav::reveal` seam is what a
+`panels <name>` command would call.
+
+> ⚑ **`56` was wrong when this was written, or went wrong afterwards — the registry holds 59.** It is
+> struck rather than corrected, because correcting it would put a fourth number on disk to go stale. It is
+> also the best possible argument for §5.9's central decision: a count of the method registry, typed into
+> prose by a consumer of that registry, drifted silently inside one document in this repo. §5.9 renders
+> every count from `METHODS.len()` at the moment it is drawn, and its gates assert against `METHODS.len()`
+> rather than an integer, for exactly this reason.
+
+---
+
+## 5.9 The command palette — the *do* half of the window
+
+> ### ✅ **BUILT**, `crates/oracle-player/src/palette.rs` (`PANELS-COMMAND-PALETTE`).
+
+§2.1's partition gave the window a *look at* half and a *do* half. The `Tab` enum is the first; the
+transport bar is three hand-placed members of the second. Everything else the bus serves had **no window
+surface at all** — reachable from a tool, from the MCP shim, from a socket client, and not from the window
+that owns the machine. That is a standing default of this lane violated by omission, and the palette is the
+repair: `Ctrl+P`, or the `⌨ commands` button on the top bar.
+
+| decision | the argument |
+|---|---|
+| **The list is DERIVED from `engine::METHODS`, never a list.** | The load-bearing property. `palette::offered` filters the registry's own rows and shows the registry's own `name`, `summary` and closed `params` set. A hardcoded menu goes stale **silently**, and the window then confidently offers the capabilities of a server that does not exist — a believable wrong answer, not a missing one. The stale `56` struck above is what that looks like after four days. |
+| **In-process, through `Bus::call`.** | Contract D15: an in-process GUI *"reads the method registry directly, in-process; it does not open a socket to itself."* `Host::call` is synchronous, so a command gets the tool's exact reply **and its exact refusal**. `Host::pump` is the once-per-iteration drain and would cost a frame per keystroke; it is not the path. Third site for this decision after the transport bar and `oracle-frontend`'s spawn picker — not a new one. |
+| **A refusal arrives as a sentence, and it is the server's.** | `ui::Echo` already carried `code`/`message` verbatim and coloured on a flag rather than on prose, so it is **reused rather than re-spelled**. `palette::remedy` adds one line keyed on `error.data.reason` — `machineRunning` only, which is the honest list — naming the pause control through `ui::PAUSE_LABEL` so a reworded button moves the remedy with it. |
+| **`oracle-frontend`'s `spawn::Refusal` was NOT lifted.** | It cannot be: that crate is bin-only with no `lib` target (which is why its `audio.rs` is `#[path]`-included into the player rather than depended on). And its remedy vocabulary is a minifb key binding — *"press Space to pause this window"* — naming a control this window does not have. What generalised is the **rule**, and the rule was already implemented here. |
+| **Two refusals are the window's own, and they say *nothing was sent*.** | An unknown name, refused with the string the human typed **and the served count from `METHODS.len()`**; and malformed JSON, refused with `serde_json`'s own message including its line and column. Both are kept in a `Local`, structurally distinct from an `Echo`, so *the server refused* and *I never asked* cannot render identically. A palette that quietly did nothing on an unknown command is the exact failure this parcel exists to not ship. |
+| **A JSON object in one box, not a generated form.** | Per-parameter widgets mean reading the vendored schema at runtime for types, ranges and the `oneOf` alternatives half these methods carry (`write_memory`'s `bytes`/`value`, `write_cram`'s `r,g,b`/`raw`). A bigger parcel with its own staleness question. The **declared key set is shown** beside the box — the cheap half of the same help, and authoritative, since `Engine::dispatch` refuses an undeclared key with `-32602` *before the handler runs*. |
+| **Clicking a row LOADS it; it does not run it.** | A palette whose list items fire on click is one mis-click from `emulator/reset` on a session somebody was ten minutes into. |
+| **Not a `Tab`, and no persistence.** | Things you *do* are controls. A ninth `Tab` would also owe `LAYOUT_VERSION` a bump and discard every layout on the owner's disk. Nothing is stored across launches. |
+
+**The gates — seven, in `palette::tests`, each with its third assertion.** Two of them are worth naming
+here because of what they cost:
+
+* **The effect gate anchors on `System::ram()`, not on the reply.** `emulator/write_memory`'s reply echoes
+  the request, so a palette that dispatched nothing at all and fabricated an `Answer::Ok` produces a reply
+  that reads perfectly correct with `refused == false`. That mutation was applied and **every assertion
+  about the answer stayed green**; only work RAM, read with no `oracle_aether` in the path, caught it. A
+  served side's own account of itself is not an independent channel.
+* **Pointer identity cannot prove "this is the registry's own row", and finding out cost a red test on a
+  correct implementation.** `METHODS` is a `pub const`, not a `static`, so const-promotion materialises a
+  **separate allocation per MIR body**. Measured: three probes comparing `METHODS` against itself *inside
+  one function* all passed; the same comparison across two functions in the same module failed. The gates
+  compare **content over all three fields in registry order** instead — which a hardcoded menu could satisfy
+  only by transcribing every summary too. *(Promoting `METHODS` to a `static` would make identity provable
+  and is a one-word change; it is not made here because it is a peer-facing item in another crate.)*
+
+**The three-surface reading, stated rather than omitted.** `oracle-frontend` — the minifb game window —
+**already has a command palette** (`crates/oracle-frontend/src/palette.rs`, a headless state machine over
+`commands::registry()`). It does **not** need a second one. But it has this parcel's own defect in mirror
+image: its registry is a hand-written `vec![...]` of ~25 *frontend actions* (pause, lens toggles, save
+states) and it contains **zero** references to `METHODS`, `Host::call` or the served vocabulary — so the
+bus registry is not reachable from the game window either. Closing that is **not** a row addition:
+`commands::Cmd` is `Copy` and dispatch is one `match cmd` in `main.rs`, whereas a bus method carries a name
+*and* a JSON params object with no fixed arity, so it needs a `Cmd::BusMethod` arm plus a free-text
+argument mode that palette's fixed-row state machine does not have. **Booked as `F-FRONTEND-PALETTE-BUS`,
+not built here**, because the owner's words for this parcel were *"your command line for the **debug**
+window"*.
+
+**Also not built, and it is a real gap:** the palette offers **methods**, not `panels <name>`. The nav menu
+this section's §5.8 shipped already opens every tab from a control that is always on the glass, so a
+`panels` command would be a second way to do something that has a working one. If it is wanted, `nav::reveal`
+is still the seam.
 
 ---
 
