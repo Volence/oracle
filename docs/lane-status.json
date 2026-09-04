@@ -139,9 +139,16 @@
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "A tool can now ask the window what text is on screen, and the window never answers, because that one wire was never connected in this player. Nobody could ask before, so nobody noticed."
+    },
+    {
+      "id": "PEER-CLAIMS-SWEEP",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Their repo had the same shape pointing back at us, and had even CORRECTED it in one file while a tool went on carrying the old version. Find ours outside the boot doc, where nobody re-reads them."
     }
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:59:26Z"
+  "updatedAt": "2026-09-04T01:01:06Z"
 }
