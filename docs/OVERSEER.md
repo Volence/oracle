@@ -105,6 +105,26 @@ over-conservative bus-arb clamp, and ours was the tick-accurate side then too. U
 urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 `docs/2026-08-18-tier1-bus-methods.md`.
 
+**Registered 2026-09-04, from the WAITFORBREAK landing:**
+
+- **F-HANDSHAKE-LOAD-TIMEOUT** — `tests/handshake.rs::initialize_advertises_a_generated_method_list_that_is_the_dispatch_table`
+  fails with a socket read timeout (`WouldBlock`, `tests/common/mod.rs:196`) under load average ~250.
+  **The implementing agent's measurement, not re-derived here** (3/3 on their branch, 2/2 on `main`'s
+  `oracle-aether`, green 15/15 at normal load), so it is attributed rather than asserted. Same CLASS as the
+  wait_for_break defect just fixed — a suite row that only fails under peer load — and a **different root
+  cause**; do not assume the fix reached it. Booked because this repo has now twice written off a
+  load-sensitive row as a flake and been wrong: the wait_for_break row was tagged a flake on 2026-09-03 and
+  again on 2026-09-04 before it was root-caused. **A row that only fails under load is a defect with a
+  narrow window, not a flake, until something says otherwise.**
+
+- **F-TMP-RESIDUE — DID NOT REPRODUCE, and the disagreement is the point.** The same agent reported 9,675
+  `/tmp/oracle_config_save_load_*_ThreadId(N)` directories, oldest 2026-08-26, leaking from outside this repo.
+  **Re-measured here minutes after their run: FOUR.** `grep -rn oracle_config_save_load crates/` returns 0
+  here, and a grep across aeon/aurora/seraph/sigil/empyrean/oracle-old returns no file at all, so the name is
+  attributable to nothing in the suite; `/tmp` is at 60%. Either the count was wrong or something reaped them
+  between the two reads, and **nothing available now can distinguish those** — which is why it was not
+  relayed to the hub as a shared-machine hazard. Recorded as a caught relay, not as a finding.
+
 **Registered 2026-08-29, from aurora's relay of the owner's R8 question:**
 
 - **F-R8-LATE-REVISION** — a *copy-of-column-0* toggle for the R8 leftmost-partial-column quirk, so a
