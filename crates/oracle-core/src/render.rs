@@ -13,7 +13,7 @@
 //! (push 5), and DMA/FIFO (push 6) are out — see the plan `docs/plans/2026-07-16-vdp-planes.md`.
 
 use crate::state_hash::{CRAM_SIZE, VRAM_SIZE};
-use crate::vdp::{DmaRecord, Vdp};
+use crate::vdp::{DmaRecord, Vdp, MCLK_PER_FRAME, MCLK_PER_LINE};
 
 /// One of the three plane-stage nametables (design §4 `plane_decoded`). Sprites are a separate push.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -957,6 +957,109 @@ pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
     let src_sy = if s.vflip { hpx - 1 - sy } else { sy };
     let offset = (src_sx / 8) * usize::from(s.height_cells) + src_sy / 8;
     Some(s.tile.wrapping_add(offset as u16))
+}
+
+/// The `caveat` an attribution answer carries when the colour it reports may not be the colour on
+/// the glass — `protocol.md` §11.27, ratified from this lane's own CR-G — or `None` when it cannot differ.
+///
+/// # The rule, and why it is a measurement rather than a heuristic
+///
+/// §11.27: *"a server emits the caveat when the CRAM entry at `cramIndex` has been written since line `y`
+/// of the last completed frame was drawn, or when no frame has completed; it is absent otherwise."*
+/// Both halves are arithmetic on the master clock and neither guesses at the guest's intent:
+///
+/// * **No write since the line drew ⇒ the glass cannot differ**, so silence is a fact and not an
+///   optimism. A "did a raster program run" flag would be wrong in both directions — §11.27 says so in
+///   terms, and a **vblank** write landing after the line drew diverges exactly as much as a mid-line one
+///   and is caught here identically.
+/// * **No completed frame ⇒ there is no picture to disagree with.** §11.3 requires this method to answer
+///   a machine that has rendered nothing since power-on; that answer is real, and this says what it is
+///   rather than implying a raster nobody drew.
+///
+/// # Why not the coarser rule §11.27 also permits
+///
+/// A server that cannot stamp per entry MAY emit on *any* CRAM write since the line drew. Oracle can
+/// stamp per entry — there are exactly two CRAM store sites in `oracle_core::vdp`, and each already knows
+/// its own index — so the precise rule costs one array slot and one store, and the coarse one would
+/// disclose on entries nobody touched. What is forbidden either way is the **unconditional** caveat, and
+/// that is not a stylistic point: both engines in this suite rebuild CRAM every vblank, so
+/// "whenever a completed frame exists" would fire on every reply after the first frame and become
+/// `emulator/read_memory`'s constant string — the failure §2.4's advisory names by name.
+///
+/// # When line `y` of the last completed frame was drawn
+///
+/// A frame index is `mclk / MCLK_PER_FRAME` and line `l` of frame `f` is drawn at
+/// `f * MCLK_PER_FRAME + l * MCLK_PER_LINE`, so with `f` frames elapsed the last **completed** one is
+/// `f - 1` and the instant wanted is `(f - 1) * MCLK_PER_FRAME + y * MCLK_PER_LINE`. `f == 0` is the
+/// no-frame-has-completed arm. The comparison is `>=`: a write landing *at* the instant the line began
+/// is a write that line cannot be relied on to have carried, and disclosing is the honest side of an
+/// ambiguity. The sub-line anchor offset is deliberately not modelled: it is smaller than one line, and
+/// a write inside line `y` itself must disclose either way.
+///
+/// `written_mclk` is `None` for an entry never written since power-on, and that is a **third arm**
+/// rather than a comparison against zero — line 0 of frame 0 drew at mclk 0, so a zero sentinel would
+/// make every untouched palette entry disclose at that coordinate.
+///
+/// # Two properties §11.27 pins, discharged here
+///
+/// **It names `emulator/scanlines`, not merely the hazard** — a caller who did not already have the
+/// workaround has to be sent somewhere. **And it is prose**: §2.4 rule 3 forbids clients parsing it, so
+/// the two arms are worded for a human and nothing machine-readable is smuggled into the wording.
+///
+/// # Why it lives in `oracle-core`, and why it is a free function rather than a `Vdp` method
+///
+/// It shipped (2026-09-03) as a private free function in `oracle-aether`, beside the one reply that
+/// disclosed it. There are now **two** consumers: `emulator/pixel_attribution` on the bus, and the
+/// player's own click panel (`oracle-frontend`'s `pick::resolve`), which answers the same question about
+/// the same dot in-process. D15 forbids the panel reaching the bus for it — *"an in-process GUI reads the
+/// method registry directly; it does not open a socket to itself"* — so parity is bought the way
+/// [`sprite_tile_at`] buys it one field over: **one implementation under both consumers**, plus a parity
+/// assertion (`pick.rs`'s `bus_parity`) that says so out loud if they ever drift.
+///
+/// `oracle-core` rather than `oracle-aether` is not a packaging preference. `oracle-aether` is an
+/// **optional** dependency of `oracle-frontend` (its `aether` feature), because the player is deliberately
+/// buildable with no control surface at all — so a caveat sourced from there would silently vanish from
+/// the window in a `--no-default-features` build. A correctness hole that opens on a feature flag is worse
+/// than one that opens always, because nothing red ever names it.
+///
+/// It is a free function, not a method on [`Vdp`], for the reason [`Vdp::cram_written_mclk`] gives for
+/// keeping the comparison off the chip: the VDP stays a machine and does not acquire an opinion about
+/// what a caller should be warned of. That reasoning survives the move intact — what changed is only that
+/// the opinion now has two readers instead of one, so it can no longer live inside either of them.
+/// Keeping it free-standing also keeps the rule witnessable without a running machine: the
+/// pre-first-frame arm and the exact boundary instant are both awkward to pose on the wire and trivial to
+/// state here (`the_caveat_turns_on_exactly_at_the_instant_the_line_drew` and its four siblings below).
+///
+/// # The wording names no consumer's field
+///
+/// The sentence is shown to a person verbatim on **both** surfaces, so it says "the colour reported here"
+/// and mentions `rgb` only as the wire's spelling of it. A shared sentence that named one consumer's
+/// result key would be a true sentence on the bus and a dangling reference in the window — the "purple
+/// boxes" failure with correct arithmetic under it.
+pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) -> Option<String> {
+    let frames_elapsed = now_mclk / MCLK_PER_FRAME;
+    let Some(last_completed) = frames_elapsed.checked_sub(1) else {
+        return Some(
+            "no frame has finished drawing yet, so there is nothing on screen for this colour to \
+             disagree with — the colour reported here is resolved from live VDP state, which is what \
+             this answer is about (`rgb` on the wire; protocol.md §11.3). Read `emulator/scanlines` \
+             for the rows the raster actually drew."
+                .into(),
+        );
+    };
+    // `None` — never written since power-on — is silence, and it is a separate arm rather than a
+    // comparison against 0 because line 0 of frame 0 genuinely drew at mclk 0: a zero sentinel would
+    // make every untouched entry disclose at that one coordinate. See `Vdp::cram_written_mclk`.
+    let written_mclk = written_mclk?;
+    let line_drawn_at = last_completed * MCLK_PER_FRAME + u64::from(y) * MCLK_PER_LINE;
+    (written_mclk >= line_drawn_at).then(|| {
+        format!(
+            "this dot's palette entry was written after line {y} of the last completed frame was \
+             drawn, so the picture on screen may show a different colour here — the colour reported \
+             here is the LIVE one (`rgb` on the wire; protocol.md §11.3). Read `emulator/scanlines` \
+             for the rows the raster actually drew."
+        )
+    })
 }
 
 impl Vdp {
@@ -1979,6 +2082,137 @@ impl Vdp {
 mod tests {
     use super::*;
     use crate::rng::SplitMix64;
+
+    // ---------------------------------------------------------------------------------------------
+    // §11.27 — `cram_divergence_caveat`, the rule as arithmetic
+    // ---------------------------------------------------------------------------------------------
+    //
+    // The wire rows in `oracle-aether`'s `tests/pixel_attribution.rs` are where the SERVER's
+    // conformance is measured, and `oracle-frontend`'s `pick.rs` `bus_parity` module is where the panel
+    // is held to the same answer; these are here, beside the rule itself, because the rule has a
+    // boundary that neither fixture can pose honestly. "Written since line `y` of the last completed
+    // frame was drawn" turns on one comparison at one instant, and on the wire that instant is whatever
+    // the scheduler happened to land on. Stated here, the off-by-one has a witness — and it now has one
+    // in the crate both consumers link, rather than in one of the two.
+
+    /// The instant line `y` of the last completed frame was drawn, per §11.27's own definition.
+    fn line_drew_at(frames_elapsed: u64, y: u16) -> u64 {
+        (frames_elapsed - 1) * MCLK_PER_FRAME + u64::from(y) * MCLK_PER_LINE
+    }
+
+    /// **The boundary, from both sides.** `>=`, not `>`: a write landing *at* the instant the line drew
+    /// is a write the line did not carry, so it discloses. One mclk earlier it does not.
+    #[test]
+    fn the_caveat_turns_on_exactly_at_the_instant_the_line_drew() {
+        let now = 3 * MCLK_PER_FRAME + 500; // three frames elapsed, so frame 2 is the last completed
+        let y = 100u16;
+        let drew = line_drew_at(3, y);
+
+        assert!(
+            cram_divergence_caveat(Some(drew - 1), y, now).is_none(),
+            "one mclk BEFORE the line drew: the raster carried this colour, so there is nothing to \
+             disclose"
+        );
+        assert!(
+            cram_divergence_caveat(Some(drew), y, now).is_some(),
+            "AT the instant the line drew: the line did not carry this write, so it discloses"
+        );
+        assert!(
+            cram_divergence_caveat(Some(drew + 1), y, now).is_some(),
+            "and after it, plainly"
+        );
+    }
+
+    /// **A vblank write discloses too, and that is the whole reason this is a measurement.** §11.27
+    /// rejects "a `did a raster program run` flag" by name: it would be wrong in both directions. A
+    /// write during vblank lands after every active line drew and diverges from all of them — no raster
+    /// trickery involved — and the same comparison catches it with no special case.
+    #[test]
+    fn a_write_in_vblank_after_the_line_drew_still_discloses() {
+        let y = 10u16; // an early line, drawn long before vblank
+        let now = 5 * MCLK_PER_FRAME + 100;
+        let vblank_of_last_completed = 4 * MCLK_PER_FRAME + 230 * MCLK_PER_LINE;
+        assert!(vblank_of_last_completed > line_drew_at(5, y));
+        assert!(
+            cram_divergence_caveat(Some(vblank_of_last_completed), y, now).is_some(),
+            "no heuristic is consulted and none is needed"
+        );
+    }
+
+    /// **`y` is part of the rule, not decoration.** The same write instant discloses for a line drawn
+    /// before it and stays silent for a line drawn after it, within one frame. A rule that compared
+    /// against the frame boundary instead of the line would answer identically for both — and would be
+    /// wrong for exactly the mid-frame CRAM repaint that produced CR-G.
+    #[test]
+    fn the_same_write_discloses_for_an_earlier_line_and_not_a_later_one() {
+        let now = 2 * MCLK_PER_FRAME + 10;
+        let written = MCLK_PER_FRAME + 100 * MCLK_PER_LINE; // frame 1, line 100
+        assert!(
+            cram_divergence_caveat(Some(written), 50, now).is_some(),
+            "line 50 drew BEFORE the write: it shows the old colour, and the reply must say so"
+        );
+        assert!(
+            cram_divergence_caveat(Some(written), 150, now).is_none(),
+            "line 150 drew AFTER the write: the raster already carried the new colour, so silence"
+        );
+    }
+
+    /// **The pre-first-frame arm, and it is not the same sentence.** Both arms name
+    /// `emulator/scanlines` (§11.27's second pinned property); they differ because the reasons differ,
+    /// and §2.4 rule 2 says a client shows this text to a human verbatim.
+    #[test]
+    fn with_no_completed_frame_the_caveat_fires_whatever_the_write_stamp_says() {
+        for written in [0, 1, MCLK_PER_FRAME - 1] {
+            let c = cram_divergence_caveat(Some(written), 0, MCLK_PER_FRAME - 1)
+                .expect("no frame has completed, so §11.27's second trigger applies");
+            assert!(c.contains("emulator/scanlines"), "{c}");
+            assert!(
+                c.contains("no frame"),
+                "the pre-first-frame arm must not claim a write happened after a line that never \
+                 drew: {c}"
+            );
+        }
+        // …and the instant the first frame completes, the ordinary rule takes over.
+        assert!(
+            cram_divergence_caveat(None, 0, MCLK_PER_FRAME).is_none(),
+            "one frame elapsed and entry never written since: silence"
+        );
+    }
+
+    /// **A never-written entry never fakes a qualifying write — and the last cell of this table is a
+    /// regression pin, not a formality.**
+    ///
+    /// The first implementation stored the stamp as a bare `u64` with 0 meaning "never written", on the
+    /// argument that 0 could only satisfy the comparison when the line also drew at mclk 0. It can:
+    /// **line 0 of frame 0**, which is a coordinate any caller can ask for the moment one frame has
+    /// completed. Every untouched palette entry disclosed there — the unconditional shape §11.27
+    /// forbids, reached by arithmetic rather than by intent, and green on every other row in this file.
+    /// `None` is a separate arm because of it.
+    ///
+    /// The `Some(0)` half is the other side of the same coin, and it must NOT be silent: an entry
+    /// genuinely written at mclk 0 is at best ambiguous against a line that began at mclk 0, and the
+    /// rule's `>=` resolves the ambiguity by disclosing. If both halves ever answer the same thing, the
+    /// distinction this test exists for has been collapsed again.
+    #[test]
+    fn a_never_written_entry_is_silent_for_every_line_of_every_frame() {
+        for frames in 1..6u64 {
+            for y in [0u16, 1, 100, 223] {
+                assert!(
+                    cram_divergence_caveat(None, y, frames * MCLK_PER_FRAME + 7).is_none(),
+                    "frames={frames} y={y}: an unwritten entry must not read as a write after the                      line drew"
+                );
+            }
+        }
+        // The exact cell the zero sentinel got wrong, from both sides.
+        assert!(
+            cram_divergence_caveat(None, 0, MCLK_PER_FRAME).is_none(),
+            "line 0 of frame 0 drew at mclk 0; an entry NOBODY wrote must still be silent there"
+        );
+        assert!(
+            cram_divergence_caveat(Some(0), 0, MCLK_PER_FRAME).is_some(),
+            "…while an entry genuinely written at mclk 0 discloses, or `None` and `Some(0)` are the              same value again and the arm above is untested"
+        );
+    }
 
     /// A powered-on VDP **in Mode 5**. Every fixture below programs Mode-5-only state (H40, the window,
     /// plane bases, autoincrement), so it must declare M5 (reg 1 bit 2); a bare `power_on` leaves reg 1 at

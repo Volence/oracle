@@ -1489,7 +1489,13 @@ fn main() {
                     // answering `planeA` for a dot the window is painting plane B at is the whole defect
                     // this parcel exists to close, and `pick.rs`'s bus-parity guard now runs over masked
                     // states so it cannot come back.
-                    let p = pick::resolve(sys.vdp(), x, y, bus.layers());
+                    //
+                    // The last argument is the machine's **now**, which §11.27's colour-staleness rule
+                    // compares a CRAM write stamp against. It is `sys.scheduler().now()` — the same
+                    // instant `emulator/pixel_attribution` stamps its verdict with — and deliberately
+                    // NOT `Vdp::now_mclk`, which is the instant the VDP last did guest-driven work and
+                    // on a paused machine can be arbitrarily stale (see `Vdp::poke_cram`).
+                    let p = pick::resolve(sys.vdp(), x, y, bus.layers(), sys.scheduler().now());
                     let wp = bus.watchpoints_mut();
                     // Retire only what this panel armed. `clear()` would take a socket client's watches
                     // with it — the shared-instrument hazard, and the one thing that made the panel's
@@ -3757,7 +3763,7 @@ mod tests {
             "the scene must contain sprites to test against"
         );
         let (sx, sy, _) = a_sprite_dot.unwrap();
-        let sprite_pick = pick::resolve(sys.vdp(), sx, sy, LayerMask::ALL);
+        let sprite_pick = pick::resolve(sys.vdp(), sx, sy, LayerMask::ALL, sys.scheduler().now());
         println!("shots: click ({sx},{sy}) -> {}", sprite_pick.description);
         println!("shots:   toast: {}", sprite_pick.toast);
         for t in &sprite_pick.targets {
