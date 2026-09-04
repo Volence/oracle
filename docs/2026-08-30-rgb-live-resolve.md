@@ -221,3 +221,14 @@ that never disagree out loud."* They now disagree out loud, on the reply, naming
 * **Runtime confirmation on a real ROM is NOT done here.** These are wire and unit rows against posed
   fixtures; nobody has driven `color_1536.bin` — the ROM that reproduced the original finding, 55 of 55 rows
   — through the caveat. That is a foreground want, not a background one.
+* **The player's click panel does not carry this clause yet, and that is a decision rather than an
+  oversight.** The three surfaces are the plain Aether bus, MCP, and the window. The bus is done; MCP needs
+  nothing, because the caveat is an ordinary result key and `oracle_mcp.py` relays the reply rather than
+  whitelisting its keys. The **window** is the gap: `pick::resolve` answers a click from `(&Vdp, x, y,
+  mask)` and has no clock, while §11.27's rule is a comparison against the machine's `now` — so carrying it
+  there means threading the scheduler's instant into the panel path and through the panel/bus parity
+  assertion that guards it. There is a precedent for the shape (the layer-mask clause already rides on the
+  panel's human-facing line, not only on a wire caveat), so this is a bounded follow-up and not a design
+  question. **Booked as `F-ATTR-CAVEAT-PANEL`.** Until it lands, a person clicking a dot in the window can
+  see a colour the glass never showed and get no warning, which is exactly aeon's complaint one surface
+  over.
