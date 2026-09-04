@@ -32,6 +32,11 @@ The failure modes covered, one class each:
                            a named cause and exit 2 -- never a skip, never a 0,
                            never rendered as "0 problems found".
   GitRevisionOriginal      'rev:path' really is read out of git.
+  ProvenanceIdentifiesTheTree
+                           two runs that measured DIFFERENT documents must not
+                           print the same provenance -- a green whose subject a
+                           reader cannot name is the failure class this whole
+                           instrument exists to end.
   RunnerIsWired            something in the tree actually runs this file.
 
 Run via: tools/run_doc_split_tests.sh
@@ -40,6 +45,7 @@ Run via: tools/run_doc_split_tests.sh
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -124,9 +130,10 @@ class ToolCase(unittest.TestCase):
         p.write_text(text, encoding="utf-8")
         return p
 
-    def run_tool(self, *args, expect=None):
+    def run_tool(self, *args, expect=None, cwd=None):
         r = subprocess.run([sys.executable, str(TOOL), *[str(a) for a in args]],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True,
+                           cwd=None if cwd is None else str(cwd))
         if expect is not None:
             self.assertEqual(
                 r.returncode, expect,
@@ -547,6 +554,218 @@ class GitRevisionOriginal(ToolCase):
         r = self.run_tool("--original", "nowhere.md", "--output", b,
                           "--output", f, "--no-new", expect=2)
         self.assertIn("not a git revision spelling", r.stderr)
+
+
+class ProvenanceIdentifiesTheTree(ToolCase):
+    """The provenance must name WHICH FILES WERE READ, not which arguments were
+    typed.
+
+    Measured on 2026-09-04, both real: this tool run from an oracle checkout
+    against oracle's already-split OVERSEER.md, and run from aeon's repo against
+    aeon's unsplit one, printed the same three provenance lines --
+    ``original : git main:docs/OVERSEER.md (repo .)`` -- and both exited 0.  One
+    of those runs measured the document under test; the other measured a
+    different repository's already-finished work.  A lane pasting either
+    transcript as its evidence produces a green that a reader cannot attribute
+    to a tree.  That is a confident verdict about an unknown subject, which is
+    the entire failure class this instrument exists to end.
+
+    So the tests below do not ask "does an absolute path appear" -- that is
+    satisfied by any absolute path, including the SAME one printed twice, which
+    is precisely the regression.  They run the tool twice against two different
+    trees holding same-named documents, with identical argv, and require the two
+    transcripts to differ BY NAMING THEIR OWN TREE.
+    """
+
+    ORIG = "# Handbook {m}\n\nAlpha sentence here.\n\n## Ref\n\nBeta sentence here.\n"
+    BOOT = "# Handbook {m}\n\nAlpha sentence here.\n"
+    REF = "## Ref\n\nBeta sentence here.\n"
+
+    def make_tree(self, name, marker):
+        """A directory holding a document, its split, and nothing tree-specific
+        in the FILE NAMES -- only in the paths and the content."""
+        t = self.d / name
+        t.mkdir()
+        (t / "ORIG.md").write_text(self.ORIG.format(m=marker), encoding="utf-8")
+        (t / "boot.md").write_text(self.BOOT.format(m=marker), encoding="utf-8")
+        (t / "ref.md").write_text(self.REF, encoding="utf-8")
+        return t.resolve()
+
+    def init_repo(self, path, marker):
+        def run(*a):
+            subprocess.run(["git", "-C", str(path), *a], check=True,
+                           capture_output=True)
+        run("init", "-q")
+        run("config", "user.email", "t@example.invalid")
+        run("config", "user.name", "t")
+        (path / "doc.md").write_text(self.ORIG.format(m=marker), encoding="utf-8")
+        run("add", "doc.md")
+        run("commit", "-qm", "original")
+        return path
+
+    @staticmethod
+    def inputs_block(stdout):
+        """Everything up to the first proof heading: the part a lane pastes."""
+        out = []
+        for line in stdout.splitlines():
+            if line.startswith("PROOF 1"):
+                break
+            out.append(line)
+        return "\n".join(out)
+
+    @staticmethod
+    def paths_in(text):
+        """Whole path tokens.  ``assertIn(str(parent), text)`` is satisfied by a
+        printed CHILD path, so a report naming only `/repo/nested/deeper` would
+        pass an assertion that `/repo` was named.  Comparing complete tokens is
+        what makes 'the toplevel is stated' mean it."""
+        return set(re.findall(r"/[^\s'\"(),;]+", text))
+
+    @staticmethod
+    def field(stdout, prefix):
+        for line in stdout.splitlines():
+            if line.strip().startswith(prefix):
+                return line.strip()
+        return ""
+
+    # -- plain-path documents ------------------------------------------------
+
+    def test_same_argv_against_two_trees_yields_distinguishable_provenance(self):
+        a = self.make_tree("alpha", "A")
+        b = self.make_tree("beta", "B")
+        argv = ["--original", "ORIG.md", "--output", "boot.md",
+                "--output", "ref.md", "--no-new", "--headings", "--repo", "."]
+        ra = self.run_tool(*argv, cwd=a, expect=0)
+        rb = self.run_tool(*argv, cwd=b, expect=0)
+
+        # Both are honest, lossless splits: the verdict cannot be what tells
+        # them apart, which is exactly why the provenance has to.
+        self.assertIn("VERDICT: PROVED", ra.stdout)
+        self.assertIn("VERDICT: PROVED", rb.stdout)
+
+        ia, ib = self.inputs_block(ra.stdout), self.inputs_block(rb.stdout)
+        self.assertNotEqual(
+            ia, ib,
+            "two runs measuring different documents printed identical "
+            f"provenance:\n{ia}")
+        self.assertIn(str(a), ia)
+        self.assertNotIn(str(b), ia,
+                         "tree alpha's report names tree beta")
+        self.assertIn(str(b), ib)
+        self.assertNotIn(str(a), ib,
+                         "tree beta's report names tree alpha")
+
+    def test_each_output_is_reported_by_resolved_path(self):
+        a = self.make_tree("alpha", "A")
+        b = self.make_tree("beta", "B")
+        argv = ["--original", "ORIG.md", "--output", "boot.md",
+                "--output", "ref.md", "--no-new", "--headings"]
+        ra = self.run_tool(*argv, cwd=a, expect=0)
+        rb = self.run_tool(*argv, cwd=b, expect=0)
+        for r, mine, theirs in ((ra, a, b), (rb, b, a)):
+            outs = [l for l in r.stdout.splitlines()
+                    if l.strip().startswith("output   :")]
+            self.assertEqual(len(outs), 2, r.stdout)
+            for line in outs:
+                self.assertIn(str(mine), line,
+                              "an output line that does not name its tree is "
+                              "the same line for every tree")
+                self.assertNotIn(str(theirs), line)
+            self.assertIn(str(mine / "boot.md"), r.stdout)
+            self.assertIn(str(mine / "ref.md"), r.stdout)
+
+    def test_declared_new_files_are_reported_by_resolved_path(self):
+        a = self.make_tree("alpha", "A")
+        b = self.make_tree("beta", "B")
+        for t in (a, b):
+            (t / "ref.md").write_text(
+                self.REF + "\nA declared new sentence.\n", encoding="utf-8")
+            (t / "new.md").write_text("A declared new sentence.\n",
+                                      encoding="utf-8")
+        argv = ["--original", "ORIG.md", "--output", "boot.md",
+                "--output", "ref.md", "--new", "new.md", "--headings"]
+        ra = self.run_tool(*argv, cwd=a, expect=0)
+        rb = self.run_tool(*argv, cwd=b, expect=0)
+        la = self.field(ra.stdout, "declared new :")
+        lb = self.field(rb.stdout, "declared new :")
+        self.assertNotEqual(la, lb, f"identical declared-new provenance: {la}")
+        self.assertIn(str(a / "new.md"), la)
+        self.assertIn(str(b / "new.md"), lb)
+
+    # -- git rev:path originals ---------------------------------------------
+
+    def test_a_git_original_names_the_tree_it_was_read_from(self):
+        """The measured defect itself: identical `rev:path`, identical `--repo`
+        spelling, two repositories, two different documents."""
+        a = self.init_repo(self.make_tree("alpha", "A"), "A")
+        b = self.init_repo(self.make_tree("beta", "B"), "B")
+        argv = ["--original", "HEAD:doc.md", "--output", "boot.md",
+                "--output", "ref.md", "--no-new", "--headings", "--repo", "."]
+        ra = self.run_tool(*argv, cwd=a, expect=0)
+        rb = self.run_tool(*argv, cwd=b, expect=0)
+        la = self.field(ra.stdout, "original :")
+        lb = self.field(rb.stdout, "original :")
+        # The git spelling is identical in both -- so it cannot be doing the
+        # distinguishing, and the line must carry the tree as well.
+        self.assertIn("git HEAD:doc.md", la)
+        self.assertIn("git HEAD:doc.md", lb)
+        self.assertNotEqual(
+            la, lb,
+            f"two repositories, one provenance line: {la}")
+        self.assertIn(str(a), la)
+        self.assertNotIn(str(b), la)
+        self.assertIn(str(b), lb)
+        self.assertNotIn(str(a), lb)
+
+    def test_repo_is_reported_resolved_never_as_the_dot_that_was_typed(self):
+        a = self.init_repo(self.make_tree("alpha", "A"), "A")
+        r = self.run_tool("--original", "HEAD:doc.md", "--output", "boot.md",
+                          "--output", "ref.md", "--no-new", "--headings",
+                          "--repo", ".", cwd=a, expect=0)
+        block = self.inputs_block(r.stdout)
+        self.assertIn(str(a), block)
+        self.assertNotIn("(repo .)", block,
+                         "the literal argument is not an identity: every run "
+                         "everywhere prints '.'")
+
+    def test_a_subdirectory_repo_reports_the_git_tree_it_actually_used(self):
+        """`--repo` is not necessarily the repository: `git -C` searches upward.
+        Two checkouts at different paths are common on this machine and
+        worktrees make it commonplace, so the run states the toplevel git
+        actually read from, not merely the directory it was pointed at."""
+        a = self.init_repo(self.make_tree("alpha", "A"), "A")
+        sub = a / "nested" / "deeper"
+        sub.mkdir(parents=True)
+        r = self.run_tool("--original", "HEAD:doc.md",
+                          "--output", a / "boot.md", "--output", a / "ref.md",
+                          "--no-new", "--headings", "--repo", sub, expect=0)
+        block = self.inputs_block(r.stdout)
+        self.assertIn(str(sub), self.paths_in(block),
+                      "the directory given must still show")
+        self.assertIn(str(a), self.paths_in(block),
+                      "the git toplevel actually read from must be stated, as "
+                      "itself and not merely as a prefix of the subdirectory")
+        self.assertIn(str(a), self.paths_in(self.field(r.stdout, "original :")),
+                      "the original line alone must identify its tree, because "
+                      "that is the line a lane quotes")
+
+    def test_a_non_git_repo_directory_is_labelled_not_silently_blank(self):
+        """No git tree is a fact about the run, not a reason to print nothing:
+        a blank would read as 'the repo line is missing' to a lane comparing
+        transcripts."""
+        a = self.make_tree("alpha", "A")
+        probe = subprocess.run(["git", "-C", str(a), "rev-parse",
+                                "--show-toplevel"], capture_output=True)
+        if probe.returncode == 0:
+            # The tempdir landed inside somebody's checkout; say so rather than
+            # asserting a fact that is not true of this run.
+            self.skipTest(f"tempdir {a} is inside a git tree")
+        r = self.run_tool("--original", "ORIG.md", "--output", "boot.md",
+                          "--output", "ref.md", "--no-new", "--headings",
+                          "--repo", ".", cwd=a, expect=0)
+        block = self.inputs_block(r.stdout)
+        self.assertIn(str(a), block)
+        self.assertIn("not a git working tree", block)
 
 
 class RunnerIsWired(unittest.TestCase):
