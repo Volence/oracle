@@ -55,6 +55,7 @@ mod memory;
 mod nav;
 mod objects;
 mod pacing;
+mod palette;
 mod report;
 mod screen;
 mod stats;
@@ -391,6 +392,10 @@ struct Loop {
     paused: bool,
     /// The transport bar's echo of the last answer the bus gave it. Rendered verbatim; never composed.
     transport: ui::Transport,
+    /// **The command palette** — every method the registry serves, invokable from this window
+    /// (`crate::palette`). A CONTROL, not a [`ui::Tab`]: things you *do* are controls, and it stores
+    /// nothing across launches.
+    palette: palette::Palette,
     /// The three stopping tabs' boxes and their last answers. **What is armed is not here** — it is the
     /// `Host`'s, read every repaint (R2).
     stopping: stopping::Panel,
@@ -444,6 +449,7 @@ impl Loop {
             // fact: the bus was just told the loop is running, and the loop is.
             paused: false,
             transport: ui::Transport::default(),
+            palette: palette::Palette::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -697,9 +703,14 @@ impl Loop {
             objects,
             stopping,
             transport,
+            palette,
             ..
         } = self;
         let mut drew = Vec::new();
+        // ⚑ The palette's chord, consumed before anything can take focus. `consume_shortcut` so the
+        // keystroke does not also reach a text field that happens to be focused.
+        let ctx = root.ctx().clone();
+        palette.handle_shortcut(&ctx);
         egui::Panel::top("bar").show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.strong(ui::APP_NAME);
@@ -727,6 +738,23 @@ impl Loop {
                 }
                 drew.append(&mut bar);
                 ui.separator();
+                // ⚑ ANOTHER CONTROL, NOT A TAB — and this one is the home for the whole *do* half of the
+                // bus. The transport bar hand-places three methods because a human reaches for them
+                // constantly; every other served capability is behind this button (and `Ctrl+P`), derived
+                // from the registry rather than listed. See `crate::palette`.
+                if ui
+                    .button(palette::PALETTE_LABEL)
+                    .on_hover_text(format!(
+                        "{} — every method this build serves, invoked in-process through the same \
+                         registry a tool reads",
+                        palette::SHORTCUT_LABEL
+                    ))
+                    .clicked()
+                {
+                    palette.open = !palette.open;
+                }
+                drew.push(screen::Run::after_sep(palette::PALETTE_LABEL));
+                ui.separator();
                 ui.monospace(status.as_str());
                 drew.push(screen::Run::mono_after_sep(status.as_str()));
             });
@@ -750,6 +778,11 @@ impl Loop {
                     .style(egui_dock::Style::from_egui(ui.style().as_ref()))
                     .show_inside(ui, &mut panels);
             });
+        // ⚑ Drawn AFTER the dock so the modal floats over the panels rather than under them, and outside
+        // the `CentralPanel` closure because that closure holds the `machine`/`bus` borrows the palette's
+        // own `Host::call` needs. Its runs join the bar's: a modal covering this window whose text a
+        // client reading `emulator/screen_text` could not see would be a hole in the readback.
+        drew.append(&mut palette.show(&ctx, machine, bus));
         drew
     }
 }
