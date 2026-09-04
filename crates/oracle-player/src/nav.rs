@@ -69,9 +69,11 @@ use egui_dock::{DockState, TabIndex};
 /// `emulator/screen_text`, and a label written twice is a window and a tool naming one control two ways
 /// — the rule [`ui::PAUSE_LABEL`] and its neighbours were made constants for.
 ///
-/// **Plain letters, no chevron.** The bar's text goes through `screen_text`'s glyph probe, and a
-/// decorative `▾` that egui's bundled fonts do not carry would be reported as an unrenderable glyph in
-/// the player's own readback — a defect manufactured for an ornament.
+/// **Plain letters, no chevron, and the rule is ASCII.** The bar's text goes through `screen_text`'s
+/// glyph probe, so a decorative `▾` that egui's bundled fonts happen not to carry would be reported as an
+/// unrenderable glyph in the player's *own* readback — a defect manufactured for an ornament. Whether a
+/// given ornament is carried cannot be measured from a test (no frame, no atlas — see
+/// `the_navs_own_text_stays_inside_ascii`), so the nav does not spend one.
 pub const PANELS_LABEL: &str = "panels";
 
 /// The suffix the menu puts after a tab that is **not in the dock at all**.
@@ -654,5 +656,61 @@ mod tests {
             assert!(matches!(&home.main_surface()[node], Node::Leaf(_)));
             assert_ne!(node, NodeIndex(usize::MAX));
         }
+    }
+
+    /// **[`bar`] draws, and hands back the run it drew** — the `emulator/screen_text` half.
+    ///
+    /// Two claims in one pass over a real `egui::Ui`: the nav reports exactly the run it painted, and
+    /// **drawing the nav with nothing clicked changes no layout**. The second is not idle: `bar` takes
+    /// `&mut DockState` and is called on every frame of the window, so a `reveal` that leaked out of the
+    /// click branch would rearrange the user's panels sixty times a second.
+    #[test]
+    fn the_bar_draws_hands_back_its_run_and_changes_nothing_by_itself() {
+        let mut dock = ui::initial_dock();
+        let before = entries(&dock);
+        let mut runs: Vec<screen::Run> = Vec::new();
+        egui::__run_test_ui(|ui| {
+            runs = bar(ui, &mut dock);
+        });
+        assert_eq!(runs, vec![screen::Run::label(PANELS_LABEL)]);
+        assert_eq!(
+            entries(&dock),
+            before,
+            "drawing the panel menu moved the layout with nothing clicked"
+        );
+    }
+
+    /// ⚑ **The nav's own text is plain ASCII**, which is the rule [`PANELS_LABEL`]'s doc states and the
+    /// most of it that can be checked in a unit test.
+    ///
+    /// The claim I wanted to make is stronger — *every character the nav draws is one the bundled fonts
+    /// can draw* — and it is **not available here.** [`crate::screen::Glyphs`] answers through
+    /// `Fonts::layout_no_wrap` on a live `egui::Context`, and under `egui::__run_test_ctx` that call
+    /// produces **no glyph rows at all**: measured, `'漢'`, `'ꨀ'` and `'p'` alike come back `None`, the
+    /// probe's own *"this family cannot be measured"* state. So a headless assertion would be measuring
+    /// the absence of a font atlas, not the label — and tolerating `None` to get a green would be exactly
+    /// the vacuity the rest of this file refuses. **Booked as `F-NAV-GLYPH-UNMEASURED`**; it needs a
+    /// frame, which means the windowed run, and no window is opened from here.
+    ///
+    /// What is left is a real rule and a sufficient one: ASCII is drawable by any font egui ships, so a
+    /// nav that stays inside it cannot manufacture an unrenderable glyph in the player's own
+    /// `screen_text` readback. It is deliberately **stricter** than the bar as a whole — [`ui::PAUSE_LABEL`]
+    /// and its neighbours carry `⏸ ▶ ⏭`, which the emoji font does have — because the nav has no ornament
+    /// worth the risk of the measurement it cannot take.
+    #[test]
+    fn the_navs_own_text_stays_inside_ascii() {
+        let mut text = format!("{PANELS_LABEL}{CLOSED_SUFFIX}");
+        for &tab in Tab::ALL.iter() {
+            text.push_str(tab.title());
+        }
+        for c in text.chars() {
+            assert!(
+                c.is_ascii_graphic() || c == ' ',
+                "the nav draws {c:?}. Whether the bundled fonts carry it cannot be measured without a \
+                 frame (see this test's doc), so the nav does not spend one."
+            );
+        }
+        // The anti-vacuity clause: the string under test is the real one and is not empty.
+        assert!(text.len() > PANELS_LABEL.len() + CLOSED_SUFFIX.len());
     }
 }
