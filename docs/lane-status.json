@@ -1,8 +1,8 @@
 {
-  "focus": "Nine parcels landed today, including a contract obligation to the suite. Next is making an armed breakpoint visible on screen.",
+  "focus": "The armed-breakpoint alarm and its release button are landed. Next is the tool that says a stop never happened when it did.",
   "inFlight": [],
   "blockedOnOwner": [],
-  "nextBoundary": "Here. Everything merged, pushed and written down.",
+  "nextBoundary": "Here \u2014 armed-state landed and pushed, nothing running.",
   "queue": [
     {
       "id": "F-NAV-COLLAPSED-LEAF",
@@ -22,19 +22,11 @@
     },
     {
       "id": "WAITFORBREAK-INSTANT-TIMEOUT",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "A tool that asks the emulator to stop and waits ten seconds can be told 'it never stopped' after waiting ZERO milliseconds, with the game still running \u2014 a wrong answer, not a slow one. Real and worth fixing on its own merits; the other team turns out NOT to depend on it, so it sits behind the things you asked for tonight."
-    },
-    {
-      "id": "ARMED-STATE-VISIBLE",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The window read as stuck because something was stopping it every frame and nothing on screen said so or offered to release it. Anything armed that can halt the game has to say it is armed, say it just halted, and give you the way out."
     },
     {
       "id": "PANELS-CLEANUP",
@@ -134,7 +126,7 @@
       "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Now also: any note that says 'oracle' as if it were ONE emulator, in prose about measurements. There are two, they disagree by a line, and a measurement whose instrument is unnamed is unreadable. The boot doc is already clean; the risk is the dated notes a peer might cite."
     }
   ],
-  "awaiting": "one question when you are next at the window: when you could not open those tabs, could you SEE their titles in the little bars above the panels? Not a blocker \u2014 it decides whether there is a second defect behind the one I fixed.",
+  "awaiting": "two things when you are next at the window, neither blocking: (1) with a breakpoint armed, does the new top-bar alarm and its release button look right \u2014 nobody has seen it on glass yet; (2) still open from last night, when you could not open those tabs, could you SEE their titles?",
   "atBoundary": true,
-  "updatedAt": "2026-09-04T03:25:23Z"
+  "updatedAt": "2026-09-04T04:23:55Z"
 }
