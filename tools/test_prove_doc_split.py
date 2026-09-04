@@ -559,12 +559,84 @@ class TornSentenceBesideATable(ToolCase):
                        "Body of the moved section, a complete sentence.\n")
         return ["--original", o, "--output", b, "--output", f, "--no-new"]
 
+    # The truncated half.  Named once, because the assertions below must quote
+    # the whole flagged line and not merely find this text somewhere in stdout.
+    TORN = "- The rule is long enough to wrap, and so it ends with a comma,"
+    TAIL = "  continuing on this second line to a full stop."
+
     def test_the_torn_bullet_is_still_red_and_quoted(self):
         r = self.run_tool(*self.fixture(), expect=1)
         self.assertIn("VERDICT: DISPROVED", r.stdout)
-        self.assertIn("- The rule is long enough to wrap, and so it ends with a comma,",
+        self.assertIn(self.TORN, r.stdout)
+        self.assertIn(self.TAIL.strip(), r.stdout)
+
+    def test_the_BEFORE_side_is_what_flags_it(self):
+        """This is the assertion that bites on an over-broad fix.
+
+        The earlier draft of this class asserted only that the torn text
+        appeared in stdout and that the run was red.  Both survive a poisoned
+        `is_table_row` that returns True for EVERY line: the run still reds off
+        the AFTER side (ref.md starts with a lowercase continuation) and the
+        derived cut still PRINTS the torn line, as '[OK ]'.  So the class was
+        passing for the wrong reason and could not have caught the very
+        regression it exists to catch.  Proven by poison, 2026-09-04.
+
+        The assertion that actually bites is the boot.md EDGE CUT, which names
+        the BEFORE side: under that poison the edge count drops 2 -> 1 and this
+        line is gone.  The derived cut stays [BAD] even poisoned, because the
+        AFTER side of that same join fails independently -- so it is asserted
+        as context, not relied on.  The class below removes that crutch
+        entirely.
+        """
+        r = self.run_tool(*self.fixture(), expect=1)
+        self.assertIn(f"EDGE CUT [boot.md] ends mid-sentence: {self.TORN!r}",
                       r.stdout)
-        self.assertIn("continuing on this second line to a full stop.", r.stdout)
+        self.assertIn("[BAD] DIVERGENCE", r.stdout)
+        self.assertIn("failing the predicate: 1", r.stdout)
+
+    def test_a_tear_only_the_before_side_can_see_is_still_red(self):
+        """The strongest form of the control: the BEFORE side is the ONLY
+        reason this split is red.
+
+        Same tear, but the orphaned continuation begins with a capital, so
+        begins_sentence() accepts it and the after side reports nothing.  Every
+        red here comes from the sentence predicate applied to a line that sits
+        in a document full of table rows.  Poison is_table_row to return True
+        for every line and this fixture goes PROVED -- the 09-02 defect,
+        invisible again -- so this test is what stands between the two.
+        """
+        doc = ("# Doc\n"
+               "\n"
+               "## Table section\n"
+               "\n"
+               "| a | b |\n"
+               "|---|---|\n"
+               "| *(none)* | — |\n"
+               "\n"
+               "- The rule is long enough to wrap, and so it ends with a comma,\n"
+               "  Sonic then continues on this second line to a full stop.\n")
+        o = self.write("ORIG2.md", doc)
+        b = self.write("boot2.md",
+                       "# Doc\n"
+                       "\n"
+                       "## Table section\n"
+                       "\n"
+                       "| a | b |\n"
+                       "|---|---|\n"
+                       "| *(none)* | — |\n"
+                       "\n"
+                       "- The rule is long enough to wrap, and so it ends with a comma,\n")
+        f = self.write("ref2.md",
+                       "  Sonic then continues on this second line to a full stop.\n")
+        r = self.run_tool("--original", o, "--output", b, "--output", f,
+                          "--no-new", expect=1)
+        self.assertIn("VERDICT: DISPROVED", r.stdout)
+        self.assertIn(f"EDGE CUT [boot2.md] ends mid-sentence: {self.TORN!r}",
+                      r.stdout)
+        self.assertIn("failing the predicate: 1", r.stdout)
+        # ... and nothing was flagged on the after side, so there is no other
+        # check that could have carried this red.
+        self.assertNotIn("starts mid-sentence", r.stdout)
 
     def test_the_older_proofs_are_blind_to_it_here_too(self):
         """The 09-02 signature again: lines and tokens all account for."""
