@@ -62,6 +62,123 @@
 /// hard-coded `ObjDef_Ring` would be this crate asserting a fact about somebody else's game.
 pub const ARCHETYPE_PREFIX: &str = "ObjDef_";
 
+/// The two derived RAM words that carry **the act's true pixel extent**, and the only two this crate will
+/// accept as the answer to "is this click inside the level".
+///
+/// aeon published them for exactly this join, and their own declaration states the box: *"the act's TRUE
+/// pixel extent — the valid world box is `[0, Level_Width) × [0, Level_Height)`"*
+/// (`games/sonic4/config/ram.emp`). They are written by `Player_BoundsInit` from the values it holds
+/// **before** it subtracts its margins, and they exist in both the release and the DEBUG shape.
+///
+/// ⚠ **`Player_Bound_Right` / `Player_Bound_Bottom` are NOT these**, and reading them as the extent is the
+/// dangerous mistake rather than the obvious one. They are the *player's* clamp edges, inset by
+/// `PBOUND_RIGHT_MARGIN` and `SCREEN_HEIGHT`; objects are deliberately unclamped, so **an object placed
+/// between `Player_Bound_Right` and `Level_Width` is legal and renders**. A window that refused there would
+/// reject real placements *and look right doing it*, because a refusal near an edge is half-expected — the
+/// failure shaped like correctness, which is precisely why aeon wrote these two words rather than pointing
+/// us at the ones a grep finds first. There is no `Player_Bound_Left`/`_Top` at all: the low edge of the
+/// box is a literal `0`.
+///
+/// ⚑ **Resolved by name, per call, never cached** — the same rule §11.26 was amended to impose on
+/// `Camera_X`. Measured on this box: `Level_Width` is `$FFFFBABE` in `s4.lst` and `$FFFFE95C` in
+/// `s4.debug.lst`, ~11 KB apart, so a cached address is silently wrong in the other shape and yields a
+/// number rather than a fault.
+pub const LEVEL_WIDTH_SYMBOL: &str = "Level_Width";
+/// See [`LEVEL_WIDTH_SYMBOL`].
+pub const LEVEL_HEIGHT_SYMBOL: &str = "Level_Height";
+
+/// **The act's pixel extent, as read out of the machine just now.**
+///
+/// Never a constant. The one act measured on this box reads `$1800 × $1800` (6144, which is aeon's
+/// `GRID_W = 3 << SECTION_SIZE_SHIFT = 11`), and that is *one act's value*, not the engine's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bounds {
+    /// `Level_Width`, in world pixels. The box is half-open: `width` itself is **outside**.
+    pub width: u32,
+    /// `Level_Height`, in world pixels.
+    pub height: u32,
+}
+
+impl Bounds {
+    /// Whether a world pixel is inside `[0, width) × [0, height)` — aeon's own words for the box.
+    ///
+    /// Half-open, and that is load-bearing at exactly one pixel per axis: `x == width` is the first column
+    /// that is not in the act. Unsigned, so the low edge needs no test — a negative world pixel cannot be
+    /// represented, and `Camera_X + dot` cannot produce one.
+    pub fn contains(&self, x: u32, y: u32) -> bool {
+        x < self.width && y < self.height
+    }
+
+    /// Whether these are the boot-cleared zeroes rather than a measurement.
+    ///
+    /// aeon's declaration: both words are *"boot-cleared with all Work RAM, so both read 0 until an act
+    /// init has run"*. A `0 × 0` box is therefore **not an act of no size** — it is the absence of an act,
+    /// and it gets its own sentence, because "your click is outside the level" is a confusing thing to read
+    /// on a title screen.
+    pub fn no_act_loaded(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// **The refusal for a click that landed outside the act.**
+    ///
+    /// It says what the engine would have done, because that is the whole reason this refusal exists: aeon's
+    /// `RunObjects` culls an out-of-act object by camera distance and *does nothing* — no error, no refusal,
+    /// nothing on screen. Before this check the window acked such a click as placed. A reader who is only
+    /// told "refused" will reasonably assume the window is being fussy; a reader who is told the object
+    /// would have been silently culled knows the refusal is the useful half.
+    pub fn outside(&self, x: u32, y: u32) -> Refusal {
+        Refusal::window(
+            "outsideAct",
+            format!(
+                "world ({x}, {y}) is outside this act, whose extent is {} x {} pixels — the valid box \
+                 is [0, {}) x [0, {}), read just now from `{LEVEL_WIDTH_SYMBOL}` and \
+                 `{LEVEL_HEIGHT_SYMBOL}`. An object placed there is culled by the engine on camera \
+                 distance with no error and nothing on screen, so the click is refused here rather than \
+                 acked and thrown away",
+                self.width, self.height, self.width, self.height
+            ),
+            Some(format!(
+                "click inside the act — it is {} x {} pixels",
+                self.width, self.height
+            )),
+        )
+    }
+
+    /// **The refusal for a build whose listing cannot answer where the act ends.**
+    ///
+    /// The third option, and the one this lane takes: not silently permitting (which is the defect itself,
+    /// restored), not silently refusing (the feature works perfectly inside a level and a silent refusal
+    /// would read as a broken click), but **saying the check could not be made**. The shipped precedent is
+    /// this module's own: no archetypes means [`Mode::arm`] refuses rather than arming a mode that can
+    /// place nothing.
+    pub fn unmeasurable() -> Refusal {
+        Refusal::window(
+            "actExtentUnknown",
+            format!(
+                "the window cannot tell whether this click is inside the act: `{LEVEL_WIDTH_SYMBOL}` and \
+                 `{LEVEL_HEIGHT_SYMBOL}` are not both in the loaded listing, so there is no measurement to \
+                 check against. An object placed outside the act is culled by the engine with no error and \
+                 nothing on screen, and a click sent unchecked would be acked as placed and then vanish — \
+                 so this refuses rather than guessing the act is infinite"
+            ),
+            Some("load a listing that names Level_Width and Level_Height".to_string()),
+        )
+    }
+
+    /// **The refusal for `0 × 0`** — the boot-cleared reading, which is the absence of an act.
+    pub fn no_act() -> Refusal {
+        Refusal::window(
+            "noActLoaded",
+            format!(
+                "`{LEVEL_WIDTH_SYMBOL}` and `{LEVEL_HEIGHT_SYMBOL}` read 0, which is what they hold until \
+                 an act has initialised — there is no act for an object to be inside of, and anything \
+                 placed now would be culled the moment objects run"
+            ),
+            Some("start an act first, then click".to_string()),
+        )
+    }
+}
+
 /// **What `emulator/lookup_symbol`'s bounded prefix search found**, and how much of the listing it
 /// actually looked at.
 ///
@@ -105,6 +222,19 @@ pub struct Refusal {
     pub reason: Option<String>,
     /// **The server's `message`, verbatim.** The one field nothing in this module is allowed to reword.
     pub message: String,
+    /// The remedy a **window-side** refusal carries with it, or `None` to fall back to
+    /// [`Self::remedy`]'s reason-keyed table.
+    ///
+    /// It is a field rather than another arm of that `match` for a reason that is not tidiness: the
+    /// remedies for these refusals **quote a measurement** — *"click inside the act — it is 1024 x 768
+    /// pixels"* — and a `match` on `reason` alone has no access to the numbers that were read. Keying it
+    /// off the constructor is *stricter* than keying it off `reason`, not looser: nothing here branches on
+    /// message text, which is the rule the reason-keyed table exists to hold.
+    ///
+    /// `pub(crate)` rather than `pub`: [`crate::bus`] builds the server-side refusal as a literal and must
+    /// be able to say `None` here, but nothing outside this crate may set a remedy — a remedy is a
+    /// statement in *this window's* vocabulary about *this window's* keys.
+    pub(crate) remedy: Option<String>,
 }
 
 impl Refusal {
@@ -115,6 +245,28 @@ impl Refusal {
             code: None,
             reason: None,
             message: message.into(),
+            remedy: None,
+        }
+    }
+
+    /// A window-side refusal that carries **its own machine-readable discriminant and its own remedy**.
+    ///
+    /// The `reason` is not decoration: `Refusal::local`'s refusals are all one undifferentiated `None`
+    /// today, and the three the act-bounds check raises are three different facts a caller may want to tell
+    /// apart (*the listing cannot answer*, *no act is loaded*, *you clicked outside it*). Giving them
+    /// discriminants is the same move §11.32 §6 makes on the wire, applied to the refusals we own — and
+    /// `code` stays `None`, so [`Self::terminal`] still says "the window" rather than claiming an RPC code
+    /// for a call that never happened.
+    pub fn window(
+        reason: impl Into<String>,
+        message: impl Into<String>,
+        remedy: Option<String>,
+    ) -> Self {
+        Self {
+            code: None,
+            reason: Some(reason.into()),
+            message: message.into(),
+            remedy,
         }
     }
 
@@ -129,6 +281,11 @@ impl Refusal {
     /// four engine refusals and the two server refusals are answered by the machine's state or by choosing
     /// a different archetype, neither of which is a keystroke this window owns.
     pub fn remedy(&self, pause_key: Option<&str>) -> Option<String> {
+        // A refusal the window built already knows its own next action, including the numbers it measured
+        // to reach it. Nothing below can reconstruct those.
+        if self.remedy.is_some() {
+            return self.remedy.clone();
+        }
         match (self.reason.as_deref(), pause_key) {
             (Some("machineRunning"), Some(k)) => Some(format!(
                 "press {k} to pause this window, then click the spot again"
@@ -398,6 +555,90 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // The act's box (`F-SPAWN-OUTSIDE-ACT`)
+    // ---------------------------------------------------------------------------------------------
+
+    /// **The box is half-open**, which matters at exactly one pixel per axis.
+    ///
+    /// aeon's own words are `[0, Level_Width) × [0, Level_Height)`, so `Level_Width` itself is the first
+    /// column that is *not* in the act. An inclusive test would accept one illegal column and one illegal
+    /// row — the object would be acked and then culled, which is the defect, surviving at the one place
+    /// nobody clicks twice.
+    #[test]
+    fn the_act_box_is_half_open_so_the_extent_itself_is_outside_it() {
+        let b = Bounds {
+            width: 6144,
+            height: 4096,
+        };
+        assert!(
+            b.contains(0, 0),
+            "the low edge is a literal 0 and is inside"
+        );
+        assert!(b.contains(6143, 4095), "the last legal pixel is inside");
+        assert!(!b.contains(6144, 0), "`Level_Width` itself is outside");
+        assert!(!b.contains(0, 4096), "`Level_Height` itself is outside");
+        assert!(!b.contains(6144, 4096));
+    }
+
+    /// The three refusals this gate can raise are **three different facts**, and each says which.
+    #[test]
+    fn each_act_bounds_refusal_is_its_own_fact_with_its_own_next_action() {
+        let b = Bounds {
+            width: 1024,
+            height: 768,
+        };
+        let outside = b.outside(2000, 10);
+        let unknown = Bounds::unmeasurable();
+        let no_act = Bounds::no_act();
+
+        // Machine-readable and distinct, so a caller never has to read prose to tell them apart.
+        let reasons: Vec<_> = [&outside, &unknown, &no_act]
+            .iter()
+            .map(|r| r.reason.clone())
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![
+                Some("outsideAct".to_string()),
+                Some("actExtentUnknown".to_string()),
+                Some("noActLoaded".to_string())
+            ]
+        );
+
+        for r in [&outside, &unknown, &no_act] {
+            // All three are the WINDOW's: no RPC happened, so no RPC code may be claimed for one.
+            assert_eq!(r.code, None, "{r:?}");
+            assert!(
+                r.terminal("ObjDef_Ring", Some("Space"))
+                    .contains("the window"),
+                "the reader must be told whose refusal this is: {r:?}"
+            );
+            // Every one of them ends in a sentence with a next action, and the toast carries the action
+            // rather than the essay — a toast is cut from the right and these messages are long.
+            let toast = r.toast(Some("Space"));
+            assert!(toast.starts_with("SPAWN REFUSED — "), "{toast:?}");
+            assert!(
+                toast.len() < r.message.len(),
+                "the glass must get the remedy, not the whole explanation: {toast:?}"
+            );
+            // …and the remedy is the window's own, not the pause key's — a rebind must not touch these.
+            assert_eq!(
+                r.remedy(Some("Space")),
+                r.remedy(Some("F8")),
+                "these remedies name no key, so rebinding must not change them: {r:?}"
+            );
+        }
+
+        // The one that measured something quotes the measurement, on both surfaces.
+        assert!(outside.message.contains("1024") && outside.message.contains("768"));
+        assert!(
+            outside.toast(None).contains("1024 x 768"),
+            "{:?}",
+            outside.toast(None)
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Refusals reach the person
     // ---------------------------------------------------------------------------------------------
 
@@ -415,16 +656,19 @@ mod tests {
                 message:
                     "emulator/object_spawn needs the machine paused; call emulator/pause first"
                         .into(),
+                remedy: None,
             },
             Refusal {
                 code: Some(-32005),
                 reason: Some("objectPoolFull".into()),
                 message: "the dynamic object pool is full; nothing was evicted".into(),
+                remedy: None,
             },
             Refusal {
                 code: Some(-32013),
                 reason: None,
                 message: "this build has no live-object mailbox".into(),
+                remedy: None,
             },
             Refusal::local("the window could not turn this click into a world position"),
         ];
@@ -468,6 +712,7 @@ mod tests {
             reason: Some("machineRunning".into()),
             message: "emulator/object_spawn needs the machine paused; call emulator/pause first"
                 .into(),
+            remedy: None,
         };
         let toast = r.toast(Some("Space"));
         assert_eq!(

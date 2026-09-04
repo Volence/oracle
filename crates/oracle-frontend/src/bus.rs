@@ -388,14 +388,76 @@ impl Bus {
         Ok(spawn::Archetypes { names, total })
     }
 
+    /// **The act's pixel extent, read out of the machine right now.**
+    ///
+    /// ⚑ **Both addresses are resolved BY NAME on every call and never cached**, which is the rule §11.26
+    /// was amended to impose on `Camera_X` after it was found to *move between build shapes*. These move
+    /// too, and further: measured on this box, `Level_Width` is `$FFFFBABE` in `s4.lst` and `$FFFFE95C` in
+    /// `s4.debug.lst`. A cached address does not fault in the other shape — it returns a number, and a
+    /// number is what this check compares against.
+    ///
+    /// The two symbols are resolved **independently**, not as one 4-byte read off the first. They are
+    /// adjacent in every listing seen so far and that is a fact about a declaration order this crate does
+    /// not own; an implementation that assumed it would keep working right up until aeon inserted a field.
+    ///
+    /// Every failure is the **window's own** refusal (`code: None`), matching the sibling case in
+    /// [`Self::spawn_at`]: a build without `Camera_X` already gets a local sentence rather than a
+    /// coordinate, and a build without `Level_Width` is the same shape of unmeasurable.
+    pub fn act_bounds(&mut self, sys: &mut System) -> Result<spawn::Bounds, spawn::Refusal> {
+        let addrs = self.host.symbols().and_then(|t| {
+            Some((
+                t.address_of(spawn::LEVEL_WIDTH_SYMBOL)?,
+                t.address_of(spawn::LEVEL_HEIGHT_SYMBOL)?,
+            ))
+        });
+        // Both or neither. Half an extent is not a smaller measurement, it is no measurement — and the
+        // half that resolved would be the more dangerous of the two, because a check on one axis looks
+        // like a check.
+        let (wa, ha) = match addrs {
+            Some(p) => p,
+            None => return Err(spawn::Bounds::unmeasurable()),
+        };
+        Ok(spawn::Bounds {
+            width: u32::from(self.read_u16(sys, wa)?),
+            height: u32::from(self.read_u16(sys, ha)?),
+        })
+    }
+
+    /// One word out of work RAM, through the same handler a socket client reads with.
+    fn read_u16(&mut self, sys: &mut System, addr: u32) -> Result<u16, spawn::Refusal> {
+        let r = self.call(
+            sys,
+            "emulator/read_memory",
+            json!({"addr": format!("0x{addr:08X}"), "len": 2}),
+        )?;
+        // `bytes` is the reply's `0xXXXX`. A reply that cannot be parsed is refused rather than defaulted
+        // to zero: a silent `0` here would read as "no act loaded" and send the person hunting for an act
+        // that is already running.
+        r["bytes"]
+            .as_str()
+            .and_then(|s| u16::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok())
+            .ok_or_else(|| {
+                spawn::Refusal::local(format!(
+                    "the window could not read the act extent at {addr:#010X}: \
+                     emulator/read_memory answered {:?}, which is not a word",
+                    r["bytes"]
+                ))
+            })
+    }
+
     /// **Place `archetype` where the window was clicked.**
     ///
-    /// Two calls, because the click is in *screen* dots and the mailbox wants *world* pixels:
+    /// Three calls, because the click is in *screen* dots, the mailbox wants *world* pixels, and the act
+    /// has an edge that the mailbox will not defend:
     ///
     /// 1. `emulator/object_at`, whose `world{x,y}` is `Camera_X`/`Camera_Y` plus the dot (§11.26 M3, and
     ///    the join §11.32 §11 names as the GUI's one extra dependency). It is a pure read and needs no
     ///    pause.
-    /// 2. `emulator/object_spawn { defSymbol, x, y }`, which is where the pause requirement, the mailbox
+    /// 2. [`Self::act_bounds`], which reads `Level_Width`/`Level_Height` by name and is what makes a click
+    ///    outside the level a **sentence** instead of an ack followed by a silent cull
+    ///    (`F-SPAWN-OUTSIDE-ACT`; see the gate's own comment below for why it is refused rather than
+    ///    clamped, and why it lives here rather than in the engine).
+    /// 3. `emulator/object_spawn { defSymbol, x, y }`, which is where the pause requirement, the mailbox
     ///    handshake and all five engine refusals live.
     ///
     /// **The `world` half is refused rather than guessed.** §11.26 makes `worldSource` a field precisely
@@ -427,6 +489,38 @@ impl Bus {
                 )))
             }
         };
+        // --- THE ACT-BOUNDS GATE (`F-SPAWN-OUTSIDE-ACT`) --------------------------------------------
+        //
+        // A click outside the level used to be **acked as placed and then silently culled**: aeon's
+        // `RunObjects` drops an out-of-act object on camera distance and does nothing — no error, no
+        // refusal, nothing on screen. That is the exact failure class this whole module is written
+        // against, arriving through the one path that returns success, so it is caught here, on the side
+        // that holds the click.
+        //
+        // **It is ours and it is window-side on purpose.** aeon deliberately added no clamp and no
+        // refusal to the mailbox rather than pre-empt this design by making the engine quietly do half of
+        // it, so `emulator/object_spawn` will accept this request without complaint. Nothing below this
+        // line is allowed to be the thing that stops it.
+        //
+        // **Refused, not clamped.** The booking allowed either. A clamp moves the object away from where
+        // the person clicked and then reports success with coordinates — which, given §11.32's ruling that
+        // the reply's `x`/`y` are a *re-read*, would print a perfectly plausible line about an object
+        // sitting at the level edge for reasons nothing on the glass explains. That is a smaller lie of
+        // the same family as the defect, and there is no rule for which edge to snap to that preserves
+        // what the click meant. A refusal costs one gesture and says why.
+        //
+        // **Ordering.** This sits after the world join and before the mailbox, so an unresolvable click
+        // is still refused for *that* reason first. It does run before the server's `paused` precondition,
+        // so an out-of-act click on a running machine reads "outside the act" rather than "press Space" —
+        // both true, and the one the person can act on without pausing first.
+        let bounds = self.act_bounds(sys)?;
+        if bounds.no_act_loaded() {
+            return Err(spawn::Bounds::no_act());
+        }
+        if !bounds.contains(world.0, world.1) {
+            return Err(bounds.outside(world.0, world.1));
+        }
+
         let placed = self.call(
             sys,
             "emulator/object_spawn",
@@ -464,14 +558,21 @@ impl Bus {
         params: Value,
     ) -> Result<Value, spawn::Refusal> {
         let (result, _stamp) = self.host.call(sys, method, &params);
-        result.map_err(|e| spawn::Refusal {
-            code: Some(e.code),
-            reason: e
+        result.map_err(|e| {
+            let reason = e
                 .data
                 .as_ref()
                 .and_then(|d| d["reason"].as_str())
-                .map(str::to_string),
-            message: e.message,
+                .map(str::to_string);
+            // `Refusal::window` is deliberately NOT used here: this refusal has a code, it is the
+            // server's, and its remedy comes from the reason-keyed table so that a rebound pause key
+            // rebinds the sentence.
+            spawn::Refusal {
+                code: Some(e.code),
+                reason,
+                message: e.message,
+                remedy: None,
+            }
         })
     }
 }
@@ -931,6 +1032,27 @@ mod tests {
         const CAMERA_X: u32 = 0x00FF_9800;
         const CAMERA_Y: u32 = 0x00FF_9802;
 
+        /// **The act extent, and the two symbols that are the wrong answer to the same question.**
+        ///
+        /// All four are in the fixture because the *distinguishing* row below needs both pairs present:
+        /// a build carrying only the extent cannot tell an implementation that reads `Level_Width` from
+        /// one that reads `Player_Bound_Right`, since the wrong symbol would simply fail to resolve. With
+        /// both here, reading the wrong one succeeds — and lands about 24 pixels short, which is exactly
+        /// how that defect would reach production.
+        const LEVEL_WIDTH: u32 = 0x00FF_9810;
+        const LEVEL_HEIGHT: u32 = 0x00FF_9812;
+        const PLAYER_BOUND_RIGHT: u32 = 0x00FF_9814;
+        const PLAYER_BOUND_BOTTOM: u32 = 0x00FF_9816;
+
+        /// The act this fixture's machine is in. Big enough that every pre-existing row's click (world
+        /// `CAM + DOT` = `(110, 220)`) is comfortably inside it, so the gate is invisible to them.
+        const ACT: (u32, u32) = (0x0400, 0x0300); // 1024 x 768
+
+        /// aeon's own insets, so the strip between the player's clamp and the act's edge is real here:
+        /// `right = level_width − PBOUND_RIGHT_MARGIN`, `bottom = level_height − SCREEN_HEIGHT`.
+        const PBOUND_RIGHT_MARGIN: u32 = 24;
+        const SCREEN_HEIGHT: u32 = 224;
+
         /// The archetype a click places, and where its record says the object ended up. The two positions
         /// are deliberately different: the request asks for one and the record holds the other, which is
         /// the only way to tell §11.32's ruled **re-read** from an echo of the request.
@@ -1068,6 +1190,11 @@ mod tests {
                 // The click→world join.
                 ("Camera_X".into(), CAMERA_X),
                 ("Camera_Y".into(), CAMERA_Y),
+                // The act extent (the right answer) beside the player clamp (the wrong one that resolves).
+                ("Level_Width".into(), LEVEL_WIDTH),
+                ("Level_Height".into(), LEVEL_HEIGHT),
+                ("Player_Bound_Right".into(), PLAYER_BOUND_RIGHT),
+                ("Player_Bound_Bottom".into(), PLAYER_BOUND_BOTTOM),
                 // Two archetypes, so the cycle has somewhere to go.
                 ("ObjDef_Ring".into(), OBJ_DEF_RING),
                 ("ObjDef_Spring".into(), OBJ_DEF_RING + 0x20),
@@ -1162,6 +1289,18 @@ mod tests {
             f.poke(MB_FLAG, 0, 1);
             f.poke(CAMERA_X, u64::from(CAM.0), 2);
             f.poke(CAMERA_Y, u64::from(CAM.1), 2);
+            // An act is loaded. Both words are boot-cleared in the real engine and read 0 until
+            // `Player_BoundsInit` has run, which is a state this fixture reaches by poking them back to 0.
+            f.poke(LEVEL_WIDTH, u64::from(ACT.0), 2);
+            f.poke(LEVEL_HEIGHT, u64::from(ACT.1), 2);
+            // The player's clamp, inset exactly as aeon insets it, so the legal strip between it and the
+            // act's edge exists to be clicked in.
+            f.poke(
+                PLAYER_BOUND_RIGHT,
+                u64::from(ACT.0 - PBOUND_RIGHT_MARGIN),
+                2,
+            );
+            f.poke(PLAYER_BOUND_BOTTOM, u64::from(ACT.1 - SCREEN_HEIGHT), 2);
             // Seat a live record where the handle points, at a position the request does NOT ask for.
             let a = slot_addr(dynamic_slot(0));
             f.poke(a, 0x27DE, 2); // code_addr — non-zero IS the activity test
@@ -1448,6 +1587,267 @@ mod tests {
             assert!(!mode.is_armed());
             assert_eq!(mode.badge(), None);
             assert!(mode.arm(Vec::new()).is_err());
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // `F-SPAWN-OUTSIDE-ACT` — the act has an edge, and the mailbox will not defend it
+        // -----------------------------------------------------------------------------------------
+
+        /// Move the camera so the fixture's one dot lands on `world`, and clear the witness so "the
+        /// machine saw nothing" is a fact about this click rather than about the seed.
+        fn aim_at(f: &mut Fix, world: (u32, u32)) {
+            f.poke(CAMERA_X, u64::from(world.0 - u32::from(DOT.0)), 2);
+            f.poke(CAMERA_Y, u64::from(world.1 - u32::from(DOT.1)), 2);
+            for c in [W_DEF, W_DEF + 2, W_X, W_Y, W_OP] {
+                f.poke(c, 0, 2);
+            }
+        }
+
+        /// ## ★ **A click outside the act is refused, and the machine never saw it.**
+        ///
+        /// # The defect
+        ///
+        /// aeon's `RunObjects` culls an out-of-act object on camera distance and **does nothing** — no
+        /// error, no refusal, nothing on screen. Their mailbox neither clamps nor refuses, deliberately,
+        /// so before this gate a click outside the level was acked as *placed* and the object was thrown
+        /// away in silence. That is the failure class this whole module exists against, arriving through
+        /// the one path that returns success.
+        ///
+        /// # Why the anchor is not the reply
+        ///
+        /// The reply and the sentence are two consumers of the same refusal; agreeing proves only that
+        /// they agree. **The independent channel for a refusal is that no spawn reached the machine** —
+        /// `W_OP` is written by the emulated 68000 the instant it observes the mailbox flag, so a zero
+        /// there is the machine's own testimony that nothing was requested of it. Nothing on the window
+        /// side can fabricate it.
+        ///
+        /// # And why the second half is not decoration
+        ///
+        /// A build that refused *everything* would pass every assertion above the anti-vacuity clause.
+        /// So the same fixture, the same archetype and the same dot are then aimed **inside** the act and
+        /// must place — with `W_OP` carrying `OP_SPAWN` and `W_X`/`W_Y` carrying the world pixel, from the
+        /// same machine that had just refused to move.
+        ///
+        /// # Planting the defect
+        ///
+        /// `Bounds::contains` returning a constant `true` fails the first half (the refusal disappears and
+        /// the witness fires); a constant `false` fails the second (nothing can ever be placed).
+        #[test]
+        fn a_click_outside_the_act_is_refused_and_the_machine_never_saw_the_request() {
+            let mut f = fixture(rows());
+
+            // One pixel past the right edge — the first column that is not in the act. The half-open box
+            // is aeon's own (`[0, Level_Width) x [0, Level_Height)`), and its boundary is where an
+            // off-by-one would live, so this is the pixel worth spending the row on.
+            let just_outside = (ACT.0, 100);
+            aim_at(&mut f, just_outside);
+            let e = f
+                .bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .expect_err("Level_Width itself is outside the act");
+
+            // ---- (1) THE ANCHOR: the machine's own testimony that nothing was asked of it. ----
+            assert_eq!(
+                f.peek8(W_OP),
+                0,
+                "a refused click must never reach the mailbox: the witness op is {:#04X}, so a spawn \
+                 request WAS consumed and the refusal was a sentence over a placement that happened",
+                f.peek8(W_OP)
+            );
+            assert_eq!(
+                (f.peek16(W_X), f.peek16(W_Y)),
+                (0, 0),
+                "…and no position may have been handed over either"
+            );
+
+            // ---- (2) …and only now, what the window said about it. ----
+            assert_eq!(e.code, None, "this refusal is the window's own: {e:?}");
+            assert_eq!(e.reason.as_deref(), Some("outsideAct"), "{e:?}");
+            // Derived from the fixture's act, not transcribed: change `ACT` and the expectation moves.
+            for expected in [ACT.0.to_string(), ACT.1.to_string()] {
+                assert!(
+                    e.message.contains(&expected),
+                    "the refusal must name the act it measured ({expected}): {:?}",
+                    e.message
+                );
+            }
+            assert!(
+                e.message.contains("culled"),
+                "a reader told only 'refused' assumes the window is being fussy; they have to be told \
+                 the object would have vanished: {:?}",
+                e.message
+            );
+            let line = e.terminal("ObjDef_Ring", Some("Space"));
+            assert!(line.contains("nothing was placed"), "{line:?}");
+            assert!(
+                line.contains(&e.message),
+                "the refusal's own words must survive to the terminal: {line:?}"
+            );
+            let toast = e.toast(Some("Space"));
+            assert!(
+                toast.contains("REFUSED") && toast.contains(&ACT.0.to_string()),
+                "the glass must carry the next action, with the measurement in it: {toast:?}"
+            );
+
+            // ---- (3) ANTI-VACUITY: the same fixture still places an object inside the act. ----
+            let inside = (ACT.0 - 1, ACT.1 - 1);
+            aim_at(&mut f, inside);
+            let placed = f
+                .bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "the last legal pixel of the act must still place: {}",
+                        e.message
+                    )
+                });
+            assert_eq!(placed.asked, inside);
+            assert_eq!(
+                f.peek8(W_OP),
+                objreq::OP_SPAWN,
+                "…and the machine must witness it, or this row passes on a build that refuses \
+                 everything"
+            );
+            assert_eq!(
+                (u32::from(f.peek16(W_X)), u32::from(f.peek16(W_Y))),
+                inside,
+                "the machine must have been asked for the pixel that was clicked"
+            );
+        }
+
+        /// ## ★ **The gate reads the act extent, NOT the player's clamp edges.**
+        ///
+        /// # The trap this row exists for
+        ///
+        /// `Player_Bound_Right` / `Player_Bound_Bottom` are the symbols a grep for "the bounds" finds
+        /// first, they are authoritative for a real question (the *warp* clamps against them), and they
+        /// are **not** the act extent: aeon insets them by `PBOUND_RIGHT_MARGIN` and `SCREEN_HEIGHT`.
+        /// Objects are deliberately unclamped, so the strip between `Player_Bound_Right` and
+        /// `Level_Width` is **legal placement space and it renders**.
+        ///
+        /// A window that read the clamp edges would refuse in that strip — near an edge, where a refusal
+        /// is half-expected — and would look correct doing it. It would survive review. That is why this
+        /// is its own row rather than a clause: it is the failure shaped like correctness, and the only
+        /// thing that catches it is a click deliberately aimed into the strip.
+        ///
+        /// # Planting the defect
+        ///
+        /// Point `act_bounds` at `Player_Bound_Right`/`Player_Bound_Bottom` instead. Every other row in
+        /// this module stays green — including the one above, whose out-of-act click is far outside both
+        /// — and only this one goes red.
+        #[test]
+        fn the_strip_between_the_player_clamp_and_the_act_edge_is_legal_placement_space() {
+            let mut f = fixture(rows());
+
+            // Inside the act on both axes, outside the PLAYER's clamp on both axes. Derived from the
+            // fixture's act and aeon's own margins, so nothing here is a transcribed coordinate.
+            let in_the_strip = (ACT.0 - PBOUND_RIGHT_MARGIN / 2, ACT.1 - SCREEN_HEIGHT / 2);
+            assert!(
+                in_the_strip.0 > ACT.0 - PBOUND_RIGHT_MARGIN
+                    && in_the_strip.1 > ACT.1 - SCREEN_HEIGHT,
+                "the fixture must actually put this click in the strip, or the row is vacuous"
+            );
+            aim_at(&mut f, in_the_strip);
+
+            let placed = f
+                .bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "a placement between Player_Bound_Right ({}) and Level_Width ({}) is LEGAL and \
+                         renders — refusing it rejects real placements while looking correct: {}",
+                        ACT.0 - PBOUND_RIGHT_MARGIN,
+                        ACT.0,
+                        e.message
+                    )
+                });
+            assert_eq!(placed.asked, in_the_strip);
+            assert_eq!(
+                (u32::from(f.peek16(W_X)), u32::from(f.peek16(W_Y))),
+                in_the_strip,
+                "the machine must have been handed the strip pixel, not a clamped one"
+            );
+            assert_eq!(f.peek8(W_OP), objreq::OP_SPAWN);
+        }
+
+        /// ## ★ **A listing that cannot answer where the act ends refuses, loudly, and writes nothing.**
+        ///
+        /// # The third option
+        ///
+        /// Silently permitting restores the defect exactly. Silently refusing breaks a feature that works
+        /// perfectly inside a level, and reads as a broken click. So the window says **it cannot check** —
+        /// the shipped precedent being this module's own `arm`, which refuses rather than arming a mode
+        /// that can place nothing.
+        ///
+        /// # Both or neither
+        ///
+        /// Dropping only `Level_Height` must refuse too. Half an extent is not a smaller measurement, and
+        /// the half that resolved is the more dangerous one: a check on a single axis looks like a check.
+        #[test]
+        fn a_listing_without_the_act_extent_says_it_cannot_check_rather_than_guessing() {
+            for missing in ["Level_Width", "Level_Height"] {
+                let rows: Vec<_> = rows().into_iter().filter(|(n, _)| n != missing).collect();
+                let mut f = fixture(rows);
+
+                let e = match f.bus.spawn_at(&mut f.sys, "ObjDef_Ring", DOT) {
+                    Err(e) => e,
+                    Ok(p) => panic!(
+                        "a listing missing {missing} must refuse, not place: {p:?} — an unchecked \
+                         click is the whole defect"
+                    ),
+                };
+                assert_eq!(e.code, None, "the window's own refusal: {e:?}");
+                assert_eq!(e.reason.as_deref(), Some("actExtentUnknown"), "{e:?}");
+                assert!(
+                    e.message.contains("Level_Width") && e.message.contains("Level_Height"),
+                    "the refusal must name what it could not resolve: {:?}",
+                    e.message
+                );
+                assert!(
+                    e.message.contains("cannot tell"),
+                    "it must say the CHECK failed, not that the click was out of bounds — those are \
+                     different facts and only one of them is about where the person clicked: {:?}",
+                    e.message
+                );
+                assert_eq!(
+                    f.peek8(W_OP),
+                    0,
+                    "nothing may reach the mailbox when the act's extent is unknown"
+                );
+                assert!(e
+                    .terminal("ObjDef_Ring", Some("Space"))
+                    .contains("nothing was placed"));
+            }
+        }
+
+        /// ## ★ **`0 x 0` is the absence of an act, and gets its own sentence.**
+        ///
+        /// aeon's declaration: both words are boot-cleared with all Work RAM and *"read 0 until an act
+        /// init has run"*. So a zero extent is not an act of no size, and telling somebody on a title
+        /// screen that their click is *outside the level* would send them hunting for a level edge that
+        /// does not exist yet.
+        #[test]
+        fn a_zero_extent_is_reported_as_no_act_loaded_rather_than_a_click_outside_one() {
+            let mut f = fixture(rows());
+            f.poke(LEVEL_WIDTH, 0, 2);
+            f.poke(LEVEL_HEIGHT, 0, 2);
+
+            let e = f
+                .bus
+                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .expect_err("a boot-cleared extent has no act to place into");
+            assert_eq!(e.reason.as_deref(), Some("noActLoaded"), "{e:?}");
+            assert_ne!(
+                e.reason.as_deref(),
+                Some("outsideAct"),
+                "'outside the level' is the wrong sentence when there is no level"
+            );
+            assert!(
+                e.message.contains("until an act has initialised"),
+                "the refusal must explain the zero rather than report it: {:?}",
+                e.message
+            );
+            assert_eq!(f.peek8(W_OP), 0, "and nothing may reach the mailbox");
         }
     }
 }
