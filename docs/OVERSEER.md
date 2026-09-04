@@ -47,10 +47,17 @@ moved with them.)*
    **error-surface gate** — since no fragment declares error conditions, a suite validating only
    replies is blind to every error obligation.
    **FOREGROUND runtime follow-ups, never a subagent** (the emulator MCP deadlocks from background
-   agents): the `step` frame-budget truncation; the `write_vram` SAT-cache desync; and **two new
+   agents): the `step` frame-budget truncation; the `write_vram` SAT-cache desync; and ~~**two new
    ones from CR-B** — the tail wrap (`z80_write {addr:"0x3FFC", bytes:<8>}` then read `$0000`;
    predicted from source: bytes 5–8 land at `$0000–$0003`) and the silent `len` clamp
-   (`z80_read {len:10000}` → `8192`, no error). ⚠ **ATTEMPTED 2026-08-22 evening and correctly
+   (`z80_read {len:10000}` → `8192`, no error)~~ ⚑ **BOTH CLOSED 2026-09-04 — AND THEY WERE NEVER
+   OURS.** Measured firsthand against the binary a consumer spawns: both refuse LOUDLY and WHOLE,
+   with a control proving the probe could see a write. CR-B was reading **`oracle-old`**; we did not
+   serve the Z80 pair until `0f35ae1` (08-29), built to refuse exactly these. The booking never named
+   an implementation. **`step` and `write_vram` above are UNTOUCHED and may carry the same defect —
+   check which server each was read against before spending a probe.** Detail in the 2026-09-04
+   register entry.
+   ⚠ **ATTEMPTED 2026-08-22 evening and correctly
    ABANDONED, not deferred for convenience:** my MCP client found no socket in my own
    `$XDG_RUNTIME_DIR` (`Errno 2` — a *failing lookup*, which says nothing about the world, bar
    16(d)). A `pgrep` showed an emulator IS live, but it is **another lane's harness** with its own
