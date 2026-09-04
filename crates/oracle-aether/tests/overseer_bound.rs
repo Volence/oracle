@@ -165,7 +165,9 @@ fn announce(size_bytes: u64, lines: usize) {
     // status line is the artifact someone reads to know card 7 can be closed — "-1,000 OVER" would
     // bury that, and a number whose sign carries the meaning is a number that gets misread.
     let against_bound = if over_bound(size_bytes) {
-        format!("{} OVER, owner card 7", commas_i64(residual))
+        // "hub card 7", not "card 7": this repo's own queue item 7 is closed and in the log, so a
+        // bare number sends the reader to the wrong document.
+        format!("{} OVER, awaiting hub card 7", commas_i64(residual))
     } else {
         format!(
             "{} UNDER — the ruled bound is MET, delete the ratchet",
@@ -302,9 +304,12 @@ fn boot_read_does_not_grow_past_the_ratchet() {
     assert!(
         size_bytes <= RATCHET_BYTES,
         "\n{}\n\nGREW by {} bytes past the ratchet of {}.\nThe boot read is already over the \
-         suite-ruled bound and is waiting on the owner (card 7). Do not add to it: put the content \
-         in docs/OVERSEER-LOG.md instead. If you SHRANK the file and want the new floor held, lower \
-         RATCHET_BYTES in this file to the new measurement and say so.",
+         suite-ruled bound and is waiting on the owner: the suite-wide card 7 on the HUB's status, \
+         NOT this repo's queue item 7 (ours is closed and in the log). Read it with\n  git -C \
+         ../empyrean show origin/main:docs/OVERSEER-LOG.md   # 2026-09-04T12:43:53Z, 13:26:52Z\n\
+         Do not add to the boot read: put the content in docs/OVERSEER-LOG.md instead. If you \
+         SHRANK the file and want the new floor held, lower RATCHET_BYTES in this file to the new \
+         measurement and say so.",
         verdict(&path, size_bytes, lines),
         commas(size_bytes - RATCHET_BYTES),
         commas(RATCHET_BYTES),
