@@ -125,6 +125,22 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   between the two reads, and **nothing available now can distinguish those** — which is why it was not
   relayed to the hub as a shared-machine hazard. Recorded as a caught relay, not as a finding.
 
+- **F-SPAWN-PICKER-PANEL-SURFACE — the owner's words name a surface that has no pointer at all, and the
+  parcel landed on the OTHER one. Booked so the gap is a decision, not an omission.** His tab ruling says
+  spawn's surface is *"clicking a spot in the Screen panel"*. **There are two windows**: `oracle-frontend`
+  (minifb, the game window, where `pick.rs`'s click-to-watch and `present::window_to_native` already live)
+  and `oracle-player` (egui, the debug tabs — Registers/Memory/Objects/Screen/nav). *"Screen panel"* is
+  `oracle-player`'s tab. **Measured: `crates/oracle-player/src/screen.rs` (541 lines) has ZERO pointer
+  interaction** — its one `click` hit is the word inside a doc comment; the crate's only `clicked()` calls
+  are buttons in `ui.rs`/`nav.rs`. So the surface his sentence names cannot receive a click today.
+  **SPAWN-PICKER (merge `531894e`) landed on `oracle-frontend`**, which is where the gesture exists and
+  where every artifact this seat's own brief cited actually lives — **the brief conflated the two windows,
+  and the agent caught it rather than half-building across the seam.** That refusal was correct: the panels
+  surface needs an egui-rect→native-dot mapping invented from scratch plus its own standing indicator.
+  **Not a defect in what shipped; a second surface.** Per this lane's three-surface rule the gap must be a
+  decision, so it is one. ⚑ **Needs ONE WORD FROM THE OWNER, filed in `awaiting`: which window did he mean?**
+  If the game window, this is closed today. If the panels window, it is a fresh parcel.
+
 - **F-SHIM-SOCKDIR-RESIDUE — the PROCESS half did not reproduce; the FILESYSTEM half did, and it is the
   real finding.** aeon relayed (via the hub, ~08:20Z 2026-09-04) 13 leaked `oracle-aether` processes on
   `/tmp/oracle-mcp-*` sockets, oldest 2026-08-28, ~38 MB. **Re-measured here minutes later: ZERO
