@@ -36,6 +36,12 @@
 //! [`crate::layout::LAYOUT_VERSION`] a bump and discard every stored layout. The three tabs that read the
 //! instruments this parcel started feeding — Breakpoints, Watchpoints, Profiler — are the next parcel's;
 //! [`Bus::read_instruments`](crate::bus::Bus::read_instruments) is what they will draw from.
+//!
+//! **`PANELS-NAV` adds the way in.** All eight tabs shipped and **six of them were unreachable**:
+//! `egui_dock` draws only each leaf's active tab, [`initial_dock`] stacks three and three, and the window
+//! had no menu, no tab list and no other affordance. [`crate::nav`] is the repair — a `panels` menu in the
+//! top bar, a control rather than a ninth [`Tab`] for the reason [`Transport`] is one, deriving its rows
+//! from [`Tab::ALL`] so the next panel somebody adds cannot be left out of it. Design §5.9.
 
 use crate::bus::Bus;
 use crate::machine::Machine;
@@ -86,9 +92,13 @@ pub enum Tab {
 impl Tab {
     /// **Every variant, in the order the docs and the layout vocabulary list them.**
     ///
-    /// Its completeness is guarded by `layout_version_is_the_index_of_todays_tab_vocabulary` in
-    /// [`crate::layout`], which is also what refuses a `Tab` change that forgets
-    /// [`crate::layout::LAYOUT_VERSION`].
+    /// Its completeness is guarded twice. `layout_version_is_the_last_row_of_the_tab_vocabulary` in
+    /// [`crate::layout`] refuses a `Tab` change that forgets [`crate::layout::LAYOUT_VERSION`] — but it
+    /// measures "today's vocabulary" *through this array*, so a variant added to the enum and left out of
+    /// here is invisible to it. That hole is closed by
+    /// `every_tab_the_player_ships_is_reachable_from_the_nav` in [`crate::nav`], which asks **serde's
+    /// derive** what variants exist and compares. It has to: [`crate::nav::entries`] maps over this
+    /// array, so a variant missing from it is a panel with a body and no way to open it.
     pub const ALL: [Tab; 8] = [
         Tab::Screen,
         Tab::Pacing,
@@ -99,6 +109,26 @@ impl Tab {
         Tab::Watchpoints,
         Tab::Profiler,
     ];
+
+    /// **The name on this tab's bar** — and, because [`crate::nav`] calls this same function, the name in
+    /// the panel menu.
+    ///
+    /// A method rather than a `match` inside [`egui_dock::TabViewer::title`] for exactly the reason
+    /// [`Transport::toggle`] is a method: a second surface reports these strings, and a label spelled
+    /// twice is a nav and a tab bar naming one panel two ways — a defect no test of either alone can see.
+    /// `TabViewer::title` below is now this call and nothing else.
+    pub const fn title(self) -> &'static str {
+        match self {
+            Tab::Screen => "Screen",
+            Tab::Pacing => "Pacing",
+            Tab::Registers => "Registers",
+            Tab::Memory => "Memory",
+            Tab::Objects => "Objects",
+            Tab::Breakpoints => "Breakpoints",
+            Tab::Watchpoints => "Watchpoints",
+            Tab::Profiler => "Profiler",
+        }
+    }
 }
 
 /// Everything the tab bodies touch. Held apart from the `DockState` so both can be borrowed at once.
@@ -147,17 +177,8 @@ impl egui_dock::TabViewer for Panels<'_> {
     }
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
-        match tab {
-            Tab::Screen => "Screen",
-            Tab::Pacing => "Pacing",
-            Tab::Registers => "Registers",
-            Tab::Memory => "Memory",
-            Tab::Objects => "Objects",
-            Tab::Breakpoints => "Breakpoints",
-            Tab::Watchpoints => "Watchpoints",
-            Tab::Profiler => "Profiler",
-        }
-        .into()
+        // One expression, shared with the panel menu. See [`Tab::title`].
+        tab.title().into()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {

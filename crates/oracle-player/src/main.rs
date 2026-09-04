@@ -52,6 +52,7 @@ mod input;
 mod layout;
 mod machine;
 mod memory;
+mod nav;
 mod objects;
 mod pacing;
 mod report;
@@ -703,6 +704,17 @@ impl Loop {
             ui.horizontal(|ui| {
                 ui.strong(ui::APP_NAME);
                 drew.push(screen::Run::label(ui::APP_NAME));
+                ui.separator();
+                // ⚑ **The panel nav, and it lives HERE rather than in the dock on purpose.** `egui_dock`
+                // draws only each leaf's active tab, so six of the eight panels are behind another title
+                // at any moment; a nav that was itself a `Tab` could be behind one too, which is the
+                // failure it exists to repair. Outside the dock it cannot be hidden, and the stored
+                // layout neither carries it nor changes shape because of it. See `crate::nav`.
+                let mut nav_runs = nav::bar(ui, dock);
+                if let Some(first) = nav_runs.first_mut() {
+                    first.sep_before = true;
+                }
+                drew.append(&mut nav_runs);
                 ui.separator();
                 // ⚑ A CONTROL, NOT A TAB. Things you *do* are controls; the `Tab` enum is for things you
                 // *look at*, and adding a variant here would also owe `layout::LAYOUT_VERSION` a bump and
