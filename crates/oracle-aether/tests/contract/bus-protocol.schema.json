@@ -1311,6 +1311,10 @@
             ],
             "description": "Path to the loaded listing on the SERVER's filesystem, resolved to an absolute path by the same one rule as romPath at the load boundary (§6 paths note and its §11.30 rider): resolve where a file exists, pass the string through where none does. Never relative to the server's working directory, which no consumer can know. Null when no listing is loaded."
           },
+          "caveat": {
+            "type": "string",
+            "description": "protocol.md section 2.4. Added 2026-09-04 (section 11.34, oracle CR-K): the standing symbol-freshness verdict. Emitted when the server cannot show that the listing at symbolsPath still parses to exactly the rows it holds: the file parses to different rows (rebuilt under the session), cannot be read, no longer parses as a listing, or a table is held with no recorded path. Quiet means only that the file has not moved past the table, never that the table is right for this image (load_symbols's own standard, one layer up). A client MUST NOT parse it (2.4 rule 3); a typed key is a separate amendment if a client ever needs to branch."
+          },
           "romLoading": {
             "type": "boolean"
           },

@@ -800,6 +800,63 @@ stop_reasons! {
 /// *internally* — it is what makes `checkpoint_list`'s cursor a resume point ("the first id strictly
 /// greater than this") — and that machinery is untouched by the wire type. [`Checkpoint::wire_id`] is
 /// the one place the two representations meet.
+/// **A cheap identity for the file at `symbols_path`** — the filter that keeps
+/// [`Engine::stale_symbols_caveat_now`] off the parse on the frame-rate path.
+///
+/// Every field is one `stat(2)`'s worth of metadata and none of them reads a byte of the file. See
+/// [`Engine::stale_symbols_caveat_now`] for the measurement, and for the two things this **cannot** see.
+///
+/// `ctime` is the field with teeth: `utimes()` lets a restore choose `mtime` but always sets `ctime` to
+/// now, so `cp -p` / `tar -x` / `rsync -t` putting an older listing back is visible here even though it
+/// deliberately preserves the timestamp `mtime` alone would compare.
+///
+/// Unix-only, in a crate that is already unix-only (`server.rs` binds a `UnixListener` unconditionally),
+/// so this adds no portability constraint the build did not already have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ListingStat {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    /// `(seconds, nanoseconds)` — the pair, not a rounded second.
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl ListingStat {
+    /// `None` when the file could not be stat'd at all.
+    ///
+    /// ⚑ **`None` is never "unchanged".** Every caller treats it as *do the full check*, which is the
+    /// path that says out loud that it could not look. A filter that answered "same as last time" for a
+    /// file it could not see would be the unmeasurable-rendered-as-a-measurement defect this whole
+    /// verdict exists to end.
+    fn of(path: &str) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = std::fs::metadata(path).ok()?;
+        Some(Self {
+            dev: m.dev(),
+            ino: m.ino(),
+            len: m.len(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+            ctime: (m.ctime(), m.ctime_nsec()),
+        })
+    }
+}
+
+/// One remembered freshness verdict, and everything that has to still be true for it to be reusable.
+///
+/// All four fields are part of the key except `verdict`: the **path** (a different listing is a different
+/// question), the **generation** (a new table is a new question even for the same path), and the
+/// **stat** (the file itself must not have moved). A verdict is reused only when all three match.
+struct SymbolFreshness {
+    path: String,
+    generation: u64,
+    stat: ListingStat,
+    /// The answer [`Engine::stale_symbols_caveat`] gave — quiet (`None`) *and* loud are both cached. A
+    /// cache that remembered only the quiet answers would re-parse a 357 KB listing every frame for
+    /// exactly as long as a session was in the state the caveat exists to report.
+    verdict: Option<String>,
+}
+
 struct Checkpoint {
     id: u64,
     /// Carried back verbatim by `checkpoint_list` and never interpreted (§6.1).
@@ -1027,6 +1084,17 @@ pub struct Engine {
     /// though they raise `rom_generation` as well. A signal that were true only when no other signal
     /// fired would be a signal nobody could read on its own.
     symbols_generation: u64,
+    /// **The last symbol-freshness verdict and the file identity it was computed against**, or `None`
+    /// when nothing may be reused. See [`Engine::stale_symbols_caveat_now`] for why a cache exists here
+    /// at all and exactly how narrow its claim is.
+    symbol_freshness: Option<SymbolFreshness>,
+    /// **How many times the FULL freshness check has actually read and parsed the listing.**
+    ///
+    /// Not on the wire and not in any snapshot: it exists so the saving above can be *measured* by a test
+    /// rather than asserted in a comment. A cache whose only evidence is that its output looks right is a
+    /// cache that can be silently doing the work it claims to skip — and that failure leaves every
+    /// correctness test green.
+    symbol_freshness_checks: u64,
     /// **The display layer mask** (`emulator/get_layer_states` / `emulator/set_layer_enabled`).
     ///
     /// It lives *here*, on the engine, for the same reason [`watchpoints`](Engine::watchpoints) does, and
@@ -1478,6 +1546,8 @@ impl Engine {
             screen_generation: 0,
             rom_generation: 0,
             symbols_generation: 0,
+            symbol_freshness: None,
+            symbol_freshness_checks: 0,
             // Every layer drawn. `LayerMask::ALL` is the state in which every render path is byte-identical
             // to the code that ran before the mask existed, so a server nobody has masked anything on
             // behaves exactly as it did.
@@ -2799,6 +2869,26 @@ impl Engine {
         if let Some((name, disp)) = self.symbol_at(pc) {
             out["symbolAtPc"] = json!(name);
             out["symbolDisp"] = json!(disp);
+        }
+        // **§11.34 (CR-K) — the STANDING symbol-freshness verdict, and the case `reload_rom` cannot
+        // reach.** `reload_rom`'s caveat closed the reload edge and nothing else: a session that
+        // connects once and runs for hours while the engine lane rebuilds never calls `reload_rom` at
+        // all, so its table went stale with no event and no observable. `symbolCount` could not carry
+        // that — a count is not an identity; of the symbols `s4.lst` and `s4.debug.lst` share, 92.6%
+        // name a *different* address — and until CR-K this fragment declared no `caveat`, so there was
+        // no legal spelling of it here.
+        //
+        // Quiet is load-bearing and is exactly §11.34's quiet: *the file at `symbolsPath` has not moved
+        // past the table*, never *the table is right for this image*, which is `load_symbols`'s own
+        // standard one layer up.
+        //
+        // ⚑ **The COST is the design**, and it is why this goes through
+        // [`Engine::stale_symbols_caveat_now`] rather than straight to `stale_symbols_caveat`: this is
+        // the cheapest and most-called method on the bus, a polling client may call it every frame, and
+        // the full check is a 2.566 ms read-and-parse of a 357 KB listing — 15.4% of a core at 60 Hz.
+        // Every figure and every hole in the filter is stated there.
+        if let Some(stale) = self.stale_symbols_caveat_now() {
+            out["caveat"] = json!(stale);
         }
         Ok(out)
     }
@@ -6074,8 +6164,109 @@ impl Engine {
         Ok(json!({ "deferred": false }))
     }
 
+    /// **The freshness verdict, with the file re-read at most once per observable change to it** —
+    /// [`Engine::stale_symbols_caveat`]'s answer, served on a path that can be called every frame.
+    ///
+    /// ## Why the uncached form could not be wired into `status` as it stood
+    ///
+    /// `stale_symbols_caveat` re-reads and re-parses the listing at question time, which was the right
+    /// call for `emulator/reload_rom`: a reload is rare and already reads a whole ROM. `emulator/status`
+    /// is the opposite — the cheapest, most-called method on this bus, and a UI or a polling client may
+    /// call it every frame. **Measured on this repo's machine** (release build, page cache warm, aeon's
+    /// `s4.debug.lst`, 356,976 B / 6,690 lines / 2,970 rows, mean of 200 iterations):
+    ///
+    /// | | cost |
+    /// |---|---|
+    /// | `fs::metadata` (this filter) | **222 ns** |
+    /// | `fs::read_to_string` | 10.1 µs |
+    /// | `SymbolTable::parse` | 2.558 ms |
+    /// | row-vector compare | 7.4 µs |
+    /// | **full check, read + parse + compare** | **2.566 ms** |
+    ///
+    /// At 60 status calls a second the full check is **154 ms of CPU per wall-clock second — 15.4% of a
+    /// core** to answer the cheapest method on the bus. The stat filter is 13.3 µs/s, about **11,500×**
+    /// cheaper, and it is the same syscall the kernel already services out of the dentry cache.
+    ///
+    /// ## What the filter can see, and what it CANNOT
+    ///
+    /// The fingerprint is [`ListingStat`]: `(dev, ino, len, mtime, ctime)`. A cached verdict is reused
+    /// **only** on a positive identity — every field equal, plus the same path and the same
+    /// [`symbols_generation`](Engine::symbols_generation) — so a quiet answer never means *"I did not
+    /// look"*. It means *"I looked at the file's identity, and nothing about it has moved since the
+    /// parse that produced this verdict"*, which is a strictly narrower claim than §11.34's quiet
+    /// already makes.
+    ///
+    /// It is **not a proof**, and the two holes are named rather than papered over:
+    ///
+    /// * **A same-size rewrite inside one timestamp tick is invisible.** `mtime` and `ctime` are
+    ///   nanosecond-resolution on ext4/tmpfs, where a rebuild cannot land inside one tick — but on a
+    ///   coarse-granularity filesystem (FAT's 2 s, exFAT's 10 ms) a rewrite of identical length within
+    ///   one tick reads as unchanged. Size is granularity-free and catches every rewrite that changes
+    ///   length; timestamps catch the rest, on any filesystem a debugger is realistically run on.
+    /// * **A clock moved backwards** can make a later write land on an earlier `ctime`. Nothing cheap
+    ///   sees that.
+    ///
+    /// `ctime` is in the fingerprint specifically because it is the field a *restore* cannot forge:
+    /// `utimes()` sets `atime`/`mtime` to whatever a caller likes and sets `ctime` to now, so
+    /// `cp -p`/`tar -x`/`rsync -t` putting an old listing back under this server moves `ctime` even
+    /// though it deliberately preserves `mtime`. `dev`/`ino` catch a rename-over, which preserves
+    /// nothing else useful.
+    ///
+    /// ## Loud on unmeasurable, and it is the DEFAULT rather than a branch
+    ///
+    /// Nothing is remembered unless the fingerprint was taken successfully. A failed `stat` — the file
+    /// is gone, the directory is unreadable — is not "unchanged": it takes the fall-through, the full
+    /// check runs, and the full check is the one that says out loud that it could not look. A table held
+    /// with no recorded path is never cached either; its verdict costs no I/O anyway.
+    ///
+    /// ## The fingerprint is taken BEFORE the read, deliberately
+    ///
+    /// If it were taken after, a rewrite landing between the read and the stat would be recorded as
+    /// *"this verdict describes the file with this fingerprint"* when it describes the previous
+    /// contents — and every later call would short-circuit onto it. Taken before, the same race records
+    /// the OLD fingerprint against a verdict derived from the NEW bytes, the next call sees a
+    /// fingerprint that moved, and re-checks. The failure mode is one wasted parse instead of a
+    /// permanently stale quiet.
+    fn stale_symbols_caveat_now(&mut self) -> Option<String> {
+        // No table, nothing that can be stale — the same early answer the full check gives, taken here
+        // so the no-symbols case does not even stat.
+        self.symbols.as_ref()?;
+        let path = self.symbols_path.clone();
+
+        if let (Some(p), Some(cached)) = (path.as_deref(), self.symbol_freshness.as_ref()) {
+            if cached.generation == self.symbols_generation && cached.path == p {
+                // The ONLY short-circuit in this function, and it fires only on a positive identity.
+                if ListingStat::of(p).is_some_and(|now| now == cached.stat) {
+                    return cached.verdict.clone();
+                }
+            }
+        }
+
+        // See "taken BEFORE the read" above: this must not move below the check.
+        let stat = path.as_deref().and_then(ListingStat::of);
+        self.symbol_freshness_checks += 1;
+        let verdict = self.stale_symbols_caveat();
+        self.symbol_freshness = match (path, stat) {
+            (Some(p), Some(stat)) => Some(SymbolFreshness {
+                path: p,
+                generation: self.symbols_generation,
+                stat,
+                verdict: verdict.clone(),
+            }),
+            // Unmeasurable: remember nothing, so the next call measures again rather than repeating a
+            // verdict it has no way to invalidate.
+            _ => None,
+        };
+        verdict
+    }
+
     /// **Is the listing this server holds still the listing at `symbols_path`?** — the symbol half of
     /// the ROM-freshness question, and the reason `F-RELOAD-KEEPS-STALE-SYMBOLS` was a defect.
+    ///
+    /// ⚑ **Callers go through [`Engine::stale_symbols_caveat_now`], not through here.** This is the one
+    /// implementation of the verdict; that is the one implementation of *when it is safe to reuse one*.
+    /// Both `emulator/status` and `emulator/reload_rom` take the same door, so the two can never answer
+    /// one client differently about one file in one millisecond.
     ///
     /// Returns `None` only when the file at `symbols_path` parses to *exactly* the rows already held —
     /// the one state that is quiet. Every other state, including "could not check", returns a sentence,
@@ -6093,6 +6284,13 @@ impl Engine {
     /// costs one parse of a file this server has already shown it can parse (aeon's `s4.debug.lst` is
     /// 357 KB / 6,690 lines) on an operation that already reads a whole ROM and resets the machine, and
     /// it gives every route the same answer for the same reason.
+    ///
+    /// ⚑ **That last clause was `reload_rom`'s argument, and it does not carry to `emulator/status`**
+    /// (§11.34, CR-K), which is the cheapest method on this bus and may be polled every frame. The
+    /// answer was not to remember a digest after all — it was to keep this measurement exactly as it is
+    /// and put a `stat(2)` in front of it: see [`Engine::stale_symbols_caveat_now`], which is the door
+    /// both callers now use. **2.566 ms per call becomes 222 ns** while the file is untouched, and the
+    /// four-routes objection above never arises, because nothing is threaded through any route.
     ///
     /// ## What the verdict does NOT claim
     ///
@@ -6215,7 +6413,7 @@ impl Engine {
                 "the loaded symbol listing no longer binds to this ROM image and was dropped; load \
                  the listing for the new build before resolving anything."
             );
-        } else if let Some(stale) = self.stale_symbols_caveat() {
+        } else if let Some(stale) = self.stale_symbols_caveat_now() {
             // **The other half of D7, and the half that had no observable.** The drop path above only
             // fires on `RomBinding::Mismatch` — a listing for a different build *shape*. A newer build of
             // the SAME shape passes that check, so the table is kept whole and `symbolsDropped: false`
@@ -6229,11 +6427,13 @@ impl Engine {
             // `reload_rom`'s fragment declares `reloaded`/`queued`/`path`/`romBytes`/`symbolsDropped`/
             // `diagnostic`/`caveat` and nothing else. `caveat` is a §2.4 string and this is an
             // explanation, not a datum a client branches on — the same reasoning `load_symbols` records
-            // for its addressless-row note. The verdict on `emulator/status`, where `romFreshness`'s
+            // for its addressless-row note. ~~The verdict on `emulator/status`, where `romFreshness`'s
             // symmetric home would be, is BLOCKED pending a CR: that fragment declares no `caveat` and
-            // no `diagnostic` at all, so there is no legal spelling of it there. Filed as
-            // `docs/proposed/2026-09-04-cr-k-symbol-freshness.md` — and the standing case is the one
-            // that needs it, since a session that never reloads goes stale with no observable at all.
+            // no `diagnostic` at all, so there is no legal spelling of it there.~~ **CR-K was filed and
+            // ADOPTED the same day** — protocol §11.34, empyrean `b447555` — so `status.result.caveat`
+            // is declared and `Engine::status` now serves the same verdict through the same door. The
+            // standing case was always the one that needed it: a session that never reloads goes stale
+            // with no observable at all.
             //
             // Mutually exclusive with the drop caveat by construction: a dropped table is not a table
             // whose freshness can be asked about.
@@ -8590,6 +8790,283 @@ fn profiler_edge_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------------------------------
+    // ⚑ The symbol-freshness short-circuit (§11.34 / CR-K), measured rather than asserted.
+    //
+    // These live HERE and not in `tests/symbol_freshness.rs` on purpose. That file's rows anchor on
+    // `emulator/lookup_symbol`'s actual answer, which is the right independent channel for *the verdict*
+    // — but it says nothing about *the work done to produce it*, and a cache that quietly re-parses a
+    // 357 KB listing on every call would leave every one of those rows green. The quantity under test
+    // here is `Engine::symbol_freshness_checks`, a private counter no wire field is derived from, so it
+    // can only be read from inside the crate.
+    // -----------------------------------------------------------------------------------------------
+
+    /// Two rows, footer counts matching, so `SymbolTable::is_intact` holds. Same dialect as
+    /// `tests/symbol_freshness.rs`.
+    const FRESH_A: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+
+    2 symbols
+    0 unused symbols
+";
+
+    /// [`FRESH_A`] with `Player_1` at a different address. **Byte-for-byte the same length**, which is
+    /// what makes it the sharp fixture: `len` in [`ListingStat`] cannot tell these apart, so a test
+    /// using it is testing the timestamp half of the fingerprint and nothing else.
+    const FRESH_A_MOVED: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF9000 C |
+
+    2 symbols
+    0 unused symbols
+";
+
+    fn fresh_path(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("ae-freshcost-{}-{tag}-{n}.lst", std::process::id()))
+    }
+
+    /// An engine holding the listing at `path`, exactly as `emulator/load_symbols` would leave it.
+    fn engine_holding(path: &std::path::Path) -> Engine {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+        let text = std::fs::read_to_string(path).expect("fixture readable");
+        e.set_symbols(
+            Some(SymbolTable::parse(&text).expect("fixture parses")),
+            Some(path.display().to_string()),
+        );
+        e
+    }
+
+    /// `status`'s caveat, or `None` when the reply is quiet.
+    fn status_caveat(e: &mut Engine) -> Option<String> {
+        let out = e.status(&Value::Null).expect("status never refuses");
+        out.get("caveat")
+            .map(|c| c.as_str().expect("a caveat is a string (§2.4)").to_string())
+    }
+
+    /// **The cost claim, as a number a test can fail on.** Fifty `emulator/status` calls against an
+    /// untouched listing must read and parse it exactly ONCE.
+    ///
+    /// Without this row the short-circuit is unobservable: it produces the same verdicts either way, so
+    /// deleting it entirely leaves the whole suite green while putting 2.566 ms of parse back on the
+    /// cheapest method on the bus.
+    #[test]
+    fn polling_status_parses_the_listing_once_however_often_it_is_asked() {
+        let p = fresh_path("once");
+        std::fs::write(&p, FRESH_A).expect("write fixture");
+        let mut e = engine_holding(&p);
+
+        assert_eq!(
+            e.symbol_freshness_checks, 0,
+            "the premise: nothing has been checked before the first call"
+        );
+        for i in 0..50 {
+            assert_eq!(
+                status_caveat(&mut e),
+                None,
+                "OVER-FIRING CONTROL (call {i}): the file has not moved past the table, so status is \
+                 quiet. A caveat emitted unconditionally would satisfy every stale row in \
+                 tests/symbol_freshness.rs and carry no information."
+            );
+        }
+        assert_eq!(
+            e.symbol_freshness_checks, 1,
+            "50 status calls, ONE read-and-parse. Anything above 1 means the stat filter is not \
+             filtering; at 2.566 ms a check and 60 calls a second that is 15.4% of a core."
+        );
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// **The poison: the cache must not survive a change it cannot see in the file's LENGTH.**
+    ///
+    /// `FRESH_A_MOVED` has the same byte count and the same row count as `FRESH_A` and resolves
+    /// `Player_1` somewhere else — the case `load_symbols` measures at 92.6% between `s4.lst` and
+    /// `s4.debug.lst`. A cache keyed on size alone would go on answering "quiet" forever, which is a way
+    /// to be confidently stale *about staleness*.
+    #[test]
+    fn a_same_size_rewrite_invalidates_the_cached_verdict() {
+        let p = fresh_path("moved");
+        std::fs::write(&p, FRESH_A).expect("write fixture");
+        let mut e = engine_holding(&p);
+
+        // Warm the cache hard, so what follows is testing invalidation and not a cold path.
+        for _ in 0..10 {
+            assert_eq!(status_caveat(&mut e), None);
+        }
+        assert_eq!(e.symbol_freshness_checks, 1);
+        let before = ListingStat::of(&p.display().to_string()).expect("stat the fixture");
+
+        std::fs::write(&p, FRESH_A_MOVED).expect("rewrite the listing");
+
+        // Premises, both derived rather than assumed.
+        assert_eq!(
+            FRESH_A.len(),
+            FRESH_A_MOVED.len(),
+            "the premise: these two listings are the same LENGTH, so `len` cannot separate them"
+        );
+        assert_ne!(
+            FRESH_A, FRESH_A_MOVED,
+            "…and they must nonetheless differ, or there is nothing here to detect"
+        );
+        let after = ListingStat::of(&p.display().to_string()).expect("stat the rewritten fixture");
+        assert_ne!(
+            before, after,
+            "the fingerprint must have MOVED. If it did not, this filesystem's timestamp granularity \
+             is coarser than the gap between the two writes above (ext4 and tmpfs are nanosecond; FAT \
+             is 2 s) — which is the hole `stale_symbols_caveat_now` names, and on such a filesystem \
+             the short-circuit really is blind to a same-size rewrite inside one tick."
+        );
+
+        let caveat = status_caveat(&mut e)
+            .expect("a rewritten listing must make status LOUD, cache or no cache");
+        assert!(
+            caveat.contains("2 row(s) held") && caveat.contains("2 row(s) in the file now"),
+            "the counts are equal and the verdict still fires: {caveat}"
+        );
+        assert_eq!(
+            e.symbol_freshness_checks, 2,
+            "exactly one further read-and-parse: the filter re-checked once, not once per call"
+        );
+
+        // And the LOUD verdict is cached too — a session in the state the caveat exists to report must
+        // not pay 2.566 ms a frame for the privilege of being told about it.
+        for _ in 0..10 {
+            assert!(status_caveat(&mut e).is_some());
+        }
+        assert_eq!(e.symbol_freshness_checks, 2);
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// **Loud on unmeasurable, and never cached.** A `stat` that fails is not "unchanged": every call
+    /// must re-measure, and every call must say out loud that it could not look.
+    ///
+    /// The counter is the point. A cache that remembered *"I could not check"* against a fingerprint it
+    /// never obtained would be remembering nothing, keyed on nothing.
+    #[test]
+    fn an_unmeasurable_listing_is_never_cached_and_never_goes_quiet() {
+        let p = fresh_path("gone");
+        std::fs::write(&p, FRESH_A).expect("write fixture");
+        let mut e = engine_holding(&p);
+
+        assert_eq!(
+            status_caveat(&mut e),
+            None,
+            "the premise: quiet while it is there"
+        );
+        assert_eq!(e.symbol_freshness_checks, 1);
+
+        std::fs::remove_file(&p).expect("delete the listing out from under the server");
+
+        for i in 1..=5u64 {
+            let c = status_caveat(&mut e).unwrap_or_else(|| {
+                panic!("call {i}: an unmeasurable freshness must be LOUD, never quiet")
+            });
+            assert!(
+                c.contains("could NOT be checked"),
+                "call {i}: it must say it could not look: {c}"
+            );
+            assert_eq!(
+                e.symbol_freshness_checks,
+                1 + i,
+                "call {i}: an unmeasurable state is re-measured every time. Caching it would mean \
+                 remembering a verdict against a fingerprint that was never taken."
+            );
+        }
+
+        // ANTI-VACUITY: put the file back and the quiet returns. Without this every assertion above is
+        // satisfied by a build that is loud unconditionally.
+        std::fs::write(&p, FRESH_A).expect("restore the listing");
+        assert_eq!(
+            status_caveat(&mut e),
+            None,
+            "ANTI-VACUITY: the same listing back on disk is quiet again"
+        );
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// **A new TABLE is a new question, even when the file did not move.** `symbols_generation` is in
+    /// the cache key for this: `load_symbols`, a checkpoint restore and a hosted embedder all replace
+    /// the table without touching the listing on disk, and a verdict about the *old* table says nothing
+    /// about the new one.
+    #[test]
+    fn replacing_the_table_invalidates_the_verdict_even_though_the_file_is_untouched() {
+        let p = fresh_path("gen");
+        std::fs::write(&p, FRESH_A).expect("write fixture");
+        let mut e = engine_holding(&p);
+
+        for _ in 0..5 {
+            assert_eq!(status_caveat(&mut e), None);
+        }
+        assert_eq!(e.symbol_freshness_checks, 1);
+        let stat_before = ListingStat::of(&p.display().to_string()).expect("stat");
+
+        // The table is replaced with a DIFFERENT one while the file stays exactly where it was.
+        let gen_before = e.symbols_generation();
+        e.set_symbols(
+            Some(SymbolTable::parse(FRESH_A_MOVED).expect("parse")),
+            Some(p.display().to_string()),
+        );
+        assert!(
+            e.symbols_generation() > gen_before,
+            "the premise: set_symbols moves the generation"
+        );
+        assert_eq!(
+            ListingStat::of(&p.display().to_string()).expect("stat"),
+            stat_before,
+            "the premise: the FILE has not moved — only the table has"
+        );
+
+        let caveat = status_caveat(&mut e).expect(
+            "the held table is now the MOVED listing while the file on disk is the original, so the \
+             two disagree and status must say so",
+        );
+        assert!(caveat.contains("row(s) in the file now"), "{caveat}");
+        assert_eq!(
+            e.symbol_freshness_checks, 2,
+            "the generation change forced exactly one re-check"
+        );
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A server with no listing at all never even stats. `symbolCount: 0` with no path is not a
+    /// freshness question, and turning it into one would put a caveat on every reply from every
+    /// server that never loaded symbols.
+    #[test]
+    fn a_server_with_no_listing_does_no_freshness_work_at_all() {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+
+        for _ in 0..20 {
+            assert_eq!(
+                status_caveat(&mut e),
+                None,
+                "no table, nothing to be stale about"
+            );
+        }
+        assert_eq!(
+            e.symbol_freshness_checks, 0,
+            "not one read, not one parse, not one stat"
+        );
+    }
 
     fn row(addr: u32, divided: u64, total: u64) -> (u32, Counts, Counts) {
         (

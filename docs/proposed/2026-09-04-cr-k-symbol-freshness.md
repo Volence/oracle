@@ -1,5 +1,31 @@
 # CR-K — `emulator/status` can say the ROM is stale and cannot say the listing is
 
+> ## ✅ ADOPTED AND CLOSED — 2026-09-04, the same day it was filed
+>
+> **Ruling:** empyrean `protocol.md` **§11.34**, commit `b447555add1e9fdd60aefa36f1078c6db5115452`
+> (read it with `git -C ../empyrean show b447555:contract/protocol.md`, never through the sibling
+> working tree). `status.result.caveat` is declared as a §2.4 string. **Not adopted:** the structured
+> `symbolFreshness` object §7 below did not ask for; a `caveat` that is an object is REFUSED by the
+> schema (upstream's second vector).
+>
+> **Adoption condition, in §11.34's own words:** *"oracle re-vendors and serves the verdict on
+> `status`; CR-K closes on that re-vendor."* Both landed in one commit on
+> `parcel/status-symbol-caveat`: the schema re-vendored to blob `3f758c40…` (see
+> `crates/oracle-aether/tests/contract/PROVENANCE.md`) and `Engine::status` serving
+> `stale_symbols_caveat`'s verdict — the same function `reload_rom` uses, through the same door.
+>
+> **§6's cost note was the parcel.** It is answered, not waved at: `Engine::stale_symbols_caveat_now`
+> puts a `stat(2)` fingerprint — `(dev, ino, len, mtime, ctime)` — in front of the parse, and the full
+> check runs only when that fingerprint moves. Measured on aeon's `s4.debug.lst` (356,976 B / 6,690
+> lines / 2,970 rows, release, mean of 200): **2.566 ms** for read+parse+compare against **222 ns** for
+> the stat, so a 60 Hz poller pays 13.3 µs/s instead of 154 ms/s. `ctime` is in the fingerprint because
+> it is the field a `cp -p` / `tar -x` restore cannot forge. What the filter **cannot** see is stated in
+> the code at the point of use: a same-length rewrite inside one timestamp tick on a coarse-granularity
+> filesystem, and a clock moved backwards. A failed `stat` is never "unchanged" — it takes the full
+> check, which is the branch that says out loud that it could not look.
+>
+> Nothing below is edited. It is the filing as filed.
+
 **Filed by:** oracle lane, 2026-09-04. **Grounds:** `F-RELOAD-KEEPS-STALE-SYMBOLS`, hit in the field
 this session and reproduced as a wire test on `parcel/reload-symbol-freshness`. Every anchor below was
 read firsthand in the vendored fragment and in the harness that enforces it, at `4f843e4`.
