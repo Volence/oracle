@@ -1,16 +1,38 @@
 {
-  "focus": "Six parcels landed today. Your debug window is built and waiting for thirty seconds of your eyes whenever you want them.",
-  "inFlight": [],
+  "focus": "You found two things in the debug window: it feels fine, and half its tabs cannot be opened. Fixing the reachable-nav one first.",
+  "inFlight": [
+    {
+      "what": "The screen-text parcel is still building; separately your demo window is live on your display, stopped at a breakpoint, waiting for you to press Step.",
+      "where": "branch parcel/player-screen-text",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [],
-  "nextBoundary": "Here. Everything merged, pushed and written down.",
+  "nextBoundary": "When the screen-text parcel lands; the contract obligation on the colour reply is queued straight after it.",
   "queue": [
     {
-      "id": "PANELS-LOOK",
-      "title": "Thirty seconds of your eyes on the debug window, last in aeon's sitting. Binary is BUILT from today's five parcels and checked by running it. I will arm a breakpoint, halt the player on it and step it in front of you, rather than showing you panels sitting still. Gates no building.",
+      "id": "PANELS-NAV",
       "state": "next",
-      "size": "S",
+      "size": "M",
       "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI"
+      "project": "ORACLE-DEBUG-UI",
+      "title": "You could not open half the tabs, and they were not broken: the window only draws the front tab of each group and there is no menu anywhere. A visible nav that lists every panel \u2014 built from the window's own list of panels, so it cannot go stale when someone adds one."
+    },
+    {
+      "id": "ARMED-STATE-VISIBLE",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The window read as stuck because something was stopping it every frame and nothing on screen said so or offered to release it. Anything armed that can halt the game has to say it is armed, say it just halted, and give you the way out."
+    },
+    {
+      "id": "PANELS-COMMAND-PALETTE",
+      "state": "open",
+      "size": "L",
+      "blockedBy": "the nav landing first",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Your command line for the debug window. Deliberately after the nav: build the shortcut before the signposted route and the route ends up designed around the shortcut."
     },
     {
       "id": "SCHEMA-DRIFT-NIGHTLY",
@@ -29,8 +51,8 @@
     },
     {
       "id": "ATTR-RGB-LATCH",
-      "title": "The rules change was accepted four days ago and improved. What is ours now is building it - the colour reply saying, only when it can matter, that the picture on screen may disagree with it - plus four conformance samples they named us to write.",
-      "state": "open",
+      "title": "Ruled a contract obligation, not a UI parcel: the colour reply must say - ONLY when it can matter, never always - that the picture on screen may disagree with it, plus four test cases the contract names us as the author of. Queued next; goes one at a time because two builds at once corrupt each other's results here.",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT"
@@ -88,14 +110,14 @@
     },
     {
       "id": "PLAYER-SCREEN-TEXT",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "A tool can now ask the window what text is on screen, and the window never answers, because that one wire was never connected in this player. Nobody could ask before, so nobody noticed."
     }
   ],
-  "awaiting": "nothing \u2014 aeon is asking you whether you want the debug-window look tonight or another day; either answer is fine and it gates no building",
-  "atBoundary": true,
-  "updatedAt": "2026-09-04T00:08:44Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-04T00:43:40Z"
 }
