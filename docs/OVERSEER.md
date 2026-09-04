@@ -112,6 +112,37 @@ over-conservative bus-arb clamp, and ours was the tick-accurate side then too. U
 urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 `docs/2026-08-18-tier1-bus-methods.md`.
 
+**Registered 2026-09-04, from reading the ADOPTED §11.33 text instead of the relay's summary of it:**
+
+- **▶ LIVE CONFORMANCE DEFECT — `emulator/step` DOES NOT ENFORCE EITHER OF `count`'s BOUNDS, AND ITS OWN
+  COMMENT CLAIMS IT TRANSCRIBES THEM.** Found because §11.33's table row mentions a `count` ceiling the
+  CR summary did not, so the adopted text was read rather than the relay.
+  **The fragment WE ALREADY VENDOR** (`tests/contract/bus-protocol.schema.json`, clean at `872bebb`) says
+  `count`: `minimum: 1`, `maximum: 1000000`, and its own description says *"a value outside is REFUSED with
+  `-32602`, never clamped … Zero was refused rather than clamped because the two servers disagreed on it and
+  a step of nothing is a status call spelt wrong."*
+  **The handler passes `hex::parse_count("count", v, 0, u64::MAX)`** (`engine.rs:3059`) under a comment
+  asserting *"`minimum: 0` is the fragment's floor and `u64::MAX` is its stated absence of a ceiling. Neither
+  is a policy this server chose; both are transcribed."* **Both halves are false against the vendored copy.**
+  **MEASURED LIVE, not read off the source:** `step {count: 0}` → **accepted**, replies `pc` unchanged;
+  `step {count: 1000001}` → **accepted and ran** (frame 240 → 324). Both must be `-32602`.
+  **Live since `0a4313e` (2026-08-25) — ten days** — which is when the bound entered our vendored fragment.
+  The comment was probably true when written; **the code did not move with the fragment and nothing could
+  tell anyone.**
+  ▶ **Folded into the CR-STEP-SHORTFALL parcel** — same handler, same fragment, and serving `stepped` while
+  leaving the bounds unenforced would ship a method half-conformant to the row being amended.
+
+- **⚑ AND IT IS THE FIRST DEMONSTRATED INSTANCE OF A BLINDNESS THIS FILE HAD ONLY PROPOSED.** The
+  acceptance section carries *"a proposed **error-surface gate** — since no fragment declares error
+  conditions, a suite validating only replies is blind to every error obligation."* **This is that, with a
+  measurement attached.** A params fragment describes what a conformant CLIENT sends; **a server's duty to
+  REFUSE what falls outside it is behaviour a document schema structurally cannot see.** Our conformance
+  suite is green, the fragment is correctly vendored, the bound is correctly written, and the server has
+  ignored it for ten days — **every artifact healthy, the obligation unmet.**
+  **The gate is no longer a proposal looking for a justification; it has a demonstrated defect it would have
+  caught.** Price it against this instance when it is picked up, and do not let it be re-argued from first
+  principles: the argument is now an observation.
+
 **Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed:**
 
 - **▶ THREE OF THE FOUR FOREGROUND RUNTIME FOLLOW-UPS WERE STALE, AND ONE WAS NEVER OURS AT ALL.**
