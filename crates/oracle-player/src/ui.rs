@@ -572,28 +572,11 @@ impl Panels<'_> {
             ui.monospace(line);
         }
 
-        // --- rings, beside the object count, because that is where the question gets asked ---
-        match &pool.rings {
-            Ok(r) => {
-                ui.monospace(r.summary());
-                ui.small(objects::RINGS_WHY);
-                // The gap, stated. An absent ceiling with no sentence is an invitation to divide the
-                // span by a remembered entry size.
-                ui.small(objects::CEILING_UNKNOWN);
-            }
-            // A ring line this listing cannot supply is one missing line, and it says which symbol was
-            // missing — never a `0`, which would read as "no rings are loaded".
-            Err(e) => {
-                ui.monospace("rings   —");
-                ui.small(format!("rings unavailable — {} {}", e.code, e.message));
-            }
-        }
-
         ui.small(
             "Every address here is read out of the loaded listing — the base from Object_RAM/Player_1, \
-             the stride from Player_2 − Player_1, the count from Object_RAM_End, the ring buffer from \
-             Ring_Count − Ring_Buffer. Nothing is hardcoded, because an object-table address is a fact \
-             about one build.",
+             the stride from Player_2 − Player_1, the count from Object_RAM_End, and the ring buffer \
+             below from Ring_Count − Ring_Buffer. Nothing is hardcoded, because an object-table address \
+             is a fact about one build.",
         );
         ui.separator();
 
@@ -641,6 +624,26 @@ impl Panels<'_> {
             "object pool — emulator/object_list — {} active of {} slots",
             pool.total, pool.slot_count
         ));
+        // --- rings, immediately under the object count, because that is where the question is asked ---
+        //
+        // The two numbers sit together on purpose: "5 active of 66 slots" invites "so where are the
+        // rings", and the answer is that they are not in that 66 at all.
+        match &pool.rings {
+            Ok(r) => {
+                ui.monospace(r.summary());
+                ui.small(objects::RINGS_WHY);
+                // The gap, stated. An absent ceiling with no sentence beside it is an invitation to
+                // divide the span above by a remembered entry size.
+                ui.small(objects::CEILING_UNKNOWN);
+            }
+            // A ring line this listing cannot supply is one missing line, and it says which symbol did
+            // not answer — never a `0`, which would read as "no rings are loaded".
+            Err(e) => {
+                ui.monospace("rings   —");
+                ui.small(format!("rings unavailable — {} {}", e.code, e.message));
+            }
+        }
+
         if pool.objects.is_empty() {
             // A stated fact, and a different one from the refusal above: the layout derived, the table
             // was read, and nothing is live in it right now.
