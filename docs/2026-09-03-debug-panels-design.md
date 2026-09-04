@@ -253,7 +253,7 @@ show a picture the Screen tab is already showing from a texture.
 | `wait_for_break` | **Deprecated by the `stopped` event in its own summary** ("deprecated by the `stopped` event; see §6 D6"). Hosted, the window is the run loop: it learns of a halt *synchronously*, from `break_observed(brk)` on the sink it fed, one frame before any event could reach it. A polling control here would be a slower path to something the panel already has. |
 | `press`, `play_input` | The window has a keyboard, and `input::decide` (parcel 1) already delivers it. Both are `require_paused`, so a "press A" button would refuse for the whole time the game is playable — the state in which a human would reach for it. A macro/timeline editor is a real feature and it is not this parcel's. |
 | `hold`, `release_all` | Not as controls, for `press`'s reason. **But their effect must be visible** — see §9.4: a client's held set ORs into the human's pad (`Bus::merge_held`), and today a human whose character walks left forever has nothing on screen that can tell them a client is holding Left. One read-only line in the status strip, sourced from `Host::held(0)`/`held(1)`. That is not a tab and not a control; it is a field. **✅ BUILT (`HELD-PADS-PLAYER`)**, together with the merge itself, which §5.6.2 had booked as undone — see §9.4. |
-| `screen_text` | **The window is this method's producer, not its consumer** (`Host::set_screen_text`; engine.rs:1355). A panel rendering it would render the window's own chrome back at itself. It exists so a *client* can read our glass. |
+| `screen_text` | **The window is this method's producer, not its consumer** (`Host::set_screen_text`; engine.rs:1355). A panel rendering it would render the window's own chrome back at itself. It exists so a *client* can read our glass. **✅ The producer half is BUILT (`PLAYER-SCREEN-TEXT`)** — `src/screen.rs`, pushed from `Loop::iterate`; see §5.8.2. The verdict here is unchanged: still not surfaced *as a panel*. |
 | `restore` — the *implicit* case | Listed as a control in §2.2; noted here because `PumpReport.rom_changed`/`timeline_moved` mean every panel's cached state is stale after one. Panels must derive from the machine each repaint rather than cache across a pump. |
 
 ### 2.5 The partition, checked
@@ -1517,10 +1517,53 @@ defect.
   comment. **This, and not `has_clients()`, is why the picture does not refresh after `emulator/step`**
   (see the correction in §5.6.2). Closing it is a behaviour change to the run loop with its own pacing
   cost — a parcel, not a line.
-* **`emulator/screen_text` is unwired here.** `oracle-frontend` publishes its title bar and status line
-  through `Host::set_screen_text` (§11.29, CR-H); `oracle-player` has no such call, so a client that
-  attaches to this window and asks what a human can read on it gets the engine's empty answer. Before this
-  parcel no client could ask; now one can. Named, not fixed.
+* ~~**`emulator/screen_text` is unwired here.**~~ **CLOSED by `PLAYER-SCREEN-TEXT`.** `oracle-frontend`
+  publishes its title bar and status line through `Host::set_screen_text` (§11.29, CR-H); `oracle-player`
+  had no such call, so a client that attached to this window and asked what a human can read on it got
+  `-32005 noDisplay`. Before `PLAYER-SERVE` no client could ask; making the window reachable is what
+  generated the demand. `crates/oracle-player/src/screen.rs` is the whole of the fix, and four things about
+  it are decisions rather than mechanics:
+
+  * **What the answer contains: the top bar and the window title. Not the panels.** ⚑ `egui_dock` draws
+    only each leaf's *active* tab — the fact this crate grew `--dock every-tab` for (§5.8.1) — so a
+    snapshot listing all eight panels would report text **nobody can see**, which is the exact class of
+    wrong answer the method exists to avoid. The active tab is no better, only less obviously so: what a
+    body actually reveals depends on the pane's pixel height and its scroll offset, both computed inside
+    egui's paint, and restating them is the drift `oracle-frontend`'s rule 2 forbids. Six of the eight
+    panels also have a structural reader already (`emulator/registers`, `read_memory`, `object_list`,
+    `breakpoint_list`, `watchpoint_hits`, `get_profiler`), and the surface `screen_text` exists for is the
+    text with **no other reader**. The top bar has none: the loop's `governor on · N frames · M rebases`,
+    the transport labels, the armed summary and the bus's verbatim echo are reported nowhere else, and
+    neither is the window title, which is invisible to a screenshot of the client area. Two surfaces,
+    `titleBar` and `statusLine`; `toast`/`palette`/`lens` are not produced and the module says why.
+  * **Where it is pushed: after `build_ui`, inside `Loop::iterate`, gated on `Bus::is_serving()`.**
+    `Host::set_screen_text`'s doc names the trap — text describing a frame *not yet presented* is a false
+    answer — so `build_ui` **returns the runs it drew** rather than a helper re-deriving them beside it.
+    The snapshot therefore cannot be composed before the bar draws it; the ordering is a type error rather
+    than a rule, and the drain that serves it is at step 3 of the *next* iteration, after eframe has
+    presented. The gate is `is_serving` and deliberately **not** `has_clients`, which the same doc rules
+    on: gating on attachment leaves a client that connects mid-session reading *there is no window* until
+    the next present. `Bus::is_serving` loses its `#[cfg(test)]` for this, which is the first gate in the
+    crate — the attribute did its job, which was to make removing it a deliberate edit.
+  * ⚑ **`unrenderable` is measured from the ATLAS, because egui's own `Fonts::has_glyph` is wrong here.**
+    `epaint 0.36`'s predicate is `resolve_face(c) != replacement_face_key` — *"is this char owned by the
+    same face as `◻`?"*, not *"can it be drawn?"* — and egui's default `Monospace` chain starts with a face
+    that owns `◻`, so the whole family answers `false`, letter `A` included. Measured, not inferred: a
+    first cut of this parcel published **26 invented hollow boxes** (25 for the status line, plus `▶` on
+    the resume button) against a window drawing every one of them correctly. `screen::Glyphs` compares the
+    `uv_rect` a glyph will sample against the rectangle two known-absent reference characters share, which
+    agrees with the pixels by construction; two references rather than one so a font set that gained the
+    first cannot silently stop the measurement. The probe answers in **three** states and only
+    `Some(false)` reaches the list — an *invented* box is a wrong answer, and worse than none.
+  * **`rendered == text`, and `truncated` therefore derives `false`.** egui measures and clips inside its
+    paint and reports nothing back, so this process cannot see its own elision — `oracle-frontend` makes
+    the identical call for its `titleBar` and for the identical reason. Registered as
+    `F-PLAYER-SCREENTEXT-CLIP`.
+
+  Driven by a real NDJSON client over a private `/tmp` socket (`Host::pump` snapshots its generation
+  counters at its own top, so an in-process `Host::call` cannot stand in), with the two states started
+  deliberately **out of step**: the fixture runs, its bar says `⏸ pause`, and the client pauses it and
+  watches it come to say `▶ resume`. A snapshot composed once at setup passes neither transition.
 
 ---
 

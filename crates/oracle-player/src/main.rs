@@ -55,6 +55,7 @@ mod memory;
 mod objects;
 mod pacing;
 mod report;
+mod screen;
 mod stats;
 mod stopping;
 mod symbols;
@@ -599,8 +600,41 @@ impl Loop {
             self.governor.rebases()
         );
         let t = Instant::now();
-        self.build_ui(root);
+        let drew = self.build_ui(root);
         let ui_ms = ms(t.elapsed());
+
+        // --- ⚑ What the window says, published for `emulator/screen_text` (§11.29, CR-H). ---
+        //
+        // **Here, after `build_ui` and after the drain, and both halves of that position are the point.**
+        // `Host::set_screen_text`'s own doc names the trap: text describing a frame *not yet presented* is
+        // a false answer to the one question the method answers truthfully. `drew` cannot exist before
+        // `build_ui` returns it — that is why it is a return value and not a helper this line could have
+        // called earlier — and the next drain is at step 3 of iteration N+1, after eframe has presented
+        // what was just composed. So a client's read lands on the frame that is on the glass, never on one
+        // mid-composition. Design §5.8.2 booked this call's absence; this is it.
+        //
+        // **Gated on `is_serving`, deliberately not on `has_clients`**, which is `oracle-frontend`'s split
+        // and its reason travels unchanged: with no socket bound no client can exist, so the snapshot is
+        // pure cost — but gating on *attachment* would leave a client that connects mid-session reading
+        // `-32005 noDisplay` ("there is no window") until the next present, which is exactly the false
+        // answer the method exists to prevent. The skip belongs one level up, and this is that level.
+        //
+        // **Missing glyphs are asked of the live `egui::Context`**, through the family that drew each run
+        // (`screen::Run::mono`). A hand-written table of characters this build cannot draw would be a
+        // second opinion about a font, and the wrong one first.
+        //
+        // ⚑ **But NOT through `Fonts::has_glyph`, which is the obvious call and is wrong here.**
+        // `screen::Glyphs` carries the measurement: on egui 0.36 `has_glyph` calls the letter `A`
+        // undrawable in the monospace family and `▶` undrawable in the proportional one, on a build that
+        // draws both — 26 invented hollow boxes on this bar. What it actually answers is *"is this char
+        // owned by the same face as `◻`?"*. The atlas rectangle a glyph samples cannot lie that way,
+        // because it IS what the renderer reads, so that is what is compared.
+        if self.bus.is_serving() {
+            let mut glyphs = screen::Glyphs::new(ctx);
+            let surfaces =
+                screen::snapshot(ui::APP_NAME, &drew, &mut |c, mono| glyphs.drawable(c, mono));
+            self.bus.set_screen_text(surfaces);
+        }
         // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
         // deliberately NOT a drain and applies neither pending change (host.rs) — so a pause or resume it
         // just issued has already moved the engine's own flags. It is adopted at the TOP of the next
@@ -639,7 +673,14 @@ impl Loop {
         ms(t.elapsed())
     }
 
-    fn build_ui(&mut self, root: &mut egui::Ui) {
+    /// **Returns the top bar's text runs, in draw order** — the readback `emulator/screen_text` serves
+    /// (§11.29). Returned rather than re-derived by a helper beside this: see [`crate::screen`] for why
+    /// handing back what was drawn is a different guarantee from computing the same thing twice.
+    ///
+    /// The `DockArea` below contributes **nothing**, and that is the parcel's central decision rather
+    /// than an omission — `egui_dock` draws only each leaf's active tab, and what an active body reveals
+    /// depends on a scroll offset computed inside egui's paint. `crate::screen`'s header argues it.
+    fn build_ui(&mut self, root: &mut egui::Ui) -> Vec<screen::Run> {
         // Disjoint field borrows: the dock, the machine, the bus and the Memory panel's state mutably
         // (`Host::call` lends the machine to the engine and takes it back), everything else immutably.
         let Loop {
@@ -657,16 +698,25 @@ impl Loop {
             transport,
             ..
         } = self;
+        let mut drew = Vec::new();
         egui::Panel::top("bar").show(root, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("oracle-player");
+                ui.strong(ui::APP_NAME);
+                drew.push(screen::Run::label(ui::APP_NAME));
                 ui.separator();
                 // ⚑ A CONTROL, NOT A TAB. Things you *do* are controls; the `Tab` enum is for things you
                 // *look at*, and adding a variant here would also owe `layout::LAYOUT_VERSION` a bump and
                 // discard every stored layout on the owner's machine.
-                transport.bar(ui, machine, bus);
+                let mut bar = transport.bar(ui, machine, bus);
+                // The bar's first run sits immediately after the separator drawn above; the rest carry
+                // their own. Set here rather than inside `bar`, because the separator is drawn here.
+                if let Some(first) = bar.first_mut() {
+                    first.sep_before = true;
+                }
+                drew.append(&mut bar);
                 ui.separator();
                 ui.monospace(status.as_str());
+                drew.push(screen::Run::mono_after_sep(status.as_str()));
             });
         });
         egui::CentralPanel::default()
@@ -688,6 +738,7 @@ impl Loop {
                     .style(egui_dock::Style::from_egui(ui.style().as_ref()))
                     .show_inside(ui, &mut panels);
             });
+        drew
     }
 }
 
@@ -1030,7 +1081,7 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([args.size.0, args.size.1])
-            .with_title("oracle-player"),
+            .with_title(ui::APP_NAME),
         persist_window: persist,
         persistence_path: scratch.clone(),
         ..Default::default()
@@ -1300,6 +1351,262 @@ mod loop_tests {
             "the engine still holds a listing it said it dropped"
         );
         let _ = std::fs::remove_file(&rom_path);
+    }
+
+    /// ★ **A client can read this window's glass, and what it reads follows the window** —
+    /// `emulator/screen_text` (§11.29, CR-H), the gap design §5.8.2 booked as *"unwired here"*.
+    ///
+    /// **Driven over a real socket, because nothing else reaches the code.** `Host::pump` snapshots its
+    /// generation counters at its own top (`host.rs:640`), so an in-process `Host::call` deliberately does
+    /// not surface changes the way a client's does; and the push under test lives in `Loop::iterate`,
+    /// which `crate::screen`'s unit tests cannot run. A private `/tmp` path, never `$XDG_RUNTIME_DIR` —
+    /// `crate::bus::serving`'s header has the three reasons.
+    ///
+    /// # ⚑ The two states start DELIBERATELY OUT OF STEP, and that is the whole anti-vacuity measure
+    ///
+    /// The fixture loop is **running**, so its bar says `⏸ pause`; the client then stops it, so the bar
+    /// must come to say `▶ resume`. A snapshot composed once at setup, one pushed from a hardcoded run
+    /// state, or one pinned to the value `Loop::new` was built with passes *neither* transition — whereas
+    /// a test that started paused would be green against all three, because the answer it wanted was
+    /// already true before anything ran. The two reads are then asserted **unequal**, which is the
+    /// assertion a re-publishing-every-frame-anyway implementation cannot fake.
+    ///
+    /// # The alternative green paths, each ruled out by a named assertion
+    ///
+    /// 1. *The fixture already had a snapshot, so the first read witnesses nothing.* Checked in-process
+    ///    **before the client is spawned**: `emulator/screen_text` refuses `-32005 noDisplay`. That is also
+    ///    this test's loud-on-unmeasurable clause — *we have not drawn yet* arrives as a typed refusal,
+    ///    never as an empty surface list that would read as *the screen is blank*.
+    /// 2. *The loop was paused all along, so `⏸ pause` proves nothing.* `machine.frames() > 0` says the
+    ///    window really was advancing the machine when it said it.
+    /// 3. *The client's pause never took effect and the label changed for some other reason.* The frame
+    ///    counter is re-read after the flip and asserted **stopped**.
+    /// 4. *The push happens but reports something other than the bar.* The line is asserted to carry all
+    ///    three pieces the bar draws — the app name, the transport labels, the loop's own status string —
+    ///    and the title bar to be a separate surface with the window-manager's own text.
+    #[test]
+    fn a_client_reads_this_windows_top_bar_and_it_follows_the_run_state() {
+        use std::io::{BufRead as _, Write as _};
+
+        let tag = format!("{}-{}", std::process::id(), line!());
+        let socket = std::env::temp_dir().join(format!("pst-{tag}.sock"));
+        let unlink = socket.clone();
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            // The governor OFF, so every iteration owns its frame and this test never waits on a clock.
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: None,
+                path: None,
+                fatal: None,
+            },
+            Some(Some(socket.clone())),
+        );
+        assert!(
+            lp.bus.is_serving(),
+            "the fixture did not bind {}, so no client can reach it and nothing below is a test",
+            socket.display()
+        );
+        // (1) The premise, in-process and before anyone attaches: nothing has been drawn, and the bus
+        // says so with a typed refusal rather than an empty list.
+        let probe = lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/screen_text",
+            &serde_json::json!({}),
+        );
+        assert_eq!(
+            probe.reason(),
+            Some("noDisplay"),
+            "the fixture already had a screen-text snapshot (or refused for another reason), so the \
+             reads below would witness nothing"
+        );
+
+        let client = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let stream = loop {
+                match std::os::unix::net::UnixStream::connect(&socket) {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut id = 0i64;
+            let mut call = |reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+                            method: &str,
+                            params: serde_json::Value| {
+                id += 1;
+                writeln!(
+                    writer,
+                    "{}",
+                    serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                )
+                .unwrap();
+                writer.flush().unwrap();
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).expect("read") > 0, "hung up");
+                    let v: serde_json::Value = serde_json::from_str(&line).expect("bad JSON");
+                    if v.get("id").is_some_and(|i| !i.is_null()) {
+                        assert!(v.get("error").is_none(), "{method} failed: {}", v["error"]);
+                        return v["result"].clone();
+                    }
+                }
+            };
+            call(
+                &mut reader,
+                "initialize",
+                serde_json::json!({"clientId":"screen-text","clientName":"st","clientVersion":"0",
+                    "protocolVersion":1,"clientCapabilities":{"events":false}}),
+            );
+            // No `initialized` notification: `Session::on_message` gates ordinary methods on the
+            // `initialize` REQUEST alone (session.rs:96), and `initialized` only opens the event
+            // subscription this client declined. Omitted deliberately, not forgotten.
+            let status = call(&mut reader, "emulator/status", serde_json::json!({}));
+
+            // The window is RUNNING here. Its bar says `⏸ pause`, and this read is what pins that.
+            let running = call(&mut reader, "emulator/screen_text", serde_json::json!({}));
+            call(&mut reader, "emulator/pause", serde_json::json!({}));
+
+            // …and now it must come to say `▶ resume`. Polled with a deadline that FAILS rather than
+            // falling through to a green assertion on the last thing read.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let paused = loop {
+                let v = call(&mut reader, "emulator/screen_text", serde_json::json!({}));
+                if v["surfaces"][1]["text"]
+                    .as_str()
+                    .expect("a statusLine surface")
+                    .contains(crate::ui::RESUME_LABEL)
+                {
+                    break v;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the window never came to say `{}` after the client paused it: {v}",
+                    crate::ui::RESUME_LABEL
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            };
+            (status, running, paused)
+        });
+
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !client.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "the client never finished — `Loop::iterate` is not publishing the bar, or not draining"
+            );
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (status, running, paused) = client.join().expect("the client thread");
+
+        // (2) The window really was advancing the machine when its bar said `⏸ pause`.
+        let ran = lp.machine.frames();
+        assert!(
+            ran > 0,
+            "the fixture never ran a frame, so `{}` in the first read is the paused default rather \
+             than the state this test set out of step",
+            crate::ui::PAUSE_LABEL
+        );
+
+        assert_eq!(
+            status["display"],
+            serde_json::json!(true),
+            "`emulator/status` must let a client ASK whether there is a window rather than probe by \
+             provoking a refusal (§11.29's rider)"
+        );
+
+        // --- the shape of the answer ---
+        for (what, v) in [("running", &running), ("paused", &paused)] {
+            assert_eq!(v["total"], serde_json::json!(2), "{what}: two surfaces");
+            assert_eq!(v["returned"], serde_json::json!(2), "{what}: none elided");
+            assert_eq!(v["surfaces"][0]["kind"], serde_json::json!("titleBar"));
+            assert_eq!(
+                v["surfaces"][0]["text"],
+                serde_json::json!(crate::ui::APP_NAME),
+                "{what}: the title bar carries the window manager's own string"
+            );
+            assert_eq!(
+                v["surfaces"][0]["unrenderable"],
+                serde_json::json!([]),
+                "{what}: REQUIRED even when empty — absent and none must not be one artifact"
+            );
+            assert_eq!(v["surfaces"][1]["kind"], serde_json::json!("statusLine"));
+            let line = v["surfaces"][1]["text"].as_str().expect("a string");
+            assert!(!line.is_empty(), "{what}: a blank line is not an answer");
+            assert!(
+                line.contains(crate::ui::APP_NAME)
+                    && line.contains(crate::ui::STEP_LABEL)
+                    && line.contains("frames")
+                    && line.contains("rebases"),
+                "{what}: the line must be the WHOLE bar — name, transport, and the loop's own status \
+                 string: {line:?}"
+            );
+            assert_eq!(
+                v["surfaces"][1]["unrenderable"],
+                serde_json::json!([]),
+                "{what}: this build draws every character of its own top bar — a hollow box here is \
+                 the F-FONT-* defect class, measured from the atlas rectangle each glyph samples \
+                 (`screen::Glyphs`; egui's own `has_glyph` reports 25 boxes here that are not there): \
+                 {line:?}"
+            );
+            assert_eq!(
+                v["surfaces"][1]["truncated"],
+                serde_json::json!(false),
+                "{what}: `rendered` equals `text` for this window (F-PLAYER-SCREENTEXT-CLIP)"
+            );
+        }
+
+        let a = running["surfaces"][1]["text"].as_str().unwrap();
+        let b = paused["surfaces"][1]["text"].as_str().unwrap();
+        assert!(
+            a.contains(crate::ui::PAUSE_LABEL) && !a.contains(crate::ui::RESUME_LABEL),
+            "a running window offers `{}`: {a:?}",
+            crate::ui::PAUSE_LABEL
+        );
+        assert!(
+            b.contains(crate::ui::RESUME_LABEL) && !b.contains(crate::ui::PAUSE_LABEL),
+            "a paused window offers `{}`: {b:?}",
+            crate::ui::RESUME_LABEL
+        );
+        assert_ne!(
+            a, b,
+            "the two reads are the same string, so the snapshot was composed once and never again — \
+             the agreement above is two copies of one untouched value"
+        );
+
+        // (3) …and the pause really is what stopped it: the counter does not move again.
+        let ctx2 = egui::Context::default();
+        let (frames, _) = drive(&mut lp, &ctx2, 5);
+        assert_eq!(
+            frames, 0,
+            "the window ran {frames} more frames after the client paused it, so the label flipped \
+             without the run state following it"
+        );
+        assert_eq!(lp.machine.frames(), ran, "…and the total is unchanged");
+        drop(lp);
+        let _ = std::fs::remove_file(&unlink);
     }
 
     fn a_loop() -> Loop {
