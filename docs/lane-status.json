@@ -1,12 +1,12 @@
 {
-  "focus": "Five parcels landed today. The debug window stops the emulator, obeys tools, is reachable, keeps its sound through a reset and its names through a reload.",
+  "focus": "Six parcels landed today. Your debug window is built and waiting for thirty seconds of your eyes whenever you want them.",
   "inFlight": [],
   "blockedOnOwner": [],
   "nextBoundary": "Here. Everything merged, pushed and written down.",
   "queue": [
     {
       "id": "PANELS-LOOK",
-      "title": "Nothing in the debug window has ever been looked at - eight panels now, including the three that stop the emulator. Staged to go LAST in one sitting with aeon's three game looks, so you are interrupted once: they show you the band and the reels, then I arm a breakpoint, halt the player and step it in front of you. Thirty seconds. Gates no building.",
+      "title": "Thirty seconds of your eyes on the debug window, last in aeon's sitting. Binary is BUILT from today's five parcels and checked by running it. I will arm a breakpoint, halt the player on it and step it in front of you, rather than showing you panels sitting still. Gates no building.",
       "state": "next",
       "size": "S",
       "blockedBy": null,
@@ -93,17 +93,9 @@
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "A tool can now ask the window what text is on screen, and the window never answers, because that one wire was never connected in this player. Nobody could ask before, so nobody noticed."
-    },
-    {
-      "id": "FRONTEND-LOOP-UNTESTED",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The older window's entire reaction to a tool changing the machine sits inside its drawing loop, where no test can reach it - four separate behaviours now, none witnessed. Predates today's work; found because we kept adding to it."
     }
   ],
-  "awaiting": null,
+  "awaiting": "nothing \u2014 aeon is asking you whether you want the debug-window look tonight or another day; either answer is fine and it gates no building",
   "atBoundary": true,
-  "updatedAt": "2026-09-03T23:21:45Z"
+  "updatedAt": "2026-09-04T00:08:44Z"
 }
