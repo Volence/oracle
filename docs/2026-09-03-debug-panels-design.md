@@ -1583,7 +1583,7 @@ defect.
 > the layout it chose is the one in which that is false for most of them.
 
 **The measurement.** `egui_dock` draws only each leaf's **active** tab. `ui::initial_dock()` puts
-Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so **six of the
+Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so **four of the
 eight panel bodies do not run on a given frame** and their titles sit behind other titles. This document
 already knew that fact and used it twice — §5.7.1 built `--dock every-tab` because a panel-cost
 measurement taken under the default layout measures the *arrangement*; `crate::screen`'s header cites it
@@ -1591,9 +1591,29 @@ to argue what `emulator/screen_text` may report. Both uses treat it as a measure
 noticed it is a usability defect**, and the window shipped with no menu, no tab list and no other
 affordance anywhere.
 
+> ⚑ **Four, and this document and `screen.rs` both said six.** `screen.rs:12` states *"six of the eight
+> panel bodies do not run on a given frame"*; the `PANELS-NAV` brief repeated it, and so did the first
+> draft of this section. The count is **four**: `egui_dock` draws one body per **leaf**, and the default
+> layout has four leaves — `[Screen]`, `[Pacing]`, `[Registers, Memory, Objects]`, `[Breakpoints,
+> Watchpoints, Profiler]`. The six counts every tab that shares a pane, but two of those six — `Registers`
+> and `Breakpoints` — are their own leaf's active tab and do run. It is now **measured**, in
+> `nav::tests::the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured`, which derives
+> the expectation from the leaf count rather than restating a figure, so a rearranged default cannot
+> strand a number in prose again. Nothing in either argument turned on which number it was — the figure
+> had simply been copied twice before anyone counted.
+
 The owner found it on his first look, in one sentence: *"It's feeling fine, there's no way to open any of
 those tabs though. Actually our command line would be sick for this I think as well as a traditional
-nav."* Nothing was broken. The panels were unreachable.
+nav."* Nothing was broken. The panels were behind other panels.
+
+> ⚠ **What is NOT established, and it should be said rather than smoothed.** `egui_dock` draws *every*
+> tab of a leaf in that leaf's tab bar, so in principle the four hidden panels had clickable titles and
+> were not literally unreachable. Why the owner could not open them — a tab bar too narrow for three
+> titles and scrolling, panes too small to notice, or simply nothing that reads as a way in — is a
+> question about pixels on his screen, and **no window is opened from this row**, so it is not answered
+> here. The report stands on its own either way: a person looking at the window could not find the
+> panels. A menu that names all eight in one list repairs that whatever the pixel-level cause was, and
+> unlike a tab bar it does not depend on a pane being wide enough to read.
 
 *(This is the docking design's own doing rather than an accident of implementation: the default dock was
 chosen so that layout persistence would have something visible to persist, and that same choice is the

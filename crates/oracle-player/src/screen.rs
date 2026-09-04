@@ -9,9 +9,16 @@
 //! answer, and not marginally:
 //!
 //! * ⚑ **`egui_dock` draws only the ACTIVE tab of a leaf.** [`crate::ui::initial_dock`] puts
-//!   Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so six of the
-//!   eight panel bodies do not run on a given frame — that fact is load-bearing enough that this crate
-//!   grew `--dock every-tab` ([`crate::ui::every_tab_dock`]) to make a cost measurement mean anything. A
+//!   Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so ~~six~~
+//!   **four** of the eight panel bodies do not run on a given frame — that fact is load-bearing enough
+//!   that this crate grew `--dock every-tab` ([`crate::ui::every_tab_dock`]) to make a cost measurement
+//!   mean anything. *(Corrected by `PANELS-NAV`, and it had been copied out of here twice before anyone
+//!   counted: `egui_dock` draws one body per **leaf**, and the default layout has four leaves. The six
+//!   counts every tab that shares a pane, but two of those — `Registers` and `Breakpoints` — are their
+//!   own leaf's active tab and do run. Measured in
+//!   `nav::tests::the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured`, which
+//!   derives it from the leaf count rather than restating a figure. The argument below is unchanged: a
+//!   snapshot of all eight would still report text nobody can see.)* A
 //!   snapshot listing all eight would report text **nobody can see**, which is the exact class of wrong
 //!   answer `screen_text` exists to avoid: a caller reading it would be told the window says something it
 //!   does not say.

@@ -4,16 +4,31 @@
 //! # The defect this repairs, which was a design defect and not a code one
 //!
 //! `egui_dock` draws only **each leaf's active tab**. [`ui::initial_dock`] puts Registers/Memory/Objects
-//! in one pane and Breakpoints/Watchpoints/Profiler in another, so on any frame **six of the eight panel
+//! in one pane and Breakpoints/Watchpoints/Profiler in another, so on any frame **four of the eight panel
 //! bodies do not run** and their titles sit behind other titles in a tab bar. That fact was already
 //! written down twice in this crate — [`crate::screen`]'s header leans on it to argue what
 //! `emulator/screen_text` may report, and `--dock every-tab` exists because a panel-cost measurement
 //! taken under the default layout measures the arrangement instead of the panels.
 //!
+//! ⚑ **Four, not six.** `screen.rs` said six and the brief for this row repeated it; the count is
+//! measured in `the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured` below and it
+//! is four. `egui_dock` draws one body per *leaf* and the default has four leaves. The six counts every
+//! tab that shares a pane, but two of those six are their own leaf's active tab and do run. Nothing in
+//! either argument turns on which number it is — but a wrong number in a header is a wrong number, and
+//! this one had been copied twice before it was checked.
+//!
 //! What nobody wrote down is the consequence for a human: **the window shipped with no menu, no tab list
-//! and no other way to bring a hidden panel forward.** Nothing was broken — the panels were unreachable.
-//! The owner's own look at the window found it in one sentence: *"there's no way to open any of those
-//! tabs though."* Six of eight is not a rough edge; it is most of the product.
+//! and no other affordance for bringing a hidden panel forward.** Nothing was broken — the panels were
+//! behind other panels. The owner's own look at the window found it in one sentence: *"there's no way to
+//! open any of those tabs though."*
+//!
+//! ⚠ **What that report does not establish, said rather than smoothed.** `egui_dock` draws *every* tab of
+//! a leaf in that leaf's tab bar, so in principle those four had clickable titles and were not literally
+//! unreachable. Why they could not be opened on his screen — a bar too narrow for three titles and
+//! scrolling, panes too small to notice, or nothing that reads as a way in — is a question about pixels,
+//! and no window is opened from a test. It is not answered here. The repair does not depend on the
+//! answer: a menu that names all eight in one list works whatever the pixel-level cause was, and unlike a
+//! tab bar it does not need a pane wide enough to read.
 //!
 //! # The shape, and why it is this shape
 //!
@@ -536,14 +551,27 @@ mod tests {
         }
     }
 
-    /// The three states are told apart, and the default layout really is the six-of-eight arrangement
-    /// the owner met.
+    /// ★ **How many panels the default layout hides — MEASURED, and it is not the number this repo has
+    /// been saying.**
     ///
-    /// ⚠ The second half is the anti-vacuity clause for the whole file: if `initial_dock` gave every tab
-    /// its own leaf, nothing would ever be `Hidden`, the nav would have no defect to repair, and
-    /// `every_tab_...` above would pass on a `reveal` that only ever reopened.
+    /// `crates/oracle-player/src/screen.rs:12` states that `initial_dock`'s arrangement means *"six of
+    /// the eight panel bodies do not run on a given frame"*, and the `PANELS-NAV` brief repeats it. **It
+    /// is four.** `egui_dock` draws one body per *leaf*, and the default layout has four leaves —
+    /// `[Screen]`, `[Pacing]`, `[Registers, Memory, Objects]`, `[Breakpoints, Watchpoints, Profiler]` —
+    /// so four bodies run and four do not. The six counts every tab in a shared pane, but two of those
+    /// six (`Registers` and `Breakpoints`) are their own leaf's active tab and do run. Corrected in
+    /// `screen.rs`, in this module's header, and in design §5.9.
+    ///
+    /// This test therefore does not restate a number at all: it derives `Showing` from **the leaf count**,
+    /// which is `egui_dock`'s actual rule, so a rearranged default moves the expectation with it and no
+    /// figure in prose can go stale again without going red.
+    ///
+    /// ⚠ The `hidden > 0` clause is the anti-vacuity one for the whole file: if `initial_dock` gave every
+    /// tab its own leaf, nothing would ever be `Hidden`, the nav would have no defect to repair, and
+    /// `every_tab_the_player_ships_is_reachable_from_the_nav` would pass on a `reveal` that only ever
+    /// reopened.
     #[test]
-    fn the_default_layout_hides_most_of_the_panels_which_is_the_defect() {
+    fn the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured() {
         let dock = ui::initial_dock();
         let showing = entries(&dock)
             .iter()
@@ -559,11 +587,27 @@ mod tests {
             "a tab in the default layout is neither showing nor hidden, so it is Closed — and the \
              default layout is supposed to carry every tab"
         );
+        // `egui_dock` draws exactly one body per leaf, so the number of panels in front IS the number
+        // of leaves. Derived, never typed.
+        let leaves = dock
+            .main_surface()
+            .iter()
+            .filter(|n| matches!(n, Node::Leaf(_)))
+            .count();
+        assert_eq!(
+            showing, leaves,
+            "the default layout has {leaves} panes but {showing} panels in front; egui_dock draws one \
+             body per leaf, so these are the same number or `state_of` is wrong"
+        );
         assert!(
-            hidden >= showing,
-            "the default layout hides {hidden} of {} panels; if that is no longer most of them the \
-             claim in this module's header has expired and should be rewritten, not deleted",
-            Tab::ALL.len()
+            hidden > 0,
+            "the default layout hides nothing, so the nav repairs nothing and every Hidden->Showing \
+             assertion in this file is exercising a state the shipped layout cannot reach"
+        );
+        assert_eq!(
+            hidden,
+            Tab::ALL.len() - leaves,
+            "hidden is not 'every tab that is not its leaf's active one'"
         );
 
         // Closed is a state this dock can reach and does not have.
