@@ -20,34 +20,36 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 49623f0b0eaad489bce53ce719400e24e0a4018f
-    pin.blob     = ed2f3f66624dbbbad379a1f2222f7f6b3648ceeb
-    pin.bytes    = 349117
+    pin.revision = 8eff7d4fbd9d5c9596ffa2cce50213389a154c76
+    pin.blob     = be18388977a1829989b675991ad666a037e2a81b
+    pin.bytes    = 349524
 
 ## Current copy
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`49623f0b0eaad489bce53ce719400e24e0a4018f`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 49623f0b0eaad489bce53ce719400e24e0a4018f origin/main` was **run**, not assumed (it exited 0; `origin/main` was `72269ef1` at the time). 67 method fragments (the `methods` object carries 68 keys, one of which is a `$comment`); all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The whole delta from the copy this replaces is **one string**: `methods["emulator/object_spawn"].params.properties.x.description` gains the act bound, the three refusal reasons and the `Player_Bound_*` trap; `y.description` still reads *"See x."*; no type, bound, key or vector changed. That single leaf is the only reason this re-vendor exists. |
-| Last commit that touched the schema | **`49623f0b0eaad489bce53ce719400e24e0a4018f`** — *"protocol 11.35: CR-L adopted, object_spawn refuses a placement outside the loaded act (three reasons, section 8 item 26); x/y descriptions carry the act bound"* (2026-09-04). |
-| Git blob | `ed2f3f66624dbbbad379a1f2222f7f6b3648ceeb` |
-| SHA-256 | `c5e22af883332e1e7cd34e6e7c86895c12aae11a99de653227e0126f147e6f98` |
-| Bytes | 349117 |
+| Contract repo revision | **`8eff7d4fbd9d5c9596ffa2cce50213389a154c76`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 8eff7d4fbd9d5c9596ffa2cce50213389a154c76 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `0f973ba6` at the time). 67 method fragments (the `methods` object carries 68 keys, one of which is a `$comment`); all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The whole delta from the copy this replaces is **one string**: `methods["emulator/object_move"].params.properties.x.description` scopes its cross-reference to `object_spawn` down to units and space, and says the §11.35 act bound is **not** inherited; `y.description` still reads *"See x."*; no type, bound, key, `$comment` or vector changed. That single leaf is the only reason this re-vendor exists. |
+| Last commit that touched the schema | **`8eff7d4fbd9d5c9596ffa2cce50213389a154c76`** — *"schema: object_move.x scopes its cross-reference to object_spawn (units and space only; the 11.35 act bound does not apply, no-clamp wins); oracle's finding"* (2026-09-04). That commit's `--stat` is one file, `1 insertion(+), 1 deletion(-)`. |
+| Git blob | `be18388977a1829989b675991ad666a037e2a81b` |
+| SHA-256 | `9e705f050b252382a54c7829b269a13ce4f8023353bf29445bc320a99d57cd57` |
+| Bytes | 349524 |
 | Vendored on | 2026-09-04 |
 
-> **⚑ The recipe and the tip-of-the-ruling gave DIFFERENT commits this time, after two re-vendors where
-> they agreed — which is exactly what the note below said would eventually happen.** `origin/main` was
-> `72269ef1` when this was taken; the ruling for §11.35 is at `49623f0b`; and
-> `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` answered `49623f0b`.
-> Here the recipe and the ruling happen to name the same commit *again* while the **tip** does not, so a
-> pin taken from "whatever `origin/main` is now" would have named `72269ef1`, a commit that never wrote
-> these bytes. The recipe was run, not skipped.
+> **⚑ The tip diverged from the recipe AGAIN, and for the second re-vendor running the tip was a
+> lane-log commit that never touched this file.** `origin/main` was `0f973ba6` — *"bank 2026-09-04…:
+> tick, loop repainted, aeon to land and drive; oracle pushed"* — when this was taken, and
+> `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` answered `8eff7d4f`.
+> A pin taken from "whatever `origin/main` is now" would have named `0f973ba6`, a bookkeeping commit that
+> wrote none of these bytes. The recipe was run, not skipped, and `--is-ancestor` was run on its answer.
 >
 > *(Retired, kept because it is the previous re-vendor's own reading and this one supersedes rather than
-> erases it.)* ~~On this re-vendor the recipe and the tip-of-the-ruling gave the SAME commit for the second
-> time running — still a coincidence, still not a simplification.~~ That was `b447555`; it is now the pin
+> erases it.)* ~~The recipe and the tip-of-the-ruling gave DIFFERENT commits this time, after two
+> re-vendors where they agreed.~~ That was `49623f0b` against tip `72269ef1`; `49623f0b` is now the pin
 > one step back.
+>
+> *(Retired one step further.)* ~~On this re-vendor the recipe and the tip-of-the-ruling gave the SAME
+> commit for the second time running.~~ That was `b447555`.
 >
 > *(Retired, kept because it is the reason the recipe is a recipe.)* ~~The pin is `8a930919`, NOT §11.33's
 > own adoption commit `3b43185e`.~~ `3b43185e` was the *correction* to §11.33 that removed the `caveat`
@@ -64,12 +66,17 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 > this commit; none is carried over, and **both halves were updated in this commit** rather than the pin
 > alone.
 >
-> ⚑ **This re-vendor landed in the SAME COMMIT as the serve it describes.** A fragment that moves ahead of
-> the server is a silent contract change — it happened here once, ten days ahead, with handler, comment
-> and tests all agreeing with each other while only the JSON disagreed. §11.35's live half (§8 item 26,
-> the four suite cases) is in this commit too.
+> ⚑ **This re-vendor has NO serve to land beside it, and that is a statement about the delta, not an
+> exemption.** The same-commit rule exists because a fragment that moves ahead of the server is a silent
+> contract change; here the only thing that moved is a `description`, which no validator reads and no
+> handler consults, so there is no obligation for a server to grow and nothing that could go ahead of one.
+> The rule stands unchanged for the next re-vendor that touches a shape.
+>
+> *(The line this replaces belonged to the §11.35 re-vendor, where it was true: "This re-vendor landed in
+> the SAME COMMIT as the serve it describes… §11.35's live half (§8 item 26, the four suite cases) is in
+> this commit too.")*
 
-**Taken from the object store at a committed revision**, `git show 49623f0b:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `ed2f3f66…`, equal to `git rev-parse 49623f0b:contract/…`. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision**, `git show 8eff7d4f:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `be183889…`, equal to `git rev-parse 8eff7d4f:contract/…` resolved in the *contract* repo. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
@@ -118,6 +125,50 @@ serve that needs the new schema.
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.35's **correction**: `object_move.x` scopes its cross-reference (2026-09-04)
+
+The re-vendor below adopted §11.35, which gave `emulator/object_spawn`'s `x`/`y` an act-bound refusal.
+**That amendment silently reached a row nobody edited.** `emulator/object_move.params.properties.x` had
+long carried the prose cross-reference — verbatim, 53 characters, no markup in the JSON —
+`New position, world PIXELS. As emulator/object_spawn.` That sentence was unambiguous while the only
+thing to inherit was units and space, and it became a contradiction the moment `object_spawn` acquired a
+refusal, because `object_move`'s own `$comment` says
+normatively *"NO CLAMP, an out-of-act object is simply culled."* A reader of our vendored tree could take
+either sentence as the operative one. `object_move` is deliberately **not** gated: moving an existing,
+addressable object outside the act is a real, reversible state change, unlike conjuring one there.
+
+This lane raised it; empyrean adopted the correction as a schema-only commit the same day, and this
+re-vendor carries it. The pin commit's own `--stat` is `1 file changed, 1 insertion(+), 1 deletion(-)`.
+
+Figures **re-derived by parsing both copies** with a JSON parser (`git cat-file blob ed2f3f66…` for the
+previous one), never carried over from a table or a commit message. Both copies were flattened to leaf
+paths and compared **structurally**, not textually:
+
+| | previous copy (`49623f0b`) | this copy (`8eff7d4f`) | delta |
+|---|---|---|---|
+| leaf paths, added / removed | — | **0 / 0** | no key appears or disappears anywhere |
+| leaf paths whose value changed | — | **exactly 1** | `methods["emulator/object_move"].params.properties.x.description` |
+| total leaves; key order | 2973 | **2973; identical** | unmoved |
+| method fragments | 67 | **67** | unmoved |
+| fragments declaring / closing `params` / declaring `result` | 67 / 67 / 67 | **67 / 67 / 67** | 0 / 0 / 0 |
+| `$defs` | 19 | **19** | unmoved — byte-identical |
+| fragments whose JSON changed at all | — | **exactly one: `emulator/object_move`** | `object_spawn` itself is untouched by the correction |
+| `object_move.params` properties / `required` / closure | 6 / `["x","y"]` / `unevaluatedProperties: false` | **unmoved** | |
+| `object_move.params.properties.x` non-description keys | `type` `integer`, `minimum` 0, `maximum` 65535 | **unmoved** | the 16-bit cell bound is the only bound a keyword carries here |
+| `object_move.params.properties.x.description` | 53 chars | **460 chars** | +407 |
+| `object_move.params.properties.y.description` | `"See x."` | **`"See x."`** | unmoved |
+| `object_move.$comment` (the NO CLAMP fact) | 1377 chars | **1377 chars** | unmoved — the correction moved the *prose that contradicted it*, not the norm |
+| `object_move.result` | — | **byte-identical** | the reply shape was never in question |
+| `object_spawn.params.properties.x.description` | 904 chars | **904 chars** | unmoved |
+| bytes | 349117 | **349524** | +407 — *the same +407*, so the description string is provably the whole delta |
+
+**What this re-vendor's green witnesses: nothing.** Not one validation verdict moves. The only edit is a
+`description`, which no validator reads, so every message that validated against the previous copy
+validates against this one and vice versa — a passing suite here is exactly as consistent with having done
+nothing at all. The worth of the change is that a reader of this tree is no longer handed two sentences
+that disagree about whether an out-of-act `object_move` is refused. There is no behavioural obligation to
+hold and no test that could hold one, which is also why this re-vendor lands with no serve beside it.
 
 ### What this re-vendor adopted — §11.35 (CR-L): `object_spawn`'s `x`/`y` carry the ACT bound (2026-09-04)
 
