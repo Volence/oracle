@@ -11,8 +11,16 @@
   "nextBoundary": "When the screen-text parcel lands; the contract obligation on the colour reply is queued straight after it.",
   "queue": [
     {
-      "id": "PANELS-NAV",
+      "id": "WAITFORBREAK-INSTANT-TIMEOUT",
       "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "A tool that asks the emulator to stop and then waits ten seconds for it can be told 'it never stopped' after waiting ZERO milliseconds, with the game still running. That is a wrong answer, not a slow one, and another team's automated checks are built on exactly that ask-then-wait sequence \u2014 to them it looks like the breakpoint simply never fired. Caught under load; passes on a quiet machine, which is why nothing had seen it."
+    },
+    {
+      "id": "PANELS-NAV",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -135,5 +143,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:54:20Z"
+  "updatedAt": "2026-09-04T00:55:58Z"
 }
