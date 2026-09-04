@@ -1628,6 +1628,101 @@ mod tests {
         );
     }
 
+    /// ★ **A CLIENT's bounded run that halts on a breakpoint is recorded too.**
+    ///
+    /// The player's own loop halts through `Host::record_break` → `Engine::halt_on_breakpoint`. Every
+    /// bounded run a client drives — `run_frames`, `press`, `run_to`, `run_to_scanline`, `step` — does
+    /// **not**: it counts the firing in `Engine::attribute` and emits its own `reason: "breakpoint"`.
+    /// Two run drivers, two halt sites, and a record kept at only one of them is worse than no record at
+    /// all: the window would then derive *"the machine is stopped, but its last breakpoint halt was N
+    /// frames ago, so something else stopped it"* from a stale entry, which is the opposite of the truth
+    /// stated confidently.
+    ///
+    /// **Alternative green paths ruled out:**
+    ///
+    /// 1. *A record was already there from something else.* Ruled out by asserting `last_break()` is
+    ///    `None` before the run.
+    /// 2. *The run did not actually halt on the breakpoint.* Ruled out by reading the reply's own
+    ///    `reason` — the server's word, not ours.
+    /// 3. *The record is a constant.* Ruled out by requiring `ordinal` to rise on a second run.
+    #[test]
+    fn a_clients_bounded_run_that_halts_on_a_breakpoint_is_recorded_at_the_other_halt_site() {
+        let (mut machine, mut bus) = rig();
+        let a = bus.call(
+            machine.system_mut(),
+            BREAKPOINT_ADD,
+            &breakpoint_add_params(HOT, "").expect("a hex target"),
+        );
+        let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
+        // 1: nothing recorded yet.
+        assert_eq!(
+            bus.last_break(),
+            None,
+            "nothing has halted, so anything asserted below would be about a pre-existing record"
+        );
+
+        let a = bus.call(machine.system_mut(), crate::ui::PAUSE, &json!({}));
+        assert!(!a.is_err(), "{}", ok_or_err(&a));
+        let a = bus.call(
+            machine.system_mut(),
+            "emulator/run_frames",
+            &json!({"frames": 1}),
+        );
+        let reply = ok(&a).clone();
+        // 2: the SERVER says a breakpoint halted this run, in the one number that means exactly that.
+        // §6 defines `hits` as *times this breakpoint halted the machine* and `Breakpoints::record_halt`
+        // is the only writer of it, so a non-zero here is the engine's own statement — not an inference
+        // this test drew from a `pc` that could have landed there for another reason. (`run_frames`'
+        // REPLY carries no `reason`; that word is on the `emulator/stopped` EVENT, which this in-process
+        // fixture has no subscription to.)
+        let listed =
+            ok(&bus.call(machine.system_mut(), "emulator/breakpoint_list", &json!({}))).clone();
+        let row = listed["breakpoints"]
+            .as_array()
+            .expect("an array")
+            .iter()
+            .find(|r| r["breakpoint"] == json!(handle))
+            .expect("the row this test armed")
+            .clone();
+        assert_eq!(
+            row["hits"],
+            json!(1),
+            "the server did not count a halt, so the bounded run ended for some other reason and this \
+             test witnesses nothing: run_frames = {reply}, list = {listed}"
+        );
+
+        let rec = bus.last_break().expect(
+            "a bounded run that halted on a breakpoint must be recorded like any other halt",
+        );
+        assert_eq!(rec.ordinal, 1);
+        assert_eq!(
+            hex::addr(rec.pc),
+            reply["pc"].as_str().expect("a pc"),
+            "the record's pc and the reply's pc are one stop and must be one number"
+        );
+
+        // 3: it is a running count, not a latch that fires once.
+        let a = bus.call(
+            machine.system_mut(),
+            "emulator/run_frames",
+            &json!({"frames": 1}),
+        );
+        assert!(!a.is_err(), "{}", ok_or_err(&a));
+        let listed =
+            ok(&bus.call(machine.system_mut(), "emulator/breakpoint_list", &json!({}))).clone();
+        assert_eq!(
+            listed["breakpoints"][0]["hits"],
+            json!(2),
+            "the second bounded run did not halt on the breakpoint either: {listed}"
+        );
+        assert_eq!(
+            bus.last_break().expect("still recorded").ordinal,
+            2,
+            "the second halt did not move the count, so a window watching this would report a machine \
+             that stopped once and has been idle since"
+        );
+    }
+
     /// ★ **The way out actually works, through the server, and destroys nothing.**
     ///
     /// [`release_gestures`] is driven through real `Host::call`s from a genuinely halted machine, and the
