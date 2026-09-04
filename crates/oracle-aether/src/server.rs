@@ -148,8 +148,15 @@ impl Drop for ServerHandle {
 /// The machine coordinate, published lock-free by the emulator thread so a connection thread can stamp
 /// an envelope-level error (a parse failure, a handshake violation) without a round trip.
 ///
-/// Replies that *did* reach the engine carry the engine's own exact stamp instead; this snapshot is only
-/// ever used for errors the engine never saw, and is at most one frame stale.
+/// Replies that *did* reach the engine carry the engine's own exact stamp instead; this snapshot stamps the
+/// errors the engine never saw, and is at most one frame stale.
+///
+/// **It has a second reader, and that one cares about the staleness**: `running` is what
+/// [`wait_for_stamp`] polls to decide whether `emulator/wait_for_break` waits at all. A snapshot that is
+/// stale in the wrong direction — still `false` from a halt that a later `resume` undid — makes the
+/// transport exit its wait instantly, and [`dispatch_call`] exists to reconcile that against what the
+/// engine says. Publishers must therefore store **before** the reply that changed the state goes out; both
+/// run drivers ([`engine_loop`], [`crate::host::Host::pump`]) do.
 #[derive(Default)]
 pub(crate) struct SharedStamp {
     mclk: AtomicU64,
@@ -160,6 +167,11 @@ impl SharedStamp {
     pub(crate) fn store(&self, mclk: u64, running: bool) {
         self.mclk.store(mclk, Ordering::Relaxed);
         self.running.store(running, Ordering::Relaxed);
+    }
+
+    /// The last-published run state. Relaxed, and **knowingly stale** — see the type's doc.
+    pub(crate) fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
     }
 
     fn snapshot(&self) -> Map<String, Value> {
@@ -489,7 +501,7 @@ pub(crate) fn connection_loop(
     subs: Subscribers,
     shared: &SharedStamp,
     // `stop` is the server-wide shutdown flag. It is read by exactly one thing here —
-    // `wait_for_break_delay`, the only place a connection thread sleeps for longer than a socket read —
+    // `wait_for_stamp`, the only place a connection thread sleeps for longer than a socket read —
     // because a wait must not outlive the server it is waiting on.
     stop: &AtomicBool,
     queue_cap: usize,
@@ -593,30 +605,15 @@ pub(crate) fn connection_loop(
                     }
                     Ok(Action::Dispatch) => {
                         // **`emulator/wait_for_break` waits HERE, on this connection's own thread, and
-                        // never on the engine's.** See [`wait_for_break_delay`]. The engine handler that
+                        // never on the engine's.** See [`dispatch_call`]. The engine handler that
                         // eventually runs is a pure poll; all this does is delay the forward until the
-                        // machine has stopped or the caller's own deadline has passed.
-                        let waited = wait_for_break_delay(&msg.method, &msg.params, shared, stop);
-                        let (tx, rx) = mpsc::channel();
-                        if engine_tx
-                            .send(EngineMsg::Call {
-                                method: msg.method.clone(),
-                                params: msg.params.clone(),
-                                reply: tx,
-                            })
-                            .is_err()
-                        {
+                        // machine has stopped or the caller's own deadline has passed — and reconcile
+                        // the two halves before the reply goes out.
+                        let Some(r) =
+                            dispatch_call(&msg.method, &msg.params, &engine_tx, shared, stop)
+                        else {
                             break;
-                        }
-                        let Ok(mut r) = rx.recv() else { break };
-                        // **`waitedMs` has exactly one writer, and it is this line.** It is wall-clock
-                        // time spent waiting, which is a host-side fact about the WAIT rather than a
-                        // machine coordinate (the fragment says so in as many words), so it is knowable
-                        // only here — the engine handler did not wait and would be guessing. D11's
-                        // emulated-clocks rule governs the stamp beside it, not this.
-                        if let (Some(w), Ok(Value::Object(m))) = (waited, &mut r.result) {
-                            m.insert("waitedMs".into(), json!(w.as_millis() as u64));
-                        }
+                        };
                         (!is_notification).then(|| render(id.as_ref(), r, &mut dropped_total, &out))
                     }
                 }
@@ -635,13 +632,13 @@ pub(crate) fn connection_loop(
     }
 }
 
-/// How often [`wait_for_break_delay`] re-reads the published run state. Short enough that a break is
-/// noticed inside one emulated frame, long enough that a five-minute wait costs ~150,000 relaxed atomic
-/// loads and nothing else.
+/// How often [`wait_for_stamp`] re-reads the published run state. Short enough that a break is noticed
+/// inside one emulated frame, long enough that a five-minute wait costs ~150,000 relaxed atomic loads and
+/// nothing else.
 const WAIT_POLL: Duration = Duration::from_millis(2);
 
-/// **Where `emulator/wait_for_break` actually waits — on the calling connection's thread, never the
-/// engine's.**
+/// **Forward one call to the engine — and, for `emulator/wait_for_break`, do the waiting first and
+/// reconcile the two halves before the reply goes out.**
 ///
 /// # The transport problem this solves
 ///
@@ -674,28 +671,94 @@ const WAIT_POLL: Duration = Duration::from_millis(2);
 ///   one reader thread reading NDJSON in order. That is the client's own pipelining choice and is
 ///   unchanged by this.
 ///
+/// # ★ Why the forward is a LOOP and not a single shot ★
+///
+/// The two halves of this method read the same *quantity* — `Engine::is_running`, the free-run mode — but
+/// they read it down **two different channels**, and that is the whole defect this loop exists to close.
+/// The waiting half polls [`SharedStamp`], a snapshot **published by whoever owns the machine after the
+/// fact**; the engine half re-reads the live flag at dispatch time. A published snapshot can be *stale in
+/// the wrong direction*: it can still say `running: false` from a halt that a subsequent `emulator/resume`
+/// has already undone. The waiting half then exits its poll **immediately**, the engine half finds the
+/// machine running, and the caller who asked to wait ten seconds is told `{"timeoutReached": true}` after
+/// approximately zero milliseconds — a wrong answer, not a slow one, and one that load makes *more*
+/// likely because scheduling pressure is what widens the gap between the state change and its publication.
+///
+/// (`Host::pump` used to publish at the *end* of a drain, after the reply to the `resume` that changed the
+/// state had already gone out; `engine_loop` has always published before its reply. That ordering is now
+/// the same on both drivers — but an ordering invariant in another file is not a guarantee this method can
+/// rest on, and the stamp is documented as stale by construction. So the guarantee is made here.)
+///
+/// So a `timeoutReached: true` from the engine is treated as **evidence that the stamp was stale**, not as
+/// an answer: while budget remains, this waits for the stamp to catch up to what the engine just said
+/// (`wait_for_stamp(.., true)`), then goes back to waiting for the halt. The property the caller gets is
+/// the one the method's name promises and the old code did not deliver:
+///
+/// > **A reply that says the wait expired has actually waited the caller's whole budget.**
+///
+/// The second wait — for the stamp to *agree* with the engine — is what keeps this bounded: without it a
+/// permanently stale stamp would re-forward every 2 ms for the whole budget. With it, one extra forward is
+/// spent per stale episode, and the pathological "the stamp never catches up" case spends the remaining
+/// budget in a sleep and then answers honestly.
+///
 /// # What it reads, and what it deliberately does not
 ///
-/// The run state comes from [`SharedStamp`], published by the engine thread after every dispatch and every
-/// free-run frame, so it is at most one frame stale — which costs a wait one frame of latency and nothing
-/// else. `timeoutMs` is parsed **leniently and only as a sleep bound**: anything this function does not
+/// `timeoutMs` is parsed **leniently and only as a sleep bound**: anything [`wait_budget`] does not
 /// recognise — a missing key, the wrong type, a value past the ceiling, or the snake_case `timeout_ms` a
 /// legacy client might send — yields a zero delay, so the malformed request reaches the engine
 /// *immediately* and is refused there. The engine is the authority on what is legal; this is only the
-/// authority on how long to sleep, and it must never sleep on a request that is going to be refused.
-fn wait_for_break_delay(
+/// authority on how long to sleep, and it must never sleep on a request that is going to be refused. A
+/// refusal comes back as `Err`, which is not `timeoutReached: true`, so it is never retried either.
+///
+/// Returns `None` only when the engine channel or its reply is gone — i.e. the connection is over.
+fn dispatch_call(
     method: &str,
     params: &Value,
+    engine_tx: &Sender<EngineMsg>,
     shared: &SharedStamp,
     stop: &AtomicBool,
-) -> Option<Duration> {
+) -> Option<CallResult> {
     // `None`, not a zero duration: the caller uses the distinction to decide whether the reply gets a
     // `waitedMs` at all. Emitting one on some other method's reply would be an undeclared key on the wire.
+    let Some(budget) = wait_budget(method, params) else {
+        return forward(method, params, engine_tx);
+    };
+    let started = Instant::now();
+    loop {
+        // The wait proper: block until the published state says the machine has stopped, the server is
+        // going down, or the caller's own deadline has passed.
+        wait_for_stamp(shared, stop, started, budget, false);
+        let mut r = forward(method, params, engine_tx)?;
+        let elapsed = started.elapsed();
+        // The reconciliation. `timeoutReached: true` means the engine — which holds the machine and is the
+        // authority — found it still running. If the budget has not been spent, the stamp we exited on was
+        // stale, so this is not an answer yet.
+        if says_timed_out(&r.result) && elapsed < budget && !stop.load(Ordering::SeqCst) {
+            wait_for_stamp(shared, stop, started, budget, true);
+            continue;
+        }
+        // **`waitedMs` has exactly one writer, and it is this line.** It is wall-clock time spent waiting,
+        // which is a host-side fact about the WAIT rather than a machine coordinate (the fragment says so
+        // in as many words), so it is knowable only here — the engine handler did not wait and would be
+        // guessing. D11's emulated-clocks rule governs the stamp beside it, not this.
+        if let Ok(Value::Object(m)) = &mut r.result {
+            m.insert(
+                "waitedMs".into(),
+                json!(started.elapsed().as_millis() as u64),
+            );
+        }
+        return Some(r);
+    }
+}
+
+/// The wait bound for `method`, or `None` if this is not a call that waits at all.
+///
+/// Lenient by design — see [`dispatch_call`]. An absent `timeoutMs` takes the contract's own default;
+/// anything unrecognised takes zero, so the engine gets to refuse it without a sleep in front of the
+/// refusal.
+fn wait_budget(method: &str, params: &Value) -> Option<Duration> {
     if method != "emulator/wait_for_break" {
         return None;
     }
-    // Lenient by design — see the doc above. `None` (absent) takes the contract's own default; anything
-    // unrecognised takes zero, so the engine gets to refuse it without a sleep in front of the refusal.
     let budget_ms = match params.get("timeoutMs") {
         None => engine::DEFAULT_WAIT_TIMEOUT_MS,
         Some(v) => match v.as_u64() {
@@ -703,24 +766,55 @@ fn wait_for_break_delay(
             _ => 0,
         },
     };
-    let started = Instant::now();
-    let budget = Duration::from_millis(budget_ms);
+    Some(Duration::from_millis(budget_ms))
+}
+
+/// Block until the published run state reads `want`, the server is stopping, or `started + budget` has
+/// passed. Returns as soon as any of the three holds.
+///
+/// `want: false` is the wait itself — a machine that is not running has already broken, which is also what
+/// makes `timeoutMs: 0` (§11.24's *"0 polls once and returns"*) fall out without a branch of its own: the
+/// budget is already spent on entry, so this returns at once and the single forward below is the poll.
+///
+/// `want: true` is the re-synchronisation after the engine has contradicted the stamp — see
+/// [`dispatch_call`].
+fn wait_for_stamp(
+    shared: &SharedStamp,
+    stop: &AtomicBool,
+    started: Instant,
+    budget: Duration,
+    want: bool,
+) {
     loop {
-        // Already stopped is the answer, not a special case: a machine that is not running has already
-        // broken. It is also what makes `timeoutMs: 0` — §11.24's "0 polls once and returns" — fall out of
-        // this loop without a branch of its own.
-        if !shared.running.load(Ordering::Relaxed) {
-            return Some(started.elapsed());
-        }
-        if stop.load(Ordering::SeqCst) {
-            return Some(started.elapsed());
+        if shared.is_running() == want || stop.load(Ordering::SeqCst) {
+            return;
         }
         let elapsed = started.elapsed();
         if elapsed >= budget {
-            return Some(elapsed);
+            return;
         }
         std::thread::sleep(WAIT_POLL.min(budget - elapsed));
     }
+}
+
+/// Whether an engine reply is the "still running, nothing observed" answer — the one
+/// [`dispatch_call`] must not hand back until the budget really is gone.
+fn says_timed_out(r: &Result<Value, RpcError>) -> bool {
+    matches!(r, Ok(Value::Object(m)) if m.get("timeoutReached") == Some(&Value::Bool(true)))
+}
+
+/// Put one call on the engine's queue and block this connection thread on its reply. `None` means the
+/// engine thread or the reply channel is gone, which ends the connection.
+fn forward(method: &str, params: &Value, engine_tx: &Sender<EngineMsg>) -> Option<CallResult> {
+    let (tx, rx) = mpsc::channel();
+    engine_tx
+        .send(EngineMsg::Call {
+            method: method.to_string(),
+            params: params.clone(),
+            reply: tx,
+        })
+        .ok()?;
+    rx.recv().ok()
 }
 
 pub(crate) fn with_dropped(mut stamp: Map<String, Value>, dropped: u64) -> Map<String, Value> {
@@ -734,5 +828,296 @@ fn render(id: Option<&Value>, r: CallResult, dropped_total: &mut u64, out: &Outb
     match r.result {
         Ok(v) => rpc::success_response(id.unwrap_or(&Value::Null), rpc::stamp_result(v, &stamp)),
         Err(e) => rpc::error_response(id, &e, &stamp),
+    }
+}
+
+// =====================================================================================================
+// `emulator/wait_for_break` — the two halves, driven directly.
+//
+// **Why these are unit tests and not socket tests.** The defect they exist for is a disagreement between
+// the connection thread's view of the run state (the published [`SharedStamp`]) and the engine's own, and
+// over a socket it is a *race*: it needs the stamp to be stale at the instant the wait starts, which is a
+// scheduling accident that peer load widens and an isolated run almost never produces. A test that needs
+// the race to happen is a test that passes for the wrong reason. So the stamp and the engine's answers are
+// both *inputs* here — constructed, not raced — and the ordering that used to be an accident is a fact of
+// the fixture. Every one of these is deterministic on a loaded machine and an idle one alike.
+// =====================================================================================================
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A stand-in engine thread: answers each `EngineMsg::Call` from a script indexed by call number, and
+    /// counts them. It never touches a machine — what is under test is the *connection* half.
+    struct FakeEngine {
+        tx: Sender<EngineMsg>,
+        calls: Arc<AtomicUsize>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeEngine {
+        fn new<F>(answer: F) -> Self
+        where
+            F: Fn(usize) -> Result<Value, RpcError> + Send + 'static,
+        {
+            let (tx, rx) = mpsc::channel::<EngineMsg>();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&calls);
+            let thread = std::thread::spawn(move || {
+                while let Ok(m) = rx.recv() {
+                    match m {
+                        EngineMsg::Shutdown => break,
+                        EngineMsg::Call { reply, .. } | EngineMsg::Initialize { reply, .. } => {
+                            let n = counter.fetch_add(1, Ordering::SeqCst);
+                            let _ = reply.send(CallResult {
+                                result: answer(n),
+                                stamp: Map::new(),
+                            });
+                        }
+                    }
+                }
+            });
+            Self {
+                tx,
+                calls,
+                thread: Some(thread),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for FakeEngine {
+        fn drop(&mut self) {
+            let _ = self.tx.send(EngineMsg::Shutdown);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    /// The engine's "still running, nothing observed" reply — no `pc`, by design.
+    fn still_running() -> Result<Value, RpcError> {
+        Ok(json!({"timeoutReached": true}))
+    }
+
+    /// The engine's "it stopped, here is where" reply.
+    fn halted() -> Result<Value, RpcError> {
+        Ok(json!({"pc": "0x0000020E", "timeoutReached": false}))
+    }
+
+    fn wait(
+        fake: &FakeEngine,
+        shared: &SharedStamp,
+        params: Value,
+    ) -> (Result<Value, RpcError>, Duration) {
+        let stop = AtomicBool::new(false);
+        let t = Instant::now();
+        let r = dispatch_call("emulator/wait_for_break", &params, &fake.tx, shared, &stop)
+            .expect("the fake engine answered");
+        (r.result, t.elapsed())
+    }
+
+    /// ## ★ THE DEFECT ★ — **a reply that says the wait expired must have actually waited the budget.**
+    ///
+    /// The exact shape of the bug, reproduced as an ordering rather than as a race: the published stamp
+    /// says `running: false` — stale, left over from a halt that a `resume` has already undone — while the
+    /// engine, which holds the machine, says it is still running. The transport's poll therefore exits at
+    /// once.
+    ///
+    /// Before the fix this returned `{"timeoutReached": true, "waitedMs": 0}` in under a millisecond
+    /// against a 300 ms budget: the caller asked to wait and was told the wait expired without any wait
+    /// having happened. `timeoutReached == false` is **not** the assertion that catches this — the honest
+    /// answer here really is `timeoutReached: true`, because the machine really is running for the whole
+    /// budget. The discriminator is the clock: a timeout that took no time is a wrong answer.
+    ///
+    /// Planting it back: make `says_timed_out` return `false`, which is exactly the single-shot forward
+    /// the old `wait_for_break_delay` + one dispatch performed.
+    #[test]
+    fn a_reported_timeout_has_spent_the_whole_budget() {
+        const BUDGET_MS: u64 = 300;
+        // Stale in the wrong direction: the published snapshot still carries the halt.
+        let shared = SharedStamp::default();
+        shared.store(0, false);
+        // …while the machine is, in fact, running for the whole of this test.
+        let fake = FakeEngine::new(|_| still_running());
+
+        let (r, elapsed) = wait(&fake, &shared, json!({"timeoutMs": BUDGET_MS}));
+        let v = r.expect("a wait against a running machine is not an error");
+
+        assert_eq!(
+            v["timeoutReached"],
+            json!(true),
+            "the machine ran for the whole budget, so the timeout is the honest answer: {v}"
+        );
+        let waited = v["waitedMs"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a wait_for_break reply must carry waitedMs: {v}"));
+        assert!(
+            waited >= BUDGET_MS,
+            "the reply says the wait expired after {waited} ms against a {BUDGET_MS} ms budget. A \
+             timeout that did not wait is a WRONG answer, not a slow one: the connection thread exited \
+             its poll on a stale `running: false` and the engine, re-reading the live flag, called that \
+             a timeout. {v}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(BUDGET_MS),
+            "…and waitedMs must be the wall clock actually spent, not a number: {elapsed:?}"
+        );
+    }
+
+    /// The other half of the same property, and the guard against "fix" it by always sleeping the budget:
+    /// a stale stamp costs **one extra forward**, not the caller's whole ten seconds.
+    ///
+    /// The fixture is the real sequence: the stamp is stale-`false`, the engine says it is running, the
+    /// stamp catches up to `true`, the machine then genuinely halts and the stamp goes `false` again. The
+    /// reply must be the halt, promptly — the wait's entire purpose.
+    #[test]
+    fn a_stale_stamp_costs_one_extra_forward_not_the_budget() {
+        const BUDGET_MS: u64 = 10_000;
+        let shared = Arc::new(SharedStamp::default());
+        shared.store(0, false); // stale: the resume has not been published yet
+        let publisher = Arc::clone(&shared);
+        let fake = FakeEngine::new(move |n| {
+            if n == 0 {
+                // The engine contradicts the stamp. Now let the publisher catch up, and halt shortly
+                // after — exactly what a `resume` followed by a breakpoint looks like.
+                publisher.store(0, true);
+                let p = Arc::clone(&publisher);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(40));
+                    p.store(0, false);
+                });
+                still_running()
+            } else {
+                halted()
+            }
+        });
+
+        let (r, elapsed) = wait(&fake, &shared, json!({"timeoutMs": BUDGET_MS}));
+        let v = r.expect("the halt is not an error");
+        assert_eq!(
+            v["timeoutReached"],
+            json!(false),
+            "the machine halted well inside the budget and the wait must report the halt: {v}"
+        );
+        assert_eq!(v["pc"], json!("0x0000020E"), "…at its pc: {v}");
+        assert_eq!(
+            fake.calls(),
+            2,
+            "one forward per stale episode plus the answer. More means the reconciliation is spinning \
+             the engine thread instead of waiting for the stamp to catch up"
+        );
+        assert!(
+            elapsed < Duration::from_millis(BUDGET_MS / 2),
+            "the wait sat out its budget instead of returning on the halt ({elapsed:?}) — a \
+             reconciliation that always burns the budget passes the defect test above and breaks the \
+             method"
+        );
+    }
+
+    /// §11.24: **`timeoutMs: 0` polls once and returns.** The budget is spent on entry, so the
+    /// reconciliation must not fire even though the engine says the machine is running.
+    #[test]
+    fn timeout_zero_polls_once_and_returns() {
+        let shared = SharedStamp::default();
+        shared.store(0, true); // accurate: the machine is running
+        let fake = FakeEngine::new(|_| still_running());
+
+        let (r, elapsed) = wait(&fake, &shared, json!({"timeoutMs": 0}));
+        let v = r.expect("a zero-budget poll is not an error");
+        assert_eq!(v["timeoutReached"], json!(true), "{v}");
+        assert_eq!(fake.calls(), 1, "0 polls ONCE — one forward, no retry");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "and returns: {elapsed:?}"
+        );
+    }
+
+    /// A machine that has already stopped is answered immediately with its `pc`, and is **never resumed**
+    /// (§5): one forward, no waiting, no retry.
+    #[test]
+    fn a_stopped_machine_answers_at_once_with_its_pc() {
+        let shared = SharedStamp::default();
+        shared.store(0, false);
+        let fake = FakeEngine::new(|_| halted());
+
+        let (r, elapsed) = wait(&fake, &shared, json!({"timeoutMs": 10_000}));
+        let v = r.expect("a halted machine is not an error");
+        assert_eq!(v["pc"], json!("0x0000020E"), "{v}");
+        assert_eq!(v["timeoutReached"], json!(false), "{v}");
+        assert_eq!(fake.calls(), 1);
+        assert!(elapsed < Duration::from_millis(100), "{elapsed:?}");
+    }
+
+    /// A `timeoutMs` past the ceiling is **refused** (`-32602`), never clamped and never slept on — and an
+    /// error is not a `timeoutReached`, so the reconciliation must not retry it into a storm of refusals.
+    #[test]
+    fn an_over_ceiling_timeout_is_refused_once_and_never_retried() {
+        let shared = SharedStamp::default();
+        shared.store(0, true);
+        let fake =
+            FakeEngine::new(|_| Err(RpcError::invalid_params("`timeoutMs` above the ceiling")));
+
+        let (r, elapsed) = wait(
+            &fake,
+            &shared,
+            json!({"timeoutMs": engine::MAX_WAIT_TIMEOUT_MS + 1}),
+        );
+        assert!(r.is_err(), "over the ceiling is a refusal, not a clamp");
+        assert_eq!(fake.calls(), 1, "and it is refused once");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "with no sleep in front of it: {elapsed:?}"
+        );
+    }
+
+    /// Every other method is forwarded exactly once, with no `waitedMs` — an undeclared key on the wire is
+    /// what this `None` branch exists to prevent.
+    #[test]
+    fn a_method_that_does_not_wait_is_forwarded_once_and_unstamped() {
+        let shared = SharedStamp::default();
+        shared.store(0, true);
+        let fake = FakeEngine::new(|_| Ok(json!({"ok": true})));
+        let stop = AtomicBool::new(false);
+        let r = dispatch_call("emulator/status", &json!({}), &fake.tx, &shared, &stop)
+            .expect("answered");
+        let v = r.result.expect("status is not an error");
+        assert!(
+            v.get("waitedMs").is_none(),
+            "waitedMs on a method that does not wait: {v}"
+        );
+        assert_eq!(fake.calls(), 1);
+    }
+
+    /// The server going down ends a wait rather than holding the shutdown for the caller's budget.
+    #[test]
+    fn a_shutdown_ends_a_wait_early() {
+        let shared = Arc::new(SharedStamp::default());
+        shared.store(0, true);
+        let fake = FakeEngine::new(|_| still_running());
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            flag.store(true, Ordering::SeqCst);
+        });
+        let t = Instant::now();
+        let r = dispatch_call(
+            "emulator/wait_for_break",
+            &json!({"timeoutMs": 30_000}),
+            &fake.tx,
+            &shared,
+            &stop,
+        )
+        .expect("answered");
+        assert!(r.result.is_ok());
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "a wait must not outlive the server it is waiting on: {:?}",
+            t.elapsed()
+        );
     }
 }

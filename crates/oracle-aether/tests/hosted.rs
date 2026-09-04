@@ -908,6 +908,17 @@ fn a_breakpoint_the_rom_never_reaches_does_not_halt_the_window() {
         w.get("pc").is_none(),
         "…and a PC sampled off a still-moving machine names an instruction that has gone: {w}"
     );
+    // **The timeout must have taken time.** `timeoutReached: true` on its own is also what the
+    // instant-timeout defect produces: the connection thread exits its poll on a stale published
+    // `running: false` and the engine, re-reading the live flag, calls that a timeout — a *wrong* answer
+    // dressed as this one, and the only thing on the wire that tells them apart is the clock. It is
+    // checked here rather than only in `server`'s unit tests because this is the socket the consumer uses.
+    assert!(
+        w["waitedMs"].as_u64().unwrap_or(0) >= 250,
+        "the wait expired after {} ms against a 250 ms budget — the caller asked to wait and was told \
+         the wait was over without one having happened: {w}",
+        w["waitedMs"]
+    );
     p.expect_progress(5, "the player keeps running through a cold breakpoint");
     assert!(mclk(&mut c) > before, "the window must still be emulating");
     assert_eq!(hits(&mut c, &bp), 0, "and nothing was counted");

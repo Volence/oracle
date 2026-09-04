@@ -6825,8 +6825,15 @@ impl Engine {
     /// self-defeating, because the same thread's free-run step is what advances the machine, so the
     /// breakpoint being waited for could never fire and the wait could only ever time out. The waiting is
     /// done instead on the **calling connection's own thread**, which is already the thread that blocks in
-    /// this architecture (see `server::wait_for_break_delay`); by the time this handler runs, the machine is
-    /// either stopped or the deadline has passed. Nothing here sleeps, and nothing here runs the machine.
+    /// this architecture (see `server::dispatch_call`). Nothing here sleeps, and nothing here runs the
+    /// machine.
+    ///
+    /// **This handler does not, and cannot, know that the wait really happened.** It sees only a machine —
+    /// so a `timeoutReached: true` from here means *"still running at the instant I looked"*, which is the
+    /// answer to a timeout only if the caller's budget is actually gone. That second half is the
+    /// connection thread's to establish, and `server::dispatch_call` does: it re-waits on this reply while
+    /// budget remains. The invariant the wire gets — *a reply saying the wait expired has waited the whole
+    /// budget* — is therefore the two halves' jointly, and never this one's alone.
     ///
     /// **It never resumes a paused machine.** A machine that is not running has already broken, and
     /// starting one on the caller's behalf is precisely the machine-state change §5 forbids a server to
@@ -6851,8 +6858,18 @@ impl Engine {
         let mut out = Map::new();
         // [`is_running`](Engine::is_running), i.e. the free-run MODE, not the transient `running` flag a
         // bounded run raises around itself: that one is false at every dispatch boundary, so reading it
-        // here would report a halt on a machine that is still going — and it is also exactly the flag the
-        // transport polls, so the two halves of this method agree by construction.
+        // here would report a halt on a machine that is still going.
+        //
+        // **The transport polls the same quantity — and the two halves still do NOT agree by
+        // construction.** This comment used to end with that claim, and it was wrong in the way that
+        // matters: `server::wait_for_stamp` reads `SharedStamp.running`, which is a *snapshot* of this same
+        // `free_run` flag published by whoever owns the machine (`server::engine_loop`, `Host::pump`)
+        // after the fact. Same quantity, two channels — and the snapshot can be stale in the wrong
+        // direction, still saying "stopped" after a `resume` this handler can already see. The waiting
+        // half then exits at ~0 ms and this branch answers `timeoutReached: true` to a caller who asked
+        // for ten seconds. Reconciling that is `server::dispatch_call`'s job, not this handler's: it treats
+        // this reply as evidence of a stale stamp and goes back to waiting while budget remains. This
+        // handler stays exactly what it says it is — a poll that reports the state it finds.
         if self.is_running() {
             // Still running at the moment the engine looked, so no halt was observed. §6 makes every
             // handler key optional, so the honest answer is the flag and nothing else: `pc` is deliberately
