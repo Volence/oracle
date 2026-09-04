@@ -338,6 +338,75 @@ class AmbiguousDeclaredNew(ToolCase):
         self.assertIn("DECLARED-NOT-USED", r.stdout)
 
 
+class DerivedCutPoints(ToolCase):
+    """The cut points derived from the alignment are not a prettier restatement
+    of the seam analysis -- they see cuts the seam analysis structurally cannot.
+
+    A paragraph seam only exists where a BLANK LINE does.  A file that joins two
+    non-adjacent original lines with no blank between them has no seam there at
+    all, and a sentence broken across that join is invisible to the whole
+    PROOF 3 seam family.  The alignment knows the join happened, so the derived
+    cut check catches it.  This fixture is built so the seam family reports
+    nothing whatsoever and the cut check reports five BAD joins.
+    """
+
+    DOC = ("# Doc\n"
+           "\n"
+           "## Prose\n"
+           "\n"
+           "Runs across three lines and the first ends with a comma,\n"
+           "the middle line continues it and also ends with a comma,\n"
+           "and the third line finishes it.\n"
+           "\n"
+           "## Ref\n"
+           "\n"
+           "Reference text.\n")
+
+    def fixture(self):
+        o = self.write("ORIG.md", self.DOC)
+        # boot takes original lines 1, 3, 5; ref takes 2, 4, 6, 7. Both streams
+        # are ascending, so the partition is valid -- the prose sentence is
+        # simply torn between them at joins that carry no blank line.
+        a = self.write("boot.md",
+                       "# Doc\n"
+                       "\n"
+                       "Runs across three lines and the first ends with a comma,\n"
+                       "and the third line finishes it.\n")
+        b = self.write("ref.md",
+                       "## Prose\n"
+                       "the middle line continues it and also ends with a comma,\n"
+                       "## Ref\n"
+                       "\n"
+                       "Reference text.\n")
+        return ["--original", o, "--output", a, "--output", b,
+                "--no-new", "--headings"]
+
+    def test_the_seam_family_is_blind_to_this_cut(self):
+        """Stated as an assertion so that if the seam analysis ever grows to
+        cover it, this test says so instead of quietly overlapping."""
+        r = self.run_tool(*self.fixture(), expect=1)
+        self.assertNotIn("SEAMS INTRODUCED BY THE SPLIT", r.stdout)
+        self.assertNotIn("EDGE CUT", r.stdout)
+        self.assertIn("seams INTRODUCED by the split: 0", r.stdout)
+
+    def test_the_derived_cuts_catch_it_and_name_the_joins(self):
+        r = self.run_tool(*self.fixture(), expect=1)
+        self.assertIn("[BAD] JUNCTION", r.stdout)
+        self.assertIn("[BAD] DIVERGENCE", r.stdout)
+        self.assertIn("failing the predicate: 5", r.stdout)
+        self.assertIn("derived cut point(s) fail the", r.stdout)
+        self.assertIn("Runs across three lines and the first ends with a comma,",
+                      r.stdout)
+
+    def test_line_and_token_accounting_are_perfect_here(self):
+        """The 09-02 signature again, at a different granularity: nothing is
+        missing, nothing is added, and the prose is still in pieces."""
+        r = self.run_tool(*self.fixture(), expect=1)
+        self.assertIn("1a ORIGINAL lines ABSENT after split: 0", r.stdout)
+        self.assertIn("tokens LOST                         : 0", r.stdout)
+        self.assertIn("RESULT: PASS", r.stdout)
+
+
 class Unmeasurable(ToolCase):
     """A thing this instrument could not measure must never render as 0, and
     must never render as a plain red either: exit 2, named cause, empty
