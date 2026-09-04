@@ -108,6 +108,40 @@ pub fn spawn_with(tag: &str, rom: Vec<u8>, queue_cap: usize) -> ServerHandle {
     spawn_system(tag, sys, queue_cap)
 }
 
+/// [`spawn_with`], with the engine's **frame budget** set by the caller.
+///
+/// The seam exists for exactly one property no other spawn can reach: the run-control methods are all
+/// frame-bounded, and a test that wants to observe what a server does *when the bound is hit* has to be
+/// able to make the bound cheap. `EngineConfig::max_run_frames` defaults to 3600 and `step` clamps its own
+/// budget to 600 of them, so the honest way to see a bounded step is a fixture that would need more than
+/// 600 frames — which is minutes of emulation per assertion. One frame is the same event, measured in
+/// milliseconds, and the bound is the engine's own rather than a branch a test switched on.
+///
+/// Everything else matches [`spawn_with`], pacing included, so a server spawned here differs from one
+/// spawned there in exactly the one number named.
+pub fn spawn_with_frame_budget(
+    tag: &str,
+    rom: Vec<u8>,
+    queue_cap: usize,
+    max_run_frames: u64,
+) -> ServerHandle {
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(rom);
+    sys.reset();
+    let config = ServerConfig {
+        socket_path: temp_socket(tag),
+        engine: EngineConfig {
+            free_run_pace: None,
+            max_run_frames,
+            ..EngineConfig::default()
+        },
+        event_queue_cap: queue_cap,
+    };
+    Server::bind(config)
+        .expect("bind aether socket")
+        .spawn(Machine::new(sys))
+}
+
 /// A server around a `System` the test has already configured — the seam for a test that needs a
 /// specific *machine* rather than a specific ROM (a VDP posed by hand, say). Everything else is
 /// identical to [`spawn`], pacing included.

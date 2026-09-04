@@ -4962,7 +4962,7 @@
       }
     },
     "emulator/step": {
-      "$comment": "protocol.md §6 (run-control), row at §6 line 851: `count? | pc, symbol?, symbolDisp?`. FIRST FRAGMENT, transcribed 2026-08-22. Named in §6's run-control state rule via 'step*', so it requires a PAUSED machine and MUST fail -32005 (data.reason 'machineRunning') on a free-running one. Emits emulator/stopped with reason 'step' (§3, which pins `step` as the reason for step/step_over/step_out alike — one stop condition, three methods). `count` bounds ≥1/def 1/≤1000000 registered 2026-08-26 by §11.24 (audit D-02 closed). caveat is declared ABSENT (the sprites precedent).",
+      "$comment": "protocol.md §6 (run-control), row at §6 line 851: `count? | pc, symbol?, symbolDisp?`. FIRST FRAGMENT, transcribed 2026-08-22. Named in §6's run-control state rule via 'step*', so it requires a PAUSED machine and MUST fail -32005 (data.reason 'machineRunning') on a free-running one. Emits emulator/stopped with reason 'step' (§3, which pins `step` as the reason for step/step_over/step_out alike — one stop condition, three methods). `count` bounds ≥1/def 1/≤1000000 registered 2026-08-26 by §11.24 (audit D-02 closed). caveat is declared ABSENT (the sprites precedent). `stepped`? added 2026-09-04 by \u00a711.33 (oracle CR-STEP-SHORTFALL): a bounded server says how many instructions actually retired instead of returning a pc that a caller reads as count instructions on.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
@@ -4997,6 +4997,11 @@
             "type": "integer",
             "minimum": 0,
             "description": "Bytes past `symbol`; 0 is an exact hit. Non-negative because it is a displacement from the NEAREST PRECEDING symbol (§4)."
+          },
+          "stepped": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Instructions actually retired by this call. Added 2026-09-04 (protocol.md section 11.33, oracle CR-STEP-SHORTFALL): a server that bounds a step inside a frame budget stops early when count is too large to retire inside it, and until this key the reply had no way to say so (no reached, and caveat is declared ABSENT on this row), so a caller read count instructions as having run. Equal to count when the step completed; LESS than count when the bound stopped it, and then the machine is wherever the bound left it, NOT count instructions on. A server that bounds steps MUST emit it whenever stepped < count and SHOULD emit it always; a server that never bounds may omit it, and absence means the count ran, never a shortfall. Never greater than count (not expressible here across params and result; the gate cannot check it, the server must). The stopped event's deadlineReached carries the same fact on the event channel; this is the reply-side spelling, so a caller that never listens to events still sees it."
           }
         }
       }
