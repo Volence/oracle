@@ -445,6 +445,7 @@ mod tests {
             cycles: 10,
             stall_cycles: 0,
             executed: true,
+            idle: false,
             supervisor: true,
         };
         let entry = |pc: u32, sp: u32, ssp: u32| StepRetire {

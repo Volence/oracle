@@ -230,11 +230,33 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   test all agreed with each other and only the vendored fragment disagreed. The lesson generalises past
   this row: **a register entry that names a contract gap is worth re-reading against the current contract,
   not only against the current code.**
-  ⚑ **`stepped` is still not fully expressible, and that is carried open rather than closed quietly.** The
-  adopted fragment types it `minimum: 1`, so a step that retired **nothing** — a CPU already halted on
+  ⚑ ~~**`stepped` is still not fully expressible, and that is carried open rather than closed quietly.**
+  The adopted fragment types it `minimum: 1`, so a step that retired **nothing** — a CPU already halted on
   `STOP` — has no legal spelling: `0` is refused and absence is the one reading §11.33 says never means a
   shortfall. This server omits the key there and leaves `deadlineReached` as the channel. **Owed upstream
-  as a `minimum: 0` amendment**; noted at the handler and in `tests/contract/PROVENANCE.md`.
+  as a `minimum: 0` amendment**; noted at the handler and in `tests/contract/PROVENANCE.md`.~~
+  ▶ **CLOSED 2026-09-04, WITHIN THE HOUR, and the round trip is the entry.** The gap was found while
+  serving §11.33, refused rather than papered over with a `max(1)`, documented in three places and raised
+  upstream; the contract lane amended the leaf to `minimum: 0` at `empyrean` `bbf3bf8` the same day, with
+  the `stepped: 0` vector flipped to pass and a `-1` fail vector in its place. Re-vendored and the guard
+  removed in the `stepped-floor-zero` parcel. **The keepable part is the shape of the loop**: a lane that
+  declines to fake a legal answer produces a contract amendment, and it took under an hour — cheaper than
+  the workaround would have been to live with.
+  ⚑ **AND THE CLOSURE FALSIFIED THE PREMISE EVERY PARTY HAD BEEN REASONING FROM — INCLUDING THE ADOPTED
+  CONTRACT TEXT'S.** *"A CPU already halted on `STOP` retires nothing"* is true of the hardware and was
+  **false of this server**. A `Stopped` CPU still turns the crank; the core delivers a retire per nominal
+  idle slice, and the `stepped` tally counted them. Measured on the wire (`testrom::build_trap_on_frame`,
+  the `stop #$2700` at `$288`): `step {count: 1000000}` answered **`stepped: 1000000` with `pc` unmoved**.
+  So `minimum: 1` was never what stood between this row and an honest answer — it hid that the answer was
+  wrong in the *other* direction, on the loudest value the key can take, and the ceiling-shaped fix would
+  have shipped that untouched. **Nobody in the chain had run the case; all three of us reasoned about it.**
+  The fix excludes idle slices from tally and goal (`StepRetire::idle`, added to the core), so a halted CPU
+  answers `stepped: 0` with `deadlineReached: true`, and `tests/step.rs` now covers the state.
+  ⚑ **The general form, and it is the sharper version of this file's standing bar.** A hole a lane
+  documents as *"this value has no spelling, so we omit the key"* is a claim about **two** things — the
+  contract's expressiveness *and* the server's behaviour — and the parcel that wrote it had evidence for
+  only the first. **When you report a gap upstream, run the case you are reporting**, or the fix lands
+  against a state nobody has observed.
   ⚑ **Why THIS one survived honestly while the other three rotted: it is documented AT THE HANDLER**
   (`engine.rs:3040-3053`, in `step`'s own doc comment, naming the CR it argues for). **A perishable claim
   decays where nobody re-reads it.** That cuts against this file's standing bar that the worst place for a

@@ -122,6 +122,9 @@ fn the_retired_fields_are_the_real_step() {
             stall_cycles: 0,
             // The first instruction runs: no exception is pending at the reset anchor.
             executed: true,
+            // ...and it is a real instruction, not a `Stopped`/`Halted` idle slice: the CPU boots
+            // `Normal`, and nothing before this anchor could have executed a `STOP`.
+            idle: false,
             // The 68000 boots supervisor, and the ROM's first instruction has not left it.
             supervisor: twin.cpu_regs().supervisor(),
         }

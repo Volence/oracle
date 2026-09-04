@@ -1344,14 +1344,20 @@ fn step(pc: u32, opcode: u16, sp: u32, ssp: u32) -> StepRetire {
         cycles: STEP_CYCLES as u32,
         stall_cycles: 0,
         executed: true,
+        // Not an idle slice: these are synthetic *instructions*, which is the whole subject of this file.
+        idle: false,
         // Supervisor unless a test says otherwise: that is where a 68000 boots, and where every handler
         // and every exception frame lives.
         supervisor: true,
     }
 }
 
-/// A step that did **not** execute the instruction at `pc` — an exception entry, an idle slice, or an
-/// aborted instruction. Its `opcode` names something the CPU never ran.
+/// A step that did **not** execute the instruction at `pc` — an exception entry or an aborted
+/// instruction. Its `opcode` names something the CPU never ran.
+///
+/// **Not an idle slice**, which is the third `executed: false` shape and carries `idle: true` besides. The
+/// profiler bills idle slices to whatever routine is open (that is `ProfilerShape::IdleInRoutine`'s whole
+/// point), so it treats the two alike; a consumer counting §11.33's `stepped` does not.
 fn entry_step(pc: u32, opcode: u16, sp: u32, ssp: u32) -> StepRetire {
     StepRetire {
         executed: false,

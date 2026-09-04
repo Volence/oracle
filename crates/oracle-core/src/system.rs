@@ -1075,6 +1075,7 @@ impl System {
                 cycles,
                 stall_cycles,
                 executed: outcome.executed,
+                idle: outcome.idle,
             });
             // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired
             // with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
