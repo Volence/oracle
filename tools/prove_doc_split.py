@@ -56,6 +56,15 @@ path.  A lane's pre-split original is normally a committed blob, and reading it
 out of git rather than off disk is what keeps the proof honest: a working-tree
 copy of "the original" can have been edited by the very change under test.
 
+The INPUTS block reports every document by RESOLVED ABSOLUTE PATH, and states
+both the resolved `--repo` and the git toplevel that `rev:path` was actually
+read from.  This is not decoration: on 2026-09-04 a run from an oracle checkout
+(measuring oracle's ALREADY-SPLIT file) and a run from aeon's repo (measuring
+the file under test) both printed `original : git main:docs/OVERSEER.md
+(repo .)` and both exited 0.  The correct transcript and the vacuous one were
+indistinguishable, and the vacuous one read as a green.  Since a lane's evidence
+is a pasted transcript, the transcript has to name its own tree.
+
 Exactly one of `--new FILE...` / `--no-new` is required.  Defaulting to "no new
 lines" would let an invocation that forgot to declare its new material read as a
 stricter proof than the one actually run.
@@ -82,14 +91,65 @@ class Unmeasurable(Exception):
     """An input could not be read, or the alignment could not be decided."""
 
 
-def read_source(spec: str, repo: Path) -> tuple[str, str]:
-    """Return (text, provenance) for a path or a ``rev:path`` git spelling."""
+def git_toplevel(repo: Path) -> str | None:
+    """The working tree ``git -C repo`` would actually act on, or None.
+
+    `--repo` is the directory the user pointed at; it is NOT necessarily the
+    repository, because git searches upward from it.  Reporting only the given
+    directory therefore still leaves 'which tree was read' unstated whenever the
+    tool is run from a subdirectory.
+    """
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+                           capture_output=True, check=False, text=True)
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+class Repo:
+    """The resolved tree every ``rev:path`` in this run is read from.
+
+    Held as an object rather than a bare Path so that the provenance printed for
+    a git blob can carry the tree with it: a lane quotes ONE line as its
+    evidence, and a line that says only `rev:path` names a document in no
+    particular repository.
+    """
+
+    def __init__(self, arg: str):
+        self.arg = arg
+        self.path = Path(arg).resolve()
+        self.toplevel = git_toplevel(self.path)
+        # What a git blob was read out of.  The toplevel when there is one --
+        # that is the tree git itself used -- and otherwise the resolved
+        # directory, which is what the failure will be reported against.
+        self.tree = self.toplevel or str(self.path)
+
+    def report_lines(self) -> list[str]:
+        top = (self.toplevel if self.toplevel
+               else f"(none -- {self.path} is not a git working tree)")
+        return [f"  repo     : {self.path}   (--repo {self.arg!r})",
+                f"  git tree : {top}   (git rev-parse --show-toplevel)"]
+
+
+def read_source(spec: str, repo: Repo) -> tuple[str, str]:
+    """Return (text, provenance) for a path or a ``rev:path`` git spelling.
+
+    The provenance is a RESOLVED ABSOLUTE path, never the spelling that was
+    typed.  Two runs against two repositories, invoked with identical argv from
+    each one's root, otherwise print identical provenance -- and one of them can
+    be measuring an already-split document in a tree nobody meant to test while
+    exiting 0.  A reader of the pasted output must be able to say which files
+    were read without knowing the directory it ran in.
+    """
     p = Path(spec)
     if p.exists():
         if p.is_dir():
             raise Unmeasurable(f"{spec}: is a directory, not a document")
         try:
-            return p.read_text(encoding="utf-8"), f"file {p}"
+            return p.read_text(encoding="utf-8"), f"file {p.resolve()}"
         except UnicodeDecodeError as exc:
             raise Unmeasurable(f"{spec}: not UTF-8 text ({exc})") from exc
         except OSError as exc:
@@ -97,7 +157,7 @@ def read_source(spec: str, repo: Path) -> tuple[str, str]:
     if ":" in spec:
         try:
             r = subprocess.run(
-                ["git", "-C", str(repo), "show", spec],
+                ["git", "-C", str(repo.path), "show", spec],
                 capture_output=True, check=False)
         except OSError as exc:
             raise Unmeasurable(f"{spec}: cannot run git ({exc})") from exc
@@ -105,9 +165,11 @@ def read_source(spec: str, repo: Path) -> tuple[str, str]:
             err = r.stderr.decode("utf-8", "replace").strip()
             raise Unmeasurable(
                 f"{spec}: no such file on disk, and "
-                f"`git -C {repo} show {spec}` failed (exit {r.returncode}): {err}")
+                f"`git -C {repo.path} show {spec}` failed "
+                f"(exit {r.returncode}): {err}")
         try:
-            return r.stdout.decode("utf-8"), f"git {spec} (repo {repo})"
+            return (r.stdout.decode("utf-8"),
+                    f"git {spec}   (read from git tree {repo.tree})")
         except UnicodeDecodeError as exc:
             raise Unmeasurable(f"{spec}: git blob is not UTF-8 text ({exc})") from exc
     raise Unmeasurable(
@@ -448,7 +510,7 @@ def main(argv=None) -> int:
                  "an undeclared default would let a forgotten declaration read "
                  "as a stricter proof than the one actually run")
 
-    repo = Path(args.repo)
+    repo = Repo(args.repo)
     orig_text, orig_prov = read_source(args.original, repo)
     outs, out_prov = [], []
     for spec in args.output:
@@ -469,6 +531,10 @@ def main(argv=None) -> int:
     print("=" * 92)
     print("INPUTS")
     print("=" * 92)
+    # Absolute, resolved, and stated up front: this block is what a lane pastes
+    # as its evidence, and it has to identify the tree it measured on its own.
+    for line in repo.report_lines():
+        print(line)
     print(f"  original : {orig_prov}")
     for n, p in zip(names, out_prov):
         print(f"  output   : {n} <- {p}")
