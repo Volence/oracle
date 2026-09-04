@@ -82,6 +82,11 @@ pub struct Reaction<'a> {
     /// The window's pause state. Written to the bus before the drain and read back after it, because
     /// `emulator/pause` is a client's way of stopping *this* loop.
     pub paused: &'a mut bool,
+    /// **Spawn mode.** Its archetype list was read out of the listing that was loaded at arm time, so a
+    /// listing that is replaced or dropped under it leaves it holding names that no longer resolve — or,
+    /// worse, names that resolve to *different addresses*. Disarmed by the reaction below rather than
+    /// left to go stale; see [`drain`]'s `symbols_changed` arm.
+    pub spawn: &'a mut crate::spawn::Mode,
 }
 
 /// What one [`drain`] left for its caller: the single effect the seam declines to perform itself, and the
@@ -174,6 +179,26 @@ pub fn drain(sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Drained {
                 None => "aether: the symbol listing was dropped over the bus".to_string(),
             },
         );
+        // **Spawn mode is disarmed by a listing change**, and it says so.
+        //
+        // Its archetype list is a set of *names* read out of the listing that was loaded when it armed,
+        // and `emulator/object_spawn {defSymbol}` re-resolves each one at call time. A replaced listing
+        // therefore does not make a click fail — it makes it succeed against a **different address**,
+        // which is the silent-corruption shape §11.32 §8 refuses on the wire and which this window would
+        // otherwise walk straight into. Of the symbols `s4.lst` and `s4.debug.lst` share, 92.6% name a
+        // different address (`Engine::load_symbols`'s own measurement), so this is the common case rather
+        // than a corner.
+        //
+        // Silently, if it was never armed: a window that announced a mode change to somebody who had not
+        // set the mode is noise. The message only appears where something was actually retracted.
+        if r.spawn.is_armed() {
+            r.spawn.disarm();
+            crate::notify(
+                r.ov,
+                ACCENT,
+                "spawn mode disarmed — the symbol listing changed, so its archetypes may now name                  different addresses",
+            );
+        }
     }
     // Conflict 1's inbound half: `emulator/pause` / `emulator/resume` are the client's way of stopping and
     // starting *this* loop, and they only mean anything if the loop follows them.
@@ -241,6 +266,7 @@ mod tests {
         rom_fp: u64,
         symbols: Option<SymbolTable>,
         paused: bool,
+        spawn: crate::spawn::Mode,
     }
 
     impl Win {
@@ -254,6 +280,7 @@ mod tests {
                 rom_fp,
                 symbols,
                 paused,
+                spawn: crate::spawn::Mode::new(),
             }
         }
 
@@ -271,6 +298,7 @@ mod tests {
                     rom_fp: &mut self.rom_fp,
                     symbols: &mut self.symbols,
                     paused: &mut self.paused,
+                    spawn: &mut self.spawn,
                 },
             )
         }

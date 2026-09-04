@@ -306,6 +306,10 @@ mod present;
 mod icon;
 // Click-to-watch: resolving a clicked dot to armable VRAM/CRAM ranges, sprites included.
 mod pick;
+// Click-to-PLACE: spawn mode, the window half of the object-mutation rows (`protocol.md` §11.32). The
+// model and every sentence it puts on screen; the click itself is in the run loop beside the watch pick it
+// displaces, and the two calls it makes are `bus::Bus::archetypes` / `spawn_at`.
+mod spawn;
 // "Open ROM..." — the browsable listing behind the palette's ROM picker, so a different game can be loaded
 // without leaving the window. Model only; the swap itself is in the run loop, beside the F5 reload it shares.
 mod rom_browser;
@@ -1412,6 +1416,12 @@ fn main() {
     let mut watched_pixel: Option<(u16, u16)> = None;
     let mut prev_mouse_down = false;
 
+    // **Spawn mode**: whether a left-click places an object instead of arming a watch, and which archetype
+    // it places. Disarmed at launch and disarmed again whenever the listing under it changes — see the
+    // `symbols_changed` / `rom_changed` reactions below, and `spawn.rs` for why a stale archetype address
+    // is the one failure this mode must not have.
+    let mut spawn_mode = spawn::Mode::new();
+
     // The save-state slot F2/F4 act on; F6/F7 step it, 0-9 pick it directly.
     let mut state_slot: usize = 0;
 
@@ -1427,6 +1437,16 @@ fn main() {
     // The command registry + palette (spec §4). The registry is the single source of truth for actions;
     // dispatch happens in ONE `match cmd` below so the actions keep borrowing the loop's state directly.
     let reg = commands::registry();
+    // **The key that pauses this window, read off the registry rather than transcribed.** Spawn mode's
+    // paused-frame refusal (§11.32 §7.1) arrives from the server saying *"call emulator/pause first"* —
+    // the right sentence for a socket client and a useless one for somebody holding a keyboard — so the
+    // window supplies its own remedy. Taken from the table so a rebind rebinds the sentence; `None` if
+    // the row ever loses its hotkey, in which case no remedy is offered rather than a wrong one.
+    let pause_key = reg
+        .iter()
+        .find(|c| matches!(c.cmd, commands::Cmd::Pause))
+        .and_then(|c| c.hotkey)
+        .map(commands::key_name);
     let mut palette = palette::Palette::new();
     let mut running = true;
     // Set when the palette closes under a still-held key; see [`release_latch`].
@@ -1480,46 +1500,74 @@ fn main() {
             // inverse of the blit that painted it, so this is correct at any window size.
             if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Discard) {
                 if let Some((x, y)) = present::window_to_native(mx, my, view, width, HEIGHT) {
-                    // Resolve the dot to whatever it is — plane tile, sprite (its drawing pattern *and* its
-                    // attribution-table entry), or backdrop palette entry. A sprite dot used to arm nothing.
+                    // **Spawn mode takes the click** (`LIVE-OBJECTS`, `protocol.md` §11.32). The branch
+                    // is here, in front of the watch pick, because the two are the same gesture and only
+                    // one of them can have it — which is precisely why the mode owes a standing statement
+                    // that it is on (`overlay::Overlay::spawn_badge`).
                     //
-                    // **Under the same mask the picture was drawn with**, which is what keeps the panel
-                    // describing the picture rather than a machine state nobody is looking at. Hiding plane
-                    // A and clicking where it used to be must arm what is *now* showing there; the panel
-                    // answering `planeA` for a dot the window is painting plane B at is the whole defect
-                    // this parcel exists to close, and `pick.rs`'s bus-parity guard now runs over masked
-                    // states so it cannot come back.
-                    //
-                    // The last argument is the machine's **now**, which §11.27's colour-staleness rule
-                    // compares a CRAM write stamp against. It is `sys.scheduler().now()` — the same
-                    // instant `emulator/pixel_attribution` stamps its verdict with — and deliberately
-                    // NOT `Vdp::now_mclk`, which is the instant the VDP last did guest-driven work and
-                    // on a paused machine can be arbitrarily stale (see `Vdp::poke_cram`).
-                    let p = pick::resolve(sys.vdp(), x, y, bus.layers(), sys.scheduler().now());
-                    let wp = bus.watchpoints_mut();
-                    // Retire only what this panel armed. `clear()` would take a socket client's watches
-                    // with it — the shared-instrument hazard, and the one thing that made the panel's
-                    // "a click replaces the prior watch" rule need a list instead of a reset.
-                    for id in panel_watches.drain(..) {
-                        wp.remove(id);
+                    // The whole exchange is a **synchronous `Host::call`**, not a queued command: a click
+                    // gets the tool's exact reply and its exact refusal rather than a second opinion, and
+                    // the five refusals §11.32 §6 defines are the valuable part of going through the
+                    // server at all. Nothing here is a no-op on failure — every path prints and toasts.
+                    let archetype = spawn_mode.selected().map(str::to_string);
+                    if let Some(archetype) = archetype {
+                        match bus.spawn_at(&mut sys, &archetype, (x, y)) {
+                            Ok(p) => {
+                                println!("{}", p.terminal(&archetype));
+                                ov.push(p.toast(&archetype), INFO);
+                            }
+                            Err(e) => {
+                                // **The server's own words to the terminal, the next action to the
+                                // glass** — the split `pick.rs` already uses, and the reason the two
+                                // halves are separate calls rather than one `notify_err`: a toast is cut
+                                // from the right at ~50 characters and a swallowed refusal is the one
+                                // outcome this feature is not allowed to have.
+                                eprintln!("{}", e.terminal(&archetype, pause_key));
+                                ov.push(e.toast(pause_key), ERROR);
+                            }
+                        }
+                    } else {
+                        // Resolve the dot to whatever it is — plane tile, sprite (its drawing pattern *and* its
+                        // attribution-table entry), or backdrop palette entry. A sprite dot used to arm nothing.
+                        //
+                        // **Under the same mask the picture was drawn with**, which is what keeps the panel
+                        // describing the picture rather than a machine state nobody is looking at. Hiding plane
+                        // A and clicking where it used to be must arm what is *now* showing there; the panel
+                        // answering `planeA` for a dot the window is painting plane B at is the whole defect
+                        // this parcel exists to close, and `pick.rs`'s bus-parity guard now runs over masked
+                        // states so it cannot come back.
+                        //
+                        // The last argument is the machine's **now**, which §11.27's colour-staleness rule
+                        // compares a CRAM write stamp against. It is `sys.scheduler().now()` — the same
+                        // instant `emulator/pixel_attribution` stamps its verdict with — and deliberately
+                        // NOT `Vdp::now_mclk`, which is the instant the VDP last did guest-driven work and
+                        // on a paused machine can be arbitrarily stale (see `Vdp::poke_cram`).
+                        let p = pick::resolve(sys.vdp(), x, y, bus.layers(), sys.scheduler().now());
+                        let wp = bus.watchpoints_mut();
+                        // Retire only what this panel armed. `clear()` would take a socket client's watches
+                        // with it — the shared-instrument hazard, and the one thing that made the panel's
+                        // "a click replaces the prior watch" rule need a list instead of a reset.
+                        for id in panel_watches.drain(..) {
+                            wp.remove(id);
+                        }
+                        for t in &p.targets {
+                            let space = match t.space {
+                                pick::Space::Vram => WatchSpace::Vram,
+                                pick::Space::Cram => WatchSpace::Cram,
+                            };
+                            panel_watches.push(wp.add_vdp_watch(
+                                space,
+                                t.lo..=t.hi,
+                                WatchOp::Write,
+                                t.label.clone(),
+                            ));
+                        }
+                        let armed_now = !p.targets.is_empty();
+                        watched_pixel = armed_now.then_some((x, y));
+                        // The terminal gets the full line; the toast gets the short form that fits on screen.
+                        println!("{}", p.description);
+                        ov.push(p.toast, if armed_now { INFO } else { ERROR });
                     }
-                    for t in &p.targets {
-                        let space = match t.space {
-                            pick::Space::Vram => WatchSpace::Vram,
-                            pick::Space::Cram => WatchSpace::Cram,
-                        };
-                        panel_watches.push(wp.add_vdp_watch(
-                            space,
-                            t.lo..=t.hi,
-                            WatchOp::Write,
-                            t.label.clone(),
-                        ));
-                    }
-                    let armed_now = !p.targets.is_empty();
-                    watched_pixel = armed_now.then_some((x, y));
-                    // The terminal gets the full line; the toast gets the short form that fits on screen.
-                    println!("{}", p.description);
-                    ov.push(p.toast, if armed_now { INFO } else { ERROR });
                 }
             }
         }
@@ -1654,6 +1702,64 @@ fn main() {
                         );
                     }
                 }
+                // --- Spawn mode (`LIVE-OBJECTS`, `protocol.md` §11.32). Both arms end in a sentence:
+                // arming can FAIL (no listing, no archetypes, no bus in this build) and a key that
+                // silently did nothing would be indistinguishable from a broken one. ---
+                commands::Cmd::ToggleSpawnMode => {
+                    if spawn_mode.is_armed() {
+                        spawn_mode.disarm();
+                        notify(
+                            &mut ov,
+                            ACCENT,
+                            "SPAWN MODE OFF — a click arms a watch again",
+                        );
+                    } else {
+                        // Read at arm time, never cached: `load_symbols` may be called at any point
+                        // after the handshake, so the archetypes a click can place are the ones the
+                        // engine resolves against *now*.
+                        match bus
+                            .archetypes(&mut sys)
+                            .and_then(|a| {
+                                let note = a.truncation_note();
+                                spawn_mode.arm(a.names).map(|n| (n.to_string(), note))
+                            }) {
+                            Ok((name, note)) => {
+                                // The terminal gets the whole story, including how much of the listing
+                                // the bounded search actually saw; the glass gets the badge, which is
+                                // standing and does not need repeating in a toast.
+                                let mut line = format!(
+                                    "spawn mode ON — a left-click now places {name};                                      {} cycles archetypes. Debug only: nothing here is saved into the                                      level, and the machine must be paused for a click to land.",
+                                    reg.iter()
+                                        .find(|c| matches!(c.cmd, commands::Cmd::NextArchetype))
+                                        .and_then(|c| c.hotkey)
+                                        .map_or("the palette", commands::key_name),
+                                );
+                                if let Some(n) = note {
+                                    line.push_str(&format!(" ({n})"));
+                                }
+                                println!("{line}");
+                                ov.push(format!("SPAWN MODE ON — PLACING {name}"), ACCENT);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "spawn mode not armed — nothing will be placed: {}",
+                                    e.message
+                                );
+                                ov.push(format!("SPAWN MODE OFF — {}", e.message), ERROR);
+                            }
+                        }
+                    }
+                }
+                commands::Cmd::NextArchetype => match spawn_mode.cycle() {
+                    Some(name) => notify(&mut ov, ACCENT, format!("NOW PLACING {name}")),
+                    // Not a no-op: the key did nothing *because the mode is off*, which is a different
+                    // fact from the key being unbound and the reader is told which.
+                    None => notify(
+                        &mut ov,
+                        ERROR,
+                        "spawn mode is off — nothing to cycle through",
+                    ),
+                },
                 // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
                 commands::Cmd::DumpHits => {
                     // **The panel side of the item-19 parity.** This reads the same ring
@@ -2238,6 +2344,7 @@ fn main() {
                 rom_fp: &mut rom_fp,
                 symbols: &mut symbols,
                 paused: &mut paused,
+                spawn: &mut spawn_mode,
             },
         );
         // The one effect the seam reports instead of performing: `AudioState` owns a live `cpal::Stream`
@@ -2442,6 +2549,11 @@ fn main() {
             // for the picture underneath it, and one that could describe a mask set a microsecond ago
             // by a socket client, over a frame drawn before it, would be a caption for something else.
             layers: drained.layers,
+            // **The standing spawn statement, built by the mode itself** — never re-derived here, so the
+            // thing that decides what a click does and the thing that says so on the glass are one
+            // derivation. `None` while disarmed, which is what keeps the badge off a window where a
+            // click still means what it always meant.
+            spawn: spawn_mode.badge(),
         };
         ov.draw(&mut screen, win_w, win_h, present_view, &status);
 
@@ -3858,6 +3970,10 @@ mod tests {
                     aspect: aspect.name(),
                     layers: LayerMask::ALL,
                     native: (width, HEIGHT),
+                    // The shots fixture carries a disarmed mode: the spawn badge has its own rows in
+                    // `overlay.rs`, and a permanent badge in every reference shot would make every one of
+                    // them a shot of the badge.
+                    spawn: None,
                 },
             );
             write_ppm(&format!("{dir}/{name}.ppm"), &screen, ww, wh);

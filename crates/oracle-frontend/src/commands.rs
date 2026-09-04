@@ -42,6 +42,16 @@ pub enum Cmd {
     /// The payload is the mask *target*, so `Layer::Sprite`'s slot is the `Layer::ALL` representative and
     /// means "the sprite layer", never one sprite.
     ToggleLayer(oracle_core::render::Layer),
+    /// **Arm or disarm spawn mode** — the mode in which a left-click on the picture places an object
+    /// instead of arming a watch (`LIVE-OBJECTS`, `protocol.md` §11.32).
+    ///
+    /// A command and not a tab, per `docs/OVERSEER.md`'s ruling with this very feature as its worked
+    /// example: *"Things you DO — reset, press, spawn, write — are NOT tabs … the spawn serve is the live
+    /// example: its surface is clicking a spot in the Screen panel, not an `object_spawn` tab."*
+    ToggleSpawnMode,
+    /// Select the next archetype a click would place. Only meaningful while spawn mode is armed, and it
+    /// says so rather than doing nothing when it is not.
+    NextArchetype,
     // Audio-only, and absent — not merely unbound — from a no-audio build: with nothing to attenuate
     // the command genuinely *cannot* exist (spec §4), which is also what keeps the main loop's
     // dispatch exhaustive without a dead catch-all arm.
@@ -69,16 +79,21 @@ pub enum Group {
     /// is*, and a user hunting for "why is the background gone" should not have to know they are the same
     /// kind of thing, because they are not.
     Layers,
+    /// Spawn mode. Its own group rather than a corner of `Game`, because everything in it **writes to the
+    /// machine** — one group is the honest place to look for "what can this window change", and it is also
+    /// where the debug-only scope gets stated on a surface somebody reads.
+    Spawn,
     Settings,
 }
 
 impl Group {
-    pub const ALL: [Group; 6] = [
+    pub const ALL: [Group; 7] = [
         Group::Game,
         Group::SaveStates,
         Group::Watch,
         Group::Lenses,
         Group::Layers,
+        Group::Spawn,
         Group::Settings,
     ];
     pub fn title(self) -> &'static str {
@@ -88,6 +103,10 @@ impl Group {
             Group::Watch => "WATCH",
             Group::Lenses => "LENSES",
             Group::Layers => "DISPLAY LAYERS",
+            // The scope is in the title because it is the owner's own framing of the feature
+            // (`LIVE-OBJECTS`: "just for debug/throwaway, wasn't planned for permanent"), and a palette
+            // row that offered "place an object" with no such qualifier would be read as level editing.
+            Group::Spawn => "SPAWN OBJECTS (DEBUG, NOT SAVED)",
             Group::Settings => "SETTINGS",
         }
     }
@@ -204,6 +223,20 @@ pub fn registry() -> Vec<CommandInfo> {
             "Toggle status line",
             Group::Settings,
             Some(Key::F3),
+        ),
+        // `P` for place, in the same single-letter family as `W`/`C`/`O`. It is not a game key (the pad is
+        // the arrows, A/S/D and Enter) and plain `P` is not the palette chord, which is Ctrl+P.
+        CommandInfo::new(
+            Cmd::ToggleSpawnMode,
+            "Spawn mode: click to place an object",
+            Group::Spawn,
+            Some(Key::P),
+        ),
+        CommandInfo::new(
+            Cmd::NextArchetype,
+            "Next archetype to place",
+            Group::Spawn,
+            Some(Key::N),
         ),
     ];
     // F1 = reset alias (hidden: one visible "Soft reset" row is enough).
@@ -352,6 +385,8 @@ pub fn key_name(k: Key) -> &'static str {
         Key::F7 => "F7",
         Key::W => "W",
         Key::C => "C",
+        Key::P => "P",
+        Key::N => "N",
         Key::F => "F",
         Key::M => "M",
         Key::O => "O",

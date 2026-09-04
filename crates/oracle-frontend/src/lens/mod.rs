@@ -1617,6 +1617,7 @@ mod tests {
             aspect: "4:3",
             layers: oracle_core::render::LayerMask::ALL,
             native: (320, 224),
+            spawn: None,
         };
         let lenses = |bg: u32| {
             let m = models(

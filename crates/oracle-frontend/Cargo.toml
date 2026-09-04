@@ -24,12 +24,18 @@ gilrs = { version = "0.11", optional = true }
 # and because the player must be buildable without a control surface at all; the `bus`/`bus_stub` pair keeps
 # the run loop identical either way.
 oracle-aether = { path = "../oracle-aether", optional = true }
+# The bus's own wire vocabulary, needed only where this crate *calls* it: `bus.rs`'s spawn-mode gestures go
+# through `Host::call`, which takes and returns `serde_json::Value`. Optional and pulled in by the `aether`
+# feature alone, so a `--no-default-features` build still links neither this nor the bus. It enters no new
+# lock-file entry — `oracle-aether` already depends on it, and it was already here as a dev-dependency.
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
-# TEST-ONLY, and only reached under the `aether` feature: `pick.rs`'s bus-parity tests read the JSON the
-# Aether handler returns, so they need to index a `Value`. It is not a runtime dependency of the player —
-# the frontend links serde_json only via the optional `oracle-aether`, and a `--no-default-features`
-# build has neither.
+# Unconditional here so the tests can index a `Value` in an `aether` build regardless of how the optional
+# dependency above resolves. **This used to say "TEST-ONLY, not a runtime dependency of the player"** —
+# that stopped being true when spawn mode landed: `bus.rs` now calls `Host::call`, whose params and reply
+# are `serde_json::Value`, so the crate above takes it as an optional runtime dependency gated on `aether`.
+# A `--no-default-features` build still links neither it nor the bus.
 serde_json = "1"
 
 [features]
@@ -40,4 +46,4 @@ audio = ["dep:ringbuf", "dep:cpal", "oracle-core/synth"]
 gamepad = ["dep:gilrs"]
 # Hosts the Aether capability layer in this process. Serving is still opt-in at *runtime* (`--aether`); this
 # only decides whether the binary is capable of it.
-aether = ["dep:oracle-aether"]
+aether = ["dep:oracle-aether", "dep:serde_json"]

@@ -24,6 +24,7 @@
 //! no-ops with the same surface — which is why the run loop calls into it unconditionally and has no
 //! `#[cfg]` of its own.
 
+use crate::spawn;
 use oracle_aether::breakpoints::BreakStop;
 use oracle_aether::host::{Host, HostConfig};
 use oracle_core::bus::Observe;
@@ -33,6 +34,7 @@ use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::Watchpoints;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// What the bus should know about the loaded cartridge — the ROM's path, and the listing bound to it (D7).
@@ -341,6 +343,136 @@ impl Bus {
     /// stale-symbol hazard D7 exists to prevent.
     pub fn set_machine_info(&mut self, info: MachineInfo) {
         self.host.set_machine_info(info.into());
+    }
+
+    // ---------------------------------------------------------------- spawn mode (LIVE-OBJECTS)
+
+    /// **Every archetype a click could place**, out of the listing this engine resolves against.
+    ///
+    /// One `Host::call` to `emulator/lookup_symbol`'s bounded prefix search — the row §11.32 §9.1 names
+    /// as already being the archetype catalogue, which is why no catalogue row was proposed. Nothing is
+    /// hard-coded here and nothing is cached: `load_symbols` may be called at any point after the
+    /// handshake, so the list is read at the moment the mode is armed and the mode is disarmed whenever
+    /// the machine's listing changes.
+    ///
+    /// Every failure comes back as the server's own words (`-32012` *you forgot to load symbols* against
+    /// `-32013` *this build has no such name* is exactly the distinction a person hits here, and §8.2
+    /// keeps them apart on purpose).
+    pub fn archetypes(&mut self, sys: &mut System) -> Result<spawn::Archetypes, spawn::Refusal> {
+        let v = self.call(
+            sys,
+            "emulator/lookup_symbol",
+            json!({"name": spawn::ARCHETYPE_PREFIX}),
+        )?;
+        // The exact branch: a symbol literally named `ObjDef_`. Vanishingly unlikely and handled anyway,
+        // because the alternative is an empty list from a reply that found something.
+        if v["exact"] == json!(true) {
+            let name = v["name"].as_str().unwrap_or_default().to_string();
+            return Ok(spawn::Archetypes {
+                total: 1,
+                names: vec![name],
+            });
+        }
+        let page = &v["otherMatches"];
+        let names: Vec<String> = page["items"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // `total` from the envelope, not from `names.len()` — the two differ exactly when the search was
+        // cut, which is the case the note exists for.
+        let total = page["total"].as_u64().unwrap_or(names.len() as u64) as usize;
+        Ok(spawn::Archetypes { names, total })
+    }
+
+    /// **Place `archetype` where the window was clicked.**
+    ///
+    /// Two calls, because the click is in *screen* dots and the mailbox wants *world* pixels:
+    ///
+    /// 1. `emulator/object_at`, whose `world{x,y}` is `Camera_X`/`Camera_Y` plus the dot (§11.26 M3, and
+    ///    the join §11.32 §11 names as the GUI's one extra dependency). It is a pure read and needs no
+    ///    pause.
+    /// 2. `emulator/object_spawn { defSymbol, x, y }`, which is where the pause requirement, the mailbox
+    ///    handshake and all five engine refusals live.
+    ///
+    /// **The `world` half is refused rather than guessed.** §11.26 makes `worldSource` a field precisely
+    /// so its absence is not inferred from a missing `world`, and a build without the camera symbols gets
+    /// a sentence instead of a coordinate — a spawn at the raw dot would land somewhere plausible and
+    /// wrong, which is the failure class this whole row is written against.
+    ///
+    /// **UNMEASURED, and named rather than assumed** (§11.32 §11's own flag): that `object_at`'s world
+    /// space is the same flat world-pixel space `Obj_Req_X`/`Y` want. Aeon states it is *"the same
+    /// convention as `Warp_Req_X/Y`"*; nothing in this repo has confirmed the two agree against a running
+    /// game, and if they do not, this needs a conversion that no CR has specified.
+    pub fn spawn_at(
+        &mut self,
+        sys: &mut System,
+        archetype: &str,
+        dot: (u16, u16),
+    ) -> Result<spawn::Placed, spawn::Refusal> {
+        let (dx, dy) = dot;
+        let at = self.call(sys, "emulator/object_at", json!({"x": dx, "y": dy}))?;
+        let source = at["worldSource"].as_str().unwrap_or("unavailable");
+        let world = match (source, at["world"]["x"].as_u64(), at["world"]["y"].as_u64()) {
+            ("camera", Some(x), Some(y)) => (x as u32, y as u32),
+            _ => {
+                return Err(spawn::Refusal::local(format!(
+                    "this build cannot turn a click into a world position (object_at answered \
+                     worldSource={source:?}): `Camera_X` and `Camera_Y` are not both in the loaded \
+                     listing, and spawning at the raw screen dot ({dx},{dy}) would place the object \
+                     somewhere plausible and wrong"
+                )))
+            }
+        };
+        let placed = self.call(
+            sys,
+            "emulator/object_spawn",
+            json!({"defSymbol": archetype, "x": world.0, "y": world.1}),
+        )?;
+        Ok(spawn::Placed {
+            handle: placed["handle"].as_str().unwrap_or_default().to_string(),
+            addr: placed["addr"].as_str().unwrap_or_default().to_string(),
+            slot: placed["slot"].as_i64(),
+            asked: world,
+            now: (
+                placed["x"].as_i64().unwrap_or_default(),
+                placed["y"].as_i64().unwrap_or_default(),
+            ),
+            frames_advanced: placed["framesAdvanced"].as_u64().unwrap_or_default(),
+            caveat: placed["caveat"].as_str().map(str::to_string),
+        })
+    }
+
+    /// One synchronous in-process dispatch, with the error translated into this crate's vocabulary and
+    /// **nothing else** — the message is moved, never rewritten.
+    ///
+    /// [`Host::call`](oracle_aether::host::Host::call) rather than the drain: the drain is the socket
+    /// clients' path and is bounded so one of them cannot freeze the window, whereas a call the window
+    /// makes of itself is its own frame time to spend. D15's *"an in-process GUI is a consumer of the same
+    /// registry, not a second server"*, taken literally.
+    ///
+    /// Private, and only per-**gesture** callers reach it. A panel body repainting through here would be
+    /// the arrangement `Host::call`'s own doc warns about; the per-frame readers in this crate go to the
+    /// core directly, exactly as [`crate::pick`] does.
+    fn call(
+        &mut self,
+        sys: &mut System,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, spawn::Refusal> {
+        let (result, _stamp) = self.host.call(sys, method, &params);
+        result.map_err(|e| spawn::Refusal {
+            code: Some(e.code),
+            reason: e
+                .data
+                .as_ref()
+                .and_then(|d| d["reason"].as_str())
+                .map(str::to_string),
+            message: e.message,
+        })
     }
 }
 
