@@ -584,7 +584,10 @@ mod tests {
 
         // Valid JSON that is not an object is refused here rather than sent as a shape the bus cannot take.
         let arr = parse_args("[1,2,3]").expect_err("an array is not a params object");
-        assert!(arr.contains("array"), "the refusal must name the shape: {arr}");
+        assert!(
+            arr.contains("array"),
+            "the refusal must name the shape: {arr}"
+        );
 
         assert_eq!(
             parse_args("{\"addr\": \"0xFF0000\"}").expect("valid JSON must parse"),
