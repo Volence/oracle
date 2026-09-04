@@ -424,7 +424,8 @@ pub fn rings(symbols: Option<&SymbolTable>, sys: &System) -> Result<RingsView, R
 
     // The count's own width, measured the same way. Refused rather than assumed: reading two bytes where
     // the listing declares one would fold `Ring_HighWater` into the count and report a plausible number.
-    let count_width = match next_symbol_above(table, count_addr).and_then(|n| n.checked_sub(count_addr))
+    let count_width = match next_symbol_above(table, count_addr)
+        .and_then(|n| n.checked_sub(count_addr))
     {
         Some(w @ (1 | 2 | 4)) => w,
         other => {
@@ -466,7 +467,10 @@ pub fn rings(symbols: Option<&SymbolTable>, sys: &System) -> Result<RingsView, R
 pub enum Objects {
     /// [`decoders::derive`] refused. The server's own `-32012` and its own sentence.
     Refused(RpcError),
-    Pool(Pool),
+    /// Boxed: [`Pool`] grew past the refusal variant when it took the layout's fields and the ring
+    /// buffer, and an enum sized to its largest arm would make every refusal carry the pool's footprint.
+    /// One allocation per repaint, which is nothing beside the pool read that produced it.
+    Pool(Box<Pool>),
 }
 
 /// A derived layout and everything under it.
@@ -548,7 +552,7 @@ impl Objects {
         };
         let players = player_state(symbols, sys);
         let rings = rings(symbols, sys);
-        Objects::Pool(Pool {
+        Objects::Pool(Box::new(Pool {
             rings,
             engine: list.layout.engine(),
             slot_count: list.layout.slot_count(),
@@ -559,7 +563,7 @@ impl Objects {
             total: list.total,
             objects: list.objects,
             players,
-        })
+        }))
     }
 }
 
@@ -1283,6 +1287,282 @@ mod bus_parity {
              cannot do — this panel is holding an address"
         );
         assert_eq!(second.objects[0].cell("code"), "0x5A5A");
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // 5. Rings — measured from the listing, and honest about the one number it cannot measure
+    // -----------------------------------------------------------------------------------------------
+
+    /// Where the fixture puts the ring buffer. Clear of the object table, which ends at
+    /// `BASE + NUM_TOTAL * SST` = `$FF9440`.
+    const RING_BASE: u32 = 0x00FF_A000;
+    /// The fixture's own span. Not aeon's `$300` — a *different* number on purpose, so a derivation that
+    /// had quietly memorised the real listing's span fails here.
+    const RING_SPAN: u32 = 0x0180;
+
+    /// `Ring_Buffer`, `Ring_Count`, and the symbol above `Ring_Count` that gives its width.
+    fn ring_rows(base: u32, span: u32) -> Vec<(String, u32)> {
+        vec![
+            ("Ring_Buffer".into(), base),
+            ("Ring_Count".into(), base + span),
+            ("Ring_HighWater".into(), base + span + 1),
+        ]
+    }
+
+    /// **The count is read at the MEASURED width, and the width is one byte here.**
+    ///
+    /// The load-bearing half is `Ring_HighWater = 0xFF`: a read that took two bytes would answer
+    /// `0x07FF` = 2047, which is a believable ring count and is exactly what an assumed width produces.
+    /// So this is a projection check, not a round-trip — the wrong implementation returns a *different*
+    /// number rather than an obviously broken one.
+    #[test]
+    fn the_ring_count_is_read_at_the_measured_width_and_not_one_byte_wider() {
+        let mut sys = booted();
+        let table = table_with(&ring_rows(RING_BASE, RING_SPAN));
+        let mut bus = populated(&mut sys, table.clone());
+        ok(bus.call(
+            &mut sys,
+            "emulator/write_memory",
+            &json!({
+                "addr": format!("0x{:06X}", RING_BASE + RING_SPAN),
+                // Ring_Count = 0x07, Ring_HighWater = 0xFF.
+                "bytes": "0x07FF",
+            }),
+        ));
+
+        let r = rings(Some(&table), &sys).expect("the ring buffer is measured");
+        assert_eq!(r.count_width, 1, "the width is the gap to `Ring_HighWater`");
+        assert_eq!(
+            r.count, 7,
+            "the count must be read at the measured width; a two-byte read answers 2047, which is a \
+             believable ring count and is why the next byte is 0xFF in this fixture"
+        );
+        assert_eq!(r.span_bytes, RING_SPAN);
+        assert_eq!(r.buffer_addr, RING_BASE);
+        // …and the line a human reads carries the measured numbers, not a remembered pair.
+        let line = r.summary();
+        assert!(
+            line.contains("7 live") && line.contains(&format!("${RING_SPAN:X} bytes")),
+            "the rings line must carry the measured count and span: {line:?}"
+        );
+    }
+
+    /// **The adjacency is re-checked against the loaded listing, and a symbol in the gap refuses.**
+    ///
+    /// `Ring_Count − Ring_Buffer` is the buffer's span only while nothing lives between them. This is
+    /// the assertion that keeps a confident wrong number off the panel: with an intruder in the gap the
+    /// subtraction measures an unrelated region, and the honest answer is to refuse it.
+    ///
+    /// ⚑ The **positive control comes first**: the identical fixture without the intruder must succeed.
+    /// Without that, a `rings()` broken in any other way would refuse here and be read as a pass.
+    #[test]
+    fn a_symbol_between_the_buffer_and_the_count_refuses_instead_of_measuring_the_gap() {
+        let sys = booted();
+
+        // --- the control: this fixture derives ---
+        let clean = table_with(&ring_rows(RING_BASE, RING_SPAN));
+        let ok_view = rings(Some(&clean), &sys)
+            .expect("the control fixture must derive, or the refusal below proves nothing");
+        assert_eq!(ok_view.span_bytes, RING_SPAN);
+
+        // --- the same listing, plus one symbol inside the buffer ---
+        let mut rows = ring_rows(RING_BASE, RING_SPAN);
+        rows.push(("Some_Other_Thing".into(), RING_BASE + 0x10));
+        let intruded = table_with(&rows);
+        let Err(e) = rings(Some(&intruded), &sys) else {
+            panic!(
+                "a symbol at {} lies between Ring_Buffer and Ring_Count, so the span between them is \
+                 NOT the ring buffer and must not be reported as its size",
+                hex::addr(RING_BASE + 0x10)
+            );
+        };
+        assert!(
+            e.message.contains("not the next symbol after"),
+            "the refusal must name the adjacency it failed, so a reader knows the span was not \
+             mis-measured but declined: {:?}",
+            e.message
+        );
+    }
+
+    /// **A listing that never names the ring buffer loses the ring line, not the tab** — and the line
+    /// says so rather than reporting `0`.
+    #[test]
+    fn a_listing_with_no_ring_symbols_refuses_the_ring_line_and_keeps_the_tab() {
+        let mut sys = booted();
+        let table = table_with(&[]); // no ring rows at all
+        let _bus = populated(&mut sys, table.clone());
+
+        let Objects::Pool(pool) = Objects::of(Some(&table), &sys) else {
+            panic!("the tab still renders — only the ring line is unavailable");
+        };
+        assert_eq!(pool.total, LIVE.len(), "the pool table is unaffected");
+        let Err(e) = &pool.rings else {
+            panic!("no Ring_Buffer/Ring_Count in this listing, so there is nothing to measure");
+        };
+        assert!(
+            e.message.contains("Ring_Buffer") && e.message.contains("Ring_Count"),
+            "the refusal names the symbols that did not answer: {:?}",
+            e.message
+        );
+    }
+
+    /// **The ceiling is unknown for a stated reason, and this pins the REASON rather than the sentence.**
+    ///
+    /// Run against `fixtures/aeon/s4.debug.lst` — committed bytes of a real build — because every claim
+    /// here is about what that listing does and does not publish:
+    ///
+    /// 1. `Ring_Buffer` and `Ring_Count` both resolve, and **nothing lies between them**, so the span is
+    ///    real. This is the adjacency the whole rings line rests on, checked on the real file.
+    /// 2. The listing **does** contain a `RING_BUFFER_ENTRY_SIZE` row — so clause 3 is about ingestion
+    ///    and not about absence. Without this clause the test would pass just as well on a listing that
+    ///    never mentioned the constant, and would be pinning nothing.
+    /// 3. `SymbolTable` nonetheless cannot answer for it, because the `Equate Table`'s values are
+    ///    deliberately not ingested (`F-EQUATES-NAMESPACE`). **That** is why no ceiling is shown.
+    ///
+    /// The day equates become readable, clause 3 goes red and asks whoever ruled it to finish the
+    /// division — which is the point of pinning the reason instead of the wording.
+    #[test]
+    fn the_rings_ceiling_is_unknown_because_equate_values_are_not_ingested() {
+        let path = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/aeon/s4.debug.lst"
+        ));
+        // Loud, never skipped: these bytes are committed to this repo, so "not there" is a broken
+        // checkout and reporting it as a pass would hide the only evidence this test carries.
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the frozen listing must be present at {path:?}: {e}"));
+        let table = SymbolTable::parse(&text).expect("the frozen listing parses");
+
+        // 1. Both symbols resolve, and nothing is between them.
+        let buffer = table
+            .address_of("Ring_Buffer")
+            .expect("the real listing names Ring_Buffer");
+        let count = table
+            .address_of("Ring_Count")
+            .expect("the real listing names Ring_Count");
+        assert!(count > buffer, "Ring_Count lies above Ring_Buffer");
+        let between: Vec<&str> = table
+            .symbols()
+            .iter()
+            .filter(|s| s.addr > buffer && s.addr < count)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            between.is_empty(),
+            "a symbol between Ring_Buffer and Ring_Count would make `Ring_Count − Ring_Buffer` measure \
+             an unrelated region, and the span on the panel would be a confident wrong number: {between:?}"
+        );
+        // The scan is not vacuous: the same filter over a range that must be populated finds symbols.
+        assert!(
+            table
+                .symbols()
+                .iter()
+                .any(|s| s.addr > buffer && s.addr < count + 0x100),
+            "the between-symbols filter matches nothing at all, so its emptiness above proves nothing"
+        );
+
+        // 2. The listing DOES publish the entry size — so clause 3 is about ingestion, not absence.
+        assert!(
+            text.contains("RING_BUFFER_ENTRY_SIZE"),
+            "this test's whole claim is that the constant is present but unreadable; if the listing \
+             stopped publishing it the claim would need restating rather than silently holding"
+        );
+
+        // 3. …and the symbol table still cannot answer for it.
+        assert!(
+            table.address_of("RING_BUFFER_ENTRY_SIZE").is_none(),
+            "equate VALUES are deliberately not ingested (F-EQUATES-NAMESPACE). If this now resolves, \
+             the ring ceiling is derivable as (Ring_Count − Ring_Buffer) / RING_BUFFER_ENTRY_SIZE and \
+             `CEILING_UNKNOWN` must be replaced with the division rather than left standing."
+        );
+        assert!(
+            CEILING_UNKNOWN.contains("RING_BUFFER_ENTRY_SIZE"),
+            "the sentence on the panel must name the constant it is missing"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // 6. The header — readable facts, and no padded table
+    // -----------------------------------------------------------------------------------------------
+
+    /// **The header carries the `layout` object's facts and none of its JSON.**
+    ///
+    /// Both halves are asserted. Absence of `{"` alone would pass on a header that had been emptied, so
+    /// every fact the JSON used to carry is checked to still be on the lines.
+    #[test]
+    fn the_header_carries_the_layouts_facts_and_not_its_json() {
+        let mut sys = booted();
+        let table = table_with(&ring_rows(RING_BASE, RING_SPAN));
+        let _bus = populated(&mut sys, table.clone());
+        let Objects::Pool(pool) = Objects::of(Some(&table), &sys) else {
+            panic!("the fixture derives");
+        };
+        let lines = pool.layout_lines();
+        let all = lines.join("\n");
+
+        // --- the facts are all still here ---
+        for want in [
+            "aeon-sst",             // engine
+            &hex::addr(BASE),       // baseAddr
+            &NUM_TOTAL.to_string(), // slotCount
+            &format!("${SST:X}"),   // slotBytes
+            "Object_RAM",           // detectedFrom
+            "player 0..2",          // pools[]
+        ] {
+            assert!(
+                all.contains(want),
+                "the header dropped `{want}` — the readable spelling must carry every fact the JSON \
+                 did, not a subset:\n{all}"
+            );
+        }
+
+        // --- and none of the JSON spelling survived ---
+        for bad in ["{\"", "\":", "detectedBy"] {
+            assert!(
+                !all.contains(bad),
+                "`{bad}` is JSON punctuation in the header, which is the defect being fixed:\n{all}"
+            );
+        }
+    }
+
+    /// **The pool table shows the live slots and nothing else — it does not pad to `slotCount`.**
+    ///
+    /// The queue row this parcel came from asserted that the table "pads with empty rows". It does not,
+    /// and never did: `object_list` skips inactive records before pushing, so the vector the renderer
+    /// iterates contains only live rows. Pinned here so the property is measured rather than re-argued —
+    /// and because a future renderer looping `0..slot_count` to line the table up is a plausible change.
+    #[test]
+    fn the_pool_table_holds_only_live_slots_and_is_not_padded_to_the_slot_count() {
+        let mut sys = booted();
+        let table = table_with(&[]);
+        let _bus = populated(&mut sys, table.clone());
+        let Objects::Pool(pool) = Objects::of(Some(&table), &sys) else {
+            panic!("the fixture derives");
+        };
+
+        assert_eq!(pool.objects.len(), LIVE.len(), "one row per live object");
+        assert_eq!(pool.total, pool.objects.len());
+        assert!(
+            pool.objects.iter().all(|r| r.active),
+            "every row in the pool table is a live slot"
+        );
+        // The anti-vacuity clause: the pool is much larger than the live set, so "no padding" is a real
+        // distinction here and not an accident of a table that happens to be full.
+        assert!(
+            pool.slot_count > pool.objects.len() as u32 * 2,
+            "this fixture must leave most of the table empty ({} live of {} slots) or padding and \
+             not-padding would look identical",
+            pool.objects.len(),
+            pool.slot_count
+        );
+        // Slot numbers are sparse, which is the visible consequence: slot 50 is present with no rows
+        // for 4..50 between it and slot 3.
+        let slots: Vec<u32> = pool.objects.iter().map(|r| r.slot).collect();
+        assert_eq!(
+            slots,
+            vec![0, 1, 2, 3, 50],
+            "sparse, exactly as the reply's are"
+        );
     }
 
     /// `field_names` publishes the catalogue the handler validates against — every name it hands out
