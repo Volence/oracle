@@ -141,14 +141,25 @@ fn commas_i64(n: i64) -> String {
 fn announce(size_bytes: u64, lines: usize) {
     let headroom = RATCHET_BYTES as i64 - size_bytes as i64;
     let residual = size_bytes as i64 - BOOT_READ_BOUND_BYTES as i64;
+    // Said in the direction it actually points. The day this file comes inside the bound, the
+    // status line is the artifact someone reads to know card 7 can be closed — "-1,000 OVER" would
+    // bury that, and a number whose sign carries the meaning is a number that gets misread.
+    let against_bound = if over_bound(size_bytes) {
+        format!("{} OVER, owner card 7", commas_i64(residual))
+    } else {
+        format!(
+            "{} UNDER — the ruled bound is MET, delete the ratchet",
+            commas_i64(-residual)
+        )
+    };
     let line = format!(
         "[boot-read gate] docs/OVERSEER.md = {} B | ratchet {} ({} headroom) | \
-         ruled bound {} ({} OVER, owner card 7) | residual {} lines vs guide ~{} (NOT gated)\n",
+         ruled bound {} ({}) | residual {} lines vs guide ~{} (NOT gated)\n",
         commas(size_bytes),
         commas(RATCHET_BYTES),
         commas_i64(headroom),
         commas(BOOT_READ_BOUND_BYTES),
-        commas_i64(residual),
+        against_bound,
         commas(lines as u64),
         BOOT_READ_LINES_GUIDE,
     );
