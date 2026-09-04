@@ -1,5 +1,5 @@
 {
-  "focus": "You found two things in the debug window: it feels fine, and half its tabs cannot be opened. Fixing the reachable-nav one first.",
+  "focus": "You said the window is great and the panels need cleaning up; the nav and the cleanup go together since they touch the same file.",
   "inFlight": [
     {
       "what": "The screen-text parcel is still building; separately your demo window is live on your display, stopped at a breakpoint, waiting for you to press Step.",
@@ -25,6 +25,14 @@
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "The window read as stuck because something was stopping it every frame and nothing on screen said so or offered to release it. Anything armed that can halt the game has to say it is armed, say it just halted, and give you the way out."
+    },
+    {
+      "id": "PANELS-CLEANUP",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The Objects tab dumps its pool layout at you as a paragraph of raw JSON and pads its table with empty dash rows. Ship the obvious half \u2014 the layout as four named pools you can read, no filler rows \u2014 and make the count say WHAT it counts, so your rings question is answered on screen instead of asked again. Rides with the nav; both touch the same file."
     },
     {
       "id": "PANELS-COMMAND-PALETTE",
@@ -119,5 +127,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:43:40Z"
+  "updatedAt": "2026-09-04T00:46:18Z"
 }
