@@ -126,9 +126,24 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   is a policy this server chose; both are transcribed."* **Both halves are false against the vendored copy.**
   **MEASURED LIVE, not read off the source:** `step {count: 0}` → **accepted**, replies `pc` unchanged;
   `step {count: 1000001}` → **accepted and ran** (frame 240 → 324). Both must be `-32602`.
-  **Live since `0a4313e` (2026-08-25) — ten days** — which is when the bound entered our vendored fragment.
-  The comment was probably true when written; **the code did not move with the fragment and nothing could
-  tell anyone.**
+  ⚑ **AND THE ARCHAEOLOGY UPGRADES THIS FROM AN OVERSIGHT TO SOMETHING WORSE — the comment was EXACTLY
+  TRUE when written.** Before `0a4313e` (2026-08-25) the fragment really did say `minimum: 0`, no maximum,
+  and its `$comment` said so in as many words: *"`count` carries no lower bound above 0, no upper bound and
+  no default, because §6's row states none … Registered as a defect (audit D-02)."* `0a4313e` closed D-02
+  via §11.24 and the bound became `≥1 / def 1 / ≤1000000`. **So the re-vendor landed and the server did
+  not move with it — for ten days.**
+  ⚠ **A TEST ENSHRINES THE SUPERSEDED READING, AND IT IS A TRAP FOR THE IMPLEMENTER.**
+  `tests/step.rs::count_zero_retires_nothing_and_moves_no_clock` asserts `count: 0` is a **legal request**,
+  under a doc comment saying *"The fragment's `minimum` is `0`, so a zero count is a legal request"*; the
+  neighbouring `an_omitted_count_is_one_instruction…` cites D-02's *"no minimum above 0 and no ceiling"*.
+  **Both were correct when written and are now assertions against a superseded contract.** They must be
+  UPDATED, not obeyed — an agent that meets a red row here and "fixes" the handler back would restore the
+  defect while making the suite green.
+  ⚑ **The durable shape, and it is the sharpest thing this session found: handler, comment and test were
+  MUTUALLY CONSISTENT and all three wrong.** Nothing in this repo could surface it, because every artifact
+  agreed with every other and the only disagreeing party was a vendored JSON file nobody re-reads against
+  the code. **A re-vendor is a SILENT contract change unless something checks the server against the new
+  text** — that is bar 8's shared frame with the frame supplied by a document instead of by a person.
   ▶ **Folded into the CR-STEP-SHORTFALL parcel** — same handler, same fragment, and serving `stepped` while
   leaving the bounds unenforced would ship a method half-conformant to the row being amended.
 
