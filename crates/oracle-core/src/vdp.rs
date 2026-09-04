@@ -288,7 +288,38 @@ pub struct Vdp {
     /// fields; in **neither** frozen currency (`state_hash`/`export_state` read only VRAM/CRAM/VSRAM/regs).
     /// Power-on = 0.
     now_mclk: u64,
+    /// Master clock of the **most recent write to each CRAM entry**, one slot per palette index 0..=63.
+    ///
+    /// Exists for one caller: `protocol.md` §11.27's caveat on `emulator/pixel_attribution`, which must
+    /// say *"emit iff the entry at `cramIndex` has been written since line `y` of the last completed
+    /// frame was drawn"*. That is a **measurement**, not a heuristic about raster programs — a vblank
+    /// write after the line drew diverges just as much as a mid-frame one, and this catches both —
+    /// so the state it needs is the write instant per entry, and nothing coarser will express it.
+    /// §11.27 permits a server that cannot stamp per entry to fall back to "any CRAM write since the
+    /// line drew"; there are exactly **two** CRAM store sites in this file, so per-entry costs one
+    /// store more than the fallback would and the coarse rule is not worth implementing.
+    ///
+    /// **`None` is "never written", and it is an `Option` rather than a zero sentinel because the
+    /// sentinel was wrong and a test caught it.** The first draft stored a bare `u64` and argued that 0
+    /// could serve for both, since a stamp of 0 only satisfies the rule's comparison when line `y` of
+    /// the last completed frame also drew at mclk 0. That instant is real and reachable: **line 0 of
+    /// frame 0**, queried any time after the first frame completes. An entry nobody had ever written
+    /// then disclosed, which is the unconditional shape §11.27 forbids, arrived at by arithmetic rather
+    /// than by intent. `a_never_written_entry_is_silent_for_every_line_of_every_frame` is the row.
+    ///
+    /// **Reset-safe without special handling.** [`crate::system::System::reset`] rebuilds the whole
+    /// machine (`*self = Self::new(seed)`), so these stamps return to 0 in the same instant the master
+    /// clock does; the two can never be compared across a reset boundary.
+    ///
+    /// Serialized like the other transient VDP fields (it round-trips a snapshot, so a restored machine
+    /// discloses what the live one would). In **neither** frozen currency — `state_hash` and
+    /// `export_state` read only VRAM/CRAM/VSRAM/regs — and written unconditionally on the CRAM store
+    /// path, so it cannot make an instrumented machine differ from a plain one. Power-on = all `None`.
+    cram_written_mclk: [Option<u64>; CRAM_ENTRIES],
 }
+
+/// Palette entries in CRAM: 64 nine-bit colours, two bytes each ([`CRAM_SIZE`] = 128).
+pub const CRAM_ENTRIES: usize = CRAM_SIZE / 2;
 
 impl std::fmt::Debug for Vdp {
     /// Summarize instead of dumping the 64 KiB VRAM buffer (keeps assertion failures readable).
@@ -345,6 +376,7 @@ impl Vdp {
             capture_cram_only: false,
             in_dma: false,
             now_mclk: 0,
+            cram_written_mclk: [None; CRAM_ENTRIES],
         }
     }
 
@@ -823,6 +855,10 @@ impl Vdp {
                 self.capture(VdpTarget::Cram, b as u32, old, masked as u32, 2);
                 self.cram[b] = (masked >> 8) as u8;
                 self.cram[b | 1] = (masked & 0xFF) as u8;
+                // §11.27's write stamp. Unconditional — unlike `capture` above, which is armed — because
+                // an instrumented machine and a plain one must stay byte-identical, and because the
+                // caveat has to be answerable on a machine nobody armed anything on.
+                self.cram_written_mclk[b >> 1] = Some(self.now_mclk);
             }
             Target::Vsram => {
                 let masked = w & 0x07FF; // 11-bit vertical scroll
@@ -1560,17 +1596,48 @@ impl Vdp {
     /// is the conservative choice, and `cram_poke_matches_the_port_path` is the test that stops the two
     /// from drifting.
     ///
+    /// # Why `at_mclk` is a parameter and not `self.now_mclk`
+    ///
+    /// A poke needs a write instant for §11.27's CRAM stamp — a repaint of an entry the raster already
+    /// drew is precisely the divergence the caveat exists to disclose, and the anti-fix pin
+    /// (`tests/pixel_attribution.rs`) drives it through *this* function. But
+    /// [`now_mclk`](Self::now_mclk) is the instant the VDP last did **guest-driven** work, and a debug
+    /// poke is not guest-driven: on a machine paused after a quiet stretch it can be arbitrarily stale,
+    /// which would date the poke *before* the line it must be reported as landing after. Taking it as a
+    /// parameter makes the caller — which knows the machine's actual now — responsible for the one fact
+    /// this function cannot honestly invent, and matches the reasoning two paragraphs up about why a
+    /// capture must not fabricate a clock. `self.now_mclk` is deliberately **not** advanced: a poke is
+    /// not VDP work, and moving it would relocate the *next* guest write's stamp.
+    ///
     /// # Panics
     ///
     /// If `entry > 63`. Callers on the bus refuse an out-of-range `line`/`index` with `-32602` long
     /// before this, so reaching it is a server bug rather than a client one.
-    pub fn poke_cram(&mut self, entry: u8, word: u16) -> u16 {
+    pub fn poke_cram(&mut self, entry: u8, word: u16, at_mclk: u64) -> u16 {
         assert!(entry < 64, "CRAM entry {entry} is outside 0-63");
         let masked = word & 0x0EEE; // 9-bit colour (---- BBB- GGG- RRR-)
         let b = (entry as usize) * 2;
         self.cram[b] = (masked >> 8) as u8;
         self.cram[b | 1] = (masked & 0xFF) as u8;
+        self.cram_written_mclk[entry as usize] = Some(at_mclk);
         masked
+    }
+
+    /// The master clock at which CRAM `entry` (0–63) was last written, or `None` if it has not been
+    /// written since power-on — see the [`cram_written_mclk`](Vdp#structfield.cram_written_mclk) field
+    /// for why those two are distinguished rather than sharing a zero.
+    ///
+    /// This is the raw datum, not the verdict: §11.27's rule compares it against when line `y` of the
+    /// last completed frame was drawn, and that comparison lives with the reply that discloses it
+    /// (`oracle-aether`'s `cram_divergence`) rather than here, so the VDP stays a machine and does not
+    /// acquire an opinion about a bus method.
+    ///
+    /// # Panics
+    ///
+    /// If `entry > 63`, for the same reason [`poke_cram`](Self::poke_cram) does.
+    pub fn cram_written_mclk(&self, entry: u8) -> Option<u64> {
+        assert!(entry < 64, "CRAM entry {entry} is outside 0-63");
+        self.cram_written_mclk[entry as usize]
     }
 
     /// **Debug poke of one VRAM byte** (`emulator/write_vram`, `protocol.md` §6, row at line 1257).
@@ -2518,7 +2585,7 @@ mod tests {
                 port.data_write(word);
 
                 let mut poke = fresh();
-                let stored = poke.poke_cram(entry, word);
+                let stored = poke.poke_cram(entry, word, 0);
 
                 assert_eq!(
                     poke.cram(),
@@ -2547,12 +2614,12 @@ mod tests {
     fn cram_poke_masks_to_nine_bits() {
         let mut v = fresh();
         assert_eq!(
-            v.poke_cram(5, 0xFFFF),
+            v.poke_cram(5, 0xFFFF, 0),
             0x0EEE,
             "every out-of-mask bit dropped"
         );
         assert_eq!(
-            v.poke_cram(5, 0x0111),
+            v.poke_cram(5, 0x0111, 0),
             0x0000,
             "only out-of-mask bits set → black"
         );
@@ -2576,7 +2643,7 @@ mod tests {
     fn poke_cram_never_captures_even_with_the_recorder_armed() {
         let mut v = fresh();
         v.set_write_capture(true);
-        v.poke_cram(3, 0x0EEE);
+        v.poke_cram(3, 0x0EEE, 0);
         assert!(
             v.take_write_captures().is_empty(),
             "a debug poke reached the watch surface — it has no instruction to name, and since \
@@ -2599,7 +2666,7 @@ mod tests {
 
         // And the CRAM-only narrowing arms the same way, so neither spelling of "armed" lets a poke through.
         v.set_write_capture_cram_only(true);
-        v.poke_cram(3, 0x0246);
+        v.poke_cram(3, 0x0246, 0);
         assert!(v.take_write_captures().is_empty());
     }
 
@@ -2608,10 +2675,10 @@ mod tests {
     #[test]
     fn cram_poke_touches_exactly_one_entry() {
         let mut v = fresh();
-        v.poke_cram(0, 0x0EEE);
-        v.poke_cram(1, 0x0EEE);
-        v.poke_cram(2, 0x0EEE);
-        v.poke_cram(1, 0x000E);
+        v.poke_cram(0, 0x0EEE, 0);
+        v.poke_cram(1, 0x0EEE, 0);
+        v.poke_cram(2, 0x0EEE, 0);
+        v.poke_cram(1, 0x000E, 0);
         assert_eq!(v.cram()[0..2], [0x0E, 0xEE], "entry 0 untouched");
         assert_eq!(v.cram()[2..4], [0x00, 0x0E], "entry 1 rewritten");
         assert_eq!(v.cram()[4..6], [0x0E, 0xEE], "entry 2 untouched");
@@ -3898,6 +3965,96 @@ mod tests {
         v.control_write(0x8F02, arm); // reg 15 = autoinc 2
         v.control_write(0xC000, arm); // CRAM write (code 0x03), A13-A0 = 0
         v.control_write(0x0000, arm); // high half, disarm the toggle
+    }
+
+    /// **§11.27's per-entry write stamp, on the GUEST path.** `write_target`'s CRAM arm is the store site
+    /// every guest route funnels through — data port timed and untimed, DMA 68k→CRAM, DMA fill, the fill
+    /// trigger — and the caveat on `emulator/pixel_attribution` is a comparison against what it records.
+    ///
+    /// **This test exists because the server-side rows could not reach it.** The wire conformance rows in
+    /// `oracle-aether` drive their writes through `emulator/write_cram`, i.e. through
+    /// [`poke_cram`](Vdp::poke_cram) — the *other* store site. Deleting the stamp from this arm left all
+    /// of them green. So the arm is pinned here, where a guest write can actually be posed.
+    ///
+    /// Three properties, and the third is the one a shared helper would break: the stamp is **per entry**
+    /// (a write to entry 0 does not date entry 1), it is the **write's own** instant rather than the
+    /// arming control's, and an entry nobody has written reads `None` rather than a clock.
+    #[test]
+    fn a_guest_cram_write_stamps_that_entry_and_only_that_entry() {
+        let mut v = fresh();
+        arm_cram_write(&mut v, 0);
+        for e in 0..64u8 {
+            assert_eq!(
+                v.cram_written_mclk(e),
+                None,
+                "entry {e}: arming a write is not writing one — an untouched entry has no instant, \
+                 and `None` is not `Some(0)` (the caveat's rule distinguishes them at line 0 of \
+                 frame 0)"
+            );
+        }
+
+        let m = 100 * MCLK_PER_LINE + 1775;
+        v.data_write_at(0x0EEE, m); // lands in entry 0; autoinc leaves the address on entry 1
+        assert_eq!(
+            v.cram_written_mclk(0),
+            Some(m),
+            "the written entry carries the WRITE's instant, not the arming control's (mclk 0)"
+        );
+        for e in 1..64u8 {
+            assert_eq!(
+                v.cram_written_mclk(e),
+                None,
+                "entry {e} was not written; a stamp here would make the caveat fire on colours \
+                 nobody touched, which is the coarse rule §11.27 lets a server fall back to and \
+                 NOT the one this server implements"
+            );
+        }
+
+        // The autoincrement moved the address on, so the next write dates a different entry.
+        let m2 = m + 4 * MCLK_PER_LINE;
+        v.data_write_at(0x0888, m2);
+        assert_eq!(v.cram_written_mclk(1), Some(m2), "entry 1, its own instant");
+        assert_eq!(
+            v.cram_written_mclk(0),
+            Some(m),
+            "and entry 0 keeps ITS instant — the stamps are per entry, not a single last-write clock"
+        );
+    }
+
+    /// **The poke path stamps too, and takes its instant from the caller.** `emulator/write_cram` is a
+    /// debug poke with no instruction behind it, so [`poke_cram`](Vdp::poke_cram) cannot read a clock off
+    /// the machine the way the guest path does — see its own note on why `now_mclk` would be the wrong
+    /// one. What it must not do is skip the stamp: a repaint of an entry the raster already drew is
+    /// exactly the divergence §11.27 exists to disclose.
+    ///
+    /// It also must not advance `now_mclk`. That value belongs to guest-driven work; moving it here would
+    /// relocate the *next* guest write's stamp, and a debugger poke must not change what the machine
+    /// reports about the machine.
+    #[test]
+    fn a_poke_stamps_the_entry_with_the_callers_instant_and_moves_nothing_else() {
+        let mut v = fresh();
+        assert_eq!(v.cram_written_mclk(7), None);
+        let before_now = v.now_mclk();
+
+        v.poke_cram(7, 0x0EEE, 12_345);
+        assert_eq!(
+            v.cram_written_mclk(7),
+            Some(12_345),
+            "the poke's stamp is the instant the CALLER passed — the only honest source, since a poke \
+             has no instruction to take one from"
+        );
+        assert_eq!(
+            v.cram_written_mclk(6),
+            None,
+            "and its neighbours are untouched"
+        );
+        assert_eq!(v.cram_written_mclk(8), None);
+        assert_eq!(
+            v.now_mclk(),
+            before_now,
+            "a poke is not VDP work: advancing `now_mclk` here would relocate the next GUEST write's \
+             stamp, which is a debugger changing what the machine reports about itself"
+        );
     }
 
     /// A bus-timed CRAM data-port write carries its own instant into the VDP: `data_write_at(w, m)` leaves

@@ -177,10 +177,22 @@ fn method_keys(result: &Value) -> BTreeSet<String> {
 /// `additionalProperties: false` (an envelope stamp is merged into it), so a surplus key would sail
 /// through the validator — exactly the F4 finding the wire probe made against ten existing methods.
 /// This is the assertion that closes it, at every level of the reply.
+///
+/// **Why every set below runs a frame first, added 2026-09-03 with §11.27's `caveat`.** These fixtures
+/// pose a VDP by hand and were previously queried with the machine still at its power-on anchor — where
+/// §11.27's *"or when no frame has completed"* arm applies, so every reply here would carry a `caveat`
+/// and this test would be pinning the key set of the **disclosing** shape only. One `run_frames` puts
+/// each fixture past its first frame, and the test ROM writes no CRAM
+/// (`the_caveat_is_absent_when_nothing_wrote_the_entry_since_its_line_drew` is the row that measures
+/// that), so the sets below are the ordinary, quiet key sets — `caveat` genuinely absent rather than
+/// subtracted. The disclosing shape is pinned in its own section further down, and the pre-first-frame
+/// arm by `a_reply_before_the_first_completed_frame_discloses_and_still_answers`.
 #[test]
 fn the_reply_carries_exactly_the_schematized_keys_and_no_surplus() {
     let h = spawn_system("pa-keys", machine_with_sprite(2, 2, false, false), 1024);
     let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 1}));
+    c.ok("emulator/pause", json!({}));
 
     // --- a sprite dot: the common keys + `sprite`, and no `cell`.
     let r = attribution(&mut c, SPRITE_AT + 3, SPRITE_AT + 3);
@@ -239,6 +251,8 @@ fn the_reply_carries_exactly_the_schematized_keys_and_no_surplus() {
     // --- a plane dot: the common keys + `cell`, and no `sprite`.
     let h2 = spawn_system("pa-keys-plane", machine_with_plane_cell(), 1024);
     let mut c2 = client(&h2);
+    c2.ok("emulator/run_frames", json!({"frames": 1}));
+    c2.ok("emulator/pause", json!({}));
     let r = attribution(&mut c2, 2, 2);
     assert_eq!(r["winner"]["layer"], json!("planeA"), "{r:#}");
     assert_eq!(
@@ -636,6 +650,13 @@ fn it_answers_a_free_running_machine_and_the_stamp_says_so() {
 /// So the behaviour below is correct-by-contract, and the real defect aeon hit is **discoverability**:
 /// nothing in the reply points at the reconciliation path. That is a CR against the fragment, not a
 /// server change — see `docs/2026-08-30-rgb-live-resolve.md`.
+///
+/// **Updated 2026-09-03**, when that CR came back ratified as §11.27. The behaviour below is unchanged
+/// and the anti-fix pin still means what it meant; what is new is the last assertion — the reply now
+/// **says** the picture may disagree, on this exact scenario, which is the one that produced the CR.
+/// The pin and the disclosure are complements, not alternatives: `rgb` stays live *and* the divergence
+/// stops being silent. If a future session ever makes this row green by reporting the latched raster,
+/// it will have deleted the reason the caveat exists at the same time.
 #[test]
 fn rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer() {
     let h = spawn_system("pa-rgb-live", machine_with_plane_cell(), 1024);
@@ -668,5 +689,215 @@ fn rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer() {
         after["rgb"],
         json!({"r": 255, "g": 0, "b": 255}),
         "and it is the newly painted colour, not merely a different one: {after}"
+    );
+    // §11.27: the divergence this row exists to protect is now AUDIBLE. `before` was quiet (a frame
+    // had drawn and nothing had written the entry since), `after` is not, and the difference is the
+    // write — which is what makes this an assertion about the rule rather than about the key.
+    assert!(
+        before.get("caveat").is_none(),
+        "before the repaint the entry was quiet, or the assertion below witnesses nothing: {before}"
+    );
+    assert!(
+        after["caveat"]
+            .as_str()
+            .is_some_and(|c| c.contains("emulator/scanlines")),
+        "§11.27: this is THE scenario the clause was written for — aeon's `cramIndex` right and `rgb` \
+         from another moment — so the reply must disclose it and name the path: {after}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------
+// §11.27 — the reply says out loud when its colour may not be the one on the glass
+// ---------------------------------------------------------------------------------------------------
+//
+// **These are the "required when applicable" half of §11.27, and they can only live here.** The ruling
+// says so in terms: a schema cannot see a write stamp, so the four wire vectors
+// (`docs/proposed/2026-08-30-cr-g-vectors.json`, merged upstream) can only pin that `caveat` is a string
+// and that disclosure never displaces `rgb`. A reply *with* the caveat and a reply *without* it are both
+// valid documents. Which one a server owes is a live conformance question, and these are the rows that
+// ask it — exactly as §11.26's two did for `object_at`.
+//
+// ⚑ **The vacuity that has to be designed out.** A caveat test that never arranges a qualifying write
+// proves only that the key is absent — which is also what a server that never emits produces, i.e. the
+// state this repo was in before today. So the rows below come in **pairs over one fixture at one dot**,
+// differing in the write stamp and in nothing else: same machine, same frame count, same coordinate,
+// same winner, same `cramIndex`. If the pair ever agrees, the emission rule is inert.
+
+/// **The absence half, and the anti-vacuity control for everything below.**
+///
+/// A completed frame exists, and nothing has written the displayed entry since line `y` of it drew, so
+/// §11.27's rule says *absent* — "no write since the line drew means the glass cannot differ" is a
+/// measurement, and this is the measurement coming back negative.
+///
+/// It is also what stops `caveat` becoming structural. §2.4's advisory names the failure precisely: a
+/// caveat present on every reply is documentation wearing signal's clothes, and `emulator/read_memory`'s
+/// constant string is the in-tree example. §11.27 raises it to a MUST NOT — an unconditional caveat is
+/// non-conformant, not merely unhelpful — because both engines in this suite rebuild CRAM every vblank,
+/// which would make "a completed frame exists" fire on every reply after the first.
+///
+/// **The fixture's silence is measured, not assumed.** `machine_with_plane_cell` poses VRAM and the
+/// registers by hand and writes **no CRAM at all** — the winning colour is an untouched entry — and
+/// `oracle_core::testrom` writes none either, which was checked by probe across 1, 2 and 5 frames before
+/// this row was written. So the stamp here is genuinely "never written", not "written early enough".
+/// The row that proves this fixture *can* produce the other answer is its pair,
+/// `a_cram_write_after_the_line_drew_makes_the_reply_say_so_and_name_the_path`, which reaches the
+/// disclosing state from this identical setup with one `emulator/write_cram`.
+#[test]
+fn the_caveat_is_absent_when_nothing_wrote_the_entry_since_its_line_drew() {
+    let h = spawn_system("pa-cav-quiet", machine_with_plane_cell(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 1}));
+    c.ok("emulator/pause", json!({}));
+
+    let r = attribution(&mut c, 2, 2);
+    assert_eq!(r["winner"]["layer"], json!("planeA"), "{r:#}");
+    assert!(
+        r.get("caveat").is_none(),
+        "a completed frame exists and NOTHING wrote this entry since its line drew, so §11.27's rule \
+         says absent. A caveat here is the unconditional shape the clause forbids in terms — the \
+         `read_memory` constant-string failure §2.4 names — and it would make every row below vacuous: \
+         {r:#}"
+    );
+}
+
+/// **The disclosure half — §11.27's first vector, live.** Same fixture, same dot, same completed frame
+/// as the row above; the ONLY difference is that the displayed palette entry has since been repainted.
+///
+/// This is the case that cost aeon an hour: `cramIndex` right, `rgb` a colour the glass never showed,
+/// and no way to tell from the reply. §11.3 keeps `rgb` live — the fix is forbidden, see
+/// `rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer` — so the reply's job is to
+/// **say so**, and to say **where to go instead**.
+///
+/// Both of oracle's two properties from the CR are asserted: the path is named (not merely the hazard),
+/// and disclosure arrives **beside** the datum rather than instead of it (`rgb` still present, still the
+/// live colour — a reply that answered with a caveat and no `rgb` is one of the ruling's red vectors).
+#[test]
+fn a_cram_write_after_the_line_drew_makes_the_reply_say_so_and_name_the_path() {
+    let h = spawn_system("pa-cav-write", machine_with_plane_cell(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 1}));
+    c.ok("emulator/pause", json!({}));
+
+    let before = attribution(&mut c, 2, 2);
+    assert!(
+        before.get("caveat").is_none(),
+        "the pair's control: this fixture is quiet before the write, or the assertion after it \
+         witnesses nothing: {before:#}"
+    );
+    let index = before["cramIndex"].as_u64().expect("cramIndex");
+
+    c.ok(
+        "emulator/write_cram",
+        json!({"line": index / 16, "index": index % 16, "r": 7, "g": 0, "b": 7}),
+    );
+
+    let after = attribution(&mut c, 2, 2);
+    assert_eq!(
+        after["cramIndex"], before["cramIndex"],
+        "the pair must differ in the WRITE STAMP and nothing else — a different index would mean a \
+         different dot was measured: {after:#}"
+    );
+    let caveat = after["caveat"]
+        .as_str()
+        .unwrap_or_else(|| panic!("§11.27: a write after the line drew MUST disclose: {after:#}"));
+    assert!(
+        caveat.contains("emulator/scanlines"),
+        "§11.27 pins TWO properties and this is the second: the caveat names the reconciliation \
+         PATH, not only the hazard. aeon already had the workaround; a caller who does not must be \
+         sent somewhere, or the caveat costs an hour and saves none. Got: {caveat}"
+    );
+    assert!(
+        after.get("rgb").is_some(),
+        "disclosure rides BESIDE the datum, never instead of it — answering with a caveat and no \
+         `rgb` is a red vector in the ruling's own set: {after:#}"
+    );
+}
+
+/// **The rule is PER ENTRY, and this is the row that proves we implemented the precise form rather than
+/// the coarse one §11.27 also permits.**
+///
+/// A server that cannot stamp per-entry writes MAY emit on *any* CRAM write since the line drew. Oracle
+/// can, so it does not: repainting entry X must leave the dot displaying entry Y silent. Under the
+/// coarse rule this test fails at the first assertion, which is exactly what makes it a measurement of
+/// which rule is in force rather than a restatement of the one above.
+///
+/// The second half is the pair's other end over the *same* connection and the same dot: repaint the
+/// entry that IS displayed, and the same reply discloses. So the two assertions differ only in **which
+/// entry the write landed on** — not in the fixture, the frame count, the dot, or the payload.
+#[test]
+fn the_caveat_is_per_entry_so_repainting_an_unrelated_colour_stays_silent() {
+    let h = spawn_system("pa-cav-perentry", machine_with_plane_cell(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 1}));
+    c.ok("emulator/pause", json!({}));
+
+    let shown = attribution(&mut c, 2, 2)["cramIndex"]
+        .as_u64()
+        .expect("cramIndex");
+    // Some entry that is NOT the one on the glass at this dot. Same palette line where possible, so the
+    // write is as adjacent as it can be without being the subject.
+    let other = if shown.is_multiple_of(16) {
+        shown + 1
+    } else {
+        shown - 1
+    };
+    assert_ne!(shown, other, "the control must poke a DIFFERENT entry");
+
+    c.ok(
+        "emulator/write_cram",
+        json!({"line": other / 16, "index": other % 16, "r": 7, "g": 7, "b": 0}),
+    );
+    let r = attribution(&mut c, 2, 2);
+    assert!(
+        r.get("caveat").is_none(),
+        "entry {other} was repainted; entry {shown} is what this dot shows and it has not been \
+         touched since its line drew. §11.27's rule is about the entry at `cramIndex`, so this reply \
+         must stay silent. A caveat here means the coarse any-CRAM-write fallback is in force, which \
+         is conformant but is NOT what this server claims to implement: {r:#}"
+    );
+
+    // …and the same dot, same connection, now with the write on the entry that IS displayed.
+    c.ok(
+        "emulator/write_cram",
+        json!({"line": shown / 16, "index": shown % 16, "r": 7, "g": 0, "b": 7}),
+    );
+    let r = attribution(&mut c, 2, 2);
+    assert!(
+        r.get("caveat").is_some(),
+        "and the other end of the pair: the DISPLAYED entry was repainted, so the same dot must now \
+         disclose. Without this half the row above is equally consistent with a server that never \
+         emits at all: {r:#}"
+    );
+}
+
+/// **§11.27's third vector, live: a reply before any frame has completed carries the caveat.**
+///
+/// §11.3 requires this method to answer a machine that has rendered nothing since power-on — *"a machine
+/// that has rendered nothing since power-on answers as well as one mid-level"* — and that answer is
+/// real. What it is not is comparable with a picture, because there is no picture. §11.27 folds this into
+/// the same key rather than inventing a second one, and the honest statement is about which moment the
+/// row answers for.
+///
+/// The complement is the row above it in the file: one `run_frames` on this identical fixture removes
+/// the caveat. So the pair differs in whether a frame completed and in nothing else.
+#[test]
+fn a_reply_before_the_first_completed_frame_discloses_and_still_answers() {
+    let h = spawn_system("pa-cav-preframe", machine_with_plane_cell(), 1024);
+    let mut c = client(&h);
+
+    let r = attribution(&mut c, 2, 2);
+    let caveat = r["caveat"].as_str().unwrap_or_else(|| {
+        panic!("§11.27: with no completed frame there is nothing to agree with, and the reply says so: {r:#}")
+    });
+    assert!(
+        caveat.contains("emulator/scanlines"),
+        "this arm names the path too — a caller here needs the same signpost: {caveat}"
+    );
+    // The whole answer is still an answer. §11.3's power-on sentence is the point: a caveat is not an
+    // excuse for a thinner reply.
+    assert_eq!(r["winner"]["layer"], json!("planeA"), "{r:#}");
+    assert!(
+        r.get("rgb").is_some() && r.get("cramIndex").is_some(),
+        "disclosure beside the datum, here too: {r:#}"
     );
 }
