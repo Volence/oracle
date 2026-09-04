@@ -133,11 +133,11 @@
     },
     {
       "id": "CR-STEP-SHORTFALL",
-      "state": "open",
-      "size": "S",
+      "state": "next",
+      "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Ask the debugger for a huge number of instructions and it quietly stops early, with no way in the answer to say it did fewer than asked. Ours documents this honestly at the code; the fix is a small change to the shared contract, not to us."
+      "title": "The contract team ruled on our step question within the hour: the answer now carries how many instructions actually ran. Our half is to serve that AND to fix something the ruling's text led me to find - the same command has been ignoring both limits on its input for ten days, accepting values the contract says it must refuse, while a comment beside the code claims it follows them. Same handler, so they land together."
     },
     {
       "id": "REGISTER-WHICH-SERVER-SWEEP",
@@ -145,10 +145,18 @@
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Our own follow-up list describes faults without saying WHICH of the two emulators has them. Three entries turned out to be about the old one and cost this session real work today. A sweep of that list is now owed - it was previously scoped only to the design docs."
+      "title": "Our own notes sometimes describe a fault without saying WHICH of the two emulators has it. Three such entries turned out to be about the old one and cost this session real work. Scope now narrowed by a check I ran: the startup file is CLEAN (three mentions, all correctly qualified), so the exposure is the dated design notes a teammate might cite - which makes this cheaper than it looked."
+    },
+    {
+      "id": "ERROR-SURFACE-GATE",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Our contract checks read replies only, so they are blind to every duty to REFUSE a bad request. This was a proposal for weeks; today it has a real defect it would have caught, found by hand. Do not re-argue it from principles - it has an observation now."
     }
   ],
   "awaiting": "One read-back when you surface, nothing blocking: by 'clicking a spot in the Screen panel' for spawn, did you mean the GAME window (where it works now) or the debug-tabs window? The hub ruled the game window closes it and I am proceeding on that. Also still parked for a look: the breakpoint alarm + release button, whether you could SEE those tab titles, and whether the colour-staleness sentence reads right on glass.",
   "atBoundary": false,
-  "updatedAt": "2026-09-04T09:58:18Z"
+  "updatedAt": "2026-09-04T10:04:13Z"
 }
