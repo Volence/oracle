@@ -29,10 +29,10 @@
     {
       "id": "PANELS-CLEANUP",
       "state": "open",
-      "size": "S",
+      "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The Objects tab dumps its pool layout at you as a paragraph of raw JSON and pads its table with empty dash rows. Ship the obvious half \u2014 the layout as four named pools you can read, no filler rows \u2014 and make the count say WHAT it counts, so your rings question is answered on screen instead of asked again. Rides with the nav; both touch the same file."
+      "title": "The Objects tab dumps its pool layout as a paragraph of raw JSON and pads its table with empty rows. Ship the readable half, and answer your rings question ON the panel: rings never take an object slot, so a rings count goes beside the object count with the one-sentence why. The ceiling for that count is stated as unknown rather than guessed unless the toolchain can tell us it \u2014 a confident wrong number is worse than an honest gap."
     },
     {
       "id": "PANELS-COMMAND-PALETTE",
@@ -127,5 +127,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-04T00:46:18Z"
+  "updatedAt": "2026-09-04T00:47:53Z"
 }
