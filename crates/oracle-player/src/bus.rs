@@ -516,6 +516,19 @@ impl Bus {
         self.host.read_breakpoints()
     }
 
+    /// **The last breakpoint halt this window actually took**, or `None` if it has never taken one.
+    ///
+    /// The other half of [`read_breakpoints`](Bus::read_breakpoints), and the half `ARMED-STATE-VISIBLE`
+    /// turns on. The set says what is armed; this says what *stopped the machine*, at what `pc`, on what
+    /// emulated frame, and — the field the incident was about — **how many times**.
+    ///
+    /// A direct read of engine state on the 60 Hz path, exactly like `read_breakpoints`: no dispatch, no
+    /// `serde_json`, and safe outside a drain window because the record is the engine's rather than the
+    /// machine's.
+    pub fn last_break(&self) -> Option<oracle_aether::engine::LastBreak> {
+        self.host.last_break()
+    }
+
     /// Hand the bus the frame the player's own run just drew, so `emulator/screenshot` and
     /// `emulator/state_hash {includeFramebuffer}` answer with what is on the glass rather than a post-hoc
     /// re-render of the VDP state — which, taken in V-Blank after the game has rewritten CRAM for the next

@@ -719,7 +719,7 @@ impl Loop {
                 // ⚑ A CONTROL, NOT A TAB. Things you *do* are controls; the `Tab` enum is for things you
                 // *look at*, and adding a variant here would also owe `layout::LAYOUT_VERSION` a bump and
                 // discard every stored layout on the owner's machine.
-                let mut bar = transport.bar(ui, machine, bus);
+                let mut bar = transport.bar(ui, machine, bus, symbols.as_ref());
                 // The bar's first run sits immediately after the separator drawn above; the rest carry
                 // their own. Set here rather than inside `bar`, because the separator is drawn here.
                 if let Some(first) = bar.first_mut() {

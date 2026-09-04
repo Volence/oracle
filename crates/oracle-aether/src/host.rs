@@ -515,6 +515,23 @@ impl Host {
         self.engine.read_breakpoints()
     }
 
+    /// **The last breakpoint halt this bus actually performed**, forwarded — see
+    /// [`Engine::last_break`](crate::engine::Engine::last_break).
+    ///
+    /// [`read_breakpoints`](Host::read_breakpoints) answers *what is armed*; this answers *what stopped
+    /// the machine, where, and how many times*. A host drawing an alarm needs both, and neither is
+    /// derivable from the other.
+    ///
+    /// **It reads through a latch this host may not have applied yet.** A halt observed by the host's own
+    /// run is handed to [`record_break`](Host::record_break) and applied at the top of the next
+    /// [`pump`](Host::pump) — so between those two points this still reports the *previous* halt. That is
+    /// the right answer rather than a stale one: until the apply, no halt has happened, the machine is
+    /// still marked running, and a surface that reported the pending observation would be announcing a
+    /// stop that a client clearing the breakpoint in the same window can still cancel.
+    pub fn last_break(&self) -> Option<crate::engine::LastBreak> {
+        self.engine.last_break()
+    }
+
     // ---------------------------------------------------------------- the picture (conflict 3)
 
     /// Hand the bus the frame the host's own run loop just drew, so `emulator/screenshot` and

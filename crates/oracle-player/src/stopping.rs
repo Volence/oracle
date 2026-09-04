@@ -52,7 +52,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use oracle_aether::breakpoints::Breakpoints;
-use oracle_aether::engine::{breakpoint_wire_id, symbol_at, watch_wire_id};
+use oracle_aether::engine::{breakpoint_wire_id, symbol_at, watch_wire_id, LastBreak};
 use oracle_aether::hex;
 use oracle_core::profiler::{Counts, Profiler};
 use oracle_core::symbols::SymbolTable;
@@ -398,6 +398,338 @@ pub fn profiler_live(p: &Profiler, armed: bool) -> Live {
     } else {
         Live::Never
     }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ Halting — what can stop the GAME, whether it just did, and the way out (ARMED-STATE-VISIBLE)
+// ---------------------------------------------------------------------------------------------------
+
+/// **The one derivation behind every surface that says "something is armed to stop this window".**
+///
+/// # The incident this exists for
+///
+/// A breakpoint was left armed. It halted the machine, the machine stayed halted, and **nothing on the
+/// glass said so or offered a way out** — so the window read as a dead one and had to be released by hand
+/// by somebody who happened to know what a breakpoint was. The requirement that came out of it is three
+/// clauses long and this type owes all three: *anything armed that can halt the game has to say it is
+/// armed, say it just halted, and give you the way out.*
+///
+/// # ⚑ In THIS window, a breakpoint is the only thing that can halt the running game
+///
+/// That is not an assumption, it is what
+/// [`Engine::run_sinks`](oracle_aether::engine::Engine::run_sinks) does, and it is worth stating because
+/// the obvious guess is wrong:
+///
+/// * The **breakpoint** sink is lent to the player's per-frame run **bare**, so its stop reaches
+///   `run_frames_with_sink` and ends the run mid-frame. It halts the game.
+/// * The **watch** and the **profiler** are lent wrapped in `Observe`, *deliberately*, because a watch's
+///   `stopAfter` is a level (`matched >= n` stays true forever) and a bare one would end every 1-frame run
+///   the window makes. `Observe` drops the halt and keeps the observations. **A watch cannot freeze this
+///   window.**
+///
+/// So the transport bar's existing armed summary — watches and the profiler, and no breakpoints — names
+/// the two things that *cannot* stop the running game and omits the one that can. [`Halting`] is the
+/// other half, and [`stopping_watches`](Self::stopping_watches) keeps the watches honest rather than
+/// silent: they still end a **commanded** run (`emulator/step`, a client's `run_frames`), which is a real
+/// surprise and a different sentence.
+///
+/// # Why not [`Live`]
+///
+/// [`Live`] answers *are the rows on this table being produced right now, or left over from when they
+/// were* — a question about a **table's freshness**, and the right question for the three tabs. This one
+/// is about the **machine**: can it be stopped, was it, and how do I start it again. They agree on
+/// exactly one bit ([`Live::Yes`] for breakpoints is `any_enabled()`, which is what
+/// [`armed`](Self::armed) counts, and `breakpoints_live_agrees_with_halting` pins that), and they differ
+/// on everything a reader of a frozen window actually needs. Collapsing the two would have put "how do I
+/// get out" inside a type whose other two variants are both *"the table is stale"*.
+pub struct Halting {
+    /// Breakpoints **enabled** — `Breakpoints::any_enabled`'s predicate, counted. This is the exact
+    /// condition `Engine::run_sinks` attaches the halting sink on, so a non-zero here means the sink is
+    /// really riding the player's frames.
+    pub armed: usize,
+    /// Every armed breakpoint's handle, complete and uncapped, in set order. **The way out is built from
+    /// this** ([`release_gestures`]), so it must not be the capped display list.
+    pub armed_handles: Vec<String>,
+    /// The armed addresses as [`hex::addr`] spells them — deduped, in set order, capped at
+    /// [`NAMED_ADDRS`]. Display only.
+    pub armed_at: Vec<String>,
+    /// Armed addresses [`armed_at`](Self::armed_at) could not name. Shown as a count rather than dropped:
+    /// a clipped list that does not say it is clipped is a list a reader will read as complete.
+    pub more_addrs: usize,
+    /// Whether the machine is stopped right now — [`crate::bus::Bus::is_paused`], which is the *truthful*
+    /// reading (it consults `pending_free_run`, which a `Host::call` does not apply).
+    pub stopped: bool,
+    /// The engine's own record of the last halt it performed. `None` means this window has never halted
+    /// on a breakpoint — a different fact from "it halted and I have forgotten".
+    pub last: Option<LastBreak>,
+    /// Emulated frames between the last halt and now. `Some(0)` means **the machine has not completed a
+    /// frame since it halted**, which is what makes "you are stopped *because of* that breakpoint" a
+    /// derivation rather than a guess: a manual pause two hundred frames later reads `Some(200)` and gets
+    /// a different sentence.
+    pub frames_since: Option<u64>,
+    /// The listing's name for the last halt's `pc`, through the same `symbol_at` the handlers use.
+    pub last_symbol: Option<(String, u32)>,
+    /// Watches carrying `stopAfter`. **They cannot halt the running game in this window** (see the type
+    /// note) but they do end a commanded run, so they are counted here rather than left to surprise
+    /// somebody who clicks `step`.
+    pub stopping_watches: usize,
+}
+
+/// How many armed addresses [`Halting::armed_at`] names inline before it starts counting instead. Four,
+/// because this line is drawn in a single-row top bar beside five other things.
+pub const NAMED_ADDRS: usize = 4;
+
+/// **The label on the halting row / bar segment.** A constant because two surfaces draw it and the tests
+/// derive their expectations from it rather than retyping it.
+pub const HALTING_LABEL: &str = "armed to halt";
+
+impl Halting {
+    /// Derive it. Every input is a shared borrow of something the loop itself feeds (R2) — the same
+    /// `Breakpoints` `emulator/breakpoint_list` pages, the same `Watchpoints`
+    /// `emulator/watchpoint_list` answers from, and the engine's own halt record.
+    ///
+    /// `now_frame` is `mclk / MCLK_PER_FRAME`, the same expression the D11 stamp and
+    /// [`LastBreak::frame`] use — the comparison in [`frames_since`](Self::frames_since) is only
+    /// meaningful because both sides are that one derivation.
+    pub fn of(
+        set: &Breakpoints,
+        last: Option<LastBreak>,
+        watches: &Watchpoints,
+        stopped: bool,
+        now_frame: u64,
+        symbols: Option<&SymbolTable>,
+    ) -> Self {
+        let armed_handles: Vec<String> = set
+            .iter()
+            .filter(|b| b.enabled)
+            .map(|b| breakpoint_wire_id(b.id))
+            .collect();
+        let mut addrs: Vec<String> = Vec::new();
+        for b in set.iter().filter(|b| b.enabled) {
+            let text = hex::addr(b.addr);
+            if !addrs.contains(&text) {
+                addrs.push(text);
+            }
+        }
+        let more_addrs = addrs.len().saturating_sub(NAMED_ADDRS);
+        addrs.truncate(NAMED_ADDRS);
+        Halting {
+            armed: armed_handles.len(),
+            armed_handles,
+            armed_at: addrs,
+            more_addrs,
+            stopped,
+            last,
+            // `saturating_sub` rather than a subtraction: a client's `emulator/restore` can wind the
+            // machine's clock *backwards* under a halt record taken on the timeline before it, and a
+            // wrapped `u64` would render as "halted 18 quintillion frames ago".
+            frames_since: last.map(|b| now_frame.saturating_sub(b.frame)),
+            last_symbol: last.and_then(|b| symbols.and_then(|t| symbol_at(t, b.pc))),
+            stopping_watches: watches
+                .watches()
+                .iter()
+                .filter(|w| w.stop_after.is_some())
+                .count(),
+        }
+    }
+
+    /// Whether anything armed can end the player's own frame run. The predicate every surface gates its
+    /// alarm on.
+    pub fn can_halt(&self) -> bool {
+        self.armed > 0
+    }
+
+    /// **Whether the machine is stopped AND a breakpoint is why**, as far as this can be derived.
+    ///
+    /// `frames_since == Some(0)` says the machine has not completed a frame since the halt, so nothing
+    /// has run that could have stopped it for another reason. A stopped machine whose last halt was
+    /// frames ago was stopped by something else — a human on the pause button, or a client — and saying
+    /// "halted by a breakpoint" there would be the confident wrong sentence this whole surface exists to
+    /// avoid.
+    pub fn halted_here(&self) -> bool {
+        self.stopped && self.frames_since == Some(0)
+    }
+
+    /// **The line the top bar and the status strip both put on the glass**, or `None` when there is
+    /// genuinely nothing to say.
+    ///
+    /// `None` rather than `"nothing armed"`, on [`crate::ui::StatusStrip::held_row`]'s precedent: a
+    /// permanent row that reads *all clear* is a row every reader learns to skip, which is how the one
+    /// day in a hundred that it says something else gets skipped too. The absence is only ever taken when
+    /// nothing is armed, nothing is stopping the machine, and nothing ever halted it — a state in which
+    /// there is no armed lens to state persistently.
+    pub fn headline(&self) -> Option<String> {
+        let halts = self.last.map_or(0, |b| b.ordinal);
+        let where_ = match (&self.last, &self.last_symbol) {
+            (Some(b), Some((n, 0))) => format!("{} ({n})", hex::addr(b.pc)),
+            (Some(b), Some((n, d))) => format!("{} ({n}+0x{d:X})", hex::addr(b.pc)),
+            (Some(b), None) => hex::addr(b.pc),
+            (None, _) => String::new(),
+        };
+        // Matched on `last` *filtered by* `halted_here` rather than on the two bools plus `last`: the
+        // combination `halted_here() && last.is_none()` cannot occur (`halted_here` requires
+        // `frames_since == Some(0)`, which requires a record), and a `match` written to spell it out
+        // would need an arm for a state that has no honest sentence.
+        match (self.last.filter(|_| self.halted_here()), self.can_halt()) {
+            // ⚑ The incident, exactly. Stopped, a breakpoint is why, and it is still armed — so the next
+            // resume stops again. `halts` is what keeps this readable in the REPEATING case: an edge
+            // ("it just halted") would flicker and then go quiet, and a window that has gone quiet is the
+            // one that gets read as broken.
+            (Some(b), true) => Some(format!(
+                "⏹ HALTED BY BREAKPOINT {} at {where_} — {halts} halt{}; {} still armed",
+                breakpoint_wire_id(b.id),
+                if halts == 1 { "" } else { "s" },
+                self.armed,
+            )),
+            // Stopped at a breakpoint, and it has since been disarmed or cleared. Resume will run.
+            (Some(b), false) => Some(format!(
+                "⏹ stopped at breakpoint {} at {where_} — {halts} halt{}; nothing is armed now, so \
+                 resume will run",
+                breakpoint_wire_id(b.id),
+                if halts == 1 { "" } else { "s" },
+            )),
+            // Armed and running (or stopped for some other reason — the `frames_since` clause says which
+            // rather than claiming the breakpoint did it).
+            (None, true) => Some(format!(
+                "⚠ ARMED TO HALT — {} breakpoint{} at {}{}{}",
+                self.armed,
+                if self.armed == 1 { "" } else { "s" },
+                if self.armed_at.is_empty() {
+                    "—".to_owned()
+                } else {
+                    self.armed_at.join(", ")
+                },
+                if self.more_addrs > 0 {
+                    format!(" +{} more", self.more_addrs)
+                } else {
+                    String::new()
+                },
+                match (self.stopped, self.frames_since) {
+                    (true, Some(n)) => format!(
+                        " · the machine is stopped, but its last breakpoint halt was {n} frame{} ago, \
+                         so something else stopped it",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    (true, None) => " · the machine is stopped, and no breakpoint has ever halted it, \
+                                     so something else stopped it"
+                        .to_owned(),
+                    (false, _) => format!(
+                        " · running; {halts} halt{} so far",
+                        if halts == 1 { "" } else { "s" }
+                    ),
+                }
+            )),
+            // Nothing armed and the machine is running: whatever halted it before is history and cannot
+            // recur. No alarm.
+            (None, false) => None,
+        }
+    }
+
+    /// **The way out, in words, naming the exact calls.**
+    ///
+    /// `None` exactly when [`headline`](Self::headline) is `None`. §9.4's rule, one instrument over: *the
+    /// remedy is one call, but you have to know to make it* — so the surface is where you learn it. The
+    /// watch clause rides here rather than in the headline because it is a *different* surprise (it ends
+    /// a commanded run, not the game) and the headline is one row on a shared bar.
+    pub fn advice(&self) -> Option<String> {
+        self.headline()?;
+        let mut s = if self.can_halt() {
+            let (label, _) = self.release_label();
+            format!(
+                "the {} button disarms {} ({} for each armed handle){}, or untick them one at a time in \
+                 the Breakpoints tab",
+                label,
+                if self.armed == 1 {
+                    "it".to_owned()
+                } else {
+                    format!("all {}", self.armed)
+                },
+                BREAKPOINT_SET_ENABLED,
+                if self.halted_here() {
+                    format!(" and then issues {}", crate::ui::RESUME)
+                } else {
+                    String::new()
+                },
+            )
+        } else {
+            format!(
+                "nothing is armed; {} runs the machine on",
+                crate::ui::RESUME
+            )
+        };
+        if self.stopping_watches > 0 {
+            s.push_str(&format!(
+                " · {} watch{} carr{} stopAfter: those cannot freeze the running game here (the halt is \
+                 dropped by Observe) but they DO end a step or a client's run",
+                self.stopping_watches,
+                if self.stopping_watches == 1 { "" } else { "es" },
+                if self.stopping_watches == 1 { "ies" } else { "y" },
+            ));
+        }
+        Some(s)
+    }
+
+    /// **The release control's label and whether it resumes**, as one decision.
+    ///
+    /// A function rather than two expressions at the click site for [`crate::ui::Transport::toggle`]'s
+    /// reason: `emulator/screen_text` reports the label, and a button that said *release* while issuing
+    /// only a disarm is a defect a readback of the bar could not tell from a correct window.
+    ///
+    /// It resumes **only** when the machine is stopped and a breakpoint is why
+    /// ([`halted_here`](Self::halted_here)). Resuming a machine a human deliberately paused, because they
+    /// clicked a button about breakpoints, would be this surface taking a run-control decision nobody
+    /// asked it for.
+    pub fn release_label(&self) -> (&'static str, bool) {
+        if self.halted_here() {
+            (RELEASE_LABEL, true)
+        } else {
+            (DISARM_LABEL, false)
+        }
+    }
+}
+
+/// The release control's two labels. Constants for [`crate::ui::PAUSE_LABEL`]'s reason — `screen_text`
+/// reports them.
+pub const RELEASE_LABEL: &str = "⏏ release";
+pub const DISARM_LABEL: &str = "⏏ disarm";
+
+/// **The way out, as the sequence of `(method, params)` pairs it really is.**
+///
+/// One `emulator/breakpoint_set_enabled {enabled:false}` per armed handle, then — only when the machine
+/// is stopped *because* of a breakpoint — `emulator/resume`. Built here rather than inlined at the click
+/// site so it can be checked against the handlers without a window, exactly as every other gesture in
+/// this module is.
+///
+/// # ⚑ Why disable and not `breakpoint_clear {all:true}`
+///
+/// `clear {all:true}` is already offered by the Breakpoints tab and is the *destructive* gesture: it
+/// removes every breakpoint on this server **including ones another client armed**, and it takes their
+/// `hits` with them. This button is pressed by somebody who does not yet know why their window is frozen,
+/// which is the worst possible moment to destroy another client's evidence. Disabling stops the halting —
+/// which is the whole complaint — retains every row and every count (§6 carries `hits` across the toggle),
+/// and is undone by re-ticking the box.
+///
+/// # ⚑ Why a sequence and not one call
+///
+/// There is no `disable_all` method, and inventing one *inside the panel* — a loop that decides for itself
+/// that N successes mean success — is exactly the "a panel composes its own answer" shape this module
+/// refuses. Each pair here is judged by the handler on its own, and the caller shows whichever refusal
+/// arrives first, in the server's words.
+pub fn release_gestures(h: &Halting) -> Vec<(&'static str, Value)> {
+    let mut g: Vec<(&'static str, Value)> = h
+        .armed_handles
+        .iter()
+        .map(|handle| {
+            (
+                BREAKPOINT_SET_ENABLED,
+                breakpoint_enable_params(handle, false),
+            )
+        })
+        .collect();
+    if h.release_label().1 {
+        g.push((crate::ui::RESUME, json!({})));
+    }
+    g
 }
 
 // ---------------------------------------------------------------------------------------------------

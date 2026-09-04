@@ -841,6 +841,43 @@ impl Checkpoint {
     }
 }
 
+/// **One breakpoint halt that really happened**, latched by
+/// [`Engine::halt_on_breakpoint`](Engine::halt_on_breakpoint) and read back by
+/// [`Engine::last_break`](Engine::last_break).
+///
+/// The set of breakpoints answers *what is armed*; this answers *what stopped the machine*. They are
+/// different questions and a window that can only ask the first is the window this type exists for: a
+/// human staring at a frozen picture is not asking which breakpoints exist, they are asking why nothing
+/// is moving.
+///
+/// Every field is here because a sentence about a stopped machine that lacks it is a sentence that has to
+/// hedge:
+///
+/// * `id` — *which* breakpoint, so the way out can name the handle rather than "one of the four".
+/// * `pc` — the address the `stopped` event reported, which stays true after a `step` moves the machine
+///   on and the PC no longer sits on a breakpoint.
+/// * `frame` — the emulated frame the halt landed on, which is what turns "it halted" into "it halted
+///   just now" or "it halted four minutes ago" without anyone guessing.
+/// * `ordinal` — **how many halts this engine has performed, 1-based.** The repeating case is the whole
+///   incident: a breakpoint that re-stops the machine on every resume produces one halt after another,
+///   and a surface that reported only the most recent *event* would go quiet between them and read as a
+///   window that had simply died. A count cannot go quiet.
+///
+/// `ordinal` is deliberately **not** a sum of the set's `hits`: [`Breakpoints::record_halt`] bumps `hits`
+/// on every enabled breakpoint at the address, so two breakpoints stacked on one address make one stop
+/// count as two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LastBreak {
+    /// The handle §6 names in the `stopped` event — the earliest-added enabled breakpoint at the address.
+    pub id: BreakpointId,
+    /// The `pc` the `stopped` event carried.
+    pub pc: u32,
+    /// `mclk / MCLK_PER_FRAME` at the halt — the same derivation as the D11 stamp's `frame`.
+    pub frame: u64,
+    /// Which halt this was over the life of this engine, 1-based.
+    pub ordinal: u64,
+}
+
 /// The emulator and everything the bus knows about it. Lives on exactly one thread (the core is
 /// single-threaded and `System` is plain owned data); every connection reaches it through a channel.
 pub struct Engine {
@@ -919,6 +956,20 @@ pub struct Engine {
     /// `resume` → `wait_for_break` idiom was exactly and only the broken path, and it failed by *timing
     /// out*, which is indistinguishable from "the ROM never reached that address".
     breakpoints: Breakpoints,
+    /// **The last breakpoint halt this engine actually performed** — see [`LastBreak`].
+    ///
+    /// Written in exactly one place, [`halt_on_breakpoint`](Engine::halt_on_breakpoint), and only on the
+    /// branch that really halted. That is the whole reason it is here rather than latched by the run
+    /// driver at the point the sink is observed: a host sees a `BreakStop` fire, but between that
+    /// observation and the drain that applies it a client can clear the breakpoint, and then
+    /// [`Breakpoints::record_halt`] answers `None` and **no halt happens**. A record kept on the
+    /// observation would report a stop that never occurred, which is a believable wrong answer rather
+    /// than a missing one.
+    ///
+    /// Engine state, not machine state, so it survives `swap_system` and is readable outside a
+    /// [`Host::pump`](crate::host::Host::pump) drain window — which is what lets a 60 Hz panel body read
+    /// it without dispatching.
+    last_break: Option<LastBreak>,
     /// **The profiler (§6, CR-26), owned here and attached to every run this engine drives.**
     ///
     /// Engine-owned for the same reason as [`watchpoints`](Engine::watchpoints): there are two run
@@ -1347,6 +1398,7 @@ impl Engine {
             next_checkpoint_id: 1,
             watchpoints,
             breakpoints: Breakpoints::new(),
+            last_break: None,
             watches_issued: 0,
             profiler: Profiler::new(),
             profiler_armed: false,
@@ -1634,6 +1686,17 @@ impl Engine {
         self.free_run = false;
         self.running = false;
         let pc = self.sys.cpu_regs().pc;
+        // **Latched here and nowhere else**, on the branch that really halted and *after* `record_halt`
+        // agreed there was still something armed to halt on. See [`Engine::last_break`] for why the run
+        // driver's own observation is the wrong place. `ordinal` counts halts rather than reading them off
+        // the set: `record_halt` bumps `hits` on *every* enabled breakpoint at the address, so a summed
+        // `hits` over two breakpoints stacked at one address says `2` for one stop.
+        self.last_break = Some(LastBreak {
+            id,
+            pc,
+            frame: self.sys.scheduler().now() / MCLK_PER_FRAME,
+            ordinal: self.last_break.map_or(0, |b| b.ordinal) + 1,
+        });
         let mut extra = Map::new();
         // §11.21's M2 clarification (ii): `breakpoint` is REQUIRED on the handle shape whenever
         // `reason` is `breakpoint`, and MUST NOT appear otherwise — the same if/then the schema
@@ -1641,6 +1704,18 @@ impl Engine {
         extra.insert("breakpoint".into(), json!(breakpoint_wire_id(id)));
         self.emit_stopped(StopReason::Breakpoint, pc, extra);
         true
+    }
+
+    /// **The last breakpoint halt this engine performed**, or `None` if it has never performed one.
+    ///
+    /// The sibling of [`read_breakpoints`](Engine::read_breakpoints), and the answer to a question that
+    /// set cannot be asked: *what stopped this machine, and when*. A breakpoint's `hits` says how many
+    /// times **it** halted the machine; nothing in the set says whether the machine is stopped **now
+    /// because of one**, and a reader looking at a frozen window is asking the second question.
+    ///
+    /// Safe outside a drain window: engine state, not `System` state.
+    pub fn last_break(&self) -> Option<LastBreak> {
+        self.last_break
     }
 
     // ---------------------------------------------------------------- the screen path

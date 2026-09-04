@@ -259,12 +259,27 @@ impl Panels<'_> {
         // `Some(...)`, never `None`: this panel has a bus, so the strip is asked rather than told nothing.
         // The `None` arm exists for a caller that genuinely has no bus, and there is none on this path.
         let held = Some(self.bus.held_pads());
+        // The same derivation the transport bar draws from, built here rather than passed down: both are
+        // pure reads of the `Host`'s own set and instruments, so there is one answer and two consumers of
+        // it, never a copy handed between panels.
+        let halting = {
+            let (watch, _, _) = self.bus.read_instruments();
+            Some(crate::stopping::Halting::of(
+                self.bus.read_breakpoints(),
+                self.bus.last_break(),
+                watch,
+                self.bus.is_paused(),
+                self.machine.system().scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
+                self.symbols,
+            ))
+        };
         for (label, value) in StatusStrip::of(
             self.machine,
             self.rom_path,
             self.symbols,
             held,
             Some(self.bus.aether_status()),
+            halting,
         )
         .rows()
         {
@@ -750,6 +765,35 @@ impl Panels<'_> {
                 )
             },
         );
+
+        // ⚑ **What the set has already DONE to this machine** — the half [`Live`] cannot express.
+        // `live_head` above says whether these rows can stop the machine; this says whether one of them
+        // is stopping it right now, at what address, and how many times it has. Same derivation as the
+        // transport bar and the status strip, so the tab a human opens to fix the problem and the bar
+        // that told them about it cannot word it differently.
+        let halting = {
+            let (watch, _, _) = self.bus.read_instruments();
+            stopping::Halting::of(
+                self.bus.read_breakpoints(),
+                self.bus.last_break(),
+                watch,
+                self.bus.is_paused(),
+                self.machine.system().scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
+                self.symbols,
+            )
+        };
+        if let Some(head) = halting.headline() {
+            let colour = if halting.halted_here() {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().warn_fg_color
+            };
+            ui.colored_label(colour, head);
+            if let Some(advice) = halting.advice() {
+                ui.small(advice);
+            }
+            ui.separator();
+        }
 
         // --- add ---
         let mut gesture: Option<(&'static str, Value)> = None;
@@ -1407,6 +1451,14 @@ pub struct StatusStrip {
     /// [`crate::bus::Bus::serve_outcome`] reports it. `None` means the strip was built with no bus to ask,
     /// exactly as for [`held`](Self::held) and for the same reason.
     pub aether: Option<crate::bus::AetherStatus>,
+    /// **What is armed to halt this window, and whether it just did** (`ARMED-STATE-VISIBLE`), as
+    /// [`crate::stopping::Halting`] derives it. `None` means the strip was built with no bus to ask,
+    /// exactly as for [`held`](Self::held) and [`aether`](Self::aether), and it draws the same loud row.
+    ///
+    /// The strip carries the *long* form; the transport bar carries the short one. Both are
+    /// [`crate::stopping::Halting::headline`] and [`advice`](crate::stopping::Halting::advice) — one
+    /// derivation, two consumers, nothing for the two to word differently.
+    pub halting: Option<crate::stopping::Halting>,
 }
 
 /// The label on the held-pads row. A constant because two tests derive their expectations from it rather
@@ -1415,6 +1467,10 @@ pub const HELD_LABEL: &str = "held by a client";
 
 /// The label on the Aether row, a constant for [`HELD_LABEL`]'s reason.
 pub const AETHER_LABEL: &str = "aether";
+
+/// The label on the halting row. [`crate::stopping::HALTING_LABEL`] re-exported by use rather than
+/// re-spelled, because the derivation module owns the vocabulary.
+pub use crate::stopping::HALTING_LABEL;
 
 impl StatusStrip {
     /// Derived from the machine, by the same expressions `Engine::status` uses. One derivation, two
@@ -1427,9 +1483,11 @@ impl StatusStrip {
         symbols: Option<&SymbolTable>,
         held: Option<[Pad; 2]>,
         aether: Option<crate::bus::AetherStatus>,
+        halting: Option<crate::stopping::Halting>,
     ) -> Self {
         let sys = machine.system();
         Self {
+            halting,
             rom_path: oracle_aether::engine::absolutise(rom_path),
             rom_bytes: sys.rom().len(),
             frame: sys.scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
@@ -1512,6 +1570,35 @@ impl StatusStrip {
         ))
     }
 
+    /// **The halting row, or `None` when there is nothing to say** (`ARMED-STATE-VISIBLE`).
+    ///
+    /// Three outcomes, and they are [`held_row`](Self::held_row)'s three, one instrument over:
+    ///
+    /// * `None` for the field → a loud row. Nothing asked the bus, and "nothing is armed" is not the
+    ///   answer to a question nobody put.
+    /// * asked, nothing armed, nothing stopped, nothing ever halted → **no row at all**. A permanent
+    ///   `armed to halt   (nothing)` is a line every reader learns to skip, which is how the one day in a
+    ///   hundred it says something else gets skipped too.
+    /// * anything else → the row: what is armed, whether the machine is stopped and whether a breakpoint
+    ///   is why, how many times it has halted, and **the way out, naming the calls**.
+    ///
+    /// **It is the same two sentences the transport bar draws.** The bar shows the headline and hides the
+    /// advice behind a hover; here both are on the glass, because a strip has the width and a bar does
+    /// not. Neither surface writes a word of its own.
+    pub fn halt_row(&self) -> Option<(&'static str, String)> {
+        let Some(h) = &self.halting else {
+            return Some((
+                HALTING_LABEL,
+                "NOT MEASURED — this strip was built with no bus to ask".into(),
+            ));
+        };
+        let head = h.headline()?;
+        match h.advice() {
+            Some(a) => Some((HALTING_LABEL, format!("{head} — {a}"))),
+            None => Some((HALTING_LABEL, head)),
+        }
+    }
+
     /// The strip as label/value pairs, in display order.
     ///
     /// **Nothing here is ever blank and nothing unmeasurable is ever a `0`.** Each of the three absences
@@ -1526,7 +1613,12 @@ impl StatusStrip {
     /// A row that only ever appears when something is wrong belongs where an alarm belongs, above the
     /// steady state, not appended after six rows a reader has already learned to skim past.
     pub fn rows(&self) -> Vec<(&'static str, String)> {
-        let mut rows: Vec<(&'static str, String)> = self.held_row().into_iter().collect();
+        // ⚑ The halting row is FIRST, ahead of even the held row, and the order is the ranking of alarms.
+        // A held pad makes the game do something you did not ask for; a halted machine makes it do
+        // NOTHING, which is the state a reader cannot diagnose at all from the picture. It goes at the
+        // top for `held_row`'s reason, more so.
+        let mut rows: Vec<(&'static str, String)> =
+            self.halt_row().into_iter().chain(self.held_row()).collect();
         rows.extend([
             ("romPath", self.rom_path.clone()),
             ("rom bytes", format!("{}", self.rom_bytes)),
@@ -1711,6 +1803,7 @@ impl Transport {
         ui: &mut egui::Ui,
         machine: &mut Machine,
         bus: &mut Bus,
+        symbols: Option<&SymbolTable>,
     ) -> Vec<screen::Run> {
         // The bus's reading, every frame, never a field of ours.
         let paused = bus.is_paused();
@@ -1733,19 +1826,75 @@ impl Transport {
         }
         drew.push(screen::Run::label(STEP_LABEL));
 
-        // **What is armed to stop this machine**, read from the instruments the loop itself feeds — one
-        // count, not a list, because the lists are the next parcel's three tabs. It belongs on the
-        // transport bar rather than in a tab for the same reason the buttons do: it is state about
-        // *stopping*, and a human reaching for "step" needs to know whether anything else will stop it
-        // first. Read through [`Bus::read_instruments`], which is the same borrow
+        // --- ⚑ ARMED-STATE-VISIBLE: the halting alarm and the way out. ---
+        //
+        // **It is on the TOP BAR and not in a tab, and that is the whole repair.** The status strip says
+        // the same thing at more length, but the strip lives inside the Registers tab, and `egui_dock`
+        // draws only each leaf's active tab — so a reader staring at a frozen Screen tab cannot see it.
+        // The incident was a human looking at a window that had halted and finding nothing that said so;
+        // an alarm behind another tab title reproduces it exactly.
+        //
+        // The button beside it is a **control, not a tab** (the standing ruling: things you look at are
+        // tabs, things you *do* are controls), and it goes through `Host::call` like every other gesture
+        // on this bar, one call per handle, so each refusal is the handler's own.
+        let halting = {
+            let (watch, _, _) = bus.read_instruments();
+            stopping::Halting::of(
+                bus.read_breakpoints(),
+                bus.last_break(),
+                watch,
+                paused,
+                machine.system().scheduler().now() / oracle_core::system::MCLK_PER_FRAME,
+                symbols,
+            )
+        };
+        let mut release: Option<Vec<(&'static str, Value)>> = None;
+        if let Some(head) = halting.headline() {
+            ui.separator();
+            // Coloured on the *derivation*, never on the shape of the string: an alarm that reads its own
+            // text back to decide how loud to be is one refactor away from being quiet.
+            let colour = if halting.halted_here() {
+                ui.visuals().error_fg_color
+            } else if halting.can_halt() {
+                ui.visuals().warn_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            let advice = halting.advice().unwrap_or_default();
+            ui.colored_label(colour, &head).on_hover_text(&advice);
+            drew.push(screen::Run::after_sep(head));
+            if halting.can_halt() {
+                let (label, _) = halting.release_label();
+                if ui.button(label).on_hover_text(&advice).clicked() {
+                    release = Some(stopping::release_gestures(&halting));
+                }
+                drew.push(screen::Run::label(label));
+            }
+        }
+        if let Some(gestures) = release {
+            self.issue_all(machine, bus, &gestures);
+        }
+
+        // **What is RECORDING**, read from the instruments the loop itself feeds — one count, not a list,
+        // because the lists are the three stopping tabs. It belongs on the transport bar rather than in a
+        // tab for the same reason the buttons do: a human reaching for "step" needs to know what is
+        // riding the run. Read through [`Bus::read_instruments`], which is the same borrow
         // `emulator/watchpoint_hits` answers from — there is one instrument, so the bar and a client
         // cannot disagree about how many watches exist.
+        //
+        // ⚑ **It used to be captioned "what is armed to stop this machine", and it was not.** Neither of
+        // these two can stop the running game in this window: `Engine::run_sinks` lends both wrapped in
+        // `Observe`, precisely so a watch's level-triggered `stopAfter` cannot end every 1-frame run the
+        // player makes. The one thing that *can* halt the game is a breakpoint, which this line never
+        // mentioned — so on the night the window froze, the bar's "armed" summary was describing the two
+        // instruments that were innocent. The halting alarm above is the other half; this is now only
+        // ever about recording, and it says so.
         let (watch, _, profiler_armed) = bus.read_instruments();
         let watches = watch.watch_count();
-        if let Some(armed) = Self::armed(watches, profiler_armed) {
+        if let Some(recording) = Self::recording(watches, profiler_armed) {
             ui.separator();
-            ui.weak(&armed);
-            drew.push(screen::Run::after_sep(armed));
+            ui.weak(&recording);
+            drew.push(screen::Run::after_sep(recording));
         }
 
         if let Some(e) = &self.last {
@@ -1779,19 +1928,61 @@ impl Transport {
         }
     }
 
-    /// **What is armed to stop this machine**, or `None` when the bar draws nothing there.
+    /// **What is RECORDING on this machine**, or `None` when the bar draws nothing there.
     ///
     /// `None` rather than an empty string, for [`StatusStrip::held_row`]'s reason one screen up: a row
     /// that is *absent* and a row that is *blank* are different facts on the glass, and `screen_text`
     /// must not make them one artifact.
-    pub fn armed(watches: usize, profiler_armed: bool) -> Option<String> {
+    ///
+    /// ⚑ **Renamed from `armed`, and the rename is the correction.** Neither a watch nor the profiler can
+    /// halt the running game in this window — `Engine::run_sinks` lends both wrapped in `Observe` on
+    /// purpose — so a line captioned *what is armed to stop this machine* that listed exactly these two
+    /// was naming the innocent parties. What can stop it is a breakpoint, and that is
+    /// [`crate::stopping::Halting`]. The word `recording` is now in the string itself, so the bar and its
+    /// `screen_text` readback both say which question this answers.
+    pub fn recording(watches: usize, profiler_armed: bool) -> Option<String> {
         (watches > 0 || profiler_armed).then(|| {
             format!(
-                "{watches} watch{} · profiler {}",
+                "recording: {watches} watch{} · profiler {}",
                 if watches == 1 { "" } else { "es" },
                 if profiler_armed { "on" } else { "off" }
             )
         })
+    }
+
+    /// **A whole gesture that is more than one call** — the release sequence, and nothing else today.
+    ///
+    /// Each pair is dispatched through `Host::call` on its own and judged by its own handler. The loop
+    /// **stops at the first refusal** and keeps that answer, in the server's words and shape, exactly as
+    /// [`issue`](Self::issue) does for a single call: a sequence that pressed on past a refusal would be
+    /// this panel deciding that a partial result counts as success, which is the one judgement it is not
+    /// allowed to make.
+    ///
+    /// There is no summary sentence of ours. The bar's own halting line is re-derived on the very next
+    /// repaint from the set the calls just changed, so *how far it got* is visible as state rather than
+    /// asserted as prose.
+    fn issue_all(
+        &mut self,
+        machine: &mut Machine,
+        bus: &mut Bus,
+        gestures: &[(&'static str, Value)],
+    ) {
+        for (method, params) in gestures {
+            let answer = bus.call(machine.system_mut(), method, params);
+            let refused = answer.is_err();
+            self.last = Some(Echo {
+                method,
+                refused,
+                reason: answer.reason().map(str::to_string),
+                text: match &answer {
+                    crate::bus::Answer::Ok(v) => format!("ok {v}"),
+                    crate::bus::Answer::Err(e) => format!("{} {}", e.code, e.message),
+                },
+            });
+            if refused {
+                return;
+            }
+        }
     }
 
     /// Make one call and keep its answer.
@@ -1867,27 +2058,41 @@ mod transport_tests {
     /// because both are *derived* from the counts rather than fixed, and a summary that said
     /// `1 watches` is the kind of wrong that survives review forever.
     #[test]
-    fn the_armed_summary_is_absent_when_nothing_is_armed_and_agrees_with_itself_when_something_is()
-    {
+    fn the_recording_summary_is_absent_when_nothing_records_and_never_claims_to_stop_the_machine() {
         assert_eq!(
-            Transport::armed(0, false),
+            Transport::recording(0, false),
             None,
-            "a bar with nothing armed draws no summary at all"
+            "a bar with nothing recording draws no summary at all"
         );
         assert_eq!(
-            Transport::armed(1, false).as_deref(),
-            Some("1 watch · profiler off")
+            Transport::recording(1, false).as_deref(),
+            Some("recording: 1 watch · profiler off")
         );
         assert_eq!(
-            Transport::armed(2, true).as_deref(),
-            Some("2 watches · profiler on")
+            Transport::recording(2, true).as_deref(),
+            Some("recording: 2 watches · profiler on")
         );
         // The profiler alone is enough to draw the row — the condition is an `or`, and a `>0` on watches
         // alone would hide the one fact a human arming a profiler most wants confirmed.
         assert_eq!(
-            Transport::armed(0, true).as_deref(),
-            Some("0 watches · profiler on")
+            Transport::recording(0, true).as_deref(),
+            Some("recording: 0 watches · profiler on")
         );
+        // ⚑ **The caption is the correction, so it is pinned.** This line used to be captioned
+        // *what is armed to stop this machine*, and neither of the two things it counts can stop the
+        // running game in this window — `Engine::run_sinks` lends both wrapped in `Observe`. A summary
+        // that says or implies "stop" here sends a reader hunting the wrong instrument on the night the
+        // window freezes, which is what happened.
+        for s in [
+            Transport::recording(3, true).unwrap(),
+            Transport::recording(0, true).unwrap(),
+        ] {
+            assert!(s.starts_with("recording:"), "{s}");
+            assert!(
+                !s.contains("stop") && !s.contains("halt") && !s.contains("armed"),
+                "the recording summary must not claim to be about stopping the machine: {s}"
+            );
+        }
     }
 
     /// **The echo line is spelled once**, and it carries the reason as a *discriminant* rather than prose.
@@ -2296,6 +2501,7 @@ mod bus_parity {
             None,
             Some(idle.held_pads()),
             Some(idle.aether_status()),
+            None,
         );
         let mut h = Host::new(HostConfig::default());
         h.set_machine_info(oracle_aether::host::MachineInfo {
@@ -2404,6 +2610,7 @@ mod bus_parity {
             Some(&table),
             Some(idle.held_pads()),
             Some(idle.aether_status()),
+            None,
         );
         let mut h = Host::new(HostConfig::default());
         // The SAME table on both sides — one parse, two consumers. Two parses of one file would agree
@@ -2519,6 +2726,7 @@ mod bus_parity {
             None,
             Some(bus.held_pads()),
             Some(bus.aether_status()),
+            None,
         );
         let quiet_rows = quiet.rows();
         assert_eq!(
@@ -2545,6 +2753,7 @@ mod bus_parity {
             None,
             Some(bus.held_pads()),
             Some(bus.aether_status()),
+            None,
         )
         .rows();
         assert_eq!(
@@ -2578,8 +2787,15 @@ mod bus_parity {
         // Only the HELD field is unmeasured here. The aether field is still asked, deliberately: this
         // test's subject is the held row displacing nothing, and blinding a second field as well would
         // move a row below it and make the displacement equality fail for an unrelated reason.
-        let blind_rows =
-            StatusStrip::of(&machine, "testrom", None, None, Some(bus.aether_status())).rows();
+        let blind_rows = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            None,
+            Some(bus.aether_status()),
+            None,
+        )
+        .rows();
         assert_eq!(
             blind_rows[0].0, HELD_LABEL,
             "a strip with no bus to ask drew no held row at all — `unavailable` was rendered as `nothing \
@@ -2636,7 +2852,14 @@ mod bus_parity {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
         let bus = idle_bus(&mut machine);
 
-        let quiet = StatusStrip::of(&machine, "testrom", None, None, Some(bus.aether_status()));
+        let quiet = StatusStrip::of(
+            &machine,
+            "testrom",
+            None,
+            None,
+            Some(bus.aether_status()),
+            None,
+        );
         let (label, off) = quiet.aether_row();
         assert_eq!(label, AETHER_LABEL);
         assert!(
@@ -2656,7 +2879,7 @@ mod bus_parity {
         );
 
         // 1 and 2: four states, four sentences.
-        let unmeasured = StatusStrip::of(&machine, "testrom", None, None, None)
+        let unmeasured = StatusStrip::of(&machine, "testrom", None, None, None, None)
             .aether_row()
             .1;
         let up = StatusStrip::of(
@@ -2668,6 +2891,7 @@ mod bus_parity {
                 outcome: ServeOutcome::Serving("/tmp/probe/s".into()),
                 attached: false,
             }),
+            None,
         )
         .aether_row()
         .1;
@@ -2680,6 +2904,7 @@ mod bus_parity {
                 outcome: ServeOutcome::Serving("/tmp/probe/s".into()),
                 attached: true,
             }),
+            None,
         )
         .aether_row()
         .1;
@@ -2746,6 +2971,7 @@ mod bus_parity {
             None,
             Some(bus.held_pads()),
             Some(bus.aether_status()),
+            None,
         )
         .held_row()
         .expect("something is held, so there is a row");
@@ -2788,6 +3014,7 @@ mod bus_parity {
             None,
             Some(bus.held_pads()),
             Some(bus.aether_status()),
+            None,
         )
         .held_row()
         .expect("port 1 holds something, so there is still a row")
