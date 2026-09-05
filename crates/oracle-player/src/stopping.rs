@@ -1501,7 +1501,17 @@ mod tests {
         }
         let mut symbols = None;
         let mut rom_path = String::new();
-        crate::bus::drain(machine, bus, &mut symbols, &mut rom_path, *paused);
+        // Detached: nothing here is about the cartridge's `.srm`, and a battery that had read one would
+        // make these rows depend on a file outside the repository.
+        let mut battery = crate::battery::Battery::detached("stopping-rig.bin");
+        crate::bus::drain(
+            machine,
+            bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+            *paused,
+        );
     }
 
     /// Run the player's loop until the machine stops, or give up. Returns whether it stopped.

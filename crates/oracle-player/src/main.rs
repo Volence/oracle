@@ -48,6 +48,10 @@
 // dependency graph rather than a test result.
 use oracle_frontend::audio;
 
+// The cartridge's `.srm` on disk: the autosave debounce, and the bytes carried across a machine the bus
+// replaced under this window. The file layer itself is `oracle_frontend::sram_file` — one format, both
+// windows. **Migration S3.**
+mod battery;
 mod bus;
 mod device;
 mod input;
@@ -62,6 +66,9 @@ mod report;
 mod screen;
 mod screen_pick;
 mod stats;
+// The ten numbered save-state slot files, around `oracle_frontend::save_state`'s container. **Migration
+// S3.**
+mod states;
 mod stopping;
 mod symbols;
 mod ui;
@@ -413,6 +420,13 @@ struct Loop {
     /// the handles of the watches that panel armed, and spawn mode. Not persisted — a spawn mode that came
     /// back armed after a restart would change what the first click of a session does, silently.
     screen: screen_pick::Panel,
+    /// **The cartridge's `.srm`** (S3) — the file, the autosave debounce, and the bytes rescued when the
+    /// machine is replaced under this window. Its whole reason for living beside the bus rather than
+    /// inside a panel is that both doors onto a cartridge swap — a client's and this window's own — are
+    /// answered in [`bus::drain`], and so is this.
+    battery: battery::Battery,
+    /// **The ten numbered save-state slots** (S3), and which slot the keys act on.
+    states: states::States,
 }
 
 impl Loop {
@@ -452,10 +466,23 @@ impl Loop {
         // and `ServeOutcome::sentence` is a value a test reads, so unlike the frontend's three inline
         // prints, the wording here is covered.
         println!("{}", bus.announcement());
+        // ⚑ **The battery is opened BEFORE anything else can run a frame** — after `Bus::new`'s setup
+        // drain, which touches no cartridge state, and before `iterate` is ever called. `oracle-frontend`
+        // loads its `.srm` before the boot reset for the same reason and records that the ordering is
+        // free there because a soft reset preserves SRAM; here the machine is already reset (it is
+        // `Machine::new`'s doing) and applying the image afterwards is the same end state.
+        let (battery, said) = battery::Battery::open(&rom_path, machine.system_mut());
+        for line in said {
+            println!("{line}");
+        }
+        let states = states::States::open(&rom_path, machine.system());
+        println!("{}", states.announcement());
         Self {
             machine,
             rom_path,
             bus,
+            battery,
+            states,
             symbols,
             mem: memory::MemoryPanel::default(),
             objects: objects::ObjectsPanel::default(),
@@ -600,9 +627,45 @@ impl Loop {
             &mut self.bus,
             &mut self.symbols,
             &mut self.rom_path,
+            &mut self.battery,
             self.paused,
         );
         let bus_ms = ms(t_bus.elapsed());
+        // ⚑ **What the drain had to say about the save file, said.** A cartridge swap that silently
+        // rewrote or re-read a `.srm` is exactly the kind of thing an operator needs to be able to quote
+        // back, and these lines are rare by construction: empty on every iteration that replaced nothing.
+        for line in &drained.battery {
+            loud(line);
+        }
+        // The autosave, and the retry of anything a swap rescued but could not write. Outside the
+        // `tick.run` gate deliberately: a paused window that is holding un-written battery bytes must
+        // still get them to disk, and a retry that only ran while frames were running would stall
+        // forever the moment a person hit pause to look at the failure.
+        for line in self.battery.tick(self.machine.system_mut()) {
+            loud(&line);
+        }
+        // A cartridge swap re-keys the slot files with it, for the `.srm`'s reason one field over: a
+        // state written against the previous image would restore the previous image.
+        if drained.rom_path {
+            self.states
+                .after_replacement(&self.rom_path, self.machine.system());
+        }
+
+        // --- ⚑ The machine keys (S3): reset, ROM reload, and the save-state slots. ---
+        //
+        // **After the drain and before `build_ui`, deliberately.** `F1` and `F5` are `Host::call`s, so
+        // what they move is recorded on the bus and repaired by the *next* drain — the same
+        // one-iteration path every gesture this window's palette and transport bar make already takes,
+        // and the reason `crate::bus::drain` holds the battery carry from the drain before it rather
+        // than re-taking one. Handling them before the drain instead would put the reload ahead of the
+        // carry that exists to rescue the battery from it.
+        //
+        // `F2`/`F4` are **not** bus gestures — there is no served method that means "the file beside the
+        // ROM" — so `crate::states` does the whole sequence itself, and
+        // `Machine::adopt_system` is what makes the timeline repair inseparable from the swap.
+        for cmd in input::poll_machine_keys(ctx) {
+            self.machine_key(cmd);
+        }
 
         // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
         // texture already bound, which is both correct and free — uploading again would be 287 KB of
@@ -685,6 +748,51 @@ impl Loop {
         tick
     }
 
+    /// **One machine key, done** — the only place any of them is acted on, for either surface.
+    ///
+    /// The split is not arbitrary and it is the whole of S3's "one door":
+    ///
+    /// * `Reset` and `ReloadRom` are **served methods**, so they go through [`bus::Bus::call`] like every
+    ///   other gesture this window makes — same dispatch, same reply, same refusal, same [`ui::Echo`] on
+    ///   the top bar, and the repairs afterwards are [`bus::drain`]'s, shared with a client doing the
+    ///   identical thing over the socket. `emulator/reload_rom` is paused-only, so pressing `F5` on a
+    ///   running machine is refused **in the server's own words**, with the palette's `remedy` naming the
+    ///   pause control. That is deliberate: pausing and resuming around it on the operator's behalf would
+    ///   be this window inventing two state changes nobody asked for, and a client watching would see
+    ///   them.
+    /// * The slot keys are [`states::States`]'s, because no served method means "the numbered file beside
+    ///   the ROM" — `emulator/restore` restores a *volatile in-memory checkpoint*, which is a different
+    ///   feature with a different lifetime.
+    fn machine_key(&mut self, cmd: input::MachineKey) {
+        match cmd {
+            input::MachineKey::Reset => {
+                self.transport
+                    .issue(&mut self.machine, &mut self.bus, ui::RESET);
+            }
+            input::MachineKey::ReloadRom => {
+                self.transport
+                    .issue(&mut self.machine, &mut self.bus, ui::RELOAD_ROM);
+            }
+            input::MachineKey::SaveState => {
+                let note = self.states.save(&self.machine);
+                loud(&note.text);
+            }
+            input::MachineKey::LoadState => {
+                let mut said = Vec::new();
+                self.states
+                    .load(&mut self.machine, &mut self.battery, &mut said);
+                for line in said {
+                    loud(&line);
+                }
+                if let Some(n) = self.states.last() {
+                    loud(&n.text);
+                }
+            }
+            input::MachineKey::SlotStep(d) => self.states.step(d),
+            input::MachineKey::SlotSelect(n) => self.states.select(n),
+        }
+    }
+
     /// Hand the current picture to egui. Returns the milliseconds it took.
     fn upload(&mut self, ctx: &egui::Context) -> f64 {
         let Some(img) = self.machine.image() else {
@@ -733,6 +841,8 @@ impl Loop {
             transport,
             palette,
             screen: screen_panel,
+            states,
+            battery,
             ..
         } = self;
         let mut drew = Vec::new();
@@ -800,6 +910,8 @@ impl Loop {
                     objects,
                     stopping,
                     screen: screen_panel,
+                    states,
+                    battery,
                     governor,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),
@@ -1022,6 +1134,29 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.persist {
             layout::save(storage, &self.lp.dock);
+        }
+    }
+
+    /// ⚑ **The last chance the battery gets** (S3). Called once on shutdown, after [`eframe::App::save`].
+    ///
+    /// `oracle-frontend` ends its run loop with `flush_pending_srm(…, "on quit")` for the same reason: a
+    /// person who saves in-game and immediately closes the window is inside the autosave debounce, and
+    /// without this the save is simply gone. It is the third of the three gestures whose ordering this
+    /// window controls (the others being a save-state load and — no longer — a reload), so it can flush
+    /// rather than carry.
+    ///
+    /// A failure can only be *reported* here; there is nothing left to retry with and nowhere to retry
+    /// from. That is the frontend's position on the same line, unchanged.
+    /// The signature is the **no-`glow`** one: this window is built on `egui-wgpu` and eframe's `glow`
+    /// feature is off in this graph, so the trait method here takes no context. If a later parcel turns
+    /// `glow` on, this stops compiling rather than silently ceasing to be an override.
+    fn on_exit(&mut self) {
+        let mut said = Vec::new();
+        self.lp
+            .battery
+            .flush(self.lp.machine.system(), "on quit", &mut said);
+        for line in said {
+            loud(&line);
         }
     }
 

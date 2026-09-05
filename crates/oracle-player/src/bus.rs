@@ -195,6 +195,73 @@ pub struct Bus {
     /// What [`Bus::new`] did about the socket. Stored so [`Bus::announcement`] and the status strip read
     /// one fact, and so a test can read it at all.
     outcome: ServeOutcome,
+    /// ⚑ **What this window's OWN gestures have moved since the last [`drain`], accumulated.**
+    ///
+    /// See [`Bus::call`]. Every `Host::call` this process makes reports what it changed, exactly as a
+    /// pump does; those reports pile up here until the next drain folds them into the same repairs a
+    /// client's changes get. It is an accumulator rather than a latch because a single `build_ui` can
+    /// issue several — the transport bar, a Memory poke and a palette command are all one frame — and
+    /// two of them must not cancel each other out.
+    own: SelfInflicted,
+}
+
+/// **What this window's own synchronous gestures did to the machine, since the last [`drain`].**
+///
+/// # ⚑ Why this type exists at all, and it is a live defect rather than a design flourish
+///
+/// [`Host::pump`] snapshots the generation counters *inside itself*. So a change made through
+/// [`Host::call`] between two drains is invisible to **both** of them — it lands after drain N reads them
+/// back and before drain N+1 reads them at its start — and no [`PumpReport`] anywhere ever mentions it.
+/// `oracle-frontend` never met this, because it swaps its own cartridge by calling
+/// [`System::load_rom`](oracle_core::system::System::load_rom) directly and repairs its window inline in
+/// the same block.
+///
+/// **This window does not have that option and must not grow it.** Its palette is derived from
+/// [`oracle_aether::engine::METHODS`] and therefore already offers `emulator/reload_rom`,
+/// `emulator/reset`, `emulator/restore` and `emulator/run_frames` — the four that replace or advance the
+/// machine — every one of them through [`Bus::call`]. Measured at S3: a palette reset left the audio
+/// clock and the scanline capture on a timeline that no longer existed, the symbol cache and the ROM-path
+/// row stale, and a palette `run_frames` drew a frame that never reached the glass. Silent, all of it,
+/// and every one of those repairs was already written and already running for a *client* doing the same
+/// thing one door over.
+///
+/// So the answer is not a second repair path keyed on the window's gestures. It is **the same report, from
+/// the other producer**: [`Host::call_reporting`] takes the diff `pump` takes, this accumulates it, and
+/// [`drain`] runs the union through the one set of repairs. Two producers, one reaction — which is the
+/// shape the CR-K parcel settled `reload_rom` on, so that *"the two cannot answer one client differently
+/// about one file in one millisecond."*
+///
+/// It is a distinct type from [`PumpReport`] rather than a merged one on purpose. [`Drained::report`] is
+/// documented as *"the drain's own report, carried verbatim"*, and folding a gesture's flags into it would
+/// make that field a composition this crate invented — a test that meant to prove the pump's reaction
+/// could then pass on the window's. Two honest values, one union at the point of use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelfInflicted {
+    /// How many gestures this window dispatched since the last drain. Nothing branches on it; it is here
+    /// so a test (and a reader) can tell "no gesture" from "a gesture that changed nothing".
+    pub calls: usize,
+    /// A gesture moved the machine's clock — a `step`, a `run_frames`, a `restore` that rewound it, a
+    /// `reset` that restarted it. Stored as the boolean rather than as the two `mclk` readings, because
+    /// several gestures can land in one frame and "before" then has no single value.
+    pub timeline: bool,
+    /// A gesture replaced or invalidated the picture.
+    pub screen_changed: bool,
+    /// A gesture replaced the machine wholesale ([`PumpReport::rom_changed`]'s three producers).
+    pub rom_changed: bool,
+    /// A gesture replaced the symbol listing.
+    pub symbols_changed: bool,
+}
+
+impl SelfInflicted {
+    /// Fold one gesture's report in. `|=` on every flag rather than assignment: two gestures in one frame
+    /// must not let the second one's quietness erase the first one's change.
+    fn absorb(&mut self, r: &PumpReport) {
+        self.calls += 1;
+        self.timeline |= r.timeline_moved();
+        self.screen_changed |= r.screen_changed;
+        self.rom_changed |= r.rom_changed;
+        self.symbols_changed |= r.symbols_changed;
+    }
 }
 
 /// One command's answer, as the tool would have received it: the handler's own reply or its own refusal.
@@ -272,7 +339,11 @@ impl Bus {
             },
             None => ServeOutcome::NotAsked,
         };
-        let mut bus = Bus { host, outcome };
+        let mut bus = Bus {
+            host,
+            outcome,
+            own: SelfInflicted::default(),
+        };
         // The report is explicitly discarded, and this is the one call site where that is right: nothing
         // has been derived from this machine yet — no picture, no audio ring, no symbol cache older than
         // the `MachineInfo` handed in three lines up — so there is nothing here to put back in step.
@@ -626,24 +697,33 @@ impl Bus {
     /// The stamp is dropped rather than returned: every panel in this parcel is looking at the same
     /// machine it just handed in, in the same instant, so `{frame, mclk, running}` would be restating
     /// what the status strip already derives. A panel that ever caches an answer across a frame needs it
-    /// back, and `Host::call` still returns it.
+    /// back, and [`Bus::call_stamped`] returns it.
+    ///
+    /// # ⚑ It is also where the window's own gestures are recorded, and every call site depends on that
+    ///
+    /// See [`SelfInflicted`]. What a gesture moved is taken here, in the one function every panel, the
+    /// transport bar and the palette already go through, and the repairs run at the next [`drain`]. It is
+    /// deliberately **not** a decision each call site makes: a per-site opt-in is a list of methods that
+    /// replace the machine, and this crate's palette is derived from the registry precisely so that no
+    /// such list exists to go stale. Adding a served method cannot leave this window unrepaired, because
+    /// nothing here names one.
     pub fn call(&mut self, sys: &mut System, method: &str, params: &Value) -> Answer {
-        let (result, _stamp) = self.host.call(sys, method, params);
-        match result {
-            Ok(v) => Answer::Ok(v),
-            Err(e) => Answer::Err(e),
-        }
+        self.call_stamped(sys, method, params).0
     }
 
     /// The full D11 stamp beside the answer, for the one caller that needs to prove the call reached the
     /// real machine rather than the engine's inert placeholder.
+    ///
+    /// The single implementation of both: [`Bus::call`] is this with the stamp dropped, so a gesture
+    /// cannot reach the engine through a path that skips [`SelfInflicted`]'s accounting.
     pub fn call_stamped(
         &mut self,
         sys: &mut System,
         method: &str,
         params: &Value,
     ) -> (Answer, Map<String, Value>) {
-        let (result, stamp) = self.host.call(sys, method, params);
+        let (result, stamp, report) = self.host.call_reporting(sys, method, params);
+        self.own.absorb(&report);
         (
             match result {
                 Ok(v) => Answer::Ok(v),
@@ -651,6 +731,24 @@ impl Bus {
             },
             stamp,
         )
+    }
+
+    /// Take the window's own accumulated changes, clearing them — [`drain`]'s first act, and its only
+    /// caller.
+    ///
+    /// `take` rather than a read, because the repairs below it are *performed*: leaving the flags set
+    /// would repeat every one of them on every subsequent iteration, which for the timeline repair means
+    /// rebuilding the audio ring sixty times a second forever after one palette reset.
+    fn take_own(&mut self) -> SelfInflicted {
+        std::mem::take(&mut self.own)
+    }
+
+    /// What this window's own gestures have moved and not yet had repaired. Test-only: the shipped
+    /// reader is [`drain`], through [`Bus::take_own`], and a second shipped reader would be a second
+    /// opinion about whether a repair is still owed.
+    #[cfg(test)]
+    pub fn pending_own(&self) -> SelfInflicted {
+        self.own
     }
 }
 
@@ -668,7 +766,11 @@ pub fn break_observed(brk: Option<BreakStop<'_>>) -> Option<u32> {
 ///
 /// Four booleans and not one, because they are four different repairs with four different triggers, and
 /// a single "resynchronised" flag would let a test that meant to prove one of them pass on another.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// **No longer `Copy`** as of S3: [`battery`](Drained::battery) carries sentences. That is a deliberate
+/// trade rather than an oversight — the alternative was a flag here and the sentences returned somewhere
+/// else, which is a repair the caller can be told about and a message the caller can drop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Drained {
     /// **The drain's own report, carried verbatim**, so a caller (and a test) can say which field
     /// produced which repair rather than inferring it from the repairs. `calls` and `deferred` reach a
@@ -699,6 +801,18 @@ pub struct Drained {
     /// own flag rather than a second reading of [`symbols`](Drained::symbols), for [`Drained`]'s stated
     /// reason: a single flag would let a test that meant to prove one repair pass on the other.
     pub rom_path: bool,
+    /// **What this window's own gestures moved since the last drain, carried verbatim** beside
+    /// [`report`](Drained::report) rather than merged into it — see [`SelfInflicted`]. The repairs above
+    /// fire on the **union** of the two; these two fields are what say which producer asked for them.
+    pub own: SelfInflicted,
+    /// **What the battery had to say about a cartridge being replaced** (S3) — the `.srm` rescued from
+    /// the outgoing image, the one applied to the incoming one, or a write that failed and is being
+    /// retried. Empty on every iteration that replaced nothing, which is all but a handful.
+    ///
+    /// Sentences rather than flags because there is no repair here a caller chooses between: the caller's
+    /// only job is to put them where a person can read them. A `bool` would have said "something happened
+    /// to your save file" and made the operator go looking.
+    pub battery: Vec<String>,
 }
 
 /// **The loop's one drain, and everything the drain's answer obliges the window to do.**
@@ -708,6 +822,21 @@ pub struct Drained {
 /// a drain whose answer the caller could simply not mention. Here the caller cannot pump without this — the
 /// only other `mirror_pause` in the crate is [`Bus::new`]'s, which has nothing derived to repair — and the
 /// tests in this file drive *this* function, not a re-implementation of it beside it.
+///
+/// # ⚑ Two producers of change, one set of repairs (S3)
+///
+/// The machine under this window moves for two reasons and they are not symmetric in how they are heard.
+/// A **client's** command arrives inside [`Host::pump`] and is reported by it. **This window's own**
+/// commands — the transport bar, a Memory poke, and every method the palette offers, which is all of them
+/// including `emulator/reload_rom`, `emulator/reset` and `emulator/restore` — go through [`Host::call`]
+/// between two drains, where no `PumpReport` can see them at all. See [`SelfInflicted`] for the
+/// mechanism and for what it had already cost.
+///
+/// So the repairs below fire on the **union** of the pump's report and [`Bus::take_own`]'s, and both are
+/// carried out on [`Drained`] separately so a test can say which producer it exercised. There is exactly
+/// one implementation of each repair and it is here; a window-driven gesture that repaired itself at its
+/// own call site would be the second copy, and the two would answer one question about one machine
+/// differently within one frame.
 ///
 /// # What each [`PumpReport`] field makes this window do
 ///
@@ -772,26 +901,64 @@ pub fn drain(
     bus: &mut Bus,
     symbols: &mut Option<SymbolTable>,
     rom_path: &mut String,
+    battery: &mut crate::battery::Battery,
     paused: bool,
 ) -> Drained {
+    // ⚑ **The window's own gestures, taken FIRST and folded into every condition below.**
+    //
+    // `Host::pump` cannot see them (see [`SelfInflicted`]), so without this the four repairs would run
+    // for a client's `emulator/reset` and not for the identical one a human ran from this window's own
+    // palette — one machine, two doors, one of them silently unrepaired. Taken before the pump so a
+    // gesture issued during the *previous* iteration's `build_ui` is repaired on this one, which is the
+    // same one-iteration latency the transport bar's pause already has and for the same reason.
+    let own = bus.take_own();
+
+    // ⚑ **The pending battery image, taken before anything can replace the machine holding it.**
+    //
+    // `oracle-frontend`'s first reload rule is *"flush the pending `.srm` first"* and it can obey it
+    // literally, because there the window is the only thing that ever replaces the machine. Here a
+    // client's `emulator/reload_rom` arrives inside the pump on the next line and has already zeroed the
+    // buffer by the time anything below runs. So the bytes are **carried** rather than raced — see
+    // [`crate::battery`], which also explains why this is not simply a flush (the drain runs every
+    // iteration, so "flush whatever is pending" would delete the autosave debounce).
+    //
+    // **The `!own.rom_changed` gate is the load-bearing half and it is not a cheap guard.** The two
+    // producers do not land at the same moment: a client's command is answered by the pump on the very
+    // next line, so a carry taken *here* is exactly right for it — but this window's own gesture was
+    // issued in the **previous** iteration's `build_ui`, and by now the buffer in the machine is the
+    // replacement's. Re-carrying then would faithfully snapshot the zeroed image and throw away the one
+    // that needs rescuing, which is the failure this whole mechanism exists to prevent, arriving through
+    // the mechanism itself. So on the one iteration where a window gesture is being answered, the carry
+    // from the drain *before* it is the one that stands.
+    if !own.rom_changed {
+        battery.carry(machine.system());
+    }
+
     let report = bus.mirror_pause(machine.system_mut(), paused);
     let mut out = Drained {
         report,
+        own,
         ..Drained::default()
     };
+    // The union, named once. Every branch below reads these rather than `report.x` directly, so a repair
+    // cannot be wired to one producer and not the other — which is exactly the asymmetry this fixes.
+    let timeline_moved = report.timeline_moved() || own.timeline;
+    let screen_changed = report.screen_changed || own.screen_changed;
+    let rom_changed = report.rom_changed || own.rom_changed;
+    let symbols_changed = report.symbols_changed || own.symbols_changed;
 
-    if report.timeline_moved() || report.rom_changed {
+    if timeline_moved || rom_changed {
         machine.resync_after_replacement();
         out.timeline = true;
     }
-    if report.screen_changed {
+    if screen_changed {
         // `None` is the documented invalidated-not-redrawn case (a restore, a ROM reload): nothing to
         // present, and the retained image stays up exactly as it does for an iteration that ran no frame.
         if let Some((width, rgb)) = bus.framebuffer() {
             out.picture = machine.adopt_frame(width, rgb);
         }
     }
-    if report.symbols_changed || report.rom_changed {
+    if symbols_changed || rom_changed {
         // Unconditional re-derivation rather than a drop, because the engine's answer covers every
         // outcome: `emulator/load_symbols` installs a listing, `emulator/reload_rom` drops the listing
         // when it no longer binds (D7) and keeps it when it does, and `emulator/reset` keeps it always.
@@ -800,7 +967,7 @@ pub fn drain(
         *symbols = bus.symbols().cloned();
         out.symbols = true;
     }
-    if report.rom_changed {
+    if rom_changed {
         // **The ROM path is the cartridge's, so it follows `rom_changed` and NOT `symbols_changed`** —
         // the split this parcel made. The status strip's `rom` row is a cached string this process was
         // launched with, and after a reload it names a cartridge that is not loaded; a listing change
@@ -816,6 +983,20 @@ pub fn drain(
             }
         }
         out.rom_path = true;
+        // ⚑ **The battery, last of the cartridge-keyed repairs and deliberately after the path.**
+        //
+        // `oracle-frontend`'s reload block re-derives `srm_path`, `rom_fp`, the listing and the watches
+        // together and says why: *"a `.srm`, a save slot or a `.lst` still pointing at the outgoing image
+        // is the failure this whole block exists to make impossible — the new game would write its
+        // battery data into the old game's file."* This is that, one door over. It runs after
+        // `rom_path` above so the path it keys to is the engine's own answer for the cartridge actually
+        // loaded, not the string this process was launched with.
+        //
+        // It fires for a client's `emulator/reload_rom` exactly as for this window's, which is the point.
+        // The three producers of `rom_changed` want three different things done to the buffer and
+        // [`crate::battery::Battery::after_replacement`] is where that is decided — from
+        // `System::sram_used`, not from the ROM path, because F5 reloads the same path.
+        out.battery = battery.after_replacement(machine.system_mut(), rom_path);
     }
 
     // --- ⚑ S2a: the display layer mask, read AFTER the pump and applied to the picture. ---
@@ -1057,7 +1238,15 @@ mod seam {
         // symbol cache is local because nothing here loads symbols; the `pumped` module drives that half.
         let mut symbols = None;
         let mut rom_path = String::new();
-        drain(machine, bus, &mut symbols, &mut rom_path, paused);
+        let mut battery = crate::battery::Battery::detached("seam-rig.bin");
+        drain(
+            machine,
+            bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+            paused,
+        );
         bus.is_paused()
     }
 
@@ -1491,7 +1680,15 @@ mod masked_picture {
     fn drained(machine: &mut Machine, bus: &mut Bus) -> Drained {
         let mut symbols = None;
         let mut rom_path = String::new();
-        drain(machine, bus, &mut symbols, &mut rom_path, true)
+        let mut battery = crate::battery::Battery::detached("mask-rig.bin");
+        drain(
+            machine,
+            bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+            true,
+        )
     }
 
     fn hide(machine: &mut Machine, bus: &mut Bus, layer: &str, enabled: bool) {
@@ -2087,10 +2284,32 @@ pub mod pumped {
 
     /// **The window's cartridge-derived cache**, as `Loop` holds it — the two fields `drain` re-derives on
     /// `rom_changed`, kept together so a helper takes one borrow instead of two.
-    #[derive(Default)]
+    ///
+    /// **Not `Default`** since the battery joined it: a battery has to be keyed to a ROM path, and a
+    /// default one keyed to `""` would write a `.srm` into the working directory the first time a fixture
+    /// dirtied SRAM. [`Cache::of`] is the only way to build one.
     struct Cache {
         symbols: Option<SymbolTable>,
         rom_path: String,
+        /// The battery, carried across the whole turn-the-loop fixture rather than made fresh per
+        /// iteration — which is not a convenience: [`crate::battery::Battery::carry`] is taken on one
+        /// drain and consumed on a later one, so a battery rebuilt each turn would make the rescue this
+        /// module tests structurally impossible to observe.
+        battery: crate::battery::Battery,
+    }
+
+    impl Cache {
+        /// The window's two cached strings plus a battery keyed to `rom_path` — the same three things
+        /// [`drain`] takes out-parameters for, so a fixture cannot accidentally build a window that is
+        /// missing one.
+        fn of(symbols: Option<SymbolTable>, rom_path: String) -> Self {
+            let battery = crate::battery::Battery::detached(&rom_path);
+            Cache {
+                symbols,
+                rom_path,
+                battery,
+            }
+        }
     }
 
     /// Everything the drains of one test put back in step. Counts rather than flags: "the picture was
@@ -2148,6 +2367,7 @@ pub mod pumped {
             bus,
             &mut cache.symbols,
             &mut cache.rom_path,
+            &mut cache.battery,
             *paused,
         )
     }
@@ -2213,7 +2433,11 @@ pub mod pumped {
             c.ok("emulator/run_frames", json!({"frames": 2}))
         });
 
-        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
+        let (mut paused, mut cache, mut totals) = (
+            true,
+            Cache::of(None, String::from("drain-rig.bin")),
+            Totals::default(),
+        );
         turn_until(
             &mut machine,
             &mut bus,
@@ -2283,7 +2507,11 @@ pub mod pumped {
             c.ok("emulator/run_frames", json!({"frames": 2}))
         });
 
-        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
+        let (mut paused, mut cache, mut totals) = (
+            true,
+            Cache::of(None, String::from("drain-rig.bin")),
+            Totals::default(),
+        );
         turn_until(
             &mut machine,
             &mut bus,
@@ -2324,7 +2552,11 @@ pub mod pumped {
             let mut c = Client::connect(&socket);
             c.handshake();
         });
-        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
+        let (mut paused, mut cache, mut totals) = (
+            true,
+            Cache::of(None, String::from("drain-rig.bin")),
+            Totals::default(),
+        );
         turn_until(
             &mut machine,
             &mut bus,
@@ -2440,7 +2672,7 @@ pub mod pumped {
     #[test]
     fn a_client_reset_puts_the_windows_derived_state_back_in_step() {
         let (mut machine, mut bus, socket) = served("reset", MachineInfo::default(), false);
-        let (mut cache, mut paused) = (Cache::default(), false);
+        let (mut cache, mut paused) = (Cache::of(None, String::from("drain-rig.bin")), false);
         let lines = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut cache, &mut paused);
         assert!(
             lines > 0,
@@ -2490,7 +2722,7 @@ pub mod pumped {
 
         // --- the control: the same halted rig, the same drains, no reset. ---
         let (mut machine, mut bus, socket) = served("reset-ctl", MachineInfo::default(), false);
-        let (mut cache, mut paused) = (Cache::default(), false);
+        let (mut cache, mut paused) = (Cache::of(None, String::from("drain-rig.bin")), false);
         let held = halt_with_a_dirty_capture(&mut machine, &mut bus, &mut cache, &mut paused);
         assert!(held > 0, "the control's capture must be non-empty too");
         let client = std::thread::spawn(move || {
@@ -2594,10 +2826,7 @@ pub mod pumped {
             },
             true,
         );
-        let mut cache = Cache {
-            symbols: Some(table),
-            rom_path: launched.display().to_string(),
-        };
+        let mut cache = Cache::of(Some(table), launched.display().to_string());
         assert_eq!(
             cache.symbols.as_ref().map(|t| t.len()),
             Some(count),
@@ -2680,10 +2909,7 @@ pub mod pumped {
             },
             true,
         );
-        let mut cache = Cache {
-            symbols: Some(table),
-            rom_path: launched.display().to_string(),
-        };
+        let mut cache = Cache::of(Some(table), launched.display().to_string());
         let client = std::thread::spawn(move || {
             let mut c = Client::connect(&socket);
             c.handshake();
@@ -2828,10 +3054,7 @@ pub mod pumped {
             },
             true,
         );
-        let mut cache = Cache {
-            symbols: Some(launched),
-            rom_path: rom_path.clone(),
-        };
+        let mut cache = Cache::of(Some(launched), rom_path.clone());
         assert_eq!(
             cache.symbols.as_ref().map(|t| t.len()),
             Some(before),
@@ -2932,10 +3155,7 @@ pub mod pumped {
             },
             true,
         );
-        let mut cache = Cache {
-            symbols: Some(launched),
-            rom_path: rom_path.clone(),
-        };
+        let mut cache = Cache::of(Some(launched), rom_path.clone());
         let client = std::thread::spawn(move || {
             let mut c = Client::connect(&socket);
             c.handshake();
@@ -3021,10 +3241,7 @@ pub mod pumped {
             },
             true,
         );
-        let mut cache = Cache {
-            symbols: Some(launched),
-            rom_path: String::new(),
-        };
+        let mut cache = Cache::of(Some(launched), String::new());
 
         // Phase 1 — checkpoint the machine while it still carries the launched listing, then swap the
         // listing out from under it. The client is handed back so the restore can use the same
