@@ -4,34 +4,60 @@
 camera positions on 2026-09-05, entirely through pure reads: no pause, no write, no resume. His game was
 frame 7019 before and after every read at position 1, and 7186 at position 2, `running: false` throughout.
 
-## THE CONCLUSION, FROM THE TABLE: A PER ROW CORRECTION OVER A FAN DRAWN IN THE ART
+## THE CONCLUSION: A PER LINE CORRECTION OVER FAN ART, SWITCHED ON BY AN H INTERRUPT
 
-*Reached 2026-09-05 from the H-scroll table itself, after two earlier conclusions in this file were wrong.
-Everything before this section is history. Read the withdrawal ledger before citing any of it.*
+*Final. Reached 2026-09-05 from the register file plus the scroll table, after three earlier conclusions in
+this file were wrong. Everything before the finding is history; read the withdrawal ledger before citing it.*
 
-**The floor is a fan drawn into the art AND a per row horizontal correction applied on top, and the
-correction's gain tracks the camera, which is what keeps the convergence under the screen.** That is the
-technique aeon built. The owner said so from his first sentence and was right every time.
+**Toy Story's floor is a fan drawn into the art, plus a sub cell per line horizontal scroll correction
+applied over it, switched on for the floor rows only by a horizontal interrupt, with the correction's gain
+tracking the camera.** That is aeon's technique with a region switch. **The owner described it correctly in
+his first sentence and was right at every step.**
 
-### The measurement
+### The mechanism, and two independent routes agree on it
 
-`emulator/read_vdp_registers` on the live window gave `raw[0x0D] = 0x3F`, so the H-scroll table base is
-**`0xFC00`**. Indexing both held floor captures there, plane B:
+From the register file at the floor scene:
 
-| | floor entries, line 176 to 223 | total | k |
-|---|---|---|---|
-| position 1 | -4 to -6 | -2 px over 47 rows | **-0.043 px/row** |
-| position 2 | -32 to -47 | -15 px over 47 rows | **-0.319 px/row** |
+| register | value | meaning |
+|---|---|---|
+| `raw[0x00]` | `0x14` | **bit 4 set: horizontal interrupt ENABLED** |
+| `raw[0x0A]` | `0xAE` = **174** | the H interrupt line counter |
+| `raw[0x0B]` | `0x00` | HSCR whole plane **at the instant of the peek** |
+| `raw[0x0D]` | `0x3F` | H scroll table base `0xFC00` |
 
-- **Line to line deltas across the floor: -1 and 0.** Sub cell, not multiples of 8.
-- **Line to line deltas above the floor: 0 only.**
-- The table varies from line 1, so it is a full per line table.
-- ⚑ **k is not constant between camera positions: seven times larger at position 2.** A painted fan alone
-  requires k = 0. **A screen anchored apex requires k to track the camera, and it does.**
+So the game arms an interrupt at **line 174**; its handler switches `$0B` to per line for the floor rows,
+and whole plane is restored for the room above.
 
-⚠ `raw[0x0B]` read **0x00** (HSCR 0, whole plane), but at **frame 22514 with the machine RUNNING**, which is
-not the floor scene. The game evidently sets the mode per scene. A clean `$0B` wants him paused at the floor;
-the table's own contents are what carry the finding here.
+⚑ **The counter PREDICTS the line where the table's regime changes, and the table was measured hours before
+anyone looked at the counter:** constant for lines 1 to 174, a single transition value at **175**, the floor
+ramp from **176**. **Two independent routes to one line.** The counter is `0xAE` in a different scene too, so
+the split is the game's standing arrangement rather than scene authored.
+
+### The correction
+
+| | plane B floor entries | k |
+|---|---|---|
+| position 1 | -4 to -6 | **-0.043 px/row** |
+| position 2 | -32 to -47 | **-0.319 px/row** |
+| position 3 (the clean read) | -78 to -113 | **-0.809 px/row** |
+
+Line to line deltas across the floor are **-1 and 0**, sub cell. Above the floor they are **0**. Plane A is
+constant across the same rows. **k grows with camera offset across three positions**, which is what anchors
+the convergence to the screen.
+
+### ⚑ THE FIFTH SHAPE, AND IT IS NOT A NULL INSTRUMENT
+
+The other four failures in this file were instruments that could not see the quantity. **This one is the
+opposite: the instrument worked perfectly and its output was under read.**
+
+`raw[0x00]` and `raw[0x0A]` were **printed in full, by this lane, in the message that reported the
+contradiction**, and went uninterpreted. Two bytes of a 24 byte file were read; the answer to the
+contradiction was sitting in the same line of output as the contradiction itself. It was resolved by the hub
+reading the file that had just been handed to them.
+
+**A complete measurement is not a read measurement.** Publishing the whole register file was right and is
+what made the resolution possible; stopping at the two registers the question was framed around is what
+made it necessary.
 
 ### The per line entries, and one more number of mine that falls
 
