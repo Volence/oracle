@@ -1992,6 +1992,19 @@ mod loop_tests {
                 "{what}: the line must be the WHOLE bar — name, transport, and the loop's own status \
                  string: {line:?}"
             );
+            // ⚑ **The build identity reaches the wire** (`F-STALE-BINARY-SILENT`). Asserted here, in the
+            // one test that drives the real `build_ui` and reads the answer back through the bus, because
+            // that is the only place the claim is end-to-end: a unit test on `identity::chip` proves the
+            // string, not that the bar drew it or that `screen_text` carried it. So a client — not only a
+            // person at the glass — can now ask which build this window is.
+            //
+            // Compared against `short_revision()` rather than the whole chip on purpose; see its doc.
+            assert!(
+                line.contains("build ") && line.contains(crate::identity::short_revision()),
+                "{what}: the bar's build identity must reach `emulator/screen_text` — a window that \
+                 shows a person which build it is but cannot tell a client the same thing leaves the \
+                 stale-binary question answerable from only one side: {line:?}"
+            );
             assert_eq!(
                 v["surfaces"][1]["unrenderable"],
                 serde_json::json!([]),

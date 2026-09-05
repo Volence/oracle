@@ -161,7 +161,13 @@ pub fn chip() -> String {
 
 /// The revision as the chip shows it: abbreviated under version control, whole otherwise (the `no-vcs`
 /// fallback is already short and truncating it would destroy the one thing it says).
-fn short_revision() -> &'static str {
+///
+/// `pub(crate)` for one reason: `a_client_reads_this_windows_top_bar_and_it_follows_the_run_state`
+/// asserts this string reaches `emulator/screen_text` on the wire, and it must assert the value this
+/// module computes rather than retype an abbreviation beside it. The full [`chip`] is the wrong thing for
+/// that test to compare against — it carries the executable's age, which can tick over between the frame
+/// the bar was painted and the line that reads it back.
+pub(crate) fn short_revision() -> &'static str {
     let rev = revision();
     if SERVER_BUILD_SOURCE == "vcs" && rev.len() > SHORT_REV {
         &rev[..SHORT_REV]
