@@ -306,6 +306,45 @@ raw count and the runtime count are different questions and only the second is t
 it** — *"ah it's able to recognize points now"*. The defect is register, not content, which is exactly the
 kind that survives every correctness review.
 
+**P10 — No em dashes and no en dashes in user-facing text.**
+*Owner ruling, 2026-09-05, suite-wide: "Can we add no emdashess to the design list, like no emdashes in
+an of our tools." Filed by the hub in `design/CHROME_SPEC.md` under "Text in the tools"; this is oracle's
+copy of it, and it binds every tool, not only this window.* Use a comma, a colon, parentheses, or two
+sentences. A dash standing in for a colon is almost always a colon.
+*Check:* `grep -rnP '[\x{2014}\x{2013}]' crates/*/src/*.rs | grep -vE ':\s*//[/!]?'` returns 0.
+**Measured at the ruling: 742 across the workspace's runtime strings, 239 of them in
+`crates/oracle-player/src/`.** That is a large number and most of it is refusal prose rather than labels,
+so this is a sweep to sequence, not a blocker on any one panel.
+⚠ **The check is deliberately not `grep -c` on the file**: doc comments (`//`, `///`, `//!`) are exempt and
+are the bulk of the raw hits. Only what a person reads at runtime is in scope.
+*Before-case named by the hub:* the Objects tab's own headings, e.g.
+`players — emulator/player_state — 2 of 66 slots`, which uses two em dashes to do a colon's work and a
+parenthesis's work in one line.
+
+---
+
+## 3a. The bar this page is measured against
+
+*Added 2026-09-05 from the owner's own words, because a token mapping is necessary and is not sufficient.*
+His paragraph, which is the brief and outranks any rule below it:
+
+> *"have oracle start making the panels actually look good?, again this is just hard to parse and kind of
+> ugly. You know how we had graphs and the piano roll and stuff? I think strong visuals will make our
+> emulator also stand out (I mean to an extent, at least super clean and readable and pops in areas like
+> this where it's just data that doesn't necessarily need like a visual built like a graph or piano roll)."*
+
+Read as three requirements, in his order of emphasis:
+1. **Hard to parse is the defect.** Not "unattractive". A panel that is correct and unreadable has failed.
+2. **Visual where the data wants a visual.** His reference is concrete and it is Seraph's graphs and piano
+   roll, not a general taste for decoration. Where a panel is showing something with shape, show the shape.
+3. **Typographically strong where it is plain data.** He explicitly scopes it: *"to an extent"*, and
+   *"super clean and readable"* for the areas that are just data. **The Objects table is that case.** Do not
+   invent a graph for a table of slots; make the table excellent.
+
+**The failure mode to avoid is the one this repo already paid for**: a lens that was entirely correct and
+communicated nothing, whose reception was *"what are the purple boxes"*. Visual weight without a legend is
+the same defect as a wall of monospace, arriving from the other side.
+
 ---
 
 ## 4. The before-case
