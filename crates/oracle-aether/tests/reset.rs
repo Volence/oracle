@@ -186,8 +186,16 @@ fn the_key_set_is_exact() {
     let mut c = client(&h);
     let r = c.ok("emulator/reset", json!({}));
     let got: BTreeSet<&str> = r.as_object().unwrap().keys().map(String::as_str).collect();
-    let want: BTreeSet<&str> = ["deferred", "frame", "mclk", "running", "droppedEvents"]
-        .into_iter()
-        .collect();
+    // `hitsDropped` joined the set on 2026-09-05 (§11.38, CR-O): required, and present even when 0.
+    let want: BTreeSet<&str> = [
+        "deferred",
+        "hitsDropped",
+        "frame",
+        "mclk",
+        "running",
+        "droppedEvents",
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(got, want);
 }

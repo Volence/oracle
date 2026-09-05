@@ -4112,6 +4112,64 @@
         "name": "RING_BUFFER_ENTRY_SIZE"
       },
       "why": "§11.36 — a result carries value or matches; a name alone has answered nothing while reporting success (the section 4 invariant, mirrored)."
+    },
+    {
+      "method": "emulator/reload_rom",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "reloaded": true,
+        "path": "/home/volence/sonic_hacks/aeon/s4.debug.bin",
+        "romBytes": 845594,
+        "symbolsDropped": false,
+        "hitsDropped": 2
+      },
+      "why": "§11.38 — a reload says how many recorded hits it discarded; aeon read frames 397/655 from a previous build's watchpoints as the new run's toggles."
+    },
+    {
+      "method": "emulator/reload_rom",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "reloaded": true,
+        "path": "/home/volence/sonic_hacks/aeon/s4.debug.bin",
+        "romBytes": 845594,
+        "symbolsDropped": false,
+        "hitsDropped": 0
+      },
+      "why": "§11.38 — zero is a real assertion (nothing was recorded before the boundary), present rather than absent."
+    },
+    {
+      "method": "emulator/reload_rom",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "reloaded": true,
+        "path": "/home/volence/sonic_hacks/aeon/s4.debug.bin",
+        "romBytes": 845594,
+        "symbolsDropped": false
+      },
+      "why": "§11.38 — hitsDropped is REQUIRED even when 0; absence and 0 must not both mean 'nothing was lost' (§2.3's argument, as symbolsDropped)."
+    },
+    {
+      "method": "emulator/reset",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "deferred": false,
+        "hitsDropped": 1
+      },
+      "why": "§11.38 — reset clears the ring too: the frame counter restarts, so a surviving hit's frame is indistinguishable from a current one."
+    },
+    {
+      "method": "emulator/reset",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "deferred": false,
+        "hitsDropped": -1
+      },
+      "why": "§11.38 — a count is never negative."
     }
   ],
   "specExamples": [

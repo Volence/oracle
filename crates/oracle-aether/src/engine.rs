@@ -6681,7 +6681,9 @@ impl Engine {
     /// it advances nothing and cannot fight the free-run loop — and the contract forbids changing
     /// the run state here (paused stays paused, free-running keeps running). Symbols are KEPT: the
     /// image is unchanged, so the binding that survived boot survives this (contrast `reload_rom`,
-    /// which re-validates). The generation bump is `restore`'s precedent — the timeline jumped, and
+    /// which re-validates). Recorded watchpoint hits are NOT kept: §11.38 (CR-O) — the frame counter
+    /// restarts, so a surviving hit's coordinate reads as a current one. The count goes out as
+    /// `hitsDropped`. The generation bump is `restore`'s precedent — the timeline jumped, and
     /// a hosted player resyncs off `PumpReport::rom_changed`.
     fn reset(&mut self, _params: &Value) -> Result<Value, RpcError> {
         self.sys.reset();
@@ -6691,10 +6693,20 @@ impl Engine {
         // reproduction depends on being deterministic. (`reload_rom` clears them for the same reason.)
         self.held = [Pad::default(); 2];
         self.invalidate_screen();
+        // The recorded watchpoint hits go too, and the count rides out on the reply — §11.38, CR-O. The
+        // long form of the argument is in [`Engine::reload_rom`] beside `invalidate_screen`; the weaker
+        // half of it is the one that applies here, and it is still decisive. The image and the symbols
+        // survive a reset, so `pc` keeps resolving to the same name — but the **frame counter restarts**,
+        // and a hit stamped frame 397 from the epoch before is then indistinguishable on the wire from
+        // frame 397 of the epoch now running. That is exactly the confusion the consumer met. Durability
+        // against CLIENT actions is untouched here as there: `watchpoint_clear` keeps hits and reads never
+        // drain, because a reset is a discontinuity in the machine, not one client erasing another's
+        // evidence.
+        let hits_dropped = self.watchpoints.take_hits().len();
         // The sample measured the machine this reset just replaced — see `restart_profiler_sample`.
         self.restart_profiler_sample();
         self.rom_generation += 1;
-        Ok(json!({ "deferred": false }))
+        Ok(json!({ "deferred": false, "hitsDropped": hits_dropped }))
     }
 
     /// **The freshness verdict, with the file re-read at most once per observable change to it** —
@@ -7095,6 +7107,28 @@ impl Engine {
         // game's. Dropped rather than kept, which puts `framebuffer` back on its honest fallback until the
         // new image has drawn a frame of its own.
         self.invalidate_screen();
+        // **And the recorded watchpoint hits go for the comment immediately above's reason** — §11.38,
+        // CR-O, 2026-09-05, raised precisely because that argument was already ours and had been applied
+        // to the artifact beside this one. A hit is epoch-relative in *three* fields at once: `frame` and
+        // the cycle stamp restart from the reset vector exactly as the line stream does, and `pc` is
+        // resolved against whatever symbol table is loaded **now**, which after a reload may describe a
+        // different build entirely. So a hit recorded against the previous image is not "slightly stale"
+        // either — it is another game's, wearing a live hit's shape on the wire and indistinguishable
+        // from one. aeon read frames 397 and 655 from a previous build's watchpoints as the new run's
+        // toggles; that is the report, and it is what a survivor looks like.
+        //
+        // **This is NOT the client-facing durability rule, and the two must not be conflated.**
+        // `watchpoint_clear` still keeps recorded hits, and reads still use `hits()` and never
+        // `take_hits()` — those protect one client's evidence from another client on a shared bus. A
+        // reload is not a client action against another client; it is a discontinuity in the machine both
+        // of them are watching. Different question, different answer.
+        //
+        // The count is said out loud rather than the ring silently emptied: a silent clear is an absence
+        // with nothing left to re-examine, and `symbolsDropped` on this same reply is the precedent for
+        // the shape. The instrument's *lifetime* counters — `seen`/`matched`/`dropped` — are deliberately
+        // untouched: they describe the recorder rather than the epoch, and `dropped` answers "the ring
+        // lost some at record time", whose true answer does not change because a cartridge did.
+        let hits_dropped = self.watchpoints.take_hits().len();
         self.restart_profiler_sample();
         self.rom_generation += 1;
 
@@ -7128,6 +7162,7 @@ impl Engine {
             "path": path,
             "romBytes": len,
             "symbolsDropped": symbols_dropped,
+            "hitsDropped": hits_dropped,
         });
         if symbols_dropped {
             out["caveat"] = json!(
