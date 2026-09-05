@@ -275,7 +275,17 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
   the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
 
-**Registered 2026-09-04, from the WAITFORBREAK landing:**
+**Registered 2026-09-05, from landing the press frame-cap parcel:**
+
+- **⚑ NO SINGLE `cargo test` INVOCATION RUNS EVERY TEST IN THIS REPO, AND THE TWO PROFILES' TOTALS
+  CAN AGREE FOR CANCELLING REASONS.** Release drops three `#[cfg(debug_assertions)]` rows in
+  `crates/oracle-core/src/testrom.rs` (they assert `debug_assert!` guards fire, so they cannot compile
+  in release) and gains the three replay playthroughs, which carry `#[cfg_attr(debug_assertions,
+  ignore)]` and run only in release. **Measured on this landing: the agent's debug run and this seat's
+  release run both reported `PASSED=2345`, differing by `IGNORED` 6 vs 3 — the pass totals matched
+  because each profile gained three the other lost.** A total quoted without its profile is not
+  comparable to another session's, and two such totals agreeing is not corroboration. **Quote the
+  profile with the number**, and read `IGNORED` as well as `PASSED` when reconciling two runs.
 
 - **F-HANDSHAKE-LOAD-TIMEOUT** — `tests/handshake.rs::initialize_advertises_a_generated_method_list_that_is_the_dispatch_table`
   fails with a socket read timeout (`WouldBlock`, `tests/common/mod.rs:196`) under load average ~250.
