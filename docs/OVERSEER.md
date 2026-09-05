@@ -144,83 +144,50 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 
 **Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed:**
 
-- **▶ THREE OF THE FOUR FOREGROUND RUNTIME FOLLOW-UPS WERE STALE, AND ONE WAS NEVER OURS AT ALL.**
-  Closed 2026-09-04 by measuring them the moment a lane-owned instrument existed. **The two CR-B Z80 rows**
-  (tail wrap, silent `len` clamp) described **`oracle-old`** — CR-B's actual subject, at `d629771` — while
-  the booking said only *"the server"*; ours has refused both since `0f35ae1` (08-29), the commit that first
-  served the Z80 pair at all. **`write_vram`'s SAT-cache desync** was closed by the 08-27 parcel via
-  `Vdp::poke_vram`. All three verified firsthand against the binary a consumer spawns, each with a control
-  proving the probe could see the effect it was looking for.
-  **`step`'s frame-budget truncation was NOT closed with them** — it closed on its own terms later the
-  same day; see the entry below.
-  *(Measurements, archaeology and the restore proofs: `OVERSEER-LOG.md`, 2026-09-04.)*
+- **▶ CLOSED 2026-09-04 — the four foreground runtime follow-ups (three stale, one never ours) and `step`'s frame-budget shortfall, closed by a CR that went the whole way to §11.33. Moved whole to `OVERSEER-LOG.md` 2026-09-05 for the boot-read bound. The two live rules they produced are kept: a register entry naming a contract gap is worth re-reading against the CURRENT CONTRACT, not only the current code; and a perishable claim decays where nobody re-reads it, the distinguishing variable being whether the claim is ABOUT THE CODE IT SITS BESIDE.**
 
-  **⚑ THE BAR, and it is this file's own two-implementer rule landing on this file's own register.** Every
-  one of the three read as a defect in OUR server because **the entry never named an implementation**, and a
-  later session spent probes on them. The conflation sweep this file already books was scoped to the
-  recon/demand/CR docs; **it is now owed against the follow-up register too**, which is worse exposure,
-  because a register is read as a to-do list rather than as a claim and so is never re-derived.
+**Registered 2026-09-05, from landing S3:**
 
-  **⚑ AND THE SECOND BAR: A BOOKED DEFECT CAN BE CLOSED BY UNRELATED WORK, AND NOTHING CLOSES THE BOOKING.**
-  Two of the three were fixed by parcels that were not about them, six and eight days before anyone noticed,
-  through several sessions that read this file at boot. **A register entry has no reader who would meet the
-  contradiction.** Operational form: **when a parcel serves a method, grep this register for that method's
-  name before writing the landing.**
+- **⚑ A SHIPPED DEFECT IN THE WINDOW THE OWNER WAS USING: every palette gesture that replaced the machine
+  ran NO repair at all.** `Host::pump` snapshots the three generation counters **inside itself** (deliberate
+  — it is what stops `set_machine_info` surfacing as a client's doing). The unintended half: **a change made
+  through `Host::call` between two drains is invisible to both**, landing after drain N reads back and
+  before drain N+1 snapshots. `oracle-frontend` never met it because it calls `System::load_rom` directly
+  and repairs inline; `oracle-player` dispatches **everything** through `Host::call`. So at `17ee2c6`,
+  `emulator/reset`, `reload_rom`, `restore` and `run_frames` from the window's own palette each left the
+  audio sink's frame clock above the restored one (**silence**), the capture on a dead timeline, and the
+  symbol cache and ROM row stale. **Verified at the shipped revision before accepting the fix**
+  (`host.rs:653-661` snapshot, `731-733` compare; `Bus::call` discarded everything but the result).
+  **Every one of those repairs already existed and already ran — for a client, one door over.**
+  ⚑ **MY BRIEF WARNED ABOUT THE MIRROR IMAGE AND THE THING IT WARNED ABOUT COULD NOT HAPPEN.** I wrote that
+  *"two copies of this repair is the defect this slice is most likely to ship"*. There was nowhere for a
+  second copy to live: the palette is **derived from `METHODS`**, so `reload_rom` was always reachable
+  through the one registry and an F5 binding is a keyboard alias for a call that already existed. **The
+  real defect was a door that ran NO repair, not two doors running it differently.** Fixed by recording in
+  `Bus::call` itself rather than a per-call-site list — a per-site list is a list of methods that replace
+  the machine, and the palette is registry-derived precisely so no such list exists to go stale.
+  **Proved by this seat restoring the defect**: deleting `self.own.absorb(&report)` turns all four
+  `bus::one_door::*` rows red.
 
-- **▶ ~~STILL LIVE~~ CLOSED 2026-09-04 — `step` FRAME-BUDGET TRUNCATION.** Never a which-server defect: a
-  **contract shape** gap binding any conformant server. `count` had no ceiling while every advance
-  primitive is frame-bounded (`max_run_frames` 3600), so an over-large `count` stopped early and **the
-  fragment gave the reply no key to say so** — no `stepped`, no `reached`, `caveat` declared ABSENT so
-  emitting one fails §8 item 20's closure. Visible only on `emulator/stopped`'s `deadlineReached`.
-  **The route was a CR, and it went the whole way: raised as CR-STEP-SHORTFALL offering the three shapes
-  this entry named (`stepped`, a `count` ceiling, or permission to carry `caveat`), adjudicated by the hub
-  as `empyrean` §11.33 — ADOPTED WITH ONE SHAPE CHOSEN, `stepped`? on `emulator/step`'s result — and served
-  here in the CR-STEP-SHORTFALL parcel with the re-vendor in the same commit.** No probe was ever spent on
-  it, exactly as this entry said none was needed.
-  ⚑ **What the closure was worth beyond the key.** Reading the ADOPTED §11.33 text rather than the relay's
-  summary of it turned up a **second, live** defect on the same handler — `count`'s bounds unenforced for
-  ten days (the entry above) — which nothing in this repo could have surfaced, because handler, comment and
-  test all agreed with each other and only the vendored fragment disagreed. The lesson generalises past
-  this row: **a register entry that names a contract gap is worth re-reading against the current contract,
-  not only against the current code.**
-  ⚑ ~~**`stepped` is still not fully expressible, and that is carried open rather than closed quietly.**
-  The adopted fragment types it `minimum: 1`, so a step that retired **nothing** — a CPU already halted on
-  `STOP` — has no legal spelling: `0` is refused and absence is the one reading §11.33 says never means a
-  shortfall. This server omits the key there and leaves `deadlineReached` as the channel. **Owed upstream
-  as a `minimum: 0` amendment**; noted at the handler and in `tests/contract/PROVENANCE.md`.~~
-  ▶ **CLOSED 2026-09-04, WITHIN THE HOUR, and the round trip is the entry.** The gap was found while
-  serving §11.33, refused rather than papered over with a `max(1)`, documented in three places and raised
-  upstream; the contract lane amended the leaf to `minimum: 0` at `empyrean` `bbf3bf8` the same day, with
-  the `stepped: 0` vector flipped to pass and a `-1` fail vector in its place. Re-vendored and the guard
-  removed in the `stepped-floor-zero` parcel. **The keepable part is the shape of the loop**: a lane that
-  declines to fake a legal answer produces a contract amendment, and it took under an hour — cheaper than
-  the workaround would have been to live with.
-  ⚑ **AND THE CLOSURE FALSIFIED THE PREMISE EVERY PARTY HAD BEEN REASONING FROM — INCLUDING THE ADOPTED
-  CONTRACT TEXT'S.** *"A CPU already halted on `STOP` retires nothing"* is true of the hardware and was
-  **false of this server**. A `Stopped` CPU still turns the crank; the core delivers a retire per nominal
-  idle slice, and the `stepped` tally counted them. Measured on the wire (`testrom::build_trap_on_frame`,
-  the `stop #$2700` at `$288`): `step {count: 1000000}` answered **`stepped: 1000000` with `pc` unmoved**.
-  So `minimum: 1` was never what stood between this row and an honest answer — it hid that the answer was
-  wrong in the *other* direction, on the loudest value the key can take, and the ceiling-shaped fix would
-  have shipped that untouched. **Nobody in the chain had run the case; all three of us reasoned about it.**
-  The fix excludes idle slices from tally and goal (`StepRetire::idle`, added to the core), so a halted CPU
-  answers `stepped: 0` with `deadlineReached: true`, and `tests/step.rs` now covers the state.
-  ⚑ **The general form, and it is the sharper version of this file's standing bar.** A hole a lane
-  documents as *"this value has no spelling, so we omit the key"* is a claim about **two** things — the
-  contract's expressiveness *and* the server's behaviour — and the parcel that wrote it had evidence for
-  only the first. **When you report a gap upstream, run the case you are reporting**, or the fix lands
-  against a state nobody has observed.
-  ⚑ **Why THIS one survived honestly while the other three rotted: it is documented AT THE HANDLER**
-  (`engine.rs:3040-3053`, in `step`'s own doc comment, naming the CR it argues for). **A perishable claim
-  decays where nobody re-reads it.** That cuts against this file's standing bar that the worst place for a
-  perishable claim is a code comment — **both are true, and the distinguishing variable is whether the claim
-  is ABOUT THE CODE IT SITS BESIDE.** A comment describing its own function is met by the next editor; a
-  comment citing a ruling made elsewhere is not.
-  ⚑ **AND THE SAME HANDLER PROVED THE OTHER HALF OF THAT RULE IN THE SAME BREATH.** Six lines below the
-  comment that survived honestly sat *"`minimum: 0` is the fragment's floor and `u64::MAX` is its stated
-  absence of a ceiling. Neither is a policy this server chose; both are transcribed"* — a comment citing a
-  ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
-  the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
+- **▶ CR OWED UPSTREAM — F-STATELOAD-SILENT-REPLACE.** A **window** save-state load replaces the machine
+  **without moving `rom_generation`**, so a connected client is never told the machine underneath it
+  changed. `oracle-frontend`'s F4 has the identical hole. **Correctly NOT built** — a new signal on a
+  contract surface is a CR, not a slice — and recorded at `states.rs`. Raise it with the hub.
+
+- **▶ RATIFIED, AND NAMED TO THE HUB RATHER THAN DECIDED QUIETLY: after a client's `reload_rom` this window
+  now applies the incoming cartridge's `.srm`.** The reply is unchanged; **the machine state a client reads
+  afterwards is not.** Ratified because it is the window's own file and the window's own repair, in the same
+  function as the four repairs `drain` already performed, and it makes the toolkit window agree with
+  `oracle-frontend`, which has done this after F5 for as long as it has existed. **It is a property of the
+  deployment, not of the protocol — the standalone server is untouched** (verified: the diff over
+  `tests/contract/` and `engine.rs` is empty). Flagged upstream so the hub can overrule.
+
+- **▶ F-ADOPT-RESYNC-UNGATED, the agent's own honest residual.** Deleting `Machine::adopt_system`'s resync
+  leaves the **whole suite green**: the fixture drives `System::run_frames`, which never feeds `Machine::cap`,
+  so `capture_lines()` was already 0, and making it non-zero needs a mid-frame halt — both breakpoints tried
+  halt before the first scanline completes. The audio half is *indefinite silence* and wants a real cpal
+  device. **What stands in a gate's place is structural (one method, two statements) and the agent wrote it
+  down as weaker rather than claiming coverage.** That is the behaviour bar 8's clause exists to get.
 
 **Registered 2026-09-05, from the socket-identity notice paying off:**
 
