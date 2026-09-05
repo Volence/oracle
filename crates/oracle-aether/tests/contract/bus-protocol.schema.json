@@ -1234,6 +1234,33 @@
         }
       }
     },
+    "emulator/machineReplaced": {
+      "$comment": "protocol.md §3 / §11.40 (CR-Q, 2026-09-05): emitted when a gesture at the window replaced the machine through no method call (today: a save-state load at the window's keys). NEVER for reload_rom (that is romReloaded), never for a refused load, a state save, load_symbols or slot selection. Advertised in capabilities.events only by a process that can produce the gesture (M2).",
+      "params": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/stamp"
+          }
+        ],
+        "required": [
+          "reason",
+          "hitsDropped"
+        ],
+        "properties": {
+          "reason": {
+            "enum": [
+              "stateLoad"
+            ],
+            "description": "Closed enum, one member today on purpose (§11.40 S1): reset and restore are not observable to a listener and no consumer has asked; when one does the answer is an added member, never a renamed event."
+          },
+          "hitsDropped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Recorded watchpoint hits dropped at this boundary, the §11.38/§11.39 shape: REQUIRED, present when 0."
+          }
+        }
+      }
+    },
     "emulator/clicked": {
       "$comment": "protocol.md §3 / §11.26 M4: emitted ONLY for a click the person made at the window, never for a method call. params = the object_at result body for that dot, verbatim, plus the stamp.",
       "params": {
@@ -5805,6 +5832,51 @@
           "enabled": {
             "type": "boolean",
             "description": "The state the layer is in AFTER this call."
+          }
+        }
+      }
+    },
+    "emulator/read_vdp_registers": {
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers), row amended by §11.41 (CR-R, 2026-09-05), leaving the BLOCKED set (audit D-20): the two ellipses were removed by STRIKING decoded{} and reducing status to its raw word, so nothing here is invented. raw[] is pinned at exactly 24 by the hardware (REG_COUNT, the same constant the frozen state_hash.regs currency hashes). A pure read and a PEEK: §8 item 29 makes that mechanically checkable. caveat is declared ABSENT; the hardware hazard lives in the description below, per §2.4.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "raw",
+          "status"
+        ],
+        "properties": {
+          "raw": {
+            "type": "array",
+            "minItems": 24,
+            "maxItems": 24,
+            "items": {
+              "type": "string",
+              "pattern": "^0x[0-9A-Fa-f]{2}$"
+            },
+            "description": "The 24 VDP registers, index-ordered 0 to 23, one two-hex-digit 0x string each. The registers are write-only on real hardware: no cartridge can read them back. This is the emulator's record of what was written, valid for comparing an emulator against itself or another emulator, and not a model of anything a real console can observe. Decoding (plane bases, scroll modes, plane size) is the hardware's and is the client's to apply; no decoded names are published here (§11.41 M1)."
+          },
+          "status": {
+            "type": "object",
+            "required": [
+              "raw"
+            ],
+            "properties": {
+              "raw": {
+                "type": "string",
+                "pattern": "^0x[0-9A-Fa-f]{4}$",
+                "description": "The VDP status word as a four-hex-digit 0x string, read by a non-mutating accessor. status IS hardware-readable at $C00004, but a real read there clears the write-pending toggle and the sprite-overflow and collision latches; this method clears nothing (§8 item 29) and MUST NOT be read as what a port read would have returned."
+              }
+            },
+            "unevaluatedProperties": false,
+            "description": "Kept as an object so a named bit can be added additively later (§11.18) without a type change; closes with exactly one key today."
           }
         }
       }
