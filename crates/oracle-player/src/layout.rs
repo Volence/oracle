@@ -721,6 +721,85 @@ mod tests {
         }
     }
 
+    /// ★★ **The owner-visible claim of the panel-selection row: a panel he closed is still closed the
+    /// next time he opens the window.**
+    ///
+    /// The nav can now turn panels off as well as on, and a *selection* that does not survive a restart
+    /// is not a selection — it is a per-session fidget, and it would be reported as the feature not
+    /// working. Nothing new is needed to make it hold, because a closed panel is simply a tab absent from
+    /// the `DockState` and this module already persists the `DockState`; what was missing is anything
+    /// that says so, and this is it.
+    ///
+    /// ⚠ *If this went green for a reason other than the round trip working, what would it be?*
+    ///
+    /// 1. **The saved layout being the default**, so "Objects is closed" was never in it. Ruled out: the
+    ///    pre-state is asserted to differ from [`ui::initial_dock`], and `Objects` is asserted present
+    ///    there and absent here.
+    /// 2. **`load` ignoring storage and handing back the default**, which would restore all eight and is
+    ///    the failure this test is *for*. It fails on the `occurrences` line.
+    /// 3. **Every tab being closed**, making "closed after a restart" vacuously easy. Ruled out: the
+    ///    other seven are asserted to survive in exactly the number they had.
+    #[test]
+    fn a_panel_the_human_closed_is_still_closed_after_a_restart() {
+        let mut dock = ui::initial_dock();
+        assert_eq!(crate::nav::occurrences(&dock, Tab::Objects), 1);
+
+        // Through the menu's own action, not a hand-rolled removal — the thing that must survive is what
+        // the shipped control does.
+        assert_eq!(
+            crate::nav::apply(&mut dock, crate::nav::Action::Hide(Tab::Objects)),
+            crate::nav::Done::Closed
+        );
+        assert_eq!(crate::nav::occurrences(&dock, Tab::Objects), 0);
+        assert_ne!(
+            shape(&dock),
+            shape(&ui::initial_dock()),
+            "the layout saved below is the default, so restoring it proves nothing"
+        );
+
+        let mut store = MemStorage::default();
+        save(&mut store, &dock);
+        let (got, outcome) = load(Some(&store));
+        assert_eq!(outcome, Outcome::Restored);
+        assert_eq!(
+            crate::nav::occurrences(&got, Tab::Objects),
+            0,
+            "the panel the human closed came back on the next run. A selection that does not survive a \
+             restart reads as the feature not working."
+        );
+        assert_eq!(
+            crate::nav::state_of(&got, Tab::Objects),
+            crate::nav::State::Closed
+        );
+        assert_eq!(shape(&got), shape(&dock));
+        for t in Tab::ALL.into_iter().filter(|t| *t != Tab::Objects) {
+            assert_eq!(
+                crate::nav::occurrences(&got, t),
+                1,
+                "{t:?} did not survive the round trip, so 'still closed' here is vacuous"
+            );
+        }
+    }
+
+    /// **And the way back survives too**: the reset row's layout is the one a fresh install gets, and it
+    /// round-trips as such — so a human who resets and quits does not find yesterday's whittled layout
+    /// waiting for him.
+    #[test]
+    fn a_layout_the_reset_row_restored_round_trips_as_the_default() {
+        let mut dock = rearranged();
+        assert_ne!(shape(&dock), shape(&ui::initial_dock()));
+        assert_eq!(
+            crate::nav::apply(&mut dock, crate::nav::Action::Reset),
+            crate::nav::Done::Reset
+        );
+
+        let mut store = MemStorage::default();
+        save(&mut store, &dock);
+        let (got, outcome) = load(Some(&store));
+        assert_eq!(outcome, Outcome::Restored);
+        assert_eq!(shape(&got), shape(&ui::initial_dock()));
+    }
+
     /// **The nav owes [`VOCABULARIES`] nothing, and this is where that is checked rather than asserted in
     /// prose.** The panel menu is drawn outside the `DockState` and adds no [`Tab`] variant, so the
     /// stored layout's alphabet is unchanged and no row is appended. If a future nav ever *does* become a
