@@ -1,0 +1,465 @@
+#!/usr/bin/env bash
+# THE LANDING COMMAND. One name, one run, one verdict.
+#
+# ============================================================================================
+# WHY THIS EXISTS
+# ============================================================================================
+#
+# Until this file, a landing in this repo was a set of checks chosen by hand at the time. There
+# is a `.github/workflows/ci.yml`, but it is a *remote* gate on a repo whose pushes are the thing
+# we are trying to make safe, it runs the DEBUG suite, and nothing local ever consulted it. So in
+# practice every landing here was recalled rather than executed.
+#
+# Sigil had a named script and drifted off it for eleven parcels, which is how two faults reached
+# its main copy, one of them a clippy red that sat there an afternoon. A checklist is precisely
+# the artifact that drifts, so this is a command and not a checklist. Type its name; it decides.
+#
+#   ./tools/land.sh              # run every gate, then push the tested SHA to origin/main
+#   ./tools/land.sh --no-push    # run every gate and stop; report what a push WOULD do
+#   ./tools/land.sh --remote R --branch B
+#
+# ============================================================================================
+# WHAT IT RUNS, AND WHAT IT REFUSES
+# ============================================================================================
+#
+# Gates (in cost order, cheapest first, so a red is loud in seconds rather than in half an hour):
+#
+#   G1  vendor precondition        a fresh worktree has no `vendor/` symlink, and without it the
+#                                  SingleStepTests sweep SKIPS AND PASSES VACUOUSLY. Its failure
+#                                  mode is a silent green — exactly what a human-read checklist is
+#                                  worst at and a script is best at. We also export `CI=1`, which
+#                                  arms the six vacuity guards the suite already carries — four
+#                                  named `vendor_data_present_when_running_in_ci` tests
+#                                  (conformance_roms, scanline_goldens, singlestep_m68000,
+#                                  singlestep_z80) plus two inline "skip locally, NEVER under CI"
+#                                  refusals (oracle-aether scanlines.rs, oracle-core
+#                                  scanline_capture.rs). Those assert against the test files' OWN
+#                                  ROM and opcode manifests, which is a stronger statement than any
+#                                  path check this script could hand-write.
+#   G2  clean tree (a)             refuse a dirty tree BEFORE anything runs, listing the paths.
+#                                  `docs/lane-status.json` is the one tolerated path — see below.
+#   G3  fast-forward               the tested SHA must be a descendant of the remote branch, so a
+#                                  landing can never rewrite pushed history.
+#   G4  expected leg count         DERIVED, never hardcoded — see the derivation section below.
+#   G5  cargo fmt --all --check
+#   G6  cargo clippy --workspace --all-targets --release -- -D warnings
+#                                  `-D warnings` is not decoration. Without it clippy exits 0 on
+#                                  every lint it finds, i.e. the gate cannot fire. The repo's own
+#                                  CI already denies warnings; a local gate that did not would be
+#                                  weaker than the thing it is meant to make unnecessary.
+#   G7  cargo test --workspace --release
+#                                  NOT `-p X -p Y`, which differs by feature unification: under
+#                                  `--workspace`, oracle-player's `oracle-core/synth` edge unifies
+#                                  onto oracle-core and 57 synth tests come with it. And release,
+#                                  not debug: the three replay playthroughs are
+#                                  `#[cfg_attr(debug_assertions, ignore = ...)]`, so only a release
+#                                  run executes them.
+#                                  The doc-bound gate (`overseer_bound.rs`) and the schema
+#                                  conformance gate (`schema_conformance.rs`) are already workspace
+#                                  test targets, so this runs them. They need no separate
+#                                  invocation; what they need is proof they RAN, which is G8.
+#   G8  ran-to-the-end             the load-bearing clause. Twice on 2026-09-05 a suite here was
+#                                  killed partway and its log aggregated perfectly clean — once at
+#                                  56 legs of 75 with zero failures, which is indistinguishable
+#                                  from success in every summary except the leg count. Aeon's
+#                                  version of the same finding: a matching md5 on a run that never
+#                                  finished was the most convincing artifact of the night.
+#                                  So: two independent counts of the log must BOTH equal the
+#                                  derived expectation, and the aggregate failure count must be 0.
+#   G9  HEAD did not move (c)
+#   G10 tree still clean
+#
+# Then, and only then, the push:
+#
+#   (e) it pushes the TESTED SHA BY NAME, never the branch tip. This is the operative clause, not
+#       (c). Refusing on a moved HEAD makes the failure loud; naming the SHA makes it impossible,
+#       and only the second survives being tired.
+#   (d) it reads the remote SHA before and after and says IN WORDS whether the push did anything,
+#       because `git push` exits 0 on already-up-to-date and its exit code therefore cannot tell
+#       "pushed" from "did nothing".
+#   (b) on ANY refusal it pushes nothing AND then goes and looks: it re-reads the remote and states
+#       that the ref did not move. A claim that we did not push is worth less than a measurement.
+#
+# It does NOT merge, does NOT commit, and does NOT write the lane log. Those stay deliberate acts.
+#
+# ============================================================================================
+# THE `docs/lane-status.json` CARVE-OUT (the one thing (a) is relaxed for)
+# ============================================================================================
+#
+# That file is tracked, is the lane's status board, and is edited continuously — a naive dirty
+# check would refuse every landing this repo will ever attempt. It is tolerated, by name, and
+# always PRINTED rather than passed over in silence. Two things make that safe rather than merely
+# convenient:
+#
+#   1. Nothing compiled reads it. `git grep lane-status -- '*.rs' '*.py' '*.sh'` is empty, so its
+#      working-tree content cannot change what the suite measures.
+#   2. Because of (e) we push a COMMIT by name, so whatever the file says in the working tree is
+#      never what reaches the remote. The tested tree and the pushed tree are the same object.
+#
+# Every other path — tracked or untracked — still refuses. The carve-out is one literal string,
+# not a pattern, so it cannot quietly widen.
+#
+# ============================================================================================
+# HOW THE EXPECTED LEG COUNT IS DERIVED  (G4)
+# ============================================================================================
+#
+# A "leg" is one `Running .../Doc-tests ...` unit of a `cargo test` run. The count must be derived
+# at run time, so that adding a crate or a test file updates it by itself: an expected count that
+# is wrong in the safe direction is a gate that can never fire, which is the entire failure mode
+# this command exists to prevent, and one wrong the other way is a gate nobody can land through.
+#
+# The naive derivation — count lib/bin/test targets from `cargo metadata --no-deps` and add one
+# doc-test leg per lib-bearing package — gives 69 + 4 = 73 against a measured 75. The missing 2 are
+# `oracle-core`'s `motion_run` and `ab_compare` EXAMPLES, which carry `test = true` in
+# `crates/oracle-core/Cargo.toml` and are therefore run by `cargo test` like any other target. An
+# example is invisible to a target-kind headcount that only looks at lib/bin/test, which is why the
+# naive number was short by exactly two.
+#
+# Rather than patch the headcount with an examples clause and hope the next surprise is also an
+# example, this asks cargo itself:
+#
+#   * the RUNNABLE legs come from `cargo test --workspace --release --no-run --message-format=json`,
+#     counting the distinct executables cargo built with `profile.test == true`. That is cargo's own
+#     target selection and its own feature resolution — including `required-features` (the
+#     `oracle-frontend` bin needs `window`; `synth_render` needs `synth`) — rather than this script's
+#     second reading of the manifests.
+#   * the DOC-TEST legs come from `cargo metadata --no-deps`: one per lib target with
+#     `doctest == true`. Those legs have no executable, so they are the one part cargo will not hand
+#     us as an artifact.
+#
+# It is not a free step: the `--no-run` build is the compile the suite needs anyway, so G4 warms the
+# cache that G7 then reuses.
+#
+# ============================================================================================
+set -uo pipefail
+
+REMOTE=origin
+BRANCH=main
+DO_PUSH=1
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --remote)  REMOTE="${2:?--remote needs a value}"; shift 2 ;;
+        --branch)  BRANCH="${2:?--branch needs a value}"; shift 2 ;;
+        --no-push) DO_PUSH=0; shift ;;
+        -h|--help) command sed -n '2,120p' "$0"; exit 0 ;;
+        *) echo "land: unknown argument '$1' (see --help)" >&2; exit 2 ;;
+    esac
+done
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 2
+cd "$ROOT" || exit 2
+
+# The suite's own vendor guards are no-ops without this. See G1.
+export CI=1
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_DIR="$ROOT/target/land/$STAMP"
+mkdir -p "$RUN_DIR" || exit 2
+
+# --------------------------------------------------------------------------------------------
+# reporting
+# --------------------------------------------------------------------------------------------
+FAILURES=()
+TESTED_SHA=""
+REMOTE_BEFORE=""
+
+hr()   { echo "------------------------------------------------------------------------------"; }
+pass() { echo "  PASS  $*"; }
+fail() { echo "  RED   $*"; FAILURES+=("$*"); }
+note() { echo "        $*"; }
+
+# (b), and it is a measurement rather than a claim: whenever we end without pushing, go and read
+# the remote back and say what it is.
+verify_remote_unmoved() {
+    local now
+    now="$(git ls-remote "$REMOTE" "refs/heads/$BRANCH" 2>/dev/null | command awk '{print $1}')"
+    hr
+    echo "(b) PUSHED NOTHING — verifying that against the remote rather than asserting it:"
+    note "$REMOTE/$BRANCH before the run : ${REMOTE_BEFORE:-<no such ref>}"
+    note "$REMOTE/$BRANCH now            : ${now:-<no such ref>}"
+    if [ "$now" = "$REMOTE_BEFORE" ]; then
+        note "the ref did not move. Nothing from this run reached the remote."
+    else
+        note "*** THE REF MOVED AND THIS RUN DID NOT PUSH IT. Someone else did. Investigate. ***"
+    fi
+    if [ -n "$TESTED_SHA" ] && [ "$now" = "$TESTED_SHA" ]; then
+        note "note: the remote already carried the tested SHA before this run began; that is not"
+        note "      this run having pushed it (the ref is unchanged from 'before' above)."
+    fi
+}
+
+finish_red() {
+    echo
+    hr
+    echo "LANDING REFUSED — $((${#FAILURES[@]})) gate(s) red:"
+    local f
+    for f in "${FAILURES[@]}"; do echo "  * $f"; done
+    [ -n "$REMOTE_BEFORE$TESTED_SHA" ] && verify_remote_unmoved
+    hr
+    {
+        echo "verdict=RED"
+        echo "tested_sha=$TESTED_SHA"
+        for f in "${FAILURES[@]}"; do echo "failure=$f"; done
+    } > "$RUN_DIR/VERDICT"
+    echo "land: RED. Run artifacts in $RUN_DIR (end marker: $RUN_DIR/VERDICT)."
+    exit 1
+}
+
+echo "=============================================================================="
+echo "land.sh — $STAMP — $ROOT"
+echo "  remote/branch : $REMOTE/$BRANCH"
+echo "  push          : $([ "$DO_PUSH" = 1 ] && echo yes || echo 'no (--no-push)')"
+echo "  run artifacts : $RUN_DIR"
+echo "=============================================================================="
+
+# --------------------------------------------------------------------------------------------
+# G1  vendor precondition
+# --------------------------------------------------------------------------------------------
+hr; echo "G1  vendor precondition"
+VENDOR_OK=1
+for need in vendor/ProcessorTests/68000/v1 vendor/ProcessorTests/z80/v1 vendor/TestRoms; do
+    if [ -d "$ROOT/$need" ]; then
+        n="$(command find -L "$ROOT/$need" -maxdepth 1 -type f | command wc -l)"
+        if [ "$n" -eq 0 ]; then
+            fail "G1 vendor: $need exists but is EMPTY"; VENDOR_OK=0
+        else
+            pass "G1 $need ($n files)"
+        fi
+    else
+        fail "G1 vendor: $need is MISSING"; VENDOR_OK=0
+    fi
+done
+if [ "$VENDOR_OK" = 0 ]; then
+    note "A fresh worktree has no vendor/. Without it the SingleStepTests sweep SKIPS and the"
+    note "suite passes VACUOUSLY. Fix, from the repo root:"
+    note "    ln -s /home/volence/sonic_hacks/oracle/vendor vendor      # a worktree: share the fetch"
+    note "    ./tools/fetch-tests.sh && ./tools/fetch-z80-tests.sh && ./tools/fetch-testroms.sh"
+    finish_red
+fi
+note "CI=1 exported: the suite's six in-built vacuity guards are armed (4 named guard tests + 2"
+note "inline skip-refusals), so a present-but-INCOMPLETE vendor corpus reddens from inside too."
+
+# --------------------------------------------------------------------------------------------
+# G2  clean tree  (aurora (a))
+# --------------------------------------------------------------------------------------------
+hr; echo "G2  clean tree"
+TOLERATED_DIRTY="docs/lane-status.json"
+
+collect_dirt() {   # -> BLOCKING[], TOLERATED[]
+    BLOCKING=(); TOLERATED=()
+    local line path
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        path="${line:3}"
+        path="${path##* -> }"          # renames: keep the destination
+        path="${path%\"}"; path="${path#\"}"
+        if [ "$path" = "$TOLERATED_DIRTY" ]; then TOLERATED+=("$line"); else BLOCKING+=("$line"); fi
+    done < <(git status --porcelain)
+}
+
+collect_dirt
+if [ "${#TOLERATED[@]}" -gt 0 ]; then
+    note "tolerated dirty path (named carve-out; nothing compiled reads it, and (e) means its"
+    note "working-tree content never reaches the remote):"
+    for l in "${TOLERATED[@]}"; do note "    $l"; done
+fi
+if [ "${#BLOCKING[@]}" -gt 0 ]; then
+    fail "G2 the tree is dirty (${#BLOCKING[@]} path(s)); a landing must test the tree it pushes"
+    for l in "${BLOCKING[@]}"; do note "    $l"; done
+    finish_red
+fi
+pass "G2 no blocking modifications"
+
+TESTED_SHA="$(git rev-parse HEAD)"
+BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"
+note "tested SHA : $TESTED_SHA  (on $BRANCH_NAME)"
+
+# --------------------------------------------------------------------------------------------
+# G3  fast-forward
+# --------------------------------------------------------------------------------------------
+hr; echo "G3  fast-forward onto $REMOTE/$BRANCH"
+REMOTE_BEFORE="$(git ls-remote "$REMOTE" "refs/heads/$BRANCH" 2>/dev/null | command awk '{print $1}')"
+if [ -z "$REMOTE_BEFORE" ]; then
+    pass "G3 $REMOTE/$BRANCH does not exist yet; any push creates it"
+elif [ "$REMOTE_BEFORE" = "$TESTED_SHA" ]; then
+    pass "G3 $REMOTE/$BRANCH is already at the tested SHA"
+elif git merge-base --is-ancestor "$REMOTE_BEFORE" "$TESTED_SHA"; then
+    pass "G3 tested SHA is a descendant of $REMOTE_BEFORE"
+else
+    fail "G3 tested SHA $TESTED_SHA is NOT a descendant of $REMOTE/$BRANCH ($REMOTE_BEFORE) — a push would rewrite pushed history"
+    finish_red
+fi
+
+# --------------------------------------------------------------------------------------------
+# G4  derive the expected leg count
+# --------------------------------------------------------------------------------------------
+hr; echo "G4  expected leg count (derived, never hardcoded)"
+cargo test --workspace --release --no-run --message-format=json \
+    > "$RUN_DIR/norun-artifacts.json" 2> "$RUN_DIR/norun.err"
+NORUN_STATUS=$?
+if [ "$NORUN_STATUS" -ne 0 ]; then
+    fail "G4 the --no-run build failed (status $NORUN_STATUS); see $RUN_DIR/norun.err"
+    command tail -40 "$RUN_DIR/norun.err"
+    finish_red
+fi
+EXEC_LEGS="$(jq -r 'select(.reason == "compiler-artifact")
+                    | select(.profile.test == true)
+                    | select(.executable != null)
+                    | .executable' "$RUN_DIR/norun-artifacts.json" | command sort -u | command wc -l)"
+DOC_LEGS="$(cargo metadata --no-deps --format-version 1 \
+            | jq '[.packages[].targets[] | select(.kind | index("lib")) | select(.doctest == true)] | length')"
+if ! [ "$EXEC_LEGS" -gt 0 ] 2>/dev/null || ! [ "$DOC_LEGS" -gt 0 ] 2>/dev/null; then
+    fail "G4 could not derive a leg count (exec=$EXEC_LEGS doc=$DOC_LEGS)"
+    finish_red
+fi
+EXPECTED_LEGS=$((EXEC_LEGS + DOC_LEGS))
+pass "G4 expected legs = $EXPECTED_LEGS  ($EXEC_LEGS test executables cargo will run + $DOC_LEGS doc-test legs)"
+
+# --------------------------------------------------------------------------------------------
+# G5  fmt
+# --------------------------------------------------------------------------------------------
+hr; echo "G5  cargo fmt --all --check"
+if cargo fmt --all --check > "$RUN_DIR/fmt.log" 2>&1; then
+    pass "G5 formatting clean"
+else
+    fail "G5 cargo fmt --all --check is RED"
+    command head -40 "$RUN_DIR/fmt.log"
+    finish_red
+fi
+
+# --------------------------------------------------------------------------------------------
+# G6  clippy
+# --------------------------------------------------------------------------------------------
+hr; echo "G6  cargo clippy --workspace --all-targets --release -- -D warnings"
+if cargo clippy --workspace --all-targets --release -- -D warnings > "$RUN_DIR/clippy.log" 2>&1; then
+    pass "G6 clippy clean under -D warnings"
+else
+    fail "G6 cargo clippy is RED"
+    command grep -E '^(error|warning)' "$RUN_DIR/clippy.log" | command head -40
+    finish_red
+fi
+
+# --------------------------------------------------------------------------------------------
+# G7  the suite
+# --------------------------------------------------------------------------------------------
+hr; echo "G7  cargo test --workspace --release   (expect $EXPECTED_LEGS legs; ~20-30 min)"
+echo "    started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SUITE_T0=$(date +%s)
+cargo test --workspace --release 2>&1 | command tee "$RUN_DIR/suite.log"
+SUITE_STATUS=${PIPESTATUS[0]}          # never $? through a pipe
+SUITE_T1=$(date +%s)
+echo "    finished $(date -u +%Y-%m-%dT%H:%M:%SZ)  ($((SUITE_T1 - SUITE_T0)) s, exit $SUITE_STATUS)"
+if [ "$SUITE_STATUS" -eq 0 ]; then
+    pass "G7 cargo test exited 0"
+else
+    fail "G7 cargo test exited $SUITE_STATUS"
+fi
+
+# --------------------------------------------------------------------------------------------
+# G8  it ran to the END
+# --------------------------------------------------------------------------------------------
+hr; echo "G8  ran-to-the-end"
+LEGS_HEADER="$(command grep -cE '^[[:space:]]{1,10}(Running|Doc-tests) ' "$RUN_DIR/suite.log")"
+LEGS_RESULT="$(command grep -cE '^test result: ' "$RUN_DIR/suite.log")"
+read -r T_PASS T_FAIL T_IGN < <(command awk '
+    /^test result: /{
+        for (i = 1; i <= NF; i++) {
+            if ($(i+1) ~ /^passed/)  p += $i;
+            if ($(i+1) ~ /^failed/)  f += $i;
+            if ($(i+1) ~ /^ignored/) g += $i;
+        }
+    }
+    END { printf "%d %d %d\n", p, f, g }' "$RUN_DIR/suite.log")
+
+note "legs by 'Running'/'Doc-tests' header : $LEGS_HEADER"
+note "legs by 'test result:' line          : $LEGS_RESULT"
+note "expected                             : $EXPECTED_LEGS"
+note "aggregate (release)                  : $T_PASS passed, $T_FAIL failed, $T_IGN ignored"
+
+if [ "$LEGS_HEADER" -eq "$EXPECTED_LEGS" ] && [ "$LEGS_RESULT" -eq "$EXPECTED_LEGS" ]; then
+    pass "G8 both counts equal the derived expectation — the run reached the end"
+else
+    fail "G8 leg count MISMATCH (header $LEGS_HEADER, result $LEGS_RESULT, expected $EXPECTED_LEGS): this run did NOT reach the end. A clean aggregate over a short run is indistinguishable from success except HERE."
+fi
+if [ "$T_FAIL" -eq 0 ]; then
+    pass "G8 aggregate failures = 0"
+else
+    fail "G8 $T_FAIL test failure(s) in the aggregate"
+    command grep -E '^(failures:|    [a-z_].*::)' "$RUN_DIR/suite.log" | command head -30
+fi
+
+# --------------------------------------------------------------------------------------------
+# G9/G10  the tree under the run  (aurora (c))
+# --------------------------------------------------------------------------------------------
+hr; echo "G9  HEAD did not move under the run"
+HEAD_AFTER="$(git rev-parse HEAD)"
+if [ "$HEAD_AFTER" = "$TESTED_SHA" ]; then
+    pass "G9 HEAD is still $TESTED_SHA"
+else
+    fail "G9 HEAD MOVED under the run: tested $TESTED_SHA, now $HEAD_AFTER. Nothing tested the tip."
+fi
+
+echo "G10 tree still clean"
+collect_dirt
+if [ "${#BLOCKING[@]}" -eq 0 ]; then
+    pass "G10 no blocking modifications appeared during the run"
+else
+    fail "G10 the tree was modified during the run (${#BLOCKING[@]} path(s))"
+    for l in "${BLOCKING[@]}"; do note "    $l"; done
+fi
+
+[ "${#FAILURES[@]}" -gt 0 ] && finish_red
+
+# --------------------------------------------------------------------------------------------
+# the push  (aurora (d) and (e))
+# --------------------------------------------------------------------------------------------
+hr
+echo "ALL GATES GREEN for $TESTED_SHA"
+note "profile=release  legs=$LEGS_HEADER/$EXPECTED_LEGS  $T_PASS passed, $T_FAIL failed, $T_IGN ignored"
+
+if [ "$DO_PUSH" = 0 ]; then
+    hr
+    echo "--no-push: stopping before the push. It WOULD have run:"
+    note "    git push $REMOTE $TESTED_SHA:refs/heads/$BRANCH"
+    verify_remote_unmoved
+    { echo "verdict=GREEN-NOPUSH"; echo "tested_sha=$TESTED_SHA"; echo "legs=$LEGS_HEADER/$EXPECTED_LEGS"; } > "$RUN_DIR/VERDICT"
+    echo "land: GREEN, not pushed. End marker: $RUN_DIR/VERDICT"
+    exit 0
+fi
+
+hr
+echo "PUSH — by tested SHA, not by branch tip  (aurora (e))"
+note "    git push $REMOTE $TESTED_SHA:refs/heads/$BRANCH"
+if ! git push "$REMOTE" "$TESTED_SHA:refs/heads/$BRANCH"; then
+    fail "push: git push failed"
+    finish_red
+fi
+
+REMOTE_AFTER="$(git ls-remote "$REMOTE" "refs/heads/$BRANCH" 2>/dev/null | command awk '{print $1}')"
+hr
+echo "(d) DID THE PUSH DO ANYTHING? — git push exits 0 on already-up-to-date, so this is read back:"
+note "before : ${REMOTE_BEFORE:-<no such ref>}"
+note "after  : ${REMOTE_AFTER:-<no such ref>}"
+if [ "$REMOTE_AFTER" != "$TESTED_SHA" ]; then
+    fail "push: $REMOTE/$BRANCH is $REMOTE_AFTER, NOT the tested SHA $TESTED_SHA"
+    finish_red
+elif [ -z "$REMOTE_BEFORE" ]; then
+    echo "    THE PUSH CREATED $REMOTE/$BRANCH at the tested SHA."
+elif [ "$REMOTE_BEFORE" = "$REMOTE_AFTER" ]; then
+    echo "    THE PUSH DID NOTHING: $REMOTE/$BRANCH was already at the tested SHA before this run."
+else
+    echo "    THE PUSH MOVED $REMOTE/$BRANCH from $REMOTE_BEFORE to the tested SHA."
+fi
+
+hr
+{
+    echo "verdict=GREEN-PUSHED"
+    echo "tested_sha=$TESTED_SHA"
+    echo "legs=$LEGS_HEADER/$EXPECTED_LEGS"
+    echo "totals=release $T_PASS passed, $T_FAIL failed, $T_IGN ignored"
+    echo "remote_before=${REMOTE_BEFORE:-none}"
+    echo "remote_after=$REMOTE_AFTER"
+} > "$RUN_DIR/VERDICT"
+echo "land: GREEN and pushed. End marker: $RUN_DIR/VERDICT"
+exit 0

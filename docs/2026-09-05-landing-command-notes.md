@@ -81,3 +81,62 @@ person writing the spec down, four minutes after being told about it.
 
 This is also why (e) is the operative clause rather than (c). Refusing on a moved HEAD makes the failure
 loud; pushing the tested SHA by name makes it **impossible**, and only one of those survives being tired.
+
+---
+
+## BUILT — `tools/land.sh`, 2026-09-05
+
+The command is `./tools/land.sh`. Its own header is the reference; this section records only what these
+notes got wrong or left open.
+
+### The gap of 2 is RESOLVED: two examples that opt into `cargo test`
+
+`crates/oracle-core/Cargo.toml` declares
+
+```toml
+[[example]]
+name = "motion_run"
+test = true
+
+[[example]]
+name = "ab_compare"
+test = true
+```
+
+so those two example targets are run by `cargo test` exactly like any other target and emit a leg each.
+73 + 2 = 75, which is the measured number, and the reason the naive derivation missed them is that it
+counted only lib / bin / test kinds. `cargo metadata` reports all 16 of `oracle-core`'s examples, but only
+these two carry `"test": true`.
+
+**The script does not encode that.** Patching a headcount with an examples clause only works until the
+next surprise is not an example, so `land.sh` asks cargo instead: the runnable legs are the distinct
+executables in `cargo test --workspace --release --no-run --message-format=json` with
+`profile.test == true` (71 today — cargo's own target selection *and* its own `required-features`
+resolution), and the doc-test legs are the lib targets with `doctest == true` in `cargo metadata --no-deps`
+(4 today), which have no executable and are therefore the one part cargo will not hand over as an artifact.
+71 + 4 = 75, derived, self-updating when a crate or a test file is added.
+
+### Two corrections to these notes
+
+* **"No CI" is not true.** `.github/workflows/ci.yml` is tracked and defines three jobs (determinism gate;
+  fmt / clippy / fetch / `cargo test --workspace` in **debug**; and the release replay playthroughs via
+  `tools/replay_playthroughs.sh`). What is true is that nothing local ever consulted it, that it gates the
+  push rather than preceding it, and that its main suite runs the debug profile. It also means the suite
+  already carries six `CI`-armed vacuity guards — four named `vendor_data_present_when_running_in_ci`
+  tests (`conformance_roms`, `scanline_goldens`, `singlestep_m68000`, `singlestep_z80`) plus two inline
+  "skip locally, never under CI" refusals (`oracle-aether/tests/scanlines.rs`,
+  `oracle-core/tests/scanline_capture.rs`). `land.sh` exports `CI=1` and arms all six, which is a stronger
+  vendor precondition than any path check the script could hand-write, because they assert against the
+  test files' own ROM and opcode manifests rather than against a directory being non-empty. Measured:
+  `cargo test --workspace --release -- vendor_data_present_when_running_in_ci` with `CI=1` is
+  `4 passed, 0 failed` over 75 legs.
+* **A clippy gate without `-D warnings` cannot fire.** The definition as ruled says
+  `cargo clippy --workspace --all-targets --release`, which exits 0 on every lint it reports. The script
+  runs it with `-- -D warnings`, matching what the repo's own CI already denies.
+
+### The dirty-tree carve-out
+
+Exactly one tolerated path, matched as a literal string and always printed rather than skipped silently:
+`docs/lane-status.json`. Safe because nothing compiled reads it (`git grep lane-status` over `*.rs` /
+`*.py` / `*.sh` is empty) and because (e) pushes a commit by name, so its working-tree content is never
+what reaches the remote. Every other path, tracked or untracked, still refuses.
