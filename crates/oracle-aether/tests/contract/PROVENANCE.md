@@ -7,6 +7,31 @@
 | `bus-protocol.schema.json` | the Aether wire schema (D14's authority for shapes) | `pin.blob` below |
 | `vectors.json` | the contract's own wire vectors — the documents the hub asserts the schema accepts, and the ones it asserts the schema **refuses** | `pin.vectors.blob` below |
 
+> ## ⚑ HOW TO PICK THE PIN, read this BEFORE running any recipe
+>
+> **The pin is the revision the copy was TAKEN FROM. It is NOT "the last commit that wrote this path".**
+>
+> Those are different questions, and **only the first can be shared by two files**, which is exactly what
+> the gate requires: `schema_conformance` **step 0 asserts the two `pin.*.revision` markers are EQUAL**. The
+> moment the two artifacts last moved in *separate* commits, a per path recipe answers two commits and both
+> cannot be written.
+>
+> **So:** pick **one** revision that is an ancestor of the contract repo's `origin/main`, take **both** files
+> from it, and verify that resolving **each** path **at that revision** yields the blob you actually hold:
+>
+> ```sh
+> git -C ../empyrean rev-parse <REV>:contract/schema/bus-protocol.schema.json
+> git -C ../empyrean rev-parse <REV>:contract/schema/tests/vectors.json
+> git -C ../empyrean merge-base --is-ancestor <REV> origin/main   # run it, do not assume it
+> git hash-object crates/oracle-aether/tests/contract/{bus-protocol.schema.json,vectors.json}
+> ```
+>
+> A revision that did not *write* a file still resolves that file to a blob, and that blob is the honest
+> pin. **`git log -1 --format=%H origin/main -- <path>` is a way to FIND a candidate revision, never the
+> pin itself.** Recorded 2026-09-05, the first re-vendor where the two answers diverged (schema `88d1077`,
+> vectors `887d01c7`, pinned at `88d1077` for both because `88d1077` resolves the vectors path to the blob
+> we hold). Do not resolve the tip either: the tip is usually a commit that wrote neither file.
+
 Both are vendored, not read from the sibling checkout at test time, so the test suite is hermetic: it
 compiles against fixed bytes and produces the same verdict on a machine that has no `empyrean/` checkout
 at all.
