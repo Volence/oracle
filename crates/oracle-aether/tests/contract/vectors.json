@@ -1,0 +1,4327 @@
+{
+  "$comment": "Wire vectors for contract/schema/bus-protocol.schema.json, added 2026-08-22 with the §9 mechanical-completion pass over protocol.md §6. EVERY CASE IS DERIVED FROM A §6 ROW AND CITES IT; none was taken from a server's replies, which is the direction §8 requires (the contract leads; the emulator implements against it). The point of the FAIL cases is that a schema which accepts everything certifies without checking: each one perturbs a PASS case in exactly one way the cited row forbids. ADDRESSES HERE ARE SYNTHETIC PLACEHOLDERS, never real RAM addresses — a rebuild moves the RAM block, and D7's whole point is that a client resolves symbols live through emulator/lookup_symbol. Result documents are written WITHOUT the envelope fields; the runner merges `envelope` into every result case unless the case carries `envelopeDrop`. EVENT CASES (added 2026-08-26 by §11.21) carry `\"group\": \"events\"` and are merged with `eventEnvelope` instead: an event carries the §2.2 stamp and NEVER droppedEvents, which §2.3 makes a per-connection fact rather than a machine coordinate.",
+  "envelope": {
+    "frame": 601,
+    "mclk": 538008040,
+    "running": false,
+    "droppedEvents": 0
+  },
+  "eventEnvelope": {
+    "frame": 601,
+    "mclk": 538008040,
+    "running": false
+  },
+  "cases": [
+    {
+      "method": "emulator/ping",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:847 — no params."
+    },
+    {
+      "method": "emulator/ping",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "version": 1
+      },
+      "why": "§2.5 / §8 item 22 — an undeclared top-level param is -32602."
+    },
+    {
+      "method": "emulator/ping",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "version": 2
+      },
+      "why": "§10 decision 2 — the only typed instance of this field in the document."
+    },
+    {
+      "method": "emulator/ping",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "version": "2"
+      },
+      "why": "§10 decision 2 shows a JSON number, not a string."
+    },
+    {
+      "method": "emulator/ping",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6:847 marks `version` unmarked, therefore required."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "count": 4
+      },
+      "why": "§6:851 — `count?`, a JSON number (D9 category 2)."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:851 — `count` is optional."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "count": "4"
+      },
+      "why": "D9 category 2 — a count is a JSON number, never a hex string."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "steps": 4
+      },
+      "why": "§2.5 — `steps` is exactly the guessed parameter name that rule exists to refuse by name."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0xDEADBE",
+        "symbol": "Obj_Placeholder",
+        "symbolDisp": 0
+      },
+      "why": "§6:851 — pc, symbol?, symbolDisp?."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "symbol": "Obj_Placeholder"
+      },
+      "why": "§6:851 — `pc` is unmarked, therefore required."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "pc": "0xDEADBE",
+        "symbolDisp": -1
+      },
+      "why": "§4 — a displacement is from the NEAREST PRECEDING symbol and cannot be negative."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "pc": "0xDEADBE",
+        "symbol": "Obj_Placeholder+$4"
+      },
+      "why": "$defs/symbolName — §4's naming rule forbids a trailing +$hex composite; the displacement is symbolDisp."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0xDEADBE",
+        "stepped": 3
+      },
+      "why": "§11.33 — `stepped`? is the instructions actually retired; a bounded server emits it, equal to count on completion and less when the frame budget stopped the step."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0xDEADBE",
+        "stepped": 0
+      },
+      "why": "§11.33 corrected 2026-09-04 — a CPU halted on STOP retires nothing; since absence means the count ran, 0 is the only legal spelling of that state. This vector was expect:fail until the correction (the mirror of count ≥ 1 was wrong: the floor on the way in is a request, the reply reports what happened)."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "pc": "0xDEADBE",
+        "stepped": -1
+      },
+      "why": "§11.33 — retired instructions cannot be negative; minimum 0 is the floor."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "pc": "0xDEADBE",
+        "stepped": "3"
+      },
+      "why": "D9 category 2 — a count is a JSON number, never a hex string; the same rule as params.count."
+    },
+    {
+      "method": "emulator/step_over",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:852 — no params."
+    },
+    {
+      "method": "emulator/step_over",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "count": 1
+      },
+      "why": "§2.5 — step_over takes no count; the row is `—`."
+    },
+    {
+      "method": "emulator/step_over",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6 / §11.24 (D-03) — the result is step's; `pc` is required. Was a pass-vector before the amendment."
+    },
+    {
+      "method": "emulator/step_over",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "envelopeDrop": [
+        "droppedEvents"
+      ],
+      "why": "§2.3 / D17 / §8 item 18 — droppedEvents is present on every result, 0 included."
+    },
+    {
+      "method": "emulator/step_out",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:853 — no params."
+    },
+    {
+      "method": "emulator/step_out",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6 / §11.24 (D-03) — the result is step's; `pc` is required. Was a pass-vector before the amendment."
+    },
+    {
+      "method": "emulator/step_out",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "envelopeDrop": [
+        "mclk"
+      ],
+      "why": "§2.2 / D11 / §8 item 10 — the stamp is on every result."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "line": 224,
+        "maxFrames": 60
+      },
+      "why": "§6:855 — line 0–511, maxFrames? ≥1."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "line": 0
+      },
+      "why": "§6:855 — maxFrames defaults to 600 (D12)."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "line": 512
+      },
+      "why": "§6:855 — the stated range is 0–511."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "maxFrames": 60
+      },
+      "why": "§6:855 — `line` is unmarked, therefore required."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "line": 10,
+        "maxFrames": 0
+      },
+      "why": "§6:855 / D12 — maxFrames is ≥1; 0 is an unbounded run by another name."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "line": 224,
+        "reached": false,
+        "maxFrames": 60,
+        "caveat": "the run ended on its frame bound; nothing about the machine's state follows from where it stopped"
+      },
+      "why": "§6:855 + D12 — reached false SHOULD carry the caveat in words."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "line": 224,
+        "maxFrames": 60
+      },
+      "why": "D12 / §8 item 11 — `reached` is what distinguishes 'my condition happened' from 'I gave up waiting'."
+    },
+    {
+      "method": "emulator/run_to_scanline",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "line": 224,
+        "reached": "true",
+        "maxFrames": 60
+      },
+      "why": "D12 — `reached` is a boolean; a truthy string is the silent wrong answer it exists to prevent."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "timeoutMs": 500
+      },
+      "why": "§6:857 — timeoutMs?."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "timeout_ms": 500
+      },
+      "why": "§2.5 + §3's camelCase-fields convention — snake_case here is a guessed name, refused by name."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0xDEADBE",
+        "timeoutReached": false,
+        "waitedMs": 12
+      },
+      "why": "§6:857 — every handler key on this row is optional."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6 / §11.24 (D-05) — `running` is the stamp's (§2.2), so the envelope alone is conformant."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "waitedMs": -1
+      },
+      "why": "A wait cannot be negative."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "timeoutReached": 1
+      },
+      "why": "§2.4 rule 3 — a typed discriminant is a boolean, not a truthy number."
+    },
+    {
+      "method": "emulator/z80_read",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "addr": "0x1FF0",
+        "len": 16
+      },
+      "why": "§6:996 — addr (0–$3FFF), len? (≤$2000)."
+    },
+    {
+      "method": "emulator/z80_read",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0",
+        "len": 8193
+      },
+      "why": "§6:996 — the ceiling is $2000 = 8192."
+    },
+    {
+      "method": "emulator/z80_read",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "len": 16
+      },
+      "why": "§6:996 — `addr` is unmarked, therefore required."
+    },
+    {
+      "method": "emulator/z80_read",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": 8176
+      },
+      "why": "D9 category 1 — an address on this bus is a hex STRING."
+    },
+    {
+      "method": "emulator/z80_read",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "addr": "0x1FF0",
+        "len": 2,
+        "bytes": "0xC3F6"
+      },
+      "why": "§6:996 — addr, len, bytes."
+    },
+    {
+      "method": "emulator/z80_read",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0",
+        "len": 2
+      },
+      "why": "§6:996 — `bytes` is unmarked, therefore required; a read that returns no bytes is not a read."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "addr": "0x1FF0",
+        "bytes": "0xC3F6"
+      },
+      "why": "§6:997 — the `bytes` payload spelling."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "addr": "0x1FF0",
+        "value": 195
+      },
+      "why": "§6:997 — the `value` payload spelling."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0"
+      },
+      "why": "§6:997 — exactly one payload spelling; neither is -32602 (the write_memory rule)."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0",
+        "bytes": "0xC3F6",
+        "value": 195
+      },
+      "why": "§6:997 — exactly one payload spelling; both is -32602."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0",
+        "bytes": "0xC3F"
+      },
+      "why": "D9 category 1 — a byte payload has an even digit count; an odd one is a byte nobody can place."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "addr": "0x1FF0",
+        "len": 2
+      },
+      "why": "§6:997 — addr, len."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0"
+      },
+      "why": "§6:997 — `len` is unmarked, therefore required."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "symbol": "Obj_Placeholder"
+      },
+      "why": "§6:1019 — addr|symbol, and D7 says resolve by symbol."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "addr": "0xDEADBE"
+      },
+      "why": "§6:1019 — the addr spelling."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "addr": "0xDEADBE",
+        "enabled": false,
+        "label": "spring"
+      },
+      "why": "§6:1019 (§11.21) — `enabled?` and `label?`; adding a batch DISARMED is the stated reason enabled is on this row at all."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xDEADBE",
+        "symbol": "Obj_Placeholder"
+      },
+      "why": "§6:1019 — `addr|symbol` is exactly one, on the run_to and write_memory precedent."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6:1019 — neither is not a request."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "symbol": "Obj_Placeholder+$4"
+      },
+      "why": "$defs/symbolName — §4 bars the +$hex composite in a symbol field."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "breakpoint": "bp-7",
+        "addr": "0x00012A4C",
+        "symbol": "Obj_Placeholder",
+        "symbolDisp": 0,
+        "enabled": true,
+        "label": "spring"
+      },
+      "why": "§6:1019 (§11.21) — the symbol spelling's reply: the resolved address plus the name §4 says it may carry."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "breakpoint": "bp-8",
+        "addr": "0xDEADBE",
+        "enabled": true
+      },
+      "why": "§6:1019 (§11.21) — the addr spelling's reply: symbol/symbolDisp/label are marked optional and an address with no readable name carries none of them."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xDEADBE",
+        "enabled": true
+      },
+      "why": "§6:1019 (§11.21) — `breakpoint` is unmarked, therefore required; without it the client holds no identity and is back at the address-named surface this amendment retired."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "breakpoint": 7,
+        "addr": "0xDEADBE",
+        "enabled": true
+      },
+      "why": "D9 category 4 / $defs/handle — a handle is an opaque STRING; a number invites the arithmetic clients must not do on it."
+    },
+    {
+      "method": "emulator/breakpoint_add",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6:1019 — the reply is three unmarked keys; an empty one answers a symbol request with nothing."
+    },
+    {
+      "method": "emulator/breakpoint_set_enabled",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "breakpoint": "bp-7",
+        "enabled": false
+      },
+      "why": "§6:1020 (§11.21) — both params unmarked, therefore required."
+    },
+    {
+      "method": "emulator/breakpoint_set_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "breakpoint": "bp-7"
+      },
+      "why": "§6:1020 — `enabled` is the whole point of the row; a toggle whose argument may be omitted leaves its caller unable to say which way it went."
+    },
+    {
+      "method": "emulator/breakpoint_set_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "enabled": true
+      },
+      "why": "§6:1020 — without the handle the call names no breakpoint."
+    },
+    {
+      "method": "emulator/breakpoint_set_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xDEADBE",
+        "enabled": true
+      },
+      "why": "§2.5 — the address spelling is not on this row: identity is the handle (§11.21 design choice 1), and an undeclared param is -32602 by name."
+    },
+    {
+      "method": "emulator/breakpoint_set_enabled",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "breakpoint": "bp-7",
+        "enabled": false,
+        "hits": 1691410
+      },
+      "why": "§6:1020 — the state now in force, and the hits a disable does NOT reset (§6's breakpoint prose)."
+    },
+    {
+      "method": "emulator/breakpoint_set_enabled",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "breakpoint": "bp-7",
+        "enabled": false
+      },
+      "why": "§6:1020 — `hits` is unmarked, therefore required; it is what tells a client the count survived the toggle."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1021 — both params are optional."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "cursor": "bp-page-2",
+        "limit": 100
+      },
+      "why": "§6:1021 (§11.21) — the row now takes §2.4's continuation and page ceiling, which audit D-14 said it lacked."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "limit": 0
+      },
+      "why": "§6:1021 — the row states 1–4096; a page of zero is not a page."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "limit": 4097
+      },
+      "why": "§6:1021 — the house ceiling is 4096, the same one watchpoint_list and read_memory carry."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xDEADBE"
+      },
+      "why": "§2.5 — this row filters by nothing; an undeclared param is refused by name rather than ignored."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "breakpoints": [
+          {
+            "breakpoint": "bp-7",
+            "label": "spring",
+            "addr": "0x00012A4C",
+            "symbol": "Obj_Placeholder",
+            "symbolDisp": 0,
+            "enabled": true,
+            "hits": 3
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "limit": 100,
+        "truncated": false
+      },
+      "why": "§6:1021 (§11.21) — the item shape plus §2.4 clause (a)'s companions in the flat spelling."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "breakpoints": [],
+        "total": 0,
+        "returned": 0,
+        "truncated": false
+      },
+      "why": "§6:1021 — an empty list is a real answer, and `truncated` is REQUIRED EVEN WHEN FALSE (§2.4 clause (a))."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "breakpoints": [],
+        "returned": 0,
+        "truncated": false
+      },
+      "why": "§2.4 clause (a) — `total` is how many exist, and without it `returned` cannot be compared to anything. Audit D-14's exact absence, now a rule."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "breakpoints": [
+          {
+            "addr": "0x00012A4C",
+            "enabled": true,
+            "hits": 3
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false
+      },
+      "why": "§6:1021 (§11.21) — the row's identity is the handle; an item without `breakpoint` is the pre-amendment shape."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "breakpoints": [
+          {
+            "breakpoint": "bp-7",
+            "addr": "0x00012A4C",
+            "enabled": true
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false
+      },
+      "why": "§6:1021 — `hits` is unmarked in the item, therefore required."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "breakpoints": [
+          {
+            "breakpoint": "bp-7",
+            "addr": "0x00012A4C",
+            "enabled": true,
+            "hits": 3,
+            "space": "bus"
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false
+      },
+      "why": "§8 item 20 — an unknown key on the wire is a change request, never a shipment; the item shape is closed."
+    },
+    {
+      "method": "emulator/breakpoint_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6:1021 — the array and its companions are the reply."
+    },
+    {
+      "method": "emulator/breakpoint_clear",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "all": true
+      },
+      "why": "§6:1022 — `breakpoint|all`, and `all` clears every client's (§11.21 design choice 5)."
+    },
+    {
+      "method": "emulator/breakpoint_clear",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "breakpoint": "bp-7"
+      },
+      "why": "§6:1022 (§11.21) — one handle, which is what makes clearing MINE not clearing YOURS."
+    },
+    {
+      "method": "emulator/breakpoint_clear",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6:1022 — exactly one of the two."
+    },
+    {
+      "method": "emulator/breakpoint_clear",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "breakpoint": "bp-7",
+        "all": true
+      },
+      "why": "§6:1022 — exactly one of the two, on the checkpoint_drop precedent: a call that says both says neither."
+    },
+    {
+      "method": "emulator/breakpoint_clear",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xDEADBE"
+      },
+      "why": "§2.5 + §11.21 — the retired address spelling. Clearing by address IS the two-client hazard this amendment was raised on, so it must be refused by name rather than quietly honoured."
+    },
+    {
+      "method": "emulator/breakpoint_clear",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "removed": 0
+      },
+      "why": "§6:1022 + §6.1's idempotent-delete rule — removed 0 is the answer for a clear that found nothing."
+    },
+    {
+      "method": "emulator/breakpoint_clear",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "removed": -1
+      },
+      "why": "A count of things removed cannot be negative."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "reason": "breakpoint",
+        "pc": "0x00012A4C",
+        "symbol": "Obj_Placeholder",
+        "symbolDisp": 0,
+        "breakpoint": "bp-7",
+        "stopPrecision": "exact"
+      },
+      "why": "§6's breakpoint prose (§11.21) — a breakpoint halt names ONE handle: the earliest-added enabled breakpoint at that address."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "reason": "watchpoint",
+        "pc": "0x00012A4C",
+        "watch": "w-1",
+        "stopPrecision": "afterCommit"
+      },
+      "why": "The else branch's control: a watchpoint halt carries `watch` and NO `breakpoint`, which is what proves the new rule refuses by reason rather than by presence."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reason": "breakpoint",
+        "pc": "0x00012A4C",
+        "stopPrecision": "exact"
+      },
+      "why": "§6's breakpoint prose (§11.21) — `breakpoint` is REQUIRED when reason is 'breakpoint'; a halt that cannot say which breakpoint fired is the guess this amendment removed."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reason": "watchpoint",
+        "pc": "0x00012A4C",
+        "watch": "w-1",
+        "breakpoint": "bp-7",
+        "stopPrecision": "exact"
+      },
+      "why": "§11.21 — absent otherwise, the same discipline `watch` carries: a handle on the wrong reason attributes the halt to a cause that did not produce it."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reason": "step",
+        "pc": "0x00012A4C",
+        "breakpoint": "bp-7",
+        "stopPrecision": "exact"
+      },
+      "why": "§11.21 — a step completion is not a breakpoint halt, and `reason` names the CONDITION (§11.7)."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reason": "step",
+        "pc": "0x00012A4C"
+      },
+      "why": "§3 (§11.31, CR-E): `stopPrecision` is REQUIRED on EVERY stopped event, a step completion included; a stop that does not say how exact it is presents as exact, which is the failure mode the key exists to remove."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reason": "step",
+        "pc": "0x00012A4C",
+        "stopPrecision": "mostly"
+      },
+      "why": "§2.1 (§11.31): three ordered members and nothing else; a value outside the enum cannot be placed in the order the binding rule needs."
+    },
+    {
+      "group": "events",
+      "method": "emulator/stopped",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "reason": "pause",
+        "pc": "0x00012A4C",
+        "stopPrecision": "exact"
+      },
+      "why": "§3 (§11.31): a reason with no triggering address still carries the key, and its value is `exact` by definition; the constant string is what spares a subscriber a table of which reasons opted in."
+    },
+    {
+      "method": "emulator/write_vram",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "addr": "0xC000",
+        "bytes": "0x00FF"
+      },
+      "why": "§6:1132 — addr, bytes."
+    },
+    {
+      "method": "emulator/write_vram",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xC000"
+      },
+      "why": "§6:1132 — both keys are unmarked, therefore required."
+    },
+    {
+      "method": "emulator/write_vram",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xC000",
+        "bytes": "0x0FF"
+      },
+      "why": "D9 category 1 — odd digit count is half a byte."
+    },
+    {
+      "method": "emulator/write_vram",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0xC000",
+        "value": 255,
+        "width": 1
+      },
+      "why": "§2.5 — this row has only the `bytes` spelling; value/width belong to write_memory (audit D-16)."
+    },
+    {
+      "method": "emulator/write_vram",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "addr": "0xC000",
+        "len": 2
+      },
+      "why": "§6:1132 — addr, len."
+    },
+    {
+      "method": "emulator/write_vram",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "len": 2
+      },
+      "why": "§6:1132 — `addr` is unmarked, therefore required; a write reply's job is saying where it landed."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "layer": "planeA",
+        "enabled": false
+      },
+      "why": "§6:1135 — layer, enabled."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "layer": "planeA"
+      },
+      "why": "§6:1135 — both unmarked, therefore required."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "layer": "planeA",
+        "enabled": "false"
+      },
+      "why": "D9 category 2 — an enable is a JSON boolean; the string 'false' is truthy in several languages."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "layer": "planeA",
+        "enabled": false
+      },
+      "why": "§6:1135 — echoed layer and resulting state."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "layer": "planeA"
+      },
+      "why": "§6:1135 — a reply that does not say the resulting state is unreadable in a two-client session."
+    },
+    {
+      "method": "emulator/get_layer_states",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1136 — no params."
+    },
+    {
+      "method": "emulator/get_layer_states",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "layer": "planeA"
+      },
+      "why": "§2.5 — the row takes no selector."
+    },
+    {
+      "method": "emulator/get_layer_states",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "planeA": true,
+        "planeB": true,
+        "window": false,
+        "sprites": true
+      },
+      "why": "§6:1136 — the four keys, enumerated with no ellipsis."
+    },
+    {
+      "method": "emulator/get_layer_states",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "planeA": true,
+        "planeB": true,
+        "sprites": true
+      },
+      "why": "§2.3's reason — an omitted mask reads exactly like a mask that is off."
+    },
+    {
+      "method": "emulator/get_layer_states",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "planeA": true,
+        "planeB": true,
+        "window": false,
+        "sprites": 1
+      },
+      "why": "D9 category 2 — an enable is a boolean."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "channel": "fm6",
+        "enabled": false
+      },
+      "why": "§6:1383 — channel, enabled."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "enabled": false
+      },
+      "why": "§6:1383 — both unmarked, therefore required."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "channel": "fm6",
+        "enabled": false
+      },
+      "why": "§6:1383."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "enabled": false
+      },
+      "why": "§6:1383 — a reply that does not say which channel it acted on is unreadable."
+    },
+    {
+      "method": "emulator/get_channel_states",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1384 — no params."
+    },
+    {
+      "method": "emulator/get_channel_states",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "fm1": true,
+        "fm2": true,
+        "fm3": true,
+        "fm4": true,
+        "fm5": true,
+        "fm6": true,
+        "dac": true,
+        "psg1": true,
+        "psg2": true,
+        "psg3": true,
+        "psgNoise": false
+      },
+      "why": "§6:1384 — fm1–fm6, dac, psg1–psg3, psgNoise."
+    },
+    {
+      "method": "emulator/get_channel_states",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "fm1": true,
+        "fm2": true,
+        "fm3": true,
+        "fm4": true,
+        "fm5": true,
+        "fm6": true,
+        "dac": true,
+        "psg1": true,
+        "psg2": true,
+        "psg3": true
+      },
+      "why": "§6:1384 — psgNoise is a named channel, and absence must not read as off."
+    },
+    {
+      "method": "emulator/vgm_start",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1385 — path?."
+    },
+    {
+      "method": "emulator/vgm_start",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "path": "/tmp/placeholder-capture.vgm"
+      },
+      "why": "§6:1385 + §6's paths note (D8) — a host-filesystem path is fine on this bus."
+    },
+    {
+      "method": "emulator/vgm_start",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "file": "/tmp/placeholder-capture.vgm"
+      },
+      "why": "§2.5 — `file` is a guessed name; the declared one is `path`."
+    },
+    {
+      "method": "emulator/vgm_start",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "path": "/tmp/placeholder-capture.vgm"
+      },
+      "why": "§6:1385 — the reply names the file."
+    },
+    {
+      "method": "emulator/vgm_start",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "why": "§6:1385 — a caller who supplied no path has no other way to find the capture."
+    },
+    {
+      "method": "emulator/vgm_stop",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1386 — no params."
+    },
+    {
+      "method": "emulator/vgm_stop",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "path": "/tmp/placeholder-capture.vgm",
+        "samples": 132300,
+        "durationSec": 3.0,
+        "bytes": 40960
+      },
+      "why": "§6:1386 — all four unmarked, therefore required."
+    },
+    {
+      "method": "emulator/vgm_stop",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "path": "/tmp/placeholder-capture.vgm",
+        "samples": 132300,
+        "durationSec": "3.0",
+        "bytes": 40960
+      },
+      "why": "D9 category 2 — a duration is a JSON number."
+    },
+    {
+      "method": "emulator/vgm_stop",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "path": "/tmp/placeholder-capture.vgm",
+        "samples": 132300,
+        "durationSec": 3.0
+      },
+      "why": "§6:1386 + the screenshot.bytes argument (§11.5) — `bytes` is how a caller knows the write completed."
+    },
+    {
+      "method": "emulator/vgm_status",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1387 — no params."
+    },
+    {
+      "method": "emulator/vgm_status",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "active": true,
+        "samples": 44100,
+        "durationSec": 1.0,
+        "bytes": 12288
+      },
+      "why": "§6:1387 — all four unmarked, therefore required."
+    },
+    {
+      "method": "emulator/vgm_status",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "samples": 0,
+        "durationSec": 0.0,
+        "bytes": 0
+      },
+      "why": "§6:1387 — without `active` the three zeros cannot be told from a finished capture of nothing."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1388 — every param is optional."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "source": "psg",
+        "fftSize": 1024,
+        "maxHz": 8000
+      },
+      "why": "§6:1388 — source fm|psg, fftSize 256–32768, maxHz?."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "source": "dac"
+      },
+      "why": "§6:1388 — the enum is fm|psg; `dac` is a channel name from another row."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "fftSize": 128
+      },
+      "why": "§6:1388 — the range is 256–32768."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "fftSize": 65536
+      },
+      "why": "§6:1388 — the range is 256–32768."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "source": "fm",
+        "sampleRate": 53267,
+        "fftSize": 4096,
+        "binHz": 13.004,
+        "dominantHz": 440.5,
+        "samplesAvailable": 4096,
+        "magnitudes": [
+          0.0,
+          1.5,
+          0.25
+        ]
+      },
+      "why": "§6:1388 — the seven result keys, all unmarked."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "source": "fm",
+        "sampleRate": 53267,
+        "fftSize": 4000,
+        "binHz": 13.004,
+        "dominantHz": 440.5,
+        "samplesAvailable": 4096,
+        "magnitudes": [
+          0.0
+        ]
+      },
+      "why": "§6:1388's '→pow2' — the size ACTUALLY used is a power of two; 4000 is the request, not the answer."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "source": "fm",
+        "sampleRate": 53267,
+        "fftSize": 4096,
+        "binHz": 13.004,
+        "dominantHz": 440.5,
+        "samplesAvailable": 4096,
+        "magnitudes": [
+          "0.0"
+        ]
+      },
+      "why": "A magnitude is a JSON number; a stringified one cannot be compared or plotted without parsing."
+    },
+    {
+      "method": "emulator/audio_spectrum",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "source": "fm",
+        "sampleRate": 53267,
+        "fftSize": 4096,
+        "binHz": 13.004,
+        "dominantHz": 440.5,
+        "magnitudes": [
+          0.0
+        ]
+      },
+      "why": "§6:1388 — samplesAvailable is unmarked, therefore required; it is this row's honesty field (audit D-22)."
+    },
+    {
+      "method": "emulator/log_clear",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1767 — no params."
+    },
+    {
+      "method": "emulator/log_clear",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "all": true
+      },
+      "why": "§2.5 — the row is `—` in both columns."
+    },
+    {
+      "method": "emulator/log_clear",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {},
+      "why": "§6:1767 — no result keys (the release_all precedent)."
+    },
+    {
+      "method": "emulator/log_clear",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "envelopeDrop": [
+        "running"
+      ],
+      "why": "§2.2 / D11 — the stamp's three fields are on every result."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0",
+        "value": 256
+      },
+      "why": "§11.22 — `value` is exactly one byte, 0–255; 256 is refused with -32602, never masked."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1FF0",
+        "value": -1
+      },
+      "why": "§11.22 — `value` is exactly one byte, 0–255."
+    },
+    {
+      "method": "emulator/z80_write",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "addr": "0x1FF0",
+        "value": 255
+      },
+      "why": "§11.22 — the top of the one-byte range is legal."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "layer": "plane_a",
+        "enabled": false
+      },
+      "why": "§11.22 — the setter's enum IS the getter's key set, camelCase; the legacy snake spelling is refused by name."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "layer": "backdrop",
+        "enabled": false
+      },
+      "why": "§11.22 — backdrop is a pixel-attribution layer, not a mask target."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "layer": "window",
+        "enabled": true
+      },
+      "why": "§11.22 — one of the four members."
+    },
+    {
+      "method": "emulator/set_layer_enabled",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "layer": "plane_a",
+        "enabled": false
+      },
+      "why": "§11.22 — the echo carries the same enum."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "channel": "psg_noise",
+        "enabled": false
+      },
+      "why": "§11.22 — psgNoise is the member; the legacy snake spelling and its `noise` alias are refused."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "channel": "noise",
+        "enabled": false
+      },
+      "why": "§11.22 — the legacy `noise` alias is not adopted."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "channel": "fm7",
+        "enabled": false
+      },
+      "why": "§11.22 — six FM channels."
+    },
+    {
+      "method": "emulator/set_channel_enabled",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "channel": "psgNoise",
+        "enabled": false
+      },
+      "why": "§11.22 — one of the eleven members."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "pass",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — the amended handshake: `implementation` from the registry, a 'vcs' `serverBuild` carrying the full revision identifier and the REQUIRED `dirty`, and `serverVersion` now present because it is required."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "pass",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "sha256:9f2c1a7b4d6e8f00",
+          "source": "content"
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — 'content' carries no `dirty`: the conditional requirement fires only under 'vcs', and a digest over the artifact is self-consistent by construction."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "pass",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "2.1-linux-pkg3",
+          "source": "declared"
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — 'declared' is admitted rather than banned, and needs no `dirty`: a packager rebuilding from a tarball has no version control and says so instead of lying."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — `implementation` is REQUIRED: a handshake that does not say which implementation answered is the gap this amendment closes."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — `serverBuild` is REQUIRED: implementation identity and build identity are two facts and they fail independently."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — `serverVersion` is REQUIRED as of this amendment; it was declared in `properties` and absent from `required` since the handshake was written."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-next",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — the registry is closed and the enum mirrors it: 'oracle-next' is a repo name that the 2026-08 rename retired, not a registered implementation."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs"
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — `dirty` is REQUIRED under source 'vcs': a commit hash from a dirty tree names a commit whose content is not what was built."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — `serverBuild.id` is minLength 1: an empty id is a build that declined to identify itself while claiming to have."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "git",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — `source` is a closed three-value enum; 'git' is a plausible spelling the contract does not define, and how `id` was derived is what makes it auditable."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        }
+      },
+      "why": "§2.1 (§11.23) — `serverBuild` is an object, not a bare string: without `source` a consumer cannot tell a revision from a self-report, which is the distinction §5.2 of the CR exists to make."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "pass",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        },
+        "stopPrecision": {
+          "watchpoint": "afterCommit",
+          "step": "exact",
+          "runTo": "exact",
+          "runToScanline": "exact",
+          "runFrames": "exact",
+          "pause": "exact",
+          "entry": "exact"
+        }
+      },
+      "why": "§2.1 (§11.31, CR-E): the per-reason map, one entry per reason this server can emit; no `breakpoint` entry because this server advertises no breakpoints, exactly as it has no `breakpoint_add`."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        },
+        "stopPrecision": {}
+      },
+      "why": "§2.1 (§11.31): an empty map answers nothing while looking like an answer; a server with no reasons to declare omits the key, whose absence is the meaningful signal."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        },
+        "stopPrecision": {
+          "step": "exact",
+          "watchpoint": "sometimes"
+        }
+      },
+      "why": "§2.1 (§11.31): a value outside the ordered enum; `approximate` is the spelling for a server that promises nothing, and it is in the enum so a client can place it."
+    },
+    {
+      "method": "initialize",
+      "kind": "result",
+      "group": "handshake",
+      "expect": "fail",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "0.0.0",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed"
+          ]
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        },
+        "stopPrecision": {
+          "step": "exact",
+          "press": "exact"
+        }
+      },
+      "why": "§2.1 (§11.31): the map is keyed by `emulator/stopped` REASONS, and `press` is not one (§11.7: reason names the condition, never the method; a press-driven advance stops with `runFrames`)."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "count": 0
+      },
+      "why": "§11.24 (D-02) — count ≥1; zero refused, never clamped. Accepted before the amendment."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "count": 1000001
+      },
+      "why": "§11.24 (D-02) — count ≤1000000, refused above. Accepted before the amendment."
+    },
+    {
+      "method": "emulator/step",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "count": 1000000
+      },
+      "why": "§11.24 (D-02) — the ceiling itself is inside the bound."
+    },
+    {
+      "method": "emulator/step_over",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0x00012A4C",
+        "symbol": "Obj_Spring",
+        "symbolDisp": 4
+      },
+      "why": "§11.24 (D-03) — step's result on step_over."
+    },
+    {
+      "method": "emulator/step_out",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0x00012A4C"
+      },
+      "why": "§11.24 (D-03) — pc alone is enough; the symbol pair is optional."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "timeoutMs": 300001
+      },
+      "why": "§11.24 (D-07) — timeoutMs ≤300000, refused above. Accepted before the amendment."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "timeoutMs": 0
+      },
+      "why": "§11.24 (D-07) — zero polls once."
+    },
+    {
+      "method": "emulator/wait_for_break",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0x00012A4C",
+        "symbol": "Obj_Spring",
+        "symbolDisp": 4
+      },
+      "why": "§11.24 (D-08) — symbolDisp paired with symbol."
+    },
+    {
+      "method": "emulator/vgm_status",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "active": true,
+        "samples": 1,
+        "durationSec": 0.0,
+        "bytes": 64,
+        "path": "/tmp/x.vgm"
+      },
+      "why": "§11.24 (D-19) — path present when active."
+    },
+    {
+      "method": "emulator/ping",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "version": 3
+      },
+      "why": "§11.24 (D-01) — version is the constant 2. Accepted before the amendment."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "limit": 8,
+        "fields": [
+          "anim",
+          "mapping_frame"
+        ],
+        "includeBytes": false
+      },
+      "why": "§11.25 - all three params, §6's row."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "pool": "dynamic"
+      },
+      "why": "§11.25 - `pool` moved to layout.pools; an undeclared param is -32602 (§8 item 22)."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "objects": [
+          {
+            "slot": 2,
+            "addr": "0x00FF8E50",
+            "x": 1024,
+            "y": 320,
+            "code": "0x2A18",
+            "name": "Obj_Ring_Main",
+            "nameDisp": 0,
+            "fields": {
+              "anim": 3,
+              "mappings": "0x00A1C4",
+              "onScreen": true
+            },
+            "bytes": "0x2A18000000000400"
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "limit": 40,
+        "truncated": false,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "detectedFrom": "Player_1",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0",
+          "pools": [
+            {
+              "name": "player",
+              "firstSlot": 0,
+              "slotCount": 2
+            },
+            {
+              "name": "dynamic",
+              "firstSlot": 2,
+              "slotCount": 40
+            }
+          ]
+        }
+      },
+      "why": "§11.25 - one item carrying every optional key, beside the five §2.4 companions and layout."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "objects": [],
+        "total": 0,
+        "returned": 0,
+        "limit": 40,
+        "truncated": false,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - 'zero objects' as a stated fact: total 0 beside truncated false, not an empty list a client must interpret. `pools` absent, which is legal."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "objects": [
+          {
+            "slot": 2,
+            "addr": "0x00FF8E50",
+            "x": 1024,
+            "y": 320
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "limit": 40,
+        "truncated": false,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - an item without `code`. The five core keys are required at the use site, since decodedSlot carries no required of its own."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "objects": [],
+        "total": 0,
+        "returned": 0,
+        "limit": 40,
+        "truncated": false
+      },
+      "why": "§11.25 - `layout` missing. The one REQUIRED key this amendment spends the pre-release window on, proven to bite."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "objects": [],
+        "total": 0,
+        "returned": 0,
+        "limit": 40,
+        "truncated": false,
+        "layout": {
+          "engine": "aeon-sst",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - layout without `detectedBy`. P2: HOW the layout was chosen is part of the answer, so decoderLayout's required set is not vacuous."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "objects": [
+          {
+            "slot": 2,
+            "addr": "0x00FF8E50",
+            "x": 1024,
+            "y": 320,
+            "code": "0x2A18",
+            "fields": {
+              "status": {
+                "raw": 6,
+                "bits": [
+                  "in_air"
+                ]
+              }
+            }
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "limit": 40,
+        "truncated": false,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - a `fields` VALUE that is an object. The typed-open map is TYPED: its keys are unbounded, its value shape is not. This is the vector that proves the openness is bounded, and it is the legacy's decoded-bit-name shape being refused by construction."
+    },
+    {
+      "method": "emulator/object_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "objects": [
+          {
+            "slot": 2,
+            "addr": "0x00FF8E50",
+            "x": 1024,
+            "y": 320,
+            "code": "0x2A18",
+            "pool": "dynamic"
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "limit": 40,
+        "truncated": false,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - a stranger key on an item. The use-site closure really closes, which is what the M3 factoring had to preserve."
+    },
+    {
+      "method": "emulator/player_state",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "players": [
+          {
+            "slot": 0,
+            "addr": "0x00FF8DB0",
+            "x": 96,
+            "y": 656,
+            "code": "0x0100",
+            "name": "Player_Main",
+            "nameDisp": 0,
+            "active": true,
+            "role": "player"
+          },
+          {
+            "slot": 1,
+            "addr": "0x00FF8E00",
+            "x": 64,
+            "y": 656,
+            "code": "0x0100",
+            "active": true,
+            "role": "sidekick"
+          }
+        ],
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "detectedFrom": "Player_1",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0",
+          "pools": [
+            {
+              "name": "player",
+              "firstSlot": 0,
+              "slotCount": 2
+            }
+          ]
+        }
+      },
+      "why": "§11.25 - two players, both active. No total/returned/truncated: a structural bound takes neither (§2.4 clause (d))."
+    },
+    {
+      "method": "emulator/player_state",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "players": [
+          {
+            "slot": 0,
+            "addr": "0x00FF8DB0",
+            "x": 96,
+            "y": 656,
+            "code": "0x0100",
+            "active": true,
+            "role": "player"
+          },
+          {
+            "slot": 1,
+            "addr": "0x00FF8E00",
+            "active": false
+          }
+        ],
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 M2 - THE ONE-PLAYER REPLY. §7.2 mandates {slot, addr, active:false} with the rest omitted, and the pre-M2 draft's fragment refused it. This vector is the fix's whole point and the commonest reply the method will ever send."
+    },
+    {
+      "method": "emulator/player_state",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "players": [
+          {
+            "slot": 0,
+            "addr": "0x00FF8DB0",
+            "active": true
+          }
+        ],
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 M2 - an ACTIVE player with no x/y/code. The `then` branch bites: the conditional loosens the inactive case without loosening the active one."
+    },
+    {
+      "method": "emulator/player_state",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "players": [
+          {
+            "slot": 1,
+            "addr": "0x00FF8E00",
+            "active": false,
+            "x": 0
+          }
+        ],
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 M2 - an INACTIVE player carrying x. The `else` branch bites: 'the rest are omitted' is a schema rule, not prose a server may not read. An x of 0 for an absent player is §4's confidently-wrong shape in miniature."
+    },
+    {
+      "method": "emulator/player_state",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "players": [
+          {
+            "slot": 0,
+            "addr": "0x00FF8DB0",
+            "x": 96,
+            "y": 656,
+            "code": "0x0100",
+            "active": true,
+            "status": {
+              "raw": 6,
+              "bits": [
+                "in_air"
+              ]
+            }
+          }
+        ],
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - the legacy's `status` object as a sibling key. Refused: decoded bit names are declined on this row, and the item's key set is closed."
+    },
+    {
+      "method": "emulator/object_slot",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "slot": 0
+      },
+      "why": "§11.25 - the one required param."
+    },
+    {
+      "method": "emulator/object_slot",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {},
+      "why": "§11.25 - `slot` is REQUIRED. This row addresses a slot; a call that names none is not a smaller request, it is object_list."
+    },
+    {
+      "method": "emulator/object_slot",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "slot": 7,
+        "addr": "0x00FF9010",
+        "x": 512,
+        "y": 288,
+        "code": "0x2A18",
+        "name": "Obj_Spring_Main",
+        "nameDisp": 4,
+        "active": true,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - the item keys HOISTED to the result top level beside layout and active. Validated closed, which is what proves the envelope survives a result that $refs decodedSlot: additionalProperties would have refused the stamp, unevaluatedProperties sees through the allOf."
+    },
+    {
+      "method": "emulator/object_slot",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "slot": 7,
+        "addr": "0x00FF9010",
+        "x": 512,
+        "y": 288,
+        "code": "0x2A18",
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 - `active` missing. On a row that ADDRESSES a slot, emptiness is an answer and the flag is required, false included."
+    },
+    {
+      "method": "emulator/object_slot",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "slot": 1,
+        "addr": "0x00FF8E00",
+        "active": false,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 M7 - THE EMPTY-SLOT REPLY. A row that addresses a slot must be able to answer 'nothing here': the slot facts and layout, with the decoded keys omitted rather than read out of a record the game never wrote. The pre-delta fragment required x/y/code unconditionally and refused this."
+    },
+    {
+      "method": "emulator/object_slot",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "slot": 1,
+        "addr": "0x00FF8E00",
+        "active": true,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 M7 - an ACTIVE object_slot with no x/y/code. The `then` branch bites: the conditional loosens the empty case without loosening the occupied one."
+    },
+    {
+      "method": "emulator/object_slot",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "slot": 1,
+        "addr": "0x00FF8E00",
+        "active": false,
+        "x": 0,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 M7 - an INACTIVE object_slot carrying x. The `else` branch bites. An x of 0 for an empty slot is the uninitialised byte reported as a datum, one level up from the rule (3) that forbids it for `fields`."
+    },
+    {
+      "method": "emulator/player_state",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "players": [
+          {
+            "slot": 0,
+            "addr": "0x00FF8DB0",
+            "x": 96,
+            "y": 656,
+            "code": "0x0100",
+            "active": true,
+            "role": "player"
+          },
+          {
+            "slot": 1,
+            "addr": "0x00FF8E00",
+            "active": false,
+            "role": "sidekick"
+          }
+        ],
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.25 M5 - `role` SURVIVES INACTIVITY. The label is the slot's, not the occupant's, and decoderLayout.pools is closed at {name, firstSlot, slotCount}, so per-slot roles are on the wire nowhere else: forbidding `role` here would have deleted the answer, not displaced it to a join. The pre-delta fragment refused this."
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "dot": {
+          "x": 160,
+          "y": 112
+        },
+        "world": {
+          "x": 256,
+          "y": 256
+        },
+        "worldSource": "camera",
+        "winner": {
+          "layer": "sprite",
+          "spriteIndex": 0
+        },
+        "owner": {
+          "kind": "object",
+          "slot": 0,
+          "raw": "0x8ED6"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M1/M2/M3 — the whole-answer case: a sprite owned by a live slot, with world from the unbiased camera. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "dot": {
+          "x": 212,
+          "y": 12
+        },
+        "world": {
+          "x": 308,
+          "y": 156
+        },
+        "worldSource": "camera",
+        "winner": {
+          "layer": "sprite",
+          "spriteIndex": 1
+        },
+        "owner": {
+          "kind": "ring",
+          "raw": "0x0001"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M2 — THE RING CLICK the ruling names as a required vector. Owner word 0x0001; no slot, because a ring is not an object slot. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "dot": {
+          "x": 212,
+          "y": 12
+        },
+        "world": {
+          "x": 308,
+          "y": 156
+        },
+        "worldSource": "camera",
+        "winner": {
+          "layer": "sprite",
+          "spriteIndex": 1
+        },
+        "owner": {
+          "kind": "ring",
+          "slot": 3,
+          "raw": "0x0001"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M2 — RED-FIRST for the ring click: `slot` is present iff kind == 'object'. This is the exact defect the method exists to prevent — rebasing the 0x0001 sentinel into a plausible slot index and naming an object that did not draw the sprite. Perturbs the pass above by adding `slot` and nothing else. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "dot": {
+          "x": 160,
+          "y": 112
+        },
+        "world": {
+          "x": 256,
+          "y": 256
+        },
+        "worldSource": "camera",
+        "winner": {
+          "layer": "sprite",
+          "spriteIndex": 0
+        },
+        "owner": {
+          "kind": "unavailable"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M2 — UNRESOLVABLE OWNER TABLE, the shape half: the loaded build has no Sprite_Owner, so there is no slot and no word was read. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "dot": {
+          "x": 160,
+          "y": 112
+        },
+        "world": {
+          "x": 256,
+          "y": 256
+        },
+        "worldSource": "camera",
+        "winner": {
+          "layer": "sprite",
+          "spriteIndex": 0
+        },
+        "owner": {
+          "kind": "unavailable",
+          "raw": "0x0000"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M2/M5 — RED-FIRST: with no owner table there was no word to read, so a `raw` here is a fabricated reading of memory that was never consulted. Perturbs the pass above by adding `raw` and nothing else. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "dot": {
+          "x": 160,
+          "y": 112
+        },
+        "worldSource": "unavailable",
+        "winner": {
+          "layer": "sprite",
+          "spriteIndex": 0
+        },
+        "owner": {
+          "kind": "object",
+          "slot": 0,
+          "raw": "0x8ED6"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M3 — UNRESOLVABLE CAMERA, the third vector the ruling names: worldSource is independent of the owner half, so the owner answer still stands while `world` is absent. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "dot": {
+          "x": 160,
+          "y": 112
+        },
+        "world": {
+          "x": 256,
+          "y": 256
+        },
+        "worldSource": "unavailable",
+        "winner": {
+          "layer": "sprite",
+          "spriteIndex": 0
+        },
+        "owner": {
+          "kind": "object",
+          "slot": 0,
+          "raw": "0x8ED6"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M3 — RED-FIRST for the camera: `world` present iff worldSource == 'camera'. A world beside 'unavailable' is a coordinate nobody computed, which is the silent-wrong-place failure M3 exists to stop. Perturbs the pass above by adding `world` and nothing else. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "dot": {
+          "x": 8,
+          "y": 8
+        },
+        "world": {
+          "x": 104,
+          "y": 152
+        },
+        "worldSource": "camera",
+        "winner": {
+          "layer": "planeB"
+        },
+        "owner": {
+          "kind": "none",
+          "raw": "0x0000"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M1/M2 — a non-sprite winner: no spriteIndex, and the owner table answered 'no owner'. Distinguishes `none` (table read, answer no) from `unavailable` (no table) in the vector set itself. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "dot": {
+          "x": 8,
+          "y": 8
+        },
+        "world": {
+          "x": 104,
+          "y": 152
+        },
+        "worldSource": "camera",
+        "winner": {
+          "layer": "planeB",
+          "spriteIndex": 4
+        },
+        "owner": {
+          "kind": "none",
+          "raw": "0x0000"
+        },
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.26 M1 — RED-FIRST: `spriteIndex` is present iff the winner is a sprite, since it mirrors pixel_attribution's winner exactly. Perturbs the pass above by adding spriteIndex and nothing else. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "x": 160,
+        "y": 112
+      },
+      "why": "§11.26 M1 — params are x, y in pixel_attribution's native-dot space with the same bounds. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_at",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "x": 160,
+        "y": 112,
+        "layers": "planeA"
+      },
+      "why": "§2.5 / §8 item 22 — an undeclared top-level param is -32602. M1 declares x and y only. (authored by the oracle lane, oracle 2c1e5de; applied by the contract lane 2026-08-29)"
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "def": "0x00A1C4",
+        "x": 1024,
+        "y": 320,
+        "subtype": 3,
+        "flipH": true,
+        "flipV": false,
+        "maxFrames": 2,
+        "expectFrameToken": 601
+      },
+      "why": "§11.32 / CR-J §9.1 - every declared param at once, addressed by `def`."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "defSymbol": "ObjDef_Ring",
+        "x": 1024,
+        "y": 320
+      },
+      "why": "§11.32 Q5 - the ergonomic path: the archetype NAMED rather than addressed, with x and y the only other required params. defSymbol is what emulator/lookup_symbol's bounded prefix search hands back, which is why the ruling adds no archetype-catalogue row."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "def": "0x00A1C4",
+        "defSymbol": "ObjDef_Ring",
+        "x": 1024,
+        "y": 320
+      },
+      "why": "§11.32 Q5 - BOTH halves of the exactly-one pair. The oneOf matches two branches and therefore refuses, which is the direction a bare anyOf would have missed."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "x": 1024,
+        "y": 320
+      },
+      "why": "§11.32 Q5 - NEITHER half of the exactly-one pair. The same oneOf matches none. Both directions are proven because write_memory's addr|symbol precedent is proven in both."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "def": "0x00A1C4",
+        "x": 65536,
+        "y": 320
+      },
+      "why": "CR-J §9.1 - `x` past the engine's 16-bit position cell. Refused, never clamped (-32602)."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "def": "0x00A1C4",
+        "x": 1024,
+        "y": 320,
+        "subtype": 256
+      },
+      "why": "§11.32 Q4 - `subtype` past a byte. THE VECTOR THAT PAYS FOR THE STRUCTURED PARAMS: the raw placement word is not a param precisely because the engine masks it to $60FF silently, so an over-large subtype must be a refusal here rather than a truncation there."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "def": "0x00A1C4",
+        "x": 1024,
+        "y": 320,
+        "maxFrames": 0
+      },
+      "why": "CR-J §9.1 - `maxFrames` below 1. A budget of zero frames could never collect the engine's acknowledgement, so every such call would be -32005 mailboxNotConsumed by construction."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "def": "0x00A1C4",
+        "x": 1024,
+        "y": 320,
+        "place": "0x6003"
+      },
+      "why": "§2.5 / §8 item 22 - an undeclared top-level param is -32602. `place` is the raw placement word §11.32 Q4 deliberately refuses to accept, so this is the closure biting on the exact key the ruling struck."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "def": "ObjDef_Ring",
+        "x": 1024,
+        "y": 320
+      },
+      "why": "D9 category 1 - `def` is an ADDRESS and travels as a hex string. A name here belongs in defSymbol, which is the other half of the pair."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "defSymbol": "ObjDef_Ring+$4",
+        "x": 1024,
+        "y": 320
+      },
+      "why": "§4 / D7 - defSymbol is a symbolName and must ROUND-TRIP through lookup_symbol. A trailing +$hex displacement is a number duplicated inside a string, and this row declares no `disp` for it to mean anything against."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "slot": 12,
+        "x": 1024,
+        "y": 320,
+        "framesAdvanced": 1,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        },
+        "caveat": "the machine was paused mid-frame; the engine consumed the request on the following frame top"
+      },
+      "why": "§11.32 / CR-J §9.1 - the whole-answer case: handle (the low word of addr), the full SST addr, the slot join, the position, the frame advance, layout, and the ONE thing caveat is for, the mid-frame window the ruling says is disclosed and never hidden."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "x": 1024,
+        "y": 320,
+        "framesAdvanced": 0,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.32 / rule (3) one level up - `slot` OMITTED because the layout did not resolve it, and no caveat, because the server could not tell that the mid-frame window applied. framesAdvanced 0 is a legal answer and is the answer, not the absence of one."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "x": 1024,
+        "y": 320,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§6 rule (5) - `framesAdvanced` missing. These rows advance a paused machine to collect the engine's acknowledgement and MUST report it on every reply, so a caller can always say where the machine ended up. Required, 0 included."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "x": 1024,
+        "y": 320,
+        "framesAdvanced": 1
+      },
+      "why": "§6 rule (1) - `layout` missing. The mutation rows inherit the decoder group's obligation whole: an unstated layout assumption is §4's confidently-wrong-information one level up."
+    },
+    {
+      "method": "emulator/object_spawn",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "x": 1024,
+        "y": 320,
+        "framesAdvanced": 1,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0",
+          "pool": "dynamic"
+        }
+      },
+      "why": "§11.25 - a stranger key inside `layout`. decoderLayout closes itself, so the closure that IS expressible here is proven to bite. NOTE what this vector is standing in for: a surplus key at the RESULT top level cannot be a red vector in this harness at all, because §8 item 20's closure is applied only to PASS vectors (G4) and is deliberately absent from the published fragment."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "handle": "0x8E62",
+        "x": 1200,
+        "y": 300
+      },
+      "why": "§11.32 Q5 - addressed by `handle`, the spelling a previous object_spawn returned."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "slot": 12,
+        "x": 1200,
+        "y": 300,
+        "maxFrames": 4,
+        "expectFrameToken": 700
+      },
+      "why": "§11.32 Q5 - addressed by `slot`, the spelling object_list reports, with the frame guard. The either-spelling convention of read / write_memory / memory_hash applied to the same problem: the client has one of two spellings and should not have to convert."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "slot": 12,
+        "x": 1200,
+        "y": 300
+      },
+      "why": "§11.32 Q5 - BOTH halves of handle|slot. Two matching branches, so the oneOf refuses."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "x": 1200,
+        "y": 300
+      },
+      "why": "§11.32 Q5 - NEITHER half of handle|slot. A move that names no object is not a smaller request; it is not a request."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "x": 1200,
+        "y": -1
+      },
+      "why": "CR-J §9.2 - a negative `y`. World pixels are the engine's unsigned 16-bit position cell here; refused, never clamped. NOTE the asymmetry with the RESULT's x/y, which is left unbounded on purpose, since the contract has not settled echo versus re-read."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "x": 1200,
+        "y": 300,
+        "velocityX": 0
+      },
+      "why": "§2.5 / §8 item 22 - an undeclared top-level param is -32602. POSITION ONLY is the row's whole semantics: velocity, status, angle and animation are untouched, so a velocity param is not a widening this fragment may absorb quietly."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "slot": 12,
+        "x": 1200,
+        "y": 300,
+        "framesAdvanced": 1,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.32 / CR-J §9.2 - the handle echoed back to a caller who addressed by slot, so one call converts the two spellings."
+    },
+    {
+      "method": "emulator/object_move",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "slot": 12,
+        "x": 1200,
+        "y": 300,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§6 rule (5) - `framesAdvanced` missing, on the second of the three rows: the obligation is the family's, not one row's."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "handle": "0x8E62"
+      },
+      "why": "§11.32 / CR-J §9.3 - a delete names a thing, not a place: no x/y, and the handle alone is a complete call."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "slot": 12,
+        "maxFrames": 3,
+        "expectFrameToken": 700
+      },
+      "why": "§11.32 / CR-J §9.3 - the same call by slot, with the budget and the frame guard."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "slot": 12
+      },
+      "why": "§11.32 Q5 - BOTH halves of handle|slot."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {},
+      "why": "§11.32 Q5 - NEITHER half. An empty delete is the one call this row must never accept, since there is no default object and no read this could degrade to."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "maxFrames": 0
+      },
+      "why": "CR-J §9.3 - `maxFrames` below 1, as on spawn."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "cascade": true
+      },
+      "why": "§2.5 / §8 item 22 - an undeclared top-level param is -32602. The cascade is the engine's DeleteObject taking the child chain, not a caller's option, so `cascade` is a param the contract never granted."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "slot": 12,
+        "framesAdvanced": 2,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.32 / CR-J §9.3 - NO `deleted: true`. A field true on every success is §11.5's released-with-a-useful-name, and the failure path is a typed error, so the boolean could never carry information. What remains is what the call acted on."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "framesAdvanced": 2
+      },
+      "why": "§6 rule (1) - `layout` missing on the third row."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x00FF8E62",
+        "slot": 12,
+        "framesAdvanced": 2,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "§11.32 - `handle` missing. Once the record is gone the handle is the only thing left that names what the call acted on, so it is required even here."
+    },
+    {
+      "method": "emulator/object_delete",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "handle": "0x8E62",
+        "addr": "0x00FF8E62",
+        "slot": -1,
+        "framesAdvanced": 2,
+        "layout": {
+          "engine": "aeon-sst",
+          "detectedBy": "symbol",
+          "slotBytes": 80,
+          "slotCount": 66,
+          "baseAddr": "0x00FF8DB0"
+        }
+      },
+      "why": "D9 category 2 - a negative `slot`. The join back to object_list is a pool index, and a sentinel smuggled into it is the rebased-sentinel defect object_at's ring vector names."
+    },
+    {
+      "method": "emulator/pixel_attribution",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "candidates": [
+          {
+            "cramIndex": 6,
+            "layer": "planeA",
+            "opaque": true,
+            "priority": false,
+            "verdict": "won"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "planeB",
+            "opaque": false,
+            "priority": false,
+            "verdict": "transparent"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "backdrop",
+            "opaque": true,
+            "priority": false,
+            "verdict": "lostToPriority"
+          }
+        ],
+        "cell": {
+          "hflip": false,
+          "palette": 0,
+          "priority": false,
+          "tile": 6,
+          "tileAddr": "0x000000C0",
+          "vflip": false
+        },
+        "cramAddr": "0x0000000C",
+        "cramIndex": 6,
+        "droppedEvents": 0,
+        "frame": 30,
+        "height": 224,
+        "mclk": 26881330,
+        "rgb": {
+          "b": 0,
+          "g": 0,
+          "r": 0
+        },
+        "running": false,
+        "state": "shadow",
+        "width": 320,
+        "winner": {
+          "layer": "planeA"
+        },
+        "x": 100,
+        "y": 100,
+        "caveat": "this dot's palette entry was written after line 100 of the last completed frame was drawn, so the picture on screen may show a different colour here; read emulator/scanlines for the rows the raster actually drew"
+      },
+      "why": "[CR-G, oracle cfaf6c0] §11.27 — the disclosing reply. A qualifying CRAM write occurred since line y drew, so the caveat is present and names emulator/scanlines. The document body is a REAL reply captured from the server (color_1536.bin, 30 frames, paused, dot 100,100) with only the caveat added — so nothing here is a hand-built shape that could not occur."
+    },
+    {
+      "method": "emulator/pixel_attribution",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "candidates": [
+          {
+            "cramIndex": 6,
+            "layer": "planeA",
+            "opaque": true,
+            "priority": false,
+            "verdict": "won"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "planeB",
+            "opaque": false,
+            "priority": false,
+            "verdict": "transparent"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "backdrop",
+            "opaque": true,
+            "priority": false,
+            "verdict": "lostToPriority"
+          }
+        ],
+        "cell": {
+          "hflip": false,
+          "palette": 0,
+          "priority": false,
+          "tile": 6,
+          "tileAddr": "0x000000C0",
+          "vflip": false
+        },
+        "cramAddr": "0x0000000C",
+        "cramIndex": 6,
+        "droppedEvents": 0,
+        "frame": 30,
+        "height": 224,
+        "mclk": 26881330,
+        "rgb": {
+          "b": 0,
+          "g": 0,
+          "r": 0
+        },
+        "running": false,
+        "state": "shadow",
+        "width": 320,
+        "winner": {
+          "layer": "planeA"
+        },
+        "x": 100,
+        "y": 100
+      },
+      "why": "[CR-G, oracle cfaf6c0] §11.27 — THE PAIR TO THE ONE ABOVE, and the reason the emission rule is a rule. No qualifying write, so the caveat is absent. Both documents are valid, which is precisely why 'emitted when and only when it can matter' is a live conformance row and not something this file can check."
+    },
+    {
+      "method": "emulator/pixel_attribution",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "candidates": [
+          {
+            "cramIndex": 6,
+            "layer": "planeA",
+            "opaque": true,
+            "priority": false,
+            "verdict": "won"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "planeB",
+            "opaque": false,
+            "priority": false,
+            "verdict": "transparent"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "backdrop",
+            "opaque": true,
+            "priority": false,
+            "verdict": "lostToPriority"
+          }
+        ],
+        "cell": {
+          "hflip": false,
+          "palette": 0,
+          "priority": false,
+          "tile": 6,
+          "tileAddr": "0x000000C0",
+          "vflip": false
+        },
+        "cramAddr": "0x0000000C",
+        "cramIndex": 6,
+        "droppedEvents": 0,
+        "frame": 30,
+        "height": 224,
+        "mclk": 26881330,
+        "rgb": {
+          "b": 0,
+          "g": 0,
+          "r": 0
+        },
+        "running": false,
+        "state": "shadow",
+        "width": 320,
+        "winner": {
+          "layer": "planeA"
+        },
+        "x": 100,
+        "y": 100,
+        "caveat": {
+          "text": "the picture may differ"
+        }
+      },
+      "why": "[CR-G, oracle cfaf6c0] RED-FIRST — `caveat` is declared `type: string`. An object here is the shape a server would produce if it tried to carry structured disclosure, and it must be refused rather than silently accepted."
+    },
+    {
+      "method": "emulator/pixel_attribution",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "candidates": [
+          {
+            "cramIndex": 6,
+            "layer": "planeA",
+            "opaque": true,
+            "priority": false,
+            "verdict": "won"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "planeB",
+            "opaque": false,
+            "priority": false,
+            "verdict": "transparent"
+          },
+          {
+            "cramIndex": 0,
+            "layer": "backdrop",
+            "opaque": true,
+            "priority": false,
+            "verdict": "lostToPriority"
+          }
+        ],
+        "cell": {
+          "hflip": false,
+          "palette": 0,
+          "priority": false,
+          "tile": 6,
+          "tileAddr": "0x000000C0",
+          "vflip": false
+        },
+        "cramAddr": "0x0000000C",
+        "cramIndex": 6,
+        "droppedEvents": 0,
+        "frame": 30,
+        "height": 224,
+        "mclk": 26881330,
+        "running": false,
+        "state": "shadow",
+        "width": 320,
+        "winner": {
+          "layer": "planeA"
+        },
+        "x": 100,
+        "y": 100,
+        "caveat": "this dot's palette entry was written after line 100 of the last completed frame was drawn, so the picture on screen may show a different colour here; read emulator/scanlines for the rows the raster actually drew"
+      },
+      "why": "[CR-G, oracle cfaf6c0] RED-FIRST — a caveat excuses nothing. `rgb` stays REQUIRED (§11.27: 'rgb's value does not change'), so a reply that discloses uncertainty INSTEAD of answering is refused. This is the failure a well-meaning implementer produces: disclosure offered in place of the datum rather than beside it."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "returned": 3,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "Oracle — frame 12720 [PAUSED]",
+            "text": "Oracle — frame 12720 [PAUSED]",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "AETHER ON 4:3 320X2",
+            "text": "AETHER ON 4:3 320X224 F12720",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "toast",
+            "rendered": "PRESS ` FOR COMMANDS",
+            "text": "PRESS ` FOR COMMANDS",
+            "truncated": false,
+            "unrenderable": [
+              "`"
+            ]
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      "why": "[CR-H, oracle e8c49b1] §11.29 — THE POPULATED REPLY, and the provenance is stated rather than implied: this document is a REAL reply from the real handler reached through the real seam (`Host::set_screen_text`) over a real socket, printed by `tests/hosted.rs::a_player_that_published_its_screen_serves_every_surface_with_both_strings`. It is NOT a capture from a live window: this lane may not launch the player, so the snapshot was pushed by a test harness standing in for the present block. Every string in it is one the frontend really composes — main.rs's window title, a status line cut by the player's own `fit`, and the player's very first toast, whose backtick this font has no glyph for."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "returned": 0,
+        "running": true,
+        "surfaces": [],
+        "total": 0,
+        "truncated": false
+      },
+      "why": "[CR-H, oracle e8c49b1] §11.29 — THE BLANK SCREEN, and it is the pair that makes the refusal mean something. A window with F3 off, no toasts and nothing else on draws no characters at all; that is the default launch, and it SUCCEEDS with an empty list. Real reply, same harness (`a_blank_screen_succeeds_where_no_screen_refuses`). Note `truncated: false` is present rather than omitted — §2.4 clause (a)."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "returned": 3,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "Oracle — frame 12720 [PAUSED]",
+            "text": "Oracle — frame 12720 [PAUSED]",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "AETHER ON 4:3 320X2",
+            "text": "AETHER ON 4:3 320X224 F12720",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "toast",
+            "rendered": "PRESS ` FOR COMMANDS",
+            "text": "PRESS ` FOR COMMANDS",
+            "truncated": false
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      "why": "[CR-H, oracle e8c49b1] RED-FIRST, and it is the case the adjudication's second change exists for. The CR left `unrenderable` present-when-non-empty; the ruling made it REQUIRED even when empty, per §2.4 clause (a), because an absent field and an empty one must not be the same artifact. This document is the real reply with the toast's `unrenderable` deleted — exactly what a server that omitted empties would emit — and the fragment must refuse it."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "returned": 3,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "Oracle — frame 12720 [PAUSED]",
+            "text": "Oracle — frame 12720 [PAUSED]",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "AETHER ON 4:3 320X2",
+            "text": "AETHER ON 4:3 320X224 F12720",
+            "unrenderable": []
+          },
+          {
+            "kind": "toast",
+            "rendered": "PRESS ` FOR COMMANDS",
+            "text": "PRESS ` FOR COMMANDS",
+            "truncated": false,
+            "unrenderable": [
+              "`"
+            ]
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      "why": "[CR-H, oracle e8c49b1] RED-FIRST — the per-surface `truncated` is REQUIRED even when false. Deleted here from the ONE surface that was actually cut, which is the worst place to lose it: a caller reading a shortened `rendered` beside no flag has been handed the message's shadow with nothing saying so."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "returned": 3,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "Oracle — frame 12720 [PAUSED]",
+            "text": "Oracle — frame 12720 [PAUSED]",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "AETHER ON 4:3 320X2",
+            "text": "AETHER ON 4:3 320X224 F12720",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "toast",
+            "rendered": "PRESS ` FOR COMMANDS",
+            "text": "PRESS ` FOR COMMANDS",
+            "truncated": false,
+            "unrenderable": [
+              "`"
+            ]
+          }
+        ],
+        "total": 3
+      },
+      "why": "[CR-H, oracle e8c49b1] RED-FIRST — the RESULT-level `truncated` is REQUIRED even when false (§2.4 clause (a)). Without it a client cannot tell 'you have the whole screen' from 'this server does not say', which is the bounded-list rule's whole point and the reason the flat spelling carries total/returned/truncated at all."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "returned": 3,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "pausedBanner",
+            "rendered": "Oracle — frame 12720 [PAUSED]",
+            "text": "Oracle — frame 12720 [PAUSED]",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "AETHER ON 4:3 320X2",
+            "text": "AETHER ON 4:3 320X224 F12720",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "toast",
+            "rendered": "PRESS ` FOR COMMANDS",
+            "text": "PRESS ` FOR COMMANDS",
+            "truncated": false,
+            "unrenderable": [
+              "`"
+            ]
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      "why": "[CR-H, oracle e8c49b1] RED-FIRST — `kind` is a CLOSED enum. `pausedBanner` is not an idle choice: the PAUSED banner is real text on the glass and the adjudicated enum has no value for it, so a server that decided to serve it anyway would reach for exactly this spelling. Adding a surface must be a contract edit, not a silent drift, and this is the row that makes that true."
+    },
+    {
+      "method": "emulator/status",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "pc": "0xDEADBE",
+        "sp": "0xFFFE00",
+        "sr": "0x2700",
+        "frameToken": 12,
+        "symbolCount": 2970,
+        "romBytes": 1048576,
+        "romPath": "/tmp/s4.bin",
+        "symbolsPath": "/tmp/s4.debug.lst",
+        "caveat": "listing at symbolsPath no longer parses to the rows held; it was rebuilt under this session, reload it"
+      },
+      "why": "§11.34 (CR-K) — status may carry a §2.4 caveat, the standing symbol-freshness verdict; declared on the fragment so §8 item 20's closure admits it."
+    },
+    {
+      "method": "emulator/status",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "pc": "0xDEADBE",
+        "sp": "0xFFFE00",
+        "sr": "0x2700",
+        "frameToken": 12,
+        "symbolCount": 2970,
+        "romBytes": 1048576,
+        "romPath": "/tmp/s4.bin",
+        "symbolsPath": "/tmp/s4.debug.lst",
+        "caveat": {
+          "stale": true
+        }
+      },
+      "why": "§11.34 — caveat is a §2.4 string; a structured freshness object was the alternative CR-K did not ask for and is refused until amended in."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "name": "RING_BUFFER_ENTRY_SIZE"
+      },
+      "why": "§11.36 — exact-name form; the one named consumer's query (oracle's Objects panel ring ceiling)."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "prefix": "RING_"
+      },
+      "why": "§11.36 — bounded prefix form, mirroring lookup_symbol's ergonomic path."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "name": "RING_BUFFER_ENTRY_SIZE",
+        "prefix": "RING_"
+      },
+      "why": "§11.36 — exactly one of name and prefix; both is refused by the oneOf in both directions."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {},
+      "why": "§11.36 — neither form is not a query."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "addr": "0x1800"
+      },
+      "why": "§11.36 — equates have no address form; addr->name including equates is the annotation use CR-M explicitly did not serve (no consumer), and the key is refused."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "name": "RING_BUFFER_ENTRY_SIZE",
+        "value": 6
+      },
+      "why": "§11.36 — the exact hit: name and value, the value a plain integer (measured: EQU RING_BUFFER_ENTRY_SIZE = $00000006)."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "query": "RING_",
+        "matches": [
+          {
+            "name": "RING_BUFFER_ENTRY_SIZE",
+            "value": 6
+          }
+        ],
+        "truncated": false
+      },
+      "why": "§11.36 — the prefix reply, complete."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "query": "ZZZ",
+        "matches": []
+      },
+      "why": "§11.36 — an empty match list is a real answer, not an error."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "name": "RING_BUFFER_ENTRY_SIZE",
+        "value": "0x6"
+      },
+      "why": "D9 category 2 — a value is a JSON number, never a hex string."
+    },
+    {
+      "method": "emulator/lookup_equate",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "name": "RING_BUFFER_ENTRY_SIZE"
+      },
+      "why": "§11.36 — a result carries value or matches; a name alone has answered nothing while reporting success (the section 4 invariant, mirrored)."
+    }
+  ],
+  "specExamples": [
+    {
+      "name": "§2:300 request envelope",
+      "pointer": "$defs/request",
+      "expect": "pass",
+      "doc": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "emulator/read_memory",
+        "params": {
+          "symbol": "Camera_X",
+          "len": 4
+        }
+      }
+    },
+    {
+      "name": "§2:308 success envelope",
+      "pointer": "$defs/successResponse",
+      "expect": "pass",
+      "doc": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {
+          "addr": "0x00FFA144",
+          "len": 4,
+          "bytes": "0x02600000",
+          "symbol": "Camera_X",
+          "frame": 601,
+          "mclk": 538008040,
+          "running": false,
+          "droppedEvents": 0
+        }
+      }
+    },
+    {
+      "name": "§2:308 success result vs emulator/read_memory fragment",
+      "pointer": "methods/emulator~1read_memory/result",
+      "expect": "pass",
+      "doc": {
+        "addr": "0x00FFA144",
+        "len": 4,
+        "bytes": "0x02600000",
+        "symbol": "Camera_X",
+        "frame": 601,
+        "mclk": 538008040,
+        "running": false,
+        "droppedEvents": 0,
+        "region": "work RAM"
+      }
+    },
+    {
+      "name": "§2:314 error envelope",
+      "pointer": "$defs/errorResponse",
+      "expect": "pass",
+      "doc": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "error": {
+          "code": -32004,
+          "message": "address out of range",
+          "data": {
+            "addr": "0x000000",
+            "frame": 601,
+            "mclk": 538008040,
+            "running": false,
+            "droppedEvents": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "§2:321 notification envelope",
+      "pointer": "$defs/notification",
+      "expect": "pass",
+      "doc": {
+        "jsonrpc": "2.0",
+        "method": "emulator/stopped",
+        "params": {
+          "reason": "breakpoint",
+          "breakpoint": "bp-3",
+          "pc": "0x00012A4C",
+          "stopPrecision": "exact",
+          "symbol": "Obj_Spring",
+          "frame": 601,
+          "mclk": 538008040,
+          "running": false
+        }
+      }
+    },
+    {
+      "name": "§2:321 notification params vs emulator/stopped event",
+      "pointer": "events/emulator~1stopped/params",
+      "expect": "pass",
+      "doc": {
+        "reason": "breakpoint",
+        "breakpoint": "bp-3",
+        "pc": "0x00012A4C",
+        "stopPrecision": "exact",
+        "symbol": "Obj_Spring",
+        "frame": 601,
+        "mclk": 538008040,
+        "running": false
+      }
+    },
+    {
+      "name": "§2.1:329 initialize params",
+      "pointer": "handshake/initialize/params",
+      "expect": "pass",
+      "doc": {
+        "clientId": "mcp",
+        "clientName": "oracle-mcp",
+        "clientVersion": "0.x",
+        "protocolVersion": 1,
+        "clientCapabilities": {
+          "events": true
+        }
+      }
+    },
+    {
+      "name": "§2.1:337 initialize result",
+      "pointer": "handshake/initialize/result",
+      "expect": "pass",
+      "doc": {
+        "serverName": "oracle",
+        "serverVersion": "x",
+        "implementation": "oracle-rs",
+        "serverBuild": {
+          "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
+          "source": "vcs",
+          "dirty": false
+        },
+        "protocolVersion": 1,
+        "capabilities": {
+          "events": [
+            "emulator/stopped",
+            "emulator/resumed",
+            "emulator/romReloaded"
+          ],
+          "z80": true,
+          "vgm": true,
+          "objectDecoders": true,
+          "profiler": true,
+          "symbolsLoaded": true,
+          "checkpoints": {
+            "supported": true,
+            "cap": 8
+          },
+          "watchpoints": {
+            "supported": true,
+            "spaces": [
+              "bus",
+              "vram",
+              "cram",
+              "vsram"
+            ],
+            "maxWatches": 32,
+            "ringCap": 8192
+          }
+        },
+        "methods": [
+          "emulator/ping",
+          "emulator/pause",
+          "emulator/resume"
+        ],
+        "methodSummaries": {
+          "emulator/pause": "stop free-running"
+        },
+        "limits": {
+          "maxRunFrames": 3600,
+          "maxReadLen": 4096,
+          "maxLineBytes": 1048576
+        },
+        "timingBasis": {
+          "standard": "ntsc",
+          "mclkPerFrame": 896040,
+          "linesPerFrame": 262
+        },
+        "frame": 601,
+        "mclk": 538008040,
+        "running": false,
+        "droppedEvents": 0,
+        "stopPrecision": {
+          "watchpoint": "afterCommit",
+          "step": "exact",
+          "runTo": "exact",
+          "runToScanline": "exact",
+          "runFrames": "exact",
+          "pause": "exact",
+          "entry": "exact"
+        }
+      }
+    },
+    {
+      "name": "§4:749 otherMatches container",
+      "pointer": "methods/emulator~1lookup_symbol/result/properties/otherMatches",
+      "expect": "pass",
+      "doc": {
+        "items": [
+          {
+            "name": "Obj_Spring",
+            "addr": "0x00012A4C",
+            "demangled": "Obj_Spring"
+          }
+        ],
+        "total": 12,
+        "returned": 5,
+        "truncated": true
+      }
+    }
+  ]
+}

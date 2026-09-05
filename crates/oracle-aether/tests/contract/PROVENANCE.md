@@ -1,9 +1,24 @@
 # Vendored contract artifacts — provenance
 
-`bus-protocol.schema.json` in this directory is a **verbatim copy** of the Aether wire schema from the
-contract repo. It is vendored, not read from the sibling checkout at test time, so the test suite is
-hermetic: it compiles against a fixed schema and produces the same verdict on a machine that has no
-`empyrean/` checkout at all.
+**Two** artifacts live in this directory as of 2026-09-05, both verbatim copies from the contract repo:
+
+| file | what it is | pinned by |
+|---|---|---|
+| `bus-protocol.schema.json` | the Aether wire schema (D14's authority for shapes) | `pin.blob` below |
+| `vectors.json` | the contract's own wire vectors — the documents the hub asserts the schema accepts, and the ones it asserts the schema **refuses** | `pin.vectors.blob` below |
+
+Both are vendored, not read from the sibling checkout at test time, so the test suite is hermetic: it
+compiles against fixed bytes and produces the same verdict on a machine that has no `empyrean/` checkout
+at all.
+
+**Why the vectors joined the schema (2026-09-05, §11.36).** A vendored schema alone can only be checked
+against the replies this server happens to emit, and that population contains no *refusals*: nothing here
+could ever have caught a fragment that accepts everything. The vectors are the hub's own anti-vacuity
+evidence — 267 cases, of which the ones marked `expect: "fail"` are the load-bearing half —
+and `schema_conformance::the_contracts_own_vectors_pass_and_fail_exactly_as_declared` runs all of them
+against the vendored fragments (upstream's G3 and G4, replicated). The two files are pinned at the **same
+contract revision**, and the gate asserts that: a schema from one revision beside vectors from another is
+a check that a fragment accepts documents written for a different fragment.
 
 The copy is not allowed to rot, and **since 2026-09-02 the way that is checked changed shape.** The gate
 no longer reads a file out of the sibling checkout. It **hashes the vendored bytes and compares the hash
@@ -17,31 +32,51 @@ the peer through git objects at a named revision, never through the peer's worki
 repo's own finding `F-SCHEMA-READS-LIVE-EMPYREAN` by name. What this file therefore has to carry is the
 pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolves) below.
 
-<!-- The three lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
+<!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 8eff7d4fbd9d5c9596ffa2cce50213389a154c76
-    pin.blob     = be18388977a1829989b675991ad666a037e2a81b
-    pin.bytes    = 349524
+    pin.revision = 2208aa8b7beee58e3532ebb804d185cfc923e026
+    pin.blob     = 4ff6019786b7ec977856fd52a40a168733ae209d
+    pin.bytes    = 353344
 
-## Current copy
+    pin.vectors.revision = 2208aa8b7beee58e3532ebb804d185cfc923e026
+    pin.vectors.blob     = d185c336c203a676bbb77bf505bd7bbe7217a2d5
+    pin.vectors.bytes    = 125753
+
+## Current copy — the schema
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`8eff7d4fbd9d5c9596ffa2cce50213389a154c76`** (2026-09-04) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 8eff7d4fbd9d5c9596ffa2cce50213389a154c76 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `0f973ba6` at the time). 67 method fragments (the `methods` object carries 68 keys, one of which is a `$comment`); all 67 declare `params`, all 67 close it with `unevaluatedProperties: false` (handshake exempt), and all 67 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The whole delta from the copy this replaces is **one string**: `methods["emulator/object_move"].params.properties.x.description` scopes its cross-reference to `object_spawn` down to units and space, and says the §11.35 act bound is **not** inherited; `y.description` still reads *"See x."*; no type, bound, key, `$comment` or vector changed. That single leaf is the only reason this re-vendor exists. |
-| Last commit that touched the schema | **`8eff7d4fbd9d5c9596ffa2cce50213389a154c76`** — *"schema: object_move.x scopes its cross-reference to object_spawn (units and space only; the 11.35 act bound does not apply, no-clamp wins); oracle's finding"* (2026-09-04). That commit's `--stat` is one file, `1 insertion(+), 1 deletion(-)`. |
-| Git blob | `be18388977a1829989b675991ad666a037e2a81b` |
-| SHA-256 | `9e705f050b252382a54c7829b269a13ce4f8023353bf29445bc320a99d57cd57` |
-| Bytes | 349524 |
-| Vendored on | 2026-09-04 |
+| Contract repo revision | **`2208aa8b7beee58e3532ebb804d185cfc923e026`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 2208aa8 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `4ee5b42b` at the time). **68** method fragments (the `methods` object carries 69 keys, one of which is a `$comment`); all 68 declare `params`, all 68 close it with `unevaluatedProperties: false` (handshake exempt), and all 68 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **one whole new fragment and nothing else**: `emulator/lookup_equate`. Zero leaf values changed anywhere; zero leaf paths removed; the eight top-level keys outside `methods` compare byte-identical, and not one pre-existing fragment differs by so much as a `description`. |
+| Last commit that touched the schema | **`2208aa8b7beee58e3532ebb804d185cfc923e026`** — *"protocol 11.36: CR-M adopted, emulator/lookup_equate (the listing's equates in their own namespace; value is a number, not an address); ten vectors"* (2026-09-05). |
+| Git blob | `4ff6019786b7ec977856fd52a40a168733ae209d` |
+| SHA-256 | `bee0e1a32571e506d4e277449f260c45e10d36fb724d62b1b704025f9e66fa97` |
+| Bytes | 353344 |
+| Vendored on | 2026-09-05 |
 
-> **⚑ The tip diverged from the recipe AGAIN, and for the second re-vendor running the tip was a
-> lane-log commit that never touched this file.** `origin/main` was `0f973ba6` — *"bank 2026-09-04…:
-> tick, loop repainted, aeon to land and drive; oracle pushed"* — when this was taken, and
-> `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` answered `8eff7d4f`.
-> A pin taken from "whatever `origin/main` is now" would have named `0f973ba6`, a bookkeeping commit that
-> wrote none of these bytes. The recipe was run, not skipped, and `--is-ancestor` was run on its answer.
+## Current copy — the vectors
+
+| | |
+|---|---|
+| Source | `empyrean/contract/schema/tests/vectors.json` |
+| Contract repo revision | **`2208aa8b7beee58e3532ebb804d185cfc923e026`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`, the **same** recipe run against the second path, which answered the **same** commit. `--is-ancestor` was run on it. **267 cases** (`cases[]`), naming **35** distinct methods, of which **10** are `emulator/lookup_equate`; the `$comment`, `envelope`, `eventEnvelope` and `specExamples` keys are byte-identical to the previous revision. |
+| Git blob | `d185c336c203a676bbb77bf505bd7bbe7217a2d5` |
+| SHA-256 | `e52abfd8e05cec4e4e87dac28db67ca0f25d1d92b131642f17b3ad32dc89cd67` |
+| Bytes | 125753 |
+| Vendored on | 2026-09-05 (**first** time this artifact has been vendored here) |
+
+> **⚑ The tip diverged from the recipe AGAIN — the third time in the last four re-vendors, and again a
+> lane-log commit.** `origin/main` was `4ee5b42b` — *"bank 2026-09-04T23:48:23Z: CR-M adopted at
+> 2208aa8"* — when this was taken, and `git log -1 --format=%H origin/main -- <path>` answered `2208aa8`
+> **for both paths**. A pin taken from "the tip of the ruling" would have named `4ee5b42b`, a bookkeeping
+> commit that wrote none of these bytes; a pin taken from the ruling's own §11.36 prose would have been
+> right by luck, since the adoption commit and the byte-writing commit coincide here. The recipe was run,
+> not skipped, and it was run **once per path** rather than assumed to give one answer for two files.
+>
+> *(Retired, kept because it is the previous re-vendor's own reading.)* ~~The tip diverged from the recipe
+> AGAIN, and for the second re-vendor running the tip was a lane-log commit that never touched this
+> file.~~ That was `8eff7d4f` against tip `0f973ba6`.
 >
 > *(Retired, kept because it is the previous re-vendor's own reading and this one supersedes rather than
 > erases it.)* ~~The recipe and the tip-of-the-ruling gave DIFFERENT commits this time, after two
@@ -66,17 +101,16 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 > this commit; none is carried over, and **both halves were updated in this commit** rather than the pin
 > alone.
 >
-> ⚑ **This re-vendor has NO serve to land beside it, and that is a statement about the delta, not an
-> exemption.** The same-commit rule exists because a fragment that moves ahead of the server is a silent
-> contract change; here the only thing that moved is a `description`, which no validator reads and no
-> handler consults, so there is no obligation for a server to grow and nothing that could go ahead of one.
-> The rule stands unchanged for the next re-vendor that touches a shape.
+> ⚑ **This re-vendor lands in the SAME COMMIT as the serve it describes**, and here the rule has teeth
+> in both directions at once. `params_closure.rs` demands a fragment for every advertised method, so
+> `emulator/lookup_equate` shipping alone reddens it; and the coverage pin `UNCOVERED_METHODS` /
+> `SCHEMATIZED_NOT_ADVERTISED` would have to grow and then shrink if the fragment landed first. One
+> commit is the only ordering with no window.
 >
-> *(The line this replaces belonged to the §11.35 re-vendor, where it was true: "This re-vendor landed in
-> the SAME COMMIT as the serve it describes… §11.35's live half (§8 item 26, the four suite cases) is in
-> this commit too.")*
+> *(The line this replaces belonged to the 2026-09-04 `object_move` correction, where it was true: "This
+> re-vendor has NO serve to land beside it… the only thing that moved is a `description`.")*
 
-**Taken from the object store at a committed revision**, `git show 8eff7d4f:contract/schema/bus-protocol.schema.json`, never copied out of the sibling working tree. The adoption was then checked **by content address**: `git hash-object` on the written file returns `be183889…`, equal to `git rev-parse 8eff7d4f:contract/…` resolved in the *contract* repo. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
+**Taken from the object store at a committed revision** — `git show 2208aa8:contract/schema/bus-protocol.schema.json` and `git show 2208aa8:contract/schema/tests/vectors.json` — never copied out of the sibling working tree. Both adoptions were then checked **by content address**: `git hash-object` on the written files returns `4ff60197…` and `d185c336…`, each equal to `git rev-parse 2208aa8:<path>` resolved in the *contract* repo. That is the one check that cannot be talked into agreeing, and this repo has caught a doctored restore with it before.
 
 ## How the freshness gate resolves
 
@@ -85,10 +119,17 @@ it** (`SUITE_PATHS.md`: *"Say which step answered"*).
 
 | step | source | what it proves |
 |---|---|---|
-| 0 | the vendored bytes themselves, hashed as a git blob and compared to `pin.blob` above | that this copy is the artifact the pin names. **Always runs. Never skipped.** This is the substance of the gate. |
+| 0 | the vendored bytes themselves, hashed as a git blob and compared to `pin.blob` above — **once for the schema and once for the vectors** | that each copy is the artifact its pin names. **Always runs. Never skipped.** This is the substance of the gate. Step 0 also asserts the two pins name the **same revision**. |
 | 1 | `$AETHER_CONTRACT_SCHEMA` — a path to a **file** | that the pinned bytes equal that file. The legitimate override, for a checkout with no peer repo, and for a nightly that wants to compare against something specific. |
 | 2 | `$AETHER_CONTRACT_REPO` — a path to a **git checkout** of the contract repo, read through `git cat-file` / `git merge-base` and **never** through its working tree | that the pinned blob exists in that repo, and that `pin.revision` is an ancestor of its committed default branch — i.e. the pin names something real and merged, not a local draft. |
 | — | neither variable set | **nothing about the peer**, said so in the run's output: the resolver prints a banner naming both variables and returns. There is no walk up the filesystem, which is precisely the shape `F-SCHEMA-READS-LIVE-EMPYREAN` registered. |
+
+⚑ **Steps 1 and 2 cover the SCHEMA only, stated rather than implied.** `$AETHER_CONTRACT_SCHEMA` names a
+file and `$AETHER_CONTRACT_REPO`'s check resolves `contract/schema/bus-protocol.schema.json` at
+`pin.revision`; neither reaches `vectors.json`. The vectors' identity is closed by step 0 — the half that
+always runs and cannot be skipped — and the same-revision assertion ties them to a schema that *is*
+confirmable. Extending step 2 to the second path is a small, unclaimed improvement, not a hole anyone is
+relying on being closed.
 
 **What was given up, and why that was the trade.** The old gate walked up from `CARGO_MANIFEST_DIR`,
 found `empyrean/contract/schema/bus-protocol.schema.json`, and byte-compared it — so a contract edit made
@@ -102,16 +143,28 @@ failure the pin exists for, and it never again reports a verdict about somebody'
 
 ```sh
 REPO=/path/to/empyrean
-REV=$(git -C "$REPO" log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json)
-git -C "$REPO" merge-base --is-ancestor "$REV" origin/main   # must exit 0
+# Run the recipe ONCE PER PATH. The two files can move independently, and assuming one answer for two
+# paths is the same class of mistake as assuming the tip.
+for P in contract/schema/bus-protocol.schema.json contract/schema/tests/vectors.json; do
+  REV=$(git -C "$REPO" log -1 --format=%H origin/main -- "$P")
+  git -C "$REPO" merge-base --is-ancestor "$REV" origin/main   # must exit 0
+  echo "$P -> $REV"
+done
+# Then, with the revision each path answered:
 git -C "$REPO" show "$REV:contract/schema/bus-protocol.schema.json" \
   > crates/oracle-aether/tests/contract/bus-protocol.schema.json
+git -C "$REPO" show "$REV:contract/schema/tests/vectors.json" \
+  > crates/oracle-aether/tests/contract/vectors.json
 git hash-object crates/oracle-aether/tests/contract/bus-protocol.schema.json  # -> the new pin.blob
+git hash-object crates/oracle-aether/tests/contract/vectors.json              # -> pin.vectors.blob
 git -C "$REPO" rev-parse "$REV:contract/schema/bus-protocol.schema.json"      # must be identical
+git -C "$REPO" rev-parse "$REV:contract/schema/tests/vectors.json"            # must be identical
 ```
 
-Then update the three `pin.*` markers and the **Current copy** table above, in the same commit as the
-serve that needs the new schema.
+Then update **all six** `pin.*` markers and **both** **Current copy** tables above, in the same commit as
+the serve that needs the new schema. The pin markers and the tables are two halves of one record and a
+re-vendor moves both: the tables were stale once while every gate stayed green, because no gate reads
+them.
 
 *(Historical, kept because it records how an upstream drafting error is handled here — it belongs to the 2026-08-26 adoption, not to the current copy.)* **A drafting miss carried in the open, because it is upstream's and not ours.** The `a0c50a11` landing left one clause of the top-level `description` reading *"the eight BLOCKED rows print there too"* when the set had just become five. It was reported rather than patched locally — a vendored copy that is hand-corrected is a copy whose blob check is worthless — and the hub landed the fix as `55d99a68`, which is why **this** revision is the one adopted rather than `a0c50a11`. `contract/protocol.md` and `contract/schema/tests/vectors.json` are byte-identical at both.
 
@@ -125,6 +178,55 @@ serve that needs the new schema.
 *(The unmerged-branch tracking box that stood here retired itself 2026-08-21 when `callers-amendment`
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
+
+### What this re-vendor adopted — §11.36 (CR-M): `emulator/lookup_equate`, 67 → 68 fragments (2026-09-05)
+
+**One fragment added, nothing else touched anywhere, and a second artifact vendored for the first time.**
+§11.36 is **this lane's own CR**, raised out of the Objects panel's ring ceiling: the panel could measure
+the ring buffer's span in bytes and could not turn it into a number of rings, because the divisor
+(`RING_BUFFER_ENTRY_SIZE`) is published by the listing only in its `Equate Table`, a section
+`oracle-core`'s symbol reader recognised and deliberately did not ingest. The CR re-derived its own demand
+rather than inheriting it — the queue row had been promoted on two consumers and has **one**, the second
+having closed under §11.35 with RAM words — and said refusal was defensible. It was adopted, **option A**,
+because the shape cost is one fragment and the alternative was the silent class this bus refuses by
+design.
+
+Figures **re-derived by parsing both copies** (`git cat-file blob be183889…` for the previous one), never
+read from a commit message. Both were flattened to leaf paths and compared **structurally**, not
+textually:
+
+| | previous copy (`8eff7d4f`) | this copy (`2208aa8`) | delta |
+|---|---|---|---|
+| method fragments | 67 | **68** | **+1**: `emulator/lookup_equate` |
+| fragments declaring / closing `params` / declaring `result` | 67 / 67 / 67 | **68 / 68 / 68** | +1 / +1 / +1 |
+| `$defs` | 19 | **19** | unmoved — the row reuses `replyFields` and declares its `matches` items inline |
+| leaf paths added / removed | — | **32 / 0** | every one of the 32 is inside the new fragment |
+| **leaf values changed** | — | **0** | not one pre-existing leaf moved, `description`s included |
+| fragments whose JSON changed at all | — | **0** | the addition reaches nothing that was already there |
+| `$schema` / `$id` / `title` / `description` / `$defs` / `anyMessage` / `handshake` / `events` | — | **byte-identical**, all eight | unmoved |
+| bytes | 349524 | **353344** | +3820 |
+| **vectors** cases | 257 (`b447555`, never vendored here) | **267** | **+10**, all `emulator/lookup_equate`; 0 removed, 0 changed, and the prefix of 257 is identical |
+
+**What this re-vendor's green witnesses, and the one line it flips.** The fragment's `params` is closed
+with `unevaluatedProperties: false`, so from these bytes onward `params_closure.rs` ties this server's
+accepted key set for the row to the contract **by parse** — `{name, prefix}`, and an `addr` key is refused
+by name. The `result` half has force for shape: `anyOf` requires `value` or `matches`, so a reply carrying
+`name` alone is refused, and `value` is typed `integer`, so a hex string is refused. That is what the ten
+vectors assert, and this parcel is the first here that can *run* them: `vectors.json` is vendored beside
+the schema and `schema_conformance::the_contracts_own_vectors_pass_and_fail_exactly_as_declared`
+replicates upstream's G3/G4, including the anti-vacuity direction — a `fail` vector the schema accepts is
+a fragment that certifies without checking.
+
+**What it cannot witness**, and on this row it is the whole safety argument. A document schema cannot see
+that an equate never enters `addr→name`. `value` is *declared* not to be an address, in prose, inside a
+`description` no validator reads. The property is held structurally in `oracle-core`'s `symbols.rs` — an
+equate is never pushed into the symbol vector, so it cannot reach the reverse index every reverse lookup
+binary-searches — and asserted by
+`symbols::tests::equates_are_not_addressable_in_either_direction`, on an equate whose value **is**
+a real label's address. On the frozen `fixtures/aeon/s4.debug.lst`: 724 equates, 2,743 labels, zero name
+collisions, **661 of 724 values inside the cart window**, and **67 equates whose value equals the address
+of a real label**. Nor can it witness that the value is ever *emitted*, or that it is the value the
+listing actually carries; that is `tests/methods.rs`'s, anchored on the frozen listing's own bytes.
 
 ### What this re-vendor adopted — §11.35's **correction**: `object_move.x` scopes its cross-reference (2026-09-04)
 

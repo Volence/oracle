@@ -632,9 +632,12 @@ impl Panels<'_> {
             Ok(r) => {
                 ui.monospace(r.summary());
                 ui.small(objects::RINGS_WHY);
-                // The gap, stated. An absent ceiling with no sentence beside it is an invitation to
-                // divide the span above by a remembered entry size.
-                ui.small(objects::CEILING_UNKNOWN);
+                // The ceiling is in `summary()` when the listing publishes the entry size (§11.36).
+                // When it does not, the gap is STATED: an absent ceiling with no sentence beside it is
+                // an invitation to divide the span above by a remembered entry size.
+                if r.ceiling.is_none() {
+                    ui.small(objects::CEILING_UNKNOWN);
+                }
             }
             // A ring line this listing cannot supply is one missing line, and it says which symbol did
             // not answer — never a `0`, which would read as "no rings are loaded".

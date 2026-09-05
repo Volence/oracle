@@ -1891,6 +1891,98 @@
         }
       }
     },
+    "emulator/lookup_equate": {
+      "$comment": "Added 2026-09-05 (protocol.md section 11.36, oracle CR-M): the listing's EQUATE TABLE in a namespace of its own, never folded into the symbol table. Measured on aeon s4.debug.lst: 742 equates, 3,014 labels, zero name collisions, and 631 of the 742 equate VALUES fall inside the cart window, so folding them into addr->name would make an equate whose value is $1800 indistinguishable from a label AT $1800 on every reverse-lookup path, present and future. A separate door makes that impossible rather than filtered. Scope: what the LISTING publishes; values the build supplies on the command line are not in the listing (sigil DEFINES-REACH-THE-LISTING, open).",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "name"
+            ]
+          },
+          {
+            "required": [
+              "prefix"
+            ]
+          }
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact equate name. Absent from the Equate Table is -32013 (data.missing, the name); no listing loaded is -32012. Neither is confusable with a label miss: labels live in emulator/lookup_symbol."
+          },
+          "prefix": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Bounded prefix search over equate names, the ergonomic path a client already knows from lookup_symbol; the reply lists matches up to the server's bound and says whether it truncated."
+          }
+        }
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "value"
+            ]
+          },
+          {
+            "required": [
+              "matches"
+            ]
+          }
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The equate's name as the listing spells it (name form)."
+          },
+          "value": {
+            "type": "integer",
+            "description": "The equate's VALUE as a plain integer (D9 category 2: a number, never a hex string), which is NOT an address even when it falls inside the cart window; a client that wants to treat it as one does so on its own authority. Present with name on an exact hit."
+          },
+          "query": {
+            "type": "string",
+            "description": "The prefix that was searched (prefix form)."
+          },
+          "matches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "value"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "unevaluatedProperties": false
+            },
+            "description": "Prefix form: the matching equates, name and value, bounded by the server; an empty array is a real answer (no equate starts with that prefix), not an error."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Prefix form: true when the server's bound cut the list; absent or false means the list is complete."
+          },
+          "caveat": {
+            "type": "string",
+            "description": "protocol.md section 2.4. The same standing symbol-freshness verdict emulator/status carries (11.34): emitted when the server cannot show the listing at symbolsPath still parses to the rows it holds."
+          }
+        }
+      }
+    },
     "emulator/lookup_symbol": {
       "params": {
         "type": "object",

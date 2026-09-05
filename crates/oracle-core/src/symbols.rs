@@ -42,18 +42,32 @@
 //! `C`(code)/`-`(equate) type marker that the body lines drop. Body lines are parsed only as a fallback,
 //! for a listing that has no `Symbol Table` section at all. See [`TableSource`].
 //!
-//! # The `Equate Table` is recognised and deliberately **not** ingested
+//! # The `Equate Table` is ingested into a namespace of its OWN — never into the symbol table
 //!
 //! Sigil began emitting the third section on 2026-08-19. Its rows are **values, not addresses** — sigil's
 //! own debugger-map test enforces that they never resolve as code or RAM locations — so folding them into
 //! the symbol table would change what [`SymbolTable::address_of`] means and let a constant answer an
-//! addr→name query. Whether equates become addressable at all, and how a same-named equate/label collision
-//! resolves, is a **ruled decision** (registered as `F-EQUATES-NAMESPACE` in
-//! `docs/2026-08-19-cram-serve-recon.md` §6.3), not a parser change. Until it is ruled, [`SymbolTable::parse`]
-//! **consumes** the section — header, rule, rows and `N equates` trailer — without counting it as damage,
-//! and stores nothing but the two counts. Before this was deliberate the rows merely happened to be
-//! rejected by the five-token row shape, which cost 684 phantom `skipped_lines` on the real `s4.lst` and
-//! made [`SymbolTable::is_intact`] wrong about a healthy file.
+//! addr→name query. `F-EQUATES-NAMESPACE` (`docs/2026-08-19-cram-serve-recon.md` §6.3) registered that as
+//! a decision to be **ruled**, and until 2026-09-05 this module consumed the section — header, rule, rows
+//! and `N equates` trailer — without counting it as damage, storing nothing but the two counts.
+//!
+//! **It is ruled**: oracle CR-M, adopted as `contract/protocol.md` §11.36 (empyrean `2208aa8`), **option
+//! A**. Equates are readable, through a **second map that is not the symbol table** —
+//! [`SymbolTable::equate_value`] and [`SymbolTable::equates_with_prefix`] — and they are reachable by
+//! **name only**. The measurement that decided the shape, re-derived here on
+//! `fixtures/aeon/s4.debug.lst`: 724 equates, 2,743 labels, **zero name collisions**, and **661 of the 724
+//! equate values fall inside the cart window** `$000000–$3FFFFF`. Sixty-seven of them are numerically
+//! equal to the address of a real label. Folding equates into the symbol vector would make
+//! `ANI_DUST_PUFF = $2AF9C` indistinguishable from the label *at* `$2AF9C` on every `addr→name` path —
+//! including paths not yet written — so the separation is **structural**: an equate is never pushed into
+//! `syms`, so it can never enter `rev`, `by_name`, `by_demangled` or `by_module`, and no reverse lookup
+//! has to *remember* to filter it out. The test
+//! `equates_are_not_addressable_in_either_direction` asserts that against the real listing, on an
+//! equate whose value is a real label's address.
+//!
+//! Before the recognition was deliberate the rows merely happened to be rejected by the five-token row
+//! shape, which cost 684 phantom `skipped_lines` on the real `s4.lst` and made [`SymbolTable::is_intact`]
+//! wrong about a healthy file.
 //!
 //! # The other dialect: stock AS listings (`sonic.lst`, the classic disassemblies)
 //!
@@ -104,6 +118,15 @@
 //! there is nothing an equate could legitimately answer, and the never-resolvable rule below stays exactly
 //! as shipped. Two dialects, two contracts; the `-` type column and the `Equate Table` section are
 //! different things that happen to share a word.
+//!
+//! ⚑ **CR-M did not touch this half, deliberately.** §11.36's scope is *the `Equate Table` section*: a
+//! type-`-` row is still an ordinary [`Symbol`], still forward-resolvable, and is **not** reachable through
+//! [`SymbolTable::equate_value`]. Unifying them would be wrong in both directions — an AS `-` row can
+//! legitimately *be* a RAM address (`v_player`), so publishing it as an equate value would put an address
+//! in a field the contract says is not one; and a sigil equate is never an address, so putting it in the
+//! symbol table is the exact fold option A was chosen to prevent. The two populations are disjoint by
+//! construction: only `Section::EquateTable` rows reach the equate map, and only `Section::SymbolTable`
+//! rows reach `syms`.
 //!
 //! ## Four traps, each of which silently produces wrong answers
 //!
@@ -470,14 +493,27 @@ struct NonAddressRows {
     unused: usize,
 }
 
-/// What we keep of the `Equate Table`: the two counts, and nothing else. Deliberately not the values —
-/// see the module docs on `F-EQUATES-NAMESPACE`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// What we keep of the `Equate Table`: the two counts **and the values**, in a map of their own.
+///
+/// ⚑ **`by_name` is a separate map rather than a flag on a shared one, and that is the whole ruling.**
+/// §11.36 chose option A because 661 of this listing's 724 equate values fall inside the cart window: a
+/// `kind` flag on a shared table would make every present and future `addr→name` path correct only for as
+/// long as each of them remembered to test it. There is nothing to remember here — an equate is not a
+/// [`Symbol`], is never pushed into `syms`, and therefore cannot reach `rev`, which is the one index every
+/// reverse lookup binary-searches.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct EquateSection {
     /// Rows matching `EQU <name> = $<hex>` that we recognised and consumed.
     rows: usize,
     /// The section's own `N equates` trailer, when it is there at all.
     declared: Option<usize>,
+    /// Name → value, ordered. `BTreeMap` for the same two reasons `by_name` is one: a prefix search is a
+    /// range query, and the crate bans `HashMap` in anything that might be hashed or serialized.
+    ///
+    /// A duplicate equate name cannot occur in a real listing (measured: 724 rows, 724 distinct names on
+    /// `fixtures/aeon/s4.debug.lst`); if one ever does, the last row wins, deterministically, and `rows`
+    /// still counts the rows so the trailer check still closes.
+    by_name: BTreeMap<String, u64>,
 }
 
 /// Everything [`SymbolTable::parse`] learns that is not a [`Symbol`]. Bundled so [`SymbolTable::build`]
@@ -536,10 +572,7 @@ impl SymbolTable {
             }
             if section != Section::EquateTable && head.starts_with("Equate Table") {
                 section = Section::EquateTable;
-                equates = Some(EquateSection {
-                    rows: 0,
-                    declared: None,
-                });
+                equates = Some(EquateSection::default());
                 continue;
             }
             match section {
@@ -585,8 +618,9 @@ impl SymbolTable {
                     }
                 }
                 Section::EquateTable => {
-                    // Recognised, never ingested. `equates` is `Some` for the whole arm — the header set
-                    // it — but express that with the option rather than an `unwrap`.
+                    // Ingested into `e.by_name` and NOWHERE else (§11.36). `equates` is `Some` for the
+                    // whole arm — the header set it — but express that with the option rather than an
+                    // `unwrap`.
                     let Some(e) = equates.as_mut() else { continue };
                     if is_rule_line(t) {
                         continue;
@@ -597,8 +631,9 @@ impl SymbolTable {
                     }
                     // Recognising the section is not swallowing it: a row that does not match the
                     // `EQU <name> = $<hex>` shape is format drift and still counts as damage.
-                    if is_equate_row(t) {
+                    if let Some((name, value)) = parse_equate_row(t) {
                         e.rows += 1;
+                        e.by_name.insert(name.to_string(), value);
                     } else {
                         skipped_lines += 1;
                     }
@@ -746,23 +781,74 @@ impl SymbolTable {
     }
 
     /// How many `EQU <name> = $<hex>` rows the `Equate Table` held, or `None` when the listing has no such
-    /// section. The count only — the names and values are deliberately not kept (`F-EQUATES-NAMESPACE`),
-    /// so no equate can ever answer a lookup.
+    /// section.
+    ///
+    /// The **row** count, which is what the `N equates` trailer counts and therefore what
+    /// [`matches_declared_equates`](Self::matches_declared_equates) must compare against. It can exceed
+    /// the number of distinct names if a listing ever repeats one; it never has.
     pub fn equate_rows(&self) -> Option<usize> {
-        self.equates.map(|e| e.rows)
+        self.equates.as_ref().map(|e| e.rows)
+    }
+
+    /// **The value of one equate, by exact name** — §11.36's `emulator/lookup_equate` name form, and the
+    /// one door the panel's ring ceiling divides by.
+    ///
+    /// `None` means *this listing does not publish that equate*, which covers both "no `Equate Table` at
+    /// all" (every listing sigil emitted before 2026-08-19, and every AS listing) and "the section is
+    /// there and the name is not in it". The two are separable by
+    /// [`has_equate_table`](Self::has_equate_table); the bus needs the distinction only for its message,
+    /// never for its code.
+    ///
+    /// ⚑ **The value is NOT an address.** 661 of this listing's 724 fall inside the cart window and 67 are
+    /// numerically equal to a real label's address; passing one to a bus read is the caller's own
+    /// authority, and nothing here masks, widens or validates it as a location.
+    pub fn equate_value(&self, name: &str) -> Option<u64> {
+        self.equates.as_ref()?.by_name.get(name).copied()
+    }
+
+    /// **Every equate whose name starts with `prefix`**, name-ordered, unbounded — §11.36's prefix form.
+    ///
+    /// The **bound is the caller's**, exactly as it is for [`with_prefix`](Self::with_prefix): a policy
+    /// ceiling belongs to the server that has to declare `truncated`, not to the parser. An empty result
+    /// is a real answer (no equate starts with that prefix), not an error.
+    ///
+    /// A range query on the ordered map, so it costs `O(log n + matches)` rather than a scan of 724 rows.
+    pub fn equates_with_prefix(&self, prefix: &str) -> Vec<(&str, u64)> {
+        let Some(e) = self.equates.as_ref() else {
+            return Vec::new();
+        };
+        e.by_name
+            .range(prefix.to_string()..)
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect()
+    }
+
+    /// Does this listing carry an `Equate Table` section at all?
+    ///
+    /// Separates *"the listing publishes no equates"* from *"the listing publishes equates and not this
+    /// one"* — a distinction a reader debugging a missing constant needs and a `None` from
+    /// [`equate_value`](Self::equate_value) cannot carry.
+    pub fn has_equate_table(&self) -> bool {
+        self.equates.is_some()
+    }
+
+    /// How many distinct equate **names** this listing publishes. 0 when there is no section.
+    pub fn equate_count(&self) -> usize {
+        self.equates.as_ref().map_or(0, |e| e.by_name.len())
     }
 
     /// The count the `Equate Table`'s own `N equates` trailer declares. `None` when there is no such
     /// section, **or** when the section is there but its trailer is not — which is what truncation looks
     /// like, and why [`is_intact`](Self::is_intact) treats the two the same.
     pub fn declared_equates(&self) -> Option<usize> {
-        self.equates.and_then(|e| e.declared)
+        self.equates.as_ref().and_then(|e| e.declared)
     }
 
     /// Did the `Equate Table` trailer agree with the rows we recognised? `None` when the listing has no
     /// `Equate Table` at all — which is not a failure, just nothing to check.
     pub fn matches_declared_equates(&self) -> Option<bool> {
-        self.equates.map(|e| e.declared == Some(e.rows))
+        self.equates.as_ref().map(|e| e.declared == Some(e.rows))
     }
 
     /// Did we account for exactly as many rows as the footer promised? `None` when there is no footer to
@@ -1015,22 +1101,30 @@ fn is_rule_line(line: &str) -> bool {
     t.starts_with('-') && t.chars().all(|c| c == '-')
 }
 
-/// Is this an `Equate Table` row — `EQU <name> = $<hex>`?
+/// Parse an `Equate Table` row — `EQU <name> = $<hex>` — into its name and its **value**.
 ///
-/// Recognition only: **nothing is returned**, because an equate is a value and this module answers
-/// questions about addresses. Folding these into the symbol table would let a constant win an addr→name
-/// query and would silently pick a winner for an equate/label name collision; that is the ruled decision
-/// `F-EQUATES-NAMESPACE`, not a parser change. Shape verified against the real `s4.lst`: all 682 rows are
-/// exactly four whitespace tokens, and the value always carries the `$`.
-fn is_equate_row(line: &str) -> bool {
+/// The value goes into [`EquateSection::by_name`] and nowhere else. It is deliberately *not* masked with
+/// [`BUS_ADDR_MASK`] and deliberately *not* range-checked against the cart window, because §11.36 pins it
+/// as a plain integer that **is not an address**: masking would be this module quietly asserting the
+/// opposite. Shape verified against the real listings: every row is exactly four whitespace tokens, the
+/// value always carries the `$`, and the widest value seen across `fixtures/aeon/s4.debug.lst` and aeon's
+/// live `s4.debug.lst` is 8 hex digits (`$FFFFFF00`).
+///
+/// **A value too wide for `u64` makes the row unrecognised, and that is a narrowing.** The predicate this
+/// replaces accepted any run of hex digits, because it stored nothing; a row we cannot represent is now a
+/// row we cannot answer for, so it is reported as damage (`skipped_lines`, and the `N equates` trailer
+/// then disagrees) rather than counted as a row whose value silently is not there. 17 hex digits have
+/// never been seen in either dialect.
+fn parse_equate_row(line: &str) -> Option<(&str, u64)> {
     let tok: Vec<&str> = line.split_whitespace().collect();
-    tok.len() == 4
-        && tok[0] == "EQU"
-        && !tok[1].is_empty()
-        && tok[2] == "="
-        && tok[3]
-            .strip_prefix('$')
-            .is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()))
+    if tok.len() != 4 || tok[0] != "EQU" || tok[1].is_empty() || tok[2] != "=" {
+        return None;
+    }
+    let hex = tok[3].strip_prefix('$')?;
+    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((tok[1], u64::from_str_radix(hex, 16).ok()?))
 }
 
 /// Parse `   2129 symbols` / `    0 unused symbols` / `   682 equates`. `suffix` is matched on the whole
@@ -1252,8 +1346,9 @@ mod tests {
 
     /// A miniature but format-faithful listing: all three sections, mangled and plain names, an
     /// `__align` pad, an `asm<N>` block scope, an aliased address, an 8-hex `FFFFxxxx` RAM block, an
-    /// unused `*` row, an `-` equate, the two symbol footers, and an `Equate Table` whose names include
-    /// one (`Player_1`) that deliberately collides with a real label.
+    /// unused `*` row, an `-` equate, the two symbol footers, and an `Equate Table` carrying **both**
+    /// kinds of collision the §11.36 ruling turns on: a name (`Player_1`) that collides with a real
+    /// label, and a **value** (`ART_ENTRY = $200`) that is exactly the address of one (`EntryPoint`).
     const FIXTURE: &str = "\
 (0) 1/200 :        EntryPoint:
 (0) 2/214 :        $engine.boot$EntryPoint$wait_dma:
@@ -1286,10 +1381,11 @@ mod tests {
   ---------------------------------------------------
 
 EQU AF_BACK = $000000FE
+EQU ART_ENTRY = $00000200
 EQU Player_1 = $00000001
 EQU zone_count = $0000000C
 
-    3 equates
+    4 equates
 ";
 
     fn table() -> SymbolTable {
@@ -1306,19 +1402,48 @@ EQU zone_count = $0000000C
         assert!(t.is_intact(), "a listing with equates is still whole");
         assert_eq!(t.len(), 10, "equates must not inflate the symbol count");
         assert_eq!(t.declared_count(), Some(10));
-        assert_eq!(t.equate_rows(), Some(3));
-        assert_eq!(t.declared_equates(), Some(3));
+        assert_eq!(t.equate_rows(), Some(4));
+        assert_eq!(t.declared_equates(), Some(4));
         assert_eq!(t.matches_declared_equates(), Some(true));
     }
 
-    /// Equates are **values, not addresses** (sigil's own pin) and this repo has not ruled on the
-    /// equate/label namespace yet, so they must resolve to nothing in **both** directions. Negative
-    /// control for "fixing" the skip by folding equate rows into the symbol table.
+    /// ⚑ **THE SAFETY PROPERTY §11.36 ADOPTED OPTION A FOR: an equate never enters `addr→name`.**
+    ///
+    /// Equates are **values, not addresses** (sigil's own pin, and now the contract's: *"NOT an address
+    /// even when it falls inside the cart window"*). Since CR-M they are readable — so a test that only
+    /// checked they answer nothing would now be checking the wrong thing. This checks the division:
+    ///
+    /// 1. the equate door **does** answer, by exact name and by prefix, so clause 2 is about separation
+    ///    and not about an empty map (without this the whole test would pass on a parser that dropped the
+    ///    section again, which is exactly the regression it is here to catch);
+    /// 2. not one equate name reaches any **symbol** index — `by_name`, `by_demangled`, `address_of`, or
+    ///    either prefix search;
+    /// 3. and the case the ruling turns on: **`ART_ENTRY = $200` is the address of `EntryPoint`**, and
+    ///    `$200` still resolves to `EntryPoint`, is still carried by exactly one symbol, and the reverse
+    ///    direction never once names the equate. On the real listing 67 equates have a value equal to a
+    ///    label's address and 661 of 724 fall inside the cart window, so this is the common case, not a
+    ///    contrived one.
+    ///
+    /// Negative control for "simplifying" the two maps into one with a `kind` flag: a shared table stays
+    /// green here only while every reverse path remembers to test the flag, and clause 3 goes red the
+    /// moment one forgets.
     #[test]
     fn equates_are_not_addressable_in_either_direction() {
         let t = table();
-        // name → address: absent entirely.
-        for name in ["AF_BACK", "zone_count"] {
+
+        // 1. The door is open — otherwise every assertion below is vacuous.
+        assert_eq!(t.equate_value("AF_BACK"), Some(0xFE));
+        assert_eq!(t.equate_value("ART_ENTRY"), Some(0x200));
+        assert_eq!(t.equate_count(), 4);
+        assert!(t.has_equate_table());
+        assert_eq!(
+            t.equates_with_prefix("A"),
+            vec![("AF_BACK", 0xFE), ("ART_ENTRY", 0x200)],
+            "the prefix form is name-ordered and bounded by the caller, not here"
+        );
+
+        // 2. name → address: absent entirely from every SYMBOL index.
+        for name in ["AF_BACK", "ART_ENTRY", "zone_count"] {
             assert!(t.by_name(name).is_none(), "{name} leaked into by_name");
             assert!(
                 t.by_demangled(name).is_empty(),
@@ -1334,10 +1459,31 @@ EQU zone_count = $0000000C
                 "{name} leaked into demangled prefixes"
             );
         }
-        // A name shared by an equate and a real label still answers with the *label*, untouched.
+        // A name shared by an equate and a real label still answers with the *label*, untouched — and the
+        // equate door still answers with the equate. Two namespaces, two answers, neither shadowing the
+        // other.
         assert_eq!(t.address_of("Player_1"), Some(0x00FF_8CFA));
         assert_eq!(t.by_demangled("Player_1").len(), 1);
-        // address → name: an equate's *value* is not a location. `$FE` and `$C` sit below every real
+        assert_eq!(t.equate_value("Player_1"), Some(1));
+
+        // 3. THE ONE THAT MATTERS. `ART_ENTRY`'s value IS `EntryPoint`'s address.
+        assert_eq!(
+            t.equate_value("ART_ENTRY"),
+            t.address_of("EntryPoint").map(u64::from),
+            "the fixture must keep the collision this clause exists to test"
+        );
+        let at = t.resolve(0x200).expect("EntryPoint is at $200");
+        assert_eq!(
+            at.symbol.name, "EntryPoint",
+            "the equate whose VALUE is $200 must not win the addr->name query"
+        );
+        assert_eq!(
+            t.symbols_at(0x200).len(),
+            1,
+            "exactly one symbol sits at $200; an ingested equate would make it two"
+        );
+
+        // address → name: an equate's *value* is not a location. `$FE`, `$1` and `$C` sit below every real
         // symbol, so nearest-preceding must find nothing rather than inventing a name for a constant.
         for value in [0x0000_00FEu32, 0x0000_0001, 0x0000_000C] {
             assert!(
@@ -1349,13 +1495,28 @@ EQU zone_count = $0000000C
                 "${value:X} resolved to a name — an equate value became an address"
             );
         }
-        // And nothing in the table carries an equate name, whatever its address.
-        for s in t.symbols() {
-            assert!(
-                !["AF_BACK", "zone_count"].contains(&s.name.as_str()),
-                "{} is an equate masquerading as a symbol",
-                s.name
-            );
+        // The sweep the three spot-checks cannot do: over EVERY equate, no reverse lookup at its value
+        // ever names it. Stated this way rather than "no symbol is called X" because `Player_1` is
+        // legitimately both a label and an equate name — the name collision is not the hazard, the
+        // VALUE collision is, and this is the property that distinguishes them.
+        let all = t.equates_with_prefix("");
+        assert_eq!(all.len(), 4, "the sweep's left side is not empty");
+        for (name, value) in all {
+            let Ok(addr) = u32::try_from(value) else {
+                continue;
+            };
+            if let Some(r) = t.resolve(addr) {
+                assert_ne!(
+                    r.symbol.name, name,
+                    "resolving ${addr:X} named the equate `{name}` — an equate reached addr->name"
+                );
+            }
+            for s in t.symbols_at(addr) {
+                assert_ne!(
+                    s.name, name,
+                    "symbols_at(${addr:X}) carried the equate `{name}`"
+                );
+            }
         }
     }
 
@@ -1364,17 +1525,17 @@ EQU zone_count = $0000000C
     /// missing entirely, which is what truncation looks like — makes the listing not-intact.
     #[test]
     fn an_equate_trailer_that_disagrees_with_the_rows_seen_is_damage() {
-        let wrong = FIXTURE.replace("    3 equates", "    4 equates");
+        let wrong = FIXTURE.replace("    4 equates", "    5 equates");
         let t = SymbolTable::parse(&wrong).expect("still parses");
-        assert_eq!(t.equate_rows(), Some(3));
-        assert_eq!(t.declared_equates(), Some(4));
+        assert_eq!(t.equate_rows(), Some(4));
+        assert_eq!(t.declared_equates(), Some(5));
         assert_eq!(t.matches_declared_equates(), Some(false));
         assert!(!t.is_intact(), "a miscounted Equate Table is damage");
         // The symbol half is untouched — the anomaly is reported, not spread.
         assert_eq!(t.len(), 10);
         assert_eq!(t.skipped_lines(), 0);
 
-        let truncated = FIXTURE.replace("    3 equates\n", "");
+        let truncated = FIXTURE.replace("    4 equates\n", "");
         let t = SymbolTable::parse(&truncated).expect("still parses");
         assert_eq!(t.declared_equates(), None);
         assert_eq!(t.matches_declared_equates(), Some(false));
@@ -1398,7 +1559,12 @@ EQU zone_count = $0000000C
         );
         let t = SymbolTable::parse(&drifted).expect("still parses");
         assert_eq!(t.skipped_lines(), 1, "drifted equate row must be reported");
-        assert_eq!(t.equate_rows(), Some(2));
+        assert_eq!(t.equate_rows(), Some(3));
+        assert_eq!(
+            t.equate_value("zone_count"),
+            None,
+            "a row we could not parse must not leave a half-ingested value behind"
+        );
         assert!(!t.is_intact());
         assert_eq!(t.len(), 10, "the symbol half is unharmed");
     }
