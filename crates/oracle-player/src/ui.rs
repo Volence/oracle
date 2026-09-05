@@ -409,7 +409,8 @@ impl Panels<'_> {
                 .clicked()
             {
                 let mut said = Vec::new();
-                self.states.load(self.machine, self.battery, &mut said);
+                self.states
+                    .load(self.machine, self.battery, self.bus, &mut said);
                 for line in said {
                     crate::device::loud(&line);
                 }

@@ -170,6 +170,22 @@ pub struct EngineConfig {
     /// Wall-clock pacing for free-running mode, or `None` to run flat out. **Pacing only** — it never
     /// touches an emulated stamp, so determinism is unaffected (recon §5 C2). Tests use `None`.
     pub free_run_pace: Option<Duration>,
+    /// **This deployment has a gesture at its own window that replaces the machine** — today exactly one:
+    /// a save-state load at the window's keys (`oracle-player`'s F4 / its load button,
+    /// `oracle-frontend`'s F4). §11.40 (CR-Q, 2026-09-05).
+    ///
+    /// It is a **config flag and not a constant** because §11.40 M2 makes the answer per deployment in
+    /// so many words: *"A headless server that has no such gesture MUST NOT advertise it; the capability
+    /// list describes what this process can emit, not what the contract knows."* The standalone
+    /// [`crate::server`] arrangement has no window and never sets it, so a headless `oracle-aether`
+    /// advertises the three events it has always advertised.
+    ///
+    /// **It gates the advertisement and the emission together**, which is the only arrangement that
+    /// cannot lie: see [`Engine::advertised_events`] and [`Engine::note_machine_replaced`]. `false` is
+    /// the default so that a new embedder under-advertises rather than promising an event it cannot
+    /// produce — and `tests/machine_replaced.rs` pins the pair in both directions rather than trusting
+    /// this sentence.
+    pub window_gestures: bool,
     pub server_name: String,
     pub server_version: String,
 }
@@ -211,6 +227,9 @@ impl Default for EngineConfig {
             watch_ring_cap: 4096,
             max_breakpoints: 32,
             free_run_pace: Some(Duration::from_micros(16_667)),
+            // The safe default is the narrow one — see the field's own doc. A headless bus is the
+            // arrangement this default describes, and it has no window to press a key at.
+            window_gestures: false,
             server_name: "oracle-next".into(),
             server_version: env!("CARGO_PKG_VERSION").into(),
         }
@@ -669,14 +688,48 @@ pub const METHODS: &[MethodSpec] = &[
 /// token on a method that accepts no continuation param, and this one accepts no params at all.
 const MAX_SCREEN_SURFACES: usize = 64;
 
-/// The events this server actually emits. Advertised verbatim as `capabilities.events`, which
-/// `protocol.md` §2.1 calls *"the authoritative event set"* — so it lists what we push, not what the
-/// spec's example happens to show.
+/// The events **every** deployment of this server emits, whatever process it is in. `protocol.md` §2.1
+/// calls `capabilities.events` *"the authoritative event set"* — so this lists what we push, not what
+/// the spec's example happens to show.
+///
+/// Not the whole advertised list any more: see [`WINDOW_GESTURE_EVENTS`] and
+/// [`Engine::advertised_events`], which is the function that decides.
 pub const EVENTS: &[&str] = &[
     "emulator/stopped",
     "emulator/resumed",
     "emulator/romReloaded",
 ];
+
+/// The events only a process with a **window gesture that replaces the machine** can emit — §11.40
+/// (CR-Q, 2026-09-05) M2, whose ruling is that advertisement is per deployment and *"a headless server
+/// that has no such gesture MUST NOT advertise it"*.
+///
+/// One member today, and [`MachineReplacedReason`] is why it is likely to stay one member for a while:
+/// §11.40 S1 pins `reason` as a closed enum so that a later `reset` or `restore` is an added member
+/// rather than a second event.
+pub const WINDOW_GESTURE_EVENTS: &[&str] = &["emulator/machineReplaced"];
+
+/// **`reason` on `emulator/machineReplaced`** (`protocol.md` §3, §11.40) — a closed enum with one member
+/// today, deliberately.
+///
+/// A type rather than a string literal at the emit site, for [`StopPrecision`]'s reason: §11.40 S1 says
+/// *"When one does [ask], the answer is an added `reason` member, never a renamed event"*, so the set is
+/// going to grow, and a growing closed set that lives as a literal is a set nobody can enumerate. `serde`
+/// is deliberately not involved; the wire spelling is pinned once, in [`MachineReplacedReason::wire`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineReplacedReason {
+    /// A save-state load at the window's own keys — the only gesture §11.40 adopts.
+    StateLoad,
+}
+
+impl MachineReplacedReason {
+    /// The wire spelling, which the vendored fragment's `enum` must accept.
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::StateLoad => "stateLoad",
+        }
+    }
+}
 
 /// **The three values of `stopPrecision` (`protocol.md` §2.1, §11.31), strongest first.**
 ///
@@ -2004,6 +2057,115 @@ impl Engine {
         self.symbols_generation
     }
 
+    /// **`capabilities.events` — the decision, in one place.** [`EVENTS`] always, plus
+    /// [`WINDOW_GESTURE_EVENTS`] when this deployment has the gesture
+    /// ([`EngineConfig::window_gestures`]).
+    ///
+    /// # ⚑ This makes the advertised event list PROCESS-dependent, and that is the
+    /// `F-BANNER-INVITES-A-PIN` hazard on a new surface
+    ///
+    /// §11.40 M2 is what puts it here: *"`capabilities.events` gains `"emulator/machineReplaced"` on a
+    /// server that can produce the gesture (a window with save-state keys). A headless server that has no
+    /// such gesture MUST NOT advertise it."* Until today this array was a constant, so it was the same
+    /// for every binary at a given version and a consumer that pinned it was merely brittle. From today a
+    /// consumer that pins the array **breaks by which binary it is talking to** rather than by version:
+    /// the same commit, the same `serverBuild.id` prefix, `oracle-player` and headless `oracle-aether`,
+    /// two different answers. That is the shape of `F-BANNER-INVITES-A-PIN`, where aurora's harness
+    /// pinned `methods === '35'` and rejected every correct binary — a total, and now an array, standing
+    /// in for the question a consumer actually has.
+    ///
+    /// **The right observable is unchanged and it is already served**: a consumer asking *can I hear
+    /// about a window state load?* must test **membership** of `"emulator/machineReplaced"` in this
+    /// array, which is exactly what §11.40's pre-adoption check found every existing client already does
+    /// (none holds a closed set). A consumer asking *is this binary current?* wants
+    /// `initialize.serverBuild`, never a capability list. Neither question is answered by equality
+    /// against a remembered array, and the two failure modes are indistinguishable at the client if it
+    /// asks that way.
+    ///
+    /// It returns owned strings rather than a slice because the answer is now composed per call; the
+    /// members themselves are still `&'static str`, so nothing here can invent a name.
+    pub fn advertised_events(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = EVENTS.to_vec();
+        if self.config.window_gestures {
+            out.extend_from_slice(WINDOW_GESTURE_EVENTS);
+        }
+        out
+    }
+
+    /// **A gesture at this process's own window replaced the machine** — §11.40 (CR-Q, 2026-09-05), the
+    /// serve of `emulator/machineReplaced`.
+    ///
+    /// The embedder has already swapped its `System`; this is the accounting and the signal that must
+    /// travel with that swap. **Call it with the NEW machine lent to the engine**
+    /// ([`Engine::swap_system`]), because the event carries the §2.2 stamp and a stamp taken outside a
+    /// lend window is the placeholder's `mclk 0`. [`crate::host::Host::machine_replaced`] is the
+    /// arrangement that guarantees it; nothing else should call this directly.
+    ///
+    /// # Half A travels with Half B, because §11.40 M3 closed that door
+    ///
+    /// The CR offered the internal accounting and the wire event as separable halves. The ruling did not:
+    /// *"the event's `hitsDropped` is the count the server actually dropped, the picture is invalidated,
+    /// the profiler sample restarts."* So all four happen here, in one function, from one drain — a
+    /// second `take_hits()` would answer `0` and any independent recount is a number free to drift from
+    /// the one on the wire while both stay schema-legal. One drain, one number.
+    ///
+    /// Each of the four is `reload_rom`'s and `restore`'s reasoning at a third boundary, and the long
+    /// forms live there rather than being restated:
+    ///
+    /// * **The recorded watchpoint hits go, and the count goes out** — §11.38's argument, which is at its
+    ///   *strongest* here. A save-state load does not merely restart the frame counter, it winds it
+    ///   **backwards** to whenever the slot was written, so a hit stamped frame 900 can sit in the ring
+    ///   of a machine now at frame 300 and read as a future event. The aggregates (`seen`/`matched`/
+    ///   `dropped`, a breakpoint's `hits`) are untouched for §11.39's reason: they describe the recorder,
+    ///   whose life this boundary did not end.
+    /// * **The latched picture is invalidated**, so a paused subscriber's next `emulator/screenshot` does
+    ///   not hand back the pre-load raster with `from_raster: true`. Item 28's extension names this one
+    ///   explicitly.
+    /// * **The profiler's sample restarts**: its shadow stack is describing a machine whose returns will
+    ///   never come. Arming survives; the measurement does not.
+    /// * **`rom_generation` moves**, which is the defect's own headline — a window state load replaced the
+    ///   machine without moving it, so a hosted embedder's `PumpReport::rom_changed` never fired and a
+    ///   client attached over the socket saw the clock jump and nothing else.
+    ///
+    /// # What deliberately does NOT happen
+    ///
+    /// **The symbol listing is kept and not re-validated.** A slot only loads against the cartridge it was
+    /// written from — `oracle_frontend::save_state::load` refuses on a ROM-fingerprint mismatch — so the
+    /// image is the same image and a listing that bound to it before binds to it now. This is `reset`'s
+    /// answer, not `reload_rom`'s, and for `reset`'s reason.
+    ///
+    /// **Held pads are kept.** `reset` and `reload_rom` clear them because a cold start has nobody
+    /// holding anything; a state load resumes a machine mid-play, so it is `restore`'s case, and
+    /// `restore` keeps them.
+    ///
+    /// **Nothing is emitted for a refused load**, and that is structural rather than a check here: the
+    /// embedder calls this only on the success path, after a whole `System` exists. §11.40 M4 and item
+    /// 28's extension both require the negative, and `tests/machine_replaced.rs` asserts it from the
+    /// wire.
+    ///
+    /// Returns the count it dropped, so a caller that wants to say it out loud at its own window does not
+    /// have to recount it either.
+    pub fn note_machine_replaced(&mut self, reason: MachineReplacedReason) -> usize {
+        // A process that does not advertise the event must not push it (§2.1: the advertised set is
+        // *authoritative*). This is an invariant of the embedder rather than a runtime input, so it is a
+        // debug assertion and not a refusal — and `tests/machine_replaced.rs` pins advertise-and-emit
+        // together in both directions, which is the check that would actually catch a new embedder.
+        debug_assert!(
+            self.config.window_gestures,
+            "note_machine_replaced on a deployment that does not advertise emulator/machineReplaced \
+             (§11.40 M2): set EngineConfig::window_gestures where the gesture is wired"
+        );
+        self.invalidate_screen();
+        let hits_dropped = self.watchpoints.take_hits().len();
+        self.restart_profiler_sample();
+        self.rom_generation += 1;
+        let mut params = Map::new();
+        params.insert("reason".into(), json!(reason.wire()));
+        params.insert("hitsDropped".into(), json!(hits_dropped));
+        self.emit("emulator/machineReplaced", params);
+        hits_dropped
+    }
+
     /// **The listing this engine resolves against right now** — the one `emulator/lookup_symbol` answers
     /// from, not a copy of what somebody handed in at startup.
     ///
@@ -2649,8 +2811,10 @@ impl Engine {
             "serverBuild": server_build,
             "protocolVersion": rpc::PROTOCOL_VERSION,
             "capabilities": {
-                // The authoritative event set (D6) — exactly what this server pushes.
-                "events": EVENTS,
+                // The authoritative event set (D6) — exactly what THIS PROCESS pushes, which since
+                // §11.40 is not the same list in every process. [`Engine::advertised_events`] is where
+                // that is decided and where the hazard it creates is written down.
+                "events": self.advertised_events(),
                 // Method groups from the catalog that this thin slice does NOT implement. Clients branch
                 // on these, never on the version integer (D5).
                 // Derived, never asserted: the flag is true iff both rows are in `METHODS`, so serving one

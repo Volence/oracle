@@ -271,10 +271,23 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl Client {
     pub fn connect(handle: &ServerHandle) -> Self {
+        Self::connect_path(handle.socket_path())
+    }
+
+    /// The same connection against a **bare socket path**, for a server this harness did not spawn.
+    ///
+    /// The one caller is `tests/machine_replaced.rs`, whose subject is a HOSTED deployment: §11.40 M2
+    /// makes `emulator/machineReplaced` a window's event, and [`spawn`] builds the standalone
+    /// arrangement, which by that ruling must never advertise or emit it. `tests/hosted.rs` solved the
+    /// same problem by hand-rolling a second client — and that client does **not** validate lines against
+    /// the vendored schema, which is precisely the check an event fragment's `required` and its closed
+    /// `reason` enum need. So the seam is here rather than a third copy of a client: one funnel,
+    /// [`Client::recv`], validates every line whichever arrangement produced it.
+    pub fn connect_path(socket: &std::path::Path) -> Self {
         // The accept loop polls, so a connect immediately after spawn may beat it by a few ms.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            match UnixStream::connect(handle.socket_path()) {
+            match UnixStream::connect(socket) {
                 Ok(s) => {
                     s.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
                     return Self {
@@ -309,6 +322,20 @@ impl Client {
             .set_read_timeout(Some(d))
             .expect("re-arm the read deadline");
         self.read_timeout = d;
+    }
+
+    /// **Claim the next request id**, for a test that writes its request line by hand and then reads the
+    /// stream itself.
+    ///
+    /// [`Client::call`] hides the id because it also hides the events — `recv_response` discards every
+    /// notification queued ahead of the reply. A row whose subject IS those notifications cannot use it,
+    /// and hand-rolling the id would let a test's counter drift from `send_raw`'s `pending` ledger, which
+    /// is what picks the per-method result schema. So the counter is handed out from the one place that
+    /// owns it.
+    pub fn next_request_id(&mut self) -> i64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
     }
 
     /// Write one line verbatim.

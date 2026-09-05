@@ -1906,8 +1906,24 @@ fn main() {
                     // restored one. `buf` deliberately keeps the old image until that frame arrives.
                     cap.clear();
 
-                    // The watch (if armed) stays armed on the same VRAM range; hits recorded before the load
-                    // remain in the log — `C` clears them.
+                    // …and the bus is told, which until §11.40 (CR-Q, 2026-09-05) it was not. A load
+                    // replaced the machine without moving `rom_generation`, so a client attached over the
+                    // socket saw the clock jump in the next stamp and nothing else. This emits
+                    // `emulator/machineReplaced` with the count of watchpoint hits dropped at the
+                    // boundary, and it is inside the success arm on purpose: a refused load returned at
+                    // the `match` above and moves nothing.
+                    //
+                    // ⚑ Ordered AFTER `sys = loaded`, because the event carries the §2.2 stamp of the
+                    // machine it announces; called before the swap it would stamp the timeline the load
+                    // just left, which is the one wrong reading a subscriber could not detect.
+                    bus.machine_replaced(&mut sys);
+
+                    // The watch (if armed) is `Watchpoints`, which lives on the engine and not in `sys`,
+                    // so it stays armed on the same VRAM range across the swap. **Its recorded hits do
+                    // NOT survive** as of §11.38/§11.40: `machine_replaced` above drains them and the
+                    // event reports the count, because a hit stamped at a frame from before the load is
+                    // uninterpretable against a machine whose clock just wound backwards. The `C` key
+                    // still clears them; it is no longer the only thing that does.
                     println!(
                         "state: loaded slot {state_slot} from {} (draw tally continues at {draws})",
                         state_path.display()

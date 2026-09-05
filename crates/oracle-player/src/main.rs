@@ -939,8 +939,12 @@ impl Loop {
             }
             input::MachineKey::LoadState => {
                 let mut said = Vec::new();
-                self.states
-                    .load(&mut self.machine, &mut self.battery, &mut said);
+                self.states.load(
+                    &mut self.machine,
+                    &mut self.battery,
+                    &mut self.bus,
+                    &mut said,
+                );
                 for line in said {
                     loud(&line);
                 }

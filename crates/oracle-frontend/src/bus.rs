@@ -122,6 +122,10 @@ impl Bus {
         // a config value's clothes.
         let mut config = HostConfig::default();
         config.engine.watch_ring_cap = crate::WATCH_CAP;
+        // §11.40 M2: this window has F4, a save-state load that replaces the machine through no served
+        // method — so it advertises `emulator/machineReplaced` and it emits it. A headless
+        // `oracle-aether` sets neither. See `Engine::advertised_events` for why the pair is one flag.
+        config.engine.window_gestures = true;
         let mut host = Host::new(config);
         host.set_machine_info(info.into());
         // A `match` rather than `if let ... else`, so that **deleting the silent case is a compile error**
@@ -328,6 +332,21 @@ impl Bus {
             symbols_changed: r.symbols_changed,
             frames_advanced: r.frames_advanced(),
         }
+    }
+
+    /// **F4 replaced the machine** — §11.40 (CR-Q, 2026-09-05). Call it after the swap, with the loaded
+    /// machine, and only on the success path: a refused load moves nothing and emits nothing.
+    ///
+    /// It emits `emulator/machineReplaced` with the count of watchpoint hits dropped at the boundary,
+    /// invalidates the latched picture, restarts the profiler sample and moves `rom_generation`. The
+    /// [`PumpReport`](oracle_aether::host::PumpReport) it produces is deliberately dropped here rather
+    /// than folded into a [`Pumped`]: this window repairs its own F4 inline in the same block that
+    /// performs it (the audio resync, the capture clear, the SRAM half are all right there), which is the
+    /// arrangement `Host::call_reporting`'s doc records as the reason `oracle-frontend` never needed the
+    /// diff. What it did NOT do inline, and could not, is tell the bus — which is this call.
+    pub fn machine_replaced(&mut self, sys: &mut System) {
+        self.host
+            .machine_replaced(sys, oracle_aether::engine::MachineReplacedReason::StateLoad);
     }
 
     /// **The listing the engine resolves against right now**, for the loop to re-derive its own clone from

@@ -35,11 +35,11 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 887d01c71190fee530bea483a428a53657e1cb6d
-    pin.blob     = 92e95c22a7139fe507f45c23c080111c664db1a5
-    pin.bytes    = 360370
+    pin.revision = 88d1077765d4e63bfd180e43c25e366d1d461b7e
+    pin.blob     = 83d4a7696951962ce532a827ed8b019f14767b25
+    pin.bytes    = 360485
 
-    pin.vectors.revision = 887d01c71190fee530bea483a428a53657e1cb6d
+    pin.vectors.revision = 88d1077765d4e63bfd180e43c25e366d1d461b7e
     pin.vectors.blob     = 136bb7163b5a8a99eca2308d59fd189d5b150da6
     pin.vectors.bytes    = 133091
 
@@ -48,12 +48,46 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`887d01c71190fee530bea483a428a53657e1cb6d`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 887d01c7 origin/main` was **run**, not assumed (it exited 0). The tip and the recipe **DIVERGED** again here: `origin/main` was `40dfd05f` when these bytes were taken, and `40dfd05f` wrote none of them. **69** method fragments (the `methods` object carries 70 keys, one of which is a `$comment`); all 69 declare `params`, all 69 close it with `unevaluatedProperties: false` (handshake exempt), and all 69 declare `result`; 19 `$defs`; **5** event fragments (the `events` object carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **28 leaf paths added, zero removed, zero values changed** (3019 → 3047 leaves), derived by flattening both copies to leaf paths and differencing the sets. Exactly **two** fragments are new and no existing one moved: `methods["emulator/read_vdp_registers"]` (19 leaves — §11.41, the row this commit serves) and `events["emulator/machineReplaced"]` (9 leaves — §11.40 / CR-Q, which this server does **not** emit). |
-| Last commit that touched the schema | **`887d01c71190fee530bea483a428a53657e1cb6d`** — *"protocol: section 11.41, CR-R adjudicated: read_vdp_registers leaves the BLOCKED set, raw[24] plus status{raw}, decoded struck; item 29 the peek rule; five vectors"* (2026-09-05). |
-| Git blob | `92e95c22a7139fe507f45c23c080111c664db1a5` |
-| SHA-256 | `d87a0cc1b35beee2efaa3d7df4ae02c0f9d3b1cd2e69fb3c3ded0892444e85c1` |
-| Bytes | 360370 |
+| Contract repo revision | **`88d1077765d4e63bfd180e43c25e366d1d461b7e`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 88d1077 origin/main` was **run**, not assumed (it exited 0). The tip and the recipe **DIVERGED** again: `origin/main` was `4f06042f` when these bytes were taken, a lane-log commit that wrote neither file. **69** method fragments (the `methods` object carries 70 keys, one of which is a `$comment`); all 69 declare `params`, all 69 close it with `unevaluatedProperties: false` (handshake exempt), and all 69 declare `result`; 19 `$defs`; **5** event fragments (the `events` object carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **zero leaf paths added, zero removed, exactly ONE value changed** (3047 → 3047 leaves), derived by flattening both copies to leaf paths and differencing the sets. The one changed value is the document's own top-level `/description`: *"FIVE §6 ROWS REMAIN UNSCHEMATIZED"* becomes *"FOUR"*, with `read_vdp_registers` struck from the list and a §11.41 note added. **Not one `methods` or `events` fragment differs**, which is what makes this half of the re-vendor prose-only. |
+| Last commit that touched the schema | **`88d1077765d4e63bfd180e43c25e366d1d461b7e`** — *"protocol: item 29's three clauses are independent and all asserted (the hash cannot see the toggle or latches); schema prose: four blocked rows, not five"* (2026-09-05). |
+| Git blob | `83d4a7696951962ce532a827ed8b019f14767b25` |
+| SHA-256 | `04fe4fe89c273a94c0b8297ffe3c1ec748e237f4d36ca2e965df95458dd2d648` |
+| Bytes | 360485 |
 | Vendored on | 2026-09-05 |
+
+> **⚑ The recipe answered TWO DIFFERENT REVISIONS for the two paths, and this is the first re-vendor here
+> where it did.** Run once per path against `origin/main` at `4f06042f`:
+>
+> ```
+> contract/schema/bus-protocol.schema.json  →  88d1077765d4e63bfd180e43c25e366d1d461b7e
+> contract/schema/tests/vectors.json        →  887d01c71190fee530bea483a428a53657e1cb6d
+> ```
+>
+> Step 0 of the gate asserts the two `pin.*.revision` markers are EQUAL, so those two answers cannot both
+> be written down. **Both are pinned at `88d1077`, and that is the true statement, not a compromise**:
+> `88d1077` is the revision these bytes were taken from, and at `88d1077` the vectors path resolves to
+> blob `136bb716` — the same object `887d01c7` left there, because `88d1077` did not touch that file.
+> "The last commit that WROTE this path" and "the revision this copy was TAKEN FROM" are two different
+> questions, and only the second one can be shared by two files. The recipe answers the first, which is
+> why it is run per path: it is how you find out whether a path moved at all. Where the two answers
+> differ, the newer revision is the one both pins carry, and the older one is recorded in the vectors
+> table below rather than discarded.
+>
+> **⚑ This re-vendor was ordered for a prose correction and its schema half is exactly that.** The
+> structural diff found **one** changed leaf in the whole document — `/description` — and zero fragments
+> touched. That is stated with the same weight a large delta would get, because a diff that comes back
+> matching the dispatch is only informative if the check that would have caught a mismatch was actually
+> run: leaf-path sets differenced, leaf values compared, `methods` and `events` re-parsed.
+>
+> **What DOES land in this commit is the serve on the other side of it.** The previous re-vendor recorded
+> `events["emulator/machineReplaced"]` arriving with §11.41's bytes and noted that *"this server does not
+> emit"* it. It does now: §11.40 (CR-Q) is served in this commit, so the fragment that was inert here for
+> a few hours is live, and `tests/machine_replaced.rs` validates against it on the wire. The fragment
+> itself did not change between the two copies — the serve caught up to the schema rather than the other
+> way round, which is the one ordering §8 item 20 permits.
+
+*(Retired one step, kept because it is the previous re-vendor's own record. Everything below this line
+until the retired §11.39 note describes `887d01c7`, not the current copy.)*
 
 > **⚑ This re-vendor moves BOTH blobs, and it carries a SECOND amendment's fragment that this server does
 > not serve.** The dispatch that ordered it named §11.41 (CR-R) and named one file. The bytes at
@@ -65,9 +99,9 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 > WINDOW gesture's event: no `METHODS` row produces it, `git grep machineReplaced -- crates/` finds
 > nothing outside the vendored artifacts, and the coverage report's event line is printed rather than
 > pinned — so an event fragment for something this server never emits adds a schema this suite will never
-> exercise, and breaks nothing. The one direction it could have bitten (an added `required` on an event
-> this server DOES emit, which is what §11.39's `romReloaded` leaf did last time) is not in this delta:
-> `events["emulator/romReloaded"]` is byte-identical across the two copies.
+> exercise, and breaks nothing. ~~The one direction it could have bitten…~~ **That reading held for one
+> re-vendor and is now spent**: the commit above serves the event, so the fragment is exercised on the
+> wire.
 >
 > **The §11.41 half is the one that had to land in this commit.** `read_vdp_registers.result` REQUIRES
 > `raw` and `status`, and the fragment is the precondition for the handler under §8 item 20 — while a
@@ -118,13 +152,28 @@ until the vectors table describes `c5638e6e`, not the current copy.)*
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/tests/vectors.json` |
-| Contract repo revision | **`887d01c71190fee530bea483a428a53657e1cb6d`** (2026-09-05) — the recipe (`git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`) was run for this path in its own right and answered `887d01c7`, the same commit the schema path answered. **285 cases** (`cases[]`, up from 276), of which **169** are `expect: "fail"` and **116** `expect: "pass"`; naming **41** distinct methods (up from 39), of which **10** are `emulator/lookup_equate`. **14** cases carry `group: "events"`, up from 10. All 276 previous cases are present and unchanged: nine are ADDED and zero removed, compared as whole documents. §11.41 contributes **five** on `emulator/read_vdp_registers` (a `params` pass on `{}`, a `params` fail on `{"reg": 4}`, a `result` pass, a `result` fail on 23 entries, a `result` fail on a `status` key beyond `raw`) and §11.40 contributes **four** on the `emulator/machineReplaced` event. `$comment`, `envelope`, `eventEnvelope` and `specExamples` are byte-identical. ⚑ The five §11.41 cases are **inserted at index 111**, beside the other §6 read rows, not appended — so "the leading prefix is unchanged" is FALSE here at 111 of 276, and the honest statement is the set comparison above rather than a prefix length. Every figure re-derived by parsing the bytes written in this commit. |
+| Contract repo revision | **`88d1077765d4e63bfd180e43c25e366d1d461b7e`** (2026-09-05) — ⚑ and the recipe (`git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`) was run for this path in its own right and answered **`887d01c7`, a DIFFERENT commit from the schema path's `88d1077`**, for the first time here. `88d1077` did not write this file; it is nonetheless the revision this copy was taken from, and the bytes at `88d1077:contract/schema/tests/vectors.json` are blob `136bb716` — the same object, unchanged since `887d01c7`. Both facts are recorded because only one of them can be a pin: see the ⚑ note under the schema table for why the pins name the newer revision and not the recipe's per-path answers. **285 cases** (`cases[]`, up from 276), of which **169** are `expect: "fail"` and **116** `expect: "pass"`; naming **41** distinct methods (up from 39), of which **10** are `emulator/lookup_equate`. **14** cases carry `group: "events"`, up from 10. All 276 previous cases are present and unchanged: nine are ADDED and zero removed, compared as whole documents. §11.41 contributes **five** on `emulator/read_vdp_registers` (a `params` pass on `{}`, a `params` fail on `{"reg": 4}`, a `result` pass, a `result` fail on 23 entries, a `result` fail on a `status` key beyond `raw`) and §11.40 contributes **four** on the `emulator/machineReplaced` event. `$comment`, `envelope`, `eventEnvelope` and `specExamples` are byte-identical. ⚑ The five §11.41 cases are **inserted at index 111**, beside the other §6 read rows, not appended — so "the leading prefix is unchanged" is FALSE here at 111 of 276, and the honest statement is the set comparison above rather than a prefix length. Every figure re-derived by parsing the bytes written in this commit. |
 | Git blob | `136bb7163b5a8a99eca2308d59fd189d5b150da6` |
 | SHA-256 | `0cde48d1283ff5110704d90d3fafc8de0d775c58c65b9aec56384b86b19acfdf` |
 | Bytes | 133091 |
 | Vendored on | 2026-09-05 |
 
-> **⚑ The tip and the recipe DIVERGED again** — after two re-vendors running where they agreed.
+> **⚑ These bytes did not move on this re-vendor, and only the pin's revision did.** Blob `136bb716` was
+> already the vendored value and it still is — re-copied from `88d1077`'s object store rather than left
+> alone, so the file is provably the object at the revision both pins now name and not merely a file that
+> happens to hash the same. Every figure in the table above was re-derived by parsing these bytes
+> (`cases[]` length, the pass/fail split, distinct methods, the `group: "events"` count) rather than
+> carried over; the "up from 276 / nine ADDED" comparisons in it describe the **previous** re-vendor's
+> delta, which is still the last time this file's content changed. The stale-table hazard recorded further
+> down is why that is said rather than assumed.
+>
+> ⚑ **The two paths' recipes ANSWERED DIFFERENT COMMITS on this re-vendor** — schema `88d1077`, vectors
+> `887d01c7` — which is a first here, and the reason is written out under the schema table above. Short
+> form: the recipe finds the last commit that WROTE a path, the pin names the revision a copy was TAKEN
+> FROM, and only the second can be shared by two files, which step 0 requires.
+>
+> *(Retired one step, kept because it is the previous re-vendor's own reading.)* **⚑ The tip and the
+> recipe DIVERGED again** — after two re-vendors running where they agreed.
 > `origin/main` was `40dfd05f` when these bytes were taken, *"bank 2026-09-05T19:13:42Z: tick; aurora and
 > oracle pushed; grep refinement banked"*, a lane-log commit that wrote neither file. `git log -1
 > --format=%H origin/main -- <path>` answered `887d01c7` for **both** paths, and

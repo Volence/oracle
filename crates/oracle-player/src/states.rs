@@ -30,13 +30,31 @@
 //!   [`Machine::adopt_system`](crate::machine::Machine::adopt_system) does it in the same statement that
 //!   takes the machine, so there is no order in which one can happen without the other.
 //!
-//! # ⚑ What a connected client is NOT told, stated rather than hidden
+//! # ⚑ What a connected client IS told — the fourth consequence, added 2026-09-05
 //!
-//! A load replaces the machine without moving the engine's `rom_generation`, so a client attached to this
-//! window over the socket gets no `emulator/romReloaded` and no `rom_changed` — it sees the clock jump in
-//! the next stamp and nothing else. `oracle-frontend`'s F4 has exactly the same hole and always has.
-//! Closing it would mean a new signal on a contract lane's surface, which is a change request and not a
-//! slice. It is recorded here so the next person does not have to rediscover it at a debugger.
+//! * **The bus is told the machine was replaced**, which it was not until §11.40 (CR-Q) adopted a signal
+//!   for it. [`Bus::machine_replaced`](crate::bus::Bus::machine_replaced) emits
+//!   `emulator/machineReplaced` with `reason: "stateLoad"` and the count of watchpoint hits dropped at
+//!   the boundary, and moves `rom_generation` so this window's own repairs run too.
+//!
+//! *(What this replaces, kept because it is the defect's own record.)* ~~A load replaces the machine
+//! without moving the engine's `rom_generation`, so a client attached to this window over the socket gets
+//! no `emulator/romReloaded` and no `rom_changed` — it sees the clock jump in the next stamp and nothing
+//! else. `oracle-frontend`'s F4 has exactly the same hole and always has. Closing it would mean a new
+//! signal on a contract lane's surface, which is a change request and not a slice.~~ The change request
+//! was raised (`docs/proposed/2026-09-05-cr-q-stateload-signal.md`), adopted as §11.40, and served here.
+//! `oracle-frontend`'s F4 is closed in the same commit.
+//!
+//! **Why the bus is a parameter of [`States::load`] and not a call the two key handlers each remember.**
+//! There are two gestures that reach the loader — the F4 key and the load button — and a per-site opt-in
+//! is a list that goes stale the moment a third arrives. Threading `&mut Bus` through the signature makes
+//! a load that does not signal a compile error rather than a silent regression, which is the same
+//! argument [`Bus::call`](crate::bus::Bus::call) makes for taking `SelfInflicted` in one place.
+//!
+//! **The refusal path signals nothing, and that is required rather than incidental.** §11.40 M4 and §8
+//! item 28's extension both name the negative: a refused load (empty slot, fingerprint mismatch, corrupt
+//! payload) moves nothing and emits nothing. Here that is structural — the `?`-shaped early return
+//! happens before the bus is touched at all.
 
 use std::path::Path;
 
@@ -176,8 +194,18 @@ impl States {
     ///
     /// Then, in this order and for the reasons in the module doc: flush the battery, take the machine
     /// (which resynchronises the timeline in the same statement), cancel the autosave, clear the restored
-    /// dirty flag.
-    pub fn load(&mut self, machine: &mut Machine, battery: &mut Battery, said: &mut Vec<String>) {
+    /// dirty flag, and tell the bus the machine was replaced.
+    ///
+    /// **The bus is told last, after the machine is whole**, because the event carries the §2.2 stamp of
+    /// the machine it is announcing. Told before the swap it would stamp the timeline the load just left,
+    /// which is the one reading a subscriber would have no way to detect as wrong.
+    pub fn load(
+        &mut self,
+        machine: &mut Machine,
+        battery: &mut Battery,
+        bus: &mut crate::bus::Bus,
+        said: &mut Vec<String>,
+    ) {
         let path = save_state::state_path_for(Path::new(&self.rom_path), self.slot);
         let loaded = match save_state::load(&path, self.rom_fp) {
             Ok(sys) => sys,
@@ -186,6 +214,8 @@ impl States {
                     text: format!("state: load of slot {} failed: {e}", self.slot),
                     refused: true,
                 });
+                // §11.40 M4 / §8 item 28: a refused load moves nothing and emits nothing. The return is
+                // before `bus` is touched, so the negative is structural rather than a check.
                 return;
             }
         };
@@ -199,6 +229,12 @@ impl States {
         // restored dirty flag, so the rolled-back SRAM reaches disk only once the game saves again.
         battery.cancel_autosave();
         machine.system_mut().clear_sram_dirty();
+        // …and the fourth consequence (§11.40, CR-Q): the machine underneath the bus is a different
+        // machine now. This drops the recorded watchpoint hits and counts them onto the event, invalidates
+        // the latched picture, restarts the profiler sample and moves `rom_generation` — so a subscriber
+        // hears about it and this window's own drain repairs run. Ordered after the swap because the
+        // event stamps the machine it announces.
+        bus.machine_replaced(machine.system_mut());
         self.last = Some(Note {
             text: format!("state: loaded slot {} from {}", self.slot, path.display()),
             refused: false,
@@ -210,10 +246,30 @@ impl States {
 mod tests {
     use super::*;
     use oracle_core::m68000::bus68k::Bus68k;
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn booted() -> Machine {
         Machine::new(oracle_core::testrom::build(), None)
+    }
+
+    /// A bus bound to **no socket**, for the rows in this module.
+    ///
+    /// It is not a stub and not a mock: it is the real [`crate::bus::Bus`] with `socket: None`, so
+    /// `States::load`'s call to [`crate::bus::Bus::machine_replaced`] runs the whole of
+    /// `Engine::note_machine_replaced` against the real engine — the hits drain, the picture
+    /// invalidation, the profiler restart, the generation bump and the broadcast. What is absent is only
+    /// a subscriber to receive the broadcast, which is what makes the rows here about the *loader*.
+    ///
+    /// The wire half is asserted where it belongs, over a socket, in
+    /// `oracle-aether/tests/machine_replaced.rs`.
+    fn inert_bus(machine: &mut Machine) -> crate::bus::Bus {
+        crate::bus::Bus::new(
+            machine.system_mut(),
+            oracle_aether::host::MachineInfo::default(),
+            false,
+            None,
+        )
     }
 
     /// A private directory with one cartridge in it, removed when the row ends.
@@ -306,6 +362,7 @@ mod tests {
         let cart = Cartridge::new("roundtrip");
         let mut machine = booted();
         let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut inert_bus = inert_bus(&mut machine);
         let mut states = States::open(&cart.path(), machine.system());
 
         machine.system_mut().run_frames(2);
@@ -348,7 +405,7 @@ mod tests {
         );
 
         let mut said = Vec::new();
-        states.load(&mut machine, &mut battery, &mut said);
+        states.load(&mut machine, &mut battery, &mut inert_bus, &mut said);
         let last = states.last().expect("the load said nothing at all");
         assert!(!last.refused, "{}", last.text);
         assert_eq!(
@@ -394,6 +451,7 @@ mod tests {
         let cart = Cartridge::new("empty-slot");
         let mut machine = booted();
         let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut inert_bus = inert_bus(&mut machine);
         let mut states = States::open(&cart.path(), machine.system());
         machine.system_mut().run_frames(2);
         let before = machine.system().state_hash().combined;
@@ -401,7 +459,7 @@ mod tests {
         states.select(7);
         assert!(!states.occupied(7), "the fixture slot must be empty");
         let mut said = Vec::new();
-        states.load(&mut machine, &mut battery, &mut said);
+        states.load(&mut machine, &mut battery, &mut inert_bus, &mut said);
         let last = states.last().expect("a refused load said nothing");
         assert!(last.refused, "loading a slot with no file was not refused");
         assert!(
@@ -428,6 +486,7 @@ mod tests {
         let cart = Cartridge::new("other-cart");
         let mut machine = booted();
         let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut inert_bus = inert_bus(&mut machine);
         let mut states = States::open(&cart.path(), machine.system());
         let note = states.save(&machine).clone();
         assert!(!note.refused, "{}", note.text);
@@ -441,7 +500,7 @@ mod tests {
 
         let before = machine.system().state_hash().combined;
         let mut said = Vec::new();
-        states.load(&mut machine, &mut battery, &mut said);
+        states.load(&mut machine, &mut battery, &mut inert_bus, &mut said);
         let last = states.last().expect("the load said nothing");
         assert!(
             last.refused,
@@ -454,5 +513,124 @@ mod tests {
             before,
             "a refused load moved the machine"
         );
+    }
+
+    /// ★ **A successful load tells the bus the machine was replaced, and a refused one does not**
+    /// (§11.40, CR-Q; §8 item 28's extension).
+    ///
+    /// This is the row that binds the loader to the signal. The wire half — the event, its `reason`, its
+    /// `hitsDropped`, and "one boundary, one signal" — is asserted over a socket against the vendored
+    /// fragment in `oracle-aether/tests/machine_replaced.rs`; what *cannot* be asserted there is that
+    /// **this** function calls it, since that fixture's window swaps and signals in two lines the test
+    /// file owns. So the two halves are asserted where each one is real.
+    ///
+    /// **The observable is the latched picture, and it is chosen because it is bus-side.** A hit count
+    /// would be the more obvious probe and it is the wrong one here: the watch instrument is fed through
+    /// `Machine::step`'s sinks, so a fixture driving `System::run_frames` directly would record nothing
+    /// and the row would pass by having no hits to lose — the vacuity trap the round-trip row above
+    /// already records for `capture_lines`. `emulator/screenshot`'s `source` has no such hole: the frames
+    /// are run **through the bus**, so the engine latches a real raster, and `"raster"` before the load
+    /// is this row's anti-vacuity clause.
+    ///
+    /// Both directions are one row because they are one decision. A `machine_replaced` moved above the
+    /// `match` — into the refusal's path as well — is the exact mistake §11.40 M4's negative names, and a
+    /// row asserting only the positive would be green for it.
+    ///
+    /// Mutation proven red: delete `bus.machine_replaced(...)` from [`States::load`] (the positive half
+    /// fails), and separately move that call above the `let loaded = match …` (the refusal half fails).
+    #[test]
+    fn a_load_tells_the_bus_the_machine_was_replaced_and_a_refusal_does_not() {
+        let cart = Cartridge::new("bus-signal");
+        let mut machine = booted();
+        let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut inert_bus = inert_bus(&mut machine);
+        let mut states = States::open(&cart.path(), machine.system());
+
+        // The engine refuses to advance a free-running machine, and the picture has to come from the
+        // engine's own run for `source` to be able to say `"raster"` at all.
+        let paused = inert_bus.call(machine.system_mut(), "emulator/pause", &json!({}));
+        assert!(
+            !paused.is_err(),
+            "the fixture must be able to pause the bus"
+        );
+
+        let shot = std::env::temp_dir().join(format!(
+            "player-mr-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let shot_params = json!({ "path": shot.display().to_string() });
+        let source = |bus: &mut crate::bus::Bus, m: &mut Machine| -> String {
+            match bus.call(m.system_mut(), "emulator/screenshot", &shot_params) {
+                crate::bus::Answer::Ok(v) => v["source"].as_str().expect("a source").to_string(),
+                crate::bus::Answer::Err(e) => panic!("screenshot refused: {}", e.message),
+            }
+        };
+
+        // --- the positive: a real slot, loaded ---
+        let note = states.save(&machine).clone();
+        assert!(!note.refused, "{}", note.text);
+        let ran = inert_bus.call(
+            machine.system_mut(),
+            "emulator/run_frames",
+            &json!({"frames": 2}),
+        );
+        assert!(!ran.is_err(), "the fixture must be able to run frames");
+        assert_eq!(
+            source(&mut inert_bus, &mut machine),
+            "raster",
+            "anti-vacuity: the engine must hold a real latched frame before the load, or the \
+             assertion after it is about nothing"
+        );
+
+        let mut said = Vec::new();
+        states.load(&mut machine, &mut battery, &mut inert_bus, &mut said);
+        assert!(
+            !states.last().expect("the load said nothing").refused,
+            "the fixture's own slot must load"
+        );
+        assert_eq!(
+            source(&mut inert_bus, &mut machine),
+            "stateRender",
+            "the load did not tell the bus: the engine still holds the pre-load raster, which is \
+             exactly what a client attached to this window used to be handed (§11.40)"
+        );
+
+        // --- the negative: an empty slot, refused ---
+        let ran = inert_bus.call(
+            machine.system_mut(),
+            "emulator/run_frames",
+            &json!({"frames": 2}),
+        );
+        assert!(!ran.is_err(), "the fixture must be able to run frames");
+        assert_eq!(
+            source(&mut inert_bus, &mut machine),
+            "raster",
+            "anti-vacuity for the negative half: the picture must be latched again before a refusal \
+             can be shown not to clear it"
+        );
+
+        states.select(1);
+        assert!(
+            !states.occupied(1),
+            "slot 1 must be empty, or the refusal below is not one"
+        );
+        let mut said = Vec::new();
+        states.load(&mut machine, &mut battery, &mut inert_bus, &mut said);
+        assert!(
+            states.last().expect("the load said nothing").refused,
+            "an empty slot must refuse"
+        );
+        assert_eq!(
+            source(&mut inert_bus, &mut machine),
+            "raster",
+            "a REFUSED load signalled a replacement: it invalidated the picture of a machine that \
+             was never replaced (§11.40 M4, §8 item 28's negative)"
+        );
+
+        let _ = std::fs::remove_file(&shot);
     }
 }
