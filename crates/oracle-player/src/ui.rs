@@ -228,11 +228,21 @@ impl Panels<'_> {
         };
         let src = tex.size_vec2();
         let ppp = ui.pixels_per_point();
-        let size = screen_pick::fit(ui.available_size(), src.x as usize, src.y as usize);
+        // One reading of the available space, used for both the fit and the allocation. Two calls would
+        // be two readings of a thing that can change, and the picture would then be fitted to one box and
+        // centred in another.
+        let avail = ui.available_size();
+        let size = screen_pick::fit(
+            avail,
+            src.x as usize,
+            src.y as usize,
+            ppp,
+            self.screen.aspect,
+        );
         if size.x <= 0.0 || size.y <= 0.0 {
             return;
         }
-        let (outer, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+        let (outer, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
         let image_rect = egui::Rect::from_center_size(outer.center(), size);
         // Nearest sampling, because a Genesis pixel is a Genesis pixel.
         egui::Image::new(tex)
@@ -277,6 +287,23 @@ impl Panels<'_> {
                 }
             } else if ui.button("spawn mode…").clicked() {
                 self.screen.arm_spawn(self.machine, self.bus);
+            }
+            ui.separator();
+            // ⚑ The aspect selector. `Aspect::name()` is the frontend's own short name, so the two windows
+            // cannot spell a mode differently, and the set is written out rather than derived because
+            // `Aspect` is a three-variant enum with no `ALL` — an added variant is a compile error at the
+            // match in `present.rs`, not a silently missing button here.
+            for a in [
+                oracle_frontend::present::Aspect::Tv,
+                oracle_frontend::present::Aspect::Square,
+                oracle_frontend::present::Aspect::Integer,
+            ] {
+                if ui
+                    .selectable_label(self.screen.aspect == a, a.name())
+                    .clicked()
+                {
+                    self.screen.aspect = a;
+                }
             }
             ui.separator();
             ui.weak(format!("{} armed by this panel", self.screen.armed_count()));

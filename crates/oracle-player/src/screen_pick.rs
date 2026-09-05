@@ -49,8 +49,9 @@
 //! minifb never tells the caller where it put the image. egui does: `Response::rect` is the rect the image
 //! was actually laid out in. So [`dot_at`] inverts **what was drawn**, not a second derivation of what
 //! should have been drawn, and the recon's §3.2 hazard — *"change the fit and the inverse must change with
-//! it"* — cannot arise. S2 changes the fit from a float square scale to three `Aspect` modes and this
-//! function needs no edit.
+//! it"* — cannot arise. S2 changed the fit from a float square scale to `present::dest_rect` under three
+//! `Aspect` modes and this function needed **no edit at all**; the identity row below passes at every mode
+//! unchanged, which is the assertion rather than the anecdote.
 //!
 //! ## The two routes, and why a click uses both
 //!
@@ -67,7 +68,7 @@
 
 use egui::{Pos2, Rect as ERect, Vec2};
 use oracle_core::render::LayerMask;
-use oracle_frontend::present;
+use oracle_frontend::present::{self, Aspect};
 use oracle_frontend::{pick, spawn};
 use serde_json::{json, Value};
 
@@ -89,25 +90,39 @@ fn pause_remedy() -> String {
 // Geometry
 // -------------------------------------------------------------------------------------------------------
 
-/// The picture's size **in egui points**, for a `src_w x src_h` native frame in an `avail`-sized panel.
+/// The picture's size **in egui points**, for a `src_w x src_h` native frame in an `avail`-sized panel,
+/// under `aspect`.
 ///
-/// S1 keeps the fit the Screen tab already had — square pixels, the largest fractional scale that fits —
-/// and moves it here for one reason: **the fit and its inverse must be one derivation.** S2 replaces the
-/// body with `present::dest_rect` and three `Aspect` modes; nothing else in this module changes when it
-/// does, because [`dot_at`] inverts the rect egui actually drew rather than re-deriving this.
+/// ⚑ **S2. This used to be four lines of float square-pixel fit, and that was a geometrically wrong
+/// picture by `oracle-frontend`'s own standard.** A Mega Drive does not have square pixels: H40 puts 320
+/// dots and H32 puts 256 dots across the *same* physical width of a 4:3 television, so the correct picture
+/// is the active area letterboxed to 4:3 in both modes — H32 stretched wider, not pillarboxed. That is
+/// [`Aspect::Tv`], it is the **default**, and the player did not have it.
+///
+/// The body is [`present::dest_rect`] — the frontend's own fit, the same integer arithmetic and the same
+/// *exact* reduced-ratio derivation, rather than a second implementation of 4:3 in this file. Only the
+/// rect's size is used: egui centres the picture itself and the origin `dest_rect` computes is for a
+/// caller that blits into a window-sized buffer.
+///
+/// **`ppp` is taken even though the result is in points**, and that is not a rounding nicety.
+/// [`Aspect::Integer`] is a claim about the **pixel** grid — "the largest whole scale at which no row or
+/// column is duplicated unevenly" — and it is meaningless in points: computed in points at a non-integer
+/// `pixels_per_point`, "integer mode" would duplicate rows while calling itself sharp. So the fit is
+/// computed in device pixels and converted back at the end.
 ///
 /// Returns a zero `Vec2` for a degenerate panel (a zero dimension anywhere), so a window manager handing
 /// out a 0-height panel mid-resize produces no picture rather than a panic or a NaN.
-pub fn fit(avail: Vec2, src_w: usize, src_h: usize) -> Vec2 {
-    if src_w == 0 || src_h == 0 || !avail.x.is_finite() || !avail.y.is_finite() {
+pub fn fit(avail: Vec2, src_w: usize, src_h: usize, ppp: f32, aspect: Aspect) -> Vec2 {
+    if !ppp.is_finite() || ppp <= 0.0 || !avail.x.is_finite() || !avail.y.is_finite() {
         return Vec2::ZERO;
     }
-    if avail.x <= 0.0 || avail.y <= 0.0 {
+    let w_px = (avail.x * ppp).floor().max(0.0) as usize;
+    let h_px = (avail.y * ppp).floor().max(0.0) as usize;
+    let r = present::dest_rect(w_px, h_px, src_w, src_h, aspect);
+    if r.w == 0 || r.h == 0 {
         return Vec2::ZERO;
     }
-    let src = Vec2::new(src_w as f32, src_h as f32);
-    let scale = (avail.x / src.x).min(avail.y / src.y).max(0.01);
-    src * scale
+    Vec2::new(r.w as f32 / ppp, r.h as f32 / ppp)
 }
 
 /// **The inverse of the blit** — the native dot under `pos`, or `None` when the pointer is off the picture.
@@ -163,13 +178,23 @@ pub struct Readout {
 
 /// The Screen tab's own state between repaints.
 ///
-/// **What is armed is not in here** — the watch handles are, because retiring only what *this panel* armed
-/// is a correctness requirement (a `watchpoint_clear {all: true}` would take a socket client's watches with
-/// it, which is the shared-instrument hazard `oracle-frontend` learned the hard way), but the watches
-/// themselves live in the `Host`'s one `Watchpoints`, read afresh by the Watchpoints tab. Two instruments
-/// would be two answers to `emulator/watchpoint_hits`.
+/// **The watches themselves are not in here — only their handles are.** The instrument is the `Host`'s one
+/// `Watchpoints`, which the Watchpoints tab reads afresh and `emulator/watchpoint_hits` answers from; a
+/// second one on this side would be two answers to one question. What this panel keeps is the list of
+/// handles *it* issued, because retiring only its own is a correctness requirement: a
+/// `watchpoint_clear {all: true}` would take a socket client's watches with it, which is the
+/// shared-instrument hazard `oracle-frontend` learned the hard way.
 #[derive(Default)]
 pub struct Panel {
+    /// **Which of the three fits the picture is drawn with**, and [`Aspect::Tv`] by default because
+    /// `Aspect`'s own `Default` is — read, not restated, so this window and the game window cannot default
+    /// differently. `Square` and `Integer` preserve the pixel grid instead, which is what you want when you
+    /// are counting pixels rather than playing.
+    ///
+    /// Not persisted, deliberately: this is a *looking at it* choice like a zoom, and the dock layout store
+    /// is `player.conf`'s open question (recon §3.4). Deciding where it lives before that slice decides the
+    /// split is how a setting ends up written by one store and read by the other.
+    pub aspect: Aspect,
     /// The standing readout of the last click. **Standing, not a toast**: a toast expires and the fact that
     /// a click armed nothing does not.
     last: Option<Readout>,
@@ -303,6 +328,13 @@ impl Panel {
         // Retire only what THIS panel armed. `{all: true}` would take a socket client's watches with it —
         // the shared-instrument hazard, and the reason "a click replaces the prior watch" needs a list
         // rather than a reset.
+        //
+        // ⚑ **The one place in this module where a refusal is deliberately not a sentence**, and it is
+        // worth saying why given the rule everywhere else. The only way this refuses is a handle the engine
+        // no longer holds — which happens when a socket client cleared it first, and that is exactly the
+        // outcome being asked for. Reporting "could not retire a watch that is already gone" would be noise
+        // on the one line the person is reading for the pick's answer. The handle leaves our list either
+        // way, which is the state that matters.
         for handle in std::mem::take(&mut self.armed) {
             let _ = bus.call(sys, "emulator/watchpoint_clear", &json!({"watch": handle}));
         }
@@ -517,12 +549,17 @@ mod tests {
     /// that extension is a new caller rather than a rewrite of the assertion.
     #[test]
     fn the_fit_and_the_click_inverse_are_inverses() {
-        for (sw, sh) in [(320usize, 224usize), (256, 224)] {
-            for ppp in [1.0f32, 1.5, 2.0] {
-                let avail = Vec2::new(1280.0 / ppp, 900.0 / ppp);
-                let size = fit(avail, sw, sh);
-                assert!(size.x > 0.0 && size.y > 0.0, "{sw}x{sh} ppp={ppp}");
-                assert_round_trip(size, ppp, sw, sh, "square");
+        for aspect in [Aspect::Tv, Aspect::Square, Aspect::Integer] {
+            for (sw, sh) in [(320usize, 224usize), (256, 224)] {
+                for ppp in [1.0f32, 1.5, 2.0] {
+                    let avail = Vec2::new(1280.0 / ppp, 900.0 / ppp);
+                    let size = fit(avail, sw, sh, ppp, aspect);
+                    assert!(
+                        size.x > 0.0 && size.y > 0.0,
+                        "{aspect:?} {sw}x{sh} ppp={ppp}"
+                    );
+                    assert_round_trip(size, ppp, sw, sh, &format!("{aspect:?}"));
+                }
             }
         }
     }
@@ -564,13 +601,147 @@ mod tests {
     }
 
     /// A degenerate panel yields no picture rather than a panic — a window manager really can hand out a
-    /// zero-height panel mid-resize.
+    /// zero-height panel mid-resize, and `dest_rect` carries the same rule.
     #[test]
     fn a_degenerate_panel_yields_no_picture() {
-        assert_eq!(fit(Vec2::new(0.0, 700.0), W, H), Vec2::ZERO);
-        assert_eq!(fit(Vec2::new(900.0, 0.0), W, H), Vec2::ZERO);
-        assert_eq!(fit(Vec2::new(900.0, 700.0), 0, H), Vec2::ZERO);
-        assert_eq!(fit(Vec2::new(f32::NAN, 700.0), W, H), Vec2::ZERO);
+        let tv = Aspect::Tv;
+        assert_eq!(fit(Vec2::new(0.0, 700.0), W, H, 1.0, tv), Vec2::ZERO);
+        assert_eq!(fit(Vec2::new(900.0, 0.0), W, H, 1.0, tv), Vec2::ZERO);
+        assert_eq!(fit(Vec2::new(900.0, 700.0), 0, H, 1.0, tv), Vec2::ZERO);
+        assert_eq!(fit(Vec2::new(900.0, 700.0), W, 0, 1.0, tv), Vec2::ZERO);
+        assert_eq!(fit(Vec2::new(f32::NAN, 700.0), W, H, 1.0, tv), Vec2::ZERO);
+        assert_eq!(fit(Vec2::new(900.0, 700.0), W, H, 0.0, tv), Vec2::ZERO);
+        assert_eq!(fit(Vec2::new(900.0, 700.0), W, H, f32::NAN, tv), Vec2::ZERO);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // S2 — the three aspect modes
+    // ---------------------------------------------------------------------------------------------
+
+    /// **The default is the television one, and the three modes are actually three.**
+    ///
+    /// The player was showing a square-pixel picture, which is geometrically wrong by the frontend's own
+    /// standard for a *player*. The default is read off `Aspect::default()` rather than written as a
+    /// literal here, so this window and the game window cannot default differently — the assertion is that
+    /// they agree, not that both happen to say `Tv`.
+    #[test]
+    fn the_default_aspect_is_the_television_one_and_the_modes_differ() {
+        assert_eq!(Panel::default().aspect, Aspect::default());
+        let avail = Vec2::new(1000.0, 700.0);
+        let tv = fit(avail, 320, 224, 1.0, Aspect::Tv);
+        let sq = fit(avail, 320, 224, 1.0, Aspect::Square);
+        let int = fit(avail, 320, 224, 1.0, Aspect::Integer);
+        assert_ne!(tv, sq, "4:3 and square must not be the same picture");
+        assert_ne!(sq, int, "a fractional square fit is not an integer one");
+        // ⚑ **`Tv` is EXACTLY 4:3 and `Square` is exactly the native ratio** — the two claims, stated as
+        // integer identities because `dest_rect` builds both out of whole multiples of a reduced fraction.
+        // Note which way round this goes for H40: 320x224 reduces to 10:7 ≈ 1.429, which is *wider* than
+        // 4:3 ≈ 1.333, so the television picture is NARROWER than square pixels here and wider than them at
+        // H32. "Tv is the wide one" is the plausible wrong version of this row, and it is wrong.
+        assert_eq!(
+            tv.x as usize * 3,
+            tv.y as usize * 4,
+            "tv={tv:?} must be an exact 4:3 box"
+        );
+        assert_eq!(
+            sq.x as usize * 7,
+            sq.y as usize * 10,
+            "sq={sq:?} must be the exact native 320:224 = 10:7 ratio"
+        );
+        // …and the two orderings, both ways, so this is a measurement of the ratio rather than of one box.
+        let sq32 = fit(avail, 256, 224, 1.0, Aspect::Square);
+        let tv32 = fit(avail, 256, 224, 1.0, Aspect::Tv);
+        assert!(tv.x / tv.y < sq.x / sq.y, "H40: 4:3 is narrower than 10:7");
+        assert!(
+            tv32.x / tv32.y > sq32.x / sq32.y,
+            "H32: 4:3 is wider than 8:7"
+        );
+        // Integer mode duplicates no row: both axes are whole multiples of the native frame.
+        assert_eq!(
+            int.x as usize % 320,
+            0,
+            "integer mode must be whole: {int:?}"
+        );
+        assert_eq!(
+            int.y as usize % 224,
+            0,
+            "integer mode must be whole: {int:?}"
+        );
+    }
+
+    /// **H32 is stretched wider, not pillarboxed.** 256 and 320 dots occupy the same 4:3 box, which is the
+    /// one thing about `Tv` that a reader is most likely to implement backwards.
+    #[test]
+    fn h32_and_h40_get_the_same_television_box() {
+        let avail = Vec2::new(1000.0, 700.0);
+        assert_eq!(
+            fit(avail, 320, 224, 1.0, Aspect::Tv),
+            fit(avail, 256, 224, 1.0, Aspect::Tv)
+        );
+        // …and under square pixels they do not, which is what makes the row above a measurement rather
+        // than a property of the fixture.
+        assert_ne!(
+            fit(avail, 320, 224, 1.0, Aspect::Square),
+            fit(avail, 256, 224, 1.0, Aspect::Square)
+        );
+    }
+
+    /// ⚑ **`Integer` is a claim about the PIXEL grid, so it must survive a non-integer `ppp`.**
+    ///
+    /// This is the row that fails if the fit is ever computed in points: at `ppp = 1.5` a "whole" scale in
+    /// points is 1.5x in pixels, which duplicates every other row while the mode's name promises it does
+    /// not. The assertion is on the pixel size, reconstructed exactly as [`dot_at`] reconstructs it.
+    #[test]
+    fn integer_mode_is_whole_in_pixels_not_in_points() {
+        for ppp in [1.0f32, 1.25, 1.5, 2.0] {
+            for (sw, sh) in [(320usize, 224usize), (256, 224)] {
+                let size = fit(
+                    Vec2::new(1600.0 / ppp, 1000.0 / ppp),
+                    sw,
+                    sh,
+                    ppp,
+                    Aspect::Integer,
+                );
+                let w_px = (size.x * ppp).round() as usize;
+                let h_px = (size.y * ppp).round() as usize;
+                assert_eq!(
+                    w_px % sw,
+                    0,
+                    "ppp={ppp} {sw}x{sh}: {w_px} px wide is not whole"
+                );
+                assert_eq!(
+                    h_px % sh,
+                    0,
+                    "ppp={ppp} {sw}x{sh}: {h_px} px tall is not whole"
+                );
+                assert_eq!(
+                    w_px / sw,
+                    h_px / sh,
+                    "ppp={ppp}: integer mode scales both axes by ONE factor"
+                );
+            }
+        }
+    }
+
+    /// The fit is `present::dest_rect`'s, **not a second implementation of it in this file**.
+    ///
+    /// Asserted by construction rather than by eye: at `ppp = 1.0` the returned points are the rect's own
+    /// pixels, for every mode and both widths. If somebody ever inlines a formula here, this is what
+    /// notices.
+    #[test]
+    fn the_fit_is_the_frontends_own_dest_rect() {
+        for aspect in [Aspect::Tv, Aspect::Square, Aspect::Integer] {
+            for (sw, sh) in [(320usize, 224usize), (256, 224)] {
+                for (w, h) in [(1000usize, 700usize), (640, 480), (1920, 1080)] {
+                    let r = present::dest_rect(w, h, sw, sh, aspect);
+                    assert_eq!(
+                        fit(Vec2::new(w as f32, h as f32), sw, sh, 1.0, aspect),
+                        Vec2::new(r.w as f32, r.h as f32),
+                        "{aspect:?} {sw}x{sh} in {w}x{h}"
+                    );
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------------

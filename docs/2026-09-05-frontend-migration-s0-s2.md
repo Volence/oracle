@@ -61,12 +61,13 @@ S1's identity test at the end of S2, or do them as one slice."* That is exactly 
 where `present::window_to_native` is handed a rect the frontend **re-derived** from the window size, and a
 fit change that missed the inverse would leave two derivations disagreeing.
 
-Under egui it should not arise, and the reason is structural rather than lucky: `Response::rect` is **the
-rect egui actually laid the image out in**, so S1's inverse reads the drawn geometry instead of re-deriving
-it. S1 is therefore written with the fit and the inverse as two functions that do not share a derivation at
-all — `fit` decides a size, `dot_at` inverts whatever was drawn. **Whether that holds is S2's measurement,
-recorded in §3 when S2 lands**; the slices are still ordered S1→S2 with S1's identity test re-run at the
-end, because "did not arise" is a thing you establish by checking.
+Under egui it did not arise, and the reason is structural rather than lucky: `Response::rect` is **the rect
+egui actually laid the image out in**, so S1's inverse reads the drawn geometry instead of re-deriving it.
+S2 replaced `fit`'s body — a float square scale became `present::dest_rect` under three `Aspect` modes —
+and **`dot_at` needed no edit at all**. S1's identity row was re-run at the end of S2 and now sweeps all
+three modes without its assertion changing, which is what turns "did not arise" into a measurement.
+
+The ordering S1→S2 was still worth keeping, because that is how you find out.
 
 ---
 
@@ -280,7 +281,8 @@ Its **anti-vacuity clause** is the second click: a backdrop click must leave a C
 "there is a watch" forever and satisfy nothing here. The empty-instrument control is taken first, while it
 is still unambiguous.
 
-*(Red-first proofs: see §2.6.)*
+**Red-first proofs: §2.6.** Three mutations, each shown applied on disk, each restored from the
+committed baseline with `git checkout --` on an otherwise-clean tree and re-run green.
 
 ### 2.5 The spawn picker, and the standing badge
 
@@ -305,16 +307,177 @@ transcribed, which is the rule the frontend's version states.
 
 ### 2.6 Red-first proofs
 
-*(Pending — recorded below once run against the committed baseline.)*
+**Mutation 1 — the points→pixels conversion dropped.** `screen_pick.rs:133`
+`let dx = (pos.x - image.min.x) * ppp;` → `let dx = pos.x - image.min.x;`:
+
+```
+test screen_pick::tests::the_click_inverse_goes_through_pixels_per_point_at_every_scale ... FAILED
+test screen_pick::tests::the_fit_and_the_click_inverse_are_inverses ... FAILED
+test result: FAILED. 7 passed; 2 failed
+```
+
+This is the recon's one named §3.1 risk, and note what the failure proves: it is **invisible at 1.0** and
+caught only because the rows sweep 1.5 and 2.0 as well.
+
+**Mutation 2 — the mask gate's early `return` deleted**, so the gate reports and does not stop:
+
+```
+test screen_pick::tests::a_masked_off_refusal_changes_nothing_on_the_machine ... FAILED
+  assertion `left == right` failed: a refused click must leave the instrument untouched
+test result: FAILED. 8 passed; 1 failed
+```
+
+**Mutation 3 — nothing is armed on the machine**, the arm loop's iterator sliced to `&p.targets[..0]`
+while the description is still composed. This is the fabricated-success shape: the panel says a true
+sentence about what it resolved and changes nothing.
+
+```
+test screen_pick::tests::a_click_arms_the_clicked_tile_on_the_machine_and_the_next_click_replaces_it ... FAILED
+  assertion `left == right` failed: a plane click must arm exactly the 32-byte pattern of tile $055 in VRAM
+   left: []
+  right: [("vram", "0x00000AA0")]
+test screen_pick::tests::a_masked_off_refusal_changes_nothing_on_the_machine ... FAILED
+  assertion `left == right` failed: the precondition: one watch is armed
+test result: FAILED. 7 passed; 2 failed
+```
+
+**And one mutation that was NOT strong enough, recorded because it is the more useful finding.** The first
+attempt at mutation 3 kept the `watchpoint_add` call and dropped only `self.armed.push(h)`. That went red —
+but on `assert_eq!(panel.armed_count(), 1)`, i.e. on the panel's own bookkeeping, with the machine-level
+assertion still passing because the watch really had been armed. A weaker mutation than intended found a
+weaker assertion than intended, and it would have been easy to write that up as "the machine-level row is
+live". It was replaced with the one above, which removes the effect rather than the record.
 
 ---
 
 ## 3. S2 — the three aspect modes
 
-*(See §3.1-3.3.)*
+### 3.1 What landed
+
+`screen_pick::fit`'s body became `present::dest_rect(w_px, h_px, src_w, src_h, aspect)` — **the frontend's
+own fit**, the same integer arithmetic and the same exact reduced-ratio derivation, rather than a second
+implementation of 4:3 in the player. `Panel::aspect` selects it; the Screen tab's strip carries three
+`selectable_label`s named by `Aspect::name()`, so the two windows cannot spell a mode differently.
+
+**The player was showing a geometrically wrong picture by the frontend's own standard.** `Aspect::Tv` is
+the frontend's default because a Mega Drive does not have square pixels, and the player had only the square
+fit.
+
+### 3.2 The one thing that is easy to get backwards, and the row that pins it
+
+`Tv` is not "the wide one". 320x224 reduces to **10:7 ≈ 1.429**, which is *wider* than 4:3 ≈ 1.333 — so at
+H40 the television picture is **narrower** than square pixels, and at H32 (8:7 ≈ 1.143) it is wider. The
+first draft of `the_default_aspect_is_the_television_one_and_the_modes_differ` asserted `tv` was
+proportionally wider and **went red on its first run**, which is how this was found rather than shipped.
+The row now asserts the two ratios as integer identities (`tv.x * 3 == tv.y * 4`, `sq.x * 7 == sq.y * 10`)
+and then asserts the ordering **both ways**, at H40 and at H32, so it is a measurement of the ratio rather
+than of one box.
+
+### 3.3 ⚑ `Integer` is a claim about the PIXEL grid, so the fit is computed in pixels
+
+`fit` takes `pixels_per_point` even though it returns points. "The largest whole scale at which no row or
+column is duplicated unevenly" is meaningless in points: computed in points at `ppp = 1.25`, integer mode
+duplicates every fourth row while calling itself sharp. So the panel size is converted to device pixels,
+`dest_rect` runs there, and the result is converted back.
+
+`integer_mode_is_whole_in_pixels_not_in_points` is the gate, swept at ppp 1.0/1.25/1.5/2.0 and both native
+widths, asserting both axes are whole multiples **and that they are the same multiple**. Red-first, with the
+mutation shown on disk — `fit`'s body computing in points (`avail.x.floor()`, result returned unscaled):
+
+```
+test screen_pick::tests::integer_mode_is_whole_in_pixels_not_in_points ... FAILED
+  assertion `left == right` failed: ppp=1.25 320x224: 1200 px wide is not whole
+test result: FAILED. 12 passed; 1 failed
+```
+
+Note that the other twelve rows stayed green under that mutation, including the identity round trip — which
+is exactly why this row exists separately: a points-space fit is *self-consistent*, so nothing that checks
+the fit against its own inverse can see it.
+
+### 3.4 `the_fit_is_the_frontends_own_dest_rect`
+
+A row asserting that at `ppp = 1.0` the points `fit` returns are `dest_rect`'s own pixels, for every mode
+and both widths at three panel sizes. Its only job is to notice if somebody ever inlines a ratio formula
+here instead of calling the frontend's function — the drift that S0's whole shape exists to prevent, in the
+one place it would be most tempting.
 
 ---
 
 ## 4. What S2a inherits
 
-*(See §4.)*
+S2a is *"the display mask must reach the picture"*. This parcel deliberately did not build it, and left it
+these five things.
+
+**1. A refusal to delete, and a test that goes with it.** `Panel::masked_off_only` and its `pick` gate are
+the whole of the masked-off-only concession, plus `the_masked_off_only_refusal_names_the_layers_the_mask_hides`
+and `a_masked_off_refusal_changes_nothing_on_the_machine`. When the picture honours the mask, delete the
+gate and those two rows; **nothing else in `screen_pick.rs` changes**, because `Panel::pick` already passes
+`bus.layers()` into `pick::resolve` rather than `LayerMask::ALL`. That was deliberate: the line is correct
+unchanged the moment the picture catches up.
+
+**2. `Bus::layers()` already exists.** It landed with S1 because the gate needed to read the mask to refuse.
+S2a needs the same accessor to draw with it, and it is a lend from `Host::layers()`, not a mirror — so a
+socket client's `emulator/set_layer_enabled` and a window checkbox move one `LayerMask`, and there is
+nothing on this side to drift.
+
+**3. ⚑ `render_scanline` must gain no mask, and this parcel added none.** `docs/OVERSEER.md:789-793`: the
+one render that commits sprite-overflow/collision latches and the R10 carry **takes no mask and has no
+masked twin**, which is what makes *"a display mask cannot perturb emulation"* enforced by the type system
+rather than by discipline. The masked path is `render_line_masked`, a separate function and a post-hoc
+re-render that loses every mid-frame palette effect. That cost is real, already accepted, and is why the
+frontend announces the masked path with a badge — **so S2a owes the badge as well as the pixels**, or the
+picture silently loses colour effects.
+
+**4. Where the mask has to reach.** In `oracle-frontend` the switch is inside `drain::drain` (`drain.rs:230`)
+so a *bus client* can change the window's rendering path. The player's equivalent seam is
+`Machine::adopt_frame` / the capture the loop feeds — and note `bus.rs`'s `framebuffer` doc, which
+deliberately does **not** mask a client-driven frame today *because* this window masks nothing: *"masking
+here would make a client-driven frame the only one that honoured `emulator/set_layer_enabled` — one window,
+two rules for what it is showing."* S2a must move both paths together or re-create that split.
+
+**5. Four palette rows close for free.** §2.1's debt names the frontend's four `ToggleLayer` commands as the
+only frontend actions that are already served methods (`emulator/set_layer_enabled`), generated from the
+core's own `LayerMask::targets()`. Four checkboxes on the Screen tab — beside the aspect selector S2 just
+put there — close them the moment the mask reaches the picture.
+
+**And one thing S2a does not inherit, because it is answered.** The recon's §3.2 worry that the fit and the
+inverse must move together does not apply here (§0.3): `dot_at` inverts the drawn rect. S2a can change what
+is *in* the picture without touching either.
+
+---
+
+## 5. Left open
+
+* **`F-STATUS-CAVEAT-NOT-ON-STRIP` is still not in the queue.** §2.2 measured that it and
+  `F-FRONTEND-NO-STATUS` are named only in `docs/lane-log.jsonl:109` and have no `id` in
+  `lane-status.json`'s `queue`. This parcel did not book it, because `lane-status.json` is deliberately
+  uncommitted and this worktree's copy is stale — an edit from here would be written against a queue that
+  no longer exists. It should be booked against `oracle-player` and landed with S7.
+* **Nothing here was seen on a screen.** Constraint A forbids launching a windowed binary from a background
+  agent, so every claim in §2 and §3 is a `cargo test` result. The two things that genuinely need the
+  owner's own display are unchanged from the recon's §7.3: that the picking offset is right at his actual
+  `pixels_per_point` (the tests pin the arithmetic at 1.0/1.25/1.5/2.0, which is the most a headless
+  harness can do — a test under Xvfb would confirm the harness's scaling rather than the display's), and
+  that the three aspect modes look right rather than merely measure right. **TAGGED for a foreground pass.**
+* **The spawn placement path is exercised only to its refusals.** `spawn::place`'s happy path needs a
+  running game with `Camera_X`/`Camera_Y`/`Level_Width`/`Level_Height` in the loaded listing and an act
+  initialised; the testrom has none of that, so a unit test there would assert the *"this build cannot turn
+  a click into a world position"* refusal, which is a real row but not the one that matters. The
+  choreography is unchanged code shared with `oracle-frontend`, which is the argument for why this is
+  acceptable rather than an argument that it is covered. **TAGGED: a foreground click-to-place on
+  `s4.debug.bin` is the instrument.**
+* **The per-frame cost of the new surfaces is not measured**, per the recon's §7.1. S1 adds no per-frame
+  work of the kind that section worries about — the pick and the spawn are per-*gesture*, and the Screen
+  tab's per-frame additions are a badge, three `selectable_label`s and a text line — but "adds no
+  measurable cost" is a claim and this parcel did not measure it. The instrument exists and is named in
+  §7.1; it needs a foreground run.
+* **The Screen tab's new strings do not reach `emulator/screen_text`** — and neither does any other panel
+  body's text, which is the status quo rather than a regression this parcel introduced: `build_ui` collects
+  `screen::Run`s from the top bar and the palette only, so all eight panel bodies are already invisible to
+  the readback. It is worth stating because the recon's §3.5 names exactly this seam for S5 and the surface
+  just got bigger. If the readback is ever extended to panel bodies, the badge and the refusal line are the
+  two that matter most, because they are the two a person would quote when reporting a problem.
+* **The hover callout and sprite outlines** — the two of `oracle-frontend`'s seven lenses §3.0(c) says are
+  irreducibly picture-coupled — are not built. They need `present::forward_map`
+  (`present::native_rect_to_window`), which is now in the lib and is already used by S1's identity test, so
+  the seam is open.
