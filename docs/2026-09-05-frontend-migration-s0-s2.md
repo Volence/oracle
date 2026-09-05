@@ -61,12 +61,12 @@ S1's identity test at the end of S2, or do them as one slice."* That is exactly 
 where `present::window_to_native` is handed a rect the frontend **re-derived** from the window size, and a
 fit change that missed the inverse would leave two derivations disagreeing.
 
-Under egui it does not arise, and the reason is structural rather than lucky: `Response::rect` is **the rect
-egui actually laid the image out in**, so S1's inverse reads the drawn geometry instead of re-deriving it.
-S2 changed the fit from a float square scale to `present::dest_rect` under three `Aspect` modes and the
-inverse needed no edit at all — the identity test S1 wrote passes at every mode without modification, which
-is the assertion rather than the anecdote. The slices are still ordered S1→S2 and S1's tests were re-run at
-the end of S2, because "did not arise" is a thing you establish by checking.
+Under egui it should not arise, and the reason is structural rather than lucky: `Response::rect` is **the
+rect egui actually laid the image out in**, so S1's inverse reads the drawn geometry instead of re-deriving
+it. S1 is therefore written with the fit and the inverse as two functions that do not share a derivation at
+all — `fit` decides a size, `dot_at` inverts whatever was drawn. **Whether that holds is S2's measurement,
+recorded in §3 when S2 lands**; the slices are still ordered S1→S2 with S1's identity test re-run at the
+end, because "did not arise" is a thing you establish by checking.
 
 ---
 
@@ -85,29 +85,6 @@ the end of S2, because "did not arise" is a thing you establish by checking.
   ["audio", "aether"]`, and the `#[path = "../../oracle-frontend/src/audio.rs"] mod audio;` include is gone.
 * `crates/oracle-frontend/src/spawn.rs` — the **spawn choreography** moved here from `bus.rs`: a `Caller`
   trait (dispatch one method; resolve one symbol) plus `archetypes`, `act_bounds` and `place`. See §1.5.
-
-### 1.5 The spawn choreography moved with the module, and that is the point of S0
-
-`oracle-frontend/src/bus.rs` held `Bus::archetypes`, `Bus::act_bounds`, `Bus::read_u16` and `Bus::spawn_at`
-— roughly 130 lines carrying the world join, the `worldSource`-refused-rather-than-guessed rule, the
-resolve-by-name-every-time rule, and the `F-SPAWN-OUTSIDE-ACT` act-bounds gate with its refused-not-clamped
-ruling. S1 needs every one of those in the player.
-
-Copying them would have been the failure the lib target exists to prevent, and this repo has already paid
-for it once: CR-K re-pointed `reload_rom` at one implementation so *"the two cannot answer one client
-differently about one file in one millisecond"* (`docs/lane-log.jsonl:109`). The stakes are higher here,
-because this choreography is what stands between a click and an **acked-then-silently-culled** spawn.
-
-So the bodies moved into `spawn` and the seam is a two-method `spawn::Caller` trait: `call` (dispatch a
-served method synchronously, hand back the tool's own reply or its own refusal) and `address_of` (resolve
-one symbol, fresh). Neither window's `Bus` type is nameable from `spawn`, and neither needs to be — the two
-windows host their `Host` differently (`oracle-frontend` pumps, `oracle-player` does not), and this is the
-part they genuinely share. `oracle-frontend/src/bus.rs` keeps a private `HostCaller` adapter and three
-one-line delegations; `Bus::act_bounds` was **deleted** rather than kept as a delegation, because after the
-move nothing in that crate called it and a public method with no caller is a second surface to keep in step.
-
-The move is behaviour-preserving by construction (the bodies are the same text) and covered by the frontend's
-existing spawn tests, which did not change and did not move.
 
 ### 1.2 The `window` feature is the answer to the objection that blocked this edge
 
@@ -203,11 +180,132 @@ would be written against a queue that no longer exists.)
 Note the row deliberately does **not** ask for `Cmd::BusMethod` in `oracle-frontend`. §2.1's third reason
 stands: adding a free-text mode to a crate scheduled for retirement is a migration bought twice.
 
+### 1.5 The spawn choreography moved with the module, and that is the point of S0
+
+`oracle-frontend/src/bus.rs` held `Bus::archetypes`, `Bus::act_bounds`, `Bus::read_u16` and `Bus::spawn_at`
+— roughly 130 lines carrying the world join, the `worldSource`-refused-rather-than-guessed rule, the
+resolve-by-name-every-time rule, and the `F-SPAWN-OUTSIDE-ACT` act-bounds gate with its refused-not-clamped
+ruling. S1 needs every one of those in the player.
+
+Copying them would have been the failure the lib target exists to prevent, and this repo has already paid
+for it once: CR-K re-pointed `reload_rom` at one implementation so *"the two cannot answer one client
+differently about one file in one millisecond"* (`docs/lane-log.jsonl:109`). The stakes are higher here,
+because this choreography is what stands between a click and an **acked-then-silently-culled** spawn.
+
+So the bodies moved into `spawn` and the seam is a two-method `spawn::Caller` trait: `call` (dispatch a
+served method synchronously, hand back the tool's own reply or its own refusal) and `address_of` (resolve
+one symbol, fresh). Neither window's `Bus` type is nameable from `spawn`, and neither needs to be — the two
+windows host their `Host` differently (`oracle-frontend` pumps, `oracle-player` does not), and this is the
+part they genuinely share. `oracle-frontend/src/bus.rs` keeps a private `HostCaller` adapter and three
+one-line delegations; `Bus::act_bounds` was **deleted** rather than kept as a delegation, because after the
+move nothing in that crate called it and a public method with no caller is a second surface to keep in step.
+
+The move is behaviour-preserving by construction (the bodies are the same text) and covered by the frontend's
+existing spawn tests, which did not change and did not move.
+
 ---
 
 ## 2. S1 — click-picking and the spawn picker on the Screen tab
 
-*(Filled in below as the slice landed; see §2.1-2.6.)*
+### 2.1 What landed
+
+`crates/oracle-player/src/screen_pick.rs` (new) holds everything about what a click *means*; `ui.rs`'s
+`Panels::screen` holds only where the picture goes and what the pointer did. `bus.rs` gained one accessor,
+`Bus::layers()`, delegating to `Host::layers()`.
+
+The `Response` that `ui.rs:210` used to discard is what `docs/OVERSEER.md:298` correctly identified as the
+reason this tab could not receive a click. It now carries the two things minifb never told `oracle-frontend`
+— **where the image actually landed** and **where the pointer was** — in the same space.
+
+The rect is allocated explicitly (`allocate_exact_size` + `Rect::from_center_size` + `Image::paint_at` +
+`Ui::interact`) rather than through `centered_and_justified`, because the whole gesture rests on the rect
+being the *picture's*: a justified layout may hand a widget more room than it asked for, and a click
+inverted against a rect a few points wider than the picture is an offset nothing on screen explains.
+
+### 2.2 Two routes out of one gesture, and D15 is the reason for both
+
+* **Resolving the dot is a read** and goes straight to the core: `pick::resolve` over the VDP the loop
+  owns. `pick.rs`'s module doc argues that out and `bus_parity` holds it to it.
+* **Arming the watch, and spawning, are per-gesture commands** and go through `Bus::call` → `Host::call` —
+  `emulator/watchpoint_clear` for the retire, `emulator/watchpoint_add` for the arm, and
+  `spawn::place`'s three calls for a placement. Synchronous, in-process, no socket. The point of going
+  through the server is that a click gets the tool's exact reply *and its exact refusal*: the watch cap's
+  `watchCapReached` and all five §11.32 refusals arrive whole and are shown whole.
+
+Retiring uses the **handles this panel holds**, never `{all: true}`, because a blanket clear would take a
+socket client's watches with it — the shared-instrument hazard `oracle-frontend` learned the hard way.
+
+### 2.3 ⚑ Masked-off-only, and why it is a refusal rather than a caveat
+
+§8's instruction, honoured literally. The player has no `blit_masked` — `bus.rs`'s own `framebuffer` doc
+already says so — so a bus-set mask changes the bus's answers and not this window's picture. Under a mask
+the tab cannot satisfy `pick::resolve`'s *"the panel describes the picture"* invariant either way round:
+resolve **with** the mask and the answer describes a picture nobody is looking at (carrying a
+`planeA hidden, so this is the masked picture` clause that is false of this glass); resolve **without** it
+and the answer is right about the picture but silently disagrees with what `emulator/pixel_attribution`
+would tell a client about the same dot in the same instant — the exact drift `bus_parity` exists to
+prevent, arriving through the one path that guard cannot see.
+
+So **while any layer is hidden the click is refused**, in a sentence that names the hidden layers (read off
+`LayerMask::hidden()`, never listed), names the slice that fixes it, and names both ways out. A caveat was
+considered and rejected: a caveat on an answer still gives the answer, and the failure mode here is a
+confident wrong tile address, not a missing disclaimer.
+
+The gate is read **before** anything is resolved or retired, so a refused click leaves the previously armed
+watch exactly where it was — asserted, not intended, by
+`a_masked_off_refusal_changes_nothing_on_the_machine`.
+
+### 2.4 The tests, and what each would catch
+
+Nine rows in `screen_pick::tests`, `cargo test -p oracle-player screen_pick`:
+
+| Row | Catches |
+|---|---|
+| `the_click_inverse_goes_through_pixels_per_point_at_every_scale` | the §3.1 risk: a points/pixels conversion that is invisible at 1.0 and wrong on the owner's display. Swept at ppp 1.0/1.5/2.0, expectations derived as `floor(n * ppp / k)`. |
+| `the_fit_and_the_click_inverse_are_inverses` | the fit and the inverse drifting. Forward direction is `present::native_rect_to_window`, so the two halves of one blit are asserted against each other. |
+| `a_pointer_off_the_picture_resolves_to_nothing` | a clamp instead of a rejection — which would arm the corner tile every time somebody clicked the letterbox. Both edges, plus the first dot inside each, so it is a boundary and not a blanket refusal. |
+| `a_degenerate_scale_answers_nothing` / `a_degenerate_panel_yields_no_picture` | NaN and zero geometry naming a dot or panicking. |
+| `the_masked_off_only_refusal_names_the_layers_the_mask_hides` | a refusal with layer names written into it rather than read off the mask; swept over every `LayerMask::targets()` entry, with the all-shown control asserted beside it. |
+| `nothing_is_refused_while_every_layer_is_shown` | the gate becoming a wall. |
+| **`a_click_arms_the_clicked_tile_on_the_machine_and_the_next_click_replaces_it`** | ★ the load-bearing one — see below. |
+| `a_masked_off_refusal_changes_nothing_on_the_machine` | the gate firing *after* the retire. |
+
+**★ The load-bearing row asserts on the machine, not on the reply**, which is the gate shape
+`docs/lane-log.jsonl:103` records as the only one that caught a fabricated-success mutation. It drives
+`Panel::click` end to end and then reads the result back **off the shared instrument through
+`emulator/watchpoint_list`** — so a panel that composed a lovely sentence and armed nothing fails. Its
+expectations are derived (`A_TILE * 32`; the backdrop register's entry × 2), not pasted back from a run.
+Its **anti-vacuity clause** is the second click: a backdrop click must leave a CRAM entry and no VRAM watch,
+`assert_ne!` against the first answer, because a `click` that became a no-op after the first would satisfy
+"there is a watch" forever and satisfy nothing here. The empty-instrument control is taken first, while it
+is still unambiguous.
+
+*(Red-first proofs: see §2.6.)*
+
+### 2.5 The spawn picker, and the standing badge
+
+Spawn mode is a **control**, not a tab, on the Screen tab's own strip: arm (which lists the archetypes
+through `emulator/lookup_symbol`'s prefix search **now**, never cached, because a stale archetype name
+spawns the wrong thing rather than failing to spawn), cycle, disarm. The click branches spawn-then-pick
+exactly as `oracle-frontend`'s run loop does, and for the reason it states: the two are the same gesture and
+only one of them can have it.
+
+The **badge** is drawn above the picture on every frame the mode is armed and names the archetype. That is
+`oracle-frontend`'s rule carried over as a correctness requirement rather than as decoration, and it is above
+the picture rather than below for the reason the halting alarm is on the top bar rather than in a tab: a
+standing statement that can be cropped out of view is not standing.
+
+The **choreography is not reimplemented** — it is `oracle_frontend::spawn::place`, the same function
+`oracle-frontend` calls, reached through a `PlayerCaller` adapter. See §1.5.
+
+One thing this window had to supply that the other already had: `spawn::Refusal::remedy` formats *"press
+{k} to pause this window"* for the `machineRunning` refusal. `oracle-frontend` passes the key its registry
+bound; this window has a **button**, so it passes `ui::PAUSE_LABEL` — derived from the label constant, not
+transcribed, which is the rule the frontend's version states.
+
+### 2.6 Red-first proofs
+
+*(Pending — recorded below once run against the committed baseline.)*
 
 ---
 

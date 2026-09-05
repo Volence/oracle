@@ -60,6 +60,7 @@ mod pacing;
 mod palette;
 mod report;
 mod screen;
+mod screen_pick;
 mod stats;
 mod stopping;
 mod symbols;
@@ -401,6 +402,10 @@ struct Loop {
     /// The three stopping tabs' boxes and their last answers. **What is armed is not here** — it is the
     /// `Host`'s, read every repaint (R2).
     stopping: stopping::Panel,
+    /// **The Screen tab's pointer state** (`crate::screen_pick`): the standing readout of the last click,
+    /// the handles of the watches that panel armed, and spawn mode. Not persisted — a spawn mode that came
+    /// back armed after a restart would change what the first click of a session does, silently.
+    screen: screen_pick::Panel,
 }
 
 impl Loop {
@@ -452,6 +457,7 @@ impl Loop {
             paused: false,
             transport: ui::Transport::default(),
             palette: palette::Palette::default(),
+            screen: screen_pick::Panel::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -706,6 +712,7 @@ impl Loop {
             stopping,
             transport,
             palette,
+            screen: screen_panel,
             ..
         } = self;
         let mut drew = Vec::new();
@@ -771,6 +778,7 @@ impl Loop {
                     mem,
                     objects,
                     stopping,
+                    screen: screen_panel,
                     governor,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),
