@@ -275,6 +275,29 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
   the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
 
+**Registered 2026-09-05, from the frontend-migration recon:**
+
+- **✔ F-FRONTEND-PALETTE-BUS — CLOSED, NOT BUILT.** Its blocker (*"needs a free-text argument mode the
+  current design lacks"*) is **true of `oracle-frontend` and moot for where the work would land**. Verified
+  firsthand: `oracle-frontend`'s `Cmd` really is `#[derive(Clone, Copy, …)]` (`commands.rs:13`), so it
+  cannot carry a payload; and **`oracle-player`'s palette already IS that free-text mode** — a method box
+  that doubles as the filter plus a JSON params box, with `serde_json`'s own line-and-column error quoted
+  whole (`palette.rs:150-167`), and a per-parameter form generator considered and rejected on the record.
+  Building the row means adding a `Cmd::BusMethod` arm to **the crate the d-25 ruling retires.**
+  ⚑ **Residual debt worth booking, and it is not the same row:** `commands.rs`'s 42 rows are frontend
+  *actions*, not bus methods, so their replacement belongs against the player, not against the palette.
+
+- **⚑ A WORKTREE AGENT READS A STALE QUEUE BY CONSTRUCTION, AND IT PRODUCED A CONFIDENT WRONG FINDING.**
+  The recon reported that two of the three rows it was asked to re-price *"exist as names in a narrative
+  sentence in `lane-log.jsonl` and have no id in `lane-status.json`"*. **False, and the mechanism is
+  structural rather than careless:** `docs/lane-status.json` is deliberately **uncommitted** (the contract
+  keeps it out of git), so an agent's worktree serves whatever was last committed — here a queue three rows
+  short and carrying five rows since removed. The agent read the only copy its tree had.
+  **Operational form, and it binds this seat rather than the agent: when a brief names queue rows, QUOTE
+  THEM INTO THE BRIEF.** Pointing an agent at a row id is pointing it at a file that is stale in its tree by
+  design. This is the live-tree hazard inverted — the usual failure is reading someone's *uncommitted* tree
+  as though committed; this is reading a *committed* copy of a file whose truth only ever lives uncommitted.
+
 **Registered 2026-09-05, from landing the press frame-cap parcel:**
 
 - **⚑ NO SINGLE `cargo test` INVOCATION RUNS EVERY TEST IN THIS REPO, AND THE TWO PROFILES' TOTALS
@@ -310,16 +333,33 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   spawn's surface is *"clicking a spot in the Screen panel"*. **There are two windows**: `oracle-frontend`
   (minifb, the game window, where `pick.rs`'s click-to-watch and `present::window_to_native` already live)
   and `oracle-player` (egui, the debug tabs — Registers/Memory/Objects/Screen/nav). *"Screen panel"* is
-  `oracle-player`'s tab. **Measured: `crates/oracle-player/src/screen.rs` (541 lines) has ZERO pointer
+  `oracle-player`'s tab. ~~**Measured: `crates/oracle-player/src/screen.rs` (541 lines) has ZERO pointer
   interaction** — its one `click` hit is the word inside a doc comment; the crate's only `clicked()` calls
-  are buttons in `ui.rs`/`nav.rs`. So the surface his sentence names cannot receive a click today.
+  are buttons in `ui.rs`/`nav.rs`.~~ ⚠ **THE MEASUREMENT READ THE WRONG FILE — corrected 2026-09-05 by the
+  migration recon, verified firsthand here before adoption. `screen.rs` is the `emulator/screen_text` GLYPH
+  MODEL** (its own header says so: *"the player half of `emulator/screen_text`"*), **not the Screen tab.**
+  The tab is `ui.rs::screen()` (`ui.rs:199-212`), which draws an aspect-fit nearest-sampled
+  `egui::Image` and nothing else. **The CONCLUSION stands and is now supported by the right artifact:** that
+  tab takes no clicks today. Kept struck rather than deleted, because a measurement that reached a true
+  conclusion from the wrong file is the exact shape this file's bars exist to catch, and it survived here
+  for two days reading as evidence.
   **SPAWN-PICKER (merge `531894e`) landed on `oracle-frontend`**, which is where the gesture exists and
   where every artifact this seat's own brief cited actually lives — **the brief conflated the two windows,
   and the agent caught it rather than half-building across the seam.** That refusal was correct: the panels
   surface needs an egui-rect→native-dot mapping invented from scratch plus its own standing indicator.
   **Not a defect in what shipped; a second surface.** Per this lane's three-surface rule the gap must be a
-  decision, so it is one. ⚑ **Needs ONE WORD FROM THE OWNER, filed in `awaiting`: which window did he mean?**
-  If the game window, this is closed today. If the panels window, it is a fresh parcel.
+  decision, so it is one. ~~⚑ **Needs ONE WORD FROM THE OWNER, filed in `awaiting`: which window did he mean?**
+  If the game window, this is closed today. If the panels window, it is a fresh parcel.~~
+  ⚠ **THE PRICE WAS WRONG TOO, AND IT INVERTS THE RANKING — corrected 2026-09-05, verified firsthand.** This
+  entry says the panels surface *"needs an egui-rect→native-dot mapping invented from scratch"*. **It does
+  not: `present::window_to_native` (`crates/oracle-frontend/src/present.rs:203`) already takes an ARBITRARY
+  `rect` and is the exact inverse of the blit** — which is precisely what an egui rect hands you. So the
+  mapping is a call, not an invention, and picking is among the CHEAPEST items on the migration list rather
+  than the dearest.
+  ⚑ **AND THE OWNER'S QUESTION DISSOLVES RATHER THAN NEEDING AN ANSWER.** Under the d-25 swap-toolkit ruling
+  the two windows become one, so *"which window did he mean?"* stops having two referents. **Do not send him
+  this question**; it was real when filed and the ruling retired it. The lesson is this file's own, arriving
+  on its own entry: **a question can be answered by a ruling made elsewhere, and nothing retracts the ask.**
 
 - **F-SHIM-SOCKDIR-RESIDUE — the PROCESS half did not reproduce; the FILESYSTEM half did, and it is the
   real finding.** aeon relayed (via the hub, ~08:20Z 2026-09-04) 13 leaked `oracle-aether` processes on
