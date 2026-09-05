@@ -222,6 +222,40 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
   the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
 
+**Registered 2026-09-05, from landing migration slices S0-S2:**
+
+- **▶ F-PARITY-BLIND-TO-SAT-STRIDE — the frontend's strongest correctness guard cannot see the SAT entry
+  stride, found by mutating it and getting GREEN.** `pick.rs`'s `bus_parity` module is nine rows asserting
+  address-level agreement between the panel and `emulator/pixel_attribution`. **Measured at this seat on the
+  merged tree:** `SAT_ENTRY_BYTES: u32 = 8` → `16`, quoted from disk, **all nine rows stayed green**; a
+  control mutation on the same file (`tile_range`'s `lo`, `+ 32`) turned two rows red with *"the panel arms
+  $0220 but the bus names 0x00000200 — the two have DRIFTED"*, **so the runner does execute the file and the
+  survival is a blind spot rather than a stale build.**
+  **Why it is blind, and both halves are needed:** every parity case asserts `spriteIndex == 0`, so
+  `index * SAT_ENTRY_BYTES` is multiplied by zero in every row; and the rows assert `p.targets[1].lo` and
+  never `.hi`, which is the one place the stride survives at index 0 (`sat_lo + SAT_ENTRY_BYTES - 1`).
+  **Not introduced by this parcel** — the rows predate the lib move. Fix is cheap and should ride with S2a,
+  which opens these rows anyway: assert `.hi`, and exercise one non-zero sprite index.
+  ⚑ **The transferable half: a guard described as the strongest in the tree had a hole reachable in one
+  mutation, and it was found only because the mutation parameter was VARIED rather than repeated.** The
+  implementing agent proved liveness with `tile_range`; repeating that would have re-confirmed the same
+  covered path forever. Bar 19's enumeration-parameter rule, arriving on a mutation instead of a survey.
+
+- **⚠ OPS, two, neither a defect in the work.** (a) **A fresh worktree has no `vendor/` symlink**, and
+  without it 8 `save_state` rows FAIL while the whole 68000 SingleStepTests sweep SKIPS AND PASSES — the
+  repo's own `vendor_data_present_when_running_in_ci` says so. The agent's first full run reported 2073 and
+  was partly vacuous; it symlinked and re-ran. **Put the symlink step in any brief whose parcel touches a
+  suite total.** (b) **Do not `git commit` while `cargo test --workspace` is running:**
+  `the_compiled_in_build_id_still_names_this_tree` compares the compiled-in id against HEAD and fails when
+  HEAD moves under the run. Correctly caught, self-inflicted, worth knowing.
+  ⚑ **And a third, this seat's own, because it produced a false alarm worth more than the mistake:** a run
+  started with BOTH `nohup …&` and the harness's own backgrounding fires its completion notification for the
+  **launcher shell**, not for cargo. Reading the log at that notification gave **50 legs / 1543 passed / 0
+  failed** against a 70-leg baseline — an apparently clean green **800 tests short**, which is bar 25's
+  artifact exactly. The missing legs were the slow ones and the log had no final summary. **Use one
+  backgrounding mechanism, and confirm a suite's completion from the log's own end, never from a
+  notification.**
+
 **Registered 2026-09-05, from the frontend-migration recon:**
 
 - **✔ F-FRONTEND-PALETTE-BUS — CLOSED, NOT BUILT.** Its blocker (*"needs a free-text argument mode the
