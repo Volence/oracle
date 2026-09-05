@@ -40,7 +40,7 @@
 //!
 //! A plane is up to 128 by 128 cells, and even the ordinary 64 by 32 is 512 by 256 pixels. Rasterising
 //! that per repaint and re-uploading it would spend real budget against a toolkit measured at 0.22 ms of a
-//! 16.67 ms frame. So [`Panel::show`] gathers the inputs, [fingerprints](Inputs::fingerprint) them, and
+//! 16.67 ms frame. So [`Panel::refresh`] gathers the inputs, [fingerprints](Inputs::fingerprint) them, and
 //! rasterises **only when the fingerprint moves**. The fingerprint covers exactly what the picture is a
 //! function of and nothing else:
 //!
@@ -54,7 +54,7 @@
 //! Everything is mixed eight bytes at a time rather than one, which is what keeps the skip cheaper than
 //! the work it skips: the raster it avoids is 131072 pixel decodes plus a 512 KB texture upload, and the
 //! fingerprint over a fully-referenced plane is 8 K mixes. `egui_dock` draws only the active tab of a
-//! leaf, so a hidden Planes tab costs exactly zero: `show` is not called at all.
+//! leaf, so a hidden Planes tab costs exactly zero: its body is not called at all.
 //!
 //! The panel **shows its own redraw count** beside the picture. A claim that something rasterises rarely
 //! is worth nothing if a person cannot see it not happening.
