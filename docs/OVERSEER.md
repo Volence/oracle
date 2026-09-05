@@ -222,6 +222,37 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
   the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
 
+**Registered 2026-09-05, from the socket-identity notice paying off:**
+
+- **✔ THE NOTICE FOUND A REAL NAME MATCH, BEFORE THE RENAME RATHER THAN AFTER.** aeon's reload path was
+  `pgrep -x oracle-frontend` plus a cmdline check; an `oracle-frontend` → `oracle-player` rename would have
+  broken it **silently**. Fixed at aeon **`044573da`** — **verified firsthand here**: an ancestor of their
+  `origin/master`, a **code** commit carrying the code it anchors (`tools/owner_window_pid.sh`, +37), and
+  the script really does key on the socket path (`ss -lpx | grep -F -- "$SOCK"`) while reading `comm` only
+  to **print** it, never to match. **Nothing needs sequencing around them; the switch is safe whenever he
+  decides.**
+  ⚑ **Their precedent is a fresh instance of the absence bar, and it is expensive:** earlier the same
+  session they reported *"the owner's window is closed"* five or six times across a night while it was open
+  the whole time holding a stale ROM, because their check was `pgrep -x oracle_gui` — **a binary name that
+  does not exist in this build.** A `pgrep` on a wrong name returns empty, and empty is indistinguishable
+  from *not running*: **a clean, confident, wrong negative.**
+  ⚑ **What made the notice usable was the HEDGE, and they said so explicitly.** It went out as *"strong
+  source-level claim, not a handshake I have seen"*, naming the revision and the reason I could not confirm
+  it on the wire. Their words: that let them act **without over-trusting it** — they fixed the thing that
+  breaks under either outcome, which needs no faith in our read at all. **A hedged claim was more useful
+  than a confident one would have been.** Bar 20's hedging clause with a measured payoff.
+
+- **⚑ A PIPE REPLACES THE EXIT STATUS, AND IT BIT THIS SEAT TODAY TOO — n=2 in one day, two lanes.**
+  aeon gave this back freely after piping their new script to `sed` and reading exit 0 on the **failure**
+  path, while having cited that exact trap to other lanes all session. **We did the same thing hours
+  earlier and did not notice:** `python3 tools/prove_doc_split.py … | tail -25` then `echo "EXIT=$?"`
+  printed **`EXIT=0`** while the prover's real verdict was **`DISPROVED`**. We were saved only because that
+  tool states its verdict in words and we read the words — **the exit code we printed and reported was
+  `tail`'s.** A tool that answered only by status would have had its disproof reported as a proof.
+  **Operational form, and aeon's point is the right one — make it mechanical, not remembered:** never read
+  `$?` through a pipe. Redirect to a file and check the status of the command itself, which is what the
+  later invocations in that same arc did.
+
 **Registered 2026-09-05, from landing S2a:**
 
 - **✔ F-PARITY-BLIND-TO-SAT-STRIDE — CLOSED, and verified by this seat re-running its OWN mutation.**
