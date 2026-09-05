@@ -1154,22 +1154,71 @@ impl Vdp {
         decode_cell(word)
     }
 
+    /// **Where this plane's nametable is in VRAM**, as a byte address.
+    ///
+    /// Exported for [`Vdp::active_display`]'s reason, one stage over: a caller that has to *say where the
+    /// map is* — a plane viewer naming the base it drew, a client answering "which nametable is this" —
+    /// must get the answer from the same expression the render fetch uses, instead of re-deriving
+    /// `(reg $02 & 0x38) << 10` on its own. Two spellings of a base decode is how a debug view and the
+    /// picture it claims to explain end up describing different bytes, and the debug view is the one
+    /// nobody checks.
+    pub fn plane_base(&self, plane: Plane) -> usize {
+        match plane {
+            Plane::A => self.plane_a_base(),
+            Plane::B => self.plane_b_base(),
+            Plane::Window => self.window_base(),
+        }
+    }
+
+    /// **This plane's nametable grid in cells**, `(cols, rows)`.
+    ///
+    /// [`Vdp::plane_decoded`] returns a *flat* row-major `Vec`, so every caller that wants a grid back has
+    /// to know its width — and the only honest source for that width is this function, because the window
+    /// plane's is the display stride rather than reg `$10`'s plane size. A caller re-deriving it reshapes
+    /// the plane wrong the first time a game runs a 64-cell-wide plane behind a 32-cell window.
+    pub fn plane_grid(&self, plane: Plane) -> (u16, u16) {
+        match plane {
+            Plane::A | Plane::B => plane_size(self.regs()[0x10]),
+            // The window map is stride-wide (64/32) and 32 rows tall (it covers the V28/V30 display).
+            Plane::Window => (self.window_stride(), 32),
+        }
+    }
+
+    /// **The effective scroll of `plane` on `line`**, after the reg `$0B` mode is resolved: the same
+    /// [`PlaneScroll`] [`Vdp::render_line_report`] carries, without the sprite walk that report also does.
+    ///
+    /// The sprite pipeline is the expensive half of a line report by a wide margin, and a caller asking
+    /// only *where is this plane on this line* — a plane viewer drawing the viewport across 224 lines —
+    /// would pay it 224 times for nothing. Same derivation, no second copy of the mode decode.
+    ///
+    /// ⚑ **It is a peek, and the mode it reads is the mode NOW.** Both the mode (reg `$0B`) and the
+    /// H-scroll table base (reg `$0D`) are ordinary registers a game may rewrite part way down a frame
+    /// off an H-interrupt, and this function has no way to see that it happened. It reports what the
+    /// current registers say the scroll of that line would be, which is the *drawn* scroll only for a
+    /// frame whose registers did not move. A caller presenting the answer to a human owes them that
+    /// caveat whenever reg `$00` bit 4 says an H-interrupt is armed.
+    pub fn plane_scroll_report(&self, plane: Plane, line: u16) -> PlaneScroll {
+        let (width, _) = self.active_display();
+        self.plane_scroll(plane, line, self.render_h40(), width as usize)
+    }
+
+    /// **Which horizontal span of `line` the window plane covers**, or `None` when it covers none of it.
+    ///
+    /// The window is the one plane whose on-screen region is not a scroll: it is a band set by regs `$11`
+    /// and `$12`, and a viewer that wanted to outline "what of this map is on screen" would otherwise have
+    /// to re-derive that band. Exported on [`Vdp::plane_base`]'s reasoning, and a peek in the same sense:
+    /// regs `$11`/`$12` are as rewritable mid-frame as the scroll registers are.
+    pub fn window_span_at(&self, line: u16) -> Option<WindowSpan> {
+        let (width, _) = self.active_display();
+        self.window_span(line, width as usize)
+    }
+
     /// The decoded nametable grid for a plane (design §4 `plane_decoded`). `rect = None` returns the whole
     /// plane row-major (`rows × cols` cells); a `rect` returns just that cell sub-region (also row-major).
     /// Pure introspection — recomputed on demand, never stored.
     pub fn plane_decoded(&self, plane: Plane, rect: Option<CellRect>) -> Vec<Cell> {
-        let (base, cols, rows) = match plane {
-            Plane::A => {
-                let (w, h) = plane_size(self.regs()[0x10]);
-                (self.plane_a_base(), w, h)
-            }
-            Plane::B => {
-                let (w, h) = plane_size(self.regs()[0x10]);
-                (self.plane_b_base(), w, h)
-            }
-            // The window map is stride-wide (64/32) and 32 rows tall (it covers the V28/V30 display).
-            Plane::Window => (self.window_base(), self.window_stride(), 32),
-        };
+        let base = self.plane_base(plane);
+        let (cols, rows) = self.plane_grid(plane);
         let r = rect.unwrap_or(CellRect {
             col: 0,
             row: 0,
