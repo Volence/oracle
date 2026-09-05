@@ -11,13 +11,22 @@ use std::os::unix::fs::PermissionsExt;
 
 /// **The most frames one swept row may advance the machine.**
 ///
-/// `common::SWEEP_FRAME_BUDGET` is 1, and every run-control row is bounded by it — except one, and the
-/// exception is measured rather than assumed. `emulator/press` defaults to `frames: 2` when the caller
-/// names no count (`engine.rs`, `press`), and that default is taken *before* the `frame_cap` the same
-/// function computes from `max_run_frames`, so a two-frame tap gets through on a one-frame server. This
-/// ceiling is therefore 2 and not 1: it is the smallest number that passes today, which is what makes it
-/// a ratchet. Restoring the 3,600-frame default takes `emulator/step_out` to 600 and turns this red.
-const SWEEP_ROW_FRAME_CEILING: i64 = 2;
+/// **It is a literal, and deliberately NOT `common::SWEEP_FRAME_BUDGET as i64`.** That spelling was
+/// written and thrown away, because it makes the check vacuous in the one direction that matters: the
+/// regression this row guards is somebody handing the sweep a default 3,600-frame server again, and a
+/// ceiling derived from the budget rises with it — `emulator/step_out` goes back to 600 frames and the
+/// assertion still passes. Verified by mutation rather than reasoned about: with the derived ceiling
+/// the budget mutation came back **green in 6.62 s**, which is a vacuous check wearing the runtime of
+/// the defect it failed to catch. A ratchet may not be adjustable by the thing it ratchets.
+///
+/// The number is 1 because 1 is the **measured** maximum across all ~60 rows, not because 1 happens to
+/// be the budget today; there is no slack in it. Two candidates for a wider row were checked and
+/// neither reaches here: `emulator/step_out` is clamped by `run_step` to `max_run_frames.min(600)`, and
+/// `emulator/press` — whose `frames` default of 2 *is* read before the `frame_cap` it computes from
+/// `max_run_frames`, so it really could outrun a one-frame server — never advances at all in a sweep,
+/// because `{}` fails `parse_buttons` first. That last one is an open observation about `press`, not
+/// something this row proves.
+const SWEEP_ROW_FRAME_CEILING: i64 = 1;
 
 /// The `frame` on a reply the caller has already unwrapped to its `result`.
 fn frame_of(result: &Value) -> i64 {
@@ -112,10 +121,10 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
             .expect("every reply carries `frame`") as i64;
         assert!(
             after - frame <= SWEEP_ROW_FRAME_CEILING,
-            "{name} advanced the machine {} frames in one sweep row. The server's budget is {} \
-             (`common::SWEEP_FRAME_BUDGET`), so a row over the ceiling of {SWEEP_ROW_FRAME_CEILING} is \
-             a wiring probe running emulation inside a socket read — which is F-HANDSHAKE-LOAD-TIMEOUT, \
-             where `emulator/step_out` took 600 of them and blew the {:?} read deadline under load.",
+            "{name} advanced the machine {} frames in one sweep row; the ceiling is \
+             {SWEEP_ROW_FRAME_CEILING} (this sweep server was spawned with a frame budget of {}). A \
+             wiring probe that runs emulation inside a socket read is F-HANDSHAKE-LOAD-TIMEOUT, where \
+             `emulator/step_out` took 600 frames and blew the {:?} read deadline under load.",
             after - frame,
             common::SWEEP_FRAME_BUDGET,
             common::READ_TIMEOUT,
