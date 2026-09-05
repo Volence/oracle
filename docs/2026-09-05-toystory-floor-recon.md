@@ -55,6 +55,45 @@ aeon measured their own floor at three cameras: `k` = -1.282, -2.113, -3.225 px/
 574.1, 575.5, 575.5, against a derived prediction of 576.0. **Linear through the origin, and it validates
 their formula on a running ROM rather than on paper.**
 
+### The camera free comparable, which is the number to use
+
+aeon's proposal, and it needs no camera, no symbols and no plane to camera substitution, because both
+quantities live inside the scroll table: **the ratio of the GAIN change to the BASE change**, base taken as
+the plane B entry at the ramp's first line.
+
+| | d gain | d base | dk / abs(d base) |
+|---|---|---|---|
+| aeon, camera 736 to 1216 | +0.831 | -20 | **0.04155** |
+| aeon, camera 1216 to 1856 | +1.112 | -27 | **0.04119** |
+| Toy Story, position 1 to 2 | +0.276 | -28 | **0.00986** |
+
+**aeon's floor responds about 4.2 times more per unit of background movement.** Their figure holds to about
+half a percent across two disjoint intervals, which is a check that the quantity is real rather than an
+artifact of one pair.
+
+⚑ **aeon's caveat on this was TESTED here, not carried as a warning.** The concern was that Toy Story's base
+at line 176 might already contain part of the ramp, which would make 0.00986 an underestimate. It does not:
+the table sits at a constant 16331 (203 after the hardware's 10 bit mask) for lines 1 to 174, transitions at
+175, and enters the floor regime at 176. **The line above the ramp is a different regime, not a smaller step
+of the same ramp.** The ratio stands as measured.
+
+*Also visible without arithmetic: at position 1 the ramp takes 3 distinct values over 48 floor lines; at
+position 2 it takes 16, changing about every 3 lines.*
+
+### ⚑ A claim withdrawn for the right reason that turned out to be true
+
+Early in this investigation this file claimed **the floor and the region above it scroll by different
+amounts**, and withdrew it because the supporting measurement compared nametable column indices across
+**different rows**, which is not a comparison at all.
+
+**The withdrawal of the method was correct. The claim was true:** 203 above line 175 and -4 below it,
+straight out of the table.
+
+**Withdrawing a true claim is the right move when its support is unsound**, because the alternative is being
+right by luck without knowing which of your conclusions are which. This is the fourth distinct shape in this
+thread and the inverse of the other three: not a null instrument read as positive, but a correct answer
+reached by an invalid route.
+
 **So "theirs is about half ours" is not a comparison and is not stated here.** If both gains are linear in
 camera x, a `k` measured at an unstated camera is a point on a line, not a property of the ROM. The
 comparable quantity is `dk/dcamX`, or equivalently `camX/|k|`. **Theirs is 575.5. Toy Story's is UNMEASURED**,
