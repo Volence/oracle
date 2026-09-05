@@ -14,9 +14,12 @@ module doc and in the refusal a person reads on the glass.
 ## 0. What the recon got wrong
 
 The recon corrected three of this repo's own booked measurements, so it earns the same treatment. Three
-things in it are wrong or incomplete; the first is the one that changed this parcel's shape.
+things in it are wrong or incomplete; the first is the one that changed this parcel's shape. Everything
+else in it that this parcel touched held up — the `file:line` claims checked out, `present::window_to_native`
+really is generic over a rect, `ui.rs:210` really did discard the `Response`, and `oracle-player` really has
+no masked pixel path (its own `Bus::framebuffer` doc says so).
 
-### 0.1 §3.0(b)'s module list is not a closed set — six of its nine cannot move
+### 0.1 §3.0(b)'s module list is not a closed set — three of its nine cannot move at all
 
 §3.0(b) recommends *"add `crates/oracle-frontend/src/lib.rs` exporting `config`, `save_state`, `sram_file`,
 `symbol_file`, `symbol_watch`, `rom_browser`, `present`, `pick`, `commands`."* Measured by enumerating every
