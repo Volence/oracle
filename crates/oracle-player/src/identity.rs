@@ -148,11 +148,27 @@ fn age_text(now: SystemTime, then: SystemTime) -> Option<String> {
 /// `+local` marker only when the tree the build script measured had uncommitted changes, the age only when
 /// the executable's mtime could be read.
 pub fn chip() -> String {
+    compose_chip(SERVER_BUILD_DIRTY, exe_age())
+}
+
+/// How old the running executable's file is, or `None` when that cannot be established.
+fn exe_age() -> Option<String> {
+    exe_written().and_then(|w| age_text(SystemTime::now(), w))
+}
+
+/// **The chip, as a pure function of the two things that vary**, so every arm is reachable from a test.
+///
+/// ⚑ *Why this is split out rather than reading the constants inline.* This tree builds clean, so
+/// `SERVER_BUILD_DIRTY` is `Some(false)` here and the `+local` arm would never once execute under the
+/// suite — a branch whose only witness is a green test that never entered it. Same for a missing mtime,
+/// which is the ordinary answer on a platform this repo does not build on and never the answer here.
+/// Taking both as parameters costs one line and turns three untested arms into three asserted ones.
+fn compose_chip(dirty: Option<bool>, age: Option<String>) -> String {
     let mut s = format!("build {}", short_revision());
-    if SERVER_BUILD_DIRTY == Some(true) {
+    if dirty == Some(true) {
         s.push_str(" +local");
     }
-    if let Some(age) = exe_written().and_then(|w| age_text(SystemTime::now(), w)) {
+    if let Some(age) = age {
         s.push_str(" · ");
         s.push_str(&age);
     }
@@ -178,6 +194,11 @@ pub(crate) fn short_revision() -> &'static str {
 
 /// **The hover** — the whole identity, and the two things it cannot tell you.
 pub fn detail() -> String {
+    compose_detail(SERVER_BUILD_DIRTY, exe_age())
+}
+
+/// The hover, as a pure function of the same two varying facts — see [`compose_chip`] for why.
+fn compose_detail(dirty: Option<bool>, age: Option<String>) -> String {
     let mut s = String::new();
     if SERVER_BUILD_SOURCE == "vcs" {
         s.push_str(&format!("Built from revision {}\n", revision()));
@@ -189,12 +210,14 @@ pub fn detail() -> String {
         ));
     }
     s.push_str(&format!("Configuration {}\n", configuration()));
-    match SERVER_BUILD_DIRTY {
+    match dirty {
         Some(true) => s.push_str("The tree had uncommitted changes when this was built.\n"),
         Some(false) => s.push_str("No uncommitted changes were seen when this was built.\n"),
+        // Nothing said rather than "clean": there was no version control to ask, so a line here would
+        // be a claim about a tree this build never saw.
         None => {}
     }
-    if let Some(age) = exe_written().and_then(|w| age_text(SystemTime::now(), w)) {
+    if let Some(age) = age {
         s.push_str(&format!(
             "This program file was last written {age} ago (copying or touching a file moves that without \
              rebuilding it).\n"
@@ -269,6 +292,52 @@ mod tests {
             "the chip's `+local` marker must mean the build script measured uncommitted changes, and \
              must be absent otherwise. A marker that is always there says nothing; one that is never \
              there is a false reassurance."
+        );
+    }
+
+    /// ⚑ **Both arms of the marker actually entered.** The row above compares the chip against the flag
+    /// *this* build carries — and this tree builds clean, so on its own it only ever exercises the
+    /// absent case and would stay green if `+local` were unreachable code.
+    #[test]
+    fn every_arm_of_the_chip_is_reachable_and_says_something_different() {
+        let dirty = compose_chip(Some(true), None);
+        let clean = compose_chip(Some(false), None);
+        let unknown = compose_chip(None, None);
+        assert!(dirty.contains("+local"), "{dirty:?}");
+        assert!(!clean.contains("+local"), "{clean:?}");
+        assert!(
+            !unknown.contains("+local"),
+            "a build with no version control knows of no uncommitted changes, so it must not claim \
+             there were any: {unknown:?}"
+        );
+        assert_eq!(
+            clean, unknown,
+            "clean and unknown are deliberately the same chip — the chip states dirtiness positively \
+             and is silent otherwise, so the hover is the only place the two differ"
+        );
+        // The age is the other varying half, and its absent arm never runs on this platform.
+        let aged = compose_chip(Some(false), Some("2d".into()));
+        assert!(aged.contains(" · 2d"), "{aged:?}");
+        assert!(
+            !clean.contains('·'),
+            "an unreadable mtime must leave the separator off too, not print a dangling one: {clean:?}"
+        );
+    }
+
+    /// The hover's three dirty arms, likewise — including the one this tree can never produce.
+    #[test]
+    fn the_hover_never_claims_a_cleanliness_it_was_not_told() {
+        assert!(compose_detail(Some(true), None).contains("had uncommitted changes"));
+        assert!(compose_detail(Some(false), None).contains("No uncommitted changes"));
+        let unknown = compose_detail(None, None);
+        assert!(
+            !unknown.contains("uncommitted changes when this was built"),
+            "with no version control there is no tree state to report, and saying either thing would \
+             be an invention: {unknown}"
+        );
+        assert!(
+            unknown.contains("cannot tell whether your checkout has moved"),
+            "the limits are stated regardless of how the build was identified: {unknown}"
         );
     }
 
