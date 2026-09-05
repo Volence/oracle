@@ -137,7 +137,8 @@ pub struct PumpReport {
     /// derives from that machine rather than reading back out of it is now stale: a save-state fingerprint,
     /// a symbol listing, a cached ROM header, an audio clock keyed to the old timeline.
     ///
-    /// Three producers raise it, and the name is narrower than the meaning because the first two came first:
+    /// **Four** producers raise it, and the name is narrower than the meaning because the first two came
+    /// first:
     ///
     /// - `emulator/reload_rom` — different cartridge bytes.
     /// - `emulator/restore` — a checkpoint carries its whole machine, ROM included (D13 rule 2), so it *may*
@@ -146,6 +147,11 @@ pub struct PumpReport {
     ///   everything clocked to the machine did, and a caller that resynchronised for the other two and not
     ///   for this one would be holding an audio clock and a frame counter from a timeline that no longer
     ///   exists.
+    /// - [`Host::machine_replaced`] — a gesture at the embedder's **own window** replaced the machine
+    ///   through no served method: a save-state load at its keys. §11.40 (CR-Q, 2026-09-05) added it, and
+    ///   it is the producer whose absence was the defect: the window swapped its `System` and this flag
+    ///   never moved, so a client attached over the socket learned nothing and the window's own repairs
+    ///   never ran either.
     ///
     /// Read it as "resynchronise", not as "re-read the ROM".
     pub rom_changed: bool,
@@ -694,6 +700,69 @@ impl Host {
         (result, stamp, report)
     }
 
+    /// **Tell the bus that a gesture at this window replaced the machine** — §11.40 (CR-Q, 2026-09-05).
+    ///
+    /// The embedder has already put the new `System` in `sys` (a save-state load is a whole-value swap:
+    /// `oracle_frontend::save_state::load` returns a complete machine or an `Err`, so there is no window
+    /// in which half a machine is running). This lends that machine to the engine exactly as
+    /// [`call_reporting`](Host::call_reporting) does, runs
+    /// [`Engine::note_machine_replaced`](crate::engine::Engine::note_machine_replaced) inside the lend,
+    /// and hands it back.
+    ///
+    /// **The lend is not ceremony.** Every event's `params` carries the machine stamp (§2.2), and the
+    /// engine holds an inert placeholder `System` outside a lend window — so an emit taken outside one
+    /// would put `frame 0, mclk 0` on the wire beside a `hitsDropped` that was real. It is the same
+    /// reason [`publish_stamp`](Host::publish_stamp) documents for itself, and the stamp is published
+    /// here too, inside the window, so a connection thread polling it does not answer from the timeline
+    /// the load just left.
+    ///
+    /// # It returns a [`PumpReport`], and the embedder must react to it like any other
+    ///
+    /// `rom_changed` is `true` — that is the defect this closes — so the host's own repairs (audio
+    /// resync, symbol re-derive, cached ROM path) run off the same union they run off for a client-driven
+    /// `reload_rom`. `screen_changed` is `true` because the latched picture was invalidated.
+    /// `timeline_moved()` is whatever the clock actually did: a slot written earlier winds it backwards,
+    /// and `mclk_before`/`mclk_after` are both read inside the window, so both are the **new** machine's
+    /// — the load has already happened by the time this is called and there is no honest reading of the
+    /// old one left to take. A caller that needs the before-clock must read it before it swaps.
+    ///
+    /// `calls` is 1 and `deferred` is `false`, [`call_reporting`](Host::call_reporting)'s convention for a
+    /// synchronous gesture.
+    ///
+    /// # ⚑ Only call this from a deployment that advertises the event
+    ///
+    /// §11.40 M2 makes `capabilities.events` per process, and emitting an event this process did not
+    /// advertise contradicts §2.1's *"authoritative event set"*. The two are gated by one flag,
+    /// [`EngineConfig::window_gestures`](crate::engine::EngineConfig::window_gestures); set it where the
+    /// gesture is wired, and `note_machine_replaced` debug-asserts it.
+    pub fn machine_replaced(
+        &mut self,
+        sys: &mut System,
+        reason: crate::engine::MachineReplacedReason,
+    ) -> PumpReport {
+        // Read before the lend, beside each other, exactly as `pump` and `call_reporting` read them.
+        let screen_gen = self.engine.screen_generation();
+        let rom_gen = self.engine.rom_generation();
+        let symbols_gen = self.engine.symbols_generation();
+        self.engine.swap_system(sys);
+        let mclk_before = self.engine.mclk();
+        self.engine.note_machine_replaced(reason);
+        let mclk_after = self.engine.mclk();
+        // Inside the window, for `pump`'s reason: a connection thread reads this stamp without a round
+        // trip, and after a state load the cached one describes a timeline that no longer exists.
+        self.publish_stamp();
+        self.engine.swap_system(sys);
+        PumpReport {
+            calls: 1,
+            mclk_before,
+            mclk_after,
+            screen_changed: self.engine.screen_generation() != screen_gen,
+            rom_changed: self.engine.rom_generation() != rom_gen,
+            symbols_changed: self.engine.symbols_generation() != symbols_gen,
+            deferred: false,
+        }
+    }
+
     // ---------------------------------------------------------------- the drain
 
     /// **Answer every queued command against the caller's machine, then give it straight back.**
@@ -1020,6 +1089,67 @@ mod tests {
             !after.rom_changed && !after.screen_changed && !after.timeline_moved(),
             "the drain after a synchronous gesture reports NOTHING about it — that is the gap \
              `call_reporting` exists to close, and an embedder that waits for this report waits forever"
+        );
+    }
+
+    /// ★ **A window gesture reports what it moved, in the same terms a served method does** — §11.40
+    /// (CR-Q, 2026-09-05).
+    ///
+    /// The row above is the same claim for a synchronous *method*; this is the claim for a gesture that
+    /// no method produced, and it is the half the defect was. A window swapped its `System` and
+    /// `rom_generation` never moved, so nothing downstream fired: not the client's event, and not the
+    /// window's own repairs, which key off exactly this flag.
+    ///
+    /// **`rom_changed` is asserted HERE and not over a socket, and that is deliberate rather than
+    /// convenient.** It was measured: deleting `self.rom_generation += 1` from
+    /// [`Engine::note_machine_replaced`](crate::engine::Engine::note_machine_replaced) leaves every row
+    /// in `tests/machine_replaced.rs`, in `tests/hosted.rs` and in `oracle-player`'s suite **green** —
+    /// the event still goes out, the picture is still invalidated, the hits still drain. The generation
+    /// counter is not on the wire and is not observable through any reply; the one place it surfaces is
+    /// the `PumpReport` an embedder reads. So a gate for it has to be here, holding the report.
+    #[test]
+    fn a_window_gesture_reports_the_machine_replacement_the_way_a_method_would() {
+        let mut h = Host::new(HostConfig {
+            engine: EngineConfig {
+                window_gestures: true,
+                ..HostConfig::default().engine
+            },
+            ..HostConfig::default()
+        });
+        let mut sys = booted();
+        // A latched picture and a clock that is not zero, so "invalidated" and "moved" are visible as
+        // changes rather than as the state the fixture started in.
+        h.pump(&mut sys);
+        sys.run_frames(2);
+
+        let report = h.machine_replaced(&mut sys, crate::engine::MachineReplacedReason::StateLoad);
+
+        assert!(
+            report.rom_changed,
+            "the gesture replaced the machine and its own report must say so — this is the defect \
+             §11.40 closes, and it is invisible everywhere else"
+        );
+        assert!(
+            report.screen_changed,
+            "the latched picture was invalidated, so the embedder must stop presenting it"
+        );
+        assert_eq!(report.calls, 1, "one gesture, one report");
+        assert!(
+            !report.deferred,
+            "a synchronous gesture has no budget to run out"
+        );
+        assert!(
+            !report.symbols_changed,
+            "a state load keeps the cartridge, so the listing that bound to it still binds — this is \
+             `reset`'s answer, not `reload_rom`'s"
+        );
+
+        // …and the drain that follows says nothing about it, which is `call_reporting`'s gap at a third
+        // producer: an embedder that waited for the next `PumpReport` would wait forever.
+        let after = h.pump(&mut sys);
+        assert!(
+            !after.rom_changed && !after.screen_changed,
+            "the drain after a gesture reports NOTHING about it"
         );
     }
 

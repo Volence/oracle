@@ -141,6 +141,15 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
     }
 
     // capabilities.events is the authoritative event set (D6).
+    //
+    // ⚑ **And since §11.40 (CR-Q, 2026-09-05) this comparison is the M2 NEGATIVE, not a tautology.**
+    // `common::spawn` builds the STANDALONE arrangement — a headless bus with no window and so no
+    // save-state keys — and M2 rules that such a process *"MUST NOT advertise"*
+    // `emulator/machineReplaced`. So this line asserts a headless server advertises exactly [`EVENTS`]
+    // and nothing from `WINDOW_GESTURE_EVENTS`. It is compared against the base constant deliberately
+    // and not against `Engine::advertised_events`, which would agree with itself whatever the flag did.
+    // The positive half — a hosted deployment advertising the extra member and then emitting it — is
+    // `tests/machine_replaced.rs`.
     let events: Vec<String> = r["capabilities"]["events"]
         .as_array()
         .unwrap()
@@ -150,6 +159,11 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
     assert_eq!(
         events,
         EVENTS.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+    assert!(
+        !events.iter().any(|e| e == "emulator/machineReplaced"),
+        "§11.40 M2: a headless server has no window gesture and must not advertise \
+         emulator/machineReplaced; it advertised {events:?}"
     );
 }
 

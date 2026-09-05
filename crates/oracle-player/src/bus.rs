@@ -330,7 +330,13 @@ impl Bus {
         paused: bool,
         socket: Option<Option<PathBuf>>,
     ) -> Self {
-        let mut host = Host::new(HostConfig::default());
+        let mut config = HostConfig::default();
+        // §11.40 M2: this process has the gesture — the slot keys in `crate::input` and the load button
+        // in `crate::ui` both reach `States::load`, which replaces the machine through no served method.
+        // So it advertises `emulator/machineReplaced` and it emits it. A headless `oracle-aether` sets
+        // neither. See `Engine::advertised_events` for why the pair is one flag.
+        config.engine.window_gestures = true;
+        let mut host = Host::new(config);
         host.set_machine_info(info);
         let outcome = match socket {
             Some(path) => match host.serve(path) {
@@ -731,6 +737,28 @@ impl Bus {
             },
             stamp,
         )
+    }
+
+    /// **A gesture at this window replaced the machine** — §11.40 (CR-Q, 2026-09-05). Today exactly one
+    /// caller: [`crate::states::States::load`], which is where the `System` is swapped.
+    ///
+    /// It goes through [`SelfInflicted`] like [`Bus::call`], and for the identical reason: what a gesture
+    /// moved is taken in one place and the repairs run at the next [`drain`]. A state load raises
+    /// `rom_changed` and `screen_changed`, so this window re-keys its own save-state slots, re-derives
+    /// its symbol cache, rebuilds the audio clock and drops the scanline capture — every one of which it
+    /// was already doing for a *client* driving `emulator/restore` one door over, and none of which it
+    /// was doing for its own F4. That is the whole of the defect, and it had two halves: the client was
+    /// not told, and neither was this window.
+    ///
+    /// The count of dropped watchpoint hits is not returned here. The window has nowhere honest to put it
+    /// — its state note names the slot and the file — and the number that matters is the one on the wire,
+    /// which is the same number by construction (one drain in
+    /// [`Engine::note_machine_replaced`](oracle_aether::engine::Engine::note_machine_replaced)).
+    pub fn machine_replaced(&mut self, sys: &mut System) {
+        let report = self
+            .host
+            .machine_replaced(sys, oracle_aether::engine::MachineReplacedReason::StateLoad);
+        self.own.absorb(&report);
     }
 
     /// Take the window's own accumulated changes, clearing them — [`drain`]'s first act, and its only
