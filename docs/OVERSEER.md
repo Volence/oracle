@@ -222,6 +222,30 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
   the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
 
+**Registered 2026-09-05, from verifying a relayed authorisation instead of absorbing it:**
+
+- **▶ F-VSYNC-NEVER-MEASURED — AN OWNER-AUTHORISED FOREGROUND PASS WAS SPENT WITHOUT ANSWERING THE QUESTION
+  IT WAS AUTHORISED FOR, AND THE MIGRATION'S RETIREMENT GATE DEPENDS ON THE ANSWER.**
+  **The granting act, verified firsthand** (the hub relayed it; this seat checked rather than adopting):
+  empyrean **`0689c55`**, an ancestor of their `origin/main`, a **docs commit carrying a docs ruling**, and it
+  carries the words itself — owner, 2026-09-02T20:36:03Z, *"6. Load them for me and tell me what to look
+  for"*, applied by the hub as **explicit authorisation for TWO NAMED RUNS on his display — aeon's left-edge
+  gate and oracle's vsync spike — and recorded there as NOT a standing one.**
+  **Ours was run** (lane log 2026-09-02T21:10:26Z, `DISPLAY=:0`, ownership confirmed at 1920×1080, 120 s,
+  exit 0), so **the authorisation is spent.** ⚑ **But it FREE-RAN.** Its own entry says *"NOT a vsync-paced
+  measurement: the spike free-runs, hence 93 rather than 60"*, and `docs/2026-09-02-toolkit-spike.md:21`
+  still reads **"Presented fps under vsync on the real GPU? NOT MEASURED. Deferred to a foreground pass."**
+  **So the deferral survived the run that was supposed to close it, and the cell is still empty.**
+  ⚑ **Why this is load-bearing rather than trivia: the hub's retirement condition for `oracle-frontend` is
+  "60 fps and audio pacing measured on the real player under the toolkit, IN THE SAME FORM AS THE SPIKE
+  DOC".** That form has this cell blank. **S8 cannot honestly close against a shape whose headline number
+  was never measured**, and measuring it needs his display — i.e. **a fresh authorisation**, since the one
+  that existed was narrow and is spent. Filed as **`d-29`**; it gates S8 only, so nothing stops until then.
+  ⚑ **The durable shape, and it is bar 24's inverse: an instrument was OBTAINED, used, and the question
+  still went unanswered — and nothing announced that.** A spent authorisation looks identical to an answered
+  question from every artifact except the one cell nobody re-read. **When a run is authorised to answer a
+  named question, check the question's own cell afterwards, not the run's exit code.**
+
 **Registered 2026-09-05, from landing migration slices S0-S2:**
 
 - **▶ F-PARITY-BLIND-TO-SAT-STRIDE — the frontend's strongest correctness guard cannot see the SAT entry
