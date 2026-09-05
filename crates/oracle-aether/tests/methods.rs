@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{spawn, Client};
+use common::{spawn, spawn_for_sweep, Client};
 use oracle_aether::engine::METHODS;
 use oracle_core::system::MCLK_PER_FRAME;
 use serde_json::{json, Value};
@@ -73,7 +73,7 @@ fn write_lst(tag: &str, text: &str) -> std::path::PathBuf {
 
 #[test]
 fn every_reply_from_every_method_carries_frame_mclk_and_running() {
-    let h = spawn("stamp");
+    let h = spawn_for_sweep("stamp");
     let mut c = Client::connect(&h);
 
     // Including the handshake reply itself.

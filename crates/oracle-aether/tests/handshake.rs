@@ -3,11 +3,26 @@
 
 mod common;
 
-use common::{spawn, Client};
+use common::{spawn, spawn_for_sweep, Client};
 use oracle_aether::engine::{EVENTS, METHODS};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
+
+/// **The most frames one swept row may advance the machine.**
+///
+/// `common::SWEEP_FRAME_BUDGET` is 1, and every run-control row is bounded by it — except one, and the
+/// exception is measured rather than assumed. `emulator/press` defaults to `frames: 2` when the caller
+/// names no count (`engine.rs`, `press`), and that default is taken *before* the `frame_cap` the same
+/// function computes from `max_run_frames`, so a two-frame tap gets through on a one-frame server. This
+/// ceiling is therefore 2 and not 1: it is the smallest number that passes today, which is what makes it
+/// a ratchet. Restoring the 3,600-frame default takes `emulator/step_out` to 600 and turns this red.
+const SWEEP_ROW_FRAME_CEILING: i64 = 2;
+
+/// The `frame` on a reply the caller has already unwrapped to its `result`.
+fn frame_of(result: &Value) -> i64 {
+    result["frame"].as_u64().expect("a stamped reply") as i64
+}
 
 #[test]
 fn socket_is_mode_0600_per_d8() {
@@ -25,7 +40,7 @@ fn socket_is_mode_0600_per_d8() {
 
 #[test]
 fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
-    let h = spawn("init");
+    let h = spawn_for_sweep("init");
     let mut c = Client::connect(&h);
     let r = c.handshake(true);
 
@@ -65,6 +80,23 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
 
     // And the list is not merely equal to a constant: every advertised name must actually dispatch.
     // A name that is advertised but unwired would come back -32601.
+    //
+    // **The sweep is also held to a cost, and that half is `F-HANDSHAKE-LOAD-TIMEOUT`.** The row failed
+    // with a bare socket-read `WouldBlock` under load and was reachable no other way; the cause was that
+    // `emulator/step_out` has no frame to return out of on this fixture and therefore ran the engine's
+    // entire 600-frame step budget — 6.68 s of the sweep's 7.44 s — inside one 20-second read. A wiring
+    // probe must not hold a read deadline open running emulation, so the ceiling is asserted per row
+    // rather than left to whatever the default budget happens to be. It is stated in **frames**, not in
+    // wall clock, precisely because wall clock is the thing load moves: a machine at load average 65
+    // makes 600 frames take longer, it does not make them fewer.
+    //
+    // Two things keep the number honest. The server is spawned with `SWEEP_FRAME_BUDGET`, so the run
+    // ceiling is the engine's own config rather than a branch this test switched on. And the machine is
+    // put back to paused whenever a row leaves it running — `emulator/resume` is in the table, and a
+    // free-running unpaced engine taxes every one of the ~48 rows after it a whole frame each while
+    // making the count depend on wall-clock scheduling. The re-pause is the harness's own call, not a
+    // swept row, so its advance is deliberately not asserted.
+    let mut frame = frame_of(&r);
     for name in &advertised {
         let v = c.call(name, common::sweep_params(name));
         if let Some(e) = v.get("error") {
@@ -73,6 +105,27 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
                 json!(-32601),
                 "{name} is advertised but not wired"
             );
+        }
+        let stamp = common::reply_stamp(&v);
+        let after = stamp["frame"]
+            .as_u64()
+            .expect("every reply carries `frame`") as i64;
+        assert!(
+            after - frame <= SWEEP_ROW_FRAME_CEILING,
+            "{name} advanced the machine {} frames in one sweep row. The server's budget is {} \
+             (`common::SWEEP_FRAME_BUDGET`), so a row over the ceiling of {SWEEP_ROW_FRAME_CEILING} is \
+             a wiring probe running emulation inside a socket read — which is F-HANDSHAKE-LOAD-TIMEOUT, \
+             where `emulator/step_out` took 600 of them and blew the {:?} read deadline under load.",
+            after - frame,
+            common::SWEEP_FRAME_BUDGET,
+            common::READ_TIMEOUT,
+        );
+        frame = after;
+        if stamp["running"]
+            .as_bool()
+            .expect("every reply carries `running`")
+        {
+            frame = frame_of(&c.ok("emulator/pause", json!({})));
         }
     }
 
@@ -428,16 +481,20 @@ fn two_clients_share_one_machine() {
 /// as a flake twice before it was root-caused to a real ordering defect. So "the timeout says what it
 /// was waiting for" is a property with a test, not a habit.
 ///
-/// The blown deadline is manufactured rather than waited for. `emulator/step_out` on this fixture has no
-/// frame to return out of, so it runs the engine's whole step budget — 600 frames on a default server,
-/// which is seconds of debug-build emulation — while a 250 ms deadline expires under it. The inequality
-/// has only one safe direction and this is it: load can make 600 frames slower, never faster, so a
-/// machine busy enough to break the *other* rows cannot turn this one green.
+/// The blown deadline is manufactured rather than waited for, and the two numbers are chosen so that
+/// **load can only ever make this test more true**. `emulator/step_out` has no frame to return out of on
+/// this fixture, so it runs the server's whole step budget; the budget is set to 120 frames, which is
+/// ~1.3 s of debug-build emulation here, and only then is the deadline dropped to 100 ms. That is a 13x
+/// margin, and it is one-sided: a busy machine makes 120 frames slower, never fewer. The handshake in
+/// front of it runs at the ordinary `READ_TIMEOUT`, so the row that exists to make a load-sensitive
+/// failure legible cannot itself become one.
 #[test]
 fn a_read_that_times_out_names_the_request_it_was_waiting_for() {
-    let h = spawn("timeout-msg");
-    let mut c = Client::connect_with_read_timeout(&h, std::time::Duration::from_millis(250));
+    let h =
+        common::spawn_with_frame_budget("timeout-msg", oracle_core::testrom::build(), 1024, 120);
+    let mut c = Client::connect(&h);
     c.handshake(false);
+    c.set_read_timeout(std::time::Duration::from_millis(100));
 
     // The panic is the subject, so it is caught rather than propagated — and its payload is read, which
     // is the only way to assert on a message rather than on the mere fact of a failure.
@@ -449,7 +506,7 @@ fn a_read_that_times_out_names_the_request_it_was_waiting_for() {
     std::panic::set_hook(hook);
 
     let err = outcome.expect_err(
-        "emulator/step_out ran its whole frame budget in under 250 ms, so this test observed no \
+        "emulator/step_out ran its whole 120-frame budget in under 100 ms, so this test observed no \
          deadline at all and proves nothing about the message a blown one carries",
     );
     let msg = err
@@ -465,7 +522,7 @@ fn a_read_that_times_out_names_the_request_it_was_waiting_for() {
          Got: {msg}"
     );
     assert!(
-        msg.contains("250ms"),
+        msg.contains("100ms"),
         "a blown read deadline must quote the deadline it blew, so slowness can be told from a hang \
          without re-deriving the number. Got: {msg}"
     );

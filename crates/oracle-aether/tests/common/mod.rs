@@ -90,6 +90,48 @@ pub fn resume_and_wait_for_stop(c: &mut Client, id: i64) -> Value {
     }
 }
 
+/// **The frame budget a method sweep gives its server**, and the ceiling every sweep row is held to.
+///
+/// A sweep calls every advertised name to check something about the *reply envelope*. Not one of them
+/// is asking a run-control method to run: the subject is that the name dispatches and comes back
+/// stamped. So the honest budget is the smallest one that still lets a bounded run happen at all.
+///
+/// On a default server it is 3,600, and `run_step` clamps the three `step*` rows to 600 of those.
+/// `emulator/step_out` on the test fixture has no frame to return out of, so it takes **every one of the
+/// 600** — measured at 6.68 s of the sweep's 7.44 s total wall clock, inside a single socket read whose
+/// deadline is [`READ_TIMEOUT`]. That is what `F-HANDSHAKE-LOAD-TIMEOUT` is: not a flake and not a
+/// deadlock, but a wiring probe holding a 20-second read open while it runs ten seconds of emulation,
+/// with only a 3x margin to spend on a busy machine. Reproduced 5 times out of 5 under 64 CPU spinners
+/// on a 16-core box (load average 43-65); it passes 15/15 unloaded, which is exactly how a defect with a
+/// narrow window looks.
+///
+/// This is the *same* defect [`sweep_params`] already fixed once, in the row above: `wait_for_break`
+/// blocked 30 seconds on its own default and tripped the same read timeout. `step_out` is the sibling
+/// that was missed, because it does not block on a timer — it blocks on a budget, and `params: &[]`
+/// means no wire knob can shorten it. The engine's own config is the only seam, which is what
+/// [`spawn_with_frame_budget`] is for.
+pub const SWEEP_FRAME_BUDGET: u64 = 1;
+
+/// **A server for a method sweep**: [`spawn`], with [`SWEEP_FRAME_BUDGET`] instead of the 3,600-frame
+/// default.
+///
+/// Every sweep should use this rather than [`spawn`]. Nothing a sweep asserts can tell the two apart —
+/// a name still dispatches, a handler still runs, a reply still comes back stamped — and the difference
+/// is whether the probe costs milliseconds or costs the read deadline.
+pub fn spawn_for_sweep(tag: &str) -> ServerHandle {
+    spawn_with_frame_budget(tag, oracle_core::testrom::build(), 1024, SWEEP_FRAME_BUDGET)
+}
+
+/// The stamp on a reply, **wherever it rides**: in `result` when the call succeeded, in `error.data`
+/// when it was refused. Both are replies, and `methods::every_reply_from_every_method_carries_frame_\
+/// mclk_and_running` is the row that says so — a sweep reading `frame` must read it from either.
+pub fn reply_stamp(reply: &Value) -> &Value {
+    match reply.get("result") {
+        Some(r) => r,
+        None => &reply["error"]["data"],
+    }
+}
+
 /// A unique socket path per test. `AF_UNIX` paths are capped near 108 bytes, so this stays short.
 pub fn temp_socket(tag: &str) -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::SeqCst);
@@ -229,29 +271,19 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl Client {
     pub fn connect(handle: &ServerHandle) -> Self {
-        Self::connect_with_read_timeout(handle, READ_TIMEOUT)
-    }
-
-    /// [`Client::connect`] with the read deadline named by the caller.
-    ///
-    /// The seam exists for one test —
-    /// `handshake::a_read_that_times_out_names_the_request_it_was_waiting_for` — which has to *observe* a
-    /// blown deadline, and observing the real one costs 20 seconds. The deadline is the only difference,
-    /// so what that test watches is this client's timeout path and not a second one.
-    pub fn connect_with_read_timeout(handle: &ServerHandle, read_timeout: Duration) -> Self {
         // The accept loop polls, so a connect immediately after spawn may beat it by a few ms.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match UnixStream::connect(handle.socket_path()) {
                 Ok(s) => {
-                    s.set_read_timeout(Some(read_timeout)).unwrap();
+                    s.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
                     return Self {
                         reader: BufReader::new(s.try_clone().unwrap()),
                         writer: s,
                         next_id: 1,
                         pending: HashMap::new(),
                         awaiting: None,
-                        read_timeout,
+                        read_timeout: READ_TIMEOUT,
                     };
                 }
                 Err(e) if std::time::Instant::now() < deadline => {
@@ -261,6 +293,22 @@ impl Client {
                 Err(e) => panic!("connect: {e}"),
             }
         }
+    }
+
+    /// **Re-arm the read deadline mid-connection**, and remember the new number so a failure quotes it.
+    ///
+    /// The seam is for one test —
+    /// `handshake::a_read_that_times_out_names_the_request_it_was_waiting_for` — which has to *observe* a
+    /// blown deadline, and observing the real one costs [`READ_TIMEOUT`]. It is a setter rather than a
+    /// second constructor on purpose: the handshake in front of that test keeps the ordinary, generous
+    /// deadline, and only the one call being watched runs against a short one. A test that pins the
+    /// timeout message must not itself become the load-sensitive row it exists to make legible.
+    pub fn set_read_timeout(&mut self, d: Duration) {
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(d))
+            .expect("re-arm the read deadline");
+        self.read_timeout = d;
     }
 
     /// Write one line verbatim.
@@ -363,12 +411,20 @@ impl Client {
                 self.awaiting_note(),
                 line.trim(),
             ),
+            // **This branch states what it ruled out, and stops.** An earlier wording said "so this is a
+            // hang or a deadlock rather than slowness", and the F-HANDSHAKE-LOAD-TIMEOUT repro caught it
+            // lying: at load average 47 a server that was merely starved failed to finish inside the
+            // deadline *and* the grace, and the message called it a deadlock. Silence through both
+            // windows rules out "late, but within the grace" and rules out nothing else. Only the branch
+            // above gets to make a positive claim, because only it has a line to show for it.
             _ => panic!(
                 "the server did not answer within the {:?} read deadline, nor within a further {:?} of \
-                 grace. Nothing came back at all, so this is a hang or a deadlock rather than slowness. \
-                 {}",
+                 grace. That rules out a server that was only a little behind, and leaves two: it is \
+                 hung, or it is starved badly enough not to finish inside {:?}. Check the machine's load \
+                 before concluding the first. {}",
                 self.read_timeout,
                 grace,
+                self.read_timeout + grace,
                 self.awaiting_note(),
             ),
         }
