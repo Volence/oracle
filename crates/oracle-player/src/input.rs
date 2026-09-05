@@ -78,9 +78,167 @@ pub fn decide(keys: Pad, wants_text: bool, latch: &mut bool) -> Pad {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// ⚑ Machine keys — S3
+// ---------------------------------------------------------------------------------------------------
+
+/// **The keys that are not the pad**: reset, ROM reload, and the save-state slots.
+///
+/// A value rather than an action, so the binding is a pure function this crate can test without a window
+/// and the *doing* stays where the doing belongs — two of these are a call to a served method and the
+/// rest are [`crate::states`]. `oracle-frontend` binds the same five keys to the same five things
+/// (`main.rs`'s controls table), and they are reproduced rather than improved on for
+/// [`pad_from_keys`]'s reason: the owner's hands already know them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineKey {
+    /// `F1` — soft reset. `emulator/reset`; SRAM contents preserved, as on real hardware.
+    ///
+    /// `oracle-frontend` also binds `Tab` to this. **`Tab` is not bound here**, and that is a decision
+    /// rather than an omission: `egui` uses `Tab` for focus traversal between widgets, and a window whose
+    /// docked panels have text boxes in them would make one keystroke mean both "move to the next field"
+    /// and "reset the console".
+    Reset,
+    /// `F5` — re-read the ROM file and reset. `emulator/reload_rom`.
+    ReloadRom,
+    /// `F2` — write the machine to the selected slot.
+    SaveState,
+    /// `F4` — restore the machine from the selected slot.
+    LoadState,
+    /// `F6` / `F7` — previous / next slot, wrapping.
+    SlotStep(isize),
+    /// `0`-`9` — select that slot directly.
+    SlotSelect(usize),
+}
+
+/// The binding, as a pure function of "was this key pressed this frame".
+///
+/// **Pressed, not down**: every one of these is an event, and a held `F2` must not write the slot sixty
+/// times a second. That is the one place this differs in kind from [`pad_from_keys`], where "down" is
+/// exactly right.
+///
+/// It returns a `Vec` rather than an `Option` because two of these can genuinely arrive in one frame (a
+/// slot key and `F2`, from a fast hand), and dropping the second would make the save go to the wrong
+/// slot — silently, and only sometimes.
+///
+/// The digits are **generated from [`oracle_frontend::save_state::SLOT_COUNT`]**, and the array they index
+/// is length-checked against it below, so a slot count that grew past the keys is a test failure rather
+/// than a slot nobody can reach.
+pub fn machine_keys(pressed: impl Fn(egui::Key) -> bool) -> Vec<MachineKey> {
+    let mut out = Vec::new();
+    if pressed(egui::Key::F1) {
+        out.push(MachineKey::Reset);
+    }
+    if pressed(egui::Key::F5) {
+        out.push(MachineKey::ReloadRom);
+    }
+    if pressed(egui::Key::F2) {
+        out.push(MachineKey::SaveState);
+    }
+    if pressed(egui::Key::F4) {
+        out.push(MachineKey::LoadState);
+    }
+    if pressed(egui::Key::F6) {
+        out.push(MachineKey::SlotStep(-1));
+    }
+    if pressed(egui::Key::F7) {
+        out.push(MachineKey::SlotStep(1));
+    }
+    for (slot, key) in SLOT_KEYS.iter().enumerate() {
+        if pressed(*key) {
+            out.push(MachineKey::SlotSelect(slot));
+        }
+    }
+    out
+}
+
+/// The digit key for each slot, in slot order. Typed here because `egui::Key` has no arithmetic; held to
+/// [`oracle_frontend::save_state::SLOT_COUNT`] by
+/// [`every_slot_has_a_key`](tests::every_slot_has_a_key) rather than by a comment.
+const SLOT_KEYS: [egui::Key; 10] = [
+    egui::Key::Num0,
+    egui::Key::Num1,
+    egui::Key::Num2,
+    egui::Key::Num3,
+    egui::Key::Num4,
+    egui::Key::Num5,
+    egui::Key::Num6,
+    egui::Key::Num7,
+    egui::Key::Num8,
+    egui::Key::Num9,
+];
+
+/// Read the machine keys off a live egui context.
+///
+/// **Silent while a widget has the keyboard**, for [`decide`]'s reason and then one more: the palette's
+/// method box is a text field, and a person typing `emulator/reload_rom` into it types a `0` on the way
+/// to `z80_read`. A digit that moved the save slot while it was being typed would be a slot change
+/// nobody made.
+pub fn poll_machine_keys(ctx: &egui::Context) -> Vec<MachineKey> {
+    if ctx.egui_wants_keyboard_input() {
+        return Vec::new();
+    }
+    ctx.input(|i| machine_keys(|k| i.key_pressed(k)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The slot keys and the slot count are one set, derived from the container's own constant. A tenth
+    /// slot with no key would be a save nobody can reach; an eleventh key would index off the end.
+    #[test]
+    fn every_slot_has_a_key() {
+        assert_eq!(
+            SLOT_KEYS.len(),
+            oracle_frontend::save_state::SLOT_COUNT,
+            "the digit keys and the container's slot count have drifted"
+        );
+        for (slot, key) in SLOT_KEYS.iter().enumerate() {
+            assert_eq!(
+                machine_keys(|k| k == *key),
+                vec![MachineKey::SlotSelect(slot)],
+                "slot {slot}'s key selects slot {slot} and nothing else"
+            );
+        }
+    }
+
+    /// Each machine key means one thing, and pressing nothing means nothing. The `assert_eq!` on the whole
+    /// vector is the anti-vacuity half: a binding that fired *and* dragged a second command along would
+    /// pass a `contains` check.
+    #[test]
+    fn the_machine_keys_are_the_minifb_players_machine_keys() {
+        let cases = [
+            (egui::Key::F1, MachineKey::Reset),
+            (egui::Key::F5, MachineKey::ReloadRom),
+            (egui::Key::F2, MachineKey::SaveState),
+            (egui::Key::F4, MachineKey::LoadState),
+            (egui::Key::F6, MachineKey::SlotStep(-1)),
+            (egui::Key::F7, MachineKey::SlotStep(1)),
+        ];
+        for (key, want) in cases {
+            assert_eq!(machine_keys(|k| k == key), vec![want], "{key:?}");
+        }
+        assert!(
+            machine_keys(|_| false).is_empty(),
+            "nothing pressed is nothing done"
+        );
+        // ⚑ And no machine key is a pad key: a binding that overlapped would make one press mean two
+        // things, and the one that is not the game would win silently.
+        for (key, _) in cases {
+            assert_eq!(
+                pad_from_keys(|k| k == key),
+                Pad::default(),
+                "{key:?} is bound to the machine AND to the pad"
+            );
+        }
+        for key in SLOT_KEYS {
+            assert_eq!(
+                pad_from_keys(|k| k == key),
+                Pad::default(),
+                "{key:?} is bound to a save slot AND to the pad"
+            );
+        }
+    }
 
     /// Every binding, one key at a time, against the minifb player's `poll_pad`. If this test and
     /// `crates/oracle-frontend/src/main.rs::poll_pad` ever disagree, the owner's hands are the ones that

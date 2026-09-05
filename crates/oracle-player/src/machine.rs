@@ -248,6 +248,28 @@ impl Machine {
         }
     }
 
+    /// **Take a whole machine in place of this one, and put the window back in step in the same
+    /// statement** — the save-state load (S3, [`crate::states`]).
+    ///
+    /// One method rather than a `system_mut()` assignment beside a
+    /// [`resync_after_replacement`](Machine::resync_after_replacement) call, because those two lines are
+    /// separable and the separation is silent: a restore that skipped the resync would leave the audio
+    /// sink's frame clock sitting *above* the restored one, which renders nothing at all until the machine
+    /// catches back up — indefinite silence, from a missing line, with the picture still moving. There is
+    /// no order in which one of these happens without the other because there is only one call.
+    ///
+    /// The retained picture is deliberately **kept**. `oracle-frontend` says why: the capture is cleared
+    /// here, so the very next completed frame is unambiguously the restored one, and until it arrives the
+    /// old image staying up is exactly what an iteration that emulated nothing does. Blanking instead
+    /// would put one frame of black on the glass for no reason a person could name.
+    ///
+    /// [`image_mask`](Machine::image_mask) is left with the picture it describes, for the same reason: it
+    /// is a fact about *those pixels*, and the pixels have not changed.
+    pub fn adopt_system(&mut self, sys: System) {
+        self.sys = sys;
+        self.resync_after_replacement();
+    }
+
     /// **Take the picture a client's own run drew**, from the bus's latched frame, and put it on the glass.
     ///
     /// This is what [`crate::bus::Bus::mirror_pause`]'s `screen_changed` is for. The frames a client runs

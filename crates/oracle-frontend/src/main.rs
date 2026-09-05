@@ -259,20 +259,19 @@
 // `pub(crate)` and sit at the crate root, so every `crate::present` / `crate::font` / `crate::spawn` /
 // `crate::pick` path in `overlay.rs`, `palette.rs`, `screen_text.rs`, `lens/*` and `bus.rs` resolves exactly
 // as it did when these were `mod` declarations.
+// ⚑ **`save_state` and `sram_file` joined them in migration S3**, so `oracle-player` gets the *same*
+// container, the same fingerprints and the same atomic write rather than a second implementation of the
+// persistence rules. Their `#[cfg(test)] mod tests` now runs under `cargo test -p oracle-frontend --lib`
+// instead of `--bin oracle-frontend`; the rows are the same rows.
 #[cfg(feature = "audio")]
 pub(crate) use oracle_frontend::audio;
-pub(crate) use oracle_frontend::{font, pick, present, spawn};
+pub(crate) use oracle_frontend::{font, pick, present, save_state, spawn, sram_file};
 
 // Host gamepad input (gilrs) — frontend-only, feature-gated exactly like `audio`, and degrading to
 // keyboard-only on every failure path. See the module docs for the mapping tables.
 #[cfg(feature = "gamepad")]
 mod gamepad;
 
-// User-facing save states — the versioned/checksummed container around the core's snapshot/restore pair.
-mod save_state;
-
-// Slice S2 — `.srm` battery-save persistence (frontend-only file I/O around the core's SRAM buffer).
-mod sram_file;
 // Opt-in `<rom>.lst` symbol loading — the file half of `oracle_core::symbols`, kept out of the no-I/O core.
 mod symbol_file;
 // Configured RAM-symbol watches: name a symbol and its values in `player.conf`, get a toast whenever the

@@ -51,6 +51,10 @@
 //! * [`pick`] — click-to-watch: a native dot resolved to armable VRAM/CRAM ranges. Window-independent
 //!   already; the three window-coupled calls stayed in the binary's run loop.
 //! * [`spawn`] — click-to-place: the spawn mode's model and every sentence it puts on screen.
+//! * [`save_state`] / [`sram_file`] — **S3.** The persistence pair: ten numbered slot files and the `.srm`
+//!   battery image, both keyed to the ROM path by one naming rule, and the atomic write both use. They move
+//!   together because [`save_state::save`] writes through [`sram_file::write_atomic`]; splitting them would
+//!   have left the container's crash-safety in the other crate.
 //!
 //! ## The `window` feature
 //!
@@ -73,6 +77,12 @@ pub mod font;
 pub mod pick;
 // Display geometry — aspect handling, the window-sized presentation blit, and the exact click inverse.
 pub mod present;
+// User-facing save states: the versioned, fingerprinted, checksummed container around the core's
+// `snapshot`/`restore` pair, and the ten numbered slot files beside the ROM. **Migration S3.**
+pub mod save_state;
+// `.srm` battery-save persistence, and this crate's shared atomic-write primitive — `save_state` writes its
+// slot files through it, which is why the two move together. **Migration S3.**
+pub mod sram_file;
 // Click-to-PLACE: spawn mode's model and every sentence it puts on screen. The click itself belongs to
 // whichever window holds it.
 pub mod spawn;

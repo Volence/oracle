@@ -154,6 +154,14 @@ pub struct Panels<'a> {
     /// The Screen tab's own state: the standing readout of the last click, the handles of the watches
     /// **this panel** armed, and spawn mode. See [`crate::screen_pick`].
     pub screen: &'a mut screen_pick::Panel,
+    /// **The ten save-state slots** (S3). `&mut` because the Screen tab's slot controls are *controls*:
+    /// things you do are not tabs, and a slot readout you could not act on would send the operator back
+    /// to a function key they have to already know about.
+    pub states: &'a mut crate::states::States,
+    /// **The cartridge's `.srm`** (S3), needed by exactly one gesture on this tab — a state load, whose
+    /// first act is flushing it. It is not a display: nothing here reads it, and it is here rather than
+    /// inside [`crate::states::States`] because the battery outlives a slot and belongs to the loop.
+    pub battery: &'a mut crate::battery::Battery,
     /// ⚑ **The display mask [`tex`](Panels::tex) was drawn under**, or `None` before the first upload.
     ///
     /// The mask of *the picture on the glass* — read off the uploaded texture, deliberately not off the bus.
@@ -356,6 +364,67 @@ impl Panels<'_> {
             ui.separator();
             ui.weak(format!("{} armed by this panel", self.screen.armed_count()));
         });
+        // ⚑ **The save-state slots** (S3), as controls beside the keys rather than instead of them.
+        //
+        // `oracle-frontend` offers these on `F2`/`F4`/`F6`/`F7`/`0`-`9` and nowhere else, which is fine
+        // for hands that already know them and is invisible to anyone else. The keys are bound here too
+        // (`crate::input::machine_keys`, the incumbent's bindings unchanged) — this row is what makes the
+        // capability *findable*, and it names the keys so the row teaches them rather than replacing
+        // them.
+        //
+        // The occupancy dots are read from [`crate::states::States`]'s probe of the filesystem, not from
+        // a count this window keeps: a slot file written by the other window, or deleted outside both,
+        // must show as it is.
+        ui.horizontal(|ui| {
+            ui.weak("state:");
+            if ui.button("◀").on_hover_text("F6 — previous slot").clicked() {
+                self.states.step(-1);
+            }
+            let slot = self.states.slot();
+            ui.monospace(format!(
+                "slot {slot} {}",
+                if self.states.occupied(slot) {
+                    "(occupied)"
+                } else {
+                    "(empty)"
+                }
+            ));
+            if ui.button("▶").on_hover_text("F7 — next slot").clicked() {
+                self.states.step(1);
+            }
+            if ui
+                .button("save")
+                .on_hover_text("F2 — write this machine to the selected slot")
+                .clicked()
+            {
+                self.states.save(self.machine);
+            }
+            // Offered whether or not the slot has a file, and **refused by the loader** when it has none
+            // — the transport bar's rule for `step`: a hidden control teaches nothing, and the refusal
+            // names the file. `save_state::load` is a static constructor, so a refusal cannot leave a
+            // half-restored machine on the glass.
+            if ui
+                .button("load")
+                .on_hover_text("F4 — restore this machine from the selected slot")
+                .clicked()
+            {
+                let mut said = Vec::new();
+                self.states.load(self.machine, self.battery, &mut said);
+                for line in said {
+                    crate::device::loud(&line);
+                }
+            }
+        });
+        if let Some(n) = self.states.last() {
+            // Coloured on the field, never on the shape of the text — `Echo`'s rule, and `Note` carries
+            // the same flag for the same reason.
+            let colour = if n.refused {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.colored_label(colour, &n.text);
+        }
         if let Some(r) = self.screen.readout() {
             // Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
             let colour = if r.refused {
@@ -1910,6 +1979,12 @@ pub fn every_tab_dock() -> egui_dock::DockState<Tab> {
 pub const PAUSE: &str = "emulator/pause";
 pub const RESUME: &str = "emulator/resume";
 pub const STEP: &str = "emulator/step";
+/// **The two machine keys that are served methods** (S3, `F1` and `F5`). Here rather than in
+/// `crate::input` for the reason the three above are here: the test below checks these strings against
+/// the engine's own `METHODS` registry, and a second copy of a wire name somewhere else is a name that
+/// can rot without failing anything.
+pub const RESET: &str = "emulator/reset";
+pub const RELOAD_ROM: &str = "emulator/reload_rom";
 
 /// **The bar's own labels, as constants**, because [`crate::screen`] reports the bar over
 /// `emulator/screen_text` and a label written twice is a window and a tool describing one button
@@ -2173,7 +2248,12 @@ impl Transport {
     /// A method the registry does not carry would come back `-32601` and be shown like any other refusal;
     /// the explicit check exists so a *typo in this file* is caught by the test below rather than by a
     /// human clicking a button that can only ever fail.
-    fn issue(&mut self, machine: &mut Machine, bus: &mut Bus, method: &'static str) {
+    /// `pub(crate)` as of S3: the `F1` and `F5` machine keys are the same three gestures the bar makes,
+    /// issued from the keyboard instead of from a button, and they land in the same [`Echo`] — so the
+    /// refusal a running machine gives `emulator/reload_rom` is shown in the same place, in the same
+    /// words, by the same code, whichever way it was asked for. A second echo for the keyboard would have
+    /// been a second sentence about one server.
+    pub(crate) fn issue(&mut self, machine: &mut Machine, bus: &mut Bus, method: &'static str) {
         let answer = bus.call(machine.system_mut(), method, &json!({}));
         self.last = Some(Echo {
             method,
@@ -2321,7 +2401,10 @@ mod transport_tests {
     /// the loop above and prove nothing, so a name that must NOT be served is checked in the same test.
     #[test]
     fn every_transport_button_names_a_served_method() {
-        for m in [PAUSE, RESUME, STEP] {
+        // `RESET` and `RELOAD_ROM` are the `F1`/`F5` machine keys (S3). They are not buttons, but they
+        // land in this bar's `Echo` through the same `Transport::issue`, so a typo in either would
+        // produce the same unexplainable `-32601` on the same line.
+        for m in [PAUSE, RESUME, STEP, RESET, RELOAD_ROM] {
             assert!(
                 memory::is_served(m),
                 "the transport bar offers {m}, which the engine's METHODS registry does not carry — that \
