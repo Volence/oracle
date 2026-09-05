@@ -209,14 +209,50 @@ impl States {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oracle_core::m68000::bus68k::Bus68k;
+    use std::path::PathBuf;
 
     fn booted() -> Machine {
         Machine::new(oracle_core::testrom::build(), None)
     }
 
-    /// The wrap is over `0..SLOT_COUNT` in both directions, derived from the constant rather than from a
-    /// literal 10 — a slot count that changed and a wrap that did not is a save that silently goes to the
-    /// wrong file.
+    /// A private directory with one cartridge in it, removed when the row ends.
+    struct Cartridge {
+        dir: PathBuf,
+        rom: PathBuf,
+    }
+
+    impl Cartridge {
+        fn new(tag: &str) -> Self {
+            let stamp = format!(
+                "{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let dir = std::env::temp_dir().join(format!("oracle-states-{tag}-{stamp}"));
+            std::fs::create_dir_all(&dir).expect("make the fixture directory");
+            let rom = dir.join("game.bin");
+            std::fs::write(&rom, oracle_core::testrom::build()).expect("write the cartridge");
+            Cartridge { dir, rom }
+        }
+
+        fn path(&self) -> String {
+            self.rom.display().to_string()
+        }
+    }
+
+    impl Drop for Cartridge {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The slot selection wraps over `0..SLOT_COUNT` in both directions, derived from the container's own
+    /// constant rather than from a literal 10 — a slot count that changed and a wrap that did not is a
+    /// save that silently goes to the wrong file.
     #[test]
     fn the_slot_selection_wraps_over_the_constant_in_both_directions() {
         let m = booted();
@@ -235,6 +271,174 @@ mod tests {
             s.slot(),
             0,
             "an out-of-range selection is ignored, not clamped onto the last slot"
+        );
+    }
+
+    /// ★ **A slot round-trips the whole machine, and the load flushes the battery first.**
+    ///
+    /// Two assertions in one row because they are one gesture and their ORDER is the thing that can be
+    /// wrong: a snapshot carries the cartridge SRAM backwards with it, so a load that did not flush first
+    /// would destroy an in-game save that happened to be a second old — which is `oracle-frontend`'s
+    /// stated reason for the same line, and which is invisible unless the battery is *pending* at the
+    /// moment of the load. It is made pending here on purpose.
+    ///
+    /// The machine assertion is on `System::state_hash`, and the two states are asserted **different**
+    /// before the load: "the machine matches the snapshot" witnesses nothing if it never left it.
+    ///
+    /// Mutations proven red: (a) delete `battery.flush(...)` from `States::load`; (b) delete
+    /// `self.resync_after_replacement()` from `Machine::adopt_system` — caught by the capture assertion.
+    #[test]
+    fn a_slot_round_trips_the_machine_and_the_load_flushes_the_battery_first() {
+        let cart = Cartridge::new("roundtrip");
+        let mut machine = booted();
+        let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut states = States::open(&cart.path(), machine.system());
+
+        machine.system_mut().run_frames(2);
+        // ⚑ The anchor is the **master clock**, not `state_hash`. Measured, and worth recording: the
+        // fixture ROM's outer loop is quiescent enough that `state_hash().combined` is byte-identical
+        // after three more frames, so a row anchored on it fails its own anti-vacuity clause — which is
+        // exactly what it is for. `mclk` rides the bincode snapshot, so a restore rewinds it, and it is
+        // the coordinate every other repair in this window is keyed to.
+        let anchor = machine.system().scheduler().now();
+        let anchor_hash = machine.system().state_hash().combined;
+
+        // The guest saves AFTER the snapshot, so the bytes on disk afterwards must be the newer ones and
+        // not the snapshot's.
+        {
+            let sys = machine.system_mut();
+            sys.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01);
+            sys.mega_bus(&mut ()).write8(0x20_0001, 5, 0x6D);
+            assert!(
+                sys.sram_used() && sys.sram_dirty(),
+                "the guest write did not latch"
+            );
+        }
+        let note = states.save(&machine).clone();
+        assert!(!note.refused, "{}", note.text);
+        assert!(states.occupied(0), "the slot is not marked occupied");
+        let live = machine.system().sram().to_vec();
+
+        machine.system_mut().run_frames(3);
+        assert_ne!(
+            machine.system().scheduler().now(),
+            anchor,
+            "anti-vacuity: the machine must have moved away from the snapshot, or the load below \
+             cannot be seen to have brought it back"
+        );
+
+        let srm = oracle_frontend::sram_file::srm_path_for(&cart.rom);
+        assert!(
+            !srm.exists(),
+            "the battery reached disk before the load, so the flush below proves nothing"
+        );
+
+        let mut said = Vec::new();
+        states.load(&mut machine, &mut battery, &mut said);
+        let last = states.last().expect("the load said nothing at all");
+        assert!(!last.refused, "{}", last.text);
+        assert_eq!(
+            machine.system().scheduler().now(),
+            anchor,
+            "the restored machine's clock is not the one that was saved"
+        );
+        assert_eq!(
+            machine.system().state_hash().combined,
+            anchor_hash,
+            "…and neither is its state"
+        );
+        assert_eq!(
+            machine.capture_lines(),
+            0,
+            "the scanline capture survived a machine replacement — its lines belong to a timeline \
+             that is gone and would be spliced onto the restored machine's first frame"
+        );
+        let on_disk = std::fs::read(&srm).unwrap_or_else(|e| {
+            panic!(
+                "the pending battery was never flushed ({e}) — a state load destroyed a real in-game \
+                 save that happened to be a second old"
+            )
+        });
+        assert_eq!(
+            on_disk, live,
+            "the flushed bytes are not the ones the guest wrote"
+        );
+        assert!(
+            !machine.system().sram_dirty(),
+            "the restored (older) SRAM is still marked dirty, so the next autosave will write it over \
+             the newer image just flushed"
+        );
+    }
+
+    /// ★ **An empty slot is refused cleanly, and the running machine is untouched.**
+    ///
+    /// `save_state::load` is a static constructor — a whole `System` or an error — so this is a property
+    /// of the type rather than of care taken here. It is asserted anyway, on the machine, because it is
+    /// the one thing a person betting a session on a mis-typed slot number needs to be true.
+    #[test]
+    fn an_empty_slot_is_refused_and_the_machine_keeps_running() {
+        let cart = Cartridge::new("empty-slot");
+        let mut machine = booted();
+        let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut states = States::open(&cart.path(), machine.system());
+        machine.system_mut().run_frames(2);
+        let before = machine.system().state_hash().combined;
+
+        states.select(7);
+        assert!(!states.occupied(7), "the fixture slot must be empty");
+        let mut said = Vec::new();
+        states.load(&mut machine, &mut battery, &mut said);
+        let last = states.last().expect("a refused load said nothing");
+        assert!(last.refused, "loading a slot with no file was not refused");
+        assert!(
+            last.text.contains('7'),
+            "the refusal does not say which slot: {}",
+            last.text
+        );
+        assert_eq!(
+            machine.system().state_hash().combined,
+            before,
+            "a refused load moved the machine"
+        );
+    }
+
+    /// ★ **A state written against a different cartridge is refused**, which is the whole reason
+    /// `rom_fp` is re-derived whenever the machine is replaced.
+    ///
+    /// A snapshot carries the ROM bytes with it, so a load that did not check would silently swap the
+    /// running game out from under a window whose `.srm` path, slot files and title still point at the
+    /// other one. The fixture changes one byte, because the fingerprint is over the image and one byte is
+    /// the smallest thing that must be enough.
+    #[test]
+    fn a_state_from_another_cartridge_is_refused_after_the_fingerprint_is_re_derived() {
+        let cart = Cartridge::new("other-cart");
+        let mut machine = booted();
+        let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut states = States::open(&cart.path(), machine.system());
+        let note = states.save(&machine).clone();
+        assert!(!note.refused, "{}", note.text);
+
+        // A different cartridge, by one byte, and the window re-keys to it exactly as `drain` does on
+        // `rom_changed`.
+        let mut other = oracle_core::testrom::build();
+        other[0x180] ^= 0xFF;
+        machine.system_mut().load_rom(other);
+        states.after_replacement(&cart.path(), machine.system());
+
+        let before = machine.system().state_hash().combined;
+        let mut said = Vec::new();
+        states.load(&mut machine, &mut battery, &mut said);
+        let last = states.last().expect("the load said nothing");
+        assert!(
+            last.refused,
+            "a state belonging to another cartridge was loaded — the running game has been swapped \
+             out from under a window still keyed to the other one: {}",
+            last.text
+        );
+        assert_eq!(
+            machine.system().state_hash().combined,
+            before,
+            "a refused load moved the machine"
         );
     }
 }

@@ -120,6 +120,13 @@ impl Battery {
     }
 
     /// The `.srm` this window is currently keyed to.
+    ///
+    /// `#[cfg(test)]`, and that is a statement rather than a convenience: **nothing on the shipped path
+    /// may read this**. Every message about the save file is composed here, beside the write that
+    /// produced it, so a surface that fetched the path and wrote its own sentence would be a second
+    /// account of a file operation it did not perform — and the two would disagree the first time a
+    /// rescue went to the *outgoing* cartridge's path instead of this one.
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -312,31 +319,46 @@ impl Battery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oracle_core::m68000::bus68k::Bus68k;
 
-    /// A machine with a real SRAM buffer, dirtied, so the gates below are exercised rather than skipped.
-    /// `sram_used` is a `System` flag set by an actual guest write, so it is produced by writing.
-    fn dirtied() -> System {
+    /// A machine with a provisioned SRAM buffer that the **guest** has written, which is the only thing
+    /// that latches `sram_used` — `load_sram` is documented as not being a guest write, so a fixture that
+    /// poked the buffer would leave [`Battery::owes`] false and every row below vacuous.
+    fn saved(byte: u8) -> System {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        sys.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01);
+        sys.mega_bus(&mut ()).write8(0x20_0001, 5, byte);
+        assert!(
+            sys.sram_used() && sys.sram_dirty(),
+            "the guest write did not latch"
+        );
+        sys
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(format!("oracle-battery-{tag}-{stamp}"));
+        std::fs::create_dir_all(&dir).expect("make the fixture directory");
+        dir
+    }
+
+    /// `load_sram` populates the buffer but does not make the cart "used" — only a guest write does. This
+    /// row is the statement of what that API answers, so the fixtures above are not built on a guess.
+    #[test]
+    fn a_loaded_image_is_not_a_guest_save() {
         let mut sys = System::new(0x5EED);
         sys.load_rom(oracle_core::testrom::build());
         sys.reset();
         sys.load_sram(&[0xAB; 32]);
-        sys
-    }
-
-    fn tmp(tag: &str) -> PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("pb-{tag}-{stamp}.bin"))
-    }
-
-    /// `load_sram` populates the buffer but does not make the cart "used" — only a guest write does. These
-    /// tests therefore drive the `used`/`dirty` pair through the public API the window itself reads, and
-    /// this row is the statement of what that API answers, so the fixtures below are not built on a guess.
-    #[test]
-    fn a_loaded_image_is_not_a_guest_save() {
-        let sys = dirtied();
         assert!(
             sys.sram_present(),
             "the fixture cart must provision a buffer or every row here is vacuous"
@@ -345,5 +367,105 @@ mod tests {
             !sys.sram_used(),
             "loading an image is the window putting bytes back, not the guest saving"
         );
+    }
+
+    /// ★ **The debounce coalesces a burst into ONE write, and it happens on the frame the constant says.**
+    ///
+    /// The number is read from [`AUTOSAVE_DEBOUNCE_FRAMES`] rather than typed, so the row cannot pass a
+    /// debounce that silently changed length; and the *absence* of a file before that frame is asserted,
+    /// because a `.srm` written every dirty frame would satisfy any assertion made only at the end.
+    #[test]
+    fn the_autosave_waits_out_the_debounce_and_then_writes_once() {
+        let dir = tmp_dir("debounce");
+        let rom = dir.join("game.bin");
+        let mut sys = saved(0x3C);
+        let (mut battery, said) = Battery::open(&rom.display().to_string(), &mut sys);
+        assert_eq!(said.len(), 1, "the open must say what it found: {said:?}");
+        assert_eq!(
+            battery.path(),
+            sram_file::srm_path_for(&rom),
+            "the battery is keyed to the wrong file"
+        );
+
+        for frame in 0..AUTOSAVE_DEBOUNCE_FRAMES {
+            let lines = battery.tick(&mut sys);
+            assert!(
+                lines.is_empty() && !battery.path().exists(),
+                "the autosave fired on frame {frame} of a {AUTOSAVE_DEBOUNCE_FRAMES}-frame debounce — \
+                 a guest save burst is one disk write per frame"
+            );
+        }
+        let lines = battery.tick(&mut sys);
+        assert_eq!(lines.len(), 1, "the write said nothing: {lines:?}");
+        let on_disk = std::fs::read(battery.path()).expect("the debounce never wrote the file");
+        assert_eq!(
+            on_disk,
+            sys.sram(),
+            "the written bytes are not the buffer's"
+        );
+        assert!(
+            !sys.sram_dirty(),
+            "the dirty flag survived the write, so the debounce re-arms forever"
+        );
+
+        // …and it does not write again with nothing new to say.
+        assert!(
+            battery.tick(&mut sys).is_empty(),
+            "the autosave fired a second time on an unchanged buffer"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ **A rescue whose write fails is KEPT and retried, and the bytes are the outgoing cartridge's.**
+    ///
+    /// This is what this window does instead of `oracle-frontend`'s abort: it cannot refuse a client's
+    /// reload, so the only honest alternative to losing the bytes is holding them. The failure is made
+    /// real rather than mocked — the outgoing cartridge's directory does not exist, so the atomic write
+    /// genuinely cannot land — and then it is *made to succeed* by creating the directory, because "it
+    /// was kept" is only half the claim and "it eventually lands" is the half that matters.
+    #[test]
+    fn a_rescue_that_cannot_be_written_is_kept_and_retried_until_it_lands() {
+        let dir = tmp_dir("orphan");
+        let gone = dir.join("unplugged");
+        let outgoing = gone.join("outgoing.bin");
+        let incoming = dir.join("incoming.bin");
+        let mut sys = saved(0x91);
+        let (mut battery, _) = Battery::open(&outgoing.display().to_string(), &mut sys);
+        let rescued = sys.sram().to_vec();
+
+        battery.carry(&sys);
+        // The cartridge is swapped: `load_rom` re-provisions a zeroed buffer and clears `sram_used`,
+        // which is exactly what a reload does to the machine.
+        sys.load_rom(oracle_core::testrom::build());
+        assert!(
+            !sys.sram_used(),
+            "the fixture swap did not clear `sram_used`"
+        );
+
+        let said = battery.after_replacement(&mut sys, &incoming.display().to_string());
+        assert!(
+            said.iter().any(|l| l.contains("FAILED")),
+            "an unwritable rescue was silent: {said:?}"
+        );
+        assert!(
+            !sram_file::srm_path_for(&outgoing).exists(),
+            "the fixture's directory is not actually unwritable, so nothing here is a failure"
+        );
+
+        // The disk comes back. The retry rides the ordinary per-frame tick, so nothing has to remember
+        // to ask for it.
+        std::fs::create_dir_all(&gone).expect("make the directory the write needs");
+        let lines = battery.tick(&mut sys);
+        assert!(
+            lines.iter().any(|l| l.contains("retry")),
+            "the retry never happened: {lines:?}"
+        );
+        let on_disk = std::fs::read(sram_file::srm_path_for(&outgoing))
+            .expect("the held bytes never reached the outgoing cartridge's file");
+        assert_eq!(
+            on_disk, rescued,
+            "the retried bytes are not the ones the guest wrote"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

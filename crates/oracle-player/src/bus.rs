@@ -2771,6 +2771,113 @@ pub mod pumped {
     0 unused symbols
 ";
 
+    /// ★ **A CLIENT's ROM reload rescues the battery to the outgoing cartridge's file — the same door.**
+    ///
+    /// `bus::one_door`'s twin drives this window's own gesture; this one drives a real client over a real
+    /// socket. Both end at the same `Battery::after_replacement` inside the same `drain`, and the point of
+    /// having both is that they are the two producers whose timings differ: a client's command is answered
+    /// by the pump immediately after this iteration's carry, this window's was issued a frame earlier. A
+    /// rescue wired to one of them and not the other is exactly what "the two cannot answer one client
+    /// differently about one file in one millisecond" forbids, and it would look correct in whichever test
+    /// existed.
+    ///
+    /// ⚑ **`emulator/reload_rom` says nothing about a `.srm` and nothing here asks it to.** The engine
+    /// zeroes the buffer (`System::load_rom`) and the reply is unchanged; the file is this **window's**,
+    /// and the repair is the window's, in the same function as the four the drain already performed.
+    ///
+    /// Mutation proven red: make `Battery::after_replacement` a no-op for a client-driven replacement by
+    /// deleting the `battery.after_replacement(...)` line from `drain`'s `rom_changed` arm.
+    #[test]
+    fn a_client_rom_reload_rescues_the_pending_battery_to_the_outgoing_cartridges_file() {
+        use oracle_core::m68000::bus68k::Bus68k;
+
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        );
+        let launched = std::env::temp_dir().join(format!("pb-launched-{stamp}.bin"));
+        let reloaded = std::env::temp_dir().join(format!("pb-reloaded-{stamp}.bin"));
+        std::fs::write(&launched, oracle_core::testrom::build()).expect("write the launched ROM");
+        std::fs::write(&reloaded, oracle_core::testrom::build()).expect("write the reloaded ROM");
+        assert_ne!(launched, reloaded, "the two fixture paths must differ");
+        let outgoing = oracle_frontend::sram_file::srm_path_for(&launched);
+        let incoming = oracle_frontend::sram_file::srm_path_for(&reloaded);
+        assert!(
+            !outgoing.exists(),
+            "the outgoing save file already exists, so a later read proves nothing"
+        );
+
+        let (mut machine, mut bus, socket) = served(
+            "reload-battery",
+            MachineInfo {
+                rom_path: Some(launched.display().to_string()),
+                ..MachineInfo::default()
+            },
+            true,
+        );
+        let mut cache = Cache::of(None, launched.display().to_string());
+
+        // The guest saves. `sram_used` latches only on a real cartridge-bus write — `load_sram` is
+        // documented as not being one — so poking the buffer here would leave nothing pending and the
+        // rescue below would be a rescue of nothing.
+        {
+            let sys = machine.system_mut();
+            sys.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01);
+            sys.mega_bus(&mut ()).write8(0x20_0001, 5, 0x7E);
+            assert!(
+                sys.sram_used() && sys.sram_dirty(),
+                "the fixture's guest write did not latch"
+            );
+        }
+        let saved = machine.system().sram().to_vec();
+
+        let path = reloaded.display().to_string();
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok("emulator/reload_rom", json!({"path": path}))
+        });
+
+        let (mut paused, mut totals) = (true, Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's reload never reached the window",
+            |t, _| t.rom_path > 0,
+        );
+        let reply = client.join().expect("the client thread");
+        assert_eq!(
+            reply["reloaded"],
+            json!(true),
+            "the client's reload did not happen, so nothing below is about a rescue"
+        );
+
+        let on_disk = std::fs::read(&outgoing).unwrap_or_else(|e| {
+            panic!(
+                "the outgoing cartridge's `.srm` ({}) was never written ({e}) — a client's reload \
+                 destroyed a save this window would have rescued from its own",
+                outgoing.display()
+            )
+        });
+        assert_eq!(
+            on_disk, saved,
+            "the rescued bytes are not the ones the guest wrote"
+        );
+        assert!(
+            !incoming.exists(),
+            "the outgoing game's battery data was written into the INCOMING game's file"
+        );
+
+        let _ = std::fs::remove_file(&launched);
+        let _ = std::fs::remove_file(&reloaded);
+        let _ = std::fs::remove_file(&outgoing);
+        let _ = std::fs::remove_file(&incoming);
+    }
+
     /// ★ **A client's `emulator/reload_rom` re-derives the window's symbol cache.**
     ///
     /// This is `rom_changed`'s **only** unique job in this crate, and finding that out is most of what the
@@ -3318,5 +3425,395 @@ pub mod pumped {
         );
 
         let _ = std::fs::remove_file(&lst);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ S3 — one door for a machine replacement, and the battery across it
+// ---------------------------------------------------------------------------------------------------
+
+#[cfg(all(test, unix))]
+mod one_door {
+    use super::*;
+    use crate::battery::Battery;
+    use crate::machine::Machine;
+    use oracle_core::m68000::bus68k::Bus68k;
+    use oracle_core::system::System;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    /// A private directory for one row's cartridges and their save files. Two ROM files with the **same
+    /// bytes and different names**, because a reload between two identical paths would make every
+    /// `.srm`-path assertion below two spellings of one string agreeing with itself.
+    struct Cartridges {
+        dir: PathBuf,
+        a: PathBuf,
+        b: PathBuf,
+    }
+
+    impl Cartridges {
+        fn new(tag: &str) -> Self {
+            let stamp = format!(
+                "{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let dir = std::env::temp_dir().join(format!("oracle-s3-{tag}-{stamp}"));
+            std::fs::create_dir_all(&dir).expect("make the fixture directory");
+            let (a, b) = (dir.join("a.bin"), dir.join("b.bin"));
+            let rom = oracle_core::testrom::build();
+            std::fs::write(&a, &rom).expect("write cartridge a");
+            std::fs::write(&b, &rom).expect("write cartridge b");
+            assert_ne!(a, b, "the two fixture cartridges must have different paths");
+            Cartridges { dir, a, b }
+        }
+
+        fn srm(&self, rom: &std::path::Path) -> PathBuf {
+            oracle_frontend::sram_file::srm_path_for(rom)
+        }
+    }
+
+    impl Drop for Cartridges {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A paused player over cartridge `a`, with no socket — every gesture below is **this window's own**,
+    /// which is the half of `drain` that had no report at all before S3.
+    ///
+    /// Paused because `emulator/reload_rom` is paused-only (§6's run-control state rule) and because a
+    /// running fixture would emulate frames between the assertions and move things nothing here asked to
+    /// move.
+    fn window(carts: &Cartridges) -> (Machine, Bus, Battery, String) {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = Bus::new(
+            machine.system_mut(),
+            MachineInfo {
+                rom_path: Some(carts.a.display().to_string()),
+                ..MachineInfo::default()
+            },
+            true,
+            None,
+        );
+        let (battery, _) = Battery::open(&carts.a.display().to_string(), machine.system_mut());
+        (machine, bus, battery, carts.a.display().to_string())
+    }
+
+    /// **Make the guest save.** `sram_used` latches only on a real write through the cartridge bus, and
+    /// `load_sram` deliberately does not set it (`System::load_sram`'s own doc), so a fixture that poked
+    /// the buffer would leave `Battery::owes` false and every rescue below would be a rescue of nothing.
+    ///
+    /// The two writes are `oracle-core`'s own `sram_used_latches_on_first_write_and_survives_clear_dirty`:
+    /// enable SRAM at `$A130F1`, then write the odd byte lane.
+    fn guest_saves(sys: &mut System, byte: u8) {
+        sys.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01);
+        sys.mega_bus(&mut ()).write8(0x20_0001, 5, byte);
+        assert!(
+            sys.sram_used() && sys.sram_dirty(),
+            "the fixture's guest write did not latch — the battery has nothing to rescue and every \
+             assertion about one is vacuous"
+        );
+    }
+
+    /// One turn of `Loop::iterate`'s machine half, paused: no frame, just the drain.
+    fn turn(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        symbols: &mut Option<SymbolTable>,
+        rom_path: &mut String,
+        battery: &mut Battery,
+    ) -> Drained {
+        drain(machine, bus, symbols, rom_path, battery, true)
+    }
+
+    /// ★ **The window's own gesture gets the drain's repairs, and the pump reports nothing about it.**
+    ///
+    /// This is the defect S3 opened on, asserted on the **derived state** rather than on a flag: the
+    /// symbol cache and the ROM-path row are the two things `drain` re-derives on `rom_changed`, and they
+    /// are seeded WRONG here on purpose so that "it was repaired" and "it was already right" are
+    /// different outcomes.
+    ///
+    /// The second assertion is the sharp one and it is the whole finding: `report.rom_changed` is
+    /// **false**. `Host::pump` snapshots the generation counters inside itself, so a change made by a
+    /// `Host::call` between two drains is invisible to it — the repair fires because
+    /// [`Bus::take_own`] saw it, and for no other reason.
+    ///
+    /// Mutation proven red: delete `|| own.rom_changed` from the two conditions in [`drain`].
+    #[test]
+    fn a_window_gesture_is_repaired_by_the_drain_and_the_pump_reports_nothing_about_it() {
+        let carts = Cartridges::new("window-gesture");
+        let (mut machine, mut bus, mut battery, rom) = window(&carts);
+
+        // Seeded wrong, both of them, so the repair has something to do.
+        let mut symbols: Option<SymbolTable> = None;
+        let mut rom_path = String::from("a path this window was never launched with");
+
+        // A quiet drain first: nothing has happened, so nothing may be repaired. Without this the row
+        // cannot tell "the repair fired for the gesture" from "the repair fires every iteration".
+        let quiet = turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        assert!(
+            !quiet.rom_path && !quiet.timeline,
+            "an idle drain repaired something, so the row below witnesses nothing"
+        );
+        assert_eq!(
+            rom_path, "a path this window was never launched with",
+            "…and left the seeded value alone"
+        );
+
+        // The gesture. `emulator/reset` because it moves three of `rom_changed`'s coordinates at once
+        // with no file and no socket in the way.
+        let a = bus.call(machine.system_mut(), "emulator/reset", &json!({}));
+        assert!(!a.is_err(), "emulator/reset was refused by the fixture");
+        assert!(
+            bus.pending_own().rom_changed,
+            "the gesture recorded nothing, so the drain below has nothing to act on"
+        );
+
+        let d = turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        assert!(
+            !d.report.rom_changed,
+            "⚑ the pump reported the window's own gesture — if this ever becomes true, `SelfInflicted` \
+             is redundant and should go; until then it is the only witness there is"
+        );
+        assert!(d.own.rom_changed, "the drain must carry what it acted on");
+        assert!(
+            d.timeline && d.symbols && d.rom_path,
+            "a window-driven machine replacement got fewer repairs than a client-driven one: \
+             timeline={} symbols={} rom_path={}",
+            d.timeline,
+            d.symbols,
+            d.rom_path
+        );
+        assert_eq!(
+            rom_path, rom,
+            "the ROM-path row still names a cartridge this window was never launched with"
+        );
+
+        // …and the accumulator was cleared, or every iteration after this one repeats all of it —
+        // rebuilding the audio ring sixty times a second after one palette reset.
+        assert_eq!(
+            bus.pending_own(),
+            SelfInflicted::default(),
+            "the drain did not take the window's own changes, so they will be repaired again forever"
+        );
+        let again = turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        assert!(
+            !again.timeline && !again.rom_path,
+            "the repair repeated on the next iteration"
+        );
+    }
+
+    /// ★ **A window-driven ROM reload rescues the battery to the OUTGOING cartridge's file.**
+    ///
+    /// The assertion is on the **bytes on disk**, at the path belonging to the game being put away — the
+    /// failure `oracle-frontend`'s reload block exists to make impossible, in its own words: *"the new
+    /// game would write its battery data into the old game's file."*
+    ///
+    /// ⚑ The frame boundary between the gesture and the drain is the point. A window gesture is issued in
+    /// `build_ui`, which is **after** that iteration's drain, so the carry that rescues it was taken one
+    /// drain earlier. That is what the `!own.rom_changed` gate in [`drain`] protects: without it the drain
+    /// answering the gesture re-carries the already-zeroed buffer and the bytes are gone.
+    ///
+    /// Mutations proven red: (a) drop the `!own.rom_changed` gate on the carry; (b) make
+    /// `Battery::after_replacement` write to `self.path` instead of the carried one.
+    #[test]
+    fn a_window_reload_rescues_the_battery_to_the_outgoing_cartridges_file() {
+        let carts = Cartridges::new("window-reload");
+        let (mut machine, mut bus, mut battery, _rom) = window(&carts);
+        let mut symbols: Option<SymbolTable> = None;
+        let mut rom_path = carts.a.display().to_string();
+
+        guest_saves(machine.system_mut(), 0x5A);
+        let saved = machine.system().sram().to_vec();
+        assert!(
+            !carts.srm(&carts.a).exists(),
+            "the outgoing save file already exists, so a later `read` proves nothing"
+        );
+
+        // Iteration N's drain: this is the carry that has to survive.
+        turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        // Iteration N's `build_ui`: the gesture.
+        let a = bus.call(
+            machine.system_mut(),
+            "emulator/reload_rom",
+            &json!({"path": carts.b.display().to_string()}),
+        );
+        assert!(
+            !a.is_err(),
+            "the fixture's reload was refused — nothing below is a test"
+        );
+        assert!(
+            machine.system().sram().iter().all(|b| *b == 0),
+            "anti-vacuity: `load_rom` must have zeroed the buffer, or the rescue below is rescuing \
+             bytes that were never in danger"
+        );
+
+        // Iteration N+1's drain: the repair.
+        let d = turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        assert!(
+            !d.battery.is_empty(),
+            "the drain said nothing about the save file it had just rewritten"
+        );
+        let on_disk = std::fs::read(carts.srm(&carts.a))
+            .expect("the outgoing cartridge's `.srm` was never written — the guest's save is gone");
+        assert_eq!(
+            on_disk, saved,
+            "the rescued bytes are not the ones the guest wrote"
+        );
+        assert!(
+            !carts.srm(&carts.b).exists(),
+            "the outgoing game's battery data was written into the INCOMING game's file"
+        );
+        assert_eq!(
+            rom_path,
+            carts.b.display().to_string(),
+            "the window is still keyed to the cartridge it just put away"
+        );
+    }
+
+    /// ★ **A reload applies the incoming cartridge's own `.srm`**, because `load_rom` zeroes the buffer it
+    /// just sized from the new header.
+    ///
+    /// The discriminant is `System::sram_used`, so the anti-vacuity clause is the one that matters: the
+    /// buffer is asserted zero immediately after the reload and non-zero after the drain, with the two
+    /// compared against a byte the fixture chose.
+    #[test]
+    fn a_reload_applies_the_incoming_cartridges_own_battery_image() {
+        let carts = Cartridges::new("incoming-srm");
+        let (mut machine, mut bus, mut battery, _rom) = window(&carts);
+        let mut symbols: Option<SymbolTable> = None;
+        let mut rom_path = carts.a.display().to_string();
+
+        // Cartridge b already has a save. Written through the same primitive the window writes with.
+        let bs_save = vec![0xC3u8; 0x40];
+        oracle_frontend::sram_file::save_srm(&carts.srm(&carts.b), &bs_save)
+            .expect("write the incoming cartridge's save");
+
+        turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        let a = bus.call(
+            machine.system_mut(),
+            "emulator/reload_rom",
+            &json!({"path": carts.b.display().to_string()}),
+        );
+        assert!(!a.is_err(), "the fixture's reload was refused");
+        assert!(
+            machine.system().sram()[..0x40].iter().all(|b| *b == 0),
+            "anti-vacuity: the buffer must be zero before the repair, or `0xC3` below proves nothing"
+        );
+
+        turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        assert_eq!(
+            &machine.system().sram()[..0x40],
+            &bs_save[..],
+            "the incoming cartridge's battery image never reached the machine — the game boots with \
+             no save"
+        );
+    }
+
+    /// ★ **A reset does NOT rewind the live battery**, and that is why the discriminant is
+    /// `System::sram_used` rather than the ROM path.
+    ///
+    /// All three of `rom_changed`'s producers reach the same branch. A soft reset preserves SRAM contents
+    /// as on real hardware, so re-reading the on-disk image there would replace what the guest is holding
+    /// with whatever was last written — which, inside the autosave debounce, is *older*.
+    ///
+    /// The fixture makes that the loud case: disk holds `0x11`, the guest is holding `0x5A`, and they are
+    /// asserted different from each other first.
+    #[test]
+    fn a_reset_does_not_rewind_the_live_battery_to_the_file() {
+        let carts = Cartridges::new("reset-keeps");
+        // Disk first, so `Battery::open` applies it and the file genuinely exists.
+        oracle_frontend::sram_file::save_srm(&carts.srm(&carts.a), &[0x11u8; 0x40])
+            .expect("write the cartridge's older save");
+        let (mut machine, mut bus, mut battery, _rom) = window(&carts);
+        let mut symbols: Option<SymbolTable> = None;
+        let mut rom_path = carts.a.display().to_string();
+        assert_eq!(
+            machine.system().sram()[0],
+            0x11,
+            "the fixture's older save never reached the machine"
+        );
+
+        guest_saves(machine.system_mut(), 0x5A);
+        assert_ne!(
+            machine.system().sram()[0],
+            0x11,
+            "the guest's newer byte and the disk's older byte must differ, or this row cannot tell a \
+             rewind from a no-op"
+        );
+
+        turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        let a = bus.call(machine.system_mut(), "emulator/reset", &json!({}));
+        assert!(!a.is_err(), "the fixture's reset was refused");
+        let d = turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        assert!(d.rom_path, "a reset must reach the cartridge-keyed repairs");
+        assert_eq!(
+            machine.system().sram()[0],
+            0x5A,
+            "a soft reset rewound the live battery to the on-disk image — the guest's save is gone \
+             and the machine is running the older one"
+        );
+        assert!(
+            machine.system().sram_used(),
+            "…and `sram_used` must survive a reset, or the branch above was taken for the wrong reason"
+        );
     }
 }
