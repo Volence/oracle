@@ -2736,3 +2736,60 @@ committed baseline:** the check disabled → 3 red / 1 green (and the failure pr
 reply verbatim: `reloaded: true, symbolsDropped: false`, no caveat — the exact artifact that misled the
 seat); the caveat made unconditional → the quiet control alone red; row comparison weakened to a count
 comparison → the moved-address row alone red.
+
+
+## Moved from OVERSEER.md 2026-09-05 — the CLOSED `step` count-bounds entry (boot-read bound)
+
+- **▶ ~~LIVE~~ CLOSED 2026-09-04 by the CR-STEP-SHORTFALL parcel — `emulator/step` DID NOT ENFORCE EITHER
+  OF `count`'s BOUNDS, AND ITS OWN COMMENT CLAIMED IT TRANSCRIBED THEM.** Found because §11.33's table row
+  mentions a `count` ceiling the CR summary did not, so the adopted text was read rather than the relay.
+  **Fixed:** `hex::parse_count("count", v, 0, u64::MAX)` → `(…, 1, 1_000_000)`, the comment rewritten to
+  carry the archaeology instead of the superseded claim, and both ends asserted **from the wire** by
+  `tests/step.rs::count_zero_is_refused_because_the_fragments_floor_is_one` and
+  `::a_count_above_the_fragments_ceiling_is_refused_not_clamped` — the second with a control proving
+  `1000000` itself is still accepted, so a handler that refused everything cannot pass it. Both proved
+  red-first by reverting the bounds on disk.
+  **The fragment WE ALREADY VENDOR** (`tests/contract/bus-protocol.schema.json`, clean at `872bebb`) says
+  `count`: `minimum: 1`, `maximum: 1000000`, and its own description says *"a value outside is REFUSED with
+  `-32602`, never clamped … Zero was refused rather than clamped because the two servers disagreed on it and
+  a step of nothing is a status call spelt wrong."*
+  **The handler passes `hex::parse_count("count", v, 0, u64::MAX)`** (`engine.rs:3059`) under a comment
+  asserting *"`minimum: 0` is the fragment's floor and `u64::MAX` is its stated absence of a ceiling. Neither
+  is a policy this server chose; both are transcribed."* **Both halves are false against the vendored copy.**
+  **MEASURED LIVE, not read off the source:** `step {count: 0}` → **accepted**, replies `pc` unchanged;
+  `step {count: 1000001}` → **accepted and ran** (frame 240 → 324). Both must be `-32602`.
+  ⚑ **AND THE ARCHAEOLOGY UPGRADES THIS FROM AN OVERSIGHT TO SOMETHING WORSE — the comment was EXACTLY
+  TRUE when written.** Before `0a4313e` (2026-08-25) the fragment really did say `minimum: 0`, no maximum,
+  and its `$comment` said so in as many words: *"`count` carries no lower bound above 0, no upper bound and
+  no default, because §6's row states none … Registered as a defect (audit D-02)."* `0a4313e` closed D-02
+  via §11.24 and the bound became `≥1 / def 1 / ≤1000000`. **So the re-vendor landed and the server did
+  not move with it — for ten days.**
+  ⚠ **A TEST ENSHRINED THE SUPERSEDED READING, AND IT WAS A TRAP FOR THE IMPLEMENTER.**
+  `tests/step.rs::count_zero_retires_nothing_and_moves_no_clock` asserted `count: 0` is a **legal request**,
+  under a doc comment saying *"The fragment's `minimum` is `0`, so a zero count is a legal request"*; the
+  neighbouring `an_omitted_count_is_one_instruction…` cited D-02's *"no minimum above 0 and no ceiling"*.
+  **Both were correct when written and were assertions against a superseded contract.** They were
+  UPDATED, not obeyed — an agent that met a red row there and "fixed" the handler back would have restored
+  the defect while making the suite green.
+  ⚑ **AND THERE WERE FOUR, NOT TWO — the third was invisible to a grep for the rot's own words.**
+  `step_reports_the_bare_label_and_the_displacement_beside_it` used `count: 0` as a *device*, to read the
+  symbol fields at the current pc without moving — literally the *"status call spelt wrong"* the amended
+  fragment names — while saying nothing about bounds anywhere in its text. It now reaches the same exact
+  hit by stepping the `jsr` at `PROF_MID`. `a_negative_or_non_numeric_count_is_refused` carried the rot in
+  its doc comment only (*"the fragment types it `integer, minimum 0`"*), and `count_is_not_a_step_family_param`
+  was checked and is clean. **A superseded contract is used, not only cited** — grep the assertions for the
+  superseded VALUE as well as the doc comments for its reasoning.
+  ⚑ **The durable shape, and it is the sharpest thing this session found: handler, comment and test were
+  MUTUALLY CONSISTENT and all three wrong.** Nothing in this repo could surface it, because every artifact
+  agreed with every other and the only disagreeing party was a vendored JSON file nobody re-reads against
+  the code. **A re-vendor is a SILENT contract change unless something checks the server against the new
+  text** — that is bar 8's shared frame with the frame supplied by a document instead of by a person.
+  ▶ **Folded into the CR-STEP-SHORTFALL parcel** — same handler, same fragment, and serving `stepped` while
+  leaving the bounds unenforced would ship a method half-conformant to the row being amended. **Landed
+  there, in one commit with the serve and the re-vendor.**
+  ⚑ **MEASURED, and it is the register's own claim turned into a number: the conformance suite stayed
+  FULLY GREEN with the whole `stepped` feature deleted.** With the emission stubbed out on disk,
+  `tests/schema_conformance.rs` reported **23 passed, 0 failed** while `tests/step.rs` went red on four
+  rows. The key is optional and `required` names only `pc`, so the schema can witness that `stepped` is
+  *declared* and never that it is *emitted* — the same blindness as the `count` bounds, pointed the other
+  way, and now recorded with a run behind it rather than an argument.
