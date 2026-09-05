@@ -4,49 +4,51 @@
 camera positions on 2026-09-05, entirely through pure reads: no pause, no write, no resume. His game was
 frame 7019 before and after every read at position 1, and 7186 at position 2, `running: false` throughout.
 
-## THE CONCLUSION: THE FLOOR IS PAINTED. The load-bearing argument is a SIGN, not a magnitude.
+## THE CONCLUSION, FROM THE TABLE: A PER ROW CORRECTION OVER A FAN DRAWN IN THE ART
 
-*Reached 2026-09-05 after the original verdict was suspended and rebuilt. Read the suspension history below
-before citing anything else in this file; four claims in it were withdrawn by their own author.*
+*Reached 2026-09-05 from the H-scroll table itself, after two earlier conclusions in this file were wrong.
+Everything before this section is history. Read the withdrawal ledger before citing any of it.*
 
-**The fan is drawn into the floor art. Nothing shears it afterwards.**
+**The floor is a fan drawn into the art AND a per row horizontal correction applied on top, and the
+correction's gain tracks the camera, which is what keeps the convergence under the screen.** That is the
+technique aeon built. The owner said so from his first sentence and was right every time.
 
-### The argument that carries the conclusion
+### The measurement
 
-Measure the plank lean twice: once in the **artwork alone**, reconstructed from tiles and nametable with no
-scroll applied at all, and once on the **actually drawn pixels**, which include any mid-frame effect.
+`emulator/read_vdp_registers` on the live window gave `raw[0x0D] = 0x3F`, so the H-scroll table base is
+**`0xFC00`**. Indexing both held floor captures there, plane B:
 
-| | from the ART alone | from the DRAWN pixels |
-|---|---|---|
-| far left | -8 | -7.6 |
-| left | -4 | -3.6 |
-| centre | 0 | 0 |
-| right | +6 | +4.8 |
-| far right | +10 | +8.4 |
+| | floor entries, line 176 to 223 | total | k |
+|---|---|---|---|
+| position 1 | -4 to -6 | -2 px over 47 rows | **-0.043 px/row** |
+| position 2 | -32 to -47 | -15 px over 47 rows | **-0.319 px/row** |
 
-**A per row correction ADDS shear. It cannot subtract it.** So if one were present on top of the painted
-fan, the drawn fan would be **stronger** than the art fan. It is not. **That is the whole argument, and it
-depends on a sign rather than on any number being right.**
+- **Line to line deltas across the floor: -1 and 0.** Sub cell, not multiples of 8.
+- **Line to line deltas above the floor: 0 only.**
+- The table varies from line 1, so it is a full per line table.
+- ⚑ **k is not constant between camera positions: seven times larger at position 2.** A painted fan alone
+  requires k = 0. **A screen anchored apex requires k to track the camera, and it does.**
 
-⚠ **The magnitude agreement is CORROBORATION, not load-bearing, and the distinction is aeon's.** The two
-figures were measured over 20 lines and 4 lines respectively and compared after normalising to pixels per 8
-scanlines. The reading *"marginally weaker, consistent with perspective scaling"* depends on that
-normalisation being right. **The sign argument does not.** Do not cite the magnitudes as the proof.
+⚠ `raw[0x0B]` read **0x00** (HSCR 0, whole plane), but at **frame 22514 with the machine RUNNING**, which is
+not the floor scene. The game evidently sets the mode per scene. A clean `$0B` wants him paused at the floor;
+the table's own contents are what carry the finding here.
 
-### Scope of an earlier withdrawal, stated so it neither over- nor under-reaches
+### ⚑ THREE NULL INSTRUMENTS, READ AS POSITIVE, IN ONE INVESTIGATION
 
-The art-side **vanishing point** figure (plane x 141) was withdrawn: its separator colour came from a
-heuristic that chose a **different palette index per row**. **That withdrawal does not reach the slopes
-above.** Those compare sub-rows 0 and 4 of the same `planeRow 31`, using the **same** index for both, so the
-differences are internally consistent even where the absolute identification was not.
+This is the durable lesson and it outranks the finding.
 
-### What remains, and it is a confirmation rather than a question
+1. **The cell phase**, offered as excluding a per line fan. It is computed from `pixel_attribution`, which
+   resolves every dot against **one** VDP state and therefore cannot see a per line table at all.
+2. **The art versus drawn comparison**, offered as excluding a per row correction. A per row ramp adds the
+   **same** lean to every board, so the **spread** of leans is the art's alone at any gain. It measured the
+   spread. It was blind by construction.
+3. **The same comparison again, worse:** "centre" was identified as the board that did not lean, which
+   re-centres the data and subtracts precisely the quantity being hunted.
 
-`emulator/read_vdp_registers` is now served (§11.41), so `raw[0x0B]` bits 0-1 name the horizontal scroll mode
-directly. Reading it requires a machine in this scene, which requires a save state, which requires **one
-keystroke in the owner's window that no tool on this host can supply** (no bus method saves or loads a
-state, `checkpoint` is in-process, `press` is pad input, and key injection is unavailable on this Wayland
-session). **It is a ten second confirmation whenever he saves, not a blocker.**
+**The second instrument's blindness had already been diagnosed in this very file, hours earlier, and applied
+to a different question, and never carried back to the claim that depended on it.** Diagnosing an
+instrument's reach does not retract the conclusions already built on it. Those have to be walked back by
+hand, one at a time, and nothing prompts you to do it.
 
 ## ⚠ HISTORY: THE ORIGINAL CONCLUSION WAS SUSPENDED, AND THE ERROR WAS MINE
 
