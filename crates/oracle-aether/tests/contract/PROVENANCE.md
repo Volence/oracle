@@ -35,27 +35,49 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = c5638e6e1f7f4b6d5ded3d3f12df07a50ad15842
-    pin.blob     = 856e5b31080a7c90b17b681f615850d6330df955
-    pin.bytes    = 356644
+    pin.revision = 887d01c71190fee530bea483a428a53657e1cb6d
+    pin.blob     = 92e95c22a7139fe507f45c23c080111c664db1a5
+    pin.bytes    = 360370
 
-    pin.vectors.revision = c5638e6e1f7f4b6d5ded3d3f12df07a50ad15842
-    pin.vectors.blob     = 75927e4f62ff3dcc2ba608c7c65cf0d06d68e541
-    pin.vectors.bytes    = 128816
+    pin.vectors.revision = 887d01c71190fee530bea483a428a53657e1cb6d
+    pin.vectors.blob     = 136bb7163b5a8a99eca2308d59fd189d5b150da6
+    pin.vectors.bytes    = 133091
 
 ## Current copy — the schema
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`c5638e6e1f7f4b6d5ded3d3f12df07a50ad15842`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor c5638e6 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `c5638e6e` at the time, so recipe and tip coincide here for the second re-vendor running — see the note under the vectors). **68** method fragments (the `methods` object carries 69 keys, one of which is a `$comment`); all 68 declare `params`, all 68 close it with `unevaluatedProperties: false` (handshake exempt), and all 68 declare `result`; 19 `$defs`; **4** event fragments (the `events` object carries 5 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **nine leaf paths added, one relocated, zero values changed** (3011 → 3019 leaves), derived by flattening both copies to leaf paths and differencing the sets: `type`/`minimum`/`description` for a `hitsDropped` property plus its entry in `required`, on `emulator/restore`'s **result** and on the `emulator/romReloaded` **event's** params (4 × 2); the relocation is `restore.result.$ref` → `restore.result.allOf[0].$ref`, same value, which is how a bare `$ref` fragment makes room for properties of its own. That is §11.39 exactly and nothing else. |
-| Last commit that touched the schema | **`c5638e6e1f7f4b6d5ded3d3f12df07a50ad15842`** — *"protocol: section 11.39, CR-P adjudicated: the epoch rule enumerated over restore and the romReloaded event; record versus aggregate ratified; item 28 extended; four vectors"* (2026-09-05). |
-| Git blob | `856e5b31080a7c90b17b681f615850d6330df955` |
-| SHA-256 | `d593bc6b48c5157fcb5dcbc07c122b9bd5d20939eb4333e77c1e2332adc91d1b` |
-| Bytes | 356644 |
+| Contract repo revision | **`887d01c71190fee530bea483a428a53657e1cb6d`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 887d01c7 origin/main` was **run**, not assumed (it exited 0). The tip and the recipe **DIVERGED** again here: `origin/main` was `40dfd05f` when these bytes were taken, and `40dfd05f` wrote none of them. **69** method fragments (the `methods` object carries 70 keys, one of which is a `$comment`); all 69 declare `params`, all 69 close it with `unevaluatedProperties: false` (handshake exempt), and all 69 declare `result`; 19 `$defs`; **5** event fragments (the `events` object carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **28 leaf paths added, zero removed, zero values changed** (3019 → 3047 leaves), derived by flattening both copies to leaf paths and differencing the sets. Exactly **two** fragments are new and no existing one moved: `methods["emulator/read_vdp_registers"]` (19 leaves — §11.41, the row this commit serves) and `events["emulator/machineReplaced"]` (9 leaves — §11.40 / CR-Q, which this server does **not** emit). |
+| Last commit that touched the schema | **`887d01c71190fee530bea483a428a53657e1cb6d`** — *"protocol: section 11.41, CR-R adjudicated: read_vdp_registers leaves the BLOCKED set, raw[24] plus status{raw}, decoded struck; item 29 the peek rule; five vectors"* (2026-09-05). |
+| Git blob | `92e95c22a7139fe507f45c23c080111c664db1a5` |
+| SHA-256 | `d87a0cc1b35beee2efaa3d7df4ae02c0f9d3b1cd2e69fb3c3ded0892444e85c1` |
+| Bytes | 360370 |
 | Vendored on | 2026-09-05 |
 
-> **⚑ This re-vendor moves BOTH blobs, as the last one did, and for the same reason: §11.39 adds
+> **⚑ This re-vendor moves BOTH blobs, and it carries a SECOND amendment's fragment that this server does
+> not serve.** The dispatch that ordered it named §11.41 (CR-R) and named one file. The bytes at
+> `887d01c7` carry §11.41 **and** §11.40 (CR-Q): a whole new event fragment, `emulator/machineReplaced`,
+> with four vectors. That is stated here rather than absorbed, because a re-vendor whose delta is larger
+> than its dispatch said is exactly the case the structural diff exists to surface.
+>
+> **The §11.40 half is inert here and that is checked, not assumed.** `emulator/machineReplaced` is a
+> WINDOW gesture's event: no `METHODS` row produces it, `git grep machineReplaced -- crates/` finds
+> nothing outside the vendored artifacts, and the coverage report's event line is printed rather than
+> pinned — so an event fragment for something this server never emits adds a schema this suite will never
+> exercise, and breaks nothing. The one direction it could have bitten (an added `required` on an event
+> this server DOES emit, which is what §11.39's `romReloaded` leaf did last time) is not in this delta:
+> `events["emulator/romReloaded"]` is byte-identical across the two copies.
+>
+> **The §11.41 half is the one that had to land in this commit.** `read_vdp_registers.result` REQUIRES
+> `raw` and `status`, and the fragment is the precondition for the handler under §8 item 20 — while a
+> fragment with no `METHODS` row would put the name in `SCHEMATIZED_NOT_ADVERTISED`, which is pinned by
+> name. There is no red-free ordering in either direction, so the serve and the re-vendor are one commit.
+
+*(Retired one step, kept because it is the previous re-vendor's own record. Everything below this line
+until the vectors table describes `c5638e6e`, not the current copy.)*
+
+> **⚑ This re-vendor moved BOTH blobs, as the one before it did, and for the same reason: §11.39 adds
 > REQUIRED leaves, and a required leaf is exactly what a vector can witness.** Four vectors — a
 > `restore` pass and a `restore` fail on absence, an event pass and an event fail on absence. So both
 > files were re-copied from the object store at `c5638e6`, both `pin.*` triples moved, and both
@@ -96,22 +118,32 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/tests/vectors.json` |
-| Contract repo revision | **`c5638e6e1f7f4b6d5ded3d3f12df07a50ad15842`** (2026-09-05) — the recipe (`git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`) was run for this path in its own right and answered `c5638e6`, the same commit the schema path answered. §11.39 adds **four** cases — two on `emulator/restore` (`hitsDropped: 3` pass, and a `fail` on the empty document, i.e. on the key being **absent**) and two on the `emulator/romReloaded` **event** (a pass carrying `path` + `hitsDropped: 2`, and a `fail` carrying `path` alone). **276 cases** (`cases[]`, up from 272), of which **164** are `expect: "fail"` and **112** `expect: "pass"`; naming **39** distinct methods (up from 37 — `emulator/restore` and `emulator/romReloaded` had no vectors at all before this), of which **10** are `emulator/lookup_equate`. **10** cases now carry `group: "events"`, up from 8. `$comment`, `envelope`, `eventEnvelope` and `specExamples` are byte-identical, and the prefix of 272 cases is unchanged. Every figure re-derived by parsing the bytes written in this commit. |
-| Git blob | `75927e4f62ff3dcc2ba608c7c65cf0d06d68e541` |
-| SHA-256 | `e5e104e24f646d160f7a96c845a6c2ba0d3f220491c5a58edbc33dc5970b1252` |
-| Bytes | 128816 |
+| Contract repo revision | **`887d01c71190fee530bea483a428a53657e1cb6d`** (2026-09-05) — the recipe (`git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`) was run for this path in its own right and answered `887d01c7`, the same commit the schema path answered. **285 cases** (`cases[]`, up from 276), of which **169** are `expect: "fail"` and **116** `expect: "pass"`; naming **41** distinct methods (up from 39), of which **10** are `emulator/lookup_equate`. **14** cases carry `group: "events"`, up from 10. All 276 previous cases are present and unchanged: nine are ADDED and zero removed, compared as whole documents. §11.41 contributes **five** on `emulator/read_vdp_registers` (a `params` pass on `{}`, a `params` fail on `{"reg": 4}`, a `result` pass, a `result` fail on 23 entries, a `result` fail on a `status` key beyond `raw`) and §11.40 contributes **four** on the `emulator/machineReplaced` event. `$comment`, `envelope`, `eventEnvelope` and `specExamples` are byte-identical. ⚑ The five §11.41 cases are **inserted at index 111**, beside the other §6 read rows, not appended — so "the leading prefix is unchanged" is FALSE here at 111 of 276, and the honest statement is the set comparison above rather than a prefix length. Every figure re-derived by parsing the bytes written in this commit. |
+| Git blob | `136bb7163b5a8a99eca2308d59fd189d5b150da6` |
+| SHA-256 | `0cde48d1283ff5110704d90d3fafc8de0d775c58c65b9aec56384b86b19acfdf` |
+| Bytes | 133091 |
 | Vendored on | 2026-09-05 |
 
-> **⚑ The tip and the recipe AGREED, for both paths, for the second re-vendor running** — after three of
-> the four before that where they did not. `origin/main` was `c5638e6e` when this was taken and `git log
-> -1 --format=%H origin/main -- <path>` answered `c5638e6e` for **both** files: the adoption commit is
-> also the commit that wrote both sets of bytes, because §11.39's ruling, its schema leaves and its four
-> vectors landed together. The recipe was still run **once per path** rather than assumed to give one
-> answer for two files — the point of the recipe is that agreement is a result, not a premise, and the
-> re-vendors where the tip was a lane-log commit that wrote none of these bytes are recorded below rather
-> than deleted.
+> **⚑ The tip and the recipe DIVERGED again** — after two re-vendors running where they agreed.
+> `origin/main` was `40dfd05f` when these bytes were taken, *"bank 2026-09-05T19:13:42Z: tick; aurora and
+> oracle pushed; grep refinement banked"*, a lane-log commit that wrote neither file. `git log -1
+> --format=%H origin/main -- <path>` answered `887d01c7` for **both** paths, and
+> `git merge-base --is-ancestor 887d01c7 origin/main` exited 0. The recipe was run **once per path**
+> rather than assumed to give one answer for two files. This is the fourth divergence in the last six
+> re-vendors and the reason the recipe resolves the path rather than the tip.
+>
+> ⚑ **The dispatch that ordered this re-vendor named ONE file.** It said *"Our vendored copy is
+> `crates/oracle-aether/tests/contract/bus-protocol.schema.json`"* and gave a blob comparison for that
+> path alone. `vectors.json` moved too, and the two pins are asserted to name the **same revision** by
+> step 0 of the gate, so re-vendoring the schema alone would have been red on its face. The recipe in
+> this file is the authority and it says once per path; a dispatch naming a subset of the paths is not a
+> licence to move a subset of the pins.
 >
 > *(Retired one step, kept because it is the previous re-vendor's own reading.)* ~~The tip and the recipe
+> AGREED, for both paths, for the second re-vendor running.~~ That was `c5638e6e`, the second of the two
+> agreements.
+>
+> *(Retired two steps, kept because it is that re-vendor's own reading.)* ~~The tip and the recipe
 > AGREED, for both paths, after three of the last four re-vendors where they did not.~~ That was
 > `75b16d02`, and it was the first of the two agreements.
 >
@@ -235,7 +267,55 @@ them.
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
 
-### What this re-vendor adopted — §11.39 (CR-P): `hitsDropped` on `restore` and on the `romReloaded` EVENT (2026-09-05)
+### What this re-vendor adopted — §11.41 (CR-R): `read_vdp_registers` leaves the BLOCKED set (2026-09-05)
+
+**A whole method fragment, for the first time since `write_vram`, and it arrives by SUBTRACTION.**
+`emulator/read_vdp_registers` has been a catalogued §6 row since the catalog was written. It was never
+missing; it was **blocked**, by audit D-20, because its own row spelled its result with two literal
+ellipses (`decoded{hintEnabled,…}`, `status{raw,vintPending,…}`) and left `raw[]`'s length unstated. A
+fragment could not be written from it without inventing names, and §2.5 reads an absent fragment correctly
+as *"not yet transcribed"* while a partial one would assert a completeness it does not have.
+
+§11.41 removes both ellipses by **striking**, not by enumerating: `decoded{}` is gone entirely and
+`status` is reduced to its one `raw` word. So the fragment is now writable with nothing invented, and the
+BLOCKED set goes **5 → 4** (`z80_registers`, `read_vsram`, `call_stack`, `log_tail` remain). Like §11.25,
+this is a row LEAVING the blocked set, not a row joining the catalog: no method is added or removed.
+
+**The shape, and the one place the adopted text differs from the CR this lane wrote.** `raw[]` is exactly
+24 entries, index-ordered 0 to 23, each a two-hex-digit **`0x..`-prefixed** string; `status` is an object
+with one REQUIRED key, `raw`, a four-hex-digit `0x....` word, closed with `unevaluatedProperties: false`.
+The CR at `docs/proposed/2026-09-05-cr-r-vdp-register-readback.md` said *"24 two-hex-digit strings"* and
+cited D9 category 1 without ever writing the prefix out; M1 spells it. That is an under-specification
+made explicit rather than a contradiction — both texts cite the same D9 category, and the served form is
+the schema's `^0x[0-9A-Fa-f]{2}$` either way — but the fragment is what the handler is written against.
+
+**`caveat` is declared ABSENT** (M3): the hazard that these 24 registers are write-only on real hardware
+travels in the fragment's own `description`, on §2.4's ground that a caveat every reply carries is one
+nobody reads. Emitting one here fails item 20's closure, which is the intended alarm.
+
+**§8 gains item 29, and it is the half a shape cannot check.** The method must be a PEEK: calling it any
+number of times on a paused machine leaves `state_hash.combined` byte-identical, leaves the control-port
+write-pending toggle where it was, and leaves the sprite-overflow and collision latches set if they were
+set. A real `$C00004` read clears all three. That obligation is invisible to a validator — a reply that
+corrupted the machine on its way out would be perfectly conformant — so it lives in
+`tests/vdp_registers.rs`, and the mechanism that makes it hold is `System::vdp` returning `&Vdp` while
+`Vdp::control_read_status` takes `&mut self`.
+
+> **⚑ A drafting miss travels in these bytes, and it is upstream's, so it is carried in the open rather
+> than patched here.** The schema's top-level `description` at `887d01c7` still reads *"FIVE §6 ROWS
+> REMAIN UNSCHEMATIZED AND DELIBERATELY SO — z80_registers, read_vdp_registers, read_vsram, call_stack,
+> log_tail"* — in the same document that now carries `methods["emulator/read_vdp_registers"]`. §11.41's
+> own ruling says the set goes *"5 to 4"* and names the four that remain, so the intent is not in doubt;
+> the prose was not updated with the fragment.
+>
+> **This is the exact shape the `a0c50a11` entry below records** (that one left the description saying
+> *"eight"* when the set had just become five), and it is handled the same way: **reported upstream, not
+> hand-corrected**, because a vendored copy that is locally edited is a copy whose blob check is
+> worthless. It is also harmless in the only way that matters — the description is prose, and the count
+> is DERIVED by `contract/schema/tests/validate_contract_schema.py`, which parses `methods` and diffs it
+> against §6. The gate is right; the sentence is stale. Nothing in this repo reads that sentence.
+
+### What the re-vendor before this one adopted — §11.39 (CR-P): `hitsDropped` on `restore` and on the `romReloaded` EVENT (2026-09-05)
 
 **Two required leaves again, on one method fragment and — for the first time in this file — one EVENT
 fragment, plus four vectors.** §11.39 is **this lane's own CR**, and it exists only because the §11.38

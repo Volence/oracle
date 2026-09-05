@@ -57,6 +57,12 @@ use oracle_core::system::{
 // own constant rather than written down here: 262 is a property of the machine, and a second copy of it
 // would be a number that looks authoritative while the timing basis moved underneath it.
 use oracle_core::vdp::LINES_PER_FRAME;
+// `Vdp` is named explicitly at `read_vdp_registers`' binding rather than inferred: that the handler holds
+// a `&Vdp` and not a `&mut Vdp` is the mechanism §8 item 29 relies on, so it is written where a reader
+// and a compiler both see it. `REG_COUNT` is the frozen `state_hash` currency's own region length, which
+// is why the reply's `raw[]` cannot drift from the fingerprint it is joinable with.
+use oracle_core::state_hash::REG_COUNT;
+use oracle_core::vdp::Vdp;
 use oracle_core::watchpoints::{
     CensusKey, Stamp, Watch, WatchHit, WatchId, WatchMode, WatchOp, WatchReport, WatchSpace,
     WatchVia, Watchpoints,
@@ -433,6 +439,19 @@ pub const METHODS: &[MethodSpec] = &[
         handler: Engine::write_cram,
         summary: "poke one palette entry (paused machine only; one colour spelling, refused never masked)",
         params: &["b", "g", "index", "line", "r", "raw"],
+    },
+    // §6's VRAM/CRAM/layers group, the row at line 1388. Served 2026-09-05 against contract revision
+    // `887d01c7`, the same commit this directory's schema and vectors are vendored from. Not a new
+    // method: the row has been catalogued since the catalog was written and sat in the schema's BLOCKED
+    // set under audit D-20 because its result carried two literal ellipses. §11.41 (CR-R) removed both by
+    // STRIKING — `decoded{}` is gone and `status` reduced to its `raw` word — so nothing here is invented.
+    // `params: &[]` is the row's own dash, and the generic closure at `unexpected_params` is what turns a
+    // guessed `{"reg": 4}` into `-32602` rather than a full file the caller believes was filtered.
+    MethodSpec {
+        name: "emulator/read_vdp_registers",
+        handler: Engine::read_vdp_registers,
+        summary: "the 24 VDP registers and the status word, PEEKED: no latch cleared, no FIFO drained",
+        params: &[],
     },
     MethodSpec {
         name: "emulator/pixel_attribution",
@@ -3969,6 +3988,61 @@ impl Engine {
         }
         out.insert("palette".into(), Value::Array(entries));
         Ok(Value::Object(out))
+    }
+
+    /// `emulator/read_vdp_registers` — the register file and the status word (§6 line 1388, unblocked by
+    /// §11.41 / CR-R).
+    ///
+    /// # The peek property is enforced by the type system, not by remembering a rule
+    ///
+    /// §8 item 29 requires that this call move nothing: the control-port write-pending toggle stays in the
+    /// state it was in, the FIFO is not drained, and the sprite-overflow and collision latches stay set if
+    /// they were set. That is not asserted here by discipline. [`System::vdp`] hands out **`&Vdp`**, and
+    /// the side-effecting `$C00004` path — [`Vdp::control_read_status`] — takes **`&mut self`**. So the
+    /// single most likely implementation mistake, calling the status-*read* where the status-*word* was
+    /// meant, **does not compile from this binding**. The two accessors used below,
+    /// [`Vdp::regs`] and [`Vdp::status_word`], both take `&self`. Keeping the binding immutable is the
+    /// whole of the enforcement; there is no invariant a later editor has to hold in mind, because the
+    /// borrow checker holds it for them.
+    ///
+    /// # The length is the currency's, not a literal
+    ///
+    /// `regs()` returns `&[u8; REG_COUNT]`, and `REG_COUNT` is the constant
+    /// [`oracle_core::state_hash`] hashes into the frozen `state_hash.regs` fingerprint. The array below
+    /// is sized from that same type, so the fragment's `minItems`/`maxItems` of 24 and the currency's
+    /// region length cannot drift apart: there is no `24` written in this function to go stale.
+    ///
+    /// # Live state, and no refusal
+    ///
+    /// Not `require_paused`, on the `read`/`read_cram`/`sprites`/`pixel_attribution`/`scanlines`
+    /// precedent, and §11.41 M2 makes that normative rather than conventional. The status word is
+    /// computed at the **machine's own now** (`scheduler().now()`), not at the VDP's last-work instant,
+    /// which is the same choice `write_cram`'s §11.27 stamp makes and for the same reason:
+    /// [`Vdp::now_mclk`] can be arbitrarily stale on a machine paused after a quiet stretch. So the
+    /// beam-position bits report where the beam is, and the reply is never the retained frame's.
+    ///
+    /// # What is deliberately not here
+    ///
+    /// No `decoded{}`: §11.41 M1 struck it rather than enumerating it, on §11.25's reasoning that a
+    /// decoded name carries strictly less than the `raw` beside it and that the decode is the hardware's.
+    /// No `caveat` either — the fragment declares it ABSENT and §2.4 is the reason (a caveat every reply
+    /// carries is one nobody reads), so the hazard that these 24 registers are **write-only on real
+    /// hardware** travels in the fragment's own `description` instead. Emitting either key here would fail
+    /// item 20's closure in the test harness, which is the intended alarm.
+    fn read_vdp_registers(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        // The machine's own now, taken before the VDP is borrowed. See the doc comment.
+        let now = self.sys.scheduler().now();
+        // `&Vdp`, deliberately and load-bearingly. `control_read_status` needs `&mut Vdp` and is therefore
+        // unreachable from this binding, which is what makes §8 item 29 a compile-time property.
+        let vdp: &Vdp = self.sys.vdp();
+        let regs = vdp.regs();
+        // `[Value; REG_COUNT]`, not a `Vec`: the length is fixed by the same constant the frozen
+        // `state_hash.regs` currency hashes, so it is a fact of the type rather than a number typed here.
+        let raw: [Value; REG_COUNT] = std::array::from_fn(|i| json!(hex::u8_hex(regs[i])));
+        Ok(json!({
+            "raw": raw.to_vec(),
+            "status": { "raw": hex::u16_hex(vdp.status_word(now)) },
+        }))
     }
 
     /// `emulator/write_cram` — one palette entry, poked (§6, specified by §11.17 / CR-27a).

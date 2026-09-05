@@ -1129,6 +1129,138 @@
       "why": "D9 category 2 — an enable is a boolean."
     },
     {
+      "group": "methods",
+      "method": "emulator/read_vdp_registers",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§11.41 — the row takes no params."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/read_vdp_registers",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reg": 4
+      },
+      "why": "§11.41 M4 / §8 item 22 — no selection param exists; a client that guesses a filter must be refused, not handed the full file while believing its filter worked."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/read_vdp_registers",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "raw": [
+          "0x04",
+          "0x74",
+          "0x30",
+          "0x2C",
+          "0x07",
+          "0x6C",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x81",
+          "0x33",
+          "0x00",
+          "0x02",
+          "0x01",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x80"
+        ],
+        "status": {
+          "raw": "0x3600"
+        }
+      },
+      "why": "§11.41 M1 — exactly 24 two-hex-digit entries and a four-hex-digit status word; decoded{} is gone."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/read_vdp_registers",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "raw": [
+          "0x04",
+          "0x74",
+          "0x30",
+          "0x2C",
+          "0x07",
+          "0x6C",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x81",
+          "0x33",
+          "0x00",
+          "0x02",
+          "0x01",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00"
+        ],
+        "status": {
+          "raw": "0x3600"
+        }
+      },
+      "why": "§11.41 M1 — raw[] is pinned at 24; a fragment that did not pin it would only have moved D-20's ellipsis into a schema."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/read_vdp_registers",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "raw": [
+          "0x04",
+          "0x74",
+          "0x30",
+          "0x2C",
+          "0x07",
+          "0x6C",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x81",
+          "0x33",
+          "0x00",
+          "0x02",
+          "0x01",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x00",
+          "0x80"
+        ],
+        "status": {
+          "raw": "0x3600",
+          "vblank": true
+        }
+      },
+      "why": "§11.41 M1 — status closes with exactly one key today; a named bit arrives by amendment (§11.18), never by emission."
+    },
+    {
       "method": "emulator/set_channel_enabled",
       "kind": "params",
       "expect": "pass",
@@ -4207,6 +4339,49 @@
         "path": "/home/volence/sonic_hacks/aeon/s4.debug.bin"
       },
       "why": "§11.39 — an event without the count is the listener-never-sees-it gap the CR closes; REQUIRED."
+    },
+    {
+      "group": "events",
+      "method": "emulator/machineReplaced",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "reason": "stateLoad",
+        "hitsDropped": 3
+      },
+      "why": "§11.40 — a window state load is a boundary a listener can see; the count travels with the event as on romReloaded."
+    },
+    {
+      "group": "events",
+      "method": "emulator/machineReplaced",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "reason": "stateLoad",
+        "hitsDropped": 0
+      },
+      "why": "§11.40 — zero is a real assertion (nothing recorded before the load), present rather than absent."
+    },
+    {
+      "group": "events",
+      "method": "emulator/machineReplaced",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reason": "stateLoad"
+      },
+      "why": "§11.40 — hitsDropped is REQUIRED; absence and 0 must not both mean 'nothing was lost'."
+    },
+    {
+      "group": "events",
+      "method": "emulator/machineReplaced",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "reason": "reset",
+        "hitsDropped": 0
+      },
+      "why": "§11.40 S1 — reason is a closed enum with one member; reset and restore are not adopted as members until a consumer asks."
     }
   ],
   "specExamples": [

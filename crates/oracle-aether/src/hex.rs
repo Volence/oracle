@@ -21,6 +21,16 @@ pub fn u16_hex(v: u16) -> String {
     format!("0x{v:04X}")
 }
 
+/// A single byte, `0x` + 2 uppercase hex digits.
+///
+/// Distinct from [`bytes`] because the caller is emitting a byte that is *individually named by number*
+/// rather than a payload whose length the caller chose: `emulator/read_vdp_registers` publishes 24 of
+/// these as an array so a client can write `raw[0x0B]` instead of doing substring arithmetic on one
+/// 48-character string (§11.41 M1). The fragment's pattern is `^0x[0-9A-Fa-f]{2}$`.
+pub fn u8_hex(v: u8) -> String {
+    format!("0x{v:02X}")
+}
+
 /// A byte payload as one hex string. Empty input yields `"0x"` — a valid zero-length payload, not `null`.
 pub fn bytes(data: &[u8]) -> String {
     let mut s = String::with_capacity(2 + data.len() * 2);
