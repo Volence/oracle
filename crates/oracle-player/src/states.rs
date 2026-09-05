@@ -285,8 +285,22 @@ mod tests {
     /// The machine assertion is on `System::state_hash`, and the two states are asserted **different**
     /// before the load: "the machine matches the snapshot" witnesses nothing if it never left it.
     ///
-    /// Mutations proven red: (a) delete `battery.flush(...)` from `States::load`; (b) delete
-    /// `self.resync_after_replacement()` from `Machine::adopt_system` — caught by the capture assertion.
+    /// Mutation proven red: delete `battery.flush(...)` from `States::load`.
+    ///
+    /// ⚠ **And one that is NOT, measured and recorded rather than claimed.** Deleting
+    /// `self.resync_after_replacement()` from [`Machine::adopt_system`] leaves this row — and the whole
+    /// suite — **green**. The `capture_lines() == 0` assertion below is therefore not a gate on it: this
+    /// fixture drives `System::run_frames` directly, which never feeds `Machine::cap` at all, so the count
+    /// was already zero. Making it non-zero needs the only thing that ends a run mid-frame — a breakpoint
+    /// — and both fixture addresses tried (`$00020E`, the fixture ROM's hot inner loop, and `$000400`)
+    /// halt before the first scanline of a frame completes, so the capture is still empty at the halt. The
+    /// audio half is worse: its absence is *indefinite silence*, and observing it needs a real cpal output
+    /// device in the suite.
+    ///
+    /// What stands in a gate's place is structural and is the reason [`Machine::adopt_system`] exists at
+    /// all: the assignment and the resync are two statements of one method, and no caller can perform the
+    /// first without the second. That is weaker than a red mutation and is written here as weaker.
+    /// Tagged for a follow-up that can produce a mid-frame halt cheaply.
     #[test]
     fn a_slot_round_trips_the_machine_and_the_load_flushes_the_battery_first() {
         let cart = Cartridge::new("roundtrip");

@@ -3636,8 +3636,18 @@ mod one_door {
     /// drain earlier. That is what the `!own.rom_changed` gate in [`drain`] protects: without it the drain
     /// answering the gesture re-carries the already-zeroed buffer and the bytes are gone.
     ///
-    /// Mutations proven red: (a) drop the `!own.rom_changed` gate on the carry; (b) make
-    /// `Battery::after_replacement` write to `self.path` instead of the carried one.
+    /// Mutations proven red: (a) drop the `!own.rom_changed` gate on the carry — red **here and nowhere
+    /// else**, which is the discriminating half: the client-driven twin in `pumped` stays green under it,
+    /// because a client's command is answered by the pump right after this drain's carry and never needed
+    /// the gate; (b) move the `self.path` re-key in `Battery::after_replacement` **ahead** of the rescue,
+    /// so it writes to the incoming cartridge's file — red here and in the twin.
+    ///
+    /// ⚠ **A weaker version of (b) came back green and is recorded because it reads exactly like a
+    /// pass**: substituting `self.path` for the carried path *at the write site* changes nothing, because
+    /// the re-key happens afterwards and the two are equal at that moment by construction. `Pending`'s own
+    /// path is load-bearing only for the **orphan retry**, which runs after the re-key — and that is what
+    /// `battery::tests::a_rescue_that_cannot_be_written_is_kept_and_retried_until_it_lands` covers. The
+    /// mutation that hits *this* assertion is the ordering one, and it is (b).
     #[test]
     fn a_window_reload_rescues_the_battery_to_the_outgoing_cartridges_file() {
         let carts = Cartridges::new("window-reload");
