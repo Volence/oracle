@@ -241,6 +241,14 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   DOC".** That form has this cell blank. **S8 cannot honestly close against a shape whose headline number
   was never measured**, and measuring it needs his display — i.e. **a fresh authorisation**, since the one
   that existed was narrow and is spent. Filed as **`d-29`**; it gates S8 only, so nothing stops until then.
+  ▶ **RULED 2026-09-05 by the HUB under the owner's standing delegation — record it as the hub's, not his,
+  and it is overturnable by him** (`d-30` supersedes `d-29`): **`at-s8`**, this lane's own recommendation.
+  Explicitly **not** `drop-the-bar` — their words: *the retirement condition stands as written, and now stands
+  knowing its headline cell is empty, which is better than standing on a number that looked measured.*
+  ⚑ **The S8 session owes the ask, and its form is prescribed: ONE SENTENCE saying what to look for, framed
+  exactly as the first run was.** His fresh word is required — `0689c55` authorised one run and it is spent —
+  and no agent may take it: this lane's flat rule bars launching any window while his player may be live, and
+  a headless framebuffer has no vsync, so it would answer a different question while looking like an answer.
   ⚑ **The durable shape, and it is bar 24's inverse: an instrument was OBTAINED, used, and the question
   still went unanswered — and nothing announced that.** A spent authorisation looks identical to an answered
   question from every artifact except the one cell nobody re-read. **When a run is authorised to answer a
