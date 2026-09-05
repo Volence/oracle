@@ -55,3 +55,29 @@ ignored counts the other). And a scoped gate accepted on argument rather than on
 ## Shape
 
 Build it, not a checklist. A checklist is the artifact that drifts; that is the whole lesson from sigil.
+
+## Aurora's spec, adopted (from `npm run land`, aurora 181d4397)
+
+The framing that carries it: **the pushed tree is never the tested tree by construction** whenever a
+lane-log or notes commit follows the suite. The command must therefore:
+
+- **(a)** refuse a dirty tree before anything runs, and **list the paths** rather than just saying dirty.
+- **(b)** push nothing on a failing suite, and **verify afterwards that the remote has no such ref**.
+- **(c)** refuse if HEAD moved under the run.
+- **(d)** read the remote SHA before and after and **say in words whether the push did anything**, because
+  `git push` exits 0 on already-up-to-date, so its exit code cannot distinguish "pushed" from "did nothing".
+- **(e)** **push the TESTED SHA by name, never the branch tip.**
+
+It does not merge, does not commit, and does not write the lane log. Those stay deliberate acts.
+
+### A live instance of (c), caught by the spec arriving mid-run
+
+While the plane-viewer suite was running against merge `63f5301`, this very notes file was committed on
+top of it, moving HEAD to `e0ff771`. The content is docs-only and cannot affect a Rust suite, which is
+exactly the reasoning that makes the habit feel safe and is not the point: **had the suite gone green I
+would have pushed a tip that no run had ever tested**, and nothing in my procedure would have said so.
+Recorded here rather than tidied away, because it is the same defect the spec describes, committed by the
+person writing the spec down, four minutes after being told about it.
+
+This is also why (e) is the operative clause rather than (c). Refusing on a moved HEAD makes the failure
+loud; pushing the tested SHA by name makes it **impossible**, and only one of those survives being tired.
