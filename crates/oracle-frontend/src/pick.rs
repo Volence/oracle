@@ -426,6 +426,11 @@ mod tests {
     const BASE_TILE: u16 = 0x10;
     /// SAT base for the fixtures: reg 5 = $58 → `($58 & $7E) << 9` = $B000.
     const SAT_BASE: u16 = 0xB000;
+    /// How far apart the fixtures lay consecutive SAT entries out: the hardware's entry is **four words**,
+    /// and this is written as `4 * 2` rather than reusing [`SAT_ENTRY_BYTES`] on purpose. Reusing the
+    /// constant under test would move the fixture and the code under test together, which is exactly the
+    /// shape that let a mutation of it stay green.
+    const SAT_FIXTURE_STRIDE: u16 = 4 * 2;
     /// Screen position of the fixture sprite (both axes), i.e. the SAT fields are this + 128.
     const SPRITE_AT: u16 = 64;
 
@@ -482,6 +487,31 @@ mod tests {
     /// pattern 0 (also zeroed) and therefore transparent, leaving the sprite the winner at every dot of its
     /// box.
     fn vdp_with_sprite(w_cells: u8, h_cells: u8, hflip: bool, vflip: bool) -> Vdp {
+        vdp_with_sprite_at_index(0, w_cells, h_cells, hflip, vflip)
+    }
+
+    /// The same sprite as [`vdp_with_sprite`], but preceded in the SAT by `decoys` off-screen entries
+    /// linked ahead of it, so the sprite that wins the dot is **SAT index `decoys`** rather than 0.
+    ///
+    /// ⚑ **This exists because of `F-PARITY-BLIND-TO-SAT-STRIDE`.** The SAT entry address is
+    /// `sat_base + index * SAT_ENTRY_BYTES` on this side and `sat_base + index * 8` on the bus's — two
+    /// implementations of one constant, which is exactly the drift `bus_parity` is here to catch. At index
+    /// **0 the multiply erases the stride**, so every row that only ever looked at sprite 0 stayed green
+    /// under a mutation of `SAT_ENTRY_BYTES`, which is how the hole was found (by mutating it and getting
+    /// GREEN). A non-zero index is what makes the stride observable at all.
+    ///
+    /// The decoys are off-screen in **Y** (`Y = 0` is `y = -128`, above the display for a one-cell sprite),
+    /// which keeps them out of every scanline's sprite list rather than merely invisible. Their X field is
+    /// off the right edge as well, deliberately: an on-screen `x = 0` sprite is a *mask* sprite on the
+    /// hardware, and a decoy that suppressed the sprite it exists to precede would be a fixture that
+    /// silently measured nothing.
+    fn vdp_with_sprite_at_index(
+        decoys: u16,
+        w_cells: u8,
+        h_cells: u8,
+        hflip: bool,
+        vflip: bool,
+    ) -> Vdp {
         assert!(
             usize::from(w_cells) * usize::from(h_cells) <= 15,
             "the fixture gives each cell a unique colour nibble (1..=15)"
@@ -503,11 +533,26 @@ mod tests {
             write_vram(&mut v, (BASE_TILE + n) * 32, &[word; 16]);
         }
 
+        // Each decoy links to the next entry, and the last one links to the real sprite: the walk starts at
+        // SAT index 0 and follows `link`, so this is the only way to make a *later* index the winner.
+        for i in 0..decoys {
+            write_vram(
+                &mut v,
+                SAT_BASE + i * SAT_FIXTURE_STRIDE,
+                &[
+                    0,              // Y field 0 → y = -128, above the display: never on a scanline
+                    (i + 1) & 0x7F, // size 1x1, link to the next entry
+                    0,              // pattern 0, which is blank in this fixture anyway
+                    128 + 380, // X field → x = 380, off the right edge of H40 (and never x = 0)
+                ],
+            );
+        }
+
         let attr: u16 = (u16::from(vflip) << 12) | (u16::from(hflip) << 11) | BASE_TILE;
         let size = u16::from(((w_cells - 1) << 2) | (h_cells - 1));
         write_vram(
             &mut v,
-            SAT_BASE,
+            SAT_BASE + decoys * SAT_FIXTURE_STRIDE,
             &[
                 SPRITE_AT + 128, // Y field (cached)
                 size << 8, // size in the high byte, link 0 in the low — link 0 ends the walk here
@@ -780,44 +825,122 @@ mod tests {
                 .expect("a dot inside the active display must answer")
         }
 
+        /// **The SAT entry stride the BUS uses, measured off the wire rather than transcribed.**
+        ///
+        /// `emulator/pixel_attribution` computes `satAddr` as `sat_base + index * 8` with a literal of its
+        /// own (`engine.rs`); the panel computes it with [`SAT_ENTRY_BYTES`]. Two implementations of one
+        /// constant is the drift this module exists to catch — and **at sprite index 0 the multiply erases
+        /// it**, which is why `SAT_ENTRY_BYTES: 8 → 16` left all nine of these rows green
+        /// (`F-PARITY-BLIND-TO-SAT-STRIDE`).
+        ///
+        /// So the stride is read back off the bus at a **non-zero** index, against the core's own
+        /// `sat_base()`, and nothing in this function or in its caller spells `8`. The `index > 0`
+        /// assertion is the anti-vacuity clause: at index 0 this would divide by zero, and a fixture that
+        /// quietly came up with the sprite at 0 again would otherwise make the whole measurement mean
+        /// nothing.
+        fn bus_sat_stride() -> u32 {
+            const DECOYS: u16 = 3;
+            let v = vdp_with_sprite_at_index(DECOYS, 1, 1, false, false);
+            let mut e = engine_showing(&v);
+            let r = attribution(&mut e, SPRITE_AT, SPRITE_AT);
+            assert_eq!(
+                r["winner"]["layer"],
+                json!("sprite"),
+                "the decoy fixture must still put a sprite under the dot: {r}"
+            );
+            let index = r["winner"]["spriteIndex"]
+                .as_u64()
+                .expect("a sprite winner names its SAT index");
+            assert_eq!(
+                index,
+                u64::from(DECOYS),
+                "the decoys must precede the real sprite in the link walk, or the stride is being \
+                 measured at index 0 where it is multiplied away: {r}"
+            );
+            let base = v.sat_base() as u32;
+            let sat = addr_of(&r["sprite"]["satAddr"]);
+            assert!(sat > base, "sat_base ${base:04X}, satAddr ${sat:04X}");
+            let span = sat - base;
+            assert_eq!(
+                span % index as u32,
+                0,
+                "the bus's satAddr must be a whole number of entries past the base"
+            );
+            span / index as u32
+        }
+
         /// Sprite dots: the tile the panel arms a watch on is the tile the bus reports, for every dot of
         /// a 3x2 and a 2x3 sprite under all four flips — and the SAT entry likewise. A column-major /
         /// row-major split between the two would surface here as a mismatched `lo`.
+        ///
+        /// ⚑ **`hi` is asserted, not only `lo`, and the sweep runs at a non-zero SAT index** — the two
+        /// halves of `F-PARITY-BLIND-TO-SAT-STRIDE`. `lo` at index 0 is `sat_base + 0 * stride`, which is
+        /// the base whatever the stride is, and `hi` was never looked at at all; between them the entry
+        /// stride was unobservable and a mutation of it stayed green. The length is compared against
+        /// [`bus_sat_stride`], i.e. against the **bus's** spacing, so the two implementations of the
+        /// constant are held to each other rather than each to itself.
         #[test]
         fn the_panel_and_the_bus_name_the_same_sprite_tile_and_sat_entry() {
-            for (w, h) in [(3u8, 2u8), (2, 3), (1, 1), (4, 1)] {
-                for (hflip, vflip) in [(false, false), (true, false), (false, true), (true, true)] {
-                    let v = vdp_with_sprite(w, h, hflip, vflip);
-                    let mut e = engine_showing(&v);
-                    for dy in 0..usize::from(h) * 8 {
-                        for dx in 0..usize::from(w) * 8 {
-                            let (x, y) = (SPRITE_AT + dx as u16, SPRITE_AT + dy as u16);
-                            let r = attribution(&mut e, x, y);
-                            let p = resolve(&v, x, y, LayerMask::ALL, now_of(&e));
+            let stride = bus_sat_stride();
+            for decoys in [0u16, 1, 5] {
+                for (w, h) in [(3u8, 2u8), (2, 3), (1, 1), (4, 1)] {
+                    for (hflip, vflip) in
+                        [(false, false), (true, false), (false, true), (true, true)]
+                    {
+                        let v = vdp_with_sprite_at_index(decoys, w, h, hflip, vflip);
+                        let mut e = engine_showing(&v);
+                        for dy in 0..usize::from(h) * 8 {
+                            for dx in 0..usize::from(w) * 8 {
+                                let (x, y) = (SPRITE_AT + dx as u16, SPRITE_AT + dy as u16);
+                                let r = attribution(&mut e, x, y);
+                                let p = resolve(&v, x, y, LayerMask::ALL, now_of(&e));
 
-                            assert_eq!(r["winner"]["layer"], json!("sprite"), "({x},{y})");
-                            assert_eq!(r["winner"]["spriteIndex"], json!(0), "({x},{y})");
-                            assert_eq!(
-                                p.targets[0].lo,
-                                addr_of(&r["sprite"]["tileAddr"]),
-                                "{w}x{h} hflip={hflip} vflip={vflip} at ({x},{y}): the panel arms \
-                                 ${:04X} but the bus names {} — the two have DRIFTED",
-                                p.targets[0].lo,
-                                r["sprite"]["tileAddr"]
-                            );
-                            assert_eq!(p.targets[0].space, Space::Vram);
-                            assert_eq!(
-                                p.targets[1].lo,
-                                addr_of(&r["sprite"]["satAddr"]),
-                                "({x},{y}): SAT entry"
-                            );
-                            // And the tile index itself, as the panel prints it into its description.
-                            let tile = r["sprite"]["tile"].as_u64().expect("tile") as u16;
-                            assert!(
-                                p.description.contains(&format!("tile ${tile:03X}")),
-                                "({x},{y}): the panel says {:?}, the bus says tile ${tile:03X}",
-                                p.description
-                            );
+                                assert_eq!(r["winner"]["layer"], json!("sprite"), "({x},{y})");
+                                assert_eq!(
+                                    r["winner"]["spriteIndex"],
+                                    json!(decoys),
+                                    "({x},{y}): the fixture's decoys must put the winner at SAT index \
+                                     {decoys}, or this iteration is measuring index 0 again"
+                                );
+                                assert_eq!(
+                                    p.targets[0].lo,
+                                    addr_of(&r["sprite"]["tileAddr"]),
+                                    "{w}x{h} hflip={hflip} vflip={vflip} at ({x},{y}): the panel arms \
+                                     ${:04X} but the bus names {} — the two have DRIFTED",
+                                    p.targets[0].lo,
+                                    r["sprite"]["tileAddr"]
+                                );
+                                assert_eq!(p.targets[0].space, Space::Vram);
+                                assert_eq!(
+                                    p.targets[1].lo,
+                                    addr_of(&r["sprite"]["satAddr"]),
+                                    "({x},{y}) at SAT index {decoys}: the panel arms ${:04X} but the \
+                                     bus names {} — the two have DRIFTED",
+                                    p.targets[1].lo,
+                                    r["sprite"]["satAddr"]
+                                );
+                                // ⚑ The other half of the blind spot: the armed range's END. `hi` is
+                                // `sat_lo + SAT_ENTRY_BYTES - 1`, and it is the one place the panel's
+                                // stride survives even at index 0.
+                                assert_eq!(
+                                    p.targets[1].hi,
+                                    p.targets[1].lo + stride - 1,
+                                    "({x},{y}): the panel arms ${:04X}-${:04X}, which is {} bytes, but \
+                                     the bus spaces its SAT entries {stride} bytes apart — the two have \
+                                     DRIFTED about the entry size",
+                                    p.targets[1].lo,
+                                    p.targets[1].hi,
+                                    p.targets[1].hi - p.targets[1].lo + 1
+                                );
+                                assert_eq!(p.targets[1].space, Space::Vram);
+                                // And the tile index itself, as the panel prints it into its description.
+                                let tile = r["sprite"]["tile"].as_u64().expect("tile") as u16;
+                                assert!(
+                                    p.description.contains(&format!("tile ${tile:03X}")),
+                                    "({x},{y}): the panel says {:?}, the bus says tile ${tile:03X}",
+                                    p.description
+                                );
+                            }
                         }
                     }
                 }
