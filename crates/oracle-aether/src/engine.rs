@@ -7155,6 +7155,18 @@ impl Engine {
         let mut params_out = Map::new();
         params_out.insert("path".into(), json!(path));
         params_out.insert("symbolsDropped".into(), json!(symbols_dropped));
+        // **The event carries the count too, and it is the SAME `hits_dropped` the reply below carries**
+        // — §11.39 (CR-P), which requires them equal in so many words. Read from the one binding made at
+        // the drain above rather than recomputed here: a second `take_hits()` would answer `0` (the ring
+        // is already empty), and any independent recount is a value that can drift from the reply's while
+        // both stay schema-legal. One drain, one number, two places.
+        //
+        // Why the event needs it at all: a client that learns of reloads by *listening* never sees the
+        // reply, so before this it had no route to the count — it saw its hits vanish with nothing
+        // saying how many. §11.39 states the limit of that fix plainly, and it is worth knowing here:
+        // this server emits three events and none of them is a reset or a restore, so a listener still
+        // cannot learn that either happened. This closes one boundary of three, not the class.
+        params_out.insert("hitsDropped".into(), json!(hits_dropped));
         self.emit("emulator/romReloaded", params_out);
 
         let mut out = json!({
@@ -7307,6 +7319,26 @@ impl Engine {
         // may or may not have swapped the image, and a host that has to guess which is a host that will
         // eventually guess wrong.
         self.invalidate_screen();
+        // **And the recorded watchpoint hits go with the latched frame, for that same sentence's reason**
+        // — §11.39 (CR-P), the enumeration that found this artifact standing beside the two §11.38 had
+        // already fixed. A restore rewinds the frame counter; hits recorded *after* the capture point are
+        // therefore stamped with coordinates in a future this restore just discarded, and they come back
+        // reading as coordinates of the timeline now running. That is `reset`'s confusion exactly, and it
+        // is worse here in one respect: D13 rule 2 makes a restore able to bring a *different cartridge*
+        // back, so a survivor can be another game's in `pc` as well, which is `reload_rom`'s argument
+        // arriving at the same place by a third road.
+        //
+        // The same two things stay untouched here as there, and for the same reasons. **Client
+        // durability**: `watchpoint_clear` keeps recorded hits and reads use `hits()`, never
+        // `take_hits()` — a restore is a discontinuity in the machine, not one client erasing another's
+        // evidence. **The aggregates**: a breakpoint's `hits` and this recorder's `seen`/`matched`/
+        // `dropped` are NOT cleared. §11.39 ratifies that distinction for all four artifacts at once: a
+        // RECORD with epoch-relative fields (`frame`, the cycle stamp, `pc`) is dropped because it is
+        // uninterpretable after the boundary, while an AGGREGATE over an observer's life is kept because
+        // it describes the *recorder*, whose life the boundary did not end. Both live on the `Engine` and
+        // not in `self.sys`, so the wholesale swap two paragraphs above already leaves them standing —
+        // this comment is what stops that being read as an oversight.
+        let hits_dropped = self.watchpoints.take_hits().len();
         // …and so does the profiler's sample, whose shadow stack is now describing a machine whose
         // returns will never come. Arming survives; the measurement restarts.
         self.restart_profiler_sample();
@@ -7348,9 +7380,12 @@ impl Engine {
             );
         }
 
-        // The whole result **is** the machine stamp (§6.1), reporting the restored coordinate — which is
-        // precisely the confirmation the caller wants, so no extra field is needed and none is invented.
-        Ok(json!({}))
+        // The result was once **only** the machine stamp (§6.1), reporting the restored coordinate — which
+        // is precisely the confirmation the caller wants, and nothing else was invented on top of it.
+        // `hitsDropped` is the one addition, and it is not an invention: §11.39 registers it as REQUIRED
+        // and present at `0`, the shape `reload_rom` and `reset` already carry, so that a silent clear is
+        // never an absence with nothing left to re-examine.
+        Ok(json!({ "hitsDropped": hits_dropped }))
     }
 
     fn checkpoint_list(&mut self, params: &Value) -> Result<Value, RpcError> {

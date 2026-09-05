@@ -177,7 +177,8 @@ fn a_checkpoint_restores_the_machine_to_exactly_the_same_coordinate() {
         .clone();
     assert_ne!(ram_at, ram_after, "the machine must actually have moved on");
 
-    // §6.1: the whole of `restore`'s result is the machine stamp, reporting the *restored* coordinate.
+    // §6.1: `restore`'s result is the machine stamp, reporting the *restored* coordinate — plus, since
+    // §11.39, the `hitsDropped` that names what the rewind discarded (`tests/watch_hits_epoch.rs`).
     let r = c.ok("emulator/restore", json!({ "id": &id }));
     assert_eq!(r["frame"], frame_at);
     assert_eq!(r["mclk"], mclk_at);

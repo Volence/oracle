@@ -4170,6 +4170,43 @@
         "hitsDropped": -1
       },
       "why": "§11.38 — a count is never negative."
+    },
+    {
+      "method": "emulator/restore",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "hitsDropped": 3
+      },
+      "why": "§11.39 — a restore rewinds the frame counter as a reset does; hits recorded after the capture point are dropped and counted."
+    },
+    {
+      "method": "emulator/restore",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {},
+      "why": "§11.39 — hitsDropped is REQUIRED on restore, present when 0, as on reload_rom and reset."
+    },
+    {
+      "group": "events",
+      "method": "emulator/romReloaded",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {
+        "path": "/home/volence/sonic_hacks/aeon/s4.debug.bin",
+        "hitsDropped": 2
+      },
+      "why": "§11.39 — the event carries the same count as the reply that caused it, so a listener sees what a caller sees."
+    },
+    {
+      "group": "events",
+      "method": "emulator/romReloaded",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "path": "/home/volence/sonic_hacks/aeon/s4.debug.bin"
+      },
+      "why": "§11.39 — an event without the count is the listener-never-sees-it gap the CR closes; REQUIRED."
     }
   ],
   "specExamples": [
