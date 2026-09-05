@@ -174,7 +174,9 @@ fn closed(fragment: &Value) -> Value {
 /// Every fragment refs `#/$defs/replyFields` or `#/$defs/stamp`, and a `$ref` resolves against the root
 /// of *the document being compiled*, so the `$defs` block must travel with it. Under 2020-12 a `$ref`
 /// may have siblings, which is what makes this work for the fragments that are a bare
-/// `{"$ref": "#/$defs/replyFields"}` (e.g. `emulator/restore`'s result).
+/// `{"$ref": "#/$defs/replyFields"}` (`emulator/release_all` and `emulator/log_clear`, the two left of
+/// them — `emulator/restore` was the example named here until §11.39 gave it a `hitsDropped` of its own
+/// and its `$ref` moved into an `allOf`).
 fn with_defs(fragment: &Value) -> Value {
     let mut o: Map<String, Value> = fragment
         .as_object()

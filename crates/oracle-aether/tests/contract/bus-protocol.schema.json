@@ -1215,7 +1215,8 @@
           }
         ],
         "required": [
-          "path"
+          "path",
+          "hitsDropped"
         ],
         "properties": {
           "path": {
@@ -1224,6 +1225,11 @@
           "buildId": {
             "type": "string",
             "description": "reserved for the future build manifest"
+          },
+          "hitsDropped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The same count the causing reload_rom reply carried (§11.38), so a client that learns of reloads by listening sees what the caller saw. Registered 2026-09-05 (§11.39, CR-P). REQUIRED, present when 0. NOTE the limit §11.39 states: this server emits no reset and no restore event, so this closes one boundary of three for a listener."
           }
         }
       }
@@ -2967,7 +2973,21 @@
         }
       },
       "result": {
-        "$ref": "#/$defs/replyFields"
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "hitsDropped"
+        ],
+        "properties": {
+          "hitsDropped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many recorded watchpoint hits were discarded by this restore. Registered 2026-09-05 (§11.39, CR-P): a restore rewinds the frame counter exactly as a reset does, so hits recorded after the capture point describe a discarded future and are dropped; REQUIRED, present when 0, the same shape and requiredness as reload_rom and reset (§11.38). Aggregates over an observer's life (a breakpoint's hits, a watch's seen/matched/dropped) are NOT cleared: they describe the recorder, not the epoch."
+          }
+        }
       }
     },
     "emulator/checkpoint_list": {
