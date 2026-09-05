@@ -1438,12 +1438,18 @@
           }
         ],
         "required": [
-          "deferred"
+          "deferred",
+          "hitsDropped"
         ],
         "properties": {
           "deferred": {
             "type": "boolean",
             "description": "When the reset landed relative to this reply. false: applied before this reply was composed — every subsequent read on any connection sees the post-reset machine. true: accepted and handed to the thread that owns the machine without waiting for completion; it MUST land within a bounded time regardless of run state (a server that cannot bound it answers -32010 instead), and this reply's own stamp is pre-reset. Reports when it landed, never which thread applied it."
+          },
+          "hitsDropped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many recorded watchpoint hits were discarded by this boundary. Registered 2026-09-05 (§11.38, CR-O): hits are epoch-relative in three fields at once (frame, cycle stamp, and pc resolved against the symbol table loaded NOW), so a hit recorded before the boundary is another image's or another epoch's datum wearing a live one's shape; the ring is cleared and the count is said out loud, the shape symbolsDropped already has. REQUIRED, present even when 0: absence and 0 must not both mean 'nothing was lost'. Durability against CLIENT actions (watchpoint_clear keeps hits; reads never drain) is untouched: this is a discontinuity in the machine, not a client action."
           }
         }
       }
@@ -1694,7 +1700,8 @@
         "required": [
           "path",
           "romBytes",
-          "symbolsDropped"
+          "symbolsDropped",
+          "hitsDropped"
         ],
         "properties": {
           "reloaded": {
@@ -1723,6 +1730,11 @@
           "caveat": {
             "type": "string",
             "description": "protocol.md §2.4."
+          },
+          "hitsDropped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many recorded watchpoint hits were discarded by this boundary. Registered 2026-09-05 (§11.38, CR-O): hits are epoch-relative in three fields at once (frame, cycle stamp, and pc resolved against the symbol table loaded NOW), so a hit recorded before the boundary is another image's or another epoch's datum wearing a live one's shape; the ring is cleared and the count is said out loud, the shape symbolsDropped already has. REQUIRED, present even when 0: absence and 0 must not both mean 'nothing was lost'. Durability against CLIENT actions (watchpoint_clear keeps hits; reads never drain) is untouched: this is a discontinuity in the machine, not a client action."
           }
         }
       }
@@ -5058,7 +5070,7 @@
       }
     },
     "emulator/step": {
-      "$comment": "protocol.md §6 (run-control), row at §6 line 851: `count? | pc, symbol?, symbolDisp?`. FIRST FRAGMENT, transcribed 2026-08-22. Named in §6's run-control state rule via 'step*', so it requires a PAUSED machine and MUST fail -32005 (data.reason 'machineRunning') on a free-running one. Emits emulator/stopped with reason 'step' (§3, which pins `step` as the reason for step/step_over/step_out alike — one stop condition, three methods). `count` bounds ≥1/def 1/≤1000000 registered 2026-08-26 by §11.24 (audit D-02 closed). caveat is declared ABSENT (the sprites precedent). `stepped`? added 2026-09-04 by \u00a711.33 (oracle CR-STEP-SHORTFALL): a bounded server says how many instructions actually retired instead of returning a pc that a caller reads as count instructions on.",
+      "$comment": "protocol.md §6 (run-control), row at §6 line 851: `count? | pc, symbol?, symbolDisp?`. FIRST FRAGMENT, transcribed 2026-08-22. Named in §6's run-control state rule via 'step*', so it requires a PAUSED machine and MUST fail -32005 (data.reason 'machineRunning') on a free-running one. Emits emulator/stopped with reason 'step' (§3, which pins `step` as the reason for step/step_over/step_out alike — one stop condition, three methods). `count` bounds ≥1/def 1/≤1000000 registered 2026-08-26 by §11.24 (audit D-02 closed). caveat is declared ABSENT (the sprites precedent). `stepped`? added 2026-09-04 by §11.33 (oracle CR-STEP-SHORTFALL): a bounded server says how many instructions actually retired instead of returning a pc that a caller reads as count instructions on.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
