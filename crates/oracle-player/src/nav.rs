@@ -1081,7 +1081,23 @@ mod tests {
         for t in Tab::ALL {
             // Through the menu's own decision each time, not through `close` directly: whatever state
             // the previous removal left this tab in, the row must still lead to it being gone.
-            while occurrences(&dock, t) > 0 {
+            //
+            // ⚑ **Bounded, and the bound is a real number rather than a paranoid one.** From any state a
+            // row reaches `Closed` in at most two clicks (`Hidden` → shown → closed; this module's
+            // header table). A third would mean the rule no longer terminates — which is exactly what a
+            // menu reverted to open-only does — and an unbounded `while` there hangs the suite instead of
+            // failing it. Measured: reverting `Entry::action`'s `Showing` arm to `Show` made this loop
+            // spin forever until the bound was put in.
+            for click in 1..=3 {
+                if occurrences(&dock, t) == 0 {
+                    break;
+                }
+                assert!(
+                    click <= 2,
+                    "{t:?} is still docked after {} clicks on its own menu row. A row that cannot reach \
+                     'closed' is the open-only menu this row exists to replace.",
+                    click - 1
+                );
                 let entry = entries(&dock)
                     .into_iter()
                     .find(|e| e.tab == t)
