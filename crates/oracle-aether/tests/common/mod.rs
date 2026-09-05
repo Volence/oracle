@@ -159,6 +159,44 @@ pub fn spawn_system(tag: &str, sys: System, queue_cap: usize) -> ServerHandle {
         .spawn(Machine::new(sys))
 }
 
+/// **A server whose ROM really is on disk** — [`spawn`], plus the `romPath` a launched server always
+/// has, pointing at a file whose bytes are the image the machine booted.
+///
+/// The seam exists because of §11.37 (CR-N): `emulator/status` now carries a ROM-freshness verdict, and
+/// its unmeasurable state — *"this server holds no path for the image"* — is exactly what [`spawn`]
+/// produces, since it loads `testrom::build()` from memory and never writes it anywhere. That is honest
+/// and it is the right default for the hundred-odd tests that do not care. It is **not** right for a test
+/// whose subject is some *other* caveat on the same key, which would otherwise be reading a composed
+/// string with an unrelated sentence in front of it.
+///
+/// Returns the handle and the ROM file's path; the caller owns the file and may rewrite it to make the
+/// image stale on purpose.
+pub fn spawn_with_rom_file(tag: &str) -> (ServerHandle, PathBuf) {
+    let rom = oracle_core::testrom::build();
+    let path = std::env::temp_dir().join(format!(
+        "ae-{tag}-{}-{}.bin",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&path, &rom).expect("write the ROM fixture to disk");
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(rom);
+    sys.reset();
+    let mut machine = Machine::new(sys);
+    machine.rom_path = Some(path.display().to_string());
+    let h = Server::bind(ServerConfig {
+        socket_path: temp_socket(tag),
+        engine: EngineConfig {
+            free_run_pace: None,
+            ..EngineConfig::default()
+        },
+        event_queue_cap: 1024,
+    })
+    .expect("bind aether socket")
+    .spawn(machine);
+    (h, path)
+}
+
 /// One NDJSON connection.
 pub struct Client {
     reader: BufReader<UnixStream>,
