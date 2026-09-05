@@ -420,9 +420,14 @@ impl Bus {
     /// decides when to take it, and [`Machine::adopt_frame`](crate::machine::Machine::adopt_frame) is what
     /// puts it on the glass.
     ///
-    /// Unmasked, deliberately: this window applies no display-layer mask to its own picture either (there is
-    /// no `blit_masked` in this crate), so masking here would make a client-driven frame the *only* one that
-    /// honoured `emulator/set_layer_enabled` — one window, two rules for what it is showing.
+    /// **Unmasked, and since S2a that is no longer a split.** This hands over the engine's *latched* frame,
+    /// which the engine composed with `render_scanline` during the client's own run — the render that takes
+    /// no mask and must never gain one. [`drain`] re-derives the picture under the mask immediately after
+    /// adopting this one, whenever a mask is set, so **both** pixel sources end up under one rule.
+    ///
+    /// Before S2a this doc had to say the opposite: masking here would have made a client-driven frame the
+    /// only one that honoured `emulator/set_layer_enabled` — one window, two rules for what it is showing.
+    /// The fix was not to mask here; it was to give the window a masked path at all.
     pub fn framebuffer(&self) -> Option<FrameRef<'_>> {
         self.host.framebuffer()
     }
@@ -434,10 +439,10 @@ impl Bus {
     /// a window control doing the reverse. It is engine state, so it survives `reset` / `reload_rom` /
     /// `restore` and appears in no snapshot and no hash.
     ///
-    /// ⚑ **This window's picture does not honour it yet** — see [`framebuffer`](Self::framebuffer)'s note,
-    /// and `crate::screen_pick`'s module doc for what that costs and what refuses because of it. Reading it
-    /// is exactly how the Screen tab knows to refuse rather than to answer wrongly, which is why the
-    /// accessor lands before the masked pixel path rather than with it.
+    /// ⚑ **Since S2a this window's picture honours it**, through
+    /// [`Machine::render_masked`](crate::machine::Machine::render_masked), applied by [`drain`] on every
+    /// iteration a mask is set. It reaches the glass on the *same* iteration a socket client sets it,
+    /// because this is read after the pump rather than before it.
     pub fn layers(&self) -> oracle_core::render::LayerMask {
         self.host.layers()
     }
@@ -677,6 +682,12 @@ pub struct Drained {
     /// the picture was *invalidated* rather than redrawn — there is nothing to present and the window keeps
     /// what it has.
     pub picture: bool,
+    /// **The picture was re-derived under a display mask** (S2a) — see
+    /// [`Machine::render_masked`](crate::machine::Machine::render_masked). `false` on every iteration with
+    /// nothing hidden, which is the overwhelming majority, and `false` too when the masked render could not
+    /// produce a picture at all (a display so configured that a line has no dots in it) — in which case the
+    /// glass keeps the unmasked picture it had and the Screen tab says so rather than describing it.
+    pub masked_picture: bool,
     /// The symbol cache was re-derived from the engine's own listing.
     ///
     /// **No longer "and the ROM path with it"** — the two repairs were one branch until
@@ -724,6 +735,15 @@ pub struct Drained {
 ///   four repairs above applies. Had the emitter bumped `rom_generation` instead — the obvious fix — this
 ///   window would have dropped its scanline capture and rebuilt its audio clock for a listing change,
 ///   which is the audible hiccup `Machine::resync_after_replacement` exists to *cure*.
+///
+/// # ⚑ One repair here is keyed on no report field at all: the display mask (S2a)
+///
+/// [`Bus::layers`] is read at the end of this function and, when anything is hidden, the picture is
+/// re-derived under it ([`Machine::render_masked`](crate::machine::Machine::render_masked)). It is not a
+/// `PumpReport` field because it is not an *event*: the mask is engine state that survives every reload and
+/// restore, and there is no edge to react to — the question every iteration has to answer is *"is a mask set
+/// right now"*, not *"did one just change"*. Keying it on a change flag is how a window ends up unmasked
+/// again after a `reset` it did not think was relevant.
 ///
 /// # ⚑ The listing is re-derived on `rom_changed` too, and `emulator/reset` is why
 ///
@@ -796,6 +816,28 @@ pub fn drain(
             }
         }
         out.rom_path = true;
+    }
+
+    // --- ⚑ S2a: the display layer mask, read AFTER the pump and applied to the picture. ---
+    //
+    // Read from the bus rather than kept anywhere on this side, because there is exactly one mask and it
+    // lives on the engine: a client's `emulator/set_layer_enabled` and this window's own checkboxes move
+    // the same field, so a mask set over the socket reaches the glass on this very iteration and the two
+    // can never describe different pictures. Read *after* the pump for that reason — before it, a client's
+    // change would show up a frame late.
+    //
+    // It rides here, after the four repairs, rather than in the loop, and both halves of that position are
+    // load-bearing. **After `screen_changed`'s `adopt_frame`**, so a client-driven frame is masked too —
+    // one window, one rule for what it is showing, which is the split `Bus::framebuffer`'s doc used to
+    // warn about. **Inside `drain`**, because it is the same kind of thing as everything above it: the
+    // machine moved under this window and the window has to answer for it, and a repair the caller may
+    // decline to mention is the shape `PLAYER-SERVE` already shipped once.
+    //
+    // `is_all()` is the whole gate — with nothing hidden not one line of this runs, and the presented
+    // picture is byte-for-byte the captured frame this loop has always shown.
+    let layers = bus.layers();
+    if !layers.is_all() {
+        out.masked_picture = machine.render_masked(layers);
     }
     out
 }
@@ -1357,6 +1399,260 @@ mod seam {
              holds a halt it will apply only if the pause happens to move, which on the frame a \
              breakpoint fires it has not."
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ S2a — the display mask reaches the picture
+// ---------------------------------------------------------------------------------------------------
+
+/// **A mask set through `emulator/set_layer_enabled` must change what is on the glass, not only what the
+/// bus answers.** Before this slice `oracle-player` had one pixel path, so it did the second and not the
+/// first, and `crate::screen_pick` had to refuse every click while a layer was hidden.
+///
+/// The assertions here are on [`Machine::image`](crate::machine::Machine::image) — **the pixels the
+/// uploader hands egui** — and not on a flag saying a re-render happened. A drain that set
+/// `masked_picture` and left the picture alone would pass a flag test and fail every row below.
+///
+/// `oracle-aether` is `#![cfg(unix)]`, so this module is too.
+#[cfg(all(test, unix))]
+mod masked_picture {
+    use super::*;
+    use crate::machine::Machine;
+    use oracle_core::render::LayerMask;
+    use oracle_core::vdp::Vdp;
+    use serde_json::json;
+
+    /// The plane-A pattern the fixture puts in the top-left cell, and the palette entry its opaque nibble
+    /// resolves to: nibble 3 of palette 1 ⇒ CRAM index `1 * 16 + 3`.
+    const A_TILE: u16 = 0x055;
+    const A_ENTRY: u8 = 16 + 3;
+    /// Reg $07's backdrop entry — everywhere plane A is not.
+    const BACKDROP_ENTRY: u8 = 0x25;
+    /// Two colours that cannot be confused for one another, written into CRAM explicitly. Leaving them
+    /// where power-on put them would make "the dot changed colour" a fact about a PRNG.
+    const A_COLOUR: u16 = 0x00E0; // green
+    const BACKDROP_COLOUR: u16 = 0x000E; // red
+
+    fn set_reg(v: &mut Vdp, reg: u8, val: u8) {
+        v.control_write(0x8000 | (u16::from(reg) << 8) | u16::from(val), 0);
+    }
+
+    /// Point the data port at `addr` with access `code` (1 = VRAM write, 3 = CRAM write).
+    fn set_addr(v: &mut Vdp, code: u8, addr: u16) {
+        v.control_write(((u16::from(code) & 0x03) << 14) | (addr & 0x3FFF), 0);
+        v.control_write(((u16::from(code) >> 2) << 4) | (addr >> 14), 0);
+    }
+
+    fn write_vram(v: &mut Vdp, addr: u16, words: &[u16]) {
+        set_addr(v, 0x01, addr);
+        for w in words {
+            v.data_write(*w);
+        }
+    }
+
+    fn write_cram(v: &mut Vdp, index: u8, value: u16) {
+        set_addr(v, 0x03, u16::from(index) * 2);
+        v.data_write(value);
+    }
+
+    /// A machine showing **one opaque plane-A cell in the top-left corner** over a non-zero backdrop, in
+    /// two colours a test can tell apart. Hiding plane A therefore has a visible, nameable consequence at
+    /// (2,2) and none at (200,100) — which is what makes the control below a control.
+    fn rig() -> (Machine, Bus) {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = Bus::new(machine.system_mut(), MachineInfo::default(), false, None);
+        let v = machine.system_mut().vdp_mut();
+        v.vram_mut().fill(0);
+        set_reg(v, 0x01, 0x74); // display on, mode 5
+        set_reg(v, 0x0C, 0x81); // H40
+        set_reg(v, 0x02, 0x30); // plane A nametable @ $C000
+        set_reg(v, 0x04, 0x07); // plane B nametable @ $E000
+        set_reg(v, 0x05, 0x58); // SAT @ $B000, empty
+        set_reg(v, 0x07, BACKDROP_ENTRY);
+        set_reg(v, 0x0F, 0x02);
+        set_reg(v, 0x10, 0x00);
+        write_vram(v, 0xC000, &[(1 << 13) | A_TILE]);
+        write_vram(v, A_TILE * 32, &[0x3333; 16]);
+        write_cram(v, A_ENTRY, A_COLOUR);
+        write_cram(v, BACKDROP_ENTRY, BACKDROP_COLOUR);
+        (machine, bus)
+    }
+
+    /// The colour of one dot of the picture currently on `machine`.
+    fn dot(machine: &Machine, x: usize, y: usize) -> egui::Color32 {
+        let img = machine.image().expect("a picture");
+        let [w, h] = img.size;
+        assert!(x < w && y < h, "({x},{y}) is outside a {w}x{h} picture");
+        img.pixels[y * w + x]
+    }
+
+    /// One turn of the loop's drain, with the two out-parameters the loop owns.
+    fn drained(machine: &mut Machine, bus: &mut Bus) -> Drained {
+        let mut symbols = None;
+        let mut rom_path = String::new();
+        drain(machine, bus, &mut symbols, &mut rom_path, true)
+    }
+
+    fn hide(machine: &mut Machine, bus: &mut Bus, layer: &str, enabled: bool) {
+        let sys = machine.system_mut();
+        match bus.call(
+            sys,
+            "emulator/set_layer_enabled",
+            &json!({"layer": layer, "enabled": enabled}),
+        ) {
+            Answer::Ok(_) => {}
+            Answer::Err(e) => panic!("set_layer_enabled refused: {} {}", e.code, e.message),
+        }
+    }
+
+    /// ★ **The load-bearing row: hiding a layer through the tool changes the PIXELS.**
+    ///
+    /// The unmasked picture is taken first and its two dots are asserted *different from each other*, so
+    /// the fixture is established as one where a mask can be seen at all — an absence needs its control,
+    /// and "the dot is red afterwards" witnesses nothing if it was red to begin with.
+    #[test]
+    fn hiding_a_layer_through_the_tool_changes_the_picture_on_the_glass() {
+        let (mut machine, mut bus) = rig();
+
+        // The unmasked picture, and the fixture's own precondition.
+        assert!(
+            machine.render_masked(LayerMask::ALL),
+            "the fixture must produce a picture at all"
+        );
+        let plane_dot = dot(&machine, 2, 2);
+        let backdrop_dot = dot(&machine, 200, 100);
+        assert_ne!(
+            plane_dot, backdrop_dot,
+            "the fixture must draw plane A in a colour the backdrop is not, or hiding it is invisible"
+        );
+        assert_eq!(machine.image_mask(), Some(LayerMask::ALL));
+
+        // The control, taken before the mask: a drain with nothing hidden must leave the picture alone.
+        let d = drained(&mut machine, &mut bus);
+        assert!(
+            !d.masked_picture,
+            "an unmasked drain must not re-render — with nothing hidden the presented picture is the \
+             captured frame, byte for byte"
+        );
+        assert_eq!(dot(&machine, 2, 2), plane_dot);
+
+        // …and now hide plane A, exactly as a socket client would.
+        hide(&mut machine, &mut bus, "planeA", false);
+        assert_eq!(
+            bus.layers().hidden(),
+            vec!["planeA"],
+            "the mask must actually be set, or this row measures nothing"
+        );
+        let d = drained(&mut machine, &mut bus);
+        assert!(
+            d.masked_picture,
+            "the drain must have re-derived the picture"
+        );
+
+        assert_eq!(
+            dot(&machine, 2, 2),
+            backdrop_dot,
+            "with plane A hidden and nothing behind it, the cell it was drawing must fall through to \
+             the backdrop — the picture on the glass still shows plane A"
+        );
+        assert_ne!(
+            dot(&machine, 2, 2),
+            plane_dot,
+            "the picture did not change at all: the mask reached the bus and not the glass, which is \
+             precisely the defect S2a exists to close"
+        );
+        assert_eq!(
+            machine.image_mask(),
+            Some(bus.layers()),
+            "the picture must record the mask it was actually drawn under"
+        );
+
+        // …and showing it again puts it back, so the mask is a state and not a one-way door.
+        hide(&mut machine, &mut bus, "planeA", true);
+        let d = drained(&mut machine, &mut bus);
+        assert!(
+            !d.masked_picture,
+            "nothing is hidden, so nothing re-renders"
+        );
+        assert!(
+            machine.render_masked(LayerMask::ALL),
+            "and the next completed frame paints plane A again"
+        );
+        assert_eq!(dot(&machine, 2, 2), plane_dot);
+    }
+
+    /// **Every layer the bus offers is a layer this window's picture honours**, swept over the core's own
+    /// [`LayerMask::targets`] rather than over a list written here. A fifth target added to the core is
+    /// covered by this row on the day it lands.
+    ///
+    /// The assertion is deliberately weak per layer — *the drain re-rendered and recorded the mask* —
+    /// because only `planeA` has something visible to hide in this fixture. The row above is what proves
+    /// the pixels move; this is what proves no target is skipped.
+    #[test]
+    fn every_layer_the_bus_offers_reaches_the_picture() {
+        for (name, layer) in LayerMask::targets() {
+            let (mut machine, mut bus) = rig();
+            assert!(machine.render_masked(LayerMask::ALL));
+            hide(&mut machine, &mut bus, name, false);
+            let d = drained(&mut machine, &mut bus);
+            assert!(
+                d.masked_picture,
+                "hiding {name} left the window redrawing nothing"
+            );
+            let m = machine.image_mask().expect("a picture with a mask");
+            assert!(
+                !m.shows(layer),
+                "the picture was drawn under a mask that still shows {name}"
+            );
+            assert_eq!(
+                m,
+                bus.layers(),
+                "and it must be the ENGINE's mask, not a copy"
+            );
+        }
+    }
+
+    /// **A client-driven frame is masked too** — one window, one rule for what it is showing.
+    ///
+    /// `adopt_frame` takes the engine's latched frame, which is composed by `render_scanline` and is
+    /// therefore unmasked. The masked re-render sits *after* it in [`drain`], so the order is what makes
+    /// this true; running the mask before the adoption would leave exactly one kind of frame — the one a
+    /// client asked for — ignoring `emulator/set_layer_enabled`.
+    #[test]
+    fn a_client_driven_frame_is_masked_as_well() {
+        let (mut machine, mut bus) = rig();
+        assert!(machine.render_masked(LayerMask::ALL));
+        let plane_dot = dot(&machine, 2, 2);
+        hide(&mut machine, &mut bus, "planeA", false);
+
+        // An adopted frame, put on the glass exactly as `screen_changed` puts one there: a solid colour
+        // that is neither of the fixture's own, so "it was replaced" and "it was masked" cannot be
+        // confused for one another.
+        let width = 320usize;
+        let rgb: Vec<oracle_aether::engine::Rgb> = vec![(1, 2, 3); width * crate::machine::HEIGHT];
+        assert!(machine.adopt_frame(width, &rgb));
+        assert_eq!(
+            machine.image_mask(),
+            Some(LayerMask::ALL),
+            "an adopted frame is the engine's latched, UNMASKED one"
+        );
+        assert_eq!(dot(&machine, 2, 2), egui::Color32::from_rgb(1, 2, 3));
+
+        let d = drained(&mut machine, &mut bus);
+        assert!(d.masked_picture);
+        assert_ne!(
+            dot(&machine, 2, 2),
+            egui::Color32::from_rgb(1, 2, 3),
+            "the adopted frame was left unmasked on the glass — one window, two rules"
+        );
+        assert_eq!(
+            dot(&machine, 2, 2),
+            dot(&machine, 200, 100),
+            "and the mask it was re-derived under is the one that hides plane A"
+        );
+        assert_ne!(dot(&machine, 2, 2), plane_dot);
+        assert_eq!(machine.image_mask(), Some(bus.layers()));
     }
 }
 

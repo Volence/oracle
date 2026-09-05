@@ -373,6 +373,13 @@ struct Loop {
     status: String,
     dock: egui_dock::DockState<ui::Tab>,
     tex: Option<egui::TextureHandle>,
+    /// ⚑ **The display mask [`Loop::tex`] was drawn under** (S2a), latched by [`Loop::upload`] in the same
+    /// statement that binds the pixels — `None` before the first upload.
+    ///
+    /// The mask of *what is on the glass*, which is a different fact from `Bus::layers()`, the mask the
+    /// machine has been told about. They agree on every ordinary frame; the Screen tab announces the gap
+    /// and refuses a click on it rather than describing a picture that is not there.
+    tex_mask: Option<oracle_core::render::LayerMask>,
     /// The `--rom` argument, verbatim. The status strip absolutises it through the bus's own helper.
     rom_path: String,
     /// **The hosted Aether bus** — unbound, unserved, never pumped inside a frame. See [`crate::bus`] for
@@ -486,6 +493,7 @@ impl Loop {
             dock: ui::initial_dock(),
             stopping: stopping::Panel::default(),
             tex: None,
+            tex_mask: None,
         }
     }
 
@@ -587,7 +595,7 @@ impl Loop {
         // The whole of it is inside the `bus` bucket, for `Machine::step`'s reason one module over: timing
         // only the pump would make this parcel's own cost structurally invisible.
         let t_bus = Instant::now();
-        bus::drain(
+        let drained = bus::drain(
             &mut self.machine,
             &mut self.bus,
             &mut self.symbols,
@@ -599,7 +607,14 @@ impl Loop {
         // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
         // texture already bound, which is both correct and free — uploading again would be 287 KB of
         // memcpy to hand egui a picture it is already holding.
-        let upload = if tick.run || self.tex.is_none() {
+        //
+        // ⚑ **…and whenever the drain itself replaced the picture**, which is the half that was missing:
+        // a client's own frame (`picture`) and a masked re-render (`masked_picture`, S2a) both change
+        // `Machine::image` on an iteration that emulated nothing, and an early wake that skipped the
+        // upload would leave the previous picture on the glass with the Screen tab correctly announcing
+        // that the two disagree. The flags are the drain's own answer rather than a second reading of it.
+        let upload = if tick.run || self.tex.is_none() || drained.picture || drained.masked_picture
+        {
             self.upload(ctx)
         } else {
             0.0
@@ -675,6 +690,10 @@ impl Loop {
         let Some(img) = self.machine.image() else {
             return 0.0;
         };
+        // ⚑ The mask this texture is being drawn under, latched in the same statement that binds the
+        // pixels. It is what the Screen tab reads to describe *the glass* rather than the machine, and
+        // taking it here — not at draw time — is what makes it a fact about these pixels.
+        self.tex_mask = self.machine.image_mask();
         let t = Instant::now();
         // `TextureHandle::set` takes the image by value, so this clone is 287 KB of memcpy per frame. The
         // spike measured the whole upload at 7 us, i.e. the clone is essentially all of it — worth
@@ -703,6 +722,7 @@ impl Loop {
             governor,
             dock,
             tex,
+            tex_mask,
             status,
             rom_path,
             bus,
@@ -773,6 +793,7 @@ impl Loop {
             .show(root, |ui| {
                 let mut panels = ui::Panels {
                     tex: tex.as_ref(),
+                    screen_mask: *tex_mask,
                     machine,
                     bus,
                     mem,
