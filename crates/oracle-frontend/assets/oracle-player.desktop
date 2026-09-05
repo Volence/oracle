@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Oracle Player
+Comment=Empyrean's Genesis / Mega Drive emulator and debugger — the dockable toolkit window
+# install-desktop.sh rewrites this line with the real binary path.
+Exec=oracle-player %f
+Icon=oracle
+Terminal=false
+Categories=Game;Emulator;
+MimeType=application/x-genesis-rom;
+# What the window reports as its class. `oracle-player` is eframe/winit, which — unlike minifb — DOES send
+# `xdg_toplevel.set_app_id`, and eframe takes that string from `ViewportBuilder::app_id`. `src/main.rs` sets
+# it to `ui::APP_NAME`, i.e. this line. Keep the three in step; the app id is also eframe's storage key, so
+# changing it moves the saved layout as well as the icon match.
+StartupWMClass=oracle-player

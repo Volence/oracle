@@ -1154,16 +1154,45 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     let scratch = (!persist).then(|| {
         std::env::temp_dir().join(format!("oracle-player-bench-{}.ron", std::process::id()))
     });
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([args.size.0, args.size.1])
+        .with_title(ui::APP_NAME)
+        // ⚑ **Set explicitly, and to exactly the string `run_native` is given below.** eframe fills a
+        // `None` app id in with the `run_native` name (`eframe-0.36.1/src/lib.rs:421`) — and the *storage
+        // directory* is then chosen from `viewport.app_id`, falling back to the name
+        // (`glow_integration.rs:251`). So the app id is not decoration here: it is the key to the RON file
+        // holding the layout, and any value other than the one already in use would silently orphan the
+        // arrangement on the owner's disk. Naming it once, from `ui::APP_NAME`, is what makes the window's
+        // desktop class and its storage key impossible to drift apart. It is also the string a Wayland
+        // compositor matches against `StartupWMClass` — see `assets/oracle-player.desktop`.
+        .with_app_id(ui::APP_NAME);
+    // The Oracle mark, from `oracle-frontend`'s blob — the same asset the minifb window wears, decoded
+    // rather than re-encoded (see `oracle_frontend::icon`). A window with no icon is what the owner
+    // reported; a window with a *wrong* icon would be worse, so a blob that will not decode leaves the
+    // icon unset and says so, exactly as `icon::apply` does for the other window.
+    match oracle_frontend::icon::decode(oracle_frontend::icon::ICON_ARGB)
+        .as_deref()
+        .and_then(oracle_frontend::icon::largest)
+    {
+        Some(im) => {
+            viewport = viewport.with_icon(egui::IconData {
+                rgba: im.rgba8(),
+                width: im.width,
+                height: im.height,
+            });
+        }
+        None => {
+            loud("note: the embedded window icon did not decode — the window opens without one")
+        }
+    }
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([args.size.0, args.size.1])
-            .with_title(ui::APP_NAME),
+        viewport,
         persist_window: persist,
         persistence_path: scratch.clone(),
         ..Default::default()
     };
     let outcome = eframe::run_native(
-        "oracle-player",
+        ui::APP_NAME,
         opts,
         Box::new(move |cc| {
             if persist {

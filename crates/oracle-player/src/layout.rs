@@ -750,6 +750,50 @@ mod tests {
         );
     }
 
+    /// ★ **The window's app id is the storage key, and it is also what a Wayland compositor matches to
+    /// find the icon. This is where those two facts are held together.**
+    ///
+    /// `src/main.rs` calls `ViewportBuilder::with_app_id(ui::APP_NAME)`. eframe chooses the RON file this
+    /// module reads and writes from `viewport.app_id`, falling back to the `run_native` name
+    /// (`eframe-0.36.1/src/native/glow_integration.rs:251` → `file_storage::storage_dir`); it also sends
+    /// that string as the Wayland `xdg_toplevel` app id, which is what `StartupWMClass` in the installed
+    /// `.desktop` entry has to equal for the window to wear the Oracle mark on a Wayland desktop.
+    ///
+    /// So a rename of [`ui::APP_NAME`] does **three** things at once: it renames the window, it moves the
+    /// saved layout to a directory nothing will look in again, and it breaks the icon match. None of the
+    /// three is a compile error and none is visible in a diff of one file. This test is the noise.
+    ///
+    /// **It is not a constant compared with a copy of itself.** The expectation is parsed out of the
+    /// checked-in `.desktop` file, which lives in another crate's `assets/` and is written in another
+    /// language — the two artifacts a human would otherwise have to remember are one pair.
+    #[test]
+    fn the_app_id_is_the_storage_key_and_the_desktop_entrys_wm_class() {
+        const ENTRY: &str = include_str!("../../oracle-frontend/assets/oracle-player.desktop");
+        let class = ENTRY
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("StartupWMClass="))
+            .map(str::trim)
+            .expect(
+                "oracle-player.desktop has no StartupWMClass line — without one a Wayland compositor \
+                 cannot match this window to the entry, and the icon falls back to a generic one",
+            );
+        assert_eq!(
+            class,
+            ui::APP_NAME,
+            "the .desktop entry names class `{class}` and the window reports `{}`. On Wayland that is a \
+             window with no Oracle icon; and because eframe also keys its storage directory off the app \
+             id, a change on the Rust side alone silently moves the saved layout as well.",
+            ui::APP_NAME
+        );
+        // The storage directory eframe derives from it, pinned in the one place that reads it back. A
+        // rename that updated both artifacts above and still wanted the old layout would land here.
+        assert_eq!(
+            ui::APP_NAME, "oracle-player",
+            "the layout already on disk lives under this name; renaming it is a layout-discarding change \
+             and should be made deliberately, not as a side effect of retitling the window"
+        );
+    }
+
     /// [`rearranged`] is written against a particular starting layout, and a silently restructured
     /// [`ui::initial_dock`] would make it degenerate rather than fail. This pins the two facts it uses:
     /// there is a `Screen` leaf to split under, and `Objects` starts in the same pane as `Registers` so
