@@ -70,6 +70,53 @@ section already raised, arriving as the thing that blocks the answer rather than
 
 **The owner should not be asked to move again.** Both captures are held and the window is untouched.
 
+## ▶ THE TEST THAT REOPENS THIS, mechanical, no interpretation
+
+*Agreed with the hub 2026-09-05. Run it the moment `emulator/read_vdp_registers` is served (§11.41). It
+needs NO further frame and NO further play from the owner: two pure reads on the Toy Story socket, then
+arithmetic on the two full VRAM captures already held under `docs/data/2026-09-05-toystory/`.*
+
+1. `raw[0x0B]` gives the scroll modes: **bits 0-1 are HSCR** (whole plane, per cell strip, or per line) and
+   **bit 2 is VSCR**. **If HSCR reads whole plane, the thread closes as painted and nothing else is needed.**
+2. `raw[0x0D] & 0x3F`, shifted left 10, gives the **H-scroll table base**.
+3. Index **both held captures** at that base and read the plane B entries for the floor lines, per line or
+   per 8-line strip as the mode dictates.
+4. Report the **LINE TO LINE DELTAS**, per position, against outcomes registered in advance:
+   - **all zero** -> uniform scroll, painted only, settled;
+   - **nonzero and growing with row depth** -> a per-row correction on top of the painted fan, which is what
+     the owner describes watching;
+   - and separately, whether the two positions' entries differ **by a constant** (translation) or **by a
+     per-row amount** (a correction that tracks the camera).
+
+**The absolute values carry a whole-frame offset and say nothing about shear; only the deltas do.** For
+contrast, aeon's own floor reads deltas of -1 and -2 px per row over 71 of 71 floor rows.
+
+**The raster read and the column test then either agree with this or the disagreement is itself the
+finding.** Given how much of this document has already been withdrawn, the disagreement is the more
+valuable outcome and should not be smoothed.
+
+### ⚑ What this document has already cost, recorded so the next reader discounts it correctly
+
+Four claims made here or in messages about it were withdrawn by their own author, each because a measurement
+was reported as reaching further than the instrument could:
+1. **The cell phase** offered as settling "not per line scroll". Null between uniform scroll and a whole
+   cell shear, and the caveat was written and then dropped from the verdict.
+2. **The VSRAM tail** offered as establishing whole plane MODE. It excludes a per column FAN and says
+   nothing about the mode.
+3. **Every state-resolved measurement** offered against mid-frame writes. `pixel_attribution` and a
+   `stateRender` scanline read resolve one VDP state for every line by construction, so a mid-frame fan
+   would produce exactly the results obtained and could not be detected by any of them.
+4. **The column lookup** behind "uniform scroll, all rows shifted the same". It used a first-match index
+   into a nametable row where **about 21 of 64 tiles repeat**, so the columns were not established. Redone
+   by matching a unique multi-cell run.
+
+The art-side vanishing point of "plane x 141" is **also withdrawn**: the separator colour was chosen by a
+rarest-index heuristic that picked a different index per row, so no gap can be computed against it.
+
+**The common shape, and it is the durable lesson: the reach of the instrument was repeatedly reported as
+the reach of the evidence.** Three of the four were caught by peers, the fourth by the author. A reader
+should treat every remaining number here as carrying that risk until the mechanical test above replaces it.
+
 ## What was measured, and how, since no VDP register is readable
 
 This server serves no VDP register readback (see the ask at the end), so nothing below reads a register.
