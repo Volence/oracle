@@ -222,6 +222,36 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
   the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
 
+**Registered 2026-09-05, from landing S2a:**
+
+- **✔ F-PARITY-BLIND-TO-SAT-STRIDE — CLOSED, and verified by this seat re-running its OWN mutation.**
+  `SAT_ENTRY_BYTES` 8→16, the mutation that left all nine rows green, now fails naming the quantity:
+  *"the panel arms $B000-$B00F, which is 16 bytes, but the bus spaces its SAT entries 8 bytes apart."*
+  The other half too: `index * SAT_ENTRY_BYTES` → `0 * …` fails with *"at SAT index 1"*, so a non-zero index
+  is genuinely exercised. Both restored from the committed baseline. **The fixture cannot move with the
+  constant under test** — nothing in the test spells `8`, `.hi` is asserted against a stride measured off the
+  wire, and the decoys are off-screen in **Y** (an on-screen `x = 0` sprite is a *mask* sprite, which would
+  have made the fixture lie in a different way).
+
+- **▶ F-THREE-MASKED-RENDERERS, the agent's finding and worth a row.** `Engine::framebuffer`,
+  `Machine::render_masked` and `oracle-frontend::blit_masked` are **three implementations of one masked
+  picture across three crates**, agreeing today with **nothing asserting they must**. Same class as
+  `sprite_tile_at` before it moved into `oracle-core`, and the same answer applies. Not urgent; it becomes
+  urgent the moment one of them is edited.
+
+- **⚑ MY BRIEF WAS WRONG ABOUT THE REFUSAL, AND THE CORRECTION IS A DESIGN FACT WORTH KEEPING.** I wrote
+  that S2a *"deletes that gate and its test"*, quoting the S0-S2 doc. **It deletes the BLANKET gate and
+  needs a narrower one, because this slice creates the very fact the old reasoning lacked: once the window
+  has two pixel paths, *the mask the machine holds* and *the mask the glass was drawn with* are two
+  different facts.** They separate when the mask moves after the picture (the palette can call
+  `set_layer_enabled` inside the same `build_ui`) or when a masked render yields nothing. So `Panel::pick`
+  takes the glass's mask as a **parameter** and refuses only on disagreement, with `None` the honest
+  *"no picture yet"* rather than a fourth state. Invisible on every ordinary frame.
+  ⚑ **THIRD CONSECUTIVE AGENT ON THIS ARC TO CORRECT ITS BRIEF ON A MATERIAL POINT** — the recon on the
+  module list, S0-S2 on the fit inverse, this one on the refusal. **That is the delegation corollary paying
+  out: a brief's frame is the thing an agent is best placed to break, and all three were caught because the
+  brief asked for disagreement first rather than last.** Keep leading dispatches with that request.
+
 **Registered 2026-09-05, from verifying a relayed authorisation instead of absorbing it:**
 
 - **▶ F-VSYNC-NEVER-MEASURED — AN OWNER-AUTHORISED FOREGROUND PASS WAS SPENT WITHOUT ANSWERING THE QUESTION
@@ -412,71 +442,7 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
   The frontend comment at `bus.rs:405-408` still carries the flag as open and is now stale — fix it in the
   next parcel that opens that file.
 
-- **✔ F-SPAWN-OUTSIDE-ACT — CLOSED 2026-09-04 (`parcel/spawn-outside-act`), window-side, refused not clamped.**
-  `Bus::spawn_at` now reads `Level_Width`/`Level_Height` **by name, per call, independently of each other**
-  between the world join and the mailbox write, and a click outside `[0,w) × [0,h)` never reaches the
-  server. **Refuse over clamp**, and the reason is this file's own re-read rule: a clamp moves the object
-  away from where the person clicked and then reports success with coordinates, and since §11.32's addendum
-  makes the reply's `x`/`y` a re-read, that success line reads *plausibly correct* about an object sitting
-  at the level edge for reasons nothing on the glass explains. A smaller lie of the same family as the
-  defect. **Three refusals, three facts** — `outsideAct`, `actExtentUnknown` (the listing cannot answer, so
-  the window says **it cannot check** rather than guessing the act is infinite — the `arm`-refuses-with-no-
-  archetypes precedent applied to a measurement), `noActLoaded` (`0×0` is the boot-cleared reading aeon
-  documents, *not* an act of no size, and "outside the level" is the wrong sentence on a title screen).
-  Each carries its own remedy so the glass gets the next action rather than a truncated essay; `code` stays
-  `None`, so the reader is still told the refusal is the window's.
-  **The trap was made a test rather than a comment.** The fixture carries `Player_Bound_Right`/`_Bottom` at
-  aeon's own insets *beside* the extent, so the wrong symbol **resolves**; the row
-  `the_strip_between_the_player_clamp_and_the_act_edge_is_legal_placement_space` clicks into the strip and
-  demands a placement. Mutation M3 (point `act_bounds` at the clamp edges) is red on it with the sentence
-  *"a placement between Player_Bound_Right (1000) and Level_Width (1024) is LEGAL and renders"*. Without
-  that row the mutation is invisible to a test suite that only ever clicks far outside.
-  ⚑ **THREE-SURFACE GAP, A DECISION AND NOT AN OMISSION — the debug window's palette is still exposed.**
-  `oracle-player`'s command line (`palette.rs::resolve`) reaches **every** row of `METHODS` by name,
-  `emulator/object_spawn` included, and dispatches typed params straight through `Bus::call`. Nothing in
-  this parcel touches that path: the check lives in `oracle-frontend`, a different crate, behind a
-  gesture the palette does not make. Closing it needs either a per-method precondition hook in the palette
-  or the server refusal — and the latter is a **contract** question (aeon's unclamped mailbox is
-  deliberate), deliberately out of this parcel's scope. **Book it; do not assume it fell out of this.**
-  ⚠ The `bus.rs:405-408` CR-J stale-flag note above is still open — this parcel opened that file but the
-  flag is about `object_at`'s world space, not the extent, and rewording it was not this parcel's claim.
-
-  *Original booking, kept for the reasoning:*
-
-- **F-SPAWN-OUTSIDE-ACT — a real gap in SPAWN-PICKER as shipped, found by the peer we asked, not by us.**
-  aeon: the warp path clamps and **the object path deliberately does not**, because an out-of-act object is
-  culled by `RunObjects`' camera-distance test and does nothing, where an out-of-act *player* would reach
-  `SEC_VOID`. **Consequence for the picker: a click outside the act is acked as placed and the object is
-  silently culled** — no error, no refusal, nothing on screen. That is precisely the failure class the whole
-  refusal design exists against (*a refusal arrives as a sentence*), arriving through the one path that
-  returns success. **The fix is OURS, not a mailbox change**: we hold the click, so we refuse or clamp before
-  sending. The refusal test needs the act bounds by symbol.
-  **ACT BOUNDS — ANSWERED BY AEON BEFORE THE ASK WAS FILED, and their answer contains the trap.**
-  ⚠ **DO NOT USE `Player_Bound_Right`/`Player_Bound_Bottom` AS ACT BOUNDS.** They are the PLAYER's clamp
-  edges and are **inset** (`level_width − PBOUND_RIGHT_MARGIN`, `level_height − SCREEN_HEIGHT`), and objects
-  are deliberately unclamped — so an object between `Player_Bound_Right` and the true `level_width` is
-  **legal and renders**. Refusing there would refuse legitimate placements **and look right**, because the
-  refusals would cluster at the edge where a person half-expects them. It is the symbol a grep for "the
-  bounds" finds first (the warp path clamps against it). There is also **no `Player_Bound_Left`/`_Top`** —
-  the low edge is a literal `0` in `clamp_and_publish`, so half the box has no name at all.
-  **The class, sharper than this file's existing name-is-not-behaviour bar: the most dangerous wrong symbol
-  is the one whose wrongness is SHAPED LIKE CORRECTNESS.** A wrong answer that fails where failures are
-  expected reads as the feature working.
-  **The real quantity:** `level_width = Act.grid_w << SECTION_SIZE_SHIFT` (=11, ×2048), same for height;
-  valid box `[0,w) × [0,h)`. Reaching it live means `Current_Act_Ptr`, **which aeon's own source calls
-  flaky** and which they declined to hand over as an interface on that basis.
-  ▶ **RULED, and filed with them: aeon publishes `Level_Width`/`Level_Height` as two derived RAM words in
-  `Player_BoundsInit`** (which already computes both before subtracting the margins). Resolved BY NAME per
-  call, exactly as `Camera_X` is. Chosen over the pointer chase because the pointer would make our
-  correctness depend on a cell they distrust **and the failure would be invisible from our side** — a bad
-  pointer yields a plausible box and our refusal then passes on garbage. **Symbol absence is loud; a bad
-  pointer is not.**
-  **⚑ MEGA-ACT CEILING — recorded because it names which side cracks first.** `level_width`/`level_height`
-  word-wrap above `$FFFF` px (grid > 31 sections), held today by a build-time `ensure` capping the grid at
-  `$8000`. That `ensure` is what makes our **unsigned u16** camera read safe — a property of the current
-  constraint, not of the design. If it is relaxed for a mega-act, **aeon's word stores break before our u32
-  arithmetic does.** Nothing to do; written down so a future session here does not find the dependency by
-  having it break.
+- **✔ F-SPAWN-OUTSIDE-ACT — CLOSED 2026-09-04 (`parcel/spawn-outside-act`), window-side, refused not clamped, with its original booking and the wrong-symbol trap (`Player_Bound_Right` is INSET and objects are deliberately unclamped) moved whole to `OVERSEER-LOG.md` 2026-09-05 for the boot-read bound. The live residual is the three-surface gap: the debug window's palette reaches `emulator/object_spawn` by name and this parcel's check lives in `oracle-frontend`, a different crate.**
 
 **Registered 2026-08-29, from aurora's relay of the owner's R8 question:**
 
