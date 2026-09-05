@@ -54,6 +54,7 @@ use oracle_frontend::audio;
 mod battery;
 mod bus;
 mod device;
+mod identity;
 mod input;
 mod layout;
 mod machine;
@@ -427,6 +428,149 @@ struct Loop {
     battery: battery::Battery,
     /// **The ten numbered save-state slots** (S3), and which slot the keys act on.
     states: states::States,
+    /// **The last time the machine under this window was replaced, and what it did to the save file.**
+    ///
+    /// `None` until something replaces the machine, which for most sessions is never. See [`SwapNotice`]
+    /// for why this is sticky rather than a line in the log the drain already writes.
+    swap: Option<SwapNotice>,
+}
+
+/// **A machine this window did not replace was replaced anyway, and the reader is told.**
+///
+/// The contract lane's ruling, 2026-09-05: after a client's `emulator/reload_rom` this window applies the
+/// **incoming** cartridge's `.srm` (`crate::battery::Battery::after_replacement`). The reply to that call
+/// is unchanged, so a client sees nothing new — but the machine state anyone reads *afterwards* is not the
+/// state they left, and the hub asked for that to be said where a reader of this window would see it.
+///
+/// **Why a sticky chip rather than the log.** `crate::bus::drain` already hands these sentences back and
+/// the loop already writes them with `device::loud`, which is stderr — a place the owner is not looking
+/// when he is looking at the window. And a toast that faded would be worst of all: a swap arrives from
+/// *another process*, so by construction the reader was not watching when it happened. It costs nothing to
+/// leave standing, because it is absent on every iteration that replaced nothing, which is all but a
+/// handful.
+///
+/// **Why it is not folded into the build chip.** They are different kinds of fact — one is a standing
+/// property of the binary, the other is an event that just happened to the machine — and a single line
+/// carrying both would serve neither. They share a bar and nothing else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SwapNotice {
+    /// What the bar shows: short, and true on its own.
+    headline: String,
+    /// The drain's own sentences, verbatim, for the hover. Never composed here — the battery says which
+    /// file it wrote and how many bytes, and rewriting that into a summary is how an operator loses the
+    /// detail they needed to quote back.
+    detail: Vec<String>,
+}
+
+impl SwapNotice {
+    /// Build the notice from what the drain reported, or `None` if the drain replaced nothing.
+    ///
+    /// Two independent triggers, deliberately: `rom_changed` is a cartridge swap, and a non-empty battery
+    /// report is the save file being re-keyed, rescued or written. `restore` moves the second without
+    /// always moving the first, so keying on the cartridge alone would stay silent on exactly the case
+    /// where a reader's save file changed under them.
+    fn new(rom_changed: bool, battery: &[String], frames: u64) -> Option<Self> {
+        if !rom_changed && battery.is_empty() {
+            return None;
+        }
+        let mut headline = format!("machine replaced at frame {frames}");
+        if !battery.is_empty() {
+            headline.push_str(" · save file re-keyed");
+        }
+        Some(Self {
+            headline,
+            detail: battery.to_vec(),
+        })
+    }
+
+    /// The hover: the battery's sentences, plus why the reader is being told at all.
+    fn hover(&self) -> String {
+        let mut s = String::new();
+        for line in &self.detail {
+            s.push_str(line);
+            s.push('\n');
+        }
+        if !self.detail.is_empty() {
+            s.push('\n');
+        }
+        s.push_str(
+            "Something replaced the machine in this window — a reload, a reset or a restore, from here \
+             or from a program driving it. Anything you read now comes from the new one. Click to \
+             dismiss.",
+        );
+        s
+    }
+}
+
+#[cfg(test)]
+mod swap_notice {
+    use super::SwapNotice;
+
+    /// ⚑ **The row the whole notice exists for.** A quiet iteration must produce nothing — not an empty
+    /// notice, not a stale one refreshed. If this returned `Some` unconditionally the bar would carry a
+    /// permanent warning, which is the same as carrying none.
+    #[test]
+    fn an_iteration_that_replaced_nothing_says_nothing() {
+        assert_eq!(SwapNotice::new(false, &[], 99), None);
+    }
+
+    /// The two triggers are independent, and that is the point: `emulator/restore` re-keys the save file
+    /// without always moving the cartridge, so a notice keyed on the cartridge alone would stay silent on
+    /// exactly the case the contract lane asked to disclose.
+    #[test]
+    fn either_a_cartridge_swap_or_a_save_file_movement_raises_it() {
+        let cart = SwapNotice::new(true, &[], 7).expect("a cartridge swap must raise a notice");
+        assert!(cart.headline.contains('7'), "{:?}", cart.headline);
+        assert!(
+            !cart.headline.contains("save file"),
+            "nothing happened to the save file, so the notice must not claim it did: {:?}",
+            cart.headline
+        );
+
+        let srm = SwapNotice::new(
+            false,
+            &["SRAM: loaded 8192 bytes from /tmp/x.srm".into()],
+            7,
+        )
+        .expect("a battery report alone must raise a notice — restore moves this without the ROM");
+        assert!(
+            srm.headline.contains("save file re-keyed"),
+            "the headline must say the save file moved, which is the fact the ruling asked to \
+             disclose: {:?}",
+            srm.headline
+        );
+    }
+
+    /// The battery's own sentences reach the reader **verbatim**. They name the file and the byte count;
+    /// a summary composed here is how an operator loses the detail they needed to quote back.
+    #[test]
+    fn the_hover_carries_the_drains_sentences_unrewritten() {
+        let lines = vec![
+            "SRAM: loaded 8192 bytes from /tmp/incoming.srm".to_string(),
+            "SRAM: wrote 8192 bytes to /tmp/outgoing.srm before the cartridge was replaced"
+                .to_string(),
+        ];
+        let h = SwapNotice::new(true, &lines, 1).expect("notice").hover();
+        for l in &lines {
+            assert!(h.contains(l), "the hover dropped {l:?}:\n{h}");
+        }
+        assert!(
+            h.contains("Anything you read now comes from the new one"),
+            "the hover must say why the reader is being told, not just what happened:\n{h}"
+        );
+    }
+
+    /// P9 of the style page: no runtime string cites the contract at the reader. The method names that
+    /// survive are the ones a reader could act on, spelled as the words a person uses.
+    #[test]
+    fn the_notice_does_not_quote_the_specification() {
+        let n = SwapNotice::new(true, &["SRAM: loaded 1 bytes from /x".into()], 1).expect("notice");
+        for s in [n.headline.clone(), n.hover()] {
+            for bad in ["§", "protocol.md", "emulator/"] {
+                assert!(!s.contains(bad), "{bad:?} reached the reader in {s:?}");
+            }
+        }
+    }
 }
 
 impl Loop {
@@ -521,6 +665,9 @@ impl Loop {
             stopping: stopping::Panel::default(),
             tex: None,
             tex_mask: None,
+            // Nothing has replaced the machine yet — the boot load is not a replacement, it is the
+            // machine.
+            swap: None,
         }
     }
 
@@ -636,6 +783,17 @@ impl Loop {
         // back, and these lines are rare by construction: empty on every iteration that replaced nothing.
         for line in &drained.battery {
             loud(line);
+        }
+        // ⚑ **…and said in the window, not only to stderr.** The loop above is the operator's log; this is
+        // the reader's. The contract lane's 2026-09-05 ruling is the one being discharged: a client's
+        // `emulator/reload_rom` leaves this window applying the incoming cartridge's `.srm`, the reply
+        // does not change, and so a person at the glass would otherwise have no way to know the machine
+        // they are reading is not the machine they left. Kept `None` on every iteration that replaced
+        // nothing, so an existing notice stands until the next replacement rather than being cleared by
+        // the next quiet frame.
+        if let Some(n) = SwapNotice::new(drained.rom_path, &drained.battery, self.machine.frames())
+        {
+            self.swap = Some(n);
         }
         // The autosave, and the retry of anything a swap rescued but could not write. Outside the
         // `tick.run` gate deliberately: a paused window that is holding un-written battery bytes must
@@ -843,6 +1001,7 @@ impl Loop {
             screen: screen_panel,
             states,
             battery,
+            swap,
             ..
         } = self;
         let mut drew = Vec::new();
@@ -854,6 +1013,16 @@ impl Loop {
             ui.horizontal(|ui| {
                 ui.strong(ui::APP_NAME);
                 drew.push(screen::Run::label(ui::APP_NAME));
+                // ⚑ **WHICH BUILD THIS IS, beside the name of the thing it is a build of**
+                // (`F-STALE-BINARY-SILENT`). Not behind a panel: a person who has to open something to
+                // learn it will not open it on the day they need it, which is the day they are reporting
+                // a fault that was fixed two commits ago. It is dimmed rather than emphasised because it
+                // is a standing fact, not a control — read once at the start of a session and ignored
+                // after. The whole identity, and the two limits on it, are in the hover; see
+                // [`crate::identity`], which owns every word of both.
+                let chip = identity::chip();
+                ui.weak(&chip).on_hover_text(identity::detail());
+                drew.push(screen::Run::label(&chip));
                 ui.separator();
                 // ⚑ **The panel nav, and it lives HERE rather than in the dock on purpose.** `egui_dock`
                 // draws only each leaf's active tab, so six of the eight panels are behind another title
@@ -894,6 +1063,26 @@ impl Loop {
                 }
                 drew.push(screen::Run::after_sep(palette::PALETTE_LABEL));
                 ui.separator();
+                // ⚑ **The machine changed under you.** Ahead of the status line rather than after it:
+                // the status is a running commentary a reader learns to skip, and this is a one-off fact
+                // that expires only when another one replaces it. A button, so it can be dismissed by the
+                // person it was for — nothing else in this window clears it, and it should not need a
+                // second gesture somewhere else.
+                if let Some(n) = swap {
+                    let hit = ui
+                        .button(egui::RichText::new(&n.headline).color(ui.visuals().warn_fg_color))
+                        .on_hover_text(n.hover())
+                        .clicked();
+                    // Pushed unconditionally, INCLUDING the frame it is dismissed on: `crate::screen`'s
+                    // guarantee is that the runs are what the bar *drew*, and the button was on the glass
+                    // when this frame was painted. Reporting the post-click state instead would make the
+                    // readback describe a bar that never existed.
+                    drew.push(screen::Run::after_sep(&n.headline));
+                    ui.separator();
+                    if hit {
+                        *swap = None;
+                    }
+                }
                 ui.monospace(status.as_str());
                 drew.push(screen::Run::mono_after_sep(status.as_str()));
             });
