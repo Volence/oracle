@@ -2,7 +2,8 @@
 //! that tab together, drag anywhere, and keep their layout between runs.* Tabs and drag shipped with parcel
 //! 1; this module is the "between runs" half, and it was deliberately held back until the [`Tab`] enum
 //! stopped moving (design §6). It has `Screen | Pacing | Registers | Memory | Objects` and, since the
-//! stopping parcel, `Breakpoints | Watchpoints | Profiler` — all eight real.
+//! stopping parcel, `Breakpoints | Watchpoints | Profiler`, and since the planes parcel `Planes` — all
+//! nine real.
 //!
 //! # The shape, and why it is this shape
 //!
@@ -48,6 +49,7 @@ use egui_dock::DockState;
 ///
 /// 1: `Screen | Pacing | Registers | Memory | Objects`, the five-panel set parcel 2c finished.
 /// 2: the same five plus `Breakpoints | Watchpoints | Profiler`, the three stopping tabs.
+/// 3: the same eight plus `Planes`, in second position beside `Screen`.
 ///
 /// **This is not a number anybody bumps.** It is [`VOCABULARIES`]' length: the version *is* the answer to
 /// "which tab vocabulary is this", so appending a row is the bump, and there is no second place to forget.
@@ -73,6 +75,18 @@ pub const VOCABULARIES: &[&[&str]] = &[
     // version 2 — parcel 3's three stopping tabs added.
     &[
         "Screen",
+        "Pacing",
+        "Registers",
+        "Memory",
+        "Objects",
+        "Breakpoints",
+        "Watchpoints",
+        "Profiler",
+    ],
+    // version 3 — the Planes tab, second in the list because it shares the picture leaf with Screen.
+    &[
+        "Screen",
+        "Planes",
         "Pacing",
         "Registers",
         "Memory",
@@ -596,9 +610,14 @@ mod tests {
             .filter(|p| *p >= 1)
             .expect("there is no previous LAYOUT_VERSION for this gate to be tested against");
         let old_vocab = VOCABULARIES[previous as usize - 1];
-        assert!(
-            !old_vocab.contains(&"Breakpoints"),
-            "the previous vocabulary already had the stopping tabs, so this test is about nothing"
+        // ⚑ The guard is DERIVED, not named. It used to read `!old_vocab.contains(&"Breakpoints")`,
+        // which was true only while the previous vocabulary was version 1: the moment a third row was
+        // appended the guard failed on a test whose subject had not changed. The claim it was making is
+        // the one below, and this spelling of it cannot go stale.
+        assert_ne!(
+            Some(old_vocab),
+            VOCABULARIES.last().copied(),
+            "the previous vocabulary is today's, so this test is about nothing"
         );
 
         // A layout built out of the previous vocabulary's tabs only — which is what a v1 file holds.
@@ -802,15 +821,20 @@ mod tests {
 
     /// **The nav owes [`VOCABULARIES`] nothing, and this is where that is checked rather than asserted in
     /// prose.** The panel menu is drawn outside the `DockState` and adds no [`Tab`] variant, so the
-    /// stored layout's alphabet is unchanged and no row is appended. If a future nav ever *does* become a
-    /// tab, `layout_version_is_the_last_row_of_the_tab_vocabulary` goes red — which is the whole point of
-    /// that table. Here the claim is the narrow one: today's vocabulary is still version
-    /// [`LAYOUT_VERSION`] and still the eight-panel row, so a layout saved by the previous build of this
-    /// player still loads.
+    /// stored layout's alphabet was unchanged by it and no row was appended for it. If a future nav ever
+    /// *does* become a tab, `layout_version_is_the_last_row_of_the_tab_vocabulary` goes red — which is
+    /// the whole point of that table.
+    ///
+    /// ⚑ **This is now a HISTORICAL claim, and it was moved rather than edited**, exactly as its own
+    /// failure message instructed. The nav shipped against version 2's eight panels; version 3 appended
+    /// `Planes`, which is a tab and therefore not a counter-example to anything this row says. So the
+    /// assertion names **`VOCABULARIES[1]`**, the row that was newest when the nav landed, instead of
+    /// following the tail. Rewriting it to today's tail would have quietly turned a claim about the nav
+    /// into a claim about whatever shipped last.
     #[test]
     fn the_panel_nav_did_not_change_the_tab_vocabulary() {
         assert_eq!(
-            VOCABULARIES.last().copied(),
+            VOCABULARIES.get(1).copied(),
             Some(
                 [
                     "Screen",
@@ -824,8 +848,8 @@ mod tests {
                 ]
                 .as_slice()
             ),
-            "the newest vocabulary is not the eight panels the nav row shipped against; if a Tab was \
-             added, this row is now a historical claim and should be moved, not edited"
+            "version 2 is not the eight panels the nav row shipped against; that row is history and \
+             must not be edited in place"
         );
     }
 

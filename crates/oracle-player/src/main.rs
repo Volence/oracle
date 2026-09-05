@@ -63,6 +63,7 @@ mod nav;
 mod objects;
 mod pacing;
 mod palette;
+mod planes;
 mod report;
 mod screen;
 mod screen_pick;
@@ -423,6 +424,10 @@ struct Loop {
     /// the handles of the watches that panel armed, and spawn mode. Not persisted — a spawn mode that came
     /// back armed after a restart would change what the first click of a session does, silently.
     screen: screen_pick::Panel,
+    /// **The Planes tab's state** (`crate::planes`): the selected plane, its two toggles, the texture it
+    /// last rasterised and the fingerprint that texture was drawn from. Not persisted, on the Screen
+    /// panel's reasoning: which plane you were last looking at is a *looking at it* choice.
+    planes: planes::Panel,
     /// **The cartridge's `.srm`** (S3) — the file, the autosave debounce, and the bytes rescued when the
     /// machine is replaced under this window. Its whole reason for living beside the bus rather than
     /// inside a panel is that both doors onto a cartridge swap — a client's and this window's own — are
@@ -638,6 +643,7 @@ impl Loop {
             transport: ui::Transport::default(),
             palette: palette::Palette::default(),
             screen: screen_pick::Panel::default(),
+            planes: planes::Panel::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -1005,6 +1011,7 @@ impl Loop {
             transport,
             palette,
             screen: screen_panel,
+            planes: planes_panel,
             states,
             battery,
             swap,
@@ -1105,6 +1112,7 @@ impl Loop {
                     objects,
                     stopping,
                     screen: screen_panel,
+                    planes: planes_panel,
                     states,
                     battery,
                     governor,

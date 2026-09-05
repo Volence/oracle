@@ -68,6 +68,10 @@ use serde_json::{json, Value};
 pub enum Tab {
     /// The emulator picture. The one tab that carries the uploaded texture.
     Screen,
+    /// **Plane A, plane B and the window drawn whole from the nametable, with no scroll applied** — the
+    /// view that answers *what does that floor actually look like* without a scroll offset in the way.
+    /// Second, beside `Screen`, because it is the other tab you look at a picture in.
+    Planes,
     /// Live pacing state — this parcel's subject, visible while it happens.
     Pacing,
     /// The 68000 register file and the cheap half of `emulator/status`, in one tab. Nine key/values in a
@@ -100,8 +104,9 @@ impl Tab {
     /// `every_tab_the_player_ships_is_reachable_from_the_nav` in [`crate::nav`], which asks **serde's
     /// derive** what variants exist and compares. It has to: [`crate::nav::entries`] maps over this
     /// array, so a variant missing from it is a panel with a body and no way to open it.
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Screen,
+        Tab::Planes,
         Tab::Pacing,
         Tab::Registers,
         Tab::Memory,
@@ -121,6 +126,7 @@ impl Tab {
     pub const fn title(self) -> &'static str {
         match self {
             Tab::Screen => "Screen",
+            Tab::Planes => "Planes",
             Tab::Pacing => "Pacing",
             Tab::Registers => "Registers",
             Tab::Memory => "Memory",
@@ -154,6 +160,10 @@ pub struct Panels<'a> {
     /// The Screen tab's own state: the standing readout of the last click, the handles of the watches
     /// **this panel** armed, and spawn mode. See [`crate::screen_pick`].
     pub screen: &'a mut screen_pick::Panel,
+    /// The Planes tab's own state: which plane, the two toggles, and the texture it last rasterised with
+    /// the fingerprint that texture was drawn from. `&mut` because the whole render-on-change decision
+    /// lives in there, and a panel that re-derived it every repaint would be the thing it exists to avoid.
+    pub planes: &'a mut crate::planes::Panel,
     /// **The ten save-state slots** (S3). `&mut` because the Screen tab's slot controls are *controls*:
     /// things you do are not tabs, and a slot readout you could not act on would send the operator back
     /// to a function key they have to already know about.
@@ -185,6 +195,7 @@ impl egui_dock::TabViewer for Panels<'_> {
     fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
         egui::Id::new(match tab {
             Tab::Screen => "screen",
+            Tab::Planes => "planes",
             Tab::Pacing => "pacing",
             Tab::Registers => "registers",
             Tab::Memory => "memory",
@@ -209,6 +220,7 @@ impl egui_dock::TabViewer for Panels<'_> {
                 ui.separator();
                 self.screen(ui);
             }
+            Tab::Planes => self.planes(ui),
             Tab::Pacing => self.pacing(ui),
             Tab::Registers => self.registers(ui),
             Tab::Memory => self.memory(ui),
@@ -470,6 +482,171 @@ impl Panels<'_> {
                 }
             });
         }
+    }
+
+    /// **The Planes tab.** Controls, then the facts and the scroll reading beside the picture.
+    ///
+    /// Everything about *what the picture is* belongs to [`crate::planes`], including the decision not to
+    /// rasterise. This function chooses where things go and nothing else, on [`Panels::screen`]'s split.
+    ///
+    /// The scroll reading sits **beside the picture rather than under it**, because the whole reason the
+    /// panel is not just an image is that the image can be a confident wrong answer: the sentence saying a
+    /// single register read could not establish the scroll has to be in the same glance as the thing it is
+    /// about.
+    fn planes(&mut self, ui: &mut egui::Ui) {
+        let ink = crate::planes::Ink::of(crate::theme::DEFAULT_FAMILY);
+        let is_window = self.planes.plane == oracle_core::render::Plane::Window;
+        ui.horizontal_wrapped(|ui| {
+            for (p, label) in crate::planes::CHOICES {
+                if ui
+                    .selectable_label(self.planes.plane == p, label)
+                    .on_hover_text("draw this plane whole, from its nametable")
+                    .clicked()
+                {
+                    self.planes.plane = p;
+                }
+            }
+            ui.separator();
+            ui.checkbox(&mut self.planes.outline, "viewport")
+                .on_hover_text("outline the part of this plane the screen is showing");
+            // Offered and **disabled** rather than hidden, on the transport bar's rule: a control that
+            // vanishes teaches nothing, and the hover says why this one is off.
+            ui.add_enabled(
+                !is_window,
+                egui::Checkbox::new(&mut self.planes.apply_scroll, "apply live scroll"),
+            )
+            .on_hover_text(if is_window {
+                "the window plane does not scroll, so there is nothing to apply"
+            } else {
+                "draw the region the scroll cuts out of this plane instead of the plane itself"
+            });
+        });
+        ui.separator();
+
+        // ⚑ Disjoint field borrows: the panel's own state mutably, the machine shared. The VDP read is
+        // in-process and read-only (`screen_pick` reads it the same way for a click).
+        let inp = self
+            .planes
+            .refresh(ui.ctx(), self.machine.system().vdp(), ink);
+        let note = crate::planes::scroll_note(&inp);
+        let (rasters, repaints) = self.planes.work();
+        let (pw, ph) = inp.pixels();
+        let (rw, rh) = inp.raster_size();
+        let facts = vec![
+            objects::Fact {
+                label: "nametable at".into(),
+                value: format!("${:04X}", inp.base),
+                mono: true,
+            },
+            objects::Fact {
+                label: "map".into(),
+                value: format!("{} by {} cells", inp.cols, inp.rows),
+                mono: false,
+            },
+            objects::Fact {
+                label: "plane".into(),
+                value: format!("{pw} by {ph} pixels"),
+                mono: false,
+            },
+            objects::Fact {
+                label: "drawn".into(),
+                value: format!("{rw} by {rh} pixels"),
+                mono: false,
+            },
+            objects::Fact {
+                label: "scroll table at".into(),
+                value: if is_window {
+                    "not used by this plane".into()
+                } else {
+                    format!("${:04X}", inp.htable)
+                },
+                mono: !is_window,
+            },
+            objects::Fact {
+                label: "rasterised".into(),
+                value: format!("{rasters} times in {repaints} repaints"),
+                mono: false,
+            },
+        ];
+
+        // A narrow pane cannot carry a column of facts and a plane side by side, so below this width the
+        // facts go under the picture instead of squeezing it.
+        let side_by_side = ui.available_width() >= 560.0;
+        let side = |ui: &mut egui::Ui| {
+            card(ui, |ui| {
+                fact_grid(ui, "planes_facts", &facts);
+                ui.add_space(SECTION_GAP);
+                let weak = ui.visuals().weak_text_color();
+                for line in [&note.horizontal, &note.vertical] {
+                    ui.label(
+                        egui::RichText::new(line)
+                            .text_style(egui::TextStyle::Small)
+                            .color(weak),
+                    );
+                }
+                // ⚑ The loud line. Never omitted when set, and coloured on the field rather than on the
+                // shape of the string (style page P5).
+                if let Some(said) = &note.unestablished {
+                    ui.add_space(SECTION_GAP);
+                    ui.label(
+                        egui::RichText::new(said)
+                            .text_style(egui::TextStyle::Small)
+                            .color(crate::theme::WARNING),
+                    );
+                }
+                if inp.scrolled {
+                    ui.add_space(SECTION_GAP);
+                    ui.label(
+                        egui::RichText::new(
+                            "The scroll is applied, so this is the region the screen shows of this \
+                             plane alone, with no other plane and no sprites over it.",
+                        )
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                    );
+                }
+            });
+        };
+        if side_by_side {
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui(egui::vec2(260.0, ui.available_height()), side);
+                ui.add_space(SECTION_GAP);
+                self.plane_picture(ui);
+            });
+        } else {
+            self.plane_picture(ui);
+            ui.add_space(SECTION_GAP);
+            side(ui);
+        }
+    }
+
+    /// The plane texture, fitted to whatever room is left, pixel grid preserved.
+    ///
+    /// [`Aspect::Square`] rather than the Screen tab's TV default, and that is not a taste call: this
+    /// picture is a **map**, and stretching it to a 4:3 raster would put a cell's width and its height in
+    /// different units on a view whose whole job is counting cells.
+    fn plane_picture(&mut self, ui: &mut egui::Ui) {
+        let Some(tex) = self.planes.texture() else {
+            ui.centered_and_justified(|ui| ui.label("nothing rasterised yet"));
+            return;
+        };
+        let src = tex.size_vec2();
+        let avail = ui.available_size();
+        let size = screen_pick::fit(
+            avail,
+            src.x as usize,
+            src.y as usize,
+            ui.pixels_per_point(),
+            oracle_frontend::present::Aspect::Square,
+        );
+        if size.x <= 0.0 || size.y <= 0.0 {
+            return;
+        }
+        egui::ScrollArea::both()
+            .id_salt("planes_picture")
+            .show(ui, |ui| {
+                ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::hover()));
+            });
     }
 
     fn pacing(&self, ui: &mut egui::Ui) {
@@ -2282,7 +2459,10 @@ impl StatusStrip {
 /// The cost of turning it on was the two feature flags design §9.2 predicted (`eframe/persistence` and
 /// `egui_dock/serde`) rather than the one this comment used to claim, plus `ron` entering the lock file.
 pub fn initial_dock() -> egui_dock::DockState<Tab> {
-    let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
+    // **`Planes` shares the picture leaf with `Screen`** rather than taking a pane of its own: they are
+    // two views of the same frame, a person switches between them rather than watching both, and a plane
+    // wants every pixel of the widest pane in the window.
+    let mut dock = egui_dock::DockState::new(vec![Tab::Screen, Tab::Planes]);
     let surface = dock.main_surface_mut();
     let [_, right] = surface.split_right(egui_dock::NodeIndex::root(), 0.68, vec![Tab::Pacing]);
     let [inspect, _] =
@@ -2305,7 +2485,7 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
 ///
 /// `egui_dock` draws only the *active* tab of a leaf, so a bench run against [`initial_dock`] executes one
 /// panel body out of the three that share a pane and reports it as the cost of adding three. That is a
-/// measurement of the arrangement rather than of the panels. This function puts all eight in their own
+/// measurement of the arrangement rather than of the panels. This function puts all nine in their own
 /// leaves, so every body runs on every frame: the worst case a user could arrange, and the only
 /// arrangement in which measuring N panels measures N panels.
 ///
@@ -2317,7 +2497,7 @@ pub fn every_tab_dock() -> egui_dock::DockState<Tab> {
     let mut dock = egui_dock::DockState::new(vec![first]);
     let surface = dock.main_surface_mut();
     let mut at = egui_dock::NodeIndex::root();
-    // Alternating right/below, so eight leaves stay roughly square rather than becoming eight slivers in
+    // Alternating right/below, so nine leaves stay roughly square rather than becoming nine slivers in
     // one direction — a leaf too thin to lay out is a leaf whose body egui may skip.
     for (i, tab) in rest.enumerate() {
         let [_, next] = if i % 2 == 0 {
