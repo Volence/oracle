@@ -479,6 +479,32 @@ impl Panel {
     }
 }
 
+/// ⚑ **The standing alarm that the picture on the glass is not the machine's masked picture**, or `None`
+/// when there is nothing to be wrong about.
+///
+/// The tab's half of the same fact [`Panel::pick`] refuses on, and it is a separate function so the two
+/// cannot answer differently about one frame — the alarm and the refusal must appear together or a person
+/// gets one without the other.
+///
+/// **`glass == None` is `None` here and a REFUSAL there, and that asymmetry is deliberate.** With no
+/// picture uploaded the tab draws *"no frame yet"* and there is no picture below the alarm for it to be
+/// about; an alarm there would fire on a freshly launched player, before its first frame, with an empty
+/// mask in it — a false alarm on the loudest surface this tab has, which is the fastest way to teach a
+/// reader to ignore it. A *click* in that state is a different question and still has no honest answer,
+/// so it is still refused.
+pub fn glass_alarm(glass: Option<LayerMask>, bus_mask: LayerMask) -> Option<String> {
+    let drawn = glass?;
+    if drawn == bus_mask {
+        return None;
+    }
+    Some(format!(
+        "THE PICTURE BELOW IS NOT THE MACHINE'S PICTURE — it was drawn with {}, and the machine's mask \
+         is now {}. Nothing here can be read as the machine's view until the next frame.",
+        describe_mask(drawn),
+        describe_mask(bus_mask)
+    ))
+}
+
 /// A mask in one short phrase, for a sentence that has to name two of them without a reader having to
 /// diff two lists. One derivation, so a refusal cannot describe the same mask two ways.
 fn describe_mask(m: LayerMask) -> String {
@@ -896,6 +922,36 @@ mod tests {
                 s.contains("palette"),
                 "it must say what the masked path costs, or the picture changes in a second way \
                  nothing on screen explains: {s:?}"
+            );
+        }
+    }
+
+    /// **The standing alarm fires when the glass and the machine hold different masks — and NOT before
+    /// the first frame.**
+    ///
+    /// ⚑ The `None` row is the one this test was written for, and it is a defect the first draft shipped:
+    /// with the alarm written as `screen_mask != Some(bus.layers())` it fired on a freshly launched
+    /// player, before any picture existed, announcing that a picture that was not there disagreed with an
+    /// empty mask. A false alarm on the loudest surface this tab has is how a reader learns to ignore the
+    /// real one, so it is asserted absent rather than argued away.
+    #[test]
+    fn the_standing_alarm_fires_on_a_disagreement_and_never_before_the_first_frame() {
+        let mut masked = LayerMask::ALL;
+        assert!(masked.set(oracle_core::render::Layer::PlaneA, false));
+
+        // No picture yet: nothing on the glass to be wrong about, under either mask.
+        assert_eq!(glass_alarm(None, LayerMask::ALL), None);
+        assert_eq!(glass_alarm(None, masked), None);
+        // Agreement, masked or not: silence, because silence here is a measurement.
+        assert_eq!(glass_alarm(Some(LayerMask::ALL), LayerMask::ALL), None);
+        assert_eq!(glass_alarm(Some(masked), masked), None);
+
+        // …and the two disagreements, in both directions.
+        for (glass, bus) in [(LayerMask::ALL, masked), (masked, LayerMask::ALL)] {
+            let s = glass_alarm(Some(glass), bus).expect("a disagreement must be announced");
+            assert!(
+                s.contains(&describe_mask(glass)) && s.contains(&describe_mask(bus)),
+                "the alarm must name BOTH masks, or a reader cannot tell which is which: {s:?}"
             );
         }
     }

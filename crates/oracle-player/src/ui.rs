@@ -295,18 +295,11 @@ impl Panels<'_> {
         }
         // ⚑ **Loud on unmeasurable.** When the glass and the machine are not the same mask, this panel
         // cannot honestly describe what is on screen, so it says that rather than describing it — the
-        // same rule that makes a click refuse in that window. Ordinarily impossible to see: the drain
+        // same rule that makes a click refuse in that window, from a function beside that one so the
+        // alarm and the refusal cannot disagree about a frame. Ordinarily impossible to see: the drain
         // masks the picture before this frame is composed, so the two agree.
-        if self.screen_mask != Some(bus_mask) {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                format!(
-                    "THE PICTURE BELOW IS NOT THE MASKED PICTURE — the machine's mask is now [{}] and \
-                     this frame was not drawn with it. Nothing here can be read as the machine's view \
-                     until the next frame.",
-                    bus_mask.hidden().join(" ")
-                ),
-            );
+        if let Some(s) = screen_pick::glass_alarm(self.screen_mask, bus_mask) {
+            ui.colored_label(ui.visuals().error_fg_color, s);
         }
         // The spawn badge is a correctness requirement rather than decoration: a mode that changes what a
         // left-click *does* must say so for as long as it is on, and it must name the archetype.
