@@ -455,21 +455,29 @@ if [ "$REMOTE_AFTER" != "$TESTED_SHA" ]; then
     fail "push: $REMOTE/$BRANCH is $REMOTE_AFTER, NOT the tested SHA $TESTED_SHA"
     finish_red
 elif [ -z "$REMOTE_BEFORE" ]; then
+    VERDICT=GREEN-CREATED
+    SUMMARY="GREEN. The push CREATED $REMOTE/$BRANCH at the tested SHA."
     echo "    THE PUSH CREATED $REMOTE/$BRANCH at the tested SHA."
 elif [ "$REMOTE_BEFORE" = "$REMOTE_AFTER" ]; then
+    # The summary line has to say this too. A run that ends "GREEN and pushed" over a push that did
+    # nothing is the same class of untruth (d) exists to prevent, one line further down the page.
+    VERDICT=GREEN-NOOP
+    SUMMARY="GREEN, and it pushed NOTHING — $REMOTE/$BRANCH already carried the tested SHA."
     echo "    THE PUSH DID NOTHING: $REMOTE/$BRANCH was already at the tested SHA before this run."
 else
+    VERDICT=GREEN-PUSHED
+    SUMMARY="GREEN and pushed. $REMOTE/$BRANCH moved to the tested SHA."
     echo "    THE PUSH MOVED $REMOTE/$BRANCH from $REMOTE_BEFORE to the tested SHA."
 fi
 
 hr
 {
-    echo "verdict=GREEN-PUSHED"
+    echo "verdict=$VERDICT"
     echo "tested_sha=$TESTED_SHA"
     echo "legs=$LEGS_HEADER/$EXPECTED_LEGS"
     echo "totals=release $T_PASS passed, $T_FAIL failed, $T_IGN ignored"
     echo "remote_before=${REMOTE_BEFORE:-none}"
     echo "remote_after=$REMOTE_AFTER"
 } > "$RUN_DIR/VERDICT"
-echo "land: GREEN and pushed. End marker: $RUN_DIR/VERDICT"
+echo "land: $SUMMARY End marker: $RUN_DIR/VERDICT"
 exit 0
