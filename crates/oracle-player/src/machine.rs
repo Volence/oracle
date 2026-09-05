@@ -8,6 +8,7 @@
 
 use oracle_core::bus::Fanout;
 use oracle_core::io::Pad;
+use oracle_core::render::LayerMask;
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
 use std::time::{Duration, Instant};
@@ -41,6 +42,18 @@ pub struct Machine {
     /// or the ring asking for a skip) re-presents it instead of flashing black. Exactly what the minifb
     /// player does with its `buf`.
     image: Option<egui::ColorImage>,
+    /// ⚑ **The display mask [`image`](Machine::image) was produced under** — `None` before the first
+    /// picture exists.
+    ///
+    /// Carried beside the picture rather than derived from the bus, because it is a fact about *the pixels
+    /// that are there*, and the bus's mask is a fact about what the machine has been told. They agree on
+    /// every ordinary frame and they are two different things: the whole of S2a is closing the gap between
+    /// them, and the residual gap — a mask changed after this picture was made — is what
+    /// [`crate::screen_pick`] must refuse on rather than describe.
+    ///
+    /// Every write to `image` writes this in the same statement, which is what keeps it from becoming a
+    /// second opinion about the picture.
+    image_mask: Option<LayerMask>,
     /// Consecutive iterations the ring has answered 0 for — the [`crate::audio::MAX_CONSECUTIVE_SKIPS`]
     /// safety valve's counter.
     skips: usize,
@@ -58,6 +71,7 @@ impl Machine {
             cap: ScanlineCapture::new(Retain::LastFrame),
             device,
             image: None,
+            image_mask: None,
             skips: 0,
             frames: 0,
             pictures: 0,
@@ -169,6 +183,11 @@ impl Machine {
             let t2 = Instant::now();
             if let Some(img) = capture_to_image(&self.cap) {
                 self.image = Some(img);
+                // The captured frame was composited line by line by `Vdp::render_scanline`, which takes no
+                // mask and must never gain one — so what came out is the unmasked picture, whatever the
+                // engine's mask happens to say. [`crate::bus::drain`] re-derives it under the mask
+                // afterwards when one is set; this records what is actually here until it does.
+                self.image_mask = Some(LayerMask::ALL);
                 self.pictures += 1;
                 // Published on exactly the frames that produced a picture, and *before* the clear below,
                 // which drops the retained pixels along with the line log.
@@ -259,12 +278,82 @@ impl Machine {
                 .map(|&(r, g, b)| egui::Color32::from_rgb(r, g, b))
                 .collect(),
         });
+        // Unmasked: `Host::framebuffer` hands over the engine's *latched* frame, which the engine composed
+        // with `render_scanline` during the client's own run. [`crate::bus::drain`] re-derives under the
+        // mask immediately after this call when one is set, so the two pixel sources end up under one rule
+        // — which is the split `Bus::framebuffer`'s doc used to have to warn about.
+        self.image_mask = Some(LayerMask::ALL);
+        true
+    }
+
+    /// ⚑ **Re-derive the picture under a display mask** — S2a, and the player's equivalent of
+    /// `oracle-frontend`'s `blit_masked`. Returns whether a picture came out.
+    ///
+    /// # Why a masked picture cannot be made out of the captured one
+    ///
+    /// The capture's rows were composited line by line during the run by
+    /// [`Vdp::render_scanline`](oracle_core::vdp::Vdp::render_scanline) — **the one render that commits the
+    /// sprite-overflow and collision latches and the R10 carry, which is why it takes no mask and has no
+    /// masked twin** (`docs/OVERSEER.md`'s LAYER-MASK entry: *"a display mask cannot perturb emulation" is
+    /// enforced by the type system*). This slice adds no mask parameter to it and none may ever be added.
+    ///
+    /// What the capture leaves behind is decoded colours with the losing layers **already discarded**, so
+    /// "mask" applied to those bytes could only mean "paint over" — and painting the backdrop over dots
+    /// plane B was visible at is the believable-wrong-answer this whole surface exists to avoid. So a masked
+    /// picture is re-derived from VDP state through
+    /// [`render_line_masked`](oracle_core::vdp::Vdp::render_line_masked), exactly as `emulator/screenshot`
+    /// does under a mask and exactly as the minifb window does.
+    ///
+    /// # What it costs, stated because it is visible on the glass
+    ///
+    /// This is a post-hoc read of whatever CRAM holds *now*, so every mid-frame palette effect the capture
+    /// exists to preserve (S3K's underwater split is the loud one) is gone for as long as a mask is set: the
+    /// water renders in the above-water palette. That is the same trade the bus makes and announces as
+    /// `source: "stateRender"`, and it is the second reason the window must **say** a mask is on rather than
+    /// let it be inferred — the picture changes in a way the toggle did not ask for. Clearing the mask puts
+    /// the captured frame back on the next completed frame; nothing is discarded.
+    pub fn render_masked(&mut self, mask: LayerMask) -> bool {
+        let vdp = self.sys.vdp();
+        // Line 0 is rendered twice rather than held: `render_line_masked` is `&self` and pure, the cost is
+        // one line out of 224, and threading the first row through as a special case is how an off-by-one
+        // between the width probe and the render gets written. `oracle-frontend`'s `blit_masked` makes the
+        // same call for the same reason.
+        let width = vdp.render_line_masked(0, mask).len();
+        if width == 0 {
+            // Loud-on-unmeasurable's floor: no picture rather than a black rectangle presented as one. The
+            // retained image and its mask are both left alone, so the caller can see that the glass and the
+            // bus disagree instead of being handed a fabricated agreement.
+            return false;
+        }
+        let mut pixels = Vec::with_capacity(width * HEIGHT);
+        for line in 0..HEIGHT as u16 {
+            let row = vdp.render_line_masked(line, mask);
+            for x in 0..width {
+                let (r, g, b) = row.get(x).copied().unwrap_or((0, 0, 0));
+                pixels.push(egui::Color32::from_rgb(r, g, b));
+            }
+        }
+        self.image = Some(egui::ColorImage {
+            size: [width, HEIGHT],
+            source_size: egui::vec2(width as f32, HEIGHT as f32),
+            pixels,
+        });
+        self.image_mask = Some(mask);
         true
     }
 
     /// The last completed picture, or `None` before the first frame finishes.
     pub fn image(&self) -> Option<&egui::ColorImage> {
         self.image.as_ref()
+    }
+
+    /// **The mask [`image`](Machine::image) was actually drawn under**, or `None` before there is one.
+    ///
+    /// Read by the uploader so the Screen tab can compare *what is on the glass* against what the bus says
+    /// the mask is. Those are the same on every ordinary frame; where they are not, the panel says so and
+    /// refuses rather than describing a picture that is not there.
+    pub fn image_mask(&self) -> Option<LayerMask> {
+        self.image_mask
     }
 
     /// Lines the scanline capture is holding right now — **for the tests that prove

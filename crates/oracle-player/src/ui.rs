@@ -154,6 +154,13 @@ pub struct Panels<'a> {
     /// The Screen tab's own state: the standing readout of the last click, the handles of the watches
     /// **this panel** armed, and spawn mode. See [`crate::screen_pick`].
     pub screen: &'a mut screen_pick::Panel,
+    /// ⚑ **The display mask [`tex`](Panels::tex) was drawn under**, or `None` before the first upload.
+    ///
+    /// The mask of *the picture on the glass* — read off the uploaded texture, deliberately not off the bus.
+    /// The bus's mask is what the machine has been told; this is what a person is looking at, and the two
+    /// separate for as long as it takes a change to reach the next upload. `crate::screen_pick` refuses a
+    /// click on exactly that gap rather than describing a picture that is not there.
+    pub screen_mask: Option<oracle_core::render::LayerMask>,
     pub governor: &'a Governor,
     pub status: &'a str,
     /// The `--rom` argument as the human typed it. The strip absolutises it through the bus's own
@@ -258,7 +265,10 @@ impl Panels<'_> {
             if let Some(dot) =
                 screen_pick::dot_at(image_rect, pos, ppp, src.x as usize, src.y as usize)
             {
-                self.screen.click(self.machine, self.bus, dot);
+                // The mask **this texture** was drawn under travels with the click, so the panel can
+                // refuse rather than describe if the machine's mask has moved since. See `screen_pick`.
+                self.screen
+                    .click(self.machine, self.bus, self.screen_mask, dot);
             }
         }
     }
@@ -270,11 +280,49 @@ impl Panels<'_> {
     /// Above rather than below for the reason the halting alarm is on the top bar rather than in a tab —
     /// a standing statement that can be scrolled or cropped out of view is not standing.
     fn screen_controls(&mut self, ui: &mut egui::Ui) {
+        // ⚑ **The standing mask statement (S2a), first and unconditionally.** A mask changes what the
+        // picture *is*, so it says so for as long as it is on, in prose, where a person is looking — not
+        // in a tooltip, not once, and not only in the wire caveat. `docs/OVERSEER.md`'s GUI-LAYERS entry
+        // banks the reasoning: *the author will forget, and then read a masked picture as the real one.*
+        // The sentence itself is `screen_pick::mask_statement`, derived from `LayerMask::hidden()`.
+        //
+        // **Read off the GLASS, not off the bus**, and that is the whole point of `screen_mask`: this line
+        // describes the picture below it. `Bus::layers()` is what the machine has been told, and the two
+        // separate for as long as it takes a change to reach the next upload.
+        let bus_mask = self.bus.layers();
+        if let Some(s) = self.screen_mask.and_then(screen_pick::mask_statement) {
+            ui.colored_label(ui.visuals().warn_fg_color, s);
+        }
+        // ⚑ **Loud on unmeasurable.** When the glass and the machine are not the same mask, this panel
+        // cannot honestly describe what is on screen, so it says that rather than describing it — the
+        // same rule that makes a click refuse in that window, from a function beside that one so the
+        // alarm and the refusal cannot disagree about a frame. Ordinarily impossible to see: the drain
+        // masks the picture before this frame is composed, so the two agree.
+        if let Some(s) = screen_pick::glass_alarm(self.screen_mask, bus_mask) {
+            ui.colored_label(ui.visuals().error_fg_color, s);
+        }
         // The spawn badge is a correctness requirement rather than decoration: a mode that changes what a
         // left-click *does* must say so for as long as it is on, and it must name the archetype.
         if let Some(badge) = self.screen.badge() {
             ui.colored_label(ui.visuals().warn_fg_color, &badge);
         }
+        // ⚑ **The four layer toggles** — one per `LayerMask::targets()` entry, generated from the core's
+        // own vocabulary rather than typed here, so this window cannot offer a layer the bus lacks or
+        // spell one differently. This is `F-PLAYER-PALETTE-NO-ACTIONS`'s four `ToggleLayer` rows, and they
+        // close here rather than being re-typed: they are the only frontend actions that were already a
+        // served method (`emulator/set_layer_enabled`), which is what the toggle calls.
+        //
+        // The checkbox shows **the bus's** mask, not the glass's, because it is a control: it must report
+        // the state it writes. The line above is what reports the glass.
+        ui.horizontal(|ui| {
+            ui.weak("layers:");
+            for (name, layer) in oracle_core::render::LayerMask::targets() {
+                let mut shown = bus_mask.shows(layer);
+                if ui.checkbox(&mut shown, name).changed() {
+                    self.screen.set_layer(self.machine, self.bus, name, shown);
+                }
+            }
+        });
         ui.horizontal(|ui| {
             // Spawn mode is a **control**, not a tab: things you *do* are controls. The armed/disarmed
             // split is one button for one question, the same rule the transport bar states.

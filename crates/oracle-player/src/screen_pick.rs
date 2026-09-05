@@ -7,34 +7,42 @@
 //! migration there is one window and it is the panels window with the game picture in a tab, so both answers
 //! became the same answer.
 //!
-//! ## ⚑ S1 SHIPS MASKED-OFF-ONLY, AND THIS IS THE PLACE THAT SAYS SO
+//! ## ⚑ S2a: THE MASK REACHES THE PICTURE, SO THE PANEL DESCRIBES THE PICTURE
 //!
-//! §3.2a of the plan — *the display mask must reach the picture* — is **not in this parcel**, and §8 states
-//! the consequence exactly: *"S1's picking is only correct once S2a lands, so if they are separated, S1 must
-//! be masked-off-only and say so."* So it is, and here is the whole argument.
-//!
-//! `oracle-frontend` has two pixel paths: `blit_capture` normally, and `blit_masked` — a post-hoc re-render
-//! through `render_line_masked` — whenever a display layer is hidden. **`oracle-player` has only the first.**
-//! A mask set through `emulator/set_layer_enabled` therefore changes the bus's answers (`screenshot`,
-//! `pixel_attribution`) and does **not** change this window's picture.
+//! S1 shipped **masked-off-only** — while any layer was hidden a click was refused outright — because
+//! `oracle-player` had one pixel path and `oracle-frontend` had two. That is over.
+//! [`Machine::render_masked`](crate::machine::Machine::render_masked) is this window's `blit_masked`, and
+//! [`crate::bus::drain`] applies it on every iteration a mask is set, to the loop's own frames and to a
+//! client-driven one alike. The blanket refusal and its two rows are deleted.
 //!
 //! [`pick::resolve`](oracle_frontend::pick::resolve)'s standing invariant is *"the panel describes the
-//! picture"*, and under a mask this window cannot satisfy it either way round:
+//! picture"*, and it is now satisfiable: resolve under **the mask the picture on the glass was actually
+//! drawn with**, which is also the bus's mask, so the answer describes what the person is looking at *and*
+//! agrees with what `emulator/pixel_attribution` would tell a socket client about the same dot in the same
+//! instant.
 //!
-//! * resolve **with** the bus's mask and the answer describes a picture nobody is looking at — plus a
-//!   `planeA hidden, so this is the masked picture` clause that is false of this window's glass;
-//! * resolve **without** it and the answer is right about the picture but disagrees, silently, with what
-//!   `emulator/pixel_attribution` would tell a socket client about the same dot in the same instant. That is
-//!   precisely the drift `pick.rs`'s `bus_parity` guard exists to prevent, arriving through the one path the
-//!   guard cannot see.
+//! ### The residual, and why it is a refusal rather than a caveat
 //!
-//! Neither is acceptable, so **while any layer is hidden a click is REFUSED**, in a sentence that names the
-//! hidden layers, says the picture does not honour a mask yet, and names both ways out. That is
-//! loud-on-unmeasurable applied to a gesture: a picker that quietly answered would be right most days and
-//! confidently wrong on the day it mattered. See [`Panel::masked_off_only`].
+//! "The mask the glass was drawn with" and "the mask the bus holds" are two different facts, and they can
+//! separate: the mask can move *after* the picture was made — the palette can call
+//! `emulator/set_layer_enabled` during the same `build_ui` that draws the picture — or a masked re-render
+//! can fail to produce a picture at all. In that window the glass is one picture and the bus is describing
+//! another, and there is no honest answer to give about a dot.
 //!
-//! **What S2a deletes:** that gate and its test, plus the `LayerMask::ALL` note in [`Panel::pick`]. Nothing
-//! else here changes — the resolve call already takes the bus's own mask.
+//! So the gate is now **narrow and exact**: a click is refused only while [`Panel::pick`]'s `glass`
+//! argument disagrees with `bus.layers()`, and the refusal says which is which. That is
+//! loud-on-unmeasurable applied to a gesture — *"COULD NOT MEASURE"* beats a plausible answer — and it
+//! costs a person nothing on any ordinary frame, because on an ordinary frame the two agree.
+//!
+//! ### And the mask says it is on, continuously, where a person is looking
+//!
+//! [`mask_statement`] is a standing line drawn on **every** frame a mask is set, above the picture, naming
+//! the hidden layers. It is a correctness requirement rather than decoration, and the reasoning is the
+//! consumer's, banked in `docs/OVERSEER.md`'s GUI-LAYERS entry: *the author will forget, and then read a
+//! masked picture as the real one.* A toast cannot carry it, because a toast expires and the mask does not.
+//! It also has to say the second thing a mask does to this window's picture — the masked path is a post-hoc
+//! re-render, so mid-frame palette effects are gone — or the picture silently changes in a way the toggle
+//! did not ask for.
 //!
 //! ## Points, pixels, and the one thing that is invisible at 1.0 scaling
 //!
@@ -277,42 +285,105 @@ impl Panel {
         }
     }
 
+    /// Show or hide one display layer, **through the served method** `emulator/set_layer_enabled`.
+    ///
+    /// The four checkboxes this backs are generated from the core's own [`LayerMask::targets`], so this
+    /// window cannot offer a layer the bus lacks and cannot spell one differently — the derivation
+    /// `oracle-frontend`'s four `ToggleLayer` palette rows already use, which is what lets those four close
+    /// with this slice rather than being re-typed here.
+    ///
+    /// It goes through [`Bus::call`] rather than through `Host::set_layer_enabled` for D15's reason and for
+    /// one more: there is exactly one mask, it lives on the engine, and a window that moved it by any other
+    /// door would be a second writer to a field a socket client also writes. The tool's own refusal is what
+    /// is shown when it refuses.
+    pub fn set_layer(&mut self, machine: &mut Machine, bus: &mut Bus, layer: &str, enabled: bool) {
+        let sys = machine.system_mut();
+        match bus.call(
+            sys,
+            "emulator/set_layer_enabled",
+            &json!({"layer": layer, "enabled": enabled}),
+        ) {
+            Answer::Ok(_) => {
+                self.last = Some(Readout::ok(format!(
+                    "{layer} is now {}",
+                    if enabled { "shown" } else { "HIDDEN" }
+                )));
+            }
+            // The server's own words, whole — this window's second opinion about a server it lives inside
+            // is the one thing a refusal must not become.
+            Answer::Err(e) => {
+                self.last = Some(Readout::refused(format!(
+                    "hiding {layer} was refused — {} {}",
+                    e.code, e.message
+                )))
+            }
+        }
+    }
+
     /// **The click.** Spawn mode takes it if armed, otherwise it is a watch pick.
     ///
     /// The branch is here, in front of the pick, exactly as `oracle-frontend`'s run loop puts it there:
     /// the two are the same gesture and only one of them can have it — which is precisely why the mode owes
     /// a standing statement that it is on ([`Panel::badge`]).
-    pub fn click(&mut self, machine: &mut Machine, bus: &mut Bus, dot: (u16, u16)) {
+    ///
+    /// `glass` is **the mask the picture on screen was drawn with** — see [`Panel::pick`].
+    pub fn click(
+        &mut self,
+        machine: &mut Machine,
+        bus: &mut Bus,
+        glass: Option<LayerMask>,
+        dot: (u16, u16),
+    ) {
         match self.mode.selected().map(str::to_string) {
             Some(archetype) => self.place(machine, bus, &archetype, dot),
-            None => self.pick(machine, bus, dot),
+            None => self.pick(machine, bus, glass, dot),
         }
     }
 
-    /// The refusal a click gets while a display layer is hidden. See this module's doc for the argument.
+    /// The refusal a click gets when the picture on the glass and the bus's mask are not the same mask.
     ///
-    /// **The layers are read off the mask**, never listed here, so this cannot name a layer the bus does not
-    /// have — the same derivation `pick::resolve`'s own mask clause and the frontend's layer badge read.
-    fn masked_off_only(mask: LayerMask) -> String {
-        let hidden = mask.hidden().join(" + ");
+    /// **Both masks are read off the values themselves**, never listed here, so this cannot name a layer the
+    /// bus does not have — the same derivation `pick::resolve`'s own mask clause and the frontend's layer
+    /// badge read. `None` for the glass is the honest *"there is no picture yet"* case rather than a fourth
+    /// spelling of "unmasked".
+    fn glass_disagrees(glass: Option<LayerMask>, bus_mask: LayerMask) -> String {
+        let drawn = match glass {
+            Some(m) => format!("the picture on screen was drawn with {}", describe_mask(m)),
+            None => "there is no picture on screen yet".to_string(),
+        };
         format!(
-            "{hidden} hidden — but this window's picture does not honour a display mask yet (migration \
-             S2a), so what you clicked is the UNMASKED machine. An answer here would describe neither the \
-             picture in front of you nor what emulator/pixel_attribution would tell a client about the same \
-             dot, so nothing was armed. Show every layer again (emulator/set_layer_enabled), or use the \
-             minifb window, whose picture does honour the mask."
+            "{drawn}, but the machine's mask is now {} — so nothing on this glass is the picture that \
+             answer would be about. Nothing was armed. This clears itself on the next frame; if it does \
+             not, the masked re-render is failing and the picture you are looking at is not the one the \
+             bus is describing.",
+            describe_mask(bus_mask)
         )
     }
 
-    fn pick(&mut self, machine: &mut Machine, bus: &mut Bus, dot: (u16, u16)) {
+    /// Resolve the dot, retire this panel's watches, and arm what the dot names.
+    ///
+    /// ⚑ **`glass` is the mask the picture was drawn with, and it is a parameter for the same reason
+    /// `pick::resolve`'s `mask` and `now_mclk` are: this panel describes a picture it did not make.** The
+    /// caller reads it off the uploaded texture rather than off the bus, because *what is on the glass* and
+    /// *what the machine has been told* are two different facts and the gap between them is exactly what
+    /// must be refused on rather than papered over. On every ordinary frame they are equal, and this reads
+    /// as it always did.
+    fn pick(
+        &mut self,
+        machine: &mut Machine,
+        bus: &mut Bus,
+        glass: Option<LayerMask>,
+        dot: (u16, u16),
+    ) {
         let (x, y) = dot;
-        // ⚑ THE MASKED-OFF-ONLY GATE. Read before anything is resolved or retired, so a refused click
-        // leaves the previously armed watches exactly where they were rather than half-clearing them.
-        let mask = bus.layers();
-        if !mask.hidden().is_empty() {
-            self.last = Some(Readout::refused(Self::masked_off_only(mask)));
+        // ⚑ THE GATE, read before anything is resolved or retired, so a refused click leaves the
+        // previously armed watches exactly where they were rather than half-clearing them.
+        let bus_mask = bus.layers();
+        if glass != Some(bus_mask) {
+            self.last = Some(Readout::refused(Self::glass_disagrees(glass, bus_mask)));
             return;
         }
+        let mask = bus_mask;
 
         let sys = machine.system_mut();
         // The machine's **now**, which §11.27's colour-staleness rule compares a CRAM write stamp against.
@@ -320,9 +391,9 @@ impl Panel {
         // and deliberately NOT `Vdp::now_mclk`, which is the instant the VDP last did guest-driven work and
         // on a paused machine can be arbitrarily stale.
         let now = sys.scheduler().now();
-        // The mask is the bus's own, not `LayerMask::ALL`: the gate above has already established it hides
-        // nothing, so the two are equal here, and passing the real one is what makes this line correct
-        // unchanged the moment S2a lands.
+        // The mask is the engine's own — never `LayerMask::ALL`, and never a second one assembled here.
+        // The gate above has established that it is also the mask the picture on the glass was drawn with,
+        // which is what makes "the panel describes the picture" an assertion rather than a hope.
         let p = pick::resolve(sys.vdp(), x, y, mask, now);
 
         // Retire only what THIS panel armed. `{all: true}` would take a socket client's watches with it —
@@ -406,6 +477,72 @@ impl Panel {
             }
         }
     }
+}
+
+/// ⚑ **The standing alarm that the picture on the glass is not the machine's masked picture**, or `None`
+/// when there is nothing to be wrong about.
+///
+/// The tab's half of the same fact [`Panel::pick`] refuses on, and it is a separate function so the two
+/// cannot answer differently about one frame — the alarm and the refusal must appear together or a person
+/// gets one without the other.
+///
+/// **`glass == None` is `None` here and a REFUSAL there, and that asymmetry is deliberate.** With no
+/// picture uploaded the tab draws *"no frame yet"* and there is no picture below the alarm for it to be
+/// about; an alarm there would fire on a freshly launched player, before its first frame, with an empty
+/// mask in it — a false alarm on the loudest surface this tab has, which is the fastest way to teach a
+/// reader to ignore it. A *click* in that state is a different question and still has no honest answer,
+/// so it is still refused.
+pub fn glass_alarm(glass: Option<LayerMask>, bus_mask: LayerMask) -> Option<String> {
+    let drawn = glass?;
+    if drawn == bus_mask {
+        return None;
+    }
+    Some(format!(
+        "THE PICTURE BELOW IS NOT THE MACHINE'S PICTURE — it was drawn with {}, and the machine's mask \
+         is now {}. Nothing here can be read as the machine's view until the next frame.",
+        describe_mask(drawn),
+        describe_mask(bus_mask)
+    ))
+}
+
+/// A mask in one short phrase, for a sentence that has to name two of them without a reader having to
+/// diff two lists. One derivation, so a refusal cannot describe the same mask two ways.
+fn describe_mask(m: LayerMask) -> String {
+    let hidden = m.hidden();
+    if hidden.is_empty() {
+        "every layer shown".to_string()
+    } else {
+        format!("{} hidden", hidden.join(" + "))
+    }
+}
+
+/// ⚑ **The standing statement that a display mask is on**, or `None` when every layer is drawn.
+///
+/// This is drawn on **every** frame the mask is non-default and on none where it is not. It is a
+/// correctness requirement rather than decoration, and the argument is `oracle-frontend`'s layer badge's,
+/// carried over word for word because the failure it prevents is the same one in a different window:
+///
+/// * **A mask changes what the picture *is*.** With no standing statement, the person who set it will
+///   forget, and then read a masked picture as the machine's — which is worse than not having the toggle,
+///   because a wrong picture that looks right is indistinguishable from a right one.
+/// * **A toast cannot carry this.** Toasts expire; the mask does not.
+/// * **It names the hidden layers rather than admitting to a mask**, because *"something is hidden"* sends
+///   a reader hunting and *"planeB is hidden"* does not. The names are [`LayerMask::hidden`]'s, which is
+///   the same derivation the wire's caveat and `pick`'s clause use — so this cannot name a layer the mask
+///   does not hide, and cannot miss one.
+/// * **And it names the second thing the mask does**, which nobody asked for and which is invisible until
+///   it bites: the masked picture is a post-hoc re-render of current VDP state, so mid-frame palette
+///   effects are gone from it. `emulator/screenshot` announces the same trade as `source: "stateRender"`.
+pub fn mask_statement(mask: LayerMask) -> Option<String> {
+    let hidden = mask.hidden();
+    if hidden.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "HIDDEN: {} — this picture is re-rendered from current VDP state, so mid-frame palette effects \
+         are not in it",
+        hidden.join(" ")
+    ))
 }
 
 impl Readout {
@@ -745,20 +882,29 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // The masked-off-only gate — what S2a deletes
+    // S2a — the standing statement, the layer toggles, and the one thing still refused
     // ---------------------------------------------------------------------------------------------
 
-    /// The refusal **names the hidden layers, and it reads them off the mask**.
+    /// **The standing statement names the hidden layers, and it reads them off the mask.**
     ///
     /// A sentence with the layer names written into it would pass a "contains planeA" check while being a
     /// claim this window made rather than one the bus supports, which is the whole failure the mask clause
     /// exists to prevent. So the expectation is derived from `LayerMask::hidden()` itself, and the
     /// all-shown control is asserted beside it — an absence needs its control.
+    ///
+    /// It also has to say the **second** thing a mask does to this window's picture, which nobody asked
+    /// for: the masked path is a post-hoc re-render, so mid-frame palette effects are not in it.
     #[test]
-    fn the_masked_off_only_refusal_names_the_layers_the_mask_hides() {
-        assert!(
-            LayerMask::ALL.hidden().is_empty(),
-            "the all-shown control: nothing hidden, so no click is refused"
+    fn the_standing_mask_statement_names_the_layers_the_mask_hides() {
+        assert_eq!(
+            mask_statement(LayerMask::ALL),
+            None,
+            "the all-shown control: nothing hidden, so there is nothing to announce"
+        );
+        assert_eq!(
+            mask_statement(LayerMask::default()),
+            None,
+            "and the default mask is the all-shown one"
         );
         for (target_name, target) in LayerMask::targets() {
             let mut m = LayerMask::ALL;
@@ -768,28 +914,266 @@ mod tests {
                 !hidden.is_empty(),
                 "hiding {target_name} must hide something"
             );
-            let s = Panel::masked_off_only(m);
+            let s = mask_statement(m).expect("a set mask must announce itself");
             for name in &hidden {
-                assert!(s.contains(name), "the refusal must name {name}: {s:?}");
+                assert!(s.contains(name), "the statement must name {name}: {s:?}");
             }
-            // …and it must say what it is refusing and how to get out, or it is a shrug with a layer name
-            // in it.
             assert!(
-                s.contains("S2a"),
-                "it must name the slice that fixes it: {s:?}"
-            );
-            assert!(
-                s.contains("emulator/set_layer_enabled"),
-                "it must name the way out: {s:?}"
+                s.contains("palette"),
+                "it must say what the masked path costs, or the picture changes in a second way \
+                 nothing on screen explains: {s:?}"
             );
         }
     }
 
-    /// The refusal is **impossible to reach** while every layer is shown — the gate is a gate, not a wall.
+    /// **The standing alarm fires when the glass and the machine hold different masks — and NOT before
+    /// the first frame.**
+    ///
+    /// ⚑ The `None` row is the one this test was written for, and it is a defect the first draft shipped:
+    /// with the alarm written as `screen_mask != Some(bus.layers())` it fired on a freshly launched
+    /// player, before any picture existed, announcing that a picture that was not there disagreed with an
+    /// empty mask. A false alarm on the loudest surface this tab has is how a reader learns to ignore the
+    /// real one, so it is asserted absent rather than argued away.
     #[test]
-    fn nothing_is_refused_while_every_layer_is_shown() {
-        assert!(LayerMask::default().hidden().is_empty());
-        assert!(LayerMask::ALL.hidden().is_empty());
+    fn the_standing_alarm_fires_on_a_disagreement_and_never_before_the_first_frame() {
+        let mut masked = LayerMask::ALL;
+        assert!(masked.set(oracle_core::render::Layer::PlaneA, false));
+
+        // No picture yet: nothing on the glass to be wrong about, under either mask.
+        assert_eq!(glass_alarm(None, LayerMask::ALL), None);
+        assert_eq!(glass_alarm(None, masked), None);
+        // Agreement, masked or not: silence, because silence here is a measurement.
+        assert_eq!(glass_alarm(Some(LayerMask::ALL), LayerMask::ALL), None);
+        assert_eq!(glass_alarm(Some(masked), masked), None);
+
+        // …and the two disagreements, in both directions.
+        for (glass, bus) in [(LayerMask::ALL, masked), (masked, LayerMask::ALL)] {
+            let s = glass_alarm(Some(glass), bus).expect("a disagreement must be announced");
+            assert!(
+                s.contains(&describe_mask(glass)) && s.contains(&describe_mask(bus)),
+                "the alarm must name BOTH masks, or a reader cannot tell which is which: {s:?}"
+            );
+        }
+    }
+
+    /// **Every layer toggle goes through the served method and moves the engine's own mask.**
+    ///
+    /// Swept over [`LayerMask::targets`] rather than over four names written here, which is what makes
+    /// this window unable to offer a layer the bus lacks. The read-back is `Bus::layers()`, i.e. the
+    /// engine's field — not the panel's memory of what it asked for.
+    #[test]
+    fn every_layer_toggle_goes_through_the_served_method() {
+        for (name, layer) in LayerMask::targets() {
+            let (mut machine, mut bus) = rig();
+            let mut panel = Panel::default();
+            assert!(
+                bus.layers().shows(layer),
+                "the control: {name} starts shown, or hiding it witnesses nothing"
+            );
+
+            panel.set_layer(&mut machine, &mut bus, name, false);
+            assert!(
+                !bus.layers().shows(layer),
+                "the toggle did not reach the engine's mask for {name}"
+            );
+            assert!(
+                bus.layers().hidden().contains(&name),
+                "and the mask must name it: {:?}",
+                bus.layers().hidden()
+            );
+            let r = panel.readout().expect("a toggle says what it did");
+            assert!(!r.refused, "showing/hiding a real layer is not a refusal");
+            assert!(
+                r.text.contains(name),
+                "it must name the layer: {:?}",
+                r.text
+            );
+
+            // …and back, so this is a control rather than a one-way door.
+            panel.set_layer(&mut machine, &mut bus, name, true);
+            assert!(bus.layers().shows(layer));
+            assert!(
+                bus.layers().is_all(),
+                "restoring one layer must restore the whole mask in this fixture"
+            );
+        }
+    }
+
+    /// **A click resolves under the mask the picture was drawn with, and it is no longer refused.**
+    ///
+    /// This is the row that replaces S1's blanket masked-off-only refusal. The fixture's one opaque
+    /// plane-A cell is at (2,2); hide plane A, re-derive the picture the way [`crate::bus::drain`] does,
+    /// and the same click must now resolve to the **backdrop** — because that is what is on the glass —
+    /// and arm a CRAM entry instead of a VRAM pattern.
+    ///
+    /// The anti-vacuity clause is the unmasked control taken first: without it, "the click armed a CRAM
+    /// entry" would be satisfied by a panel that had always armed one.
+    #[test]
+    fn a_click_resolves_under_the_mask_the_picture_was_drawn_with() {
+        let (mut machine, mut bus) = rig();
+        let mut panel = Panel::default();
+
+        // The control: unmasked, (2,2) is plane A and the click arms its pattern in VRAM.
+        assert!(machine.render_masked(LayerMask::ALL));
+        let glass = machine.image_mask();
+        panel.click(&mut machine, &mut bus, glass, (2, 2));
+        let unmasked = armed_on_the_machine(&mut machine, &mut bus);
+        assert_eq!(
+            unmasked,
+            vec![(
+                "vram".to_string(),
+                format!("0x{:08X}", u32::from(A_TILE) * 32)
+            )],
+            "the unmasked control: (2,2) is plane A"
+        );
+
+        // Hide plane A through the tool, and re-derive the picture exactly as the drain does.
+        {
+            let sys = machine.system_mut();
+            match bus.call(
+                sys,
+                "emulator/set_layer_enabled",
+                &json!({"layer": "planeA", "enabled": false}),
+            ) {
+                Answer::Ok(_) => {}
+                Answer::Err(e) => panic!("set_layer_enabled refused: {} {}", e.code, e.message),
+            }
+        }
+        let mask = bus.layers();
+        assert!(machine.render_masked(mask), "the masked picture must exist");
+        assert_eq!(
+            machine.image_mask(),
+            Some(mask),
+            "the glass and the bus must agree, or the click below is refused for the other reason"
+        );
+
+        let glass = machine.image_mask();
+        panel.click(&mut machine, &mut bus, glass, (2, 2));
+        let r = panel.readout().expect("a standing readout");
+        assert!(
+            !r.refused,
+            "a click on a masked picture this window actually drew is answerable: {:?}",
+            r.text
+        );
+        assert!(
+            r.text.contains("backdrop"),
+            "with plane A hidden the dot IS the backdrop — the panel must describe the picture: {:?}",
+            r.text
+        );
+        assert!(
+            r.text.contains("planeA"),
+            "and it must say the picture is a masked one, naming what is hidden: {:?}",
+            r.text
+        );
+
+        let masked = armed_on_the_machine(&mut machine, &mut bus);
+        assert_eq!(
+            masked,
+            vec![(
+                "cram".to_string(),
+                format!("0x{:08X}", u32::from(BACKDROP_ENTRY) * 2)
+            )],
+            "the click must arm what the MASKED picture draws that dot from"
+        );
+        // ⚑ ANTI-VACUITY: a panel that ignored the mask would have armed the plane pattern again.
+        assert_ne!(
+            unmasked, masked,
+            "the mask did not change what the click resolved to"
+        );
+    }
+
+    /// **The one thing still refused: the glass and the machine holding different masks.**
+    ///
+    /// Narrow, and reachable — the palette can call `emulator/set_layer_enabled` during the same
+    /// `build_ui` that drew the picture, and a masked re-render can fail outright. In that window there is
+    /// no honest answer about a dot, so the panel says so rather than describing a picture that is not
+    /// there, and it leaves the previously armed watch exactly where it was: the gate is read before
+    /// anything is resolved *or retired*.
+    #[test]
+    fn a_click_is_refused_while_the_glass_and_the_machine_disagree_about_the_mask() {
+        let (mut machine, mut bus) = rig();
+        let mut panel = Panel::default();
+        assert!(machine.render_masked(LayerMask::ALL));
+        let glass = machine.image_mask();
+        panel.click(&mut machine, &mut bus, glass, (2, 2));
+        let before = armed_on_the_machine(&mut machine, &mut bus);
+        assert_eq!(before.len(), 1, "the precondition: one watch is armed");
+
+        // The mask moves on the machine; the picture is deliberately NOT re-derived, which is the state
+        // between a mid-frame `set_layer_enabled` and the next drain.
+        {
+            let sys = machine.system_mut();
+            match bus.call(
+                sys,
+                "emulator/set_layer_enabled",
+                &json!({"layer": "planeA", "enabled": false}),
+            ) {
+                Answer::Ok(_) => {}
+                Answer::Err(e) => panic!("set_layer_enabled refused: {} {}", e.code, e.message),
+            }
+        }
+        assert_eq!(
+            machine.image_mask(),
+            Some(LayerMask::ALL),
+            "the glass must still be the unmasked picture, or this row measures nothing"
+        );
+        assert_ne!(machine.image_mask(), Some(bus.layers()));
+
+        let glass = machine.image_mask();
+        panel.click(&mut machine, &mut bus, glass, (200, 100));
+        assert_eq!(
+            armed_on_the_machine(&mut machine, &mut bus),
+            before,
+            "a refused click must leave the instrument untouched"
+        );
+        let r = panel
+            .readout()
+            .expect("a refusal is a sentence, never silence");
+        assert!(r.refused, "and it must be marked as one: {:?}", r.text);
+        assert!(
+            r.text.contains("planeA"),
+            "it must name what the machine now hides: {:?}",
+            r.text
+        );
+        assert!(
+            r.text.contains("every layer shown"),
+            "…and what the glass was drawn with, or a reader cannot tell which is which: {:?}",
+            r.text
+        );
+
+        // …and once the picture catches up, the same click answers. The gate is a gate, not a wall.
+        assert!(machine.render_masked(bus.layers()));
+        let glass = machine.image_mask();
+        panel.click(&mut machine, &mut bus, glass, (200, 100));
+        assert!(
+            !panel.readout().expect("a readout").refused,
+            "with the glass and the machine back in step the click must answer: {:?}",
+            panel.readout().map(|r| r.text.clone())
+        );
+    }
+
+    /// **A click before there is any picture is refused, and it says that rather than naming a mask.**
+    ///
+    /// `None` is a different fact from "unmasked", and a refusal that spelled it as one would send a
+    /// reader looking for a mask that is not set.
+    #[test]
+    fn a_click_with_no_picture_yet_says_so() {
+        let (mut machine, mut bus) = rig();
+        let mut panel = Panel::default();
+        assert_eq!(machine.image_mask(), None, "the precondition: no picture");
+        panel.click(&mut machine, &mut bus, None, (2, 2));
+        let r = panel.readout().expect("a refusal is a sentence");
+        assert!(r.refused, "{:?}", r.text);
+        assert!(
+            r.text.contains("no picture on screen yet"),
+            "it must say there is no picture rather than describe a mask: {:?}",
+            r.text
+        );
+        assert_eq!(
+            armed_on_the_machine(&mut machine, &mut bus),
+            Vec::new(),
+            "and it must have armed nothing"
+        );
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -883,6 +1267,9 @@ mod tests {
     fn a_click_arms_the_clicked_tile_on_the_machine_and_the_next_click_replaces_it() {
         let (mut machine, mut bus) = rig();
         let mut panel = Panel::default();
+        // S2a: a click is answered against *the picture on the glass*, so there has to be one. Nothing is
+        // masked here, so this is the ordinary frame every other assertion in this row is about.
+        assert!(machine.render_masked(LayerMask::ALL));
 
         // Nothing is armed before the first click — the control, taken while it is still unambiguous.
         assert_eq!(
@@ -892,7 +1279,8 @@ mod tests {
         );
 
         // --- Click the one opaque plane-A cell. ---
-        panel.click(&mut machine, &mut bus, (2, 2));
+        let glass = machine.image_mask();
+        panel.click(&mut machine, &mut bus, glass, (2, 2));
         let after_plane = armed_on_the_machine(&mut machine, &mut bus);
         let want_vram = format!("0x{:08X}", u32::from(A_TILE) * 32);
         assert_eq!(
@@ -908,7 +1296,8 @@ mod tests {
         );
 
         // --- Click the backdrop. The prior watch is retired and a CRAM entry takes its place. ---
-        panel.click(&mut machine, &mut bus, (200, 100));
+        let glass = machine.image_mask();
+        panel.click(&mut machine, &mut bus, glass, (200, 100));
         let after_backdrop = armed_on_the_machine(&mut machine, &mut bus);
         let want_cram = format!("0x{:08X}", u32::from(BACKDROP_ENTRY) * 2);
         assert_eq!(
@@ -926,53 +1315,6 @@ mod tests {
             panel.armed_count(),
             1,
             "the panel retires what IT armed; it must not accumulate"
-        );
-    }
-
-    /// **A refused click leaves the previously armed watch exactly where it was.**
-    ///
-    /// The masked-off-only gate is read before anything is resolved or retired, and this is why that
-    /// ordering is not incidental: a gate that fired after the retire would answer "nothing is armed"
-    /// while telling the person it had refused to change anything.
-    #[test]
-    fn a_masked_off_refusal_changes_nothing_on_the_machine() {
-        let (mut machine, mut bus) = rig();
-        let mut panel = Panel::default();
-        panel.click(&mut machine, &mut bus, (2, 2));
-        let before = armed_on_the_machine(&mut machine, &mut bus);
-        assert_eq!(before.len(), 1, "the precondition: one watch is armed");
-
-        // Hide a layer through the tool — the same call a socket client would make.
-        let hidden = {
-            let sys = machine.system_mut();
-            match bus.call(
-                sys,
-                "emulator/set_layer_enabled",
-                &json!({"layer": "planeA", "enabled": false}),
-            ) {
-                Answer::Ok(v) => v,
-                Answer::Err(e) => panic!("set_layer_enabled refused: {} {}", e.code, e.message),
-            }
-        };
-        assert!(
-            !bus.layers().hidden().is_empty(),
-            "the mask must actually be set, or this row measures nothing: {hidden}"
-        );
-
-        panel.click(&mut machine, &mut bus, (200, 100));
-        assert_eq!(
-            armed_on_the_machine(&mut machine, &mut bus),
-            before,
-            "a refused click must leave the instrument untouched"
-        );
-        let r = panel
-            .readout()
-            .expect("a refusal is a sentence, never silence");
-        assert!(r.refused, "and it must be marked as one: {:?}", r.text);
-        assert!(
-            r.text.contains("planeA"),
-            "and it must name what is hidden: {:?}",
-            r.text
         );
     }
 }
