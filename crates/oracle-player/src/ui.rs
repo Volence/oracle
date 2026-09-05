@@ -377,7 +377,7 @@ impl Panels<'_> {
         // must show as it is.
         ui.horizontal(|ui| {
             ui.weak("state:");
-            if ui.button("◀").on_hover_text("F6 — previous slot").clicked() {
+            if ui.button("◀").on_hover_text("F6: previous slot").clicked() {
                 self.states.step(-1);
             }
             let slot = self.states.slot();
@@ -389,12 +389,12 @@ impl Panels<'_> {
                     "(empty)"
                 }
             ));
-            if ui.button("▶").on_hover_text("F7 — next slot").clicked() {
+            if ui.button("▶").on_hover_text("F7: next slot").clicked() {
                 self.states.step(1);
             }
             if ui
                 .button("save")
-                .on_hover_text("F2 — write this machine to the selected slot")
+                .on_hover_text("F2: write this machine to the selected slot")
                 .clicked()
             {
                 self.states.save(self.machine);
@@ -405,7 +405,7 @@ impl Panels<'_> {
             // half-restored machine on the glass.
             if ui
                 .button("load")
-                .on_hover_text("F4 — restore this machine from the selected slot")
+                .on_hover_text("F4: restore this machine from the selected slot")
                 .clicked()
             {
                 let mut said = Vec::new();
@@ -426,13 +426,48 @@ impl Panels<'_> {
             ui.colored_label(colour, &n.text);
         }
         if let Some(r) = self.screen.readout() {
+            // ⚑ **The last click's answer, laid out in three weights instead of one wrapped block.**
+            //
+            // The three parts are `screen_pick::Readout`'s own fields, handed over by whoever composed
+            // them: `pick::Pick` already carries the sentence and the addressing separately, and the
+            // outcome is this panel's own count. Nothing here recovers structure by looking at the text,
+            // which is the same rule that keeps the colour on `refused` rather than on a `"REFUSED"`
+            // prefix.
+            //
+            // The card is what makes it findable at all. A standing readout drawn as loose text under a
+            // column of controls reads as one more control's label, which is how a correct answer ends up
+            // unread.
+            //
             // Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
-            let colour = if r.refused {
-                ui.visuals().error_fg_color
-            } else {
-                ui.visuals().text_color()
-            };
-            ui.colored_label(colour, &r.text);
+            let refused = r.refused;
+            card(ui, |ui| {
+                let head = if refused {
+                    ui.visuals().error_fg_color
+                } else {
+                    ui.visuals().strong_text_color()
+                };
+                ui.label(egui::RichText::new(&r.head).color(head));
+                if let Some(d) = &r.detail {
+                    // The addressing recedes and goes monospace: it is what a reader checks the sentence
+                    // against, in the spelling they would compare with a tool's reply.
+                    ui.label(
+                        egui::RichText::new(d)
+                            .monospace()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                if let Some(o) = &r.outcome {
+                    ui.label(
+                        egui::RichText::new(o)
+                            .text_style(egui::TextStyle::Small)
+                            .color(if refused {
+                                ui.visuals().error_fg_color
+                            } else {
+                                crate::theme::SUCCESS
+                            }),
+                    );
+                }
+            });
         }
     }
 
@@ -790,25 +825,26 @@ impl Panels<'_> {
             Objects::Pool(p) => p,
         };
 
-        // The layout, as facts rather than as its own JSON. Every value on these lines is a key of the
-        // `layout` object the three ⚙ rows serve — the same answer, spelled for a human. Composed in
-        // `objects` rather than here so the strings are reachable from a test.
-        for line in pool.layout_lines() {
-            ui.monospace(line);
-        }
-
+        // --- the derived layout, as a card of labelled facts ---
+        //
+        // Every value here is a key of the `layout` object the three served rows carry: the same answer,
+        // laid out for a person instead of run together on one line. Composed in `objects::layout_facts`
+        // rather than here so the strings are reachable from a test.
+        card(ui, |ui| {
+            fact_grid(ui, "objects-layout", &pool.layout_facts());
+        });
         ui.small(
-            "Every address here is read out of the loaded listing — the base from Object_RAM/Player_1, \
-             the stride from Player_2 − Player_1, the count from Object_RAM_End, and the ring buffer \
-             below from Ring_Count − Ring_Buffer. Nothing is hardcoded, because an object-table address \
-             is a fact about one build.",
+            "Every address here is read out of the loaded listing: the base from Object_RAM/Player_1, \
+             the stride from Player_2 minus Player_1, the count from Object_RAM_End, and the ring \
+             buffer below from Ring_Count minus Ring_Buffer. Nothing is hardcoded, because an \
+             object-table address is a fact about one build.",
         );
-        ui.separator();
 
         // --- the player section: the same decoder, the same layout, its own refusal ---
+        ui.add_space(SECTION_GAP);
         match &pool.players {
             Err(e) => {
-                ui.strong("players — emulator/player_state");
+                section(ui, "players", None, "emulator/player_state");
                 ui.colored_label(
                     ui.visuals().error_fg_color,
                     format!(
@@ -821,94 +857,97 @@ impl Panels<'_> {
             Ok(pv) => {
                 // The section says how much of the table it covers. Two rows out of sixty-six is a fact
                 // a reader needs in order not to take this section for the pool.
-                ui.strong(format!(
-                    "players — emulator/player_state — {} of {} slots",
-                    pv.players.len(),
-                    pv.layout.slot_count()
-                ));
-                for p in &pv.players {
-                    let role = p.cell("role");
-                    if p.active {
-                        ui.monospace(format!("{role:<12} {}", p.summary()));
-                    } else {
-                        // `active: false` is the answer to "is player 2 present", so it is a row that
-                        // says so — not a row omitted and not a row of zeroes.
-                        ui.monospace(format!(
-                            "{role:<12} {:>3}  {:<10}  not present (the slot is empty)",
-                            p.slot,
-                            p.cell("addr")
-                        ));
-                    }
-                }
+                section(
+                    ui,
+                    "players",
+                    Some(format!(
+                        "{} of {} slots",
+                        pv.players.len(),
+                        pv.layout.slot_count()
+                    )),
+                    "emulator/player_state",
+                );
+                slot_table(ui, &objects::PLAYER_COLS, &pv.players, None, "player-row");
             }
         }
-        ui.separator();
 
         // --- the pool table ---
-        ui.strong(format!(
-            "object pool — emulator/object_list — {} active of {} slots",
-            pool.total, pool.slot_count
-        ));
+        ui.add_space(SECTION_GAP);
+        section(
+            ui,
+            "object pool",
+            Some(format!(
+                "{} active of {} slots",
+                pool.total, pool.slot_count
+            )),
+            "emulator/object_list",
+        );
+
         // --- rings, immediately under the object count, because that is where the question is asked ---
         //
         // The two numbers sit together on purpose: "5 active of 66 slots" invites "so where are the
         // rings", and the answer is that they are not in that 66 at all.
-        match &pool.rings {
+        card(ui, |ui| match &pool.rings {
             Ok(r) => {
-                ui.monospace(r.summary());
+                fact_grid(ui, "objects-rings", &r.facts());
                 ui.small(objects::RINGS_WHY);
-                // The ceiling is in `summary()` when the listing publishes the entry size (§11.36).
-                // When it does not, the gap is STATED: an absent ceiling with no sentence beside it is
+                // The capacity is a fact of its own when the listing publishes the entry size (§11.36).
+                // When it does not, the gap is STATED: an absent capacity with no sentence beside it is
                 // an invitation to divide the span above by a remembered entry size.
                 if r.ceiling.is_none() {
-                    ui.small(objects::CEILING_UNKNOWN);
+                    ui.colored_label(ui.visuals().warn_fg_color, objects::CEILING_UNKNOWN);
                 }
             }
-            // A ring line this listing cannot supply is one missing line, and it says which symbol did
-            // not answer — never a `0`, which would read as "no rings are loaded".
+            // A ring line this listing cannot supply is one missing card, and it says which symbol did
+            // not answer, never a `0`, which would read as "no rings are loaded".
             Err(e) => {
-                ui.monospace("rings   —");
-                ui.small(format!("rings unavailable — {} {}", e.code, e.message));
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("rings unavailable. {} {}", e.code, e.message),
+                );
+                ui.small(objects::RINGS_WHY);
             }
-        }
+        });
 
         if pool.objects.is_empty() {
             // A stated fact, and a different one from the refusal above: the layout derived, the table
             // was read, and nothing is live in it right now.
-            ui.monospace(
-                "0 active objects — the layout derived and every slot's code word is the empty-slot \
-                 sentinel. This is not a missing listing.",
+            ui.label(
+                "0 active objects. The layout derived and every slot's code word is the empty-slot \
+                 sentinel; this is not a missing listing.",
             );
         }
-        ui.monospace(format!(
-            "{:>3}  {:<10}  {:<8}  {:>7} {:>7}  {}",
-            "sl", "addr", "code", "x", "y", "name"
-        ));
-        egui::ScrollArea::vertical()
+        let clicked = egui::ScrollArea::vertical()
             .id_salt("object-pool")
             .max_height(240.0)
             .show(ui, |ui| {
-                for r in &pool.objects {
-                    let open = self.objects.selected == Some(r.slot);
-                    if ui
-                        .selectable_label(open, egui::RichText::new(r.summary()).monospace())
-                        .clicked()
-                    {
-                        // A second click closes it: the expansion is one row's detail, and a row that
-                        // cannot be un-expanded is a mode with no way out.
-                        self.objects.selected = if open { None } else { Some(r.slot) };
-                    }
-                }
-            });
+                slot_table(
+                    ui,
+                    &objects::POOL_COLS,
+                    &pool.objects,
+                    Some(self.objects.selected),
+                    "pool-row",
+                )
+            })
+            .inner;
+        if let Some(slot) = clicked {
+            // A second click closes it: the expansion is one row's detail, and a row that cannot be
+            // un-expanded is a mode with no way out.
+            self.objects.selected = if self.objects.selected == Some(slot) {
+                None
+            } else {
+                Some(slot)
+            };
+        }
 
         // --- the row expansion: one addressed slot, every field the layout declares ---
         let Some(slot) = self.objects.selected else {
             return;
         };
-        ui.separator();
+        ui.add_space(SECTION_GAP);
         match objects::object_slot(self.symbols, self.machine.system(), slot) {
             Err(e) => {
-                ui.strong(format!("slot {slot} — emulator/object_slot"));
+                section(ui, &format!("slot {slot}"), None, "emulator/object_slot");
                 ui.colored_label(
                     ui.visuals().error_fg_color,
                     format!("REFUSED {} {}", e.code, e.message),
@@ -918,33 +957,61 @@ impl Panels<'_> {
                 // The address is spelled by the bus's own `hex::addr`, not by a second `{:X}` here: this
                 // is the string `addr` carries on the wire, and two spellings of one address is how a
                 // reader ends up comparing the panel to a tool and seeing a difference that is not one.
-                ui.strong(format!(
-                    "slot {slot} of {} at {} — emulator/object_slot",
-                    v.layout.slot_count(),
-                    oracle_aether::hex::addr(v.row.addr)
-                ));
+                section(
+                    ui,
+                    &format!("slot {slot}"),
+                    Some(format!(
+                        "of {} at {}",
+                        v.layout.slot_count(),
+                        oracle_aether::hex::addr(v.row.addr)
+                    )),
+                    "emulator/object_slot",
+                );
                 egui::ScrollArea::vertical()
                     .id_salt("object-slot")
                     .max_height(300.0)
                     .show(ui, |ui| {
-                        for (k, val) in &v.row.item {
-                            if k == "fields" {
-                                continue;
+                        // The envelope's own keys, then the game's declared fields under their own
+                        // heading. Two grids rather than one, because the second set is a fact about the
+                        // loaded build and the first is a fact about the contract.
+                        let envelope: Vec<objects::Fact> = v
+                            .row
+                            .item
+                            .iter()
+                            .filter(|(k, _)| k.as_str() != "fields")
+                            .map(|(k, val)| objects::Fact {
+                                label: k.clone(),
+                                value: render(val),
+                                mono: true,
+                            })
+                            .collect();
+                        card(ui, |ui| fact_grid(ui, "object-slot-envelope", &envelope));
+                        match v.row.item.get("fields").and_then(|f| f.as_object()) {
+                            Some(f) => {
+                                ui.add_space(SECTION_GAP);
+                                ui.label(
+                                    egui::RichText::new("declared fields")
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                                let fields: Vec<objects::Fact> = f
+                                    .iter()
+                                    .map(|(k, val)| objects::Fact {
+                                        label: k.clone(),
+                                        value: render(val),
+                                        mono: true,
+                                    })
+                                    .collect();
+                                card(ui, |ui| fact_grid(ui, "object-slot-fields", &fields));
                             }
-                            ui.monospace(format!("{k:<12} {}", render(val)));
-                        }
-                        if let Some(f) = v.row.item.get("fields").and_then(|f| f.as_object()) {
-                            ui.separator();
-                            for (k, val) in f {
-                                ui.monospace(format!("  {k:<20} {}", render(val)));
-                            }
-                        } else {
                             // Only reachable on an inactive slot, where the decoded keys are OMITTED
-                            // rather than zeroed — bytes the game never wrote are not data.
-                            ui.monospace(
-                                "no fields — this slot is empty, and an empty slot's record is bytes \
-                                 the game never wrote, so they are omitted rather than shown as zeroes",
-                            );
+                            // rather than zeroed: bytes the game never wrote are not data.
+                            None => {
+                                ui.small(
+                                    "no fields. This slot is empty, and an empty slot's record is \
+                                     bytes the game never wrote, so they are omitted rather than \
+                                     shown as zeroes.",
+                                );
+                            }
                         }
                     });
             }
@@ -1522,6 +1589,302 @@ impl Panels<'_> {
             ui.separator();
             note_label(ui, note);
         }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------
+// ⚑ Panel furniture: cards, labelled facts, section heads, and a real table
+//
+// The style page's P2 says rows of like-shaped data go in a table with fixed columns, and names the check:
+// **no width-padded format specifier** doing a table's job inside a `ui.monospace(format!(..))`. These four
+// helpers are what makes that possible without one.
+//
+// # Why the table is drawn by hand
+//
+// Neither ready-made option fits, and the choice was made rather than defaulted into:
+//
+// * `egui::Grid` sizes columns beautifully and is used below for every *labelled-fact* block. But it hands
+//   back no row rectangle, so a whole row cannot be made clickable, striped or selected as one band, and
+//   the pool table's central gesture is clicking a row.
+// * `egui_extras::TableBuilder` does exactly that, and it is **not a dependency of this workspace** and
+//   not in the vendored registry either, so adding it means a network fetch and a new crate for six
+//   columns. Measuring the widths here with `Painter::layout_no_wrap` over the rows that are actually on
+//   screen is about twenty lines, is exact for whatever face the theme installs, and adds nothing.
+//
+// The measurement matters more than it looks. Counting characters and multiplying by a remembered advance
+// would be a fact about one font file, and this crate does not ship the font file: the style page's §2
+// item 7 leaves the faces as egui's stock pair until the owner rules on vendoring Inter and JetBrains
+// Mono, so the advance is going to change under this code.
+// -------------------------------------------------------------------------------------------------------
+
+/// The space between a panel's sections. `space.3` (6px).
+const SECTION_GAP: f32 = 6.0;
+
+/// A card's inner padding. `space.4` (8px).
+const CARD_PAD: i8 = 8;
+
+/// The gap between two table columns. `space.5` (12px) plus a hair, so two columns of right-aligned digits
+/// never touch.
+const COL_GUTTER: f32 = 14.0;
+
+/// The narrowest the last (name) column is allowed to get on a cramped panel. Below this a name stops
+/// being a name and the hover is the only place it exists.
+const NAME_COL_FLOOR: f32 = 120.0;
+
+/// A bordered block on the `raised` surface, one step above the panel it sits on.
+///
+/// The surface ladder is how depth is carried here: CHROME_SPEC forbids drop shadows on controls, and
+/// `theme.rs` sets `window_shadow`/`popup_shadow` to `Shadow::NONE` accordingly.
+fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(CARD_PAD))
+        .show(ui, add)
+        .inner
+}
+
+/// Labelled facts in two aligned columns: the label small and recessed, the value emphasised.
+///
+/// Emphasis is **colour and size, never weight** -- egui selects fonts by family and has no bold axis, so
+/// `RichText::strong()` only swaps in `Visuals::strong_text_color()`, which `theme.rs` sets to the
+/// family's `text.hi`. That is the whole of what "typographically strong" can mean here, and saying it out
+/// loud is cheaper than someone discovering it by trying to embolden a header.
+fn fact_grid(ui: &mut egui::Ui, id: &str, facts: &[objects::Fact]) {
+    let (weak, strong) = (
+        ui.visuals().weak_text_color(),
+        ui.visuals().strong_text_color(),
+    );
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([COL_GUTTER, 3.0])
+        .show(ui, |ui| {
+            for f in facts {
+                ui.label(
+                    egui::RichText::new(&f.label)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+                let v = egui::RichText::new(&f.value).color(strong);
+                ui.label(if f.mono { v.monospace() } else { v });
+                ui.end_row();
+            }
+        });
+}
+
+/// A section head: the title, what it covers, and the served row it is a direct read of.
+///
+/// This replaces three headings of the form `players — emulator/player_state — 2 of 66 slots`, which used
+/// two em dashes to do a colon's work and a parenthesis's work in one line. Em and en dashes are barred
+/// from a tool's user-facing text by the owner's 2026-09-05 ruling (CHROME_SPEC, "Text in the tools"), and
+/// the three facts are not the same kind of thing anyway: one is a name, one is a scope, one is a wire
+/// method. So they get three different weights on one line instead of one string with punctuation in it.
+fn section(ui: &mut egui::Ui, title: &str, scope: Option<String>, method: &str) {
+    let (weak, strong) = (
+        ui.visuals().weak_text_color(),
+        ui.visuals().strong_text_color(),
+    );
+    ui.horizontal(|ui| {
+        ui.heading(egui::RichText::new(title).color(strong));
+        if let Some(s) = scope {
+            ui.label(egui::RichText::new(s).color(weak));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(method).monospace().color(weak))
+                .on_hover_text(
+                    "the served row this section is a direct read of, so the panel and a client \
+                         asking the same question see the same answer",
+                );
+        });
+    });
+}
+
+/// The width `text` needs in `face`, measured with the font the theme actually installed.
+fn text_w(ui: &egui::Ui, face: &egui::FontId, text: &str) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), face.clone(), egui::Color32::PLACEHOLDER)
+        .size()
+        .x
+}
+
+/// Column widths for `cols` over `cells`: the widest cell in each column, header included.
+///
+/// The **last** column is left out of that and takes whatever room remains, because it is the name column
+/// and a symbol name has no bound: sized to its widest entry it would push the numeric columns off the
+/// panel, which is the one failure a fixed-column table exists to prevent.
+fn column_widths(ui: &egui::Ui, cols: &[objects::Col], cells: &[Vec<String>]) -> Vec<f32> {
+    if cols.is_empty() {
+        return Vec::new();
+    }
+    let head = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Small)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(10.0));
+    let faces: Vec<egui::FontId> = cols.iter().map(|c| cell_face(ui, c)).collect();
+    let mut w: Vec<f32> = cols.iter().map(|c| text_w(ui, &head, c.head)).collect();
+    for row in cells {
+        for (i, cell) in row.iter().enumerate().take(cols.len()) {
+            w[i] = w[i].max(text_w(ui, &faces[i], cell));
+        }
+    }
+    for x in w.iter_mut() {
+        *x += COL_GUTTER;
+    }
+    let used: f32 = w[..cols.len() - 1].iter().sum();
+    if let Some(last) = w.last_mut() {
+        // Whatever is left, but never so little that the column is unreadable: a narrow panel gets a
+        // truncated name with the whole of it on the hover, not a name reduced to one letter.
+        *last = (ui.available_width() - used).max(last.min(NAME_COL_FLOOR));
+    }
+    w
+}
+
+/// One cell, `w` points wide, right-aligned when the column is numeric.
+///
+/// Right alignment is not a nicety on a numeric column: it is the whole reason a column of coordinates can
+/// be compared down the page at all, and it is exactly what a padded `{:>7}` was reaching for and could
+/// only approximate.
+fn table_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, text: &str, colour: egui::Color32) {
+    let rich = egui::RichText::new(text).color(colour);
+    let rich = if c.mono { rich.monospace() } else { rich };
+    let layout = if c.numeric {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+    let h = ui.spacing().interact_size.y;
+    // Whether this cell is going to be cut off, measured before it is drawn rather than inferred from
+    // the response afterwards: `Label::truncate` allocates the width it was given either way, so the
+    // rect it hands back says nothing about whether any glyphs were dropped.
+    let cut = text_w(ui, &cell_face(ui, c), text) > w;
+    ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
+        let r = ui.add(egui::Label::new(rich).truncate());
+        // The short cell says the object has no name; the sentence saying *why* is a fact about the
+        // listing and belongs on the hover, not in a column six characters wide.
+        if text == objects::NO_NAME {
+            r.on_hover_text(objects::NO_NAME_WHY);
+        } else if cut {
+            // A truncated cell is unreadable, not merely tidy, so the whole of it is one hover away.
+            r.on_hover_text(text);
+        }
+    });
+}
+
+/// The face a cell of `c` is drawn in. One function, so the width measurement and the `RichText` cannot
+/// disagree about which font is about to be used.
+fn cell_face(ui: &egui::Ui, c: &objects::Col) -> egui::FontId {
+    let want = if c.mono {
+        egui::TextStyle::Monospace
+    } else {
+        egui::TextStyle::Body
+    };
+    ui.style()
+        .text_styles
+        .get(&want)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(13.0))
+}
+
+/// A table of slots: a header row, hairline-separated, then one banded row per slot.
+///
+/// `selected` is `None` for a table whose rows are not clickable (the player section, which is a list of
+/// two) and `Some(current)` for one whose rows are (the pool table, where a click opens the expansion).
+/// Returns the slot clicked this frame, if any -- the caller owns the selection, because a table that
+/// decided its own selection would need a second copy of it.
+fn slot_table(
+    ui: &mut egui::Ui,
+    cols: &[objects::Col],
+    rows: &[objects::Row],
+    selected: Option<Option<u32>>,
+    salt: &str,
+) -> Option<u32> {
+    let cells: Vec<Vec<String>> = rows.iter().map(|r| r.cells(cols)).collect();
+    let widths = column_widths(ui, cols, &cells);
+    let mut hit = None;
+
+    ui.scope(|ui| {
+        // Table rows sit tighter than a panel's default flow; `item_spacing` here is the row gap, and the
+        // zebra band below is what separates them rather than whitespace.
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+
+        let weak = ui.visuals().weak_text_color();
+        ui.horizontal(|ui| {
+            for (c, w) in cols.iter().zip(&widths) {
+                table_cell(ui, c, *w, c.head, weak);
+            }
+        });
+        let y = ui.cursor().top();
+        ui.painter().hline(
+            ui.max_rect().x_range(),
+            y,
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+        ui.add_space(3.0);
+
+        for (i, (r, cs)) in rows.iter().zip(&cells).enumerate() {
+            // Reserved BEFORE the cells so the band paints behind them. `Painter::add(Shape::Noop)` then
+            // `Painter::set` is egui's own idiom for painting under content that has not been laid out
+            // yet; there is no z-order to fight and no second pass.
+            let bg = ui.painter().add(egui::Shape::Noop);
+            let inner = ui.horizontal(|ui| {
+                for ((c, w), text) in cols.iter().zip(&widths).zip(cs) {
+                    table_cell(ui, c, *w, text, cell_colour(ui, c, text, r.active));
+                }
+            });
+            // Full panel width, not the width of the text: a click target that stops where the last
+            // column's glyphs stop is a click target a person misses.
+            let band =
+                egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), inner.response.rect.y_range())
+                    .expand2(egui::vec2(0.0, 1.0));
+
+            let chosen = selected == Some(Some(r.slot));
+            let resp = selected
+                .map(|_| ui.interact(band, ui.id().with((salt, r.slot)), egui::Sense::click()));
+            let fill = if chosen {
+                crate::theme::selection()
+            } else if resp.as_ref().is_some_and(egui::Response::hovered) {
+                ui.visuals().widgets.hovered.bg_fill
+            } else if i % 2 == 1 {
+                ui.visuals().faint_bg_color
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            ui.painter()
+                .set(bg, egui::Shape::rect_filled(band, 0.0, fill));
+
+            if let Some(resp) = resp {
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if resp.clicked() {
+                    hit = Some(r.slot);
+                }
+            }
+        }
+    });
+    hit
+}
+
+/// What colour a cell is drawn in, and every branch of it is a fact rather than a taste.
+///
+/// * An **absent** value and an **unnamed** object recede: they are answers, but they are not the answer a
+///   reader is scanning for, and at full weight sixty of them would be the loudest thing on the tab.
+/// * An **inactive slot's** whole row recedes for the same reason: the row exists to say "not present".
+/// * A **role** on a live slot is [`crate::theme::SUCCESS`], because "player 1 is here" is the one thing
+///   the player section is asked and it should be answerable without reading.
+/// * The **name** is the emphasis colour: it is what a human scans a pool table for.
+fn cell_colour(ui: &egui::Ui, c: &objects::Col, text: &str, active: bool) -> egui::Color32 {
+    if text == objects::ABSENT || text == objects::NO_NAME || text == objects::NOT_PRESENT {
+        return ui.visuals().weak_text_color();
+    }
+    if !active {
+        return ui.visuals().weak_text_color();
+    }
+    match c.field {
+        objects::Field::Role => crate::theme::SUCCESS,
+        objects::Field::Name => ui.visuals().strong_text_color(),
+        _ => ui.visuals().text_color(),
     }
 }
 

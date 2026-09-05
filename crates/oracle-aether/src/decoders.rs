@@ -296,9 +296,9 @@ impl ObjectLayout {
             RpcError::new(
                 code::NO_SYMBOLS_LOADED,
                 format!(
-                    "the loaded symbol table does not partition the object table into pools, so the \
-                     `{PLAYER_POOL}` slots cannot be identified — refusing rather than guessing which \
-                     slots hold players (protocol.md §11.25)."
+                    "the loaded symbol table does not partition the object table into pools, so \
+                     the `{PLAYER_POOL}` slots cannot be identified. Refusing rather than guessing \
+                     which slots hold players."
                 ),
             )
             // Which boundary symbols were absent, and **not** the whole list dressed as the missing one:
@@ -410,9 +410,9 @@ pub fn derive(table: Option<&SymbolTable>) -> Result<ObjectLayout, RpcError> {
     let Some(table) = table else {
         return Err(RpcError::new(
             code::NO_SYMBOLS_LOADED,
-            "no symbol table is loaded, so no object layout can be derived — call \
+            "no symbol table is loaded, so no object layout can be derived. Call \
              emulator/load_symbols first. This row refuses rather than decoding from a guessed base \
-             address (protocol.md §11.25).",
+             address.",
         ));
     };
     let spec = &AEON_SST;
@@ -594,8 +594,8 @@ fn no_layout(spec: &EngineLayout, table: &SymbolTable, why: &str) -> RpcError {
     RpcError::new(
         code::NO_SYMBOLS_LOADED,
         format!(
-            "the loaded symbol table does not describe an object layout — {why}. Refusing rather than \
-             decoding from a guessed base (protocol.md §11.25)."
+            "the loaded symbol table does not describe an object layout: {why}. Refusing rather \
+             than decoding from a guessed base."
         ),
     )
     .with_data(json!({

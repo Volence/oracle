@@ -72,6 +72,8 @@ mod stats;
 mod states;
 mod stopping;
 mod symbols;
+// The suite's design tokens as an egui style. Installed once, in `run_native`'s creation closure.
+mod theme;
 mod ui;
 
 use std::time::{Duration, Instant};
@@ -1106,8 +1108,13 @@ impl Loop {
                     rom_path: rom_path.as_str(),
                     symbols: symbols.as_ref(),
                 };
+                // The dock takes its whole look from the theme (`Style::from_egui`) plus the three
+                // overrides CHROME_SPEC names and `from_egui` cannot infer. See `theme::dock_style`.
                 egui_dock::DockArea::new(dock)
-                    .style(egui_dock::Style::from_egui(ui.style().as_ref()))
+                    .style(crate::theme::dock_style(
+                        ui.style().as_ref(),
+                        crate::theme::DEFAULT_FAMILY,
+                    ))
                     .show_inside(ui, &mut panels);
             });
         // ⚑ Drawn AFTER the dock so the modal floats over the panels rather than under them, and outside
@@ -1519,6 +1526,11 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         ui::APP_NAME,
         opts,
         Box::new(move |cc| {
+            // ⚑ **The suite's tokens, installed before the first frame is composed.** Until this line the
+            // window ran egui's stock dark theme with no theming code in the crate at all, which is the
+            // whole of what "ugly right now" meant. `theme::install` writes the **Dark** style slot rather
+            // than "the current one", so a desktop reporting a light preference cannot revert it.
+            theme::install(&cc.egui_ctx, theme::DEFAULT_FAMILY);
             if persist {
                 // A public *field* on `CreationContext` (`epi.rs:64`), not the `storage()` accessor
                 // `Frame` carries — and `None` here whenever eframe could not open a storage file.

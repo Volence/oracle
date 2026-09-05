@@ -69,37 +69,171 @@ pub struct Row {
     pub item: Map<String, Value>,
 }
 
+/// The marker a cell shows when the record simply does not carry that key.
+///
+/// **Never blank**, because a blank cell in a table of numbers is indistinguishable from a zero that
+/// failed to render, and an inactive slot's omitted keys are an answer ("the game never wrote this
+/// record") rather than a gap. A middle dot rather than the dash it used to be: the suite's text rule
+/// (CHROME_SPEC, "Text in the tools") bars em and en dashes from anything a person reads, and this string
+/// is on screen sixty times over on a full table.
+pub const ABSENT: &str = "·";
+
+/// What the `name` column shows for a slot the game has never written.
+///
+/// **A stated fact, not a blank and not a row of zeroes.** "player 2 is not present" is the answer to the
+/// question the player section is asked, so it occupies the one column wide enough to say it rather than
+/// being inferred from a row of [`ABSENT`] markers.
+pub const NOT_PRESENT: &str = "not present (the slot is empty)";
+
+/// What the `name` column shows when the listing cannot name the object.
+///
+/// Short, because it is a table cell. The reason is [`NO_NAME_WHY`] and belongs on the hover: it is a
+/// sentence about the listing, a table cell is not the place for a sentence, and leaving it out entirely
+/// would make an unnamable object look like a naming bug.
+pub const NO_NAME: &str = "(unnamed)";
+
+/// Why a row has no name, for the hover on [`NO_NAME`]. Both reasons are facts about the listing rather
+/// than about the object, which is the thing a reader would otherwise assume.
+pub const NO_NAME_WHY: &str =
+    "`ObjCodeBase` is absent from the loaded listing, or nothing resolves at the address this record's \
+     code word points to. Both are facts about the listing, not about the object.";
+
+/// One column of a slot table, named once so a header and a body cannot disagree about how many there
+/// are or what order they come in.
+///
+/// `numeric` and `mono` are **presentation facts derived from what the column holds**, kept here rather
+/// than in the renderer so the two tables cannot align one column two ways: a machine address and a
+/// coordinate are monospace because they are read digit by digit against each other, and a count or a
+/// coordinate is right-aligned because that is what makes a column of numbers comparable at a glance.
+/// A symbol name is neither.
+#[derive(Clone, Copy)]
+pub struct Col {
+    /// The header cell. Lower case: this is a column of a table, not a title.
+    pub head: &'static str,
+    /// Which fact the cell holds.
+    pub field: Field,
+    /// Right-aligned. True for anything whose digits a reader compares down the column.
+    pub numeric: bool,
+    /// Drawn in the monospace face. Style page P3: addresses, hex and machine numbers only.
+    pub mono: bool,
+}
+
+/// The facts a slot table can show, as an enum rather than as contract key strings in the renderer, so a
+/// mistyped key is a compile error instead of a column of [`ABSENT`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Field {
+    /// The row's own slot number, which is not a key of the served item.
+    Slot,
+    /// `role`, present only on the player section's rows.
+    Role,
+    Addr,
+    Code,
+    X,
+    Y,
+    /// `name`, with `nameDisp` folded in as `+$offset` when it is non-zero.
+    Name,
+}
+
+/// The pool table's columns.
+pub const POOL_COLS: [Col; 6] = [
+    Col {
+        head: "slot",
+        field: Field::Slot,
+        numeric: true,
+        mono: true,
+    },
+    Col {
+        head: "addr",
+        field: Field::Addr,
+        numeric: false,
+        mono: true,
+    },
+    Col {
+        head: "code",
+        field: Field::Code,
+        numeric: false,
+        mono: true,
+    },
+    Col {
+        head: "x",
+        field: Field::X,
+        numeric: true,
+        mono: true,
+    },
+    Col {
+        head: "y",
+        field: Field::Y,
+        numeric: true,
+        mono: true,
+    },
+    Col {
+        head: "name",
+        field: Field::Name,
+        numeric: false,
+        mono: false,
+    },
+];
+
+/// The player section's columns: the pool's, with the slot's `role` in front of them.
+///
+/// `role` leads because it is the reason this section exists — a reader is here to find *player 1*, not
+/// slot 0 — and because it is the one column the pool table cannot show.
+pub const PLAYER_COLS: [Col; 7] = [
+    Col {
+        head: "role",
+        field: Field::Role,
+        numeric: false,
+        mono: false,
+    },
+    POOL_COLS[0],
+    POOL_COLS[1],
+    POOL_COLS[2],
+    POOL_COLS[3],
+    POOL_COLS[4],
+    POOL_COLS[5],
+];
+
 impl Row {
-    /// A contract key as a display string, or `"—"`. **Never blank**: a blank cell in a table of numbers
-    /// is indistinguishable from a zero that failed to render, and an inactive slot's omitted keys are an
-    /// answer ("the game never wrote this record") rather than a gap.
+    /// A contract key as a display string, or [`ABSENT`].
     pub fn cell(&self, key: &str) -> String {
         match self.item.get(key) {
-            None => "—".into(),
+            None => ABSENT.into(),
             Some(Value::String(s)) => s.clone(),
             Some(v) => v.to_string(),
         }
     }
 
-    /// The row's own headline: what a human scans a pool table for.
-    pub fn summary(&self) -> String {
-        format!(
-            "{:>3}  {:<10}  {:<8}  {:>7} {:>7}  {}",
-            self.slot,
-            self.cell("addr"),
-            self.cell("code"),
-            self.cell("x"),
-            self.cell("y"),
-            match self.item.get("name") {
+    /// One field of this row as the cell a table draws.
+    ///
+    /// The single place a served key becomes display text, which is what lets the panel be a table of
+    /// facts rather than a table of `format!`s: change how an address is spelled and both tables and the
+    /// row expansion move together.
+    pub fn field(&self, f: Field) -> String {
+        match f {
+            Field::Slot => self.slot.to_string(),
+            Field::Role => self.cell("role"),
+            Field::Addr => self.cell("addr"),
+            Field::Code => self.cell("code"),
+            Field::X => self.cell("x"),
+            Field::Y => self.cell("y"),
+            // An empty slot's keys are OMITTED rather than zeroed, so every other column of an
+            // inactive row is `ABSENT`. This is the column that says why.
+            Field::Name if !self.active => NOT_PRESENT.into(),
+            Field::Name => match self.item.get("name") {
                 Some(Value::String(n)) => match self.item.get("nameDisp").and_then(Value::as_u64) {
                     Some(0) | None => n.clone(),
                     Some(d) => format!("{n}+${d:X}"),
                 },
-                // `ObjCodeBase` absent, or nothing resolves at the target. Said, not blanked — the two
-                // reasons a name is missing are both facts about the listing, not about the object.
-                _ => "(no name — ObjCodeBase absent, or nothing resolves there)".into(),
-            }
-        )
+                // `ObjCodeBase` absent, or nothing resolves at the target. Named, not blanked; the full
+                // reason is `NO_NAME_WHY` on the hover.
+                _ => NO_NAME.into(),
+            },
+        }
+    }
+
+    /// Every cell of this row for `cols`, in order.
+    pub fn cells(&self, cols: &[Col]) -> Vec<String> {
+        cols.iter().map(|c| self.field(c.field)).collect()
     }
 }
 
@@ -260,7 +394,7 @@ pub fn object_slot(
     // because a slot number is an *address*, and an address a caller chose must be checked by the callee.
     if slot >= layout.slot_count() {
         return Err(RpcError::invalid_params(format!(
-            "slot {slot} is past the end of the object pool — this build has {} slots (0..={}), and \
+            "slot {slot} is past the end of the object pool: this build has {} slots (0..={}), and \
              the bound is refused rather than clamped",
             layout.slot_count(),
             layout.slot_count().saturating_sub(1)
@@ -307,13 +441,13 @@ const RING_ENTRY_SIZE: &str = "RING_BUFFER_ENTRY_SIZE";
 /// listing that publishes no `Equate Table`, or one whose build renamed the constant, still has no
 /// divisor, and no entry size is guessed then either.)*
 pub const CEILING_UNKNOWN: &str =
-    "ceiling unknown — the span above is measured, but converting it to a number of rings needs \
+    "ceiling unknown. The span above is measured, but converting it to a number of rings needs \
      RING_BUFFER_ENTRY_SIZE, and this listing does not publish it (no Equate Table, or a build that \
      renamed the constant). No entry size is guessed here.";
 
 /// The one sentence this panel owes the reader about rings, beside the object count.
 pub const RINGS_WHY: &str =
-    "Rings never occupy an object slot — they live in their own buffer, so a full ring buffer does not \
+    "Rings never occupy an object slot: they live in their own buffer, so a full ring buffer does not \
      consume the pool and a ring is never one of the objects counted above.";
 
 /// What the panel can say about rings, measured the same way everything else on this tab is.
@@ -347,33 +481,69 @@ pub struct RingsView {
     pub ceiling: Option<u32>,
 }
 
+/// The label the ring capacity is filed under, so the panel, the tests and the absence case all name it
+/// once. **Absent rather than zero** when the listing publishes no entry size: an unknown capacity that
+/// rendered as a row would be a number nobody measured.
+pub const CAPACITY: &str = "capacity";
+
 impl RingsView {
-    /// The rings line as the header shows it — **a string, so it can be asserted on.**
+    /// The ring buffer as labelled facts, **data rather than a drawn line, so it can be asserted on.**
     ///
-    /// Same reason [`Row::summary`] is a method here rather than a `format!` in the renderer: a panel
-    /// this crate cannot screenshot is only checkable at the seam where it becomes text.
-    pub fn summary(&self) -> String {
-        format!(
-            "rings   {} live{}   buffer {}..{} (${:X} bytes)   Ring_Count is {} byte{}",
-            self.count,
-            // **The ceiling, finished** (§11.36). `of N` rather than a bare second number, because
-            // "5 128" beside a live count reads as two counts. Absent only when the listing publishes no
-            // entry size, and then `CEILING_UNKNOWN` says so in words underneath.
-            match (self.ceiling, self.entry_size) {
-                (Some(c), Some(e)) =>
-                    format!(" of {c} (${:X} bytes / {e} per ring)", self.span_bytes),
-                _ => String::new(),
-            },
-            hex::addr(self.buffer_addr),
-            hex::addr(self.count_addr),
-            self.span_bytes,
-            // Shown because it is what makes the count readable at all: the width was MEASURED from the
-            // next symbol, not assumed, and reading two bytes where the listing declares one would fold
-            // `Ring_HighWater` into the count and report a plausible number.
-            self.count_width,
-            if self.count_width == 1 { "" } else { "s" },
-        )
+    /// This used to be one run-on string with four facts in it separated by runs of spaces. Same reason
+    /// it is a method here rather than a `format!` in the renderer: a panel this crate cannot screenshot
+    /// is only checkable at the seam where it becomes text.
+    pub fn facts(&self) -> Vec<Fact> {
+        let mut v = vec![Fact {
+            label: "live".into(),
+            value: self.count.to_string(),
+            mono: true,
+        }];
+        // **The ceiling, finished** (§11.36). A labelled row rather than a second bare number, because
+        // "5 128" beside a live count reads as two counts. Omitted entirely when the listing publishes no
+        // entry size, and `CEILING_UNKNOWN` then says so in words underneath.
+        if let (Some(c), Some(e)) = (self.ceiling, self.entry_size) {
+            v.push(Fact {
+                label: CAPACITY.into(),
+                value: format!("{c} rings (${:X} bytes / {e} per ring)", self.span_bytes),
+                mono: true,
+            });
+        }
+        v.push(Fact {
+            label: "buffer".into(),
+            value: format!(
+                "{}..{} (${:X} bytes)",
+                hex::addr(self.buffer_addr),
+                hex::addr(self.count_addr),
+                self.span_bytes
+            ),
+            mono: true,
+        });
+        // Shown because it is what makes the count readable at all: the width was MEASURED from the next
+        // symbol, not assumed, and reading two bytes where the listing declares one would fold
+        // `Ring_HighWater` into the count and report a plausible number.
+        v.push(Fact {
+            label: "Ring_Count width".into(),
+            value: format!(
+                "{} byte{}, measured from the next symbol",
+                self.count_width,
+                if self.count_width == 1 { "" } else { "s" }
+            ),
+            mono: true,
+        });
+        v
     }
+}
+
+/// Labelled facts as one flat string. **A test convenience only** -- the panel lays the facts out, and
+/// this is what lets an assertion say "the count and the span are both on screen" without asserting a
+/// layout this crate cannot see.
+#[cfg(test)]
+pub fn facts_text(facts: &[Fact]) -> String {
+    facts
+        .iter()
+        .map(|f| format!("{} {}", f.label, f.value))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The smallest symbol address strictly above `addr`, i.e. where whatever lives at `addr` must end.
@@ -403,8 +573,8 @@ pub fn rings(symbols: Option<&SymbolTable>, sys: &System) -> Result<RingsView, R
             code::NO_SYMBOLS_LOADED,
             format!(
                 "the loaded listing does not name both `{RING_BUFFER}` and `{RING_COUNT}`, so the ring \
-                 buffer cannot be measured — refusing rather than reporting a ring count from a guessed \
-                 address"
+                 buffer cannot be measured. Refusing rather than reporting a ring count from a \
+                 guessed address"
             ),
         ));
     };
@@ -429,9 +599,9 @@ pub fn rings(symbols: Option<&SymbolTable>, sys: &System) -> Result<RingsView, R
             return Err(RpcError::new(
                 code::NO_SYMBOLS_LOADED,
                 format!(
-                    "`{RING_COUNT}` is not the next symbol after `{RING_BUFFER}` in this listing — {} \
-                     comes first — so `{RING_COUNT} − {RING_BUFFER}` spans more than the ring buffer \
-                     and is not reported as its size",
+                    "`{RING_COUNT}` is not the next symbol after `{RING_BUFFER}` in this listing \
+                     ({} comes first), so `{RING_COUNT} - {RING_BUFFER}` spans more than the ring \
+                     buffer and is not reported as its size",
                     other.map_or_else(
                         || "nothing at all".to_string(),
                         |a| format!("a symbol at {}", hex::addr(a))
@@ -452,8 +622,8 @@ pub fn rings(symbols: Option<&SymbolTable>, sys: &System) -> Result<RingsView, R
                 code::NO_SYMBOLS_LOADED,
                 format!(
                     "`{RING_COUNT}`'s width is measured as the gap to the next symbol above it, and \
-                     this listing makes that {} — not a 1-, 2- or 4-byte scalar, so the value is not \
-                     read",
+                     this listing makes that {}, which is not a 1-, 2- or 4-byte scalar, so the \
+                     value is not read",
                     other.map_or("unbounded".to_string(), |w| format!("{w} bytes")),
                 ),
             ));
@@ -540,38 +710,77 @@ pub struct Pool {
     pub rings: Result<RingsView, RpcError>,
 }
 
-impl Pool {
-    /// The two layout lines the header shows, **as strings rather than as a `Value`**.
+/// One header fact: a label, its value, and whether the value is a machine number.
+///
+/// A pair rather than a sentence, so the header can be **laid out** instead of read left to right. The
+/// facts on it are all of the form *name: value* and they were previously one run-on line per row, which
+/// is the shape a reader has to parse a comma at a time.
+pub struct Fact {
+    /// The label, in the reader's words rather than the wire's: `slots` rather than `slotCount`.
     ///
-    /// This is the readable half of what used to be one `ui.monospace` line ending in a whole JSON
-    /// object. Returned as text so a test can assert both halves of the fix: that the facts are all still
-    /// here, and that no `{"key":` survives into the header.
-    pub fn layout_lines(&self) -> Vec<String> {
+    /// Owned rather than `&'static str` because the row expansion's labels are the record's own declared
+    /// field names, which come from the loaded listing. One `Fact` for both, so the header and the
+    /// expansion cannot end up laid out two different ways.
+    pub label: String,
+    pub value: String,
+    /// Drawn in the monospace face. Style page P3: an address or a machine number, never prose.
+    pub mono: bool,
+}
+
+impl Pool {
+    /// The layout's facts, **as labelled values rather than as a `Value` or as a run-on line**.
+    ///
+    /// This used to be one `ui.monospace` line ending in a whole JSON object
+    /// (`{"baseAddr":"0x00FF8000","detectedBy":"symbol",…}`); the JSON went in `09a7e11` and the run-on
+    /// line goes here. Returned as data rather than drawn inline so a test can still assert both halves
+    /// of that fix: that every fact the JSON carried survives, and that none of its punctuation does.
+    ///
+    /// `detectedBy` is the one key deliberately not here: it is `"symbol"` unconditionally on this server,
+    /// so a row for it would be a constant dressed as a finding.
+    pub fn layout_facts(&self) -> Vec<Fact> {
+        let mono = |label: &str, value| Fact {
+            label: label.into(),
+            value,
+            mono: true,
+        };
         vec![
-            format!(
-                "engine {}   table {}   {} slots × ${:X} bytes   base from {}",
-                self.engine,
-                hex::addr(self.base_addr),
-                self.slot_count,
-                self.slot_bytes,
-                self.detected_from,
-            ),
+            Fact {
+                label: "engine".into(),
+                value: self.engine.to_string(),
+                mono: false,
+            },
+            mono("table at", hex::addr(self.base_addr)),
+            mono("slots", self.slot_count.to_string()),
+            mono("slot size", format!("${:X} bytes", self.slot_bytes)),
+            Fact {
+                label: "base from".into(),
+                value: self.detected_from.to_string(),
+                mono: false,
+            },
             match &self.partition {
-                Some(ps) => format!(
-                    "pools    {}",
-                    ps.iter()
-                        .map(|p| format!(
-                            "{} {}..{}",
-                            p.name,
-                            p.first_slot,
-                            p.first_slot + p.slot_count
-                        ))
+                Some(ps) => Fact {
+                    label: "pools".into(),
+                    value: ps
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{} {}..{}",
+                                p.name,
+                                p.first_slot,
+                                p.first_slot + p.slot_count
+                            )
+                        })
                         .collect::<Vec<_>>()
-                        .join("   ")
-                ),
+                        .join("   "),
+                    mono: false,
+                },
                 // Said, not omitted: this is the same missing partition the player section refuses on,
-                // and a header that skipped the line would leave that refusal looking like a bug.
-                None => "pools    — this listing does not partition the table".to_string(),
+                // and a header that skipped the row would leave that refusal looking like a bug.
+                None => Fact {
+                    label: "pools".into(),
+                    value: "this listing does not partition the table".into(),
+                    mono: false,
+                },
             },
         ]
     }
@@ -610,7 +819,7 @@ impl Objects {
 /// `emulator/load_symbols`, which is not a thing a human at this window can call.
 pub fn refusal_text(e: &RpcError) -> String {
     format!(
-        "NO OBJECTS TO SHOW — {} {}\n\nThis tab decodes the game's object records, and every address in \
+        "NO OBJECTS TO SHOW. {} {}\n\nThis tab decodes the game's object records, and every address in \
          them is a fact about the build that is loaded, so without a listing there is nothing to decode \
          and nothing is guessed. Relaunch with `--symbols PATH`, or put the matching `.lst` beside the \
          ROM.\n\nThis is not an empty pool: an empty table would say this game has no objects, which is \
@@ -914,10 +1123,10 @@ mod bus_parity {
         // *"ambiguity is an omission, never a pick"*. Pinned rather than worked around, because the
         // tempting fix (take the first) would make the panel label a slot from a guess while the bus
         // labelled it not at all, which is precisely the drift this test exists to catch. The renderer
-        // shows `—` for it, never a blank.
+        // shows `ABSENT` for it, never a blank.
         assert_eq!(
             panel.players[0].cell("role"),
-            "—",
+            ABSENT,
             "two symbols name slot 0's address, so the label is omitted by the decoder"
         );
         assert!(!panel.players[0].item.contains_key("role"));
@@ -1082,9 +1291,12 @@ mod bus_parity {
         }
         assert_eq!(
             dead.row.cell("x"),
-            "—",
+            ABSENT,
             "and the renderer must say so rather than leaving the cell blank"
         );
+        // …and the ONE column wide enough for a sentence says which fact is missing, so a row of
+        // markers is not the only thing a reader has to go on.
+        assert_eq!(dead.row.field(Field::Name), NOT_PRESENT);
     }
 
     /// The inactive-player case, stated on its own because it is a **different rule** from
@@ -1375,11 +1587,11 @@ mod bus_parity {
         );
         assert_eq!(r.span_bytes, RING_SPAN);
         assert_eq!(r.buffer_addr, RING_BASE);
-        // …and the line a human reads carries the measured numbers, not a remembered pair.
-        let line = r.summary();
+        // …and the facts a human reads carry the measured numbers, not a remembered pair.
+        let line = facts_text(&r.facts());
         assert!(
-            line.contains("7 live") && line.contains(&format!("${RING_SPAN:X} bytes")),
-            "the rings line must carry the measured count and span: {line:?}"
+            line.contains("live 7") && line.contains(&format!("${RING_SPAN:X} bytes")),
+            "the rings facts must carry the measured count and span: {line:?}"
         );
     }
 
@@ -1514,10 +1726,10 @@ mod bus_parity {
             Some(RING_SPAN / 6),
             "64 is what a derivation that memorised aeon's real entry size would give"
         );
-        let line = view.summary();
+        let line = facts_text(&view.facts());
         assert!(
-            line.contains("of 24") && line.contains("16 per ring"),
-            "the panel line carries both halves of the division: {line:?}"
+            line.contains("24 rings") && line.contains("16 per ring"),
+            "the capacity fact carries both halves of the division: {line:?}"
         );
 
         // …and the equate still is not an address, on the bus, in the presence of a real symbol table.
@@ -1620,10 +1832,10 @@ mod bus_parity {
             Some(128),
             "and on this build that number is 128"
         );
-        let line = view.summary();
+        let line = facts_text(&view.facts());
         assert!(
-            line.contains("of 128"),
-            "the panel line must carry the ceiling now that it has one: {line:?}"
+            line.contains("128 rings"),
+            "the panel must carry the ceiling now that it has one: {line:?}"
         );
         assert!(
             line.contains("6 per ring"),
@@ -1654,9 +1866,9 @@ mod bus_parity {
             "no divisor, no ceiling — and none guessed"
         );
         assert!(
-            !view.summary().contains(" of "),
-            "the summary must not invent a ceiling: {:?}",
-            view.summary()
+            !view.facts().iter().any(|f| f.label == CAPACITY),
+            "with no divisor there is no capacity fact, invented or otherwise: {:?}",
+            facts_text(&view.facts())
         );
         assert!(CEILING_UNKNOWN.contains("RING_BUFFER_ENTRY_SIZE"));
     }
@@ -1677,8 +1889,7 @@ mod bus_parity {
         let Objects::Pool(pool) = Objects::of(Some(&table), &sys) else {
             panic!("the fixture derives");
         };
-        let lines = pool.layout_lines();
-        let all = lines.join("\n");
+        let all = facts_text(&pool.layout_facts());
 
         // --- the facts are all still here ---
         for want in [
@@ -1691,7 +1902,7 @@ mod bus_parity {
         ] {
             assert!(
                 all.contains(want),
-                "the header dropped `{want}` — the readable spelling must carry every fact the JSON \
+                "the header dropped `{want}`. The readable spelling must carry every fact the JSON \
                  did, not a subset:\n{all}"
             );
         }
@@ -1702,6 +1913,244 @@ mod bus_parity {
                 !all.contains(bad),
                 "`{bad}` is JSON punctuation in the header, which is the defect being fixed:\n{all}"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // 6a. The style page's P2 and P10, as gates rather than as a reviewer's grep
+    // -----------------------------------------------------------------------------------------------
+
+    /// ⚑ **P2: a row is a set of cells, never one padded string.**
+    ///
+    /// The style page names the reviewer's check as *"the panel contains no width-padded format
+    /// specifier"*, and `{:>3}  {:<10}  {:<8}  {:>7} {:>7}  {}` is exactly what `Row::summary` used to be.
+    /// A grep is a check on one revision; this is the property that grep was standing in for, and it holds
+    /// against any spelling: **every cell is a bare value**, so the only thing that can align a column is
+    /// the layout.
+    ///
+    /// Both tables are covered, and both an active and an inactive row, because the inactive row is the
+    /// one that used to be a second `format!` with its own padding in the renderer.
+    #[test]
+    fn a_table_row_is_cells_and_never_a_padded_string() {
+        let mut sys = booted();
+        let table = table_with(&[]);
+        let mut bus = populated(&mut sys, table.clone());
+        // Slot 1's code word cleared to the engine's own empty-slot sentinel, so the inactive arm of
+        // every cell is actually exercised. `populated` fills both player slots.
+        ok(bus.call(
+            &mut sys,
+            "emulator/write_memory",
+            &json!({"addr": format!("0x{:06X}", BASE + SST), "bytes": "0x0000"}),
+        ));
+        let Objects::Pool(pool) = Objects::of(Some(&table), &sys) else {
+            panic!("the fixture derives");
+        };
+        let players = pool
+            .players
+            .as_ref()
+            .expect("the fixture partitions the table");
+
+        // The anti-vacuity clause: there must be rows of both kinds to check.
+        assert!(!pool.objects.is_empty(), "the pool table has live rows");
+        assert!(
+            players.players.iter().any(|r| r.active) && players.players.iter().any(|r| !r.active),
+            "the fixture must carry a present player AND an absent one, or the inactive arm is untested"
+        );
+
+        for (cols, rows) in [
+            (&POOL_COLS[..], &pool.objects),
+            (&PLAYER_COLS[..], &players.players),
+        ] {
+            for r in rows {
+                let cells = r.cells(cols);
+                assert_eq!(
+                    cells.len(),
+                    cols.len(),
+                    "a row must produce one cell per column, or the header names a column nothing fills"
+                );
+                for (c, cell) in cols.iter().zip(&cells) {
+                    assert_eq!(
+                        cell.trim(),
+                        cell.as_str(),
+                        "column `{}` of slot {} is padded: {cell:?}. Padding inside a cell is the \
+                         pseudo-table P2 outlaws, just moved one function down",
+                        c.head,
+                        r.slot
+                    );
+                    assert!(
+                        !cell.contains('\n'),
+                        "column `{}` of slot {} spans lines, so the table is not a table: {cell:?}",
+                        c.head,
+                        r.slot
+                    );
+                }
+            }
+        }
+
+        // …and the header names every column exactly once, so no column is anonymous.
+        let heads: Vec<&str> = POOL_COLS.iter().map(|c| c.head).collect();
+        let mut sorted = heads.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            heads.len(),
+            "two columns share a header: {heads:?}"
+        );
+    }
+
+    /// ⚑ **P10: no em dash and no en dash in anything this tab puts on screen.**
+    ///
+    /// The owner's ruling of 2026-09-05, filed suite-wide in `design/CHROME_SPEC.md` under "Text in the
+    /// tools". A dash standing in for a colon is almost always a colon.
+    ///
+    /// P9 rides along, because the refusal below is the tab's whole-panel state and one sweep answers
+    /// both questions about it.
+    ///
+    /// ⚑ **The refusals are the REAL ones**, driven through `Objects::of(None, ..)` and `player_state`,
+    /// not `RpcError`s written here. A hand-made error carries whatever text the test typed, so it would
+    /// have passed this while the sentence a person actually sees carried both an em dash and a
+    /// `protocol.md §11.25`. It did: the first version of this test built the error by hand and was green
+    /// on a defect that was on screen.
+    ///
+    /// **What this covers, said plainly:** every string the tab's *data layer* composes, which is the
+    /// headings, the labelled facts, every table cell, the standing sentences and the refusal. It cannot
+    /// reach the literals the renderer holds inline, because those never become values this crate can
+    /// enumerate; those are checked by grep over `ui.rs` and stated as such in the parcel's report rather
+    /// than claimed here.
+    #[test]
+    fn nothing_this_tab_shows_carries_an_em_dash_or_an_en_dash() {
+        let mut sys = booted();
+        let table = table_with(&ring_rows(RING_BASE, RING_SPAN));
+        let mut bus = populated(&mut sys, table.clone());
+        // As above: one player present and one absent, so `NOT_PRESENT` and `ABSENT` are both collected
+        // rather than being two constants nothing on this fixture ever renders.
+        ok(bus.call(
+            &mut sys,
+            "emulator/write_memory",
+            &json!({"addr": format!("0x{:06X}", BASE + SST), "bytes": "0x0000"}),
+        ));
+        let Objects::Pool(pool) = Objects::of(Some(&table), &sys) else {
+            panic!("the fixture derives");
+        };
+        let players = pool
+            .players
+            .as_ref()
+            .expect("the fixture partitions the table");
+        let rings = pool
+            .rings
+            .as_ref()
+            .expect("the fixture names the ring symbols");
+
+        let mut shown: Vec<String> = vec![
+            ABSENT.into(),
+            NO_NAME.into(),
+            NO_NAME_WHY.into(),
+            NOT_PRESENT.into(),
+            CEILING_UNKNOWN.into(),
+            RINGS_WHY.into(),
+            CAPACITY.into(),
+            // The whole-tab refusal, as the tab reaches it: `decoders::derive(None)`'s own words.
+            match Objects::of(None, &sys) {
+                Objects::Refused(e) => refusal_text(&e),
+                Objects::Pool(_) => panic!("no listing must refuse, or this arm is unchecked"),
+            },
+            // …and the player section's own refusal, a different sentence from a different function,
+            // shown while the pool table beside it renders.
+            match player_state(
+                Some(&SymbolTable::parse(&listing(&pool_rows(BASE, SST)[..2])).expect("parses")),
+                &sys,
+            ) {
+                Err(e) => e.message,
+                Ok(_) => panic!("a listing with no pool partition must refuse the player section"),
+            },
+        ];
+        shown.extend(
+            POOL_COLS
+                .iter()
+                .chain(PLAYER_COLS.iter())
+                .map(|c| c.head.to_string()),
+        );
+        for f in pool.layout_facts().iter().chain(rings.facts().iter()) {
+            shown.push(f.label.clone());
+            shown.push(f.value.clone());
+        }
+        for r in pool.objects.iter().chain(players.players.iter()) {
+            shown.extend(r.cells(&PLAYER_COLS));
+        }
+
+        // The anti-vacuity clause. A `shown` that had quietly become empty, or a fixture whose facts all
+        // collapsed to markers, would pass this in silence.
+        assert!(
+            shown.len() > 40,
+            "only {} strings were collected, so this is checking almost nothing",
+            shown.len()
+        );
+        assert!(
+            shown.iter().any(|s| s == "Player_2"),
+            "the collected strings must include real content, not just markers: {shown:?}"
+        );
+        assert!(
+            shown.iter().any(|s| s == NOT_PRESENT),
+            "the absent-player sentence must be among the strings checked"
+        );
+
+        for s in &shown {
+            for bad in ['\u{2014}', '\u{2013}'] {
+                assert!(
+                    !s.contains(bad),
+                    "{bad:?} reaches the reader in {s:?}. Use a comma, a colon, a period or parentheses"
+                );
+            }
+            // P9: a section reference is addressed to somebody holding the contract, and the person at
+            // this window is not.
+            for bad in ["§", "protocol.md"] {
+                assert!(
+                    !s.contains(bad),
+                    "{bad:?} quotes the specification at the reader in {s:?}"
+                );
+            }
+        }
+    }
+
+    /// A listing with no `pools[]` still renders a header, and **that arm's text is checked too**.
+    ///
+    /// The partition-absent branch of `layout_facts` is a different string from the partition-present one
+    /// and used to carry its own em dash. Separate from the sweep above because it needs a different
+    /// listing, and a rule checked on only the arm that happens to be easy to reach is not checked.
+    #[test]
+    fn the_header_says_an_unpartitioned_listing_is_unpartitioned_without_a_dash() {
+        let mut sys = booted();
+        let rows: Vec<(String, u32)> = pool_rows(BASE, SST)
+            .into_iter()
+            .filter(|(n, _)| {
+                !matches!(
+                    n.as_str(),
+                    "Dynamic_Slots" | "System_Slots" | "Effect_Slots"
+                )
+            })
+            .collect();
+        let table = SymbolTable::parse(&listing(&rows)).expect("the listing parses");
+        let _bus = populated(&mut sys, table.clone());
+        let Objects::Pool(pool) = Objects::of(Some(&table), &sys) else {
+            panic!("the fixture still derives without a partition");
+        };
+        assert!(
+            pool.partition.is_none(),
+            "the fixture must actually be unpartitioned, or this checks the other arm"
+        );
+        let pools = pool
+            .layout_facts()
+            .into_iter()
+            .find(|f| f.label == "pools")
+            .expect("the row is stated, never omitted");
+        assert!(
+            pools.value.contains("does not partition"),
+            "the absent partition is SAID, not left blank: {:?}",
+            pools.value
+        );
+        for bad in ['\u{2014}', '\u{2013}'] {
+            assert!(!pools.value.contains(bad), "{bad:?} in {:?}", pools.value);
         }
     }
 

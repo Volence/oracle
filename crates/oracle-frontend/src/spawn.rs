@@ -130,15 +130,15 @@ impl Bounds {
         Refusal::window(
             "outsideAct",
             format!(
-                "world ({x}, {y}) is outside this act, whose extent is {} x {} pixels — the valid box \
-                 is [0, {}) x [0, {}), read just now from `{LEVEL_WIDTH_SYMBOL}` and \
+                "world ({x}, {y}) is outside this act, whose extent is {} x {} pixels. The valid \
+                 box is [0, {}) x [0, {}), read just now from `{LEVEL_WIDTH_SYMBOL}` and \
                  `{LEVEL_HEIGHT_SYMBOL}`. An object placed there is culled by the engine on camera \
                  distance with no error and nothing on screen, so the click is refused here rather than \
                  acked and thrown away",
                 self.width, self.height, self.width, self.height
             ),
             Some(format!(
-                "click inside the act — it is {} x {} pixels",
+                "click inside the act, which is {} x {} pixels",
                 self.width, self.height
             )),
         )
@@ -158,8 +158,8 @@ impl Bounds {
                 "the window cannot tell whether this click is inside the act: `{LEVEL_WIDTH_SYMBOL}` and \
                  `{LEVEL_HEIGHT_SYMBOL}` are not both in the loaded listing, so there is no measurement to \
                  check against. An object placed outside the act is culled by the engine with no error and \
-                 nothing on screen, and a click sent unchecked would be acked as placed and then vanish — \
-                 so this refuses rather than guessing the act is infinite"
+                 nothing on screen, and a click sent unchecked would be acked as placed and then \
+                 vanish, so this refuses rather than guessing the act is infinite"
             ),
             Some("load a listing that names Level_Width and Level_Height".to_string()),
         )
@@ -171,7 +171,7 @@ impl Bounds {
             "noActLoaded",
             format!(
                 "`{LEVEL_WIDTH_SYMBOL}` and `{LEVEL_HEIGHT_SYMBOL}` read 0, which is what they hold until \
-                 an act has initialised — there is no act for an object to be inside of, and anything \
+                 an act has initialised. There is no act for an object to be inside of, and anything \
                  placed now would be culled the moment objects run"
             ),
             Some("start an act first, then click".to_string()),
@@ -199,7 +199,7 @@ impl Archetypes {
     pub fn truncation_note(&self) -> Option<String> {
         (self.total > self.names.len()).then(|| {
             format!(
-                "the listing holds {} — this is the first {}, which is where the bus's bounded \
+                "the listing holds {}; this is the first {}, which is where the bus's bounded \
                  symbol search stops",
                 self.total,
                 self.names.len()
@@ -302,6 +302,12 @@ impl Refusal {
     ///
     /// `archetype` is named because a refusal with no subject reads as "something went wrong" — the
     /// failure this module's own docs open with.
+    ///
+    /// ⚑ **This one is user-facing in `oracle-player` too**, which is why its two em dashes went and
+    /// [`Self::toast`]'s did not: the player's pick readout shows this line verbatim when a spawn is
+    /// refused, so it is inside the panel parcel that applied the owner's 2026-09-05 no-dash ruling.
+    /// The toast is drawn only by this crate's own window and is left for that lane's own pass, because
+    /// a rule applied where nobody asked for it is a rule applied to somebody else's tests.
     pub fn terminal(&self, archetype: &str, pause_key: Option<&str>) -> String {
         let who = match (self.code, self.reason.as_deref()) {
             (Some(c), Some(r)) => format!("aether {c} {r}"),
@@ -309,11 +315,11 @@ impl Refusal {
             (None, _) => "the window".to_string(),
         };
         let mut s = format!(
-            "spawn refused by {who} — nothing was placed, {archetype} is not on screen: {}",
+            "spawn refused by {who}, nothing was placed, {archetype} is not on screen: {}",
             self.message
         );
         if let Some(r) = self.remedy(pause_key) {
-            s.push_str(&format!(" — {r}"));
+            s.push_str(&format!(". {r}"));
         }
         s
     }
@@ -368,9 +374,9 @@ impl Placed {
             None => "a slot this build's layout cannot name".to_string(),
         };
         let mut s = format!(
-            "spawned {archetype} at world ({}, {}) — it is {slot}, handle {}, addr {}. \
-             Its record reads ({}, {}) after {} frame(s): that is where the object is NOW, not a \
-             confirmation of where you clicked — anything with velocity has already moved.",
+            "spawned {archetype} at world ({}, {}): it is {slot}, handle {}, addr {}. \
+             Its record reads ({}, {}) after {} frame(s), which is where the object is NOW and not a \
+             confirmation of where you clicked (anything with velocity has already moved).",
             self.asked.0,
             self.asked.1,
             self.handle,
@@ -455,7 +461,7 @@ impl Mode {
         if archetypes.is_empty() {
             return Err(Refusal::local(format!(
                 "this build's symbol listing names no `{ARCHETYPE_PREFIX}` archetype, so there is \
-                 nothing a click could place — spawn mode is left off"
+                 nothing a click could place. Spawn mode is left off"
             )));
         }
         self.archetypes = archetypes;
