@@ -630,12 +630,68 @@ impl Host {
         method: &str,
         params: &Value,
     ) -> (Result<Value, RpcError>, Map<String, Value>) {
+        let (result, stamp, _) = self.call_reporting(sys, method, params);
+        (result, stamp)
+    }
+
+    /// **[`call`](Host::call), plus the same four-coordinate diff [`pump`](Host::pump) takes** — for an
+    /// embedder that dispatches its own gestures synchronously and has to repair whatever they moved.
+    ///
+    /// # ⚑ Why this exists, and it is a defect report rather than a convenience
+    ///
+    /// [`pump`](Host::pump) snapshots the three generation counters **inside itself**, deliberately: that
+    /// is what keeps [`set_machine_info`](Host::set_machine_info) from surfacing as a client's doing, and
+    /// its own comment says so. The unintended half of that choice is that a change made by a `call`
+    /// *between* two drains is invisible to **both**: it lands after drain N has read the counters back
+    /// and before drain N+1 reads them at its start, so the delta is zero on either side and no
+    /// [`PumpReport`] anywhere ever mentions it.
+    ///
+    /// `oracle-frontend` never noticed, because it dispatches its own F5 by calling
+    /// [`System::load_rom`](oracle_core::system::System::load_rom) directly and repairs the window inline
+    /// beside it. `oracle-player` dispatches **every** served method from its command palette through
+    /// `call` — `emulator/reload_rom`, `emulator/reset`, `emulator/restore`, `emulator/run_frames`
+    /// included — and so had no report to repair from at all: a palette reset left that window's audio
+    /// clock and scanline capture on a timeline that no longer existed, its cached symbol listing and ROM
+    /// path stale, and a palette `run_frames` drew a frame that never reached the glass. All of it
+    /// silent, and all of it the repairs its own drain already performs for a *client* doing the same
+    /// thing.
+    ///
+    /// So the diff is the one thing that was missing, taken here in exactly the shape and the order
+    /// `pump` takes it, in the same file, so the two readings of "what did that move" cannot drift.
+    ///
+    /// **`calls` is 1 and `deferred` is `false`, always** — one dispatch, synchronous, no budget. The
+    /// other four fields carry the same meanings [`PumpReport`] documents, including
+    /// [`timeline_moved`](PumpReport::timeline_moved) for a gesture that ran or rewound the machine.
+    ///
+    /// This is **not** a second dispatch path: it is [`call`](Host::call)'s body, and `call` is now a
+    /// wrapper over it, so there is one place a synchronous gesture is answered.
+    pub fn call_reporting(
+        &mut self,
+        sys: &mut System,
+        method: &str,
+        params: &Value,
+    ) -> (Result<Value, RpcError>, Map<String, Value>, PumpReport) {
+        // Read before the swap, beside each other, exactly as `pump` reads them.
+        let screen_gen = self.engine.screen_generation();
+        let rom_gen = self.engine.rom_generation();
+        let symbols_gen = self.engine.symbols_generation();
         self.engine.swap_system(sys);
+        let mclk_before = self.engine.mclk();
         let result = self.engine.dispatch(method, params);
         // Read inside the window, exactly as the drain does, so the stamp is the real machine's.
         let stamp = self.engine.stamp();
+        let mclk_after = self.engine.mclk();
         self.engine.swap_system(sys);
-        (result, stamp)
+        let report = PumpReport {
+            calls: 1,
+            mclk_before,
+            mclk_after,
+            screen_changed: self.engine.screen_generation() != screen_gen,
+            rom_changed: self.engine.rom_generation() != rom_gen,
+            symbols_changed: self.engine.symbols_generation() != symbols_gen,
+            deferred: false,
+        };
+        (result, stamp, report)
     }
 
     // ---------------------------------------------------------------- the drain
@@ -906,6 +962,65 @@ mod tests {
         let r = rx.try_recv().expect("the drain answered");
         assert!(r.result.is_ok(), "{method}: {:?}", r.result.err());
         report
+    }
+
+    /// ★ **A synchronous gesture reports what it moved — and the next drain does not.**
+    ///
+    /// Both halves are the point, and the second one is why this method exists at all. `pump` snapshots
+    /// the generation counters *inside itself* ([`Host::pump`]'s own comment says so, deliberately), so a
+    /// change a `call` makes between two drains lands in the gap: after drain N read them back and before
+    /// drain N+1 reads them at its start. Nothing anywhere ever mentions it.
+    ///
+    /// So the assertions are paired. The gesture's own report must name the change; the drain that
+    /// follows it must **not**, because that is the fact an embedder has to be built against. An
+    /// embedder that "simplified" [`Host::call_reporting`] away and read the next `PumpReport` instead
+    /// would fail the first half here rather than discovering it as silence at a window.
+    ///
+    /// `emulator/reset` is the gesture because it moves three of the four coordinates at once — the ROM
+    /// generation (`PumpReport::rom_changed`'s third producer), the clock, and the picture — with no
+    /// file, no socket and no client involved.
+    #[test]
+    fn a_synchronous_gesture_reports_what_it_moved_and_the_next_drain_does_not() {
+        let mut h = Host::new(HostConfig::default());
+        let mut sys = booted();
+        sys.run_frames(2); // a clock that is not 0, so a restart is visible as a *change*
+        let before = sys.scheduler().now();
+        assert!(before > 0, "the fixture must have a clock to restart");
+
+        let (result, _stamp, report) =
+            h.call_reporting(&mut sys, "emulator/reset", &serde_json::json!({}));
+        assert!(result.is_ok(), "emulator/reset: {:?}", result.err());
+        assert!(
+            report.rom_changed,
+            "a reset replaces the machine — the gesture's own report must say so"
+        );
+        assert!(
+            report.timeline_moved(),
+            "a reset restarts the clock, so the caller's audio ring and capture are on a dead timeline"
+        );
+        assert!(
+            report.screen_changed,
+            "a reset invalidates the picture, and the caller has to be told to stop presenting it"
+        );
+        assert_eq!(report.calls, 1, "one dispatch, one call");
+        assert!(
+            !report.deferred,
+            "a synchronous gesture has no budget to run out"
+        );
+        assert_ne!(
+            sys.scheduler().now(),
+            before,
+            "anti-vacuity: the reset must actually have moved the machine, or every flag above is a \
+             claim about nothing"
+        );
+
+        // …and the half an embedder cannot see for itself.
+        let after = h.pump(&mut sys);
+        assert!(
+            !after.rom_changed && !after.screen_changed && !after.timeline_moved(),
+            "the drain after a synchronous gesture reports NOTHING about it — that is the gap \
+             `call_reporting` exists to close, and an embedder that waits for this report waits forever"
+        );
     }
 
     /// Conflict 1, both directions: the host's pause state becomes the bus's `free_run`, and a client's
