@@ -40,13 +40,18 @@
 #                                  `docs/lane-status.json` is the one tolerated path — see below.
 #   G3  fast-forward               the tested SHA must be a descendant of the remote branch, so a
 #                                  landing can never rewrite pushed history.
-#   G4  expected leg count         DERIVED, never hardcoded — see the derivation section below.
-#   G5  cargo fmt --all --check
-#   G6  cargo clippy --workspace --all-targets --release -- -D warnings
+#   G4  cargo fmt --all --check
+#   G5  cargo clippy --workspace --all-targets --release -- -D warnings
 #                                  `-D warnings` is not decoration. Without it clippy exits 0 on
-#                                  every lint it finds, i.e. the gate cannot fire. The repo's own
-#                                  CI already denies warnings; a local gate that did not would be
-#                                  weaker than the thing it is meant to make unnecessary.
+#                                  every lint it finds, i.e. the gate cannot fire — measured: the
+#                                  same `clippy::needless_return` that reddens G5 leaves the flagless
+#                                  command at exit 0. The repo's own CI already denies warnings; a
+#                                  local gate that did not would be weaker than the thing it is
+#                                  meant to make unnecessary.
+#   G6  expected leg count         DERIVED, never hardcoded — see the derivation section below.
+#                                  It runs AFTER clippy so that its build is the one the suite
+#                                  reuses; clippy and test disagree about workspace fingerprints,
+#                                  and whichever runs second rebuilds them.
 #   G7  cargo test --workspace --release
 #                                  NOT `-p X -p Y`, which differs by feature unification: under
 #                                  `--workspace`, oracle-player's `oracle-core/synth` edge unifies
@@ -292,14 +297,43 @@ else
 fi
 
 # --------------------------------------------------------------------------------------------
-# G4  derive the expected leg count
+# G4  fmt
 # --------------------------------------------------------------------------------------------
-hr; echo "G4  expected leg count (derived, never hardcoded)"
+hr; echo "G4  cargo fmt --all --check"
+if cargo fmt --all --check > "$RUN_DIR/fmt.log" 2>&1; then
+    pass "G4 formatting clean"
+else
+    fail "G4 cargo fmt --all --check is RED"
+    command head -40 "$RUN_DIR/fmt.log"
+    finish_red
+fi
+
+# --------------------------------------------------------------------------------------------
+# G5  clippy
+# --------------------------------------------------------------------------------------------
+hr; echo "G5  cargo clippy --workspace --all-targets --release -- -D warnings"
+if cargo clippy --workspace --all-targets --release -- -D warnings > "$RUN_DIR/clippy.log" 2>&1; then
+    pass "G5 clippy clean under -D warnings"
+else
+    fail "G5 cargo clippy is RED"
+    command grep -E '^(error|warning)' "$RUN_DIR/clippy.log" | command head -40
+    finish_red
+fi
+
+# --------------------------------------------------------------------------------------------
+# G6  derive the expected leg count
+#
+# AFTER clippy, deliberately. `cargo clippy` and `cargo test` disagree about the workspace crates'
+# fingerprints, so whichever runs second rebuilds them. Measured on the red-first run that had this
+# block before clippy: G7 re-compiled oracle-aether, oracle-frontend and oracle-player after G6 had
+# already built them. In this order the `--no-run` build below is the one the suite then reuses.
+# --------------------------------------------------------------------------------------------
+hr; echo "G6  expected leg count (derived, never hardcoded)"
 cargo test --workspace --release --no-run --message-format=json \
     > "$RUN_DIR/norun-artifacts.json" 2> "$RUN_DIR/norun.err"
 NORUN_STATUS=$?
 if [ "$NORUN_STATUS" -ne 0 ]; then
-    fail "G4 the --no-run build failed (status $NORUN_STATUS); see $RUN_DIR/norun.err"
+    fail "G6 the --no-run build failed (status $NORUN_STATUS); see $RUN_DIR/norun.err"
     command tail -40 "$RUN_DIR/norun.err"
     finish_red
 fi
@@ -310,35 +344,11 @@ EXEC_LEGS="$(jq -r 'select(.reason == "compiler-artifact")
 DOC_LEGS="$(cargo metadata --no-deps --format-version 1 \
             | jq '[.packages[].targets[] | select(.kind | index("lib")) | select(.doctest == true)] | length')"
 if ! [ "$EXEC_LEGS" -gt 0 ] 2>/dev/null || ! [ "$DOC_LEGS" -gt 0 ] 2>/dev/null; then
-    fail "G4 could not derive a leg count (exec=$EXEC_LEGS doc=$DOC_LEGS)"
+    fail "G6 could not derive a leg count (exec=$EXEC_LEGS doc=$DOC_LEGS)"
     finish_red
 fi
 EXPECTED_LEGS=$((EXEC_LEGS + DOC_LEGS))
-pass "G4 expected legs = $EXPECTED_LEGS  ($EXEC_LEGS test executables cargo will run + $DOC_LEGS doc-test legs)"
-
-# --------------------------------------------------------------------------------------------
-# G5  fmt
-# --------------------------------------------------------------------------------------------
-hr; echo "G5  cargo fmt --all --check"
-if cargo fmt --all --check > "$RUN_DIR/fmt.log" 2>&1; then
-    pass "G5 formatting clean"
-else
-    fail "G5 cargo fmt --all --check is RED"
-    command head -40 "$RUN_DIR/fmt.log"
-    finish_red
-fi
-
-# --------------------------------------------------------------------------------------------
-# G6  clippy
-# --------------------------------------------------------------------------------------------
-hr; echo "G6  cargo clippy --workspace --all-targets --release -- -D warnings"
-if cargo clippy --workspace --all-targets --release -- -D warnings > "$RUN_DIR/clippy.log" 2>&1; then
-    pass "G6 clippy clean under -D warnings"
-else
-    fail "G6 cargo clippy is RED"
-    command grep -E '^(error|warning)' "$RUN_DIR/clippy.log" | command head -40
-    finish_red
-fi
+pass "G6 expected legs = $EXPECTED_LEGS  ($EXEC_LEGS test executables cargo will run + $DOC_LEGS doc-test legs)"
 
 # --------------------------------------------------------------------------------------------
 # G7  the suite

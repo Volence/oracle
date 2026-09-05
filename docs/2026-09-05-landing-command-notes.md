@@ -140,3 +140,12 @@ Exactly one tolerated path, matched as a literal string and always printed rathe
 `docs/lane-status.json`. Safe because nothing compiled reads it (`git grep lane-status` over `*.rs` /
 `*.py` / `*.sh` is empty) and because (e) pushes a commit by name, so its working-tree content is never
 what reaches the remote. Every other path, tracked or untracked, still refuses.
+
+### One ordering fact, measured rather than guessed
+
+`cargo clippy` and `cargo test` disagree about the workspace crates' fingerprints, so whichever runs
+second recompiles them. The first red-first run had the leg-count derivation before clippy and G7 then
+re-compiled `oracle-aether`, `oracle-frontend` and `oracle-player` that clippy had just built. The gates
+are therefore ordered fmt → clippy → leg-count → suite, so the `--no-run` build is the one the suite
+reuses. (Only the workspace crates churn; the dependency graph is shared, so a separate
+`CARGO_TARGET_DIR` for clippy would cost ~1.7 GB to save what re-ordering saves for free.)
