@@ -24,6 +24,29 @@
 //! ring is asserted empty by count as well as by array. A reply that reported a plausible constant, or a
 //! clear that dropped a different number of hits than it claimed, reads identically to a correct one on
 //! any assertion weaker than that.
+//!
+//! ## Red-first, measured — which mutation reddened which row
+//!
+//! Each mutation was applied to a **committed, clean** tree at `d7bc6ae`, quoted back from disk before
+//! the run, and restored with `git checkout --` from that commit. Recorded here rather than in a report
+//! nobody will find, because the value of a row is what it is the *only* thing that catches.
+//!
+//! | # | mutation, in `engine.rs` | rows that went RED |
+//! |---|---|---|
+//! | M1 | `reload_rom`: `take_hits()` → `hits()` — count still correct, ring **kept** | 1 only |
+//! | M2 | `reset`: `take_hits()` → `hits()` | 2 and 4 |
+//! | M3 | `reset`: emit `hitsDropped` only when `> 0` | 3 only — and it failed on the **vendored schema's** `required`, which is the re-vendor proving itself load-bearing |
+//! | M3b | `reset`: `hits_dropped.max(1)` — schema-LEGAL, so the fragment cannot see it | 3 only, on the row's own `== 0` |
+//! | M4 | `watchpoint_clear` drains the ring — *the exact defect item 28's last sentence forbids* | **4 only** |
+//! | M5 | both replies report a constant `0` while really draining | 1, 2 and 4 (3 stays green, correctly) |
+//!
+//! M3b and M5 are the two that matter for the trap this repo has hit twice. M3b is invisible to the
+//! schema — a non-negative integer is a non-negative integer — so only row 3's own comparison sees it.
+//! M5 leaves every "are the hits gone?" assertion true and is caught **solely** by comparing the count
+//! against what the ring was holding, which is why every row does.
+//!
+//! M4 is the whole justification for row 4's existence: it reddens **that row and no other**. Rows 1-3
+//! are green under an implementation that lets any client erase any other client's evidence.
 
 #![cfg(unix)]
 
