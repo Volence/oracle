@@ -1656,6 +1656,16 @@ visible and focusing it is honest; expanding it is not reachable from outside th
 `fully_collapsed` — is `pub(crate)` in `egui_dock-0.21.1`, and setting `LeafNode::collapsed = false`
 without it leaves the parent counters overstated.
 
+> ⚑ **2026-09-05, re-checked while building panel selection: still true, and now not the whole story.**
+> `node_update_collapsed`, `set_collapsed` and `is_collapsed` are all still `pub(crate)` in
+> `egui_dock-0.21.1`, so the row stands as written. But it did **not** block the selection work, and the
+> owner's own next sentence — *"we still dont have a way to select which to open"* — points at
+> **selection, not collapse**, which is the evidence `d-28` was filed to get and did not have. Closing
+> and reopening a panel work regardless of any leaf's collapsed state. Separately, `nav`'s new reset row
+> gives a human whose layout has become unusable a one-click way out that does not need the upstream
+> `pub` at all: `ui::initial_dock()` has no collapsed leaves. So the *practical* half of the row is
+> answered; what remains open is the narrow one — expanding a collapsed group **in place**.
+
 ~~**Deliberately not built.**~~ **BUILT — see §5.9.** The owner's *"our command line would be sick for
 this"* is a **separate, later** surface, and this row is the traditional nav he asked for beside it. A
 command line over the method registry is a different design with a different gate (it would address the
