@@ -1313,7 +1313,7 @@
           },
           "caveat": {
             "type": "string",
-            "description": "protocol.md section 2.4. Added 2026-09-04 (section 11.34, oracle CR-K): the standing symbol-freshness verdict. Emitted when the server cannot show that the listing at symbolsPath still parses to exactly the rows it holds: the file parses to different rows (rebuilt under the session), cannot be read, no longer parses as a listing, or a table is held with no recorded path. Quiet means only that the file has not moved past the table, never that the table is right for this image (load_symbols's own standard, one layer up). A client MUST NOT parse it (2.4 rule 3); a typed key is a separate amendment if a client ever needs to branch."
+            "description": "protocol.md section 2.4. The standing FRESHNESS verdicts, composed in one string, ROM FIRST (section 11.37, oracle CR-N; a stale image makes the listing question moot) then the listing (section 11.34, oracle CR-K). ROM half: emitted when the server cannot show that the image it holds is the file at romPath, byte for byte: the sizes differ; the sizes MATCH but the bytes do not (size is definitive only when it differs, and the same-size-different-bytes case is the one that happens); the file cannot be read (say it cannot check, never treat as fresh). Listing half: emitted when the server cannot show the listing at symbolsPath still parses to exactly the rows it holds (rebuilt under the session; cannot be read; no longer parses; a table held with no recorded path). Quiet means only that neither file has moved past what the server holds, never that either is right for the other. A client MUST NOT parse it (2.4 rule 3); a typed key is a separate amendment if a client ever needs to branch."
           },
           "romLoading": {
             "type": "boolean"
@@ -1892,7 +1892,7 @@
       }
     },
     "emulator/lookup_equate": {
-      "$comment": "Added 2026-09-05 (protocol.md section 11.36, oracle CR-M): the listing's EQUATE TABLE in a namespace of its own, never folded into the symbol table. Measured on aeon s4.debug.lst: 742 equates, 3,014 labels, zero name collisions, and 631 of the 742 equate VALUES fall inside the cart window, so folding them into addr->name would make an equate whose value is $1800 indistinguishable from a label AT $1800 on every reverse-lookup path, present and future. A separate door makes that impossible rather than filtered. Scope: what the LISTING publishes; values the build supplies on the command line are not in the listing (sigil DEFINES-REACH-THE-LISTING, open).",
+      "$comment": "Added 2026-09-05 (protocol.md section 11.36, oracle CR-M): the listing's EQUATE TABLE in a namespace of its own, never folded into the symbol table. Measured on aeon s4.debug.lst: 742 equates, 3,014 labels, zero name collisions, and 673 of the 742 equate VALUES fall inside the cart window (631 excluding the 42 zero-valued equates), so folding them into addr->name would make an equate whose value is $1800 indistinguishable from a label AT $1800 on every reverse-lookup path, present and future. A separate door makes that impossible rather than filtered. Scope: what the LISTING publishes; values the build supplies on the command line are not in the listing (sigil DEFINES-REACH-THE-LISTING, open).",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,

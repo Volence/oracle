@@ -35,11 +35,11 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 2208aa8b7beee58e3532ebb804d185cfc923e026
-    pin.blob     = 4ff6019786b7ec977856fd52a40a168733ae209d
-    pin.bytes    = 353344
+    pin.revision = 90aa1df3cf30406762bc5e3f544feb34a4e0ca52
+    pin.blob     = de8cf12bf253d5244a54e0323b5b89b32662c64d
+    pin.bytes    = 353750
 
-    pin.vectors.revision = 2208aa8b7beee58e3532ebb804d185cfc923e026
+    pin.vectors.revision = 90aa1df3cf30406762bc5e3f544feb34a4e0ca52
     pin.vectors.blob     = d185c336c203a676bbb77bf505bd7bbe7217a2d5
     pin.vectors.bytes    = 125753
 
@@ -48,19 +48,50 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`2208aa8b7beee58e3532ebb804d185cfc923e026`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 2208aa8 origin/main` was **run**, not assumed (it exited 0; `origin/main` was `4ee5b42b` at the time). **68** method fragments (the `methods` object carries 69 keys, one of which is a `$comment`); all 68 declare `params`, all 68 close it with `unevaluatedProperties: false` (handshake exempt), and all 68 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **one whole new fragment and nothing else**: `emulator/lookup_equate`. Zero leaf values changed anywhere; zero leaf paths removed; the eight top-level keys outside `methods` compare byte-identical, and not one pre-existing fragment differs by so much as a `description`. |
-| Last commit that touched the schema | **`2208aa8b7beee58e3532ebb804d185cfc923e026`** — *"protocol 11.36: CR-M adopted, emulator/lookup_equate (the listing's equates in their own namespace; value is a number, not an address); ten vectors"* (2026-09-05). |
-| Git blob | `4ff6019786b7ec977856fd52a40a168733ae209d` |
-| SHA-256 | `bee0e1a32571e506d4e277449f260c45e10d36fb724d62b1b704025f9e66fa97` |
-| Bytes | 353344 |
+| Contract repo revision | **`90aa1df3cf30406762bc5e3f544feb34a4e0ca52`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 90aa1df origin/main` was **run**, not assumed (it exited 0; `origin/main` was `8878cc5f` at the time). **68** method fragments (the `methods` object carries 69 keys, one of which is a `$comment`); all 68 declare `params`, all 68 close it with `unevaluatedProperties: false` (handshake exempt), and all 68 declare `result`; 19 `$defs` — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **two leaf VALUES and nothing else**, both of them prose: `methods./emulator/status/.result.properties.caveat.description` (§11.37, the reason for this re-vendor) and `methods./emulator/lookup_equate/.$comment` (a measurement correction, below). **Zero leaf paths added, zero removed**, derived by flattening both copies to leaf paths and differencing the sets — so nothing in this revision carries validation force that the previous one did not. |
+| Last commit that touched the schema | **`90aa1df3cf30406762bc5e3f544feb34a4e0ca52`** — *"protocol 11.37: CR-N adopted, status caveat carries the ROM-freshness verdict ROM first (description) and section 8 item 27 (the suite obligation incl. same-size-different-bytes)"* (2026-09-05). |
+| Git blob | `de8cf12bf253d5244a54e0323b5b89b32662c64d` |
+| SHA-256 | `bd3994ed34a0d240a279be77c9d9721663e1fb11729b736e28d3954bc86e2239` |
+| Bytes | 353750 |
 | Vendored on | 2026-09-05 |
+
+> **⚑ TWO leaf values moved, not one — and the second was not the one this re-vendor was raised for.**
+> The re-vendor was dispatched with the expected delta stated as *"ONE description string on
+> `emulator/status.result.caveat`"*, and told to stop and report if anything else had moved. Something
+> else had. The structural diff (leaf-path sets differenced, leaf values compared) found a second changed
+> value: `emulator/lookup_equate.$comment`, where *"631 of the 742 equate VALUES fall inside the cart
+> window"* became *"673 … (631 excluding the 42 zero-valued equates)"*. It is **this repo's own
+> re-measurement**, landed upstream as `81d4cc7` — *"protocol 11.36: 673 inside the cart window (631
+> excluding zero-valued), oracle's re-measure"* — one commit before the ruling, on a path the recipe
+> therefore sweeps up. It is a `$comment`: no validation force, no leaf path added or removed, nothing a
+> conformant reply could notice. It is recorded here rather than silently absorbed, because the reason a
+> re-vendor states its expected delta is so that an unexpected one has to be *named* before it is
+> accepted, and "it was only a comment" is a judgement the next reader is entitled to check.
+>
+> **⚑ And the vectors' revision pin moved even though the vectors did not.** The re-vendor was
+> dispatched with *"do NOT re-vendor vectors.json and do not bump its pin"* — correct about the bytes,
+> and impossible as stated about the pin, because
+> `schema_conformance::the_vendored_vectors_are_the_blob_provenance_pins` asserts
+> `pin.vectors.revision == pin.revision` in as many words: *"a schema pinned at one revision beside
+> vectors pinned at another is a gate asserting that a fragment accepts documents written for a different
+> fragment."* Leaving the vectors pin at `2208aa8` would have made the suite RED on that assertion.
+>
+> The invariant is *"both copies are what ONE contract revision publishes"*, not *"the last commit to
+> touch each path is the same commit"* — and both copies are what `90aa1df` publishes, checked by content
+> address rather than argued: `git rev-parse 90aa1df:contract/schema/tests/vectors.json` is
+> `d185c336…`, the blob already vendored here. So the revision label moved to `90aa1df`, the file was not
+> re-copied, and `pin.vectors.blob` / `pin.vectors.bytes` did not change. The path recipe's answer for
+> this file (`2208aa8`, the last commit that wrote its bytes) is recorded in the row above rather than
+> thrown away, because it is the honest provenance of the *bytes* and the revision is the honest
+> provenance of the *pair*.
+
 
 ## Current copy — the vectors
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/tests/vectors.json` |
-| Contract repo revision | **`2208aa8b7beee58e3532ebb804d185cfc923e026`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`, the **same** recipe run against the second path, which answered the **same** commit. `--is-ancestor` was run on it. **267 cases** (`cases[]`), naming **35** distinct methods, of which **10** are `emulator/lookup_equate`; the `$comment`, `envelope`, `eventEnvelope` and `specExamples` keys are byte-identical to the previous revision. |
+| Contract repo revision | **`90aa1df3cf30406762bc5e3f544feb34a4e0ca52`** (2026-09-05) — **the FILE is unchanged; only the revision this copy is attributed to moved, and that is not an oversight either way.** The path recipe (`git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`) still answers **`2208aa8`**: CR-N adds no vector, because *"no vector can express an emission duty"* (§11.37's additivity note) — the obligation is §8 item 27's, discharged by this server's own suite in `crates/oracle-aether/tests/rom_freshness.rs`. The bytes were therefore **not re-copied**, and `pin.vectors.blob`/`pin.vectors.bytes` are untouched. What moved is the revision label, because `git rev-parse 90aa1df:contract/schema/tests/vectors.json` is the **same blob** `d185c336…` — this copy *is* what revision `90aa1df` publishes, and saying so is what keeps the two artifacts attributable to one contract state. See the note below on why the pin could not simply be left behind. **267 cases** (`cases[]`), naming **35** distinct methods, of which **10** are `emulator/lookup_equate`. |
 | Git blob | `d185c336c203a676bbb77bf505bd7bbe7217a2d5` |
 | SHA-256 | `e52abfd8e05cec4e4e87dac28db67ca0f25d1d92b131642f17b3ad32dc89cd67` |
 | Bytes | 125753 |
@@ -179,7 +210,33 @@ them.
 merged as `70c7bb4` — its third profiler-amendment carry, per its own recipe: copy from the object
 store, never from the checkout.)*
 
-### What this re-vendor adopted — §11.36 (CR-M): `emulator/lookup_equate`, 67 → 68 fragments (2026-09-05)
+### What this re-vendor adopted — §11.37 (CR-N): the `status` caveat's scope, description-only (2026-09-05)
+
+**Two prose leaves moved and nothing else — no leaf path added, none removed, no validation force
+anywhere.** §11.37 is **this lane's own CR** (`docs/proposed/2026-09-05-cr-n-status-caveat-scope.md`),
+raised out of ROMFRESHNESS-DIES-AT-CUTOVER: the suite's only stale-image warning was `romFreshness` in the
+legacy MCP shim, computed client-side, in the repo the cutover deletes. It bought **no capability** —
+`status.result.caveat` was already a declared §2.4 string, so the ROM sentence was legal by omission — and
+was raised because the *description* scoped the key to the listing verdict alone, which is the state that
+let `step`'s count bounds sit unenforced for ten days. Adopted as: both freshness verdicts composed in one
+string, **ROM first**, quiet only when the bytes match; plus §8 item 27, the live obligation this server
+discharges in `crates/oracle-aether/tests/rom_freshness.rs`.
+
+Figures **re-derived by parsing both copies**, never read from a commit message. Both were flattened to
+leaf paths and compared **structurally**, not textually:
+
+| | previous copy (`2208aa8`) | this copy (`90aa1df`) | delta |
+|---|---|---|---|
+| method fragments | 68 | **68** | unmoved |
+| fragments declaring / closing `params` / declaring `result` | 68 / 68 / 68 | **68 / 68 / 68** | unmoved |
+| `$defs` | 19 | **19** | unmoved |
+| leaf paths added / removed | — | **0 / 0** | nothing structural moved at all |
+| **leaf values changed** | — | **2** | `emulator/status.result.properties.caveat.description` (§11.37, the reason for this re-vendor) and `emulator/lookup_equate.$comment` (`81d4cc7`, this repo's own 631 → 673 re-measure — see the note in the schema table) |
+| leaf values changed that carry validation force | — | **0** | one `description`, one `$comment`; neither is read by any validator |
+| bytes | 353344 | **353750** | +406 |
+| **vectors** cases | 267 | **267** | unmoved, and the file was not re-copied — §11.37 adds no vector, because no vector can express an emission duty |
+
+### What the PREVIOUS re-vendor adopted — §11.36 (CR-M): `emulator/lookup_equate`, 67 → 68 fragments (2026-09-05)
 
 **One fragment added, nothing else touched anywhere, and a second artifact vendored for the first time.**
 §11.36 is **this lane's own CR**, raised out of the Objects panel's ring ceiling: the panel could measure

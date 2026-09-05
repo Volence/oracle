@@ -29,7 +29,7 @@
 
 mod common;
 
-use common::{spawn, temp_socket, Client};
+use common::{spawn, spawn_with_rom_file, temp_socket, Client};
 use oracle_aether::engine::EngineConfig;
 use oracle_aether::server::{Machine, Server, ServerConfig, ServerHandle};
 use oracle_core::system::System;
@@ -189,7 +189,12 @@ fn a_standing_session_that_never_reloads_learns_from_status_that_its_listing_mov
     let lst = write_lst("standing", LST_OLD);
     let lst_abs = std::fs::canonicalize(&lst).expect("canonicalize the listing");
 
-    let h = spawn("symfresh-standing");
+    // §11.37: `status.caveat` now composes TWO verdicts, ROM first, and `spawn` boots an image that
+    // was never on disk — so a plain `spawn` here would put an unmeasurable-ROM sentence in front of
+    // every assertion below and this file's subject would no longer be alone on the key. The ROM is
+    // real, on disk, and untouched throughout, which makes the ROM half quiet and leaves the listing
+    // half the only thing that can speak.
+    let (h, _rom) = spawn_with_rom_file("symfresh-standing");
     let mut c = Client::connect(&h);
     c.handshake(false);
 
@@ -281,7 +286,12 @@ fn polling_status_against_an_unchanged_listing_stays_quiet() {
     // permanent false alarm on the glass of every session that changed nothing.
     let lst = write_lst("poll", LST_OLD);
 
-    let h = spawn("symfresh-poll");
+    // §11.37: `status.caveat` now composes TWO verdicts, ROM first, and `spawn` boots an image that
+    // was never on disk — so a plain `spawn` here would put an unmeasurable-ROM sentence in front of
+    // every assertion below and this file's subject would no longer be alone on the key. The ROM is
+    // real, on disk, and untouched throughout, which makes the ROM half quiet and leaves the listing
+    // half the only thing that can speak.
+    let (h, _rom) = spawn_with_rom_file("symfresh-poll");
     let mut c = Client::connect(&h);
     c.handshake(false);
     c.ok(
@@ -318,7 +328,12 @@ fn a_status_whose_listing_vanished_is_loud_and_stays_loud() {
     let lst = write_lst("statusgone", LST_OLD);
     let lst_abs = std::fs::canonicalize(&lst).expect("canonicalize");
 
-    let h = spawn("symfresh-statusgone");
+    // §11.37: `status.caveat` now composes TWO verdicts, ROM first, and `spawn` boots an image that
+    // was never on disk — so a plain `spawn` here would put an unmeasurable-ROM sentence in front of
+    // every assertion below and this file's subject would no longer be alone on the key. The ROM is
+    // real, on disk, and untouched throughout, which makes the ROM half quiet and leaves the listing
+    // half the only thing that can speak.
+    let (h, _rom) = spawn_with_rom_file("symfresh-statusgone");
     let mut c = Client::connect(&h);
     c.handshake(false);
     c.ok(

@@ -806,20 +806,26 @@ stop_reasons! {
 /// *internally* — it is what makes `checkpoint_list`'s cursor a resume point ("the first id strictly
 /// greater than this") — and that machinery is untouched by the wire type. [`Checkpoint::wire_id`] is
 /// the one place the two representations meet.
-/// **A cheap identity for the file at `symbols_path`** — the filter that keeps
-/// [`Engine::listing_freshness_now`] off the parse on the frame-rate path.
+/// **A cheap identity for a file this server holds a copy of** — the filter that keeps
+/// [`Engine::listing_freshness_now`] off the parse, and [`Engine::rom_freshness_now`] off the byte
+/// comparison, on the frame-rate path.
 ///
 /// Every field is one `stat(2)`'s worth of metadata and none of them reads a byte of the file. See
 /// [`Engine::listing_freshness_now`] for the measurement, and for the two things this **cannot** see.
 ///
+/// ⚑ **One struct, two files, deliberately.** It was `ListingStat` until §11.37 (CR-N) put the same
+/// question to `rom_path`. A second fingerprint type with the same five fields would have been a
+/// parallel mechanism that could drift — one of them growing a field, one of them not — while looking
+/// like one idea. The fields are properties of a *file*, not of a listing, so the name is now the file's.
+///
 /// `ctime` is the field with teeth: `utimes()` lets a restore choose `mtime` but always sets `ctime` to
-/// now, so `cp -p` / `tar -x` / `rsync -t` putting an older listing back is visible here even though it
-/// deliberately preserves the timestamp `mtime` alone would compare.
+/// now, so `cp -p` / `tar -x` / `rsync -t` putting an older listing or an older ROM back is visible here
+/// even though it deliberately preserves the timestamp `mtime` alone would compare.
 ///
 /// Unix-only, in a crate that is already unix-only (`server.rs` binds a `UnixListener` unconditionally),
 /// so this adds no portability constraint the build did not already have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ListingStat {
+struct FileStat {
     dev: u64,
     ino: u64,
     len: u64,
@@ -828,7 +834,7 @@ struct ListingStat {
     ctime: (i64, i64),
 }
 
-impl ListingStat {
+impl FileStat {
     /// `None` when the file could not be stat'd at all.
     ///
     /// ⚑ **`None` is never "unchanged".** Every caller treats it as *do the full check*, which is the
@@ -848,20 +854,31 @@ impl ListingStat {
     }
 }
 
-/// **Why the freshness question could not be answered** — the three ways [`ListingFreshness`] lands in
-/// [`ListingFreshness::Unmeasurable`], kept apart as data rather than as three sentences.
+/// **Why the freshness question could not be answered** — the ways [`ListingFreshness`] and
+/// [`RomFreshness`] land in their `Unmeasurable` arm, kept apart as data rather than as three sentences.
 ///
-/// Each arm carries exactly what its sentence needs and nothing more, so both consumers — the `caveat`
-/// `emulator/status` serves and the clause a symbol miss appends — are *derived* from the state. Neither
-/// is parsed back out of the other.
+/// Each arm carries exactly what its sentence needs and nothing more, so every consumer — the `caveat`
+/// `emulator/status` serves, and the clause a symbol miss appends — is *derived* from the state. None of
+/// them is parsed back out of another.
+///
+/// ⚑ **Shared by both freshness questions on purpose** (§11.37, CR-N). "I could not look" has the same
+/// causes for a 357 KB listing and for an 844 KB image, and the whole point of both verdicts is that this
+/// state must never render as the quiet one. Two copies of the reason-set would be two places to forget
+/// that. [`Unparseable`](Self::Unparseable) is the one arm only the listing can reach — a ROM is bytes and
+/// there is nothing to parse — which is a property of the *producer*, not a reason to fork the type; the
+/// ROM's sentence is written from [`clause`](Self::clause) and so stays correct if that ever changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Unmeasurable {
-    /// A table is held with **no recorded path**. A hosted embedder's [`crate::host::MachineInfo`] and a
-    /// checkpoint restore both reach this state; `emulator/load_symbols` never can.
+    /// A table or an image is held with **no recorded path**. A hosted embedder's
+    /// [`crate::host::MachineInfo`] and a checkpoint restore both reach this state for the listing;
+    /// `emulator/load_symbols` never can. For the ROM it is an image loaded from bytes rather than from a
+    /// file — the in-process embedding, and every test that boots `testrom::build()` without writing it
+    /// to disk first.
     NoPath,
     /// There is a path and it cannot be read now — deleted, renamed, permissions.
     Unreadable { path: String, err: String },
     /// There is a path, it reads, and it is no longer a listing — a truncated write, a build in flight.
+    /// **Listing-only**: see the type's note.
     Unparseable { path: String, err: String },
 }
 
@@ -1007,11 +1024,146 @@ impl ListingFreshness {
 struct SymbolFreshness {
     path: String,
     generation: u64,
-    stat: ListingStat,
+    stat: FileStat,
     /// The answer [`Engine::listing_freshness`] gave — quiet ([`ListingFreshness::Current`]) *and* loud
     /// are both cached. A cache that remembered only the quiet answers would re-parse a 357 KB listing
     /// every frame for exactly as long as a session was in the state the caveat exists to report.
     verdict: ListingFreshness,
+}
+
+/// **Is the image this server is RUNNING still the file at `rom_path`? — as a TYPE, not as a sentence.**
+///
+/// §11.37 (CR-N). The listing question's twin, and deliberately the same idea applied to a second file
+/// rather than a second mechanism: same [`FileStat`] fingerprint, same [`Unmeasurable`] reason-set, same
+/// `stat(2)`-gated door ([`Engine::rom_freshness_now`]), same rule that **quiet happens only when the
+/// bytes match**, and the same refusal to make the verdict a typed key a client branches on.
+///
+/// ## Why this exists at all
+///
+/// The only stale-image warning in this suite was the legacy MCP shim's client-side `romFreshness`
+/// banner, in the repo the cutover exists to delete. On 2026-09-04 it caught a seat holding a
+/// **742,018-byte** image while the file at its own `romPath` was **844,730** bytes — a build from before
+/// a peer lane's landing — on the first call, and stopped a per-scanline measurement that would have been
+/// published, confidently and about the wrong binary, to the lane that made it. Nothing errors when this
+/// happens. No method 404s. The numbers look plausible. That is why the verdict is served rather than
+/// merely available, and why it is impossible to miss rather than something a caller must think to ask.
+///
+/// ## ⚑ Size is definitive only when it DIFFERS
+///
+/// A size mismatch is conclusive without reading a byte, and [`StaleSize`](Self::StaleSize) is reached
+/// from `metadata` alone. **Matching sizes prove nothing** and MUST escalate to a real byte comparison:
+/// aeon reported two different builds sharing a byte count on the same evening as the sighting above, and
+/// §11.37's description now names the same-size-different-bytes case explicitly, so an implementation that
+/// answered it from size alone would be one the fragment says is wrong.
+///
+/// ## What the verdict does NOT claim
+///
+/// Exactly one question: *are the bytes I am running the bytes at that path?* It says **nothing** about
+/// whether that path is the build you meant — a stale checkout, the wrong lane's output and a file
+/// rebuilt one second ago all read `Current` here. That limit is stated inside the sentences themselves,
+/// because the place a reader meets this verdict is the sentence and not this doc comment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RomFreshness {
+    /// The file at `path` is the same length as the held image **and** compares equal byte for byte. The
+    /// one quiet state, and quiet is therefore a real assertion rather than an absence of one (§8 item
+    /// 27's fourth row).
+    Current { path: String, bytes: usize },
+    /// The lengths differ — conclusive, and reached without reading the file.
+    StaleSize {
+        path: String,
+        held_bytes: usize,
+        disk_bytes: u64,
+    },
+    /// **The row this parcel exists for.** Same length, different content.
+    ///
+    /// `first_diff` is the offset of the first differing byte and `differing` how many differ in total;
+    /// both come out of the one pass that already had to be made, and both are in the sentence because
+    /// "somewhere in 844 KB" is not something a reader can act on.
+    StaleBytes {
+        path: String,
+        bytes: usize,
+        first_diff: usize,
+        differing: usize,
+    },
+    /// The check could not be made. Never rendered as [`Current`](Self::Current).
+    Unmeasurable {
+        held_bytes: usize,
+        why: Unmeasurable,
+    },
+}
+
+impl RomFreshness {
+    /// **The ROM half of the `caveat` `emulator/status` serves** — `None` only for
+    /// [`Current`](Self::Current).
+    ///
+    /// Every loud sentence names three things, because the field sighting needed all three: *what is
+    /// held*, *what the path holds now*, and *the fix* (`emulator/reload_rom`). Each also closes on the
+    /// limit of the claim — that this compares bytes against a path and cannot tell you the path is the
+    /// build you meant — since the sentence is where a reader meets the verdict.
+    fn caveat(&self) -> Option<String> {
+        // One spelling of the scope limit, so the three sentences cannot drift apart on it.
+        const SCOPE: &str =
+            "This compares the running bytes against that path and nothing else — it \
+                             cannot tell you the path is the build you meant.";
+        match self {
+            Self::Current { .. } => None,
+            Self::StaleSize {
+                path,
+                held_bytes,
+                disk_bytes,
+            } => Some(format!(
+                "the image this server is RUNNING is not the file at {path}: it holds {held_bytes} \
+                 byte(s) and that file is {disk_bytes} byte(s) now, so the image was rebuilt or replaced \
+                 after it was loaded. Every address, breakpoint and measurement in this session \
+                 describes the OLD image — nothing errors, no method fails, and the numbers look \
+                 plausible. `romBytes` reports the size of what is held, which is a size and not an \
+                 identity. Re-read it: emulator/reload_rom. {SCOPE}"
+            )),
+            Self::StaleBytes {
+                path,
+                bytes,
+                first_diff,
+                differing,
+            } => Some(format!(
+                "the image this server is RUNNING is not the file at {path}: that file is still {bytes} \
+                 byte(s) — the SAME size as the image held, so a size check alone would have called this \
+                 current — but {differing} byte(s) differ, the first at ${first_diff:06X}. Every \
+                 address, breakpoint and measurement in this session describes the OLD image — nothing \
+                 errors, no method fails, and the numbers look plausible. Re-read it: \
+                 emulator/reload_rom. {SCOPE}"
+            )),
+            Self::Unmeasurable { held_bytes, why } => Some(format!(
+                "whether the {held_bytes}-byte image this server is RUNNING is still the file it was \
+                 loaded from could NOT be checked ({why}), so it has NOT been shown to be current — and \
+                 unknown is not fresh. `romBytes` reports the size of what is held, which is a size and \
+                 not an identity. {SCOPE}",
+                why = why.clause()
+            )),
+        }
+    }
+}
+
+/// One remembered ROM-freshness verdict, and everything that has to still be true for it to be reusable.
+///
+/// [`SymbolFreshness`]'s shape, key for key, and for the same three reasons: the **path** (a different
+/// image is a different question), the **generation**
+/// ([`rom_generation`](Engine::rom_generation) — a new cartridge is a new question even at the same path,
+/// and `reload_rom`, `reset` and `restore` all move it), and the **stat** (the file itself must not have
+/// moved).
+///
+/// ⚑ **The gate matters MORE here than on the listing side, not less.** A listing check is a 2.566 ms
+/// read-and-parse; a ROM check is a read of the whole image plus a byte compare, on the cheapest and
+/// most-polled method on the bus. The one asymmetry is in the *other* direction and is deliberate: the
+/// size-differs verdict costs a `metadata` call and no read at all, so the expensive path is only ever
+/// taken when the sizes match — which is exactly when the answer cannot be had any cheaper.
+struct RomFreshnessCache {
+    path: String,
+    generation: u64,
+    stat: FileStat,
+    /// Quiet **and** loud are both cached, for [`SymbolFreshness::verdict`]'s reason: a session in the
+    /// state the caveat exists to report must not pay a full image compare every frame for the privilege
+    /// of being told about it.
+    verdict: RomFreshness,
 }
 
 struct Checkpoint {
@@ -1252,6 +1404,18 @@ pub struct Engine {
     /// cache that can be silently doing the work it claims to skip — and that failure leaves every
     /// correctness test green.
     symbol_freshness_checks: u64,
+    /// **The last ROM-freshness verdict and the file identity it was computed against**, or `None` when
+    /// nothing may be reused (§11.37). [`symbol_freshness`](Engine::symbol_freshness)' twin; see
+    /// [`Engine::rom_freshness_now`].
+    rom_freshness: Option<RomFreshnessCache>,
+    /// **How many times the FULL ROM check has actually gone past the `stat`.**
+    ///
+    /// [`symbol_freshness_checks`](Engine::symbol_freshness_checks)' counterpart, and it exists for the
+    /// lesson that parcel learned the hard way: mutating the symbol cache to invalidate on every call
+    /// left **all twelve** wire rows green, because the sentences are byte-identical either way. Only a
+    /// counter separates a stat-gated door from a door that re-reads a whole cartridge image every time
+    /// a UI asks for the PC.
+    rom_freshness_checks: u64,
     /// **The display layer mask** (`emulator/get_layer_states` / `emulator/set_layer_enabled`).
     ///
     /// It lives *here*, on the engine, for the same reason [`watchpoints`](Engine::watchpoints) does, and
@@ -1705,6 +1869,8 @@ impl Engine {
             symbols_generation: 0,
             symbol_freshness: None,
             symbol_freshness_checks: 0,
+            rom_freshness: None,
+            rom_freshness_checks: 0,
             // Every layer drawn. `LayerMask::ALL` is the state in which every render path is byte-identical
             // to the code that ran before the mask existed, so a server nobody has masked anything on
             // behaves exactly as it did.
@@ -3049,8 +3215,26 @@ impl Engine {
         // the cheapest and most-called method on the bus, a polling client may call it every frame, and
         // the full check is a 2.566 ms read-and-parse of a 357 KB listing — 15.4% of a core at 60 Hz.
         // Every figure and every hole in the filter is stated there.
-        if let Some(stale) = self.listing_freshness_now().and_then(|f| f.caveat()) {
-            out["caveat"] = json!(stale);
+        //
+        // **§11.37 (CR-N) — the ROM verdict joins it, and goes FIRST.** The only stale-image warning in
+        // this suite was the legacy MCP shim's, computed client-side, in the repo the cutover deletes;
+        // nothing in this server replaced it. It earns its place by a measured save (see
+        // [`RomFreshness`]), and the order is contract text rather than taste: a stale image makes the
+        // listing question moot, so a reader who reads only the first sentence should read that one.
+        //
+        // Composed by *collecting* rather than by branching on the pair, so a third verdict would be a
+        // row in the array and could not reorder the two that exist. `caveat` stays absent when both are
+        // quiet: §2.4 and §11.27 make an unconditional caveat a MUST NOT, and the quiet state is the
+        // control that catches an implementation which shouts always (§8 item 27's fourth row).
+        let caveats: Vec<String> = [
+            self.rom_freshness_now().and_then(|f| f.caveat()),
+            self.listing_freshness_now().and_then(|f| f.caveat()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !caveats.is_empty() {
+            out["caveat"] = json!(caveats.join(" "));
         }
         Ok(out)
     }
@@ -6538,7 +6722,7 @@ impl Engine {
     ///
     /// ## What the filter can see, and what it CANNOT
     ///
-    /// The fingerprint is [`ListingStat`]: `(dev, ino, len, mtime, ctime)`. A cached verdict is reused
+    /// The fingerprint is [`FileStat`]: `(dev, ino, len, mtime, ctime)`. A cached verdict is reused
     /// **only** on a positive identity — every field equal, plus the same path and the same
     /// [`symbols_generation`](Engine::symbols_generation) — so a quiet answer never means *"I did not
     /// look"*. It means *"I looked at the file's identity, and nothing about it has moved since the
@@ -6585,14 +6769,14 @@ impl Engine {
         if let (Some(p), Some(cached)) = (path.as_deref(), self.symbol_freshness.as_ref()) {
             if cached.generation == self.symbols_generation && cached.path == p {
                 // The ONLY short-circuit in this function, and it fires only on a positive identity.
-                if ListingStat::of(p).is_some_and(|now| now == cached.stat) {
+                if FileStat::of(p).is_some_and(|now| now == cached.stat) {
                     return Some(cached.verdict.clone());
                 }
             }
         }
 
         // See "taken BEFORE the read" above: this must not move below the check.
-        let stat = path.as_deref().and_then(ListingStat::of);
+        let stat = path.as_deref().and_then(FileStat::of);
         self.symbol_freshness_checks += 1;
         let verdict = self.listing_freshness();
         self.symbol_freshness = match (path, stat, verdict.clone()) {
@@ -6687,6 +6871,168 @@ impl Engine {
             held_rows,
             disk_rows: on_disk.symbols().len(),
         })
+    }
+
+    /// **The ROM-freshness verdict, with the image re-read at most once per observable change to the
+    /// file** — [`Engine::rom_freshness`]'s answer, served on a path that can be called every frame.
+    ///
+    /// [`Engine::listing_freshness_now`]'s twin, and the same door in front of the same kind of
+    /// measurement: `stat(2)` first, full check only on a fingerprint that moved. Everything that doc
+    /// says about *what the filter can see and what it cannot* — the same-size rewrite inside one
+    /// timestamp tick, a clock moved backwards, why `ctime` is in the fingerprint, why the fingerprint is
+    /// taken **before** the read — holds here verbatim, because it is the same [`FileStat`] over the same
+    /// syscall. It is not repeated; it is one idea with one home.
+    ///
+    /// ⚑ **The gate is worth MORE here.** The listing check is 2.566 ms of read-and-parse; the ROM check
+    /// reads a whole cartridge image (aeon's is 844,730 bytes) and compares it. `emulator/status` is the
+    /// cheapest method on this bus and a UI may poll it every frame.
+    ///
+    /// **What is genuinely different, and it is a saving rather than a cost:** the size-differs verdict is
+    /// reached from `metadata` alone (see [`Engine::rom_freshness`]), so the *only* time the full read
+    /// happens is when the sizes match — which is exactly the case where no cheaper answer exists, and the
+    /// case the shim's own comment says a size check gets wrong.
+    ///
+    /// The cache key is path + [`FileStat`] + [`rom_generation`](Engine::rom_generation), which is
+    /// `symbol_freshness`'s key with the ROM's own counter substituted. `reload_rom`, `reset` and
+    /// `restore` all move that counter, so a new cartridge is a new question even when the path did not
+    /// change. Nothing is remembered unless the fingerprint was taken successfully, so a failed `stat` is
+    /// never "unchanged": it falls through to the full check, and the full check is the one that says out
+    /// loud that it could not look.
+    fn rom_freshness_now(&mut self) -> Option<RomFreshness> {
+        // No image, nothing that can be stale — the `self.symbols.as_ref()?` of this function, taken here
+        // so a server with no cartridge does not even stat.
+        if self.sys.rom().is_empty() {
+            return None;
+        }
+        let path = self.rom_path.clone();
+
+        if let (Some(p), Some(cached)) = (path.as_deref(), self.rom_freshness.as_ref()) {
+            if cached.generation == self.rom_generation && cached.path == p {
+                // The ONLY short-circuit in this function, and it fires only on a positive identity.
+                if FileStat::of(p).is_some_and(|now| now == cached.stat) {
+                    return Some(cached.verdict.clone());
+                }
+            }
+        }
+
+        // Taken BEFORE the read, for `listing_freshness_now`'s reason: a rewrite landing between the read
+        // and the stat would otherwise be recorded as "this verdict describes the file with THIS
+        // fingerprint" while describing the previous contents, and every later call would short-circuit
+        // onto it — a permanently stale quiet. Taken first, the same race costs one wasted re-check.
+        let stat = path.as_deref().and_then(FileStat::of);
+        self.rom_freshness_checks += 1;
+        let verdict = self.rom_freshness();
+        self.rom_freshness = match (path, stat, verdict.clone()) {
+            (Some(p), Some(stat), Some(v)) => Some(RomFreshnessCache {
+                path: p,
+                generation: self.rom_generation,
+                stat,
+                verdict: v,
+            }),
+            // Unmeasurable: remember nothing, so the next call measures again rather than repeating a
+            // verdict it has no way to invalidate.
+            _ => None,
+        };
+        verdict
+    }
+
+    /// **Is the image this server is running still the file at `rom_path`?** — the measurement itself.
+    ///
+    /// ⚑ **Callers go through [`Engine::rom_freshness_now`], not through here**, exactly as
+    /// `listing_freshness`'s callers do: one implementation of the verdict, one implementation of when it
+    /// is safe to reuse one.
+    ///
+    /// Returns `None` only when there is no image at all — the state that is not a freshness answer, the
+    /// way "no table" is not one on the listing side. Every other state that is not
+    /// [`RomFreshness::Current`] is a sentence, **including "could not check"**: loud on unmeasurable
+    /// beats a plausible answer.
+    ///
+    /// ## The two-stage compare, and why the order is the design
+    ///
+    /// 1. **`metadata` only.** A length that differs is conclusive *and free of a read* — the whole image
+    ///    never enters memory. This is the case that fired in the field (742,018 held vs 844,730 on
+    ///    disk).
+    /// 2. **Equal lengths force the full read and a byte compare.** ⚑ Size is definitive only when it
+    ///    DIFFERS. Two builds shared a byte count on 2026-09-04, the shim's own comment says the same in
+    ///    as many words, and §11.37's fragment now names the case, so stopping at stage 1 would be an
+    ///    implementation the contract describes as wrong.
+    ///
+    /// The length is re-derived from the bytes actually read rather than trusted from the `metadata`
+    /// call: a rebuild landing between the two would otherwise be compared against a stale length, and
+    /// the comparison below would either panic on a length assumption or silently compare a prefix.
+    ///
+    /// ## What this does NOT claim
+    ///
+    /// See [`RomFreshness`]: it answers "are these the bytes at that path", never "is that path the build
+    /// you meant". A quiet verdict is a real assertion about the bytes and nothing more.
+    fn rom_freshness(&self) -> Option<RomFreshness> {
+        let held = self.sys.rom();
+        if held.is_empty() {
+            return None;
+        }
+        let held_bytes = held.len();
+        let unmeasurable = |why: Unmeasurable| Some(RomFreshness::Unmeasurable { held_bytes, why });
+        let Some(path) = self.rom_path.as_deref() else {
+            return unmeasurable(Unmeasurable::NoPath);
+        };
+        // Stage 1: the length, without reading a byte of an 844 KB file.
+        let disk_bytes = match std::fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                return unmeasurable(Unmeasurable::Unreadable {
+                    path: path.to_string(),
+                    err: e.to_string(),
+                })
+            }
+        };
+        if disk_bytes != held_bytes as u64 {
+            return Some(RomFreshness::StaleSize {
+                path: path.to_string(),
+                held_bytes,
+                disk_bytes,
+            });
+        }
+        // Stage 2: the lengths agree, which settles nothing.
+        let on_disk = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                return unmeasurable(Unmeasurable::Unreadable {
+                    path: path.to_string(),
+                    err: e.to_string(),
+                })
+            }
+        };
+        if on_disk.len() != held_bytes {
+            // The file changed length between the `metadata` and the read. Conclusive all the same, and
+            // reported from the bytes in hand rather than from the number that has already gone stale.
+            return Some(RomFreshness::StaleSize {
+                path: path.to_string(),
+                held_bytes,
+                disk_bytes: on_disk.len() as u64,
+            });
+        }
+        // One pass produces both figures the sentence needs; a bare `!=` would produce neither, and
+        // "the image differs somewhere in 844 KB" is not something a reader can act on.
+        let mut first_diff = None;
+        let mut differing = 0usize;
+        for (i, (a, b)) in held.iter().zip(on_disk.iter()).enumerate() {
+            if a != b {
+                differing += 1;
+                first_diff.get_or_insert(i);
+            }
+        }
+        match first_diff {
+            None => Some(RomFreshness::Current {
+                path: path.to_string(),
+                bytes: held_bytes,
+            }),
+            Some(first_diff) => Some(RomFreshness::StaleBytes {
+                path: path.to_string(),
+                bytes: held_bytes,
+                first_diff,
+                differing,
+            }),
+        }
     }
 
     /// **Append the freshness clause to a symbol-miss refusal — one implementation, every site.**
@@ -9191,7 +9537,7 @@ mod tests {
 ";
 
     /// [`FRESH_A`] with `Player_1` at a different address. **Byte-for-byte the same length**, which is
-    /// what makes it the sharp fixture: `len` in [`ListingStat`] cannot tell these apart, so a test
+    /// what makes it the sharp fixture: `len` in [`FileStat`] cannot tell these apart, so a test
     /// using it is testing the timestamp half of the fingerprint and nothing else.
     const FRESH_A_MOVED: &str = "\
   Symbol Table (* = unused):
@@ -9211,12 +9557,32 @@ mod tests {
         std::env::temp_dir().join(format!("ae-freshcost-{}-{tag}-{n}.lst", std::process::id()))
     }
 
-    /// An engine holding the listing at `path`, exactly as `emulator/load_symbols` would leave it.
-    fn engine_holding(path: &std::path::Path) -> Engine {
+    /// The ROM file [`engine_holding`] writes beside a listing fixture, so a test can delete both.
+    fn rom_beside(listing: &std::path::Path) -> std::path::PathBuf {
+        listing.with_extension("bin")
+    }
+
+    /// An engine booted from a ROM **that is really on disk**, with no listing loaded.
+    ///
+    /// The ROM file matters since §11.37: `status.caveat` composes the ROM verdict in front of the
+    /// listing one, and an image loaded from memory with no `rom_path` is a legitimately *unmeasurable*
+    /// ROM — so a fixture that skipped this would put an unrelated sentence in front of every listing
+    /// assertion in this module and make every `status_caveat(..) == None` control unsatisfiable.
+    fn engine_on_disk_rom(listing: &std::path::Path) -> Engine {
+        let rom = oracle_core::testrom::build();
+        let rom_path = rom_beside(listing);
+        std::fs::write(&rom_path, &rom).expect("write the ROM fixture to disk");
         let mut sys = System::new(0x5EED);
-        sys.load_rom(oracle_core::testrom::build());
+        sys.load_rom(rom);
         sys.reset();
         let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+        e.set_rom_path(Some(rom_path.display().to_string()));
+        e
+    }
+
+    /// An engine holding the listing at `path`, exactly as `emulator/load_symbols` would leave it.
+    fn engine_holding(path: &std::path::Path) -> Engine {
+        let mut e = engine_on_disk_rom(path);
         let text = std::fs::read_to_string(path).expect("fixture readable");
         e.set_symbols(
             Some(SymbolTable::parse(&text).expect("fixture parses")),
@@ -9264,6 +9630,7 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(rom_beside(&p));
     }
 
     /// **The poison: the cache must not survive a change it cannot see in the file's LENGTH.**
@@ -9283,7 +9650,7 @@ mod tests {
             assert_eq!(status_caveat(&mut e), None);
         }
         assert_eq!(e.symbol_freshness_checks, 1);
-        let before = ListingStat::of(&p.display().to_string()).expect("stat the fixture");
+        let before = FileStat::of(&p.display().to_string()).expect("stat the fixture");
 
         std::fs::write(&p, FRESH_A_MOVED).expect("rewrite the listing");
 
@@ -9297,7 +9664,7 @@ mod tests {
             FRESH_A, FRESH_A_MOVED,
             "…and they must nonetheless differ, or there is nothing here to detect"
         );
-        let after = ListingStat::of(&p.display().to_string()).expect("stat the rewritten fixture");
+        let after = FileStat::of(&p.display().to_string()).expect("stat the rewritten fixture");
         assert_ne!(
             before, after,
             "the fingerprint must have MOVED. If it did not, this filesystem's timestamp granularity \
@@ -9325,6 +9692,7 @@ mod tests {
         assert_eq!(e.symbol_freshness_checks, 2);
 
         let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(rom_beside(&p));
     }
 
     /// **Loud on unmeasurable, and never cached.** A `stat` that fails is not "unchanged": every call
@@ -9373,6 +9741,7 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(rom_beside(&p));
     }
 
     /// **A new TABLE is a new question, even when the file did not move.** `symbols_generation` is in
@@ -9389,7 +9758,7 @@ mod tests {
             assert_eq!(status_caveat(&mut e), None);
         }
         assert_eq!(e.symbol_freshness_checks, 1);
-        let stat_before = ListingStat::of(&p.display().to_string()).expect("stat");
+        let stat_before = FileStat::of(&p.display().to_string()).expect("stat");
 
         // The table is replaced with a DIFFERENT one while the file stays exactly where it was.
         let gen_before = e.symbols_generation();
@@ -9402,7 +9771,7 @@ mod tests {
             "the premise: set_symbols moves the generation"
         );
         assert_eq!(
-            ListingStat::of(&p.display().to_string()).expect("stat"),
+            FileStat::of(&p.display().to_string()).expect("stat"),
             stat_before,
             "the premise: the FILE has not moved — only the table has"
         );
@@ -9418,6 +9787,138 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(rom_beside(&p));
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // ⚑ The ROM-freshness short-circuit (§11.37 / CR-N), measured rather than asserted.
+    //
+    // Same split, same reason as the block above. `tests/rom_freshness.rs` anchors on the wire —
+    // `status`'s sentence and the byte `read_memory` hands back — which is the right independent channel
+    // for *the verdict*, and says nothing about *the work done to produce it*. A cache that quietly
+    // re-read and re-compared a whole cartridge image on every call would leave all six of those rows
+    // green while putting the read back on the cheapest method on the bus.
+    //
+    // That is not a hypothetical: tonight's symbol parcel mutated its cache to invalidate on every call
+    // and **all twelve** of its wire rows stayed green, because the sentences are byte-identical either
+    // way. Only a counter catches it, so `Engine::rom_freshness_checks` is what these rows read.
+    // -----------------------------------------------------------------------------------------------
+
+    /// **The cost claim, as a number a test can fail on.** Fifty `emulator/status` calls against an
+    /// untouched image must read and compare it exactly ONCE.
+    ///
+    /// The ROM gate matters more than the listing gate, not less: a listing check is a 2.566 ms
+    /// read-and-parse, a ROM check reads a whole cartridge image (aeon's is 844,730 bytes) and compares
+    /// it byte for byte, and `status` is the method a UI calls every frame.
+    #[test]
+    fn polling_status_compares_the_image_once_however_often_it_is_asked() {
+        let p = fresh_path("romonce");
+        let mut e = engine_on_disk_rom(&p);
+
+        assert_eq!(
+            e.rom_freshness_checks, 0,
+            "the premise: nothing has been checked before the first call"
+        );
+        for i in 0..50 {
+            assert_eq!(
+                status_caveat(&mut e),
+                None,
+                "OVER-FIRING CONTROL (call {i}): the image on disk is the image held, so status is \
+                 quiet. A caveat emitted unconditionally would satisfy every loud row in \
+                 tests/rom_freshness.rs and carry no information."
+            );
+        }
+        assert_eq!(
+            e.rom_freshness_checks, 1,
+            "50 status calls, ONE read-and-compare. Anything above 1 means the stat filter is not \
+             filtering, and the whole cartridge is being re-read on the bus's cheapest method."
+        );
+
+        // …and the filter must still be live: a rewrite the same LENGTH is the case `len` cannot see, so
+        // this is the timestamp half of the fingerprint doing the work.
+        let rom = rom_beside(&p);
+        let mut bytes = std::fs::read(&rom).expect("read the ROM fixture");
+        let before = FileStat::of(&rom.display().to_string()).expect("stat the fixture");
+        bytes[0x2FF] = 0xA5;
+        std::fs::write(&rom, &bytes).expect("rewrite the ROM in place");
+        assert_eq!(
+            std::fs::metadata(&rom).expect("stat").len(),
+            bytes.len() as u64,
+            "the premise: the rewrite did not change the file's LENGTH"
+        );
+        assert_ne!(
+            before,
+            FileStat::of(&rom.display().to_string()).expect("stat the rewritten fixture"),
+            "the fingerprint must have MOVED. If it did not, this filesystem's timestamp granularity \
+             is coarser than the gap between the two writes — the hole `rom_freshness_now` names."
+        );
+
+        let caveat = status_caveat(&mut e)
+            .expect("a rewritten image must make status LOUD, cache or no cache");
+        assert!(
+            caveat.contains("SAME size") && caveat.contains("1 byte(s) differ"),
+            "the sizes are equal and the verdict still fires: {caveat}"
+        );
+        assert_eq!(
+            e.rom_freshness_checks, 2,
+            "exactly one further read-and-compare: the filter re-checked once, not once per call"
+        );
+
+        // And the LOUD verdict is cached too — a session in the state the caveat exists to report must
+        // not re-read the whole image every frame for the privilege of being told about it.
+        for _ in 0..10 {
+            assert!(status_caveat(&mut e).is_some());
+        }
+        assert_eq!(e.rom_freshness_checks, 2);
+
+        let _ = std::fs::remove_file(&rom);
+    }
+
+    /// **Loud on unmeasurable, and never cached.** A `stat` that fails is not "unchanged".
+    ///
+    /// The counter is the point: a cache that remembered *"I could not check"* against a fingerprint it
+    /// never obtained would be remembering nothing, keyed on nothing — and would then go on repeating
+    /// that verdict after the file came back.
+    #[test]
+    fn an_unmeasurable_image_is_never_cached_and_never_goes_quiet() {
+        let p = fresh_path("romgone");
+        let mut e = engine_on_disk_rom(&p);
+        let rom = rom_beside(&p);
+
+        assert_eq!(
+            status_caveat(&mut e),
+            None,
+            "the premise: quiet while it is there"
+        );
+        assert_eq!(e.rom_freshness_checks, 1);
+
+        std::fs::remove_file(&rom).expect("delete the image out from under the server");
+
+        for i in 1..=5u64 {
+            let c = status_caveat(&mut e).unwrap_or_else(|| {
+                panic!("call {i}: an unmeasurable ROM freshness must be LOUD, never quiet")
+            });
+            assert!(
+                c.contains("could NOT be checked"),
+                "call {i}: it must say it could not look: {c}"
+            );
+            assert_eq!(
+                e.rom_freshness_checks,
+                1 + i,
+                "call {i}: an unmeasurable state is re-measured every time. Caching it would mean \
+                 remembering a verdict against a fingerprint that was never taken."
+            );
+        }
+
+        // ANTI-VACUITY: put the file back and the quiet returns.
+        std::fs::write(&rom, oracle_core::testrom::build()).expect("restore the image");
+        assert_eq!(
+            status_caveat(&mut e),
+            None,
+            "ANTI-VACUITY: the same image back on disk is quiet again"
+        );
+
+        let _ = std::fs::remove_file(&rom);
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -9488,6 +9989,7 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(rom_beside(&p));
     }
 
     /// **THE CONTROL: the three states must say three DIFFERENT things.**
@@ -9553,6 +10055,7 @@ mod tests {
         assert!(miss_message(&mut e, "Nope").contains("is CURRENT"));
 
         let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(rom_beside(&p));
     }
 
     /// **§4's line holds: `-32012` gains nothing.** A server with no table has no listing that could be
@@ -9592,10 +10095,8 @@ mod tests {
     /// server that never loaded symbols.
     #[test]
     fn a_server_with_no_listing_does_no_freshness_work_at_all() {
-        let mut sys = System::new(0x5EED);
-        sys.load_rom(oracle_core::testrom::build());
-        sys.reset();
-        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+        let p = fresh_path("nolisting");
+        let mut e = engine_on_disk_rom(&p);
 
         for _ in 0..20 {
             assert_eq!(
@@ -9608,6 +10109,8 @@ mod tests {
             e.symbol_freshness_checks, 0,
             "not one read, not one parse, not one stat"
         );
+
+        let _ = std::fs::remove_file(rom_beside(&p));
     }
 
     fn row(addr: u32, divided: u64, total: u64) -> (u32, Counts, Counts) {
