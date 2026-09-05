@@ -66,6 +66,34 @@
 //!
 //! M4 is the whole justification for row 4's existence: it reddens **that row and no other**. Rows 1-3
 //! are green under an implementation that lets any client erase any other client's evidence.
+//!
+//! ### …and the seven for §11.39's four rows
+//!
+//! Same method: applied to a **committed, clean** tree at `342428e`, quoted back from disk before each
+//! run, restored with `git checkout --` from that commit, and the run below is the run that was made.
+//!
+//! | # | mutation, in `engine.rs` | rows that went RED |
+//! |---|---|---|
+//! | M6 | `restore`: `take_hits()` → `hits()` — count still correct, ring **kept** | 5 and 8 |
+//! | M7 | `restore`: return `Ok(json!({}))`, the shape it had yesterday | 5, 6 and 8 — on the **vendored schema's** `methods.emulator/restore.result: "hitsDropped" is a required property`, and it takes **9 of 20 `checkpoints.rs` rows** with it |
+//! | M7b | `restore`: `hits_dropped.max(1)` — schema-LEGAL, so the fragment is blind to it | **6 only**, on the row's own `== 0` |
+//! | M8 | `reload_rom`: drop `hitsDropped` from the EVENT params, keep it on the reply | 1, 3, 7 and 8 — on `events.emulator/romReloaded.params: "hitsDropped" is a required property`, plus a row in `events.rs`: `Client::recv` validates every line, so this is not one row but every test that reloads |
+//! | M9 | `reload_rom`: the event recomputes the count (`take_hits().len()` again) instead of reading the one binding | **7 only** — `left: 0, right: 3` |
+//! | M11 | `restore`: report a constant `0` while really draining | 5 and 8 (6 stays green, correctly) |
+//! | M12 | `restore`: clear the breakpoints' `hits`, leave the watch aggregates alone | **8 only** — `left: 0, right: 1` |
+//! | M10 | `restore`: clear **everything** — fresh `Watchpoints`, breakpoint `hits` zeroed | **8 only** — `seen` `left: 0, right: 179199` |
+//!
+//! **M10 is the whole justification for row 8, and it is the sharpest measurement in this file.** It is
+//! the implementation §11.39's ratification exists to forbid — one that treats every counter as
+//! epoch-relative — and it passes **rows 1 through 7 and every vector in the vendored schema**. Only row
+//! 8 sees it. M12 is the same argument narrowed to the breakpoint half, so neither half of that row is
+//! carrying the other.
+//!
+//! **M9 is the trap the two-place shape creates and the reason the count is one binding.** A recomputed
+//! count is a legal non-negative integer on both fragments and identical to a correct one on every
+//! assertion that reads a single message; it is caught **solely** by comparing the event to the reply
+//! that caused it. M7b is §11.38's `max(1)` trap arriving at the new boundary, and it is likewise
+//! invisible to the schema.
 
 #![cfg(unix)]
 
