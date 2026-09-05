@@ -1,5 +1,49 @@
 # CR-Q — a save-state load at the window replaces the machine and no client is ever told
 
+> ## ✅ ADOPTED WITH CHANGES AND CLOSED — 2026-09-05
+>
+> **Ruling:** empyrean `protocol.md` **§11.40**, adopted at `31e0b7c` and read here at
+> `88d1077765d4e63bfd180e43c25e366d1d461b7e` (`git show 88d1077:contract/protocol.md`, never through the
+> sibling working tree). Reviewer named in the ruling: **aeon**, the lane that attaches to that socket to
+> drive probes and would be the first misled reader.
+>
+> **The four changes, and what each cost us**, since the whole point of keeping this file is that the
+> ruling and the proposal differ:
+>
+> * **M1 — the shape as proposed**, `reason` plus `hitsDropped`, `hitsDropped` REQUIRED and present at 0.
+> * **M2 — advertisement is PER DEPLOYMENT.** A headless `oracle-aether` MUST NOT advertise the member.
+>   This is the change with a consequence the CR did not price: it makes `capabilities.events`
+>   process-dependent, which is `F-BANNER-INVITES-A-PIN` on a new surface — a consumer that pins the
+>   array now breaks by *which binary it is talking to* rather than by version. Written up where the
+>   advertisement is decided, `Engine::advertised_events`.
+> * **M3 — Half A is NOT optional.** §5 below offered the internal accounting and the wire event as
+>   separable; the ruling closed that. They are one function now (`Engine::note_machine_replaced`), one
+>   drain, one number in two places.
+> * **M4 — one boundary, one signal**, both directions, with V7 to V11 as suite obligations.
+> * **S1 as proposed** — the single-member `reason` enum, so `reset` and `restore` later become an added
+>   member rather than a renamed event.
+>
+> **A correction to our §5, kept because it is the kind of mistake worth remembering:** we priced the
+> schema cost as larger than it was, on the belief that events are not schematized in this repo. They
+> are (`bus-protocol.schema.json` `events`, validated against `eventEnvelope`), so the cost was one
+> fragment, and the hub had already added it. The pre-adoption check §5 flagged and could not run, the
+> hub ran, and it came back clear: no client holds a closed events set.
+>
+> **Adoption condition, in §11.40's own words:** *"oracle serves both halves and re-vendors; CR-Q closes
+> on item 28's extended rows in its suite, V7 to V11 included."* All three landed in one commit on
+> `parcel/machine-replaced`: the serve (`Engine::note_machine_replaced`, `Host::machine_replaced`, both
+> windows wired), the re-vendor of **both** pins to `88d1077` (schema blob `83d4a769…`, vectors
+> `136bb716…`, see `crates/oracle-aether/tests/contract/PROVENANCE.md`), and
+> `crates/oracle-aether/tests/machine_replaced.rs` — 8 rows over a real socket, validated against the
+> vendored fragment on every line.
+>
+> ⚑ **One thing the CR got wrong about its own defect, found in the serve.** §4 frames the exposure as a
+> client's: *"no client was attached to the owner's window when measured today."* The window was also not
+> telling **itself**. `PumpReport::rom_changed` is what drives this window's own repairs — the audio
+> resync, the scanline capture drop, the save-state re-key — and every one of them was already running
+> for a *client* driving `emulator/restore` one door over, and not running for the window's own F4. The
+> unattached case was not the harmless one.
+
 **Raised by:** oracle lane, 2026-09-05. Lane defect id **`F-STATELOAD-SILENT-REPLACE`**, booked at
 `docs/OVERSEER.md` and recorded at the source in `crates/oracle-player/src/states.rs`.
 **Target:** `contract/protocol.md` §11.40 (next free) — one new row in **§3 Events**, one member of the
