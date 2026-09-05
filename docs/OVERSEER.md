@@ -146,6 +146,36 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 
 - **▶ CLOSED 2026-09-04 — the four foreground runtime follow-ups (three stale, one never ours) and `step`'s frame-budget shortfall, closed by a CR that went the whole way to §11.33. Moved whole to `OVERSEER-LOG.md` 2026-09-05 for the boot-read bound. The two live rules they produced are kept: a register entry naming a contract gap is worth re-reading against the CURRENT CONTRACT, not only the current code; and a perishable claim decays where nobody re-reads it, the distinguishing variable being whether the claim is ABOUT THE CODE IT SITS BESIDE.**
 
+**▶ CR-Q ADOPTED WITH CHANGES — §11.40, and it is OWED, not done.**
+
+Adjudicated 2026-09-05 at empyrean **`31e0b7c`** — **verified firsthand, not taken from the relay**: an
+ancestor of their `origin/main`, and a **contract** commit carrying `protocol.md` +54,
+`bus-protocol.schema.json` +27 and `vectors.json` +43, so its SHA class matches what it anchors. §11.40,
+the §3 row and the schema member are all present at `origin/main`. **Reviewer named: aeon.**
+
+**What we owe:** serve `emulator/machineReplaced` (`reason` enum `{stateLoad}` + **`hitsDropped`, required
+and present at 0**), **re-vendor the fragment by blob id**, and close against item 28's extended rows.
+**Sequenced behind the icon parcel, the build-identity line and the first style pass** — the hub's order
+and this seat agrees; nothing is attached to the owner's window today.
+
+**The four changes to our proposal, transcribed rather than summarised:**
+- **M2 — `capabilities.events` advertises the member ONLY on a process that can produce the gesture; a
+  headless `oracle-aether` MUST NOT advertise it.** ⚑ **This makes the events list PROCESS-DEPENDENT, which
+  is the [[F-BANNER-INVITES-A-PIN]] hazard on a new surface**: a consumer that pins the events array will
+  now break by *which binary it is talking to* rather than by version. Say so when we serve it.
+- **M3 — Half A (internal accounting) is REQUIRED alongside Half B, not optional.** Our proposal offered it
+  as separable; the hub closed that door.
+- **M4 — one boundary, one signal**, with V7-V11 in our suite.
+- **S1 as proposed** (the single-member `reason` enum, so `reset`/`restore` later are an added member
+  rather than a renamed event).
+
+**And a correction to OUR §5 worth keeping: events ARE schematized in this repo**, so the schema cost is
+one fragment, which the hub added. We priced it as more.
+**The pre-adoption check we flagged and could not run, the hub ran:** `clients/python` validates no closed
+set (boolean negotiation), the MCP shim negotiates `want_events=False`, and the handshake fragment is free
+strings. **So the check came back clear — but it was right to hand it over rather than assert it**, which
+is bar 24's second-instrument rule working in the direction of a peer rather than a document.
+
 **Registered 2026-09-05, from landing S3:**
 
 - **⚑ A SHIPPED DEFECT IN THE WINDOW THE OWNER WAS USING: every palette gesture that replaced the machine
