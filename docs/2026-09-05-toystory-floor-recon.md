@@ -4,7 +4,51 @@
 camera positions on 2026-09-05, entirely through pure reads: no pause, no write, no resume. His game was
 frame 7019 before and after every read at position 1, and 7186 at position 2, `running: false` throughout.
 
-## ⚠ THE CONCLUSION IS SUSPENDED, 2026-09-05, AND THE ERROR IS MINE
+## THE CONCLUSION: THE FLOOR IS PAINTED. The load-bearing argument is a SIGN, not a magnitude.
+
+*Reached 2026-09-05 after the original verdict was suspended and rebuilt. Read the suspension history below
+before citing anything else in this file; four claims in it were withdrawn by their own author.*
+
+**The fan is drawn into the floor art. Nothing shears it afterwards.**
+
+### The argument that carries the conclusion
+
+Measure the plank lean twice: once in the **artwork alone**, reconstructed from tiles and nametable with no
+scroll applied at all, and once on the **actually drawn pixels**, which include any mid-frame effect.
+
+| | from the ART alone | from the DRAWN pixels |
+|---|---|---|
+| far left | -8 | -7.6 |
+| left | -4 | -3.6 |
+| centre | 0 | 0 |
+| right | +6 | +4.8 |
+| far right | +10 | +8.4 |
+
+**A per row correction ADDS shear. It cannot subtract it.** So if one were present on top of the painted
+fan, the drawn fan would be **stronger** than the art fan. It is not. **That is the whole argument, and it
+depends on a sign rather than on any number being right.**
+
+⚠ **The magnitude agreement is CORROBORATION, not load-bearing, and the distinction is aeon's.** The two
+figures were measured over 20 lines and 4 lines respectively and compared after normalising to pixels per 8
+scanlines. The reading *"marginally weaker, consistent with perspective scaling"* depends on that
+normalisation being right. **The sign argument does not.** Do not cite the magnitudes as the proof.
+
+### Scope of an earlier withdrawal, stated so it neither over- nor under-reaches
+
+The art-side **vanishing point** figure (plane x 141) was withdrawn: its separator colour came from a
+heuristic that chose a **different palette index per row**. **That withdrawal does not reach the slopes
+above.** Those compare sub-rows 0 and 4 of the same `planeRow 31`, using the **same** index for both, so the
+differences are internally consistent even where the absolute identification was not.
+
+### What remains, and it is a confirmation rather than a question
+
+`emulator/read_vdp_registers` is now served (§11.41), so `raw[0x0B]` bits 0-1 name the horizontal scroll mode
+directly. Reading it requires a machine in this scene, which requires a save state, which requires **one
+keystroke in the owner's window that no tool on this host can supply** (no bus method saves or loads a
+state, `checkpoint` is in-process, `press` is pad input, and key injection is unavailable on this Wayland
+session). **It is a ten second confirmation whenever he saves, not a blocker.**
+
+## ⚠ HISTORY: THE ORIGINAL CONCLUSION WAS SUSPENDED, AND THE ERROR WAS MINE
 
 **Do not build from the verdict this document originally carried.** It said the convergence is painted into
 fixed art, the plane scrolls uniformly, and the vanishing point travels with the world. **The first
