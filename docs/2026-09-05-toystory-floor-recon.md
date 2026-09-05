@@ -4,22 +4,78 @@
 camera positions on 2026-09-05, entirely through pure reads: no pause, no write, no resume. His game was
 frame 7019 before and after every read at position 1, and 7186 at position 2, `running: false` throughout.
 
-## The answer to his question, in one sentence
+## ⚠ THE CONCLUSION IS SUSPENDED, 2026-09-05, AND THE ERROR IS MINE
 
-**The convergence is drawn into fixed artwork and the whole plane scrolls, so the vanishing point travels
-with the world; it is not re-anchored to the screen as the camera moves.**
+**Do not build from the verdict this document originally carried.** It said the convergence is painted into
+fixed art, the plane scrolls uniformly, and the vanishing point travels with the world. **The first
+measurement offered in support of that is a null instrument, and the owner's own observation contradicts
+the conclusion.**
 
-He asked, of his own drawing: *"see how the left points to the left corner, right to right corner, middle
-to center, but if you keep moving it continuously does that?"* Measured answer: **no, not continuously.**
-That alignment is a property of where the camera happens to be, because the fan is painted into the floor
-art and slides with it.
+### What the owner saw, which a rigid translation cannot produce
+
+His words: *"as you move the plank on the right is pointed out right, then when you pass it in the center it
+points down, and when it pass and it's on left it points and angles left. Just 2d flat art couldn't change
+perspective like this as you move."* He is right on the physics. Scrolling a painted image moves a plank; it
+cannot change that plank's **angle**.
+
+### The null instrument, stated plainly because it was this document's lead evidence
+
+The constant 8 pixel cell phase down the screen (4 everywhere at position 1, 0 everywhere at position 2) was
+offered as the first of three measurements settling the painted reading. **It settles nothing between the
+two hypotheses.** A per line or per strip scroll whose entries differ by WHOLE CELLS produces exactly the
+same constant phase, because a multiple of 8 changes no sub cell phase at all. The original text even said
+so as a caveat and then concluded past it, which is the defect: a limitation stated and then not carried
+into the verdict. *(Raised independently by aeon and by the hub.)*
+
+### What still stands
+
+1. **Floor tile art and the plane B nametable are byte identical across the two camera positions**, while the
+   plane scrolled. So the fan is drawn once and is never redrawn for a new camera. That is unaffected.
+2. **38 unique consecutive tiles per cell row, no repeating pattern.** Unaffected.
+3. **VSRAM is whole plane**, `0x0320, 0x0320`, then zeroes. Unaffected.
+
+### What was measured after the challenge, and it constrains both stories
+
+Per floor row, which nametable column sits at screen x=0 (correcting for the vertical scroll of 800, which
+the first pass got wrong):
+
+| | rows above the floor | floor rows y=180 to 220 | floor movement between positions |
+|---|---|---|---|
+| position 1 | column 0 | column 3, every row | |
+| position 2 | column 0 | column 15, every row | 12 cells, 96 px |
+
+- **Adjacent floor rows are NOT sheared**, at 8 pixel resolution across 8 line row spacing, at both positions.
+  Combined with the constant phase (which does exclude sub cell differences), no fan is visible **between the
+  rows sampled**.
+- **But the floor and the region above it scroll by DIFFERENT amounts**, and by different amounts again
+  between positions (the floor moved 12 cells, the upper region moved none). **That proves a per line or per
+  region horizontal scroll table exists.**
+
+### What is not established, and is the reason this is suspended rather than rewritten
+
+**The scroll table has not been located.** Four search signatures over the two full VRAM captures failed to
+find it: structural smoothness, the between position change signature, the within frame two region
+signature, and both the per line (stride 4) and per cell (stride 32) storage layouts. A candidate found by
+shape alone was already rejected once in this document for being the nametable, and no further candidate
+will be adopted on shape.
+
+So the honest state is: **a scroll table demonstrably exists and its contents are unknown.** The question
+aeon poses is the right one and is answerable only from the table's LINE TO LINE DELTAS, not its absolute
+values: all zero means uniform, all multiples of 8 means a whole cell shear, any non multiple of 8 means a
+sub cell fan. (For contrast, aeon's own floor reads deltas of -1 and -2 per row.)
+
+**This is settled in one call by `emulator/read_vdp_registers`, whose serve is in flight under §11.41:
+register `$0B` names the mode and `$0D` names the table's base.** That is the same gap this document's last
+section already raised, arriving as the thing that blocks the answer rather than merely slowing it.
+
+**The owner should not be asked to move again.** Both captures are held and the window is untouched.
 
 ## What was measured, and how, since no VDP register is readable
 
 This server serves no VDP register readback (see the ask at the end), so nothing below reads a register.
 Every number is a measurement of observable behaviour or a byte read out of VRAM.
 
-### 1. The fan is NOT per-line horizontal scroll
+### 1. ~~The fan is NOT per-line horizontal scroll~~ ⚠ STRUCK: THIS SECTION IS A NULL INSTRUMENT
 
 A line's horizontal scroll fixes where the 8 pixel cell grid falls on screen, and that is directly
 observable: the screen `x` at which the winning plane B tile changes. A smooth perspective fan needs
@@ -31,8 +87,11 @@ screen.
 | 1 | 7019 | 48 (y=96 to 223) | **{4}** |
 | 2 | 7186 | 20 | **{0}** |
 
-**Constant down the screen at both positions, and shifted as a whole between them.** That is the signature
-of a plane scrolled uniformly, not fanned per line.
+~~**Constant down the screen at both positions, and shifted as a whole between them.** That is the signature
+of a plane scrolled uniformly, not fanned per line.~~
+⚠ **The measurement is real; the inference is void.** A per line or per strip scroll differing by WHOLE
+CELLS gives the identical constant phase, so this excludes only a SUB CELL fan and says nothing about a
+whole cell one. Do not cite this section as evidence for uniform scroll.
 
 ### 2. The fan is in the art, and the art is unique per cell
 
@@ -69,8 +128,10 @@ visible plane B cell on row y=210 moved from plane column 3 to column 15, so the
 96 pixels**, and the phase change of 4 puts the true figure at 92 or 100 pixels (the sub-cell part is not
 separable without the scroll value itself).
 
-So the game did **not** redraw the fan for the new camera position. If it had, the vanishing point would
-stay under the screen centre; it does not.
+So the game did **not** redraw the fan for the new camera position. **That much stands.**
+⚠ ~~If it had, the vanishing point would stay under the screen centre; it does not.~~ **STRUCK:** the second
+clause does not follow. A fan drawn once can still be sheared afterwards by a per line scroll, which is what
+the owner describes watching, and what the suspended conclusion at the top is waiting on.
 
 ### 4. Vertical scroll
 
