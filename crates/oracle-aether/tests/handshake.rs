@@ -418,3 +418,61 @@ fn two_clients_share_one_machine() {
         .unwrap();
     assert_eq!(after, before + 3, "both connections see one machine");
 }
+
+/// **A blown read deadline must name the request it was waiting for.**
+///
+/// This is a gate on the *harness*, and it earns its place because the harness's failure message is
+/// evidence. `F-HANDSHAKE-LOAD-TIMEOUT` was booked as "a socket read timeout under heavy load, cause
+/// unknown" — and the cause was legible from the wire the whole time, in the one word the message did
+/// not carry: the outstanding method. The same bare `WouldBlock` let the `wait_for_break` row be closed
+/// as a flake twice before it was root-caused to a real ordering defect. So "the timeout says what it
+/// was waiting for" is a property with a test, not a habit.
+///
+/// The blown deadline is manufactured rather than waited for. `emulator/step_out` on this fixture has no
+/// frame to return out of, so it runs the engine's whole step budget — 600 frames on a default server,
+/// which is seconds of debug-build emulation — while a 250 ms deadline expires under it. The inequality
+/// has only one safe direction and this is it: load can make 600 frames slower, never faster, so a
+/// machine busy enough to break the *other* rows cannot turn this one green.
+#[test]
+fn a_read_that_times_out_names_the_request_it_was_waiting_for() {
+    let h = spawn("timeout-msg");
+    let mut c = Client::connect_with_read_timeout(&h, std::time::Duration::from_millis(250));
+    c.handshake(false);
+
+    // The panic is the subject, so it is caught rather than propagated — and its payload is read, which
+    // is the only way to assert on a message rather than on the mere fact of a failure.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.call("emulator/step_out", json!({}));
+    }));
+    std::panic::set_hook(hook);
+
+    let err = outcome.expect_err(
+        "emulator/step_out ran its whole frame budget in under 250 ms, so this test observed no \
+         deadline at all and proves nothing about the message a blown one carries",
+    );
+    let msg = err
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .expect("a panic payload the test can read")
+        .to_string();
+
+    assert!(
+        msg.contains("emulator/step_out"),
+        "a blown read deadline must name the outstanding request — that name is the diagnosis. \
+         Got: {msg}"
+    );
+    assert!(
+        msg.contains("250ms"),
+        "a blown read deadline must quote the deadline it blew, so slowness can be told from a hang \
+         without re-deriving the number. Got: {msg}"
+    );
+    // And it must commit to one of the two diagnoses rather than reporting an errno that fits both.
+    assert!(
+        msg.contains("LATE, not never") || msg.contains("nor within a further"),
+        "a blown read deadline must say whether the server answered late or never answered — the two \
+         are opposite defects and `WouldBlock` fires identically for both. Got: {msg}"
+    );
+}

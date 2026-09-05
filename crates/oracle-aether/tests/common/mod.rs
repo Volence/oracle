@@ -209,21 +209,49 @@ pub struct Client {
     /// both [`Client::call`] and [`Client::send_raw`]: many tests write the request line by hand, and a
     /// reply the harness cannot attribute to a method gets envelope validation only.
     pending: HashMap<String, String>,
+    /// **The request this connection is waiting on**, as `method (id N)`, or `None` when the last line
+    /// read settled it. Set by [`Client::send_raw`], cleared by [`Client::recv`].
+    ///
+    /// Distinct from `pending`, which is a permanent `id -> method` ledger for schema selection and
+    /// therefore grows to the whole sweep. This is the one thing a timeout has to be able to say, and it
+    /// is why [`Client::read_line_or_explain`] can name a method instead of an errno.
+    awaiting: Option<String>,
+    /// The read deadline this connection was armed with, kept so a failure can quote the number it blew.
+    read_timeout: Duration,
 }
+
+/// **The socket read deadline.** Named rather than spelled inline because a failure now quotes it, and a
+/// deadline a test reports has to be a deadline the test can name.
+///
+/// Twenty seconds is not "slow", it is starvation or a hang — see [`Client::read_line_or_explain`] for
+/// what the client does before it is willing to say which.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl Client {
     pub fn connect(handle: &ServerHandle) -> Self {
+        Self::connect_with_read_timeout(handle, READ_TIMEOUT)
+    }
+
+    /// [`Client::connect`] with the read deadline named by the caller.
+    ///
+    /// The seam exists for one test —
+    /// `handshake::a_read_that_times_out_names_the_request_it_was_waiting_for` — which has to *observe* a
+    /// blown deadline, and observing the real one costs 20 seconds. The deadline is the only difference,
+    /// so what that test watches is this client's timeout path and not a second one.
+    pub fn connect_with_read_timeout(handle: &ServerHandle, read_timeout: Duration) -> Self {
         // The accept loop polls, so a connect immediately after spawn may beat it by a few ms.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match UnixStream::connect(handle.socket_path()) {
                 Ok(s) => {
-                    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+                    s.set_read_timeout(Some(read_timeout)).unwrap();
                     return Self {
                         reader: BufReader::new(s.try_clone().unwrap()),
                         writer: s,
                         next_id: 1,
                         pending: HashMap::new(),
+                        awaiting: None,
+                        read_timeout,
                     };
                 }
                 Err(e) if std::time::Instant::now() < deadline => {
@@ -249,6 +277,7 @@ impl Client {
             if let (Some(id), Some(m)) = (v.get("id"), v.get("method").and_then(Value::as_str)) {
                 if !id.is_null() {
                     self.pending.insert(id.to_string(), m.to_string());
+                    self.awaiting = Some(format!("{m} (id {id})"));
                 }
             }
         }
@@ -264,9 +293,7 @@ impl Client {
     /// off-contract shape without failing. See `common::schema` for what that covers and what it
     /// structurally cannot.
     pub fn recv(&mut self) -> Value {
-        let mut line = String::new();
-        let n = self.reader.read_line(&mut line).expect("read");
-        assert!(n > 0, "connection closed while a reply was expected");
+        let line = self.read_line_or_explain();
         let v: Value = serde_json::from_str(&line)
             .unwrap_or_else(|e| panic!("bad JSON on the wire: {e}: {line}"));
         let method = v
@@ -274,8 +301,87 @@ impl Client {
             .filter(|i| !i.is_null())
             .and_then(|i| self.pending.get(&i.to_string()))
             .cloned();
+        if v.get("id").is_some_and(|i| !i.is_null()) {
+            self.awaiting = None;
+        }
         schema::assert_incoming(&v, method.as_deref());
         v
+    }
+
+    /// One line off the wire, or **a panic that says what the client was waiting for and for how long.**
+    ///
+    /// This used to be `read_line(&mut line).expect("read")`, and the message it produced was
+    /// `read: Os { code: 11, kind: WouldBlock }` — an errno, at a `common/mod.rs` line number, naming
+    /// neither the method nor the deadline. That message is the reason `F-HANDSHAKE-LOAD-TIMEOUT` was
+    /// booked as "a socket read timeout, cause unknown", and it is the same message that let the
+    /// `wait_for_break` row be written off as a flake **twice** (2026-09-03 and 2026-09-04) before it was
+    /// root-caused to a real ordering defect. A load-sensitive failure whose only evidence is `EAGAIN` is
+    /// indistinguishable from noise, so it gets read as noise.
+    ///
+    /// Two things are added, and each answers a question the bare errno could not.
+    ///
+    /// 1. **What was outstanding.** `awaiting` carries `method (id N)`, so the panic names the row. In the
+    ///    booked failure that one word — `emulator/step_out` — is the whole diagnosis.
+    /// 2. **Whether the server answered late, or not at all.** These are opposite defects — the first is a
+    ///    slow or starved machine, the second is a hang or a deadlock — and the deadline alone cannot tell
+    ///    them apart, because it fires identically for both. So the deadline is *not* treated as final:
+    ///    the socket is re-armed for a grace window and read once more, purely so the panic can state
+    ///    which of the two happened. A line that arrives in the grace window proves the server was alive
+    ///    and merely behind; silence through both windows is the stronger claim, and only then is it made.
+    ///
+    /// The grace read costs nothing on a passing run — it is only ever reached after a deadline has
+    /// already blown, i.e. on a run that is failing either way.
+    fn read_line_or_explain(&mut self) -> String {
+        // One buffer across both attempts: `read_line`'s contents are unspecified on error, and a partial
+        // line already drained out of the socket must not be dropped on the floor by the retry.
+        let mut line = String::new();
+        let started = std::time::Instant::now();
+        match self.reader.read_line(&mut line) {
+            Ok(0) => panic!(
+                "connection closed while a reply was expected. {}",
+                self.awaiting_note()
+            ),
+            Ok(_) => return line,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => panic!("read failed: {e}. {}", self.awaiting_note()),
+        }
+        let blown = started.elapsed();
+        let grace = self.read_timeout / 2;
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(grace))
+            .expect("re-arm the read deadline for the grace window");
+        match self.reader.read_line(&mut line) {
+            Ok(n) if n > 0 => panic!(
+                "the server answered LATE, not never. Nothing arrived within the {:?} read deadline, \
+                 but a line did arrive {:?} after it — so the server is alive and behind (a slow or \
+                 starved machine), NOT hung. {} Late line: {}",
+                self.read_timeout,
+                started.elapsed() - blown,
+                self.awaiting_note(),
+                line.trim(),
+            ),
+            _ => panic!(
+                "the server did not answer within the {:?} read deadline, nor within a further {:?} of \
+                 grace. Nothing came back at all, so this is a hang or a deadlock rather than slowness. \
+                 {}",
+                self.read_timeout,
+                grace,
+                self.awaiting_note(),
+            ),
+        }
+    }
+
+    /// The "what was it waiting for" clause of a transport failure message.
+    fn awaiting_note(&self) -> String {
+        match &self.awaiting {
+            Some(req) => format!("The outstanding request was {req}."),
+            None => "No request was outstanding on this connection — the read was waiting for a \
+                     server-pushed event."
+                .to_string(),
+        }
     }
 
     /// Read lines until one has an `id` (i.e. skip any events queued ahead of the reply).
