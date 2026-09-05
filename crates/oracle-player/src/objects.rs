@@ -293,23 +293,23 @@ pub fn object_slot(
 const RING_BUFFER: &str = "Ring_Buffer";
 const RING_COUNT: &str = "Ring_Count";
 
-/// **Why the ring buffer's capacity is not on this panel**, stated in full because an absent number
+/// The equate the ceiling divides by. A **name**, read from the listing at run time — never a number
+/// typed in here, which would be a fact about one build wearing the clothes of a measurement.
+const RING_ENTRY_SIZE: &str = "RING_BUFFER_ENTRY_SIZE";
+
+/// **The sentence for the one listing that still cannot answer**, stated in full because an absent number
 /// invites the reader to supply one.
 ///
-/// The span is derivable and is shown. Turning a span in *bytes* into a ceiling in *rings* needs the
-/// entry size, and `RING_BUFFER_ENTRY_SIZE` is published by the listing only in its `Equate Table` —
-/// a section [`SymbolTable::parse`] recognises and deliberately consumes **without keeping the values**
-/// (`F-EQUATES-NAMESPACE`, an unruled decision). So the divisor is not a number this process can read,
-/// and the one thing worse than the gap would be closing it with a constant typed in here: an entry size
-/// written into this crate is a fact about one build, which is exactly what the rest of this file refuses
-/// to hold.
-///
-/// [`rings_ceiling_is_unknown_because_equate_values_are_not_ingested`] pins the *reason* rather than the
-/// sentence, so the day equates become readable this goes red and asks for the division to be finished.
+/// *(Rewritten 2026-09-05. The constant this replaces said the ceiling was unknown because the symbol
+/// table **deliberately did not ingest** equate values — `F-EQUATES-NAMESPACE`, then an unruled decision.
+/// It is ruled: `contract/protocol.md` §11.36 adopts CR-M, `oracle-core` reads the `Equate Table` into a
+/// namespace of its own, and the ceiling is now a division. What is left here is the honest residue: a
+/// listing that publishes no `Equate Table`, or one whose build renamed the constant, still has no
+/// divisor, and no entry size is guessed then either.)*
 pub const CEILING_UNKNOWN: &str =
     "ceiling unknown — the span above is measured, but converting it to a number of rings needs \
-     RING_BUFFER_ENTRY_SIZE, which the listing publishes only as an equate and which the symbol table \
-     deliberately does not ingest (F-EQUATES-NAMESPACE). No entry size is guessed here.";
+     RING_BUFFER_ENTRY_SIZE, and this listing does not publish it (no Equate Table, or a build that \
+     renamed the constant). No entry size is guessed here.";
 
 /// The one sentence this panel owes the reader about rings, beside the object count.
 pub const RINGS_WHY: &str =
@@ -334,6 +334,17 @@ pub struct RingsView {
     pub count_width: u32,
     /// The live value read out of `Ring_Count`.
     pub count: u32,
+    /// `RING_BUFFER_ENTRY_SIZE`, **read from the listing's `Equate Table`** (§11.36 / CR-M) — the divisor
+    /// that turns [`span_bytes`](Self::span_bytes) into a ring count.
+    ///
+    /// `None` when this listing publishes no such equate; the panel then shows [`CEILING_UNKNOWN`] rather
+    /// than a guessed size. Zero is treated as absent, since it is not a divisor.
+    pub entry_size: Option<u32>,
+    /// `span_bytes / entry_size` — **how many rings the buffer holds**. The number this CR was raised for.
+    ///
+    /// `None` when there is no divisor. Note this is a *derivation*, not a second reading: it and
+    /// [`entry_size`](Self::entry_size) cannot disagree, because one is computed from the other.
+    pub ceiling: Option<u32>,
 }
 
 impl RingsView {
@@ -343,8 +354,16 @@ impl RingsView {
     /// this crate cannot screenshot is only checkable at the seam where it becomes text.
     pub fn summary(&self) -> String {
         format!(
-            "rings   {} live   buffer {}..{} (${:X} bytes)   Ring_Count is {} byte{}",
+            "rings   {} live{}   buffer {}..{} (${:X} bytes)   Ring_Count is {} byte{}",
             self.count,
+            // **The ceiling, finished** (§11.36). `of N` rather than a bare second number, because
+            // "5 128" beside a live count reads as two counts. Absent only when the listing publishes no
+            // entry size, and then `CEILING_UNKNOWN` says so in words underneath.
+            match (self.ceiling, self.entry_size) {
+                (Some(c), Some(e)) =>
+                    format!(" of {c} (${:X} bytes / {e} per ring)", self.span_bytes),
+                _ => String::new(),
+            },
             hex::addr(self.buffer_addr),
             hex::addr(self.count_addr),
             self.span_bytes,
@@ -445,12 +464,29 @@ pub fn rings(symbols: Option<&SymbolTable>, sys: &System) -> Result<RingsView, R
     let (bytes, _) = engine::debug_read(sys, count_addr, count_width as usize)?;
     let count = bytes.iter().fold(0u32, |acc, b| (acc << 8) | u32::from(*b));
 
+    // **The division, finished** — §11.36 / CR-M, which this panel is the one named consumer of.
+    //
+    // `entry_size` comes out of the listing's `Equate Table` through the SAME door
+    // `emulator/lookup_equate` answers from (`SymbolTable::equate_value`), so the panel and the bus
+    // cannot report different entry sizes for one listing. Contract D15: an in-process GUI consumes the
+    // same registry rather than dialling a socket to itself.
+    //
+    // Zero is filtered as absent — it is not a divisor — and the `u32` conversion is fallible because an
+    // equate value is a plain integer of the listing's own width, not an address of this machine's.
+    let entry_size = table
+        .equate_value(RING_ENTRY_SIZE)
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|e| *e > 0);
+    let ceiling = entry_size.map(|e| span_bytes / e);
+
     Ok(RingsView {
         buffer_addr,
         count_addr,
         span_bytes,
         count_width,
         count,
+        entry_size,
+        ceiling,
     })
 }
 
@@ -1406,23 +1442,118 @@ mod bus_parity {
         );
     }
 
-    /// **The ceiling is unknown for a stated reason, and this pins the REASON rather than the sentence.**
+    /// **The panel's ring ceiling and `emulator/lookup_equate` divide by the SAME number** — §11.36's
+    /// one implementation, two consumers, plus the clause a parity pair cannot supply.
+    ///
+    /// D15: an in-process GUI is a consumer of the same registry, not a second server. The panel does not
+    /// open a socket to itself; both sides call `SymbolTable::equate_value`. So legs 1 and 2 below are
+    /// *agreement*, and agreement is exactly what a shared implementation gives for free — break
+    /// `equate_value` and both move together, agreeing perfectly and both wrong.
+    ///
+    /// ⚑ **Leg 3 is therefore the load-bearing one**: the shared derivation is checked against a value
+    /// this test wrote into the listing, in a form no plausible mistake reproduces. The fixture's entry
+    /// size is `$00000010`, which is **16 in hex and 10 in decimal**, and the span is `$180` — so a
+    /// decimal-parsing `equate_value` answers a perfectly believable `38` rings instead of `24`, and a
+    /// derivation that memorised aeon's real `6` answers `64`. Neither is caught by any amount of
+    /// panel-versus-bus agreement.
+    #[test]
+    fn the_panels_ring_ceiling_and_lookup_equate_divide_by_the_same_listing_value() {
+        const ENTRY: u32 = 0x10;
+        let mut sys = booted();
+        let mut rows = pool_rows(BASE, SST);
+        rows.extend_from_slice(&ring_rows(RING_BASE, RING_SPAN));
+        let text = format!(
+            "{}\n  Equate Table (name = value; values, not addresses):\n  \
+             ---------------------------------------------------\n\n\
+             EQU RING_BUFFER_ENTRY_SIZE = ${ENTRY:08X}\n\n    1 equates\n",
+            listing(&rows)
+        );
+        let table = SymbolTable::parse(&text).expect("a listing with an Equate Table parses");
+        let mut bus = populated(&mut sys, table.clone());
+
+        // 1. The bus's answer, from a real reply.
+        let r = ok(bus.call(
+            &mut sys,
+            "emulator/lookup_equate",
+            &json!({"name": "RING_BUFFER_ENTRY_SIZE"}),
+        ));
+        assert_eq!(r["name"], json!("RING_BUFFER_ENTRY_SIZE"));
+        let served = r["value"].as_u64().expect("value is a number") as u32;
+
+        // 2. The panel's, from the same listing in the same process.
+        let view = rings(Some(&table), &sys).expect("the ring buffer is measured");
+        assert_eq!(
+            view.entry_size,
+            Some(served),
+            "the panel and the bus must divide by one number; two doors, one door"
+        );
+
+        // 3. ⚑ THE CLAUSE AGREEMENT CANNOT SUPPLY. The shared derivation produced the LISTING's value.
+        assert_eq!(
+            served, ENTRY,
+            "the served value must be the hex the listing spells ($10 = 16); a decimal parse answers 10"
+        );
+        assert_eq!(
+            view.span_bytes, RING_SPAN,
+            "the span is measured, not remembered"
+        );
+        assert_eq!(
+            view.ceiling,
+            Some(RING_SPAN / ENTRY),
+            "the ceiling is span / entry-size: {RING_SPAN:#X} / {ENTRY} = {}",
+            RING_SPAN / ENTRY
+        );
+        assert_eq!(view.ceiling, Some(24));
+        assert_ne!(
+            view.ceiling,
+            Some(RING_SPAN / 10),
+            "38 is what a decimal-parsed $10 would give, and it is entirely believable"
+        );
+        assert_ne!(
+            view.ceiling,
+            Some(RING_SPAN / 6),
+            "64 is what a derivation that memorised aeon's real entry size would give"
+        );
+        let line = view.summary();
+        assert!(
+            line.contains("of 24") && line.contains("16 per ring"),
+            "the panel line carries both halves of the division: {line:?}"
+        );
+
+        // …and the equate still is not an address, on the bus, in the presence of a real symbol table.
+        let e = match bus.call(
+            &mut sys,
+            "emulator/lookup_symbol",
+            &json!({"name": "RING_BUFFER_ENTRY_SIZE"}),
+        ) {
+            Answer::Err(e) => e,
+            Answer::Ok(v) => panic!("an equate resolved as a symbol: {v}"),
+        };
+        assert_eq!(e.code, code::SYMBOL_NOT_FOUND);
+    }
+
+    /// **The ceiling is a NUMBER now, and this asserts the number rather than the reason.**
+    ///
+    /// *(This test was `the_rings_ceiling_is_unknown_because_equate_values_are_not_ingested`, a
+    /// deliberate tripwire whose own doc said "the day equates become readable this goes red and asks
+    /// whoever ruled it to finish the division". §11.36 / CR-M is that day. The division is finished, and
+    /// the test that pinned the gap now pins what closed it — renamed rather than deleted, because a
+    /// tripwire that is silenced instead of answered ships the capability and leaves the one consumer
+    /// that justified it unserved.)*
     ///
     /// Run against `fixtures/aeon/s4.debug.lst` — committed bytes of a real build — because every claim
-    /// here is about what that listing does and does not publish:
+    /// here is about what that listing publishes:
     ///
     /// 1. `Ring_Buffer` and `Ring_Count` both resolve, and **nothing lies between them**, so the span is
     ///    real. This is the adjacency the whole rings line rests on, checked on the real file.
-    /// 2. The listing **does** contain a `RING_BUFFER_ENTRY_SIZE` row — so clause 3 is about ingestion
-    ///    and not about absence. Without this clause the test would pass just as well on a listing that
-    ///    never mentioned the constant, and would be pinning nothing.
-    /// 3. `SymbolTable` nonetheless cannot answer for it, because the `Equate Table`'s values are
-    ///    deliberately not ingested (`F-EQUATES-NAMESPACE`). **That** is why no ceiling is shown.
-    ///
-    /// The day equates become readable, clause 3 goes red and asks whoever ruled it to finish the
-    /// division — which is the point of pinning the reason instead of the wording.
+    /// 2. The listing publishes `RING_BUFFER_ENTRY_SIZE`, and `SymbolTable` can now **answer for it** —
+    ///    with 6, the value the file spells, through the equate door and not the symbol one.
+    /// 3. So the ceiling is `(Ring_Count − Ring_Buffer) / 6` = **128 rings**, and the panel's own summary
+    ///    line carries it.
+    /// 4. And the division did not cost the safety property: `RING_BUFFER_ENTRY_SIZE` still resolves to
+    ///    no address, in either direction.
     #[test]
-    fn the_rings_ceiling_is_unknown_because_equate_values_are_not_ingested() {
+    fn the_rings_ceiling_is_the_measured_span_divided_by_the_listings_entry_size() {
         let path = std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/aeon/s4.debug.lst"
@@ -1461,24 +1592,73 @@ mod bus_parity {
             "the between-symbols filter matches nothing at all, so its emptiness above proves nothing"
         );
 
-        // 2. The listing DOES publish the entry size — so clause 3 is about ingestion, not absence.
+        // 2. The listing publishes the entry size AND the table can answer for it.
         assert!(
             text.contains("RING_BUFFER_ENTRY_SIZE"),
-            "this test's whole claim is that the constant is present but unreadable; if the listing \
-             stopped publishing it the claim would need restating rather than silently holding"
+            "this test's whole claim is about a constant the file publishes; if the listing stopped \
+             publishing it the claim would need restating rather than silently holding"
+        );
+        assert_eq!(
+            table.equate_value("RING_BUFFER_ENTRY_SIZE"),
+            Some(6),
+            "\u{a7}11.36: the Equate Table is readable, and 6 is what this build spells"
         );
 
-        // 3. …and the symbol table still cannot answer for it.
+        // 3. The ceiling, on the panel's own line — the string a human reads.
+        let mut sys = booted();
+        let _bus = populated(&mut sys, table.clone());
+        let view = rings(Some(&table), &sys).expect("the frozen listing measures the ring buffer");
+        assert_eq!(view.span_bytes, count - buffer);
+        assert_eq!(view.entry_size, Some(6));
+        assert_eq!(
+            view.ceiling,
+            Some((count - buffer) / 6),
+            "the ceiling is the MEASURED span divided by the LISTING's entry size — neither is typed here"
+        );
+        assert_eq!(
+            view.ceiling,
+            Some(128),
+            "and on this build that number is 128"
+        );
+        let line = view.summary();
+        assert!(
+            line.contains("of 128"),
+            "the panel line must carry the ceiling now that it has one: {line:?}"
+        );
+        assert!(
+            line.contains("6 per ring"),
+            "\u{2026}and say what it divided by, so the number can be checked: {line:?}"
+        );
+
+        // 4. The division did not cost the safety property.
         assert!(
             table.address_of("RING_BUFFER_ENTRY_SIZE").is_none(),
-            "equate VALUES are deliberately not ingested (F-EQUATES-NAMESPACE). If this now resolves, \
-             the ring ceiling is derivable as (Ring_Count − Ring_Buffer) / RING_BUFFER_ENTRY_SIZE and \
-             `CEILING_UNKNOWN` must be replaced with the division rather than left standing."
+            "an equate is readable by NAME through its own door; it is still not an address"
         );
         assert!(
-            CEILING_UNKNOWN.contains("RING_BUFFER_ENTRY_SIZE"),
-            "the sentence on the panel must name the constant it is missing"
+            table.by_name("RING_BUFFER_ENTRY_SIZE").is_none(),
+            "the equate must not have leaked into the symbol table"
         );
+
+        // \u{2026}and `CEILING_UNKNOWN` is now the fallback for a listing that publishes no entry size,
+        // which is a real state and still gets a sentence rather than a blank.
+        let no_equates = text
+            .split("  Equate Table")
+            .next()
+            .expect("the listing has a body before its Equate Table");
+        let stripped = SymbolTable::parse(no_equates).expect("the truncated listing still parses");
+        assert_eq!(stripped.equate_value("RING_BUFFER_ENTRY_SIZE"), None);
+        let view = rings(Some(&stripped), &sys).expect("the ring symbols are still there");
+        assert_eq!(
+            view.ceiling, None,
+            "no divisor, no ceiling — and none guessed"
+        );
+        assert!(
+            !view.summary().contains(" of "),
+            "the summary must not invent a ceiling: {:?}",
+            view.summary()
+        );
+        assert!(CEILING_UNKNOWN.contains("RING_BUFFER_ENTRY_SIZE"));
     }
 
     // -----------------------------------------------------------------------------------------------

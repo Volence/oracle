@@ -23,6 +23,34 @@ const LST_UNBOUND: &str = "\
     0 unused symbols
 ";
 
+/// A `.lst` carrying an `Equate Table` (§11.36) beside the same five symbols.
+///
+/// `ART_ENTRY` is deliberately `$200`, which is **`EntryPoint`'s address** — the collision the whole
+/// option-A ruling turns on, present here so the bus-level test can show the two doors answering
+/// differently about one number.
+const LST_EQUATES: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ $engine.boot$EntryPoint$wait_dma : 214 C |
+ $engine.boot$EntryPoint$warm_boot : 218 C |
+ Player_1 : FFFF8CFA C |
+ Player_2 : FFFF8D4A C |
+
+    5 symbols
+    0 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU ART_ENTRY = $00000200
+EQU RING_BUFFER_ENTRY_SIZE = $00000006
+EQU RING_MAX = $00000080
+
+    3 equates
+";
+
 /// A `.lst` that declares an `EndOfRom` the image does not corroborate — must be REFUSED.
 const LST_WRONG_SHAPE: &str = "\
   Symbol Table (* = unused):
@@ -535,6 +563,171 @@ fn no_symbols_and_symbol_not_found_are_distinct_codes() {
     assert_eq!(
         c.err("emulator/lookup_symbol", json!({"name": "Nope_Nope"}))["code"],
         json!(-32013)
+    );
+}
+
+/// **§11.36 / CR-M, the three cases the ruling closes on, plus the safety property on the wire.**
+///
+/// The adoption condition names three by hand — *"the exact hit, the empty prefix and the
+/// `-32013`/`-32012` distinction"* — and all three are here, from a real reply rather than a fixture:
+///
+/// * the **exact hit** answers `{name, value}` with `value` a JSON **number**, not a hex string (D9
+///   category 2), and the number is the one the listing spells;
+/// * the **empty prefix** answers `matches: []` with `truncated: false` and **is not an error** — the
+///   distinction a client cannot make if an empty answer arrives as `-32013`;
+/// * `-32012` (no listing) and `-32013` (this listing does not publish that name) are **different codes**
+///   on the same method, so a client can tell "you forgot `load_symbols`" from "your build renamed the
+///   constant". The `-32013` carries `data.missing`.
+///
+/// And the one a schema cannot hold: `ART_ENTRY`'s value is `$200`, which **is** `EntryPoint`'s address.
+/// `lookup_equate` answers `512` for the name and `lookup_symbol` answers `EntryPoint` for the address,
+/// and neither door ever mentions the other's answer. That is option A on the wire.
+#[test]
+fn lookup_equate_serves_the_exact_hit_the_empty_prefix_and_the_two_refusals() {
+    let h = spawn("equ");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    // -32012 FIRST, before any listing exists: "you forgot load_symbols".
+    let e = c.err("emulator/lookup_equate", json!({"name": "RING_MAX"}));
+    assert_eq!(e["code"], json!(-32012), "no listing is -32012, not -32013");
+
+    let lst = write_lst("equ", LST_EQUATES);
+    let r = c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    assert_eq!(
+        r["symbolCount"],
+        json!(5),
+        "the three equate rows must not inflate the SYMBOL count"
+    );
+
+    // 1. The exact hit. `value` is a NUMBER.
+    let r = c.ok(
+        "emulator/lookup_equate",
+        json!({"name": "RING_BUFFER_ENTRY_SIZE"}),
+    );
+    assert_eq!(r["name"], json!("RING_BUFFER_ENTRY_SIZE"));
+    assert_eq!(r["value"], json!(6));
+    assert!(
+        r["value"].is_number(),
+        "D9 category 2: a value is a JSON number, never a hex string — got {:?}",
+        r["value"]
+    );
+    assert!(r.get("matches").is_none(), "the exact form carries no list");
+
+    // 2. The prefix form, complete and then EMPTY. An empty list is an answer.
+    let r = c.ok("emulator/lookup_equate", json!({"prefix": "RING_"}));
+    assert_eq!(r["query"], json!("RING_"));
+    assert_eq!(r["truncated"], json!(false));
+    let m = r["matches"].as_array().expect("matches is an array");
+    assert_eq!(
+        m.iter()
+            .map(|x| (x["name"].as_str().unwrap(), x["value"].as_u64().unwrap()))
+            .collect::<Vec<_>>(),
+        vec![("RING_BUFFER_ENTRY_SIZE", 6), ("RING_MAX", 128)],
+        "name-ordered, and both rows carry name AND value"
+    );
+
+    let r = c.ok("emulator/lookup_equate", json!({"prefix": "ZZZ"}));
+    assert_eq!(r["query"], json!("ZZZ"));
+    assert_eq!(
+        r["matches"],
+        json!([]),
+        "an empty match list is a real answer, NOT an error (§11.36)"
+    );
+    assert_eq!(r["truncated"], json!(false));
+
+    // 3. -32013 for an absent NAME, with `data.missing`, and it is not the -32012 above.
+    let e = c.err("emulator/lookup_equate", json!({"name": "NOT_AN_EQUATE"}));
+    assert_eq!(e["code"], json!(-32013));
+    assert_eq!(e["data"]["missing"], json!("NOT_AN_EQUATE"));
+
+    // Exactly one of the two params, in both directions.
+    assert_eq!(
+        c.err("emulator/lookup_equate", json!({}))["code"],
+        json!(-32602)
+    );
+    assert_eq!(
+        c.err(
+            "emulator/lookup_equate",
+            json!({"name": "RING_MAX", "prefix": "RING_"})
+        )["code"],
+        json!(-32602)
+    );
+    // M1: there is no `addr` form. §2.5's closure refuses the key by name before the handler runs.
+    let e = c.err("emulator/lookup_equate", json!({"addr": "0x200"}));
+    assert_eq!(e["code"], json!(-32602));
+    assert!(
+        e["message"].as_str().unwrap().contains("addr"),
+        "the refusal names the offending key: {:?}",
+        e["message"]
+    );
+
+    // ⚑ THE SAFETY PROPERTY, ON THE WIRE. `ART_ENTRY == $200 == EntryPoint`.
+    let eq = c.ok("emulator/lookup_equate", json!({"name": "ART_ENTRY"}));
+    assert_eq!(eq["value"], json!(0x200));
+    let sym = c.ok("emulator/lookup_symbol", json!({"addr": "0x200"}));
+    assert_eq!(
+        sym["name"],
+        json!("EntryPoint"),
+        "addr->name must still answer with the LABEL at $200, never with the equate whose value is $200"
+    );
+    assert!(
+        !sym.to_string().contains("ART_ENTRY"),
+        "an equate reached a symbol reply: {sym}"
+    );
+    // …and the equate is invisible to the symbol door in the name direction too.
+    assert_eq!(
+        c.err("emulator/lookup_symbol", json!({"name": "ART_ENTRY"}))["code"],
+        json!(-32013),
+        "an equate name must not resolve as a symbol"
+    );
+}
+
+/// **The value this server serves is the value the REAL listing carries**, and the division that value
+/// exists for produces a real number.
+///
+/// The test above proves the shape against a five-row fixture, which is exactly the kind of listing a
+/// wrong hex parser passes. This one reads the frozen bytes of a real aeon build — the same file the
+/// Objects panel's ring ceiling test reads — and asserts the two facts a fixture cannot carry: the
+/// listing publishes 724 equates, and `RING_BUFFER_ENTRY_SIZE` is 6, so
+/// `(Ring_Count − Ring_Buffer) / RING_BUFFER_ENTRY_SIZE` is **128 rings**.
+///
+/// It goes through `SymbolTable` rather than the bus because the frozen listing describes an aeon ROM
+/// this server is not holding, and `load_symbols` correctly refuses a listing that does not bind. The bus
+/// half is the test above; this is the half that says the number is not invented.
+#[test]
+fn the_frozen_listings_equates_are_the_ones_the_file_publishes() {
+    let path = std::path::PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/aeon/s4.debug.lst"
+    ));
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the frozen listing must be present at {path:?}: {e}"));
+    let t = oracle_core::symbols::SymbolTable::parse(&text).expect("the frozen listing parses");
+
+    assert_eq!(t.equate_rows(), Some(724));
+    assert_eq!(t.declared_equates(), Some(724), "the file's own trailer");
+    assert_eq!(t.equate_count(), 724, "724 rows, 724 distinct names");
+    assert_eq!(t.equate_value("RING_BUFFER_ENTRY_SIZE"), Some(6));
+
+    let buffer = t.address_of("Ring_Buffer").expect("Ring_Buffer");
+    let count = t.address_of("Ring_Count").expect("Ring_Count");
+    assert_eq!(
+        (count - buffer) / 6,
+        128,
+        "the ring ceiling this CR was for"
+    );
+
+    // The cart-window measurement the ruling rests on, re-derived rather than quoted.
+    let all = t.equates_with_prefix("");
+    let in_window = all.iter().filter(|(_, v)| *v <= 0x003F_FFFF).count();
+    assert_eq!(
+        (all.len(), in_window),
+        (724, 661),
+        "661 of 724 equate values look like cart addresses — the reason option A won"
     );
 }
 

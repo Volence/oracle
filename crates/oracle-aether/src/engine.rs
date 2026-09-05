@@ -516,6 +516,12 @@ pub const METHODS: &[MethodSpec] = &[
         params: &["addr", "name"],
     },
     MethodSpec {
+        name: "emulator/lookup_equate",
+        handler: Engine::lookup_equate,
+        summary: "equate name -> value (a plain integer, never an address), or a bounded prefix search",
+        params: &["name", "prefix"],
+    },
+    MethodSpec {
         name: "emulator/load_symbols",
         handler: Engine::load_symbols,
         summary: "load a sigil/AS .lst listing, refusing one that does not bind to the loaded ROM",
@@ -6252,6 +6258,113 @@ impl Engine {
             "caveat": "no symbol has that exact name; these are prefix matches and any of them may be \
                        the wrong one.",
         }))
+    }
+
+    /// **`emulator/lookup_equate`** (§11.36 / CR-M) — the listing's `Equate Table`, in a namespace of its
+    /// own.
+    ///
+    /// Everything this method is careful about follows from one measurement: **661 of the frozen
+    /// listing's 724 equate values fall inside the cart window**, and 67 are numerically equal to the
+    /// address of a real label. So:
+    ///
+    /// * **`value` is a plain integer and is NOT an address** (D9 category 2). It is not hex-formatted,
+    ///   not masked to 24 bits, and not range-checked against the ROM — a client that wants to read it as
+    ///   a location does so on its own authority, and `read_memory` will judge it there.
+    /// * **There is no `addr` form and no reverse door.** M1 of the ruling: naming an immediate operand by
+    ///   its constant is a real use with no consumer, and it is booked rather than served. The key is
+    ///   refused by §2.5's closure before this handler runs, which is what the params vector asserts.
+    /// * **The two refusals stay apart.** `-32012` is *no listing is loaded*; `-32013` is *this listing
+    ///   does not publish that name*. §4 keeps the same pair distinct for labels, and blurring them here
+    ///   would make "you forgot `load_symbols`" and "your build renamed the constant" one sentence.
+    ///
+    /// The absent-name refusal goes through [`Engine::with_symbol_freshness`] like a label miss, and for
+    /// the same reason: an equate a rebuild added is absent here while sitting in the file, so the reader
+    /// has the same two theories and deserves the same measured answer. The success replies carry the
+    /// same standing verdict as `emulator/status`, through the same cached door
+    /// ([`Engine::listing_freshness_now`]), so this method cannot disagree with `status` about one file
+    /// in one millisecond.
+    fn lookup_equate(&mut self, params: &Value) -> Result<Value, RpcError> {
+        // Cloned for `lookup_symbol`'s reason: the freshness clause below needs `&mut self` while the
+        // table is still being read.
+        let table = self.symbols.clone().ok_or_else(no_symbols)?;
+        let limit = self.config.max_symbol_matches;
+
+        // §11.36's `oneOf`, served rather than assumed. The bus closure refuses an *undeclared* key; it
+        // cannot refuse a declared pair, so "exactly one" is this handler's own duty.
+        let name = params.get("name");
+        let prefix = params.get("prefix");
+        let query = match (name, prefix) {
+            (Some(_), Some(_)) => {
+                return Err(RpcError::invalid_params(
+                    "exactly one of `name` (exact) or `prefix` (bounded search) — both were given",
+                ))
+            }
+            (None, None) => return Err(RpcError::invalid_params(
+                "one of `name` (string, exact) or `prefix` (string, bounded search) is required",
+            )),
+            (Some(v), None) => Ok(v),
+            (None, Some(v)) => Err(v),
+        };
+
+        let mut out = match query {
+            Ok(name) => {
+                let Some(name) = name.as_str() else {
+                    return Err(RpcError::invalid_params("`name` must be a string"));
+                };
+                let Some(value) = table.equate_value(name) else {
+                    // Distinguished in the MESSAGE, never in the code: a listing that publishes no
+                    // `Equate Table` at all (every listing sigil emitted before 2026-08-19, and every AS
+                    // listing) is still a loaded listing, so `-32012` would be a lie about the server's
+                    // state. The reader gets the distinction as a sentence.
+                    let why = if table.has_equate_table() {
+                        format!(
+                            "the loaded listing publishes {} equate(s) and this is not one of them",
+                            table.equate_count()
+                        )
+                    } else {
+                        "the loaded listing carries no Equate Table section at all".to_string()
+                    };
+                    // `data.missing`, §11.36's own spelling and `objreq::resolve`'s — NOT
+                    // `lookup_symbol`'s `data.name`. One fact, one key: emitting both spellings would
+                    // make a client choose, which is the drift §4's `rawName` was struck for.
+                    let e = RpcError::new(
+                        code::SYMBOL_NOT_FOUND,
+                        format!("no equate named {name} — {why}"),
+                    )
+                    .with_data(json!({"missing": name}));
+                    return Err(self.with_symbol_freshness(e));
+                };
+                json!({ "name": name, "value": value })
+            }
+            Err(prefix) => {
+                let Some(prefix) = prefix.as_str() else {
+                    return Err(RpcError::invalid_params("`prefix` must be a string"));
+                };
+                let all = table.equates_with_prefix(prefix);
+                let total = all.len();
+                let matches: Vec<Value> = all
+                    .iter()
+                    .take(limit)
+                    .map(|(n, v)| json!({"name": n, "value": v}))
+                    .collect();
+                // **An empty list is an answer, not an error** (§11.36), so there is no miss branch
+                // here at all — and `truncated` is emitted in both directions rather than only when it
+                // is true, because a field that appears only in the unusual case is a field nobody
+                // reads (§11.5's argument, and `exact`'s on `lookup_symbol`).
+                json!({
+                    "query": prefix,
+                    "matches": matches,
+                    "truncated": total > limit,
+                })
+            }
+        };
+
+        // §11.34's standing verdict, through the ONE cached door — see `Engine::status`, which takes the
+        // same one. A `stat(2)` short-circuits the 2.566 ms re-parse while the file is untouched.
+        if let Some(stale) = self.listing_freshness_now().and_then(|f| f.caveat()) {
+            out["caveat"] = json!(stale);
+        }
+        Ok(out)
     }
 
     fn load_symbols(&mut self, params: &Value) -> Result<Value, RpcError> {

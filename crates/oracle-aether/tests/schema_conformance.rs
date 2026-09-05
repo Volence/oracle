@@ -28,7 +28,8 @@
 mod common;
 
 use common::schema::{
-    check_incoming, check_incoming_strict, divergence_report, schemas, KNOWN_CONTRACT_DIVERGENCES,
+    check_incoming, check_incoming_strict, compile_fragment, divergence_report, schema_root,
+    schemas, vectors_root, KNOWN_CONTRACT_DIVERGENCES,
 };
 use oracle_aether::engine::METHODS;
 use serde_json::{json, Value};
@@ -216,6 +217,179 @@ fn the_vendored_schema_is_the_blob_provenance_pins() {
          a copy whose provenance is worthless — or a re-vendor landed without updating the sidecar. \
          PROVENANCE.md carries the recipe.",
         pin("revision")
+    );
+}
+
+/// **The same step 0, for the second vendored artifact** — the contract's own wire vectors (§11.36).
+///
+/// Vendored for the first time in the CR-M parcel, and pinned by the same content address for the same
+/// reason: a vector file read out of a peer's working tree proves nothing attributable, and one that is
+/// hand-edited here proves less than nothing.
+#[test]
+fn the_vendored_vectors_are_the_blob_provenance_pins() {
+    let vendored = common::schema::VENDORED_VECTORS.as_bytes();
+    let want_blob = pin("vectors.blob");
+    let want_bytes: usize = pin("vectors.bytes")
+        .parse()
+        .expect("pin.vectors.bytes is a number");
+    let got_blob = git_blob_hash(vendored);
+    eprintln!(
+        "RESULT ok step=0-pin artifact=vectors blob={got_blob} bytes={} revision={}",
+        vendored.len(),
+        pin("vectors.revision")
+    );
+    assert_eq!(vendored.len(), want_bytes);
+    assert_eq!(
+        got_blob, want_blob,
+        "the vendored vectors hash to {got_blob}; PROVENANCE.md pins blob {want_blob}"
+    );
+    // The two artifacts are pinned at ONE revision, deliberately. They are adopted together — §11.36 is
+    // one commit carrying both — and a schema pinned at one revision beside vectors pinned at another is
+    // a gate asserting that a fragment accepts documents written for a different fragment.
+    assert_eq!(
+        pin("vectors.revision"),
+        pin("revision"),
+        "the schema and the vectors must be pinned at the SAME contract revision"
+    );
+}
+
+/// **The contract's own vectors, run** — upstream's G3 and G4, replicated against the vendored copies.
+///
+/// This is what makes vendoring the vectors worth the bytes. Every `expect: "pass"` case must validate
+/// against the fragment its `method`/`kind` names, and — the half that matters — **every
+/// `expect: "fail"` case must be REFUSED**. A fail-vector the schema accepts is upstream's own word for
+/// what it means: *"this fragment is vacuous here"*. Our previous position was that the schema's shapes
+/// were checked only by the replies this server happens to emit, which cannot witness a refusal the
+/// server never attempts.
+///
+/// Server-emitted payloads (a `result`, or an event's `params`) are merged with the vectors file's own
+/// envelope before validation, exactly as upstream's runner does, and then re-validated under §8 item
+/// 20's closure — the keyword that lives in the harness and never in the published artifact.
+///
+/// **What this cannot witness**, so nobody reads its green as more: it is a document check. It says
+/// nothing about whether this server ever emits any of these shapes. `emulator/lookup_equate`'s live
+/// obligations are `tests/symbols_path.rs`-shaped and live in `tests/methods.rs`.
+#[test]
+fn the_contracts_own_vectors_pass_and_fail_exactly_as_declared() {
+    let schema = schema_root();
+    let vectors = vectors_root();
+    let cases = vectors["cases"]
+        .as_array()
+        .expect("vectors.cases is an array");
+
+    let mut passed = 0usize;
+    let mut refused = 0usize;
+    let mut closed_ok = 0usize;
+    let mut per_method: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut failures: Vec<String> = Vec::new();
+
+    for case in cases {
+        let method = case["method"].as_str().expect("case.method");
+        let kind = case["kind"].as_str().expect("case.kind");
+        let expect = case["expect"].as_str().expect("case.expect");
+        let group = case
+            .get("group")
+            .and_then(Value::as_str)
+            .unwrap_or("methods");
+        let why = case.get("why").and_then(Value::as_str).unwrap_or("");
+        let label = format!("{method} {kind} [{group}] ({why})");
+        *per_method.entry(method).or_default() += 1;
+
+        // A server-EMITTED payload travels inside the reply (or event) envelope; a `params` document is
+        // the bare request object.
+        let emitted = kind == "result" || group == "events";
+        let mut doc = case["doc"].clone();
+        if emitted {
+            let envelope = if group == "events" {
+                &vectors["eventEnvelope"]
+            } else {
+                &vectors["envelope"]
+            };
+            let mut merged = envelope
+                .as_object()
+                .cloned()
+                .expect("envelope is an object");
+            for k in case
+                .get("envelopeDrop")
+                .and_then(Value::as_array)
+                .unwrap_or(&Vec::new())
+            {
+                merged.remove(k.as_str().expect("envelopeDrop entry is a string"));
+            }
+            for (k, v) in doc.as_object().expect("case.doc is an object") {
+                merged.insert(k.clone(), v.clone());
+            }
+            doc = Value::Object(merged);
+        }
+
+        let Some(fragment) = schema
+            .get(group)
+            .and_then(|g| g.get(method))
+            .and_then(|f| f.get(kind))
+        else {
+            failures.push(format!("{label}: no fragment in the vendored schema"));
+            continue;
+        };
+        let open = compile_fragment(fragment, &label, false);
+        let accepted = open.is_valid(&doc);
+        match expect {
+            "pass" => {
+                if accepted {
+                    passed += 1;
+                    if emitted {
+                        if compile_fragment(fragment, &label, true).is_valid(&doc) {
+                            closed_ok += 1;
+                        } else {
+                            failures.push(format!(
+                                "{label}: §8 item 20's closure rejects a PASS vector — it carries a key \
+                                 its fragment never declared"
+                            ));
+                        }
+                    }
+                } else {
+                    let first = open
+                        .iter_errors(&doc)
+                        .next()
+                        .map_or_else(|| "?".to_string(), |e| e.to_string());
+                    failures.push(format!("{label}: expected to validate, got {first}"));
+                }
+            }
+            "fail" => {
+                if accepted {
+                    failures.push(format!(
+                        "{label}: expected REJECTION, the schema ACCEPTED it — this fragment is vacuous \
+                         here"
+                    ));
+                } else {
+                    refused += 1;
+                }
+            }
+            other => failures.push(format!("{label}: unknown expect {other:?}")),
+        }
+    }
+
+    eprintln!(
+        "RESULT vectors cases={} pass={passed} fail={refused} closed={closed_ok} methods={}",
+        cases.len(),
+        per_method.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} of {} contract vectors did not behave as declared:\n  {}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n  ")
+    );
+    // Anti-vacuity for the runner ITSELF: a loop that validated nothing would report zero failures and
+    // read as a clean sweep. Both halves must be non-empty, and the ten §11.36 rows must be among them.
+    assert!(
+        passed > 0 && refused > 0,
+        "the vector runner checked nothing"
+    );
+    assert_eq!(
+        per_method.get("emulator/lookup_equate").copied(),
+        Some(10),
+        "§11.36 adopted ten lookup_equate vectors; the vendored file must carry all ten"
     );
 }
 

@@ -79,6 +79,37 @@ use std::sync::OnceLock;
 /// with no `empyrean/` checkout. `tests/schema_conformance.rs` proves the copy is fresh.
 pub const VENDORED_SCHEMA: &str = include_str!("../contract/bus-protocol.schema.json");
 
+/// **The contract's own wire vectors, vendored beside the schema** (first vendored 2026-09-05, §11.36).
+///
+/// The schema says what a shape *is*; the vectors say which concrete documents the hub asserts it accepts
+/// and — the half that matters — which it asserts it **refuses**. Vendoring the schema alone left this
+/// repo able to compile a fragment that accepts everything and call the result conformance. `PROVENANCE.md`
+/// pins these bytes by blob exactly as it pins the schema's, and
+/// `schema_conformance::the_contracts_own_vectors_pass_and_fail_exactly_as_declared` runs them.
+pub const VENDORED_VECTORS: &str = include_str!("../contract/vectors.json");
+
+/// The vectors document, parsed once.
+pub fn vectors_root() -> &'static Value {
+    static V: OnceLock<Value> = OnceLock::new();
+    V.get_or_init(|| {
+        serde_json::from_str(VENDORED_VECTORS)
+            .expect("the vendored contract vectors must be valid JSON")
+    })
+}
+
+/// Compile one fragment out of the vendored schema, optionally under §8 item 20's closure.
+///
+/// The public door onto [`with_defs`]/[`closed`] for the vector runner, which needs `params` fragments
+/// (never closed here — the closure is already *written into* every `params` fragment upstream, §2.5) as
+/// well as `result` and event `params` fragments (closed, item 20).
+pub fn compile_fragment(fragment: &Value, what: &str, close: bool) -> Validator {
+    if close {
+        compile(&closed(fragment), what)
+    } else {
+        compile(fragment, what)
+    }
+}
+
 /// The schema root, parsed once.
 pub fn schema_root() -> &'static Value {
     static ROOT: OnceLock<Value> = OnceLock::new();
