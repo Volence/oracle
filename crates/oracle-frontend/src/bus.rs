@@ -34,7 +34,7 @@ use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use oracle_core::watchpoints::Watchpoints;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::PathBuf;
 
 /// What the bus should know about the loaded cartridge — the ROM's path, and the listing bound to it (D7).
@@ -347,197 +347,29 @@ impl Bus {
 
     // ---------------------------------------------------------------- spawn mode (LIVE-OBJECTS)
 
-    /// **Every archetype a click could place**, out of the listing this engine resolves against.
+    /// **Every archetype a click could place**, and **where a click puts one** — both delegated.
     ///
-    /// One `Host::call` to `emulator/lookup_symbol`'s bounded prefix search — the row §11.32 §9.1 names
-    /// as already being the archetype catalogue, which is why no catalogue row was proposed. Nothing is
-    /// hard-coded here and nothing is cached: `load_symbols` may be called at any point after the
-    /// handshake, so the list is read at the moment the mode is armed and the mode is disarmed whenever
-    /// the machine's listing changes.
+    /// ⚑ **The bodies moved to [`spawn`] at the migration's S0** (`crates/oracle-frontend/src/lib.rs`),
+    /// because `oracle-player`'s Screen tab needs the identical choreography and a second copy of it is
+    /// exactly the drift CR-K's `reload_rom` ruling exists to prevent — *"the two cannot answer one client
+    /// differently about one file in one millisecond."* What is left here is the adapter: this window's
+    /// `Host` supplying [`spawn::Caller`]'s two operations.
     ///
-    /// Every failure comes back as the server's own words (`-32012` *you forgot to load symbols* against
-    /// `-32013` *this build has no such name* is exactly the distinction a person hits here, and §8.2
-    /// keeps them apart on purpose).
+    /// See [`spawn::archetypes`], [`spawn::act_bounds`] and [`spawn::place`] for the argument behind every
+    /// branch — the discovery-not-a-catalogue rule, the resolve-by-name-every-time rule, the act-bounds
+    /// gate and the refused-rather-than-clamped ruling all live with the code now.
     pub fn archetypes(&mut self, sys: &mut System) -> Result<spawn::Archetypes, spawn::Refusal> {
-        let v = self.call(
-            sys,
-            "emulator/lookup_symbol",
-            json!({"name": spawn::ARCHETYPE_PREFIX}),
-        )?;
-        // The exact branch: a symbol literally named `ObjDef_`. Vanishingly unlikely and handled anyway,
-        // because the alternative is an empty list from a reply that found something.
-        if v["exact"] == json!(true) {
-            let name = v["name"].as_str().unwrap_or_default().to_string();
-            return Ok(spawn::Archetypes {
-                total: 1,
-                names: vec![name],
-            });
-        }
-        let page = &v["otherMatches"];
-        let names: Vec<String> = page["items"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| m["name"].as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        // `total` from the envelope, not from `names.len()` — the two differ exactly when the search was
-        // cut, which is the case the note exists for.
-        let total = page["total"].as_u64().unwrap_or(names.len() as u64) as usize;
-        Ok(spawn::Archetypes { names, total })
+        spawn::archetypes(&mut HostCaller { bus: self, sys })
     }
 
-    /// **The act's pixel extent, read out of the machine right now.**
-    ///
-    /// ⚑ **Both addresses are resolved BY NAME on every call and never cached**, which is the rule §11.26
-    /// was amended to impose on `Camera_X` after it was found to *move between build shapes*. These move
-    /// too, and further: measured on this box, `Level_Width` is `$FFFFBABE` in `s4.lst` and `$FFFFE95C` in
-    /// `s4.debug.lst`. A cached address does not fault in the other shape — it returns a number, and a
-    /// number is what this check compares against.
-    ///
-    /// The two symbols are resolved **independently**, not as one 4-byte read off the first. They are
-    /// adjacent in every listing seen so far and that is a fact about a declaration order this crate does
-    /// not own; an implementation that assumed it would keep working right up until aeon inserted a field.
-    ///
-    /// Every failure is the **window's own** refusal (`code: None`), matching the sibling case in
-    /// [`Self::spawn_at`]: a build without `Camera_X` already gets a local sentence rather than a
-    /// coordinate, and a build without `Level_Width` is the same shape of unmeasurable.
-    pub fn act_bounds(&mut self, sys: &mut System) -> Result<spawn::Bounds, spawn::Refusal> {
-        let addrs = self.host.symbols().and_then(|t| {
-            Some((
-                t.address_of(spawn::LEVEL_WIDTH_SYMBOL)?,
-                t.address_of(spawn::LEVEL_HEIGHT_SYMBOL)?,
-            ))
-        });
-        // Both or neither. Half an extent is not a smaller measurement, it is no measurement — and the
-        // half that resolved would be the more dangerous of the two, because a check on one axis looks
-        // like a check.
-        let (wa, ha) = match addrs {
-            Some(p) => p,
-            None => return Err(spawn::Bounds::unmeasurable()),
-        };
-        Ok(spawn::Bounds {
-            width: u32::from(self.read_u16(sys, wa)?),
-            height: u32::from(self.read_u16(sys, ha)?),
-        })
-    }
-
-    /// One word out of work RAM, through the same handler a socket client reads with.
-    fn read_u16(&mut self, sys: &mut System, addr: u32) -> Result<u16, spawn::Refusal> {
-        let r = self.call(
-            sys,
-            "emulator/read_memory",
-            json!({"addr": format!("0x{addr:08X}"), "len": 2}),
-        )?;
-        // `bytes` is the reply's `0xXXXX`. A reply that cannot be parsed is refused rather than defaulted
-        // to zero: a silent `0` here would read as "no act loaded" and send the person hunting for an act
-        // that is already running.
-        r["bytes"]
-            .as_str()
-            .and_then(|s| u16::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok())
-            .ok_or_else(|| {
-                spawn::Refusal::local(format!(
-                    "the window could not read the act extent at {addr:#010X}: \
-                     emulator/read_memory answered {:?}, which is not a word",
-                    r["bytes"]
-                ))
-            })
-    }
-
-    /// **Place `archetype` where the window was clicked.**
-    ///
-    /// Three calls, because the click is in *screen* dots, the mailbox wants *world* pixels, and the act
-    /// has an edge that the mailbox will not defend:
-    ///
-    /// 1. `emulator/object_at`, whose `world{x,y}` is `Camera_X`/`Camera_Y` plus the dot (§11.26 M3, and
-    ///    the join §11.32 §11 names as the GUI's one extra dependency). It is a pure read and needs no
-    ///    pause.
-    /// 2. [`Self::act_bounds`], which reads `Level_Width`/`Level_Height` by name and is what makes a click
-    ///    outside the level a **sentence** instead of an ack followed by a silent cull
-    ///    (`F-SPAWN-OUTSIDE-ACT`; see the gate's own comment below for why it is refused rather than
-    ///    clamped, and why it lives here rather than in the engine).
-    /// 3. `emulator/object_spawn { defSymbol, x, y }`, which is where the pause requirement, the mailbox
-    ///    handshake and all five engine refusals live.
-    ///
-    /// **The `world` half is refused rather than guessed.** §11.26 makes `worldSource` a field precisely
-    /// so its absence is not inferred from a missing `world`, and a build without the camera symbols gets
-    /// a sentence instead of a coordinate — a spawn at the raw dot would land somewhere plausible and
-    /// wrong, which is the failure class this whole row is written against.
-    ///
-    /// **UNMEASURED, and named rather than assumed** (§11.32 §11's own flag): that `object_at`'s world
-    /// space is the same flat world-pixel space `Obj_Req_X`/`Y` want. Aeon states it is *"the same
-    /// convention as `Warp_Req_X/Y`"*; nothing in this repo has confirmed the two agree against a running
-    /// game, and if they do not, this needs a conversion that no CR has specified.
+    /// Place `archetype` where the window was clicked — see [`spawn::place`].
     pub fn spawn_at(
         &mut self,
         sys: &mut System,
         archetype: &str,
         dot: (u16, u16),
     ) -> Result<spawn::Placed, spawn::Refusal> {
-        let (dx, dy) = dot;
-        let at = self.call(sys, "emulator/object_at", json!({"x": dx, "y": dy}))?;
-        let source = at["worldSource"].as_str().unwrap_or("unavailable");
-        let world = match (source, at["world"]["x"].as_u64(), at["world"]["y"].as_u64()) {
-            ("camera", Some(x), Some(y)) => (x as u32, y as u32),
-            _ => {
-                return Err(spawn::Refusal::local(format!(
-                    "this build cannot turn a click into a world position (object_at answered \
-                     worldSource={source:?}): `Camera_X` and `Camera_Y` are not both in the loaded \
-                     listing, and spawning at the raw screen dot ({dx},{dy}) would place the object \
-                     somewhere plausible and wrong"
-                )))
-            }
-        };
-        // --- THE ACT-BOUNDS GATE (`F-SPAWN-OUTSIDE-ACT`) --------------------------------------------
-        //
-        // A click outside the level used to be **acked as placed and then silently culled**: aeon's
-        // `RunObjects` drops an out-of-act object on camera distance and does nothing — no error, no
-        // refusal, nothing on screen. That is the exact failure class this whole module is written
-        // against, arriving through the one path that returns success, so it is caught here, on the side
-        // that holds the click.
-        //
-        // **It is ours and it is window-side on purpose.** aeon deliberately added no clamp and no
-        // refusal to the mailbox rather than pre-empt this design by making the engine quietly do half of
-        // it, so `emulator/object_spawn` will accept this request without complaint. Nothing below this
-        // line is allowed to be the thing that stops it.
-        //
-        // **Refused, not clamped.** The booking allowed either. A clamp moves the object away from where
-        // the person clicked and then reports success with coordinates — which, given §11.32's ruling that
-        // the reply's `x`/`y` are a *re-read*, would print a perfectly plausible line about an object
-        // sitting at the level edge for reasons nothing on the glass explains. That is a smaller lie of
-        // the same family as the defect, and there is no rule for which edge to snap to that preserves
-        // what the click meant. A refusal costs one gesture and says why.
-        //
-        // **Ordering.** This sits after the world join and before the mailbox, so an unresolvable click
-        // is still refused for *that* reason first. It does run before the server's `paused` precondition,
-        // so an out-of-act click on a running machine reads "outside the act" rather than "press Space" —
-        // both true, and the one the person can act on without pausing first.
-        let bounds = self.act_bounds(sys)?;
-        if bounds.no_act_loaded() {
-            return Err(spawn::Bounds::no_act());
-        }
-        if !bounds.contains(world.0, world.1) {
-            return Err(bounds.outside(world.0, world.1));
-        }
-
-        let placed = self.call(
-            sys,
-            "emulator/object_spawn",
-            json!({"defSymbol": archetype, "x": world.0, "y": world.1}),
-        )?;
-        Ok(spawn::Placed {
-            handle: placed["handle"].as_str().unwrap_or_default().to_string(),
-            addr: placed["addr"].as_str().unwrap_or_default().to_string(),
-            slot: placed["slot"].as_i64(),
-            asked: world,
-            now: (
-                placed["x"].as_i64().unwrap_or_default(),
-                placed["y"].as_i64().unwrap_or_default(),
-            ),
-            frames_advanced: placed["framesAdvanced"].as_u64().unwrap_or_default(),
-            caveat: placed["caveat"].as_str().map(str::to_string),
-        })
+        spawn::place(&mut HostCaller { bus: self, sys }, archetype, dot)
     }
 
     /// One synchronous in-process dispatch, with the error translated into this crate's vocabulary and
@@ -574,6 +406,30 @@ impl Bus {
                 remedy: None,
             }
         })
+    }
+}
+
+/// This window supplying [`spawn::Caller`] — the whole of what the shared spawn choreography needs from a
+/// window, and nothing else.
+///
+/// It borrows the `Bus` and the `System` together because [`Bus::call`] needs both and the choreography
+/// takes neither: it is written against "dispatch a method" and "resolve a symbol", which is what lets
+/// `oracle-player` supply the same two operations from a `Host` it hosts differently.
+struct HostCaller<'a> {
+    bus: &'a mut Bus,
+    sys: &'a mut System,
+}
+
+impl spawn::Caller for HostCaller<'_> {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, spawn::Refusal> {
+        self.bus.call(self.sys, method, params)
+    }
+
+    /// **Resolved off the engine's own listing, every call.** `Bus::symbols` is the engine's table rather
+    /// than a copy, so this cannot answer from a listing a `load_symbols` has already replaced — which is
+    /// the rule [`spawn::act_bounds`] depends on and states.
+    fn address_of(&mut self, symbol: &str) -> Option<u32> {
+        self.bus.host.symbols().and_then(|t| t.address_of(symbol))
     }
 }
 

@@ -5,14 +5,25 @@ edition.workspace = true
 license.workspace = true
 description = "Live windowed frontend for the oracle-core Genesis emulation core — window + keyboard + gamepad, no I/O in the core."
 
+# The binary is the minifb game window; the lib (`src/lib.rs`) is the part of it `oracle-player` consumes
+# while the migration onto the toolkit is in flight. The bin is gated on the `window` feature below so the
+# lib's consumers do not link a windowing library to reach `present`/`pick`.
+[[bin]]
+name = "oracle-frontend"
+path = "src/main.rs"
+required-features = ["window"]
+
 [dependencies]
 oracle-core = { path = "../oracle-core" }
-minifb = "0.28"
+# **Optional, behind the default-on `window` feature.** Nothing in `src/lib.rs`'s module set touches any of
+# these three; they exist for `main.rs` and `icon.rs`, which are the binary. Gating them is what answers the
+# standing objection to this crate having a lib target at all — see `src/lib.rs`'s "The `window` feature".
+minifb = { version = "0.28", optional = true }
 # Window identity (icon + WM class) — both already in the tree as minifb's own dependencies, promoted to
 # direct so `icon.rs` can match on the raw window handle and call `XSetClassHint` on minifb's Display. No new
 # crate enters the lock file.
-raw-window-handle = "0.6"
-x11-dl = "2.21"
+raw-window-handle = { version = "0.6", optional = true }
+x11-dl = { version = "2.21", optional = true }
 # Real-time audio (Phase SY-5) — frontend-only; pulls the core's opt-in synth, an SPSC ring, and the
 # host output stream. All three are optional and confined to the frontend `audio` feature.
 ringbuf = { version = "0.4", optional = true }
@@ -39,7 +50,11 @@ serde_json = { version = "1", optional = true }
 serde_json = "1"
 
 [features]
-default = ["audio", "gamepad", "aether"]
+default = ["audio", "gamepad", "aether", "window"]
+# The minifb window itself — the `oracle-frontend` binary and nothing else. On by default, so building or
+# testing this crate is unchanged; off, the crate is the lib alone and links no windowing library. The bin's
+# `required-features` above is what makes "off" mean "no binary" rather than "a binary that will not link".
+window = ["dep:minifb", "dep:raw-window-handle", "dep:x11-dl"]
 # Turns on the core's native synth (AudioSink), the SPSC-ring substrate, and the cpal host output stream.
 audio = ["dep:ringbuf", "dep:cpal", "oracle-core/synth"]
 # Turns on host gamepad polling (gilrs). Off → keyboard-only, exactly as before this feature existed.
