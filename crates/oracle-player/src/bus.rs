@@ -1613,14 +1613,19 @@ mod masked_picture {
         }
     }
 
-    /// **A client-driven frame is masked too** — one window, one rule for what it is showing.
+    /// **An unmasked picture on the glass is masked by the next drain**, whatever put it there —
+    /// `adopt_frame`'s client frame included, since the engine's latched frame is composed by
+    /// `render_scanline` and is therefore unmasked by construction.
     ///
-    /// `adopt_frame` takes the engine's latched frame, which is composed by `render_scanline` and is
-    /// therefore unmasked. The masked re-render sits *after* it in [`drain`], so the order is what makes
-    /// this true; running the mask before the adoption would leave exactly one kind of frame — the one a
-    /// client asked for — ignoring `emulator/set_layer_enabled`.
+    /// ⚠ **This row does NOT pin the ordering inside [`drain`], and the first draft claimed it did.**
+    /// Measured: moving the masked re-render *ahead* of `screen_changed`'s adoption left this green,
+    /// because the adoption here is performed by the test rather than by that branch, so the drain under
+    /// test sees `screen_changed == false` and only ever runs one of the two. The row that does pin it is
+    /// `pumped::a_client_driven_frame_reaches_the_glass_already_masked`, which drives a real client over a
+    /// real socket and asserts on `Machine::image_mask` — the field the two orderings write in the two
+    /// different orders. What is left here is still worth having, and it is what the name now says.
     #[test]
-    fn a_client_driven_frame_is_masked_as_well() {
+    fn an_unmasked_picture_on_the_glass_is_masked_by_the_next_drain() {
         let (mut machine, mut bus) = rig();
         assert!(machine.render_masked(LayerMask::ALL));
         let plane_dot = dot(&machine, 2, 2);
@@ -2164,6 +2169,86 @@ pub mod pumped {
             totals.add(iterate(machine, bus, cache, paused));
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    /// ★ **A client-driven frame reaches the glass ALREADY MASKED (S2a), and this is the row that pins the
+    /// ORDERING inside [`drain`].**
+    ///
+    /// `Host::framebuffer` hands over the engine's *latched* frame, composed during the client's own run by
+    /// `render_scanline` — the render that takes no mask and must never gain one. So an adopted frame is
+    /// unmasked by construction, and the masked re-derivation has to come **after** the adoption or exactly
+    /// one kind of frame — the one a client asked for — would ignore `emulator/set_layer_enabled`. One
+    /// window, two rules for what it is showing.
+    ///
+    /// **The assertion is on `Machine::image_mask`, not on pixels**, and that is what makes it an ordering
+    /// row rather than a masking row: both orderings mask *something*, and only the one that masks last
+    /// leaves the picture recording the mask it was drawn under. Written the other way round — the mask
+    /// applied ahead of `screen_changed` — this goes red on the adoption's own `LayerMask::ALL`.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    ///
+    /// 1. *This loop drew the picture itself.* The client pauses the window (it has no choice: `run_frames`
+    ///    is refused against a running machine), so `machine.frames() == 0` says no frame of ours ran.
+    /// 2. *The fixture started with a picture.* Checked before the client is spawned.
+    /// 3. *The mask was never set.* `bus.layers().hidden()` is read back off the engine afterwards.
+    /// 4. *A later, non-adopting drain masked it.* [`turn_until`] stops on the **adopting** iteration, so
+    ///    the last drain to touch the picture is the one under test.
+    #[test]
+    fn a_client_driven_frame_reaches_the_glass_already_masked() {
+        use oracle_core::render::LayerMask;
+
+        let (mut machine, mut bus, socket) = served("masked-adopt", MachineInfo::default(), true);
+        assert!(
+            machine.image().is_none() && machine.image_mask().is_none(),
+            "the fixture already had a picture, so the mask below would witness nothing"
+        );
+
+        let client = std::thread::spawn(move || {
+            let mut c = Client::connect(&socket);
+            c.handshake();
+            c.ok(
+                "emulator/set_layer_enabled",
+                json!({"layer": "planeA", "enabled": false}),
+            );
+            c.ok("emulator/run_frames", json!({"frames": 2}))
+        });
+
+        let (mut paused, mut cache, mut totals) = (true, Cache::default(), Totals::default());
+        turn_until(
+            &mut machine,
+            &mut bus,
+            &mut cache,
+            &mut paused,
+            &mut totals,
+            "the client's run never reached the window's picture",
+            |t, _| t.picture > 0,
+        );
+        let reply = client.join().expect("the client thread");
+
+        assert_eq!(reply["frames"], json!(2), "the client's run really ran");
+        assert_eq!(
+            machine.frames(),
+            0,
+            "this loop ran a frame of its own, so the picture below is not evidence of anything"
+        );
+        let mask = bus.layers();
+        assert_eq!(
+            mask.hidden(),
+            vec!["planeA"],
+            "the client's mask never landed, so there is nothing for the picture to honour"
+        );
+        assert!(
+            machine.image().is_some(),
+            "the client ran two frames and the window is still showing nothing"
+        );
+        assert_eq!(
+            machine.image_mask(),
+            Some(mask),
+            "the adopted frame reached the glass UNMASKED. `screen_changed`'s adoption writes \
+             LayerMask::ALL, so this is what a masked re-render placed AHEAD of it looks like: the \
+             client's own frame is the one frame that ignores the mask."
+        );
+        assert_ne!(machine.image_mask(), Some(LayerMask::ALL));
     }
 
     /// ★ **The picture follows a client's run.** Design §5.6.2's picture-after-a-step bullet, and the half
