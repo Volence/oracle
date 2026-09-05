@@ -72,6 +72,11 @@ pub mod audio;
 // The self-contained 5x7 bitmap font and its clipping canvas. `minifb` presents a raw pixel buffer and has
 // no text rendering whatsoever; a toolkit consumer does not need this, but `present` documents against it.
 pub mod font;
+// The window's desktop identity — the embedded Oracle mark and the WM class. **Both windows' icon, from
+// one blob.** The data half (decode, `rgba8`, `net_wm_icon`) is always compiled; `apply`, which takes a
+// `minifb::Window`, is behind the `window` feature, so `oracle-player` reaches the mark without linking a
+// windowing library. See the module header for why it is here rather than in the binary.
+pub mod icon;
 // Click-to-watch: resolving a clicked dot to armable VRAM/CRAM ranges, sprites included. **Keep this module
 // and the `oracle-aether` edge in one compilation unit** — see the module doc above.
 pub mod pick;

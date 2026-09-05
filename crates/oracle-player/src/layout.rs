@@ -721,6 +721,85 @@ mod tests {
         }
     }
 
+    /// ★★ **The owner-visible claim of the panel-selection row: a panel he closed is still closed the
+    /// next time he opens the window.**
+    ///
+    /// The nav can now turn panels off as well as on, and a *selection* that does not survive a restart
+    /// is not a selection — it is a per-session fidget, and it would be reported as the feature not
+    /// working. Nothing new is needed to make it hold, because a closed panel is simply a tab absent from
+    /// the `DockState` and this module already persists the `DockState`; what was missing is anything
+    /// that says so, and this is it.
+    ///
+    /// ⚠ *If this went green for a reason other than the round trip working, what would it be?*
+    ///
+    /// 1. **The saved layout being the default**, so "Objects is closed" was never in it. Ruled out: the
+    ///    pre-state is asserted to differ from [`ui::initial_dock`], and `Objects` is asserted present
+    ///    there and absent here.
+    /// 2. **`load` ignoring storage and handing back the default**, which would restore all eight and is
+    ///    the failure this test is *for*. It fails on the `occurrences` line.
+    /// 3. **Every tab being closed**, making "closed after a restart" vacuously easy. Ruled out: the
+    ///    other seven are asserted to survive in exactly the number they had.
+    #[test]
+    fn a_panel_the_human_closed_is_still_closed_after_a_restart() {
+        let mut dock = ui::initial_dock();
+        assert_eq!(crate::nav::occurrences(&dock, Tab::Objects), 1);
+
+        // Through the menu's own action, not a hand-rolled removal — the thing that must survive is what
+        // the shipped control does.
+        assert_eq!(
+            crate::nav::apply(&mut dock, crate::nav::Action::Hide(Tab::Objects)),
+            crate::nav::Done::Closed
+        );
+        assert_eq!(crate::nav::occurrences(&dock, Tab::Objects), 0);
+        assert_ne!(
+            shape(&dock),
+            shape(&ui::initial_dock()),
+            "the layout saved below is the default, so restoring it proves nothing"
+        );
+
+        let mut store = MemStorage::default();
+        save(&mut store, &dock);
+        let (got, outcome) = load(Some(&store));
+        assert_eq!(outcome, Outcome::Restored);
+        assert_eq!(
+            crate::nav::occurrences(&got, Tab::Objects),
+            0,
+            "the panel the human closed came back on the next run. A selection that does not survive a \
+             restart reads as the feature not working."
+        );
+        assert_eq!(
+            crate::nav::state_of(&got, Tab::Objects),
+            crate::nav::State::Closed
+        );
+        assert_eq!(shape(&got), shape(&dock));
+        for t in Tab::ALL.into_iter().filter(|t| *t != Tab::Objects) {
+            assert_eq!(
+                crate::nav::occurrences(&got, t),
+                1,
+                "{t:?} did not survive the round trip, so 'still closed' here is vacuous"
+            );
+        }
+    }
+
+    /// **And the way back survives too**: the reset row's layout is the one a fresh install gets, and it
+    /// round-trips as such — so a human who resets and quits does not find yesterday's whittled layout
+    /// waiting for him.
+    #[test]
+    fn a_layout_the_reset_row_restored_round_trips_as_the_default() {
+        let mut dock = rearranged();
+        assert_ne!(shape(&dock), shape(&ui::initial_dock()));
+        assert_eq!(
+            crate::nav::apply(&mut dock, crate::nav::Action::Reset),
+            crate::nav::Done::Reset
+        );
+
+        let mut store = MemStorage::default();
+        save(&mut store, &dock);
+        let (got, outcome) = load(Some(&store));
+        assert_eq!(outcome, Outcome::Restored);
+        assert_eq!(shape(&got), shape(&ui::initial_dock()));
+    }
+
     /// **The nav owes [`VOCABULARIES`] nothing, and this is where that is checked rather than asserted in
     /// prose.** The panel menu is drawn outside the `DockState` and adds no [`Tab`] variant, so the
     /// stored layout's alphabet is unchanged and no row is appended. If a future nav ever *does* become a
@@ -747,6 +826,50 @@ mod tests {
             ),
             "the newest vocabulary is not the eight panels the nav row shipped against; if a Tab was \
              added, this row is now a historical claim and should be moved, not edited"
+        );
+    }
+
+    /// ★ **The window's app id is the storage key, and it is also what a Wayland compositor matches to
+    /// find the icon. This is where those two facts are held together.**
+    ///
+    /// `src/main.rs` calls `ViewportBuilder::with_app_id(ui::APP_NAME)`. eframe chooses the RON file this
+    /// module reads and writes from `viewport.app_id`, falling back to the `run_native` name
+    /// (`eframe-0.36.1/src/native/glow_integration.rs:251` → `file_storage::storage_dir`); it also sends
+    /// that string as the Wayland `xdg_toplevel` app id, which is what `StartupWMClass` in the installed
+    /// `.desktop` entry has to equal for the window to wear the Oracle mark on a Wayland desktop.
+    ///
+    /// So a rename of [`ui::APP_NAME`] does **three** things at once: it renames the window, it moves the
+    /// saved layout to a directory nothing will look in again, and it breaks the icon match. None of the
+    /// three is a compile error and none is visible in a diff of one file. This test is the noise.
+    ///
+    /// **It is not a constant compared with a copy of itself.** The expectation is parsed out of the
+    /// checked-in `.desktop` file, which lives in another crate's `assets/` and is written in another
+    /// language — the two artifacts a human would otherwise have to remember are one pair.
+    #[test]
+    fn the_app_id_is_the_storage_key_and_the_desktop_entrys_wm_class() {
+        const ENTRY: &str = include_str!("../../oracle-frontend/assets/oracle-player.desktop");
+        let class = ENTRY
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("StartupWMClass="))
+            .map(str::trim)
+            .expect(
+                "oracle-player.desktop has no StartupWMClass line — without one a Wayland compositor \
+                 cannot match this window to the entry, and the icon falls back to a generic one",
+            );
+        assert_eq!(
+            class,
+            ui::APP_NAME,
+            "the .desktop entry names class `{class}` and the window reports `{}`. On Wayland that is a \
+             window with no Oracle icon; and because eframe also keys its storage directory off the app \
+             id, a change on the Rust side alone silently moves the saved layout as well.",
+            ui::APP_NAME
+        );
+        // The storage directory eframe derives from it, pinned in the one place that reads it back. A
+        // rename that updated both artifacts above and still wanted the old layout would land here.
+        assert_eq!(
+            ui::APP_NAME, "oracle-player",
+            "the layout already on disk lives under this name; renaming it is a layout-discarding change \
+             and should be made deliberately, not as a side effect of retitling the window"
         );
     }
 

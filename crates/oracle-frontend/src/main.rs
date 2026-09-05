@@ -305,8 +305,11 @@ mod bus;
 // test can reach it — `FRONTEND-LOOP-UNTESTABLE`. It lived inline here until a `rom_changed` branch was
 // found by hand to leave the cached symbol listing stale, with nothing in this crate able to catch it.
 mod drain;
-// The window's desktop identity: the embedded Oracle icon and its WM class.
-mod icon;
+// The window's desktop identity: the embedded Oracle icon and its WM class. ⚑ **Now this crate's `lib`,
+// not a module of this binary** — `oracle-player` wears the same mark, from the same blob, and a second
+// `include_bytes!` in a second crate would be a second place for the mark to live. `icon::apply` below is
+// unchanged: it is `#[cfg(feature = "window")]` over there, and this binary requires that feature.
+pub(crate) use oracle_frontend::icon;
 // "Open ROM..." — the browsable listing behind the palette's ROM picker, so a different game can be loaded
 // without leaving the window. Model only; the swap itself is in the run loop, beside the F5 reload it shares.
 mod rom_browser;

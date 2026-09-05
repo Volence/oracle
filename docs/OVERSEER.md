@@ -1063,6 +1063,16 @@ can leave someone walking left forever with nothing on screen able to say why.
 the placeholders are gone (saving a layout of placeholders buys a migration); `Tab::Registers` content is
 filler on purpose while the docking it exercises is real.
 
+> ⚑ **SUPERSEDED BY EVENTS, 2026-09-05 — do not brief from the sentence above.** Layout persistence is
+> **ON and has shipped**: `crates/oracle-player/src/layout.rs` (eframe `Storage`, RON, `LAYOUT_VERSION` in
+> its own key, discard-never-migrate), with `eframe/persistence` and `egui_dock/serde` in
+> `crates/oracle-player/Cargo.toml` and the cost argued in the manifest comment. The condition the
+> sentence names was met — the placeholders went — and the flag was turned on, but the line-item was left
+> reading as a standing decision. **A brief written from it told this lane that persistence was off and
+> that turning it on was a live choice, when the only real question left was whether anything asserted
+> the property.** The paragraph is kept verbatim because it is a record of what was settled *then*; this
+> note is what makes it safe to read. The live shape of the feature is `layout.rs`'s own header.
+
 ## ⚑ OWNER RULING, 2026-09-02T20:05:08Z — d-25 DOCK SHAPE: **option 3 `swap-toolkit`, NOT our recommendation**
 
 ⚑ **RELAYED (empyrean-c0, 2026-09-05), NOT WITNESSED HERE — verified firsthand at empyrean

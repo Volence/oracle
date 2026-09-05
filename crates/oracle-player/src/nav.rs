@@ -49,6 +49,49 @@
 //!   and the one the owner named, and its label is on the glass at all times, which is the property the
 //!   defect was about.
 //!
+//! # ⚑ Both directions, because one direction is not a selection
+//!
+//! The row above shipped this menu as **open-only**, and the owner's next sentence about the window was
+//! *"we still dont have a way to select which to open, theyre just open by default hopefully."* The menu
+//! he was looking at draws each row with [`egui::Ui::selectable_label`] and highlights the one in front —
+//! which is the shape of a checklist — and clicking a highlighted row did **nothing observable**, because
+//! [`reveal`] on an already-active tab focuses a leaf that was already focused. A control that looks like
+//! a toggle and refuses to toggle reads as broken whether or not anything is wrong underneath.
+//!
+//! Closing a panel was *technically* possible before this row: `egui_dock` draws a ✕ on every tab
+//! (`DockArea::show_close_buttons` defaults to `true`) and closes on a middle-click. That is worth saying
+//! plainly rather than claiming a capability was absent — but it is a control in the crowded tab bar,
+//! which is the exact place the owner could not find things, and it only ever offers the *active* tab of
+//! each leaf. What did not exist is **one list that names all eight and lets each be turned on and off**,
+//! which is what "select which to open" asks for.
+//!
+//! So a row's click now depends on where the panel stands, and the three cases are three different
+//! intents rather than one overloaded one:
+//!
+//! | state | click means | why not the other thing |
+//! |---|---|---|
+//! | [`State::Closed`] | put it back | — |
+//! | [`State::Hidden`] | bring it forward | closing a panel the human cannot even see is a gesture whose result is invisible |
+//! | [`State::Showing`] | **close it** | it is in front; there is nothing left for "bring forward" to do, and this is the missing half |
+//!
+//! Reaching *closed* from *hidden* is therefore two clicks, not one, and that is deliberate: the first
+//! click shows you what you are about to close.
+//!
+//! # The reset row, and what it quietly repairs
+//!
+//! Below a separator, [`RESET_LABEL`] puts [`ui::initial_dock`] back. It is the safety net that makes
+//! closing panels a safe gesture — without it, a layout whittled down to nothing has no way home short of
+//! deleting eframe's RON file by hand — and it is why nothing here refuses to close the last panel: an
+//! empty dock is recoverable, and the nav that recovers it is drawn in the top bar, outside the dock, so
+//! it cannot be one of the things that got closed.
+//!
+//! ⚑ It also closes the *practical* half of `F-NAV-COLLAPSED-LEAF`. That defect is **real and still
+//! open** — `Tree::node_update_collapsed`, `set_collapsed` and `is_collapsed` are all `pub(crate)` in
+//! `egui_dock-0.21.1` (re-verified for this row), so a collapsed leaf still cannot be expanded from here
+//! and a panel revealed into one is still behind a collapsed pane. What the reset row adds is a way out
+//! that does not need the upstream `pub`: `initial_dock()` has no collapsed leaves, so one click returns
+//! a human whose layout has become unusable to a layout that works.
+//!
 //! # Focus, never a second copy
 //!
 //! The owner's case was **panels that were open and behind other panels**. Opening a second copy of an
@@ -98,6 +141,13 @@ pub const PANELS_LABEL: &str = "panels";
 /// from the menu's own highlighting.
 pub const CLOSED_SUFFIX: &str = " (closed)";
 
+/// The label on the row that puts [`ui::initial_dock`] back.
+///
+/// A constant for the same reason as [`PANELS_LABEL`], **ASCII for the same reason**, and worded as an
+/// instruction rather than a noun ("reset…" not "default layout") because it is the one row in this menu
+/// that discards something the human arranged.
+pub const RESET_LABEL: &str = "reset to the default layout";
+
 /// Where a [`Tab`] stands relative to what the window is showing.
 ///
 /// Three states rather than a bool, because *behind another tab* and *not in the layout at all* are
@@ -124,6 +174,41 @@ pub enum Reveal {
     Reopened,
 }
 
+/// **What a click on a menu row means**, decided from that row's [`State`] alone.
+///
+/// A named value between the widget and the mutation, rather than the mutation happening inside the
+/// closure that drew the row. That is what lets [`Entry::action`] — *the same function the menu calls* —
+/// be checked against every state without a frame, a context or a window: the decision is the part that
+/// can be got wrong, and it is now separable from the paint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Bring this panel in front: it is closed, or docked behind a pane-mate.
+    Show(Tab),
+    /// Take this panel out of the layout: it is docked **and** in front, so there is nothing left for
+    /// [`Action::Show`] to do. This is the half the open-only menu did not have.
+    Hide(Tab),
+    /// Put [`ui::initial_dock`] back, discarding the human's arrangement.
+    Reset,
+}
+
+/// What [`apply`] did. A superset of [`Reveal`], because the menu now has two more outcomes to tell
+/// apart, and every one of them is a different sentence to a reader of a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Done {
+    /// [`Reveal::Focused`].
+    Focused,
+    /// [`Reveal::Reopened`].
+    Reopened,
+    /// The panel was docked and is not any more.
+    Closed,
+    /// [`Action::Hide`] on a panel that was not docked. **Cannot arise from the menu** — the row that
+    /// produces `Hide` is the row whose state is [`State::Showing`] — and exists so that `close` is
+    /// total rather than panicking on a caller who got there another way.
+    AlreadyClosed,
+    /// The default layout is back.
+    Reset,
+}
+
 /// One row the nav offers.
 ///
 /// `label` is [`Tab::title`] — *the same function* `egui_dock::TabViewer::title` returns, not a second
@@ -145,6 +230,31 @@ impl Entry {
         match self.state {
             State::Closed => format!("{}{CLOSED_SUFFIX}", self.label),
             _ => self.label.to_owned(),
+        }
+    }
+
+    /// **What clicking this row does** — the table in this module's header, as code.
+    ///
+    /// The whole of the menu's decision-making. [`bar`] draws a row, asks this, and hands the answer to
+    /// [`apply`]; there is no second place where a click is turned into a change, so
+    /// `every_row_of_the_menu_does_what_its_state_says` is checking the shipped rule and not a replica
+    /// of it.
+    pub fn action(&self) -> Action {
+        match self.state {
+            // In front already: the only move left is out of the layout.
+            State::Showing => Action::Hide(self.tab),
+            // Behind a pane-mate, or gone entirely: forward.
+            State::Hidden | State::Closed => Action::Show(self.tab),
+        }
+    }
+
+    /// The tooltip on this row. **It has to name the outcome**, because the three states share one
+    /// widget and the highlight alone cannot say that a click on the highlighted row removes the panel.
+    pub fn hint(&self) -> &'static str {
+        match self.state {
+            State::Showing => "in front — click to CLOSE it",
+            State::Hidden => "open, behind another tab in its pane — click to bring it forward",
+            State::Closed => "not in your layout — click to put it back",
         }
     }
 }
@@ -243,6 +353,42 @@ pub fn reveal(dock: &mut DockState<Tab>, tab: Tab) -> Reveal {
     Reveal::Reopened
 }
 
+/// **Take `tab` out of the layout.** The other half of [`reveal`], and the one the menu was missing.
+///
+/// Nothing here refuses to remove the last panel. An empty dock is a legitimate thing to want (the game
+/// screen closed and everything else with it is a perfectly good way to leave the window), it is not a
+/// state anything in this crate mishandles, and the affordance that undoes it — this very menu, plus
+/// [`Action::Reset`] — is drawn in the top bar, outside the `DockState`, so it survives its own emptiness.
+/// A guard here would be a rule the human did not ask for, defending against a state with an exit.
+///
+/// **One copy, not all of them.** `reveal` cannot create a duplicate (see this module's header) so there
+/// is at most one, and `occurrences` is what says so in the tests. Removing "all" would be code written
+/// against a state this crate maintains cannot occur, and it would hide the day it did.
+pub fn close(dock: &mut DockState<Tab>, tab: Tab) -> Done {
+    match dock.find_tab(&tab) {
+        Some(path) => {
+            dock.remove_tab(path);
+            Done::Closed
+        }
+        None => Done::AlreadyClosed,
+    }
+}
+
+/// **Carry out a menu [`Action`].** The one place a click becomes a change to the layout.
+pub fn apply(dock: &mut DockState<Tab>, action: Action) -> Done {
+    match action {
+        Action::Show(tab) => match reveal(dock, tab) {
+            Reveal::Focused => Done::Focused,
+            Reveal::Reopened => Done::Reopened,
+        },
+        Action::Hide(tab) => close(dock, tab),
+        Action::Reset => {
+            *dock = ui::initial_dock();
+            Done::Reset
+        }
+    }
+}
+
 /// The node of `dock` holding a tab that shares `tab`'s pane in [`ui::initial_dock`], if one is still
 /// docked.
 ///
@@ -272,26 +418,35 @@ fn home_leaf(dock: &DockState<Tab>, tab: Tab) -> Option<egui_dock::NodePath> {
 /// things it says only while a mouse is held over a button. That is the same call [`crate::screen`]'s
 /// header makes about panel bodies: report what is unconditionally on the glass.
 pub fn bar(ui: &mut egui::Ui, dock: &mut DockState<Tab>) -> Vec<screen::Run> {
-    let mut picked: Option<Tab> = None;
+    let mut picked: Option<Action> = None;
     ui.menu_button(PANELS_LABEL, |ui| {
         for entry in entries(dock) {
+            // The highlight marks the panel in front, and clicking a highlighted row un-highlights it by
+            // closing the panel — which is what a checklist row does and what the owner's report says he
+            // expected. `Entry::action` owns the rule; nothing about it is decided here.
             let response = ui
                 .selectable_label(entry.state == State::Showing, entry.menu_label())
-                .on_hover_text(match entry.state {
-                    State::Showing => "in front — this panel's body is drawing",
-                    State::Hidden => {
-                        "open, behind another tab in its pane — click to bring it forward"
-                    }
-                    State::Closed => "not in your layout — click to put it back",
-                });
+                .on_hover_text(entry.hint());
             if response.clicked() {
-                picked = Some(entry.tab);
+                picked = Some(entry.action());
                 ui.close();
             }
         }
+        ui.separator();
+        if ui
+            .button(RESET_LABEL)
+            .on_hover_text(
+                "put every panel back where this build starts them — discards the arrangement you made, \
+                 and is the way back from a layout you cannot use",
+            )
+            .clicked()
+        {
+            picked = Some(Action::Reset);
+            ui.close();
+        }
     });
-    if let Some(tab) = picked {
-        reveal(dock, tab);
+    if let Some(action) = picked {
+        apply(dock, action);
     }
     vec![screen::Run::label(PANELS_LABEL)]
 }
@@ -743,7 +898,11 @@ mod tests {
     /// worth the risk of the measurement it cannot take.
     #[test]
     fn the_navs_own_text_stays_inside_ascii() {
-        let mut text = format!("{PANELS_LABEL}{CLOSED_SUFFIX}");
+        // ⚑ Scope: text the nav DRAWS — the button, the row labels and their suffix. Tooltips are
+        // deliberately out, and always have been: `Entry::hint` carries an em dash, hover text is not on
+        // the glass unconditionally, and it is not part of `screen_text`'s readback. Widening the rule to
+        // cover it would be a new rule, not this one.
+        let mut text = format!("{PANELS_LABEL}{CLOSED_SUFFIX}{RESET_LABEL}");
         for &tab in Tab::ALL.iter() {
             text.push_str(tab.title());
         }
@@ -756,5 +915,256 @@ mod tests {
         }
         // The anti-vacuity clause: the string under test is the real one and is not empty.
         assert!(text.len() > PANELS_LABEL.len() + CLOSED_SUFFIX.len());
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Choosing which panels are open — the half the open-only menu did not have
+    // -----------------------------------------------------------------------------------------------
+
+    /// **Every leaf of every surface, as its tab list** — the layout's shape at the resolution this
+    /// module cares about.
+    ///
+    /// `entries()` sees only showing/hidden/closed, so two very different arrangements holding the same
+    /// eight tabs compare equal through it. That is exactly the hole a `Reset` that merely *reopened*
+    /// everything would slip through, so the reset test measures panes instead.
+    fn panes(dock: &DockState<Tab>) -> Vec<Vec<Tab>> {
+        let mut out = Vec::new();
+        for (_, surface) in dock.iter_surfaces_indexed() {
+            let Some(tree) = surface.node_tree() else {
+                continue;
+            };
+            for node in tree.iter() {
+                if let Node::Leaf(leaf) = node {
+                    out.push(leaf.tabs.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// ★★ **The gate: a menu row does what its state says, for all three states.**
+    ///
+    /// [`Entry::action`] is the whole of the menu's decision — [`bar`] draws a row, asks this, and hands
+    /// the answer to [`apply`] — so this is the shipped rule under test and not a restatement of it.
+    ///
+    /// ⚠ *If this went green for a reason other than the rule holding, what would it be?*
+    ///
+    /// 1. **Some state never occurring**, so its row is asserted against nothing. Ruled out by building
+    ///    each state from a real `DockState` and asserting the state first: `Showing` from the default
+    ///    layout, `Hidden` via [`hide`], `Closed` by removing the tab. All three are then checked to be
+    ///    three *different* states, so a `state_of` that collapsed two of them fails here.
+    /// 2. **The expectation being the implementation.** The table is written out literally, in the same
+    ///    order as this module's header states it; `Entry::action` is a `match` the test does not share.
+    #[test]
+    fn every_row_of_the_menu_does_what_its_state_says() {
+        let entry_for = |dock: &DockState<Tab>, tab: Tab| {
+            entries(dock)
+                .into_iter()
+                .find(|e| e.tab == tab)
+                .expect("every Tab has a row")
+        };
+
+        // Showing: the default layout's Screen leaf holds it alone, so it is its leaf's active tab.
+        let showing = entry_for(&ui::initial_dock(), Tab::Screen);
+        // Hidden: a pane-mate made active instead.
+        let mut d = ui::initial_dock();
+        hide(&mut d, Tab::Memory);
+        let hidden = entry_for(&d, Tab::Memory);
+        // Closed: taken out of the layout.
+        let mut d = ui::initial_dock();
+        let path = d.find_tab(&Tab::Objects).expect("docked by default");
+        d.remove_tab(path).expect("the tab just found");
+        let closed = entry_for(&d, Tab::Objects);
+
+        assert_eq!(showing.state, State::Showing);
+        assert_eq!(hidden.state, State::Hidden);
+        assert_eq!(closed.state, State::Closed);
+        // Three states, not one state fetched three ways.
+        assert_ne!(showing.state, hidden.state);
+        assert_ne!(hidden.state, closed.state);
+
+        assert_eq!(
+            showing.action(),
+            Action::Hide(Tab::Screen),
+            "a panel already in front has nothing left to bring forward; clicking its row must close it, \
+             which is the half the open-only menu did not have"
+        );
+        assert_eq!(
+            hidden.action(),
+            Action::Show(Tab::Memory),
+            "a panel the human cannot see must come forward first — closing it would be a gesture whose \
+             result is invisible"
+        );
+        assert_eq!(closed.action(), Action::Show(Tab::Objects));
+
+        // And the tooltip names the outcome, because the highlight alone cannot say "this closes it".
+        assert!(
+            showing.hint().contains("CLOSE"),
+            "the row that closes a panel does not say so: {:?}",
+            showing.hint()
+        );
+        assert_ne!(showing.hint(), hidden.hint());
+        assert_ne!(hidden.hint(), closed.hint());
+    }
+
+    /// **Closing the panel in front takes it out of the layout, and the menu then says it is closed.**
+    ///
+    /// The full cycle through the shipped [`apply`]: close, observe [`State::Closed`], reopen, observe it
+    /// back — with [`occurrences`] taken at every step so a "close" that left a copy behind, or a reopen
+    /// that added a second, is caught rather than inferred from the state alone.
+    #[test]
+    fn closing_the_panel_in_front_takes_it_out_of_the_layout_and_the_menu_says_so() {
+        let mut dock = ui::initial_dock();
+        assert_eq!(state_of(&dock, Tab::Screen), State::Showing);
+        assert_eq!(occurrences(&dock, Tab::Screen), 1);
+
+        assert_eq!(apply(&mut dock, Action::Hide(Tab::Screen)), Done::Closed);
+        assert_eq!(occurrences(&dock, Tab::Screen), 0);
+        assert_eq!(state_of(&dock, Tab::Screen), State::Closed);
+        // The row is still offered, and now says so in words rather than by an absent highlight.
+        let row = entries(&dock)
+            .into_iter()
+            .find(|e| e.tab == Tab::Screen)
+            .expect("a closed panel keeps its row — that is how it gets back");
+        assert!(row.menu_label().ends_with(CLOSED_SUFFIX));
+
+        assert_eq!(apply(&mut dock, Action::Show(Tab::Screen)), Done::Reopened);
+        assert_eq!(occurrences(&dock, Tab::Screen), 1);
+        assert_eq!(state_of(&dock, Tab::Screen), State::Showing);
+
+        // The other seven were not disturbed by any of it.
+        for t in Tab::ALL.into_iter().filter(|t| *t != Tab::Screen) {
+            assert_eq!(occurrences(&dock, t), 1, "{t:?} was lost or duplicated");
+        }
+    }
+
+    /// **A hidden panel takes two clicks to close, and the first one shows it.** The header calls that
+    /// deliberate; this is where it is a fact rather than a claim.
+    #[test]
+    fn a_hidden_panel_takes_two_clicks_to_close_and_the_first_one_shows_it() {
+        let mut dock = ui::initial_dock();
+        hide(&mut dock, Tab::Memory);
+        assert_eq!(state_of(&dock, Tab::Memory), State::Hidden);
+
+        let click = |dock: &mut DockState<Tab>| {
+            let entry = entries(dock)
+                .into_iter()
+                .find(|e| e.tab == Tab::Memory)
+                .expect("every Tab has a row");
+            apply(dock, entry.action())
+        };
+
+        assert_eq!(
+            click(&mut dock),
+            Done::Focused,
+            "the first click must reveal"
+        );
+        assert_eq!(state_of(&dock, Tab::Memory), State::Showing);
+        assert_eq!(occurrences(&dock, Tab::Memory), 1);
+
+        assert_eq!(
+            click(&mut dock),
+            Done::Closed,
+            "the second click must close"
+        );
+        assert_eq!(occurrences(&dock, Tab::Memory), 0);
+    }
+
+    /// **Every panel can be closed — including the last one — and the menu survives the empty dock.**
+    ///
+    /// This is the claim [`close`]'s "nothing here refuses to remove the last panel" rests on. An empty
+    /// `DockState` is a state the nav still enumerates (the menu is drawn in the top bar, outside the
+    /// dock) and still recovers from, and the recovery is checked rather than assumed.
+    #[test]
+    fn every_panel_can_be_closed_and_the_menu_survives_an_empty_dock() {
+        let mut dock = ui::initial_dock();
+        for t in Tab::ALL {
+            // Through the menu's own decision each time, not through `close` directly: whatever state
+            // the previous removal left this tab in, the row must still lead to it being gone.
+            //
+            // ⚑ **Bounded, and the bound is a real number rather than a paranoid one.** From any state a
+            // row reaches `Closed` in at most two clicks (`Hidden` → shown → closed; this module's
+            // header table). A third would mean the rule no longer terminates — which is exactly what a
+            // menu reverted to open-only does — and an unbounded `while` there hangs the suite instead of
+            // failing it. Measured: reverting `Entry::action`'s `Showing` arm to `Show` made this loop
+            // spin forever until the bound was put in.
+            for click in 1..=3 {
+                if occurrences(&dock, t) == 0 {
+                    break;
+                }
+                assert!(
+                    click <= 2,
+                    "{t:?} is still docked after {} clicks on its own menu row. A row that cannot reach \
+                     'closed' is the open-only menu this row exists to replace.",
+                    click - 1
+                );
+                let entry = entries(&dock)
+                    .into_iter()
+                    .find(|e| e.tab == t)
+                    .expect("every Tab has a row");
+                apply(&mut dock, entry.action());
+            }
+        }
+        for t in Tab::ALL {
+            assert_eq!(occurrences(&dock, t), 0, "{t:?} would not close");
+        }
+        assert!(
+            panes(&dock).iter().all(|p| p.is_empty()),
+            "a dock with every tab closed still holds one somewhere: {:?}",
+            panes(&dock)
+        );
+
+        // The menu still offers all eight, all closed, and one of them still comes back.
+        let rows = entries(&dock);
+        assert_eq!(rows.len(), Tab::ALL.len());
+        assert!(rows.iter().all(|e| e.state == State::Closed));
+        assert_eq!(apply(&mut dock, rows[0].action()), Done::Reopened);
+        assert_eq!(occurrences(&dock, rows[0].tab), 1);
+    }
+
+    /// ★ **The reset row puts the default layout back — the whole layout, not just the missing tabs.**
+    ///
+    /// ⚠ *The impostor this is built to catch.* A `Reset` implemented as "reopen everything that is
+    /// closed" would satisfy every claim [`entries`] can make, because `entries` sees only
+    /// showing/hidden/closed and would report all eight present either way. So the measurement is
+    /// [`panes`] — every leaf's actual tab list — taken against a layout that has been **both** whittled
+    /// down *and* rearranged, and asserted different from the default before the reset runs.
+    #[test]
+    fn the_reset_row_restores_the_default_layout_and_not_merely_its_tabs() {
+        let mut dock = ui::initial_dock();
+        // Whittle: two panels closed. Rearrange: everything that is left, stacked into one leaf.
+        apply(&mut dock, Action::Hide(Tab::Objects));
+        apply(&mut dock, Action::Hide(Tab::Profiler));
+        let survivors: Vec<Tab> = Tab::ALL
+            .into_iter()
+            .filter(|t| occurrences(&dock, *t) > 0)
+            .collect();
+        dock = DockState::new(survivors);
+        assert_ne!(
+            panes(&dock),
+            panes(&ui::initial_dock()),
+            "the layout under test is the default, so the reset below would prove nothing"
+        );
+
+        assert_eq!(apply(&mut dock, Action::Reset), Done::Reset);
+        assert_eq!(
+            panes(&dock),
+            panes(&ui::initial_dock()),
+            "reset gave back a layout holding the right tabs in the wrong arrangement"
+        );
+        for t in Tab::ALL {
+            assert_eq!(occurrences(&dock, t), 1, "{t:?} is not back exactly once");
+        }
+    }
+
+    /// [`close`] is total: asked to close something already closed it says so and changes nothing,
+    /// rather than panicking on the `find_tab` that is not there.
+    #[test]
+    fn closing_a_panel_that_is_already_closed_is_a_no_op_that_says_so() {
+        let mut dock = ui::initial_dock();
+        assert_eq!(close(&mut dock, Tab::Pacing), Done::Closed);
+        let before = panes(&dock);
+        assert_eq!(close(&mut dock, Tab::Pacing), Done::AlreadyClosed);
+        assert_eq!(panes(&dock), before);
     }
 }
