@@ -45,12 +45,30 @@ impl Player {
         Self::start_with(tag, None)
     }
 
+    /// A player whose cartridge really is a **file on disk**, with the machine booted from that file's
+    /// own bytes.
+    ///
+    /// The seam exists for §11.37: `emulator/status` carries a ROM-freshness verdict, and the default
+    /// `MachineInfo` above names the image `"testrom"` — a label, not a path, and so a legitimately
+    /// *unmeasurable* ROM. A test asking whether the verdict reaches a client of the hosted engine needs
+    /// a player whose image can actually be compared against something.
+    fn start_with_rom_file(tag: &str, rom_path: &Path) -> Self {
+        Self::start_full(tag, None, rom_path.display().to_string())
+    }
+
     /// A player that also publishes screen text once per iteration, the way the real run loop publishes it
     /// once per present (`oracle-frontend/src/main.rs`, at the bottom of the present block).
     ///
     /// `None` is a player that never pushes — the state the real one is in before its first present, and
     /// the state a `--no-default-features` build is in forever.
     fn start_with(tag: &str, screen: Option<Vec<ScreenSurface>>) -> Self {
+        Self::start_full(tag, screen, "testrom".to_string())
+    }
+
+    /// The one constructor. `rom_path` is what the loop reports as its image: `"testrom"` for every row
+    /// that predates §11.37 (a label the frontend is explicitly allowed to use, see `rom_path.rs`), or a
+    /// real path for the one row that measures against a file.
+    fn start_full(tag: &str, screen: Option<Vec<ScreenSurface>>, rom_path: String) -> Self {
         let socket = temp_socket(tag);
         let stop = Arc::new(AtomicBool::new(false));
         let iterations = Arc::new(AtomicU64::new(0));
@@ -67,7 +85,7 @@ impl Player {
 
                 let mut host = Host::new(HostConfig::default());
                 host.set_machine_info(MachineInfo {
-                    rom_path: Some("testrom".into()),
+                    rom_path: Some(rom_path),
                     ..MachineInfo::default()
                 });
                 host.serve(Some(t_socket)).expect("bind the hosted socket");
@@ -1159,4 +1177,141 @@ fn a_blank_screen_succeeds_where_no_screen_refuses() {
         json!(false),
         "a player that has never presented has nothing to report yet, and says so"
     );
+}
+
+// ---------------------------------------------------------------------------------------------------
+// §11.37 (CR-N) — the ROM-freshness verdict on the HOSTED path, and word-for-word the standalone one
+// ---------------------------------------------------------------------------------------------------
+
+/// **The stale-image warning must reach a client of the player's own engine, not only a client of a
+/// standalone server — and it must say the same thing.**
+///
+/// The two arrangements share `Engine::status` *by construction*: `server::engine_loop` and
+/// `Host::pump`'s drain both end at `Engine::dispatch(method, params)` and both return that `result`
+/// unaltered. But "it cannot differ" is a claim, and this file exists because that claim has been wrong
+/// here before: **the `WAITFORBREAK-INSTANT-TIMEOUT` defect lived only on the hosted path** —
+/// `engine_loop` published its stamp before replying and `pump` did not — so a client of the hosted
+/// engine got a wrong answer while the standalone server was right. Two paths, one apparent behaviour,
+/// one of them wrong.
+///
+/// A freshness verdict that appeared on one path and not the other would fail in exactly the same silent
+/// way: the `caveat` is simply **absent**, and absence reads as "fine". So this row does not assert that
+/// the hosted reply "has a caveat"; it asserts that the hosted reply is **byte-identical** to the
+/// standalone one, in the quiet state and in two loud ones. A wrapper that stripped, truncated,
+/// re-ordered or re-worded the string on either path fails here, and so would a hosted path answering
+/// out of a different engine's state.
+///
+/// The prompt for the row was a peer *reading* — aeon queried the owner's live frontend window after a
+/// reload and saw `romFreshness: state: None` rather than a verdict — which is **not** evidence about
+/// this server: that field is the legacy shim's, computed client-side, and the shim attaches only when
+/// `$ORACLE_SOCKET` is set. It is recorded as what prompted the row, not as what justifies it.
+#[test]
+fn the_rom_freshness_verdict_reaches_a_hosted_client_word_for_word() {
+    use oracle_aether::engine::EngineConfig;
+    use oracle_aether::server::{Machine, Server, ServerConfig};
+
+    /// `status`'s caveat over one connection, or `None` when the reply is quiet.
+    fn caveat(c: &mut Client) -> Option<String> {
+        c.ok("emulator/status", json!({}))
+            .get("caveat")
+            .map(|v| v.as_str().expect("a caveat is a string (§2.4)").to_string())
+    }
+
+    let rom_bytes = oracle_core::testrom::build();
+    let rom = std::env::temp_dir().join(format!(
+        "ah-romfresh-{}-{}.bin",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&rom, &rom_bytes).expect("write the ROM fixture");
+
+    // Arrangement 1: the player owns the machine and the bus is drained once per iteration.
+    let player = Player::start_with_rom_file("romfresh-hosted", &rom);
+    let mut hosted = Client::connect(&player);
+    hosted.handshake(false);
+    player.expect_progress(2, "the player must turn over");
+
+    // Arrangement 2: the bus owns the machine on a thread of its own — the same image, the same path.
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(rom_bytes.clone());
+    sys.reset();
+    let mut machine = Machine::new(sys);
+    machine.rom_path = Some(rom.display().to_string());
+    let standalone = Server::bind(ServerConfig {
+        socket_path: temp_socket("romfresh-standalone"),
+        engine: EngineConfig {
+            free_run_pace: None,
+            ..EngineConfig::default()
+        },
+        event_queue_cap: 1024,
+    })
+    .expect("bind the standalone socket")
+    .spawn(machine);
+    let mut direct = Client::connect_path(standalone.socket_path());
+    direct.handshake(false);
+
+    // State 1 — QUIET. The control: without it every comparison below is satisfied by two paths that are
+    // both silent because neither ever checks anything.
+    assert_eq!(
+        caveat(&mut hosted),
+        None,
+        "the premise: the hosted client sees no caveat while the image on disk is the image held"
+    );
+    assert_eq!(
+        caveat(&mut direct),
+        None,
+        "…and neither does the other path"
+    );
+
+    // State 2 — SAME SIZE, DIFFERENT BYTES. The row a size-only check misses.
+    let mut rebuilt = rom_bytes.clone();
+    rebuilt[0x2FF] = 0xA5;
+    assert_eq!(
+        rebuilt.len(),
+        rom_bytes.len(),
+        "the premise: the same LENGTH"
+    );
+    std::fs::write(&rom, &rebuilt).expect("rewrite the ROM in place");
+
+    let h = caveat(&mut hosted).expect(
+        "THE ROW: a client of the HOSTED engine must be told its image is not the file on disk. An \
+         absent caveat here is the silent failure this parcel exists to prevent, arriving through the \
+         surface the owner actually looks at.",
+    );
+    let d = caveat(&mut direct).expect("and the standalone path must say so too");
+    assert_eq!(
+        h, d,
+        "the two arrangements must say the SAME thing, word for word. They reach one Engine::status \
+         by construction — engine_loop and Host::pump's drain both end at Engine::dispatch and return \
+         its result unaltered — and this is that construction ASSERTED rather than assumed, because \
+         WAITFORBREAK-INSTANT-TIMEOUT was a hosted-only defect in the same shape."
+    );
+    assert!(
+        h.contains("SAME size") && h.contains("$0002FF"),
+        "and it is the real verdict, not an empty string both paths happen to agree on: {h}"
+    );
+
+    // State 3 — UNMEASURABLE. "I could not look" must never render as "I looked and it is fine", on
+    // either path.
+    std::fs::remove_file(&rom).expect("delete the image out from under both servers");
+    let h = caveat(&mut hosted).expect("an unmeasurable ROM is LOUD on the hosted path");
+    let d = caveat(&mut direct).expect("…and on the standalone one");
+    assert_eq!(h, d, "still word for word: {h} vs {d}");
+    assert!(h.contains("could NOT be checked"), "{h}");
+
+    // ANTI-VACUITY: put the image back and BOTH go quiet again. Without this, states 2 and 3 are
+    // satisfied by two paths that are both loud unconditionally.
+    std::fs::write(&rom, &rom_bytes).expect("restore the image");
+    assert_eq!(
+        caveat(&mut hosted),
+        None,
+        "ANTI-VACUITY: the hosted path goes quiet again"
+    );
+    assert_eq!(
+        caveat(&mut direct),
+        None,
+        "ANTI-VACUITY: and so does the standalone one"
+    );
+
+    let _ = std::fs::remove_file(&rom);
 }
