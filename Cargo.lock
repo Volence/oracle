@@ -2965,6 +2965,7 @@ dependencies = [
  "egui_dock",
  "oracle-aether",
  "oracle-core",
+ "oracle-frontend",
  "ringbuf",
  "serde",
  "serde_json",

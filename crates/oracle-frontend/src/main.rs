@@ -253,8 +253,15 @@
 // and self-contained. Phase SY-5b (below) consumes it: the live loop drives the composite sink each frame
 // and drains→pushes into the ring, and `start_audio` spawns the cpal output stream that pops the ring's
 // consumer. See `docs/2026-07-23-phase-sy5-realtime-audio-design.md`.
+// ⚑ **`audio`, `font`, `pick`, `present` and `spawn` are this crate's own `lib` target, not modules of the
+// binary** (`src/lib.rs`). They are `use`d rather than declared so that `oracle-player` links the *same*
+// code during the migration instead of `#[path]`-including a compile-time copy of it. The re-exports are
+// `pub(crate)` and sit at the crate root, so every `crate::present` / `crate::font` / `crate::spawn` /
+// `crate::pick` path in `overlay.rs`, `palette.rs`, `screen_text.rs`, `lens/*` and `bus.rs` resolves exactly
+// as it did when these were `mod` declarations.
 #[cfg(feature = "audio")]
-mod audio;
+pub(crate) use oracle_frontend::audio;
+pub(crate) use oracle_frontend::{font, pick, present, spawn};
 
 // Host gamepad input (gilrs) — frontend-only, feature-gated exactly like `audio`, and degrading to
 // keyboard-only on every failure path. See the module docs for the mapping tables.
@@ -278,7 +285,6 @@ mod commands;
 // Slice S2 — the player's persistent settings file (spec §7): pure parse/serialize plus
 // load-with-recovery and atomic save.
 mod config;
-mod font;
 // Lenses: read-only overlays over the picture, each its own toggle command (spec §5).
 mod lens;
 mod overlay;
@@ -300,16 +306,8 @@ mod bus;
 // test can reach it — `FRONTEND-LOOP-UNTESTABLE`. It lived inline here until a `rom_changed` branch was
 // found by hand to leave the cached symbol listing stale, with nothing in this crate able to catch it.
 mod drain;
-// Display geometry — aspect handling, the window-sized presentation blit, and the exact click inverse.
-mod present;
 // The window's desktop identity: the embedded Oracle icon and its WM class.
 mod icon;
-// Click-to-watch: resolving a clicked dot to armable VRAM/CRAM ranges, sprites included.
-mod pick;
-// Click-to-PLACE: spawn mode, the window half of the object-mutation rows (`protocol.md` §11.32). The
-// model and every sentence it puts on screen; the click itself is in the run loop beside the watch pick it
-// displaces, and the two calls it makes are `bus::Bus::archetypes` / `spawn_at`.
-mod spawn;
 // "Open ROM..." — the browsable listing behind the palette's ROM picker, so a different game can be loaded
 // without leaving the window. Model only; the swap itself is in the run loop, beside the F5 reload it shares.
 mod rom_browser;

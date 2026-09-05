@@ -42,7 +42,7 @@
 //! ## The mode says it is on, for as long as it is on
 //!
 //! [`Mode::badge`] is a **standing** statement, drawn on every frame the mode is armed (see
-//! [`crate::overlay::Overlay::spawn_badge`]). This is a correctness requirement in this crate and not
+//! the frontend's `overlay::Overlay::spawn_badge`, the player's Screen-tab badge). This is a correctness requirement in this crate and not
 //! decoration: the layer mask earned the identical rule one file over — *"the person who set it will
 //! forget, and then read a masked picture as the machine's"* — and a mode that changes what a left-click
 //! **does** is the same hazard with a bigger blast radius. A toast cannot carry it, because toasts expire
@@ -231,10 +231,14 @@ pub struct Refusal {
     /// off the constructor is *stricter* than keying it off `reason`, not looser: nothing here branches on
     /// message text, which is the rule the reason-keyed table exists to hold.
     ///
-    /// `pub(crate)` rather than `pub`: [`crate::bus`] builds the server-side refusal as a literal and must
-    /// be able to say `None` here, but nothing outside this crate may set a remedy — a remedy is a
-    /// statement in *this window's* vocabulary about *this window's* keys.
-    pub(crate) remedy: Option<String>,
+    /// **`pub` as of the S0 lib target**, and the widening is deliberate rather than incidental. It was
+    /// `pub(crate)` so that the frontend's `bus` module could build the server-side refusal as a literal
+    /// and say `None` here while nothing outside the crate could set a remedy. This module now lives in
+    /// `oracle-frontend`'s lib and its second consumer — `oracle-player`'s Screen tab — is a window in
+    /// exactly the same sense, with its own keys to name. The rule the old visibility encoded still
+    /// stands and is now a rule rather than a type: **a remedy is a statement in the holding window's
+    /// vocabulary about the holding window's keys**, so a consumer that has no such key writes `None`.
+    pub remedy: Option<String>,
 }
 
 impl Refusal {
@@ -474,6 +478,225 @@ impl Mode {
         self.index = (self.index + 1) % self.archetypes.len();
         self.selected()
     }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The choreography — one implementation, two windows
+// ---------------------------------------------------------------------------------------------------
+//
+// ⚑ **Why this is here rather than in either window's `bus` module.** It was in
+// `oracle-frontend/src/bus.rs` (`Bus::archetypes` / `act_bounds` / `spawn_at`) until the migration's S1,
+// which is when a *second* window needed it. Copying it would have put two implementations of the act-bounds
+// gate and the world join on disk, and the migration's own standing lesson is the one CR-K banked:
+// `reload_rom` was deliberately re-pointed at one implementation so *"the two cannot answer one client
+// differently about one file in one millisecond."* The same argument applies with more force here, because
+// this choreography is what stands between a click and an **acked-then-silently-culled** spawn.
+//
+// The seam is [`Caller`]: one method that dispatches a served method synchronously and gives back the
+// tool's own reply or the tool's own refusal, and one that resolves a symbol. Both windows hold a `Host`
+// and can supply both; neither window's `Bus` type is nameable from here, and it does not need to be.
+
+/// What the choreography below needs from whichever window is holding the click.
+///
+/// **Deliberately two methods and no more.** A trait that took the window's `Bus` would tie this to one
+/// crate; a trait that took a `Host` would tie it to `oracle-aether`'s exact hosting arrangement, which the
+/// two windows do not share (`oracle-frontend` pumps, `oracle-player` does not). What is genuinely common is
+/// "dispatch one method and hand me the answer" and "resolve one symbol", and that is the whole surface.
+///
+/// `call` returns `Result<Value, Refusal>` rather than the raw `RpcError` for the reason
+/// [`Refusal::terminal`] exists: the server's `message` is carried **verbatim** and the *remedy* is the
+/// holding window's to add, keyed on `reason`. An implementor builds the `Refusal` with `code: Some(..)`,
+/// the reply's `reason`, the server's `message`, and `remedy: None`.
+#[cfg(feature = "aether")]
+pub trait Caller {
+    /// Dispatch one served method synchronously, in-process. No socket — `protocol.md` D15.
+    fn call(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, Refusal>;
+
+    /// The 68000 address of `symbol` in the listing the machine is running with, **resolved fresh every
+    /// time**. See [`act_bounds`] for why a cache here is a correctness bug rather than an optimisation.
+    fn address_of(&mut self, symbol: &str) -> Option<u32>;
+}
+
+/// **The archetypes this build offers**, discovered under [`ARCHETYPE_PREFIX`] rather than listed.
+///
+/// The list is read at the moment the mode is armed and the mode is disarmed whenever the machine's listing
+/// changes, because a stale archetype name is a spawn of the wrong thing rather than a failed spawn.
+///
+/// Every failure comes back as the server's own words (`-32012` *you forgot to load symbols* against
+/// `-32013` *this build has no such name* is exactly the distinction a person hits here, and §8.2 keeps them
+/// apart on purpose).
+#[cfg(feature = "aether")]
+pub fn archetypes(c: &mut impl Caller) -> Result<Archetypes, Refusal> {
+    let v = c.call(
+        "emulator/lookup_symbol",
+        serde_json::json!({"name": ARCHETYPE_PREFIX}),
+    )?;
+    // The exact branch: a symbol literally named `ObjDef_`. Vanishingly unlikely and handled anyway,
+    // because the alternative is an empty list from a reply that found something.
+    if v["exact"] == serde_json::json!(true) {
+        let name = v["name"].as_str().unwrap_or_default().to_string();
+        return Ok(Archetypes {
+            total: 1,
+            names: vec![name],
+        });
+    }
+    let page = &v["otherMatches"];
+    let names: Vec<String> = page["items"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    // `total` from the envelope, not from `names.len()` — the two differ exactly when the search was cut,
+    // which is the case the note exists for.
+    let total = page["total"].as_u64().unwrap_or(names.len() as u64) as usize;
+    Ok(Archetypes { names, total })
+}
+
+/// **The act's pixel extent, read out of the machine right now.**
+///
+/// ⚑ **Both addresses are resolved BY NAME on every call and never cached**, which is the rule §11.26 was
+/// amended to impose on `Camera_X` after it was found to *move between build shapes*. These move too, and
+/// further: measured on this box, `Level_Width` is `$FFFFBABE` in `s4.lst` and `$FFFFE95C` in
+/// `s4.debug.lst`. A cached address does not fault in the other shape — it returns a number, and a number is
+/// what this check compares against.
+///
+/// The two symbols are resolved **independently**, not as one 4-byte read off the first. They are adjacent
+/// in every listing seen so far and that is a fact about a declaration order this crate does not own; an
+/// implementation that assumed it would keep working right up until aeon inserted a field.
+///
+/// Every failure is the **window's own** refusal (`code: None`), matching the sibling case in [`place`]: a
+/// build without `Camera_X` already gets a local sentence rather than a coordinate, and a build without
+/// `Level_Width` is the same shape of unmeasurable.
+#[cfg(feature = "aether")]
+pub fn act_bounds(c: &mut impl Caller) -> Result<Bounds, Refusal> {
+    let addrs = c
+        .address_of(LEVEL_WIDTH_SYMBOL)
+        .zip(c.address_of(LEVEL_HEIGHT_SYMBOL));
+    // Both or neither. Half an extent is not a smaller measurement, it is no measurement — and the half
+    // that resolved would be the more dangerous of the two, because a check on one axis looks like a check.
+    let (wa, ha) = match addrs {
+        Some(p) => p,
+        None => return Err(Bounds::unmeasurable()),
+    };
+    Ok(Bounds {
+        width: u32::from(read_u16(c, wa)?),
+        height: u32::from(read_u16(c, ha)?),
+    })
+}
+
+/// One word out of work RAM, through the same handler a socket client reads with.
+#[cfg(feature = "aether")]
+fn read_u16(c: &mut impl Caller, addr: u32) -> Result<u16, Refusal> {
+    let r = c.call(
+        "emulator/read_memory",
+        serde_json::json!({"addr": format!("0x{addr:08X}"), "len": 2}),
+    )?;
+    // `bytes` is the reply's `0xXXXX`. A reply that cannot be parsed is refused rather than defaulted to
+    // zero: a silent `0` here would read as "no act loaded" and send the person hunting for an act that is
+    // already running.
+    r["bytes"]
+        .as_str()
+        .and_then(|s| u16::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok())
+        .ok_or_else(|| {
+            Refusal::local(format!(
+                "the window could not read the act extent at {addr:#010X}: \
+                 emulator/read_memory answered {:?}, which is not a word",
+                r["bytes"]
+            ))
+        })
+}
+
+/// **Place `archetype` where the window was clicked.**
+///
+/// Three calls, because the click is in *screen* dots, the mailbox wants *world* pixels, and the act has an
+/// edge that the mailbox will not defend:
+///
+/// 1. `emulator/object_at`, whose `world{x,y}` is `Camera_X`/`Camera_Y` plus the dot (§11.26 M3, and the
+///    join §11.32 §11 names as the GUI's one extra dependency). It is a pure read and needs no pause.
+/// 2. [`act_bounds`], which reads `Level_Width`/`Level_Height` by name and is what makes a click outside
+///    the level a **sentence** instead of an ack followed by a silent cull (`F-SPAWN-OUTSIDE-ACT`).
+/// 3. `emulator/object_spawn { defSymbol, x, y }`, which is where the pause requirement, the mailbox
+///    handshake and all five engine refusals live.
+///
+/// **The `world` half is refused rather than guessed.** §11.26 makes `worldSource` a field precisely so its
+/// absence is not inferred from a missing `world`, and a build without the camera symbols gets a sentence
+/// instead of a coordinate — a spawn at the raw dot would land somewhere plausible and wrong, which is the
+/// failure class this whole row is written against.
+///
+/// **UNMEASURED, and named rather than assumed** (§11.32 §11's own flag): that `object_at`'s world space is
+/// the same flat world-pixel space `Obj_Req_X`/`Y` want. Aeon states it is *"the same convention as
+/// `Warp_Req_X/Y`"*; nothing in this repo has confirmed the two agree against a running game, and if they do
+/// not, this needs a conversion that no CR has specified.
+#[cfg(feature = "aether")]
+pub fn place(c: &mut impl Caller, archetype: &str, dot: (u16, u16)) -> Result<Placed, Refusal> {
+    let (dx, dy) = dot;
+    let at = c.call("emulator/object_at", serde_json::json!({"x": dx, "y": dy}))?;
+    let source = at["worldSource"].as_str().unwrap_or("unavailable");
+    let world = match (source, at["world"]["x"].as_u64(), at["world"]["y"].as_u64()) {
+        ("camera", Some(x), Some(y)) => (x as u32, y as u32),
+        _ => {
+            return Err(Refusal::local(format!(
+                "this build cannot turn a click into a world position (object_at answered \
+                 worldSource={source:?}): `Camera_X` and `Camera_Y` are not both in the loaded \
+                 listing, and spawning at the raw screen dot ({dx},{dy}) would place the object \
+                 somewhere plausible and wrong"
+            )))
+        }
+    };
+    // --- THE ACT-BOUNDS GATE (`F-SPAWN-OUTSIDE-ACT`) --------------------------------------------
+    //
+    // A click outside the level used to be **acked as placed and then silently culled**: aeon's
+    // `RunObjects` drops an out-of-act object on camera distance and does nothing — no error, no refusal,
+    // nothing on screen. That is the exact failure class this whole module is written against, arriving
+    // through the one path that returns success, so it is caught here, on the side that holds the click.
+    //
+    // **It is ours and it is window-side on purpose.** aeon deliberately added no clamp and no refusal to
+    // the mailbox rather than pre-empt this design by making the engine quietly do half of it, so
+    // `emulator/object_spawn` will accept this request without complaint. Nothing below this line is
+    // allowed to be the thing that stops it.
+    //
+    // **Refused, not clamped.** The booking allowed either. A clamp moves the object away from where the
+    // person clicked and then reports success with coordinates — which, given §11.32's ruling that the
+    // reply's `x`/`y` are a *re-read*, would print a perfectly plausible line about an object sitting at the
+    // level edge for reasons nothing on the glass explains. That is a smaller lie of the same family as the
+    // defect, and there is no rule for which edge to snap to that preserves what the click meant. A refusal
+    // costs one gesture and says why.
+    //
+    // **Ordering.** This sits after the world join and before the mailbox, so an unresolvable click is
+    // still refused for *that* reason first. It does run before the server's `paused` precondition, so an
+    // out-of-act click on a running machine reads "outside the act" rather than "press Space" — both true,
+    // and the one the person can act on without pausing first.
+    let bounds = act_bounds(c)?;
+    if bounds.no_act_loaded() {
+        return Err(Bounds::no_act());
+    }
+    if !bounds.contains(world.0, world.1) {
+        return Err(bounds.outside(world.0, world.1));
+    }
+
+    let placed = c.call(
+        "emulator/object_spawn",
+        serde_json::json!({"defSymbol": archetype, "x": world.0, "y": world.1}),
+    )?;
+    Ok(Placed {
+        handle: placed["handle"].as_str().unwrap_or_default().to_string(),
+        addr: placed["addr"].as_str().unwrap_or_default().to_string(),
+        slot: placed["slot"].as_i64(),
+        asked: world,
+        now: (
+            placed["x"].as_i64().unwrap_or_default(),
+            placed["y"].as_i64().unwrap_or_default(),
+        ),
+        frames_advanced: placed["framesAdvanced"].as_u64().unwrap_or_default(),
+        caveat: placed["caveat"].as_str().map(str::to_string),
+    })
 }
 
 #[cfg(test)]

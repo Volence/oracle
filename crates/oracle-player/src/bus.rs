@@ -427,6 +427,21 @@ impl Bus {
         self.host.framebuffer()
     }
 
+    /// **The display layer mask — the engine's, not a copy of it.**
+    ///
+    /// A lend rather than a mirror, for the reason `oracle-frontend`'s twin states: a second mask on this
+    /// side would mean a socket client hiding plane A changed `emulator/screenshot` and not the window, and
+    /// a window control doing the reverse. It is engine state, so it survives `reset` / `reload_rom` /
+    /// `restore` and appears in no snapshot and no hash.
+    ///
+    /// ⚑ **This window's picture does not honour it yet** — see [`framebuffer`](Self::framebuffer)'s note,
+    /// and `crate::screen_pick`'s module doc for what that costs and what refuses because of it. Reading it
+    /// is exactly how the Screen tab knows to refuse rather than to answer wrongly, which is why the
+    /// accessor lands before the masked pixel path rather than with it.
+    pub fn layers(&self) -> oracle_core::render::LayerMask {
+        self.host.layers()
+    }
+
     /// **The listing the engine resolves against now.**
     ///
     /// Read rather than remembered because `emulator/reload_rom` can *drop* the table — that is the D7

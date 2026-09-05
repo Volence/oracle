@@ -28,9 +28,26 @@ eframe = { version = "0.36", features = ["persistence"] }
 egui = "0.36"
 egui_dock = { version = "0.21", features = ["serde"] }
 
-# The SAME audio substrate `oracle-frontend` uses. `src/audio.rs` here is `#[path]`-included from
-# `crates/oracle-frontend/src/audio.rs`, byte for byte, so this crate needs exactly its two dependencies at
-# exactly the player's versions. See `src/audio.rs` for why it is included rather than depended on.
+# **The game window, as a library** (`crates/oracle-frontend/src/lib.rs`) — the migration's S0.
+#
+# `default-features = false` plus exactly the two features this crate uses is what keeps the objection that
+# blocked this edge from being true: the frontend's `window` feature (minifb, x11-dl, raw-window-handle) and
+# its `gamepad` feature (gilrs) are **off** here, so `cargo tree -p oracle-player` gains no windowing
+# library, no X11 loader and no gamepad stack. What it gains is `present` (the exact click inverse the
+# Screen tab needs), `pick` (click-to-watch), `spawn` (click-to-place) and `audio` — the last of which
+# **replaces the `#[path]` include** this crate carried, so the pacing policy tuned by measurement exists
+# once instead of being compiled twice with no shared type identity.
+#
+# `aether` is on because `spawn`'s choreography speaks `serde_json` and dispatches through `Host::call`.
+oracle-frontend = { path = "../oracle-frontend", default-features = false, features = [
+    "audio",
+    "aether",
+] }
+
+# The SAME audio substrate `oracle-frontend` uses — now **linked** from the crate above rather than
+# `#[path]`-included, so these two are this crate's own direct uses (`device.rs`'s output stream and ring,
+# `pacing.rs`'s and `report.rs`'s `Observer`) rather than the include's transitive needs. Still exactly the
+# frontend's versions: a mismatch would put two `ringbuf` majors in one process.
 ringbuf = "0.4"
 cpal = "0.15"
 

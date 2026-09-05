@@ -29,22 +29,24 @@
 //! * Both bench modes force **gain 0.0**, which multiplies on the producer side, so the ring dynamics, the
 //!   feedback loop and every underrun count stay genuine while the amplitude is exactly zero.
 
-// The player's audio substrate, included verbatim rather than re-implemented, so "the same audio path" is
-// literally the same file.
+// The player's audio substrate — **linked, not included**, as of the migration's S0.
 //
-// `oracle-frontend` is a binary crate with no `lib` target, so there is nothing to depend on. The
-// alternatives were weighed: **copying** the file puts two tuned-by-measurement copies of the pacing policy
-// on disk and lets them drift silently; giving `oracle-frontend` a `lib` target drags `minifb`, `x11-dl`
-// and `gilrs` into this crate's graph to reach one file; **extracting a shared `oracle-audio` crate** is the
-// right end state and is a parcel-2 line item, but it means editing `oracle-frontend`, and the standing
-// instruction for this parcel is that the minifb player is not touched.
+// It used to be `#[path = "../../oracle-frontend/src/audio.rs"] mod audio;`, on the reasoning that
+// `oracle-frontend` was a binary crate with no lib target to depend on, that copying the file would put two
+// tuned-by-measurement copies of the pacing policy on disk, and that *"giving `oracle-frontend` a `lib`
+// target drags `minifb`, `x11-dl` and `gilrs` into this crate's graph to reach one file"*.
 //
-// Its `#[cfg(test)] mod tests` compiles here too, so `cargo test -p oracle-player` re-runs the substrate's
-// own tests in this crate's context. That is the proof that the file this crate compiles is the file the
-// player compiles.
-#[allow(dead_code)]
-#[path = "../../oracle-frontend/src/audio.rs"]
-mod audio;
+// That last objection is what S0 answered rather than overrode: those three are now optional in
+// `oracle-frontend`, behind its default-on `window`/`gamepad` features, and this crate depends on it with
+// `default-features = false`. So the file is reached without them — and reached as a **library** rather
+// than as a compile-time copy, which is what gives the two windows one type identity for the whole
+// migration instead of two graphs that drift.
+//
+// The substrate's own `#[cfg(test)] mod tests` no longer re-runs inside this crate, because it is no longer
+// this crate's source. It runs where the code lives: `cargo test -p oracle-frontend --lib`. The proof it
+// used to give — "the file this crate compiles is the file the player compiles" — is now a fact of the
+// dependency graph rather than a test result.
+use oracle_frontend::audio;
 
 mod bus;
 mod device;
@@ -58,6 +60,7 @@ mod pacing;
 mod palette;
 mod report;
 mod screen;
+mod screen_pick;
 mod stats;
 mod stopping;
 mod symbols;
@@ -399,6 +402,10 @@ struct Loop {
     /// The three stopping tabs' boxes and their last answers. **What is armed is not here** — it is the
     /// `Host`'s, read every repaint (R2).
     stopping: stopping::Panel,
+    /// **The Screen tab's pointer state** (`crate::screen_pick`): the standing readout of the last click,
+    /// the handles of the watches that panel armed, and spawn mode. Not persisted — a spawn mode that came
+    /// back armed after a restart would change what the first click of a session does, silently.
+    screen: screen_pick::Panel,
 }
 
 impl Loop {
@@ -450,6 +457,7 @@ impl Loop {
             paused: false,
             transport: ui::Transport::default(),
             palette: palette::Palette::default(),
+            screen: screen_pick::Panel::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -704,6 +712,7 @@ impl Loop {
             stopping,
             transport,
             palette,
+            screen: screen_panel,
             ..
         } = self;
         let mut drew = Vec::new();
@@ -769,6 +778,7 @@ impl Loop {
                     mem,
                     objects,
                     stopping,
+                    screen: screen_panel,
                     governor,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),

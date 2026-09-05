@@ -49,6 +49,7 @@ use crate::memory::{self, MemoryPanel};
 use crate::objects::{self, Objects, ObjectsPanel};
 use crate::pacing::Governor;
 use crate::screen;
+use crate::screen_pick;
 use crate::stopping::{self, Live};
 use oracle_core::io::Pad;
 use oracle_core::symbols::SymbolTable;
@@ -150,6 +151,9 @@ pub struct Panels<'a> {
     /// got. **Nothing about what is armed lives here** — that is the `Host`'s, read afresh every repaint
     /// through [`Bus::read_breakpoints`] and [`Bus::read_instruments`] (R2).
     pub stopping: &'a mut stopping::Panel,
+    /// The Screen tab's own state: the standing readout of the last click, the handles of the watches
+    /// **this panel** armed, and spawn mode. See [`crate::screen_pick`].
+    pub screen: &'a mut screen_pick::Panel,
     pub governor: &'a Governor,
     pub status: &'a str,
     /// The `--rom` argument as the human typed it. The strip absolutises it through the bus's own
@@ -183,7 +187,13 @@ impl egui_dock::TabViewer for Panels<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
-            Tab::Screen => self.screen(ui),
+            Tab::Screen => {
+                // Controls and the standing readout first, then the picture with whatever is left. The
+                // order is the layout: `screen` allocates all remaining space.
+                self.screen_controls(ui);
+                ui.separator();
+                self.screen(ui);
+            }
             Tab::Pacing => self.pacing(ui),
             Tab::Registers => self.registers(ui),
             Tab::Memory => self.memory(ui),
@@ -196,19 +206,117 @@ impl egui_dock::TabViewer for Panels<'_> {
 }
 
 impl Panels<'_> {
-    fn screen(&self, ui: &mut egui::Ui) {
+    /// The picture, and **the pointer over it**.
+    ///
+    /// ⚑ **The `Response` is kept.** It used to be thrown away — `ui.add(Image…)`'s return value was
+    /// discarded, which is exactly why `docs/OVERSEER.md`'s `F-SPAWN-PICKER-PANEL-SURFACE` recorded that
+    /// this tab could not receive a click. It now carries the two things the inverse needs and that minifb
+    /// never told `oracle-frontend`: **where the image actually landed** (`Response::rect`) and **where the
+    /// pointer was when it went down** (`Response::interact_pointer_pos`), both in the same space.
+    ///
+    /// The rect is allocated explicitly rather than through `centered_and_justified`, because the whole
+    /// gesture rests on the rect being *the picture's* and nothing else's: a justified layout is free to
+    /// hand a widget more room than it asked for, and a click inverted against a rect one pixel wider than
+    /// the picture is an offset nothing on screen would explain.
+    ///
+    /// Everything about what a click *means* is `crate::screen_pick`'s, including the standing statements
+    /// this draws. This function decides where the picture goes and what the pointer did, and nothing else.
+    fn screen(&mut self, ui: &mut egui::Ui) {
         let Some(tex) = self.tex else {
             ui.centered_and_justified(|ui| ui.label("no frame yet"));
             return;
         };
-        // Aspect-fit, the job `crates/oracle-frontend/src/present.rs::dest_rect` does today. Nearest
-        // sampling, because a Genesis pixel is a Genesis pixel.
-        let avail = ui.available_size();
         let src = tex.size_vec2();
-        let scale = (avail.x / src.x).min(avail.y / src.y).max(0.01);
-        ui.centered_and_justified(|ui| {
-            ui.add(egui::Image::new(tex).fit_to_exact_size(src * scale));
+        let ppp = ui.pixels_per_point();
+        // One reading of the available space, used for both the fit and the allocation. Two calls would
+        // be two readings of a thing that can change, and the picture would then be fitted to one box and
+        // centred in another.
+        let avail = ui.available_size();
+        let size = screen_pick::fit(
+            avail,
+            src.x as usize,
+            src.y as usize,
+            ppp,
+            self.screen.aspect,
+        );
+        if size.x <= 0.0 || size.y <= 0.0 {
+            return;
+        }
+        let (outer, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
+        let image_rect = egui::Rect::from_center_size(outer.center(), size);
+        // Nearest sampling, because a Genesis pixel is a Genesis pixel.
+        egui::Image::new(tex)
+            .texture_options(egui::TextureOptions::NEAREST)
+            .paint_at(ui, image_rect);
+        let hit = ui.interact(
+            image_rect,
+            ui.id().with("screen-picture"),
+            egui::Sense::click(),
+        );
+
+        if let (true, Some(pos)) = (hit.clicked(), hit.interact_pointer_pos()) {
+            if let Some(dot) =
+                screen_pick::dot_at(image_rect, pos, ppp, src.x as usize, src.y as usize)
+            {
+                self.screen.click(self.machine, self.bus, dot);
+            }
+        }
+    }
+
+    /// The Screen tab's controls and its standing readout, drawn **above** the picture in their own strip.
+    ///
+    /// Separate from [`Panels::screen`] because the picture takes all the room there is: a control drawn
+    /// inside that allocation would be over the game, and one drawn after it would have no room at all.
+    /// Above rather than below for the reason the halting alarm is on the top bar rather than in a tab —
+    /// a standing statement that can be scrolled or cropped out of view is not standing.
+    fn screen_controls(&mut self, ui: &mut egui::Ui) {
+        // The spawn badge is a correctness requirement rather than decoration: a mode that changes what a
+        // left-click *does* must say so for as long as it is on, and it must name the archetype.
+        if let Some(badge) = self.screen.badge() {
+            ui.colored_label(ui.visuals().warn_fg_color, &badge);
+        }
+        ui.horizontal(|ui| {
+            // Spawn mode is a **control**, not a tab: things you *do* are controls. The armed/disarmed
+            // split is one button for one question, the same rule the transport bar states.
+            if self.screen.is_armed() {
+                if ui.button("spawn: off").clicked() {
+                    self.screen.disarm_spawn();
+                }
+                if ui.button("next archetype").clicked() {
+                    self.screen.cycle_spawn();
+                }
+            } else if ui.button("spawn mode…").clicked() {
+                self.screen.arm_spawn(self.machine, self.bus);
+            }
+            ui.separator();
+            // ⚑ The aspect selector. `Aspect::name()` is the frontend's own short name, so the two windows
+            // cannot spell a mode differently, and the set is written out rather than derived because
+            // `Aspect` is a three-variant enum with no `ALL` — an added variant is a compile error at the
+            // match in `present.rs`, not a silently missing button here.
+            for a in [
+                oracle_frontend::present::Aspect::Tv,
+                oracle_frontend::present::Aspect::Square,
+                oracle_frontend::present::Aspect::Integer,
+            ] {
+                if ui
+                    .selectable_label(self.screen.aspect == a, a.name())
+                    .clicked()
+                {
+                    self.screen.aspect = a;
+                }
+            }
+            ui.separator();
+            ui.weak(format!("{} armed by this panel", self.screen.armed_count()));
         });
+        if let Some(r) = self.screen.readout() {
+            // Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
+            let colour = if r.refused {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().text_color()
+            };
+            ui.colored_label(colour, &r.text);
+        }
     }
 
     fn pacing(&self, ui: &mut egui::Ui) {
