@@ -221,23 +221,7 @@ is bar 24's second-instrument rule working in the direction of a peer rather tha
 
 **Registered 2026-09-05, from the socket-identity notice paying off:**
 
-- **✔ THE NOTICE FOUND A REAL NAME MATCH, BEFORE THE RENAME RATHER THAN AFTER.** aeon's reload path was
-  `pgrep -x oracle-frontend` plus a cmdline check; an `oracle-frontend` → `oracle-player` rename would have
-  broken it **silently**. Fixed at aeon **`044573da`** — **verified firsthand here**: an ancestor of their
-  `origin/master`, a **code** commit carrying the code it anchors (`tools/owner_window_pid.sh`, +37), and
-  the script really does key on the socket path (`ss -lpx | grep -F -- "$SOCK"`) while reading `comm` only
-  to **print** it, never to match. **Nothing needs sequencing around them; the switch is safe whenever he
-  decides.**
-  ⚑ **Their precedent is a fresh instance of the absence bar, and it is expensive:** earlier the same
-  session they reported *"the owner's window is closed"* five or six times across a night while it was open
-  the whole time holding a stale ROM, because their check was `pgrep -x oracle_gui` — **a binary name that
-  does not exist in this build.** A `pgrep` on a wrong name returns empty, and empty is indistinguishable
-  from *not running*: **a clean, confident, wrong negative.**
-  ⚑ **What made the notice usable was the HEDGE, and they said so explicitly.** It went out as *"strong
-  source-level claim, not a handshake I have seen"*, naming the revision and the reason I could not confirm
-  it on the wire. Their words: that let them act **without over-trusting it** — they fixed the thing that
-  breaks under either outcome, which needs no faith in our read at all. **A hedged claim was more useful
-  than a confident one would have been.** Bar 20's hedging clause with a measured payoff.
+- **✔ CLOSED 2026-09-05 — the socket-identity notice found a real name match in aeon before the rename (their `pgrep -x oracle-frontend`), fixed at aeon `044573da` to key on the socket path. Moved whole to `OVERSEER-LOG.md` for the boot-read bound. Two live rules kept: a `pgrep` on a name that does not exist returns empty and reads as *not running* — aeon reported the owner's window closed all night while it was open; and a HEDGED cross-lane claim was more useful than a confident one would have been, because it let the receiver fix what breaks under either outcome.**
 
 - **⚑ A PIPE REPLACES THE EXIT STATUS, AND IT BIT THIS SEAT TODAY TOO — n=2 in one day, two lanes.**
   aeon gave this back freely after piping their new script to `sed` and reading exit 0 on the **failure**
@@ -1059,9 +1043,23 @@ its refusal*. That grants his correctness half in full and costs JSON per click,
 window does** must be *visible* in it — `hold` ORs a client's pad into the player's, so a disconnected client
 can leave someone walking left forever with nothing on screen able to say why.
 
-**Parcel-2 line items this settles:** layout persistence is one `serde` flag and is deliberately OFF until
+~~**Parcel-2 line items this settles:** layout persistence is one `serde` flag and is deliberately OFF until
 the placeholders are gone (saving a layout of placeholders buys a migration); `Tab::Registers` content is
-filler on purpose while the docking it exercises is real.
+filler on purpose while the docking it exercises is real.~~
+
+⚠ **BOTH HALVES ARE STALE AND THE FIRST ONE COST A PARCEL — struck 2026-09-05.** Layout persistence is
+**ON and shipped**: `crates/oracle-player/src/layout.rs` is 779 lines of eframe `Storage`/RON persistence
+with `LAYOUT_VERSION = 2` in its own storage key, and `eframe = { features = ["persistence"] }` is in the
+manifest. The condition this paragraph named — *until the placeholders are gone* — **was met, the flag was
+flipped, and this sentence was never struck.**
+⚑ **The cost, measured: this seat briefed a parcel to "decide the persistence question", and the question
+did not exist.** The agent found the source of the error here and annotated it rather than editing it,
+which is the right division — the brief was mine and the ruling is mine.
+⚑ **The class, and it is worse than the code-comment case this file already books:** a claim of the form
+*"X is off until Y"* is **a decision with an expiry date**, and it reads as a standing decision forever
+after Y happens, because nothing about it changes when Y does. **The worst place for one is the boot doc,
+which every session reads and nobody re-derives.** Operational form: when a conditional line's condition is
+met, strike the line in the same commit that meets it.
 
 > ⚑ **SUPERSEDED BY EVENTS, 2026-09-05 — do not brief from the sentence above.** Layout persistence is
 > **ON and has shipped**: `crates/oracle-player/src/layout.rs` (eframe `Storage`, RON, `LAYOUT_VERSION` in

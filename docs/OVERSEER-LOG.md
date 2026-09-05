@@ -2943,3 +2943,24 @@ comparison → the moved-address row alone red.
   absence of a ceiling. Neither is a policy this server chose; both are transcribed"* — a comment citing a
   ruling made elsewhere, exactly true when written and false from `0a4313e` onward. **Both comments were in
   the same doc block, three lines apart, and only one of them rotted.** The distinguishing variable holds.
+
+
+## Moved from OVERSEER.md 2026-09-05 — the CLOSED socket-identity-notice entry (boot-read bound)
+
+- **✔ THE NOTICE FOUND A REAL NAME MATCH, BEFORE THE RENAME RATHER THAN AFTER.** aeon's reload path was
+  `pgrep -x oracle-frontend` plus a cmdline check; an `oracle-frontend` → `oracle-player` rename would have
+  broken it **silently**. Fixed at aeon **`044573da`** — **verified firsthand here**: an ancestor of their
+  `origin/master`, a **code** commit carrying the code it anchors (`tools/owner_window_pid.sh`, +37), and
+  the script really does key on the socket path (`ss -lpx | grep -F -- "$SOCK"`) while reading `comm` only
+  to **print** it, never to match. **Nothing needs sequencing around them; the switch is safe whenever he
+  decides.**
+  ⚑ **Their precedent is a fresh instance of the absence bar, and it is expensive:** earlier the same
+  session they reported *"the owner's window is closed"* five or six times across a night while it was open
+  the whole time holding a stale ROM, because their check was `pgrep -x oracle_gui` — **a binary name that
+  does not exist in this build.** A `pgrep` on a wrong name returns empty, and empty is indistinguishable
+  from *not running*: **a clean, confident, wrong negative.**
+  ⚑ **What made the notice usable was the HEDGE, and they said so explicitly.** It went out as *"strong
+  source-level claim, not a handshake I have seen"*, naming the revision and the reason I could not confirm
+  it on the wire. Their words: that let them act **without over-trusting it** — they fixed the thing that
+  breaks under either outcome, which needs no faith in our read at all. **A hedged claim was more useful
+  than a confident one would have been.** Bar 20's hedging clause with a measured payoff.
