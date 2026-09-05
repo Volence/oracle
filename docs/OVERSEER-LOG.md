@@ -2964,3 +2964,23 @@ comparison → the moved-address row alone red.
   it on the wire. Their words: that let them act **without over-trusting it** — they fixed the thing that
   breaks under either outcome, which needs no faith in our read at all. **A hedged claim was more useful
   than a confident one would have been.** Bar 20's hedging clause with a measured payoff.
+
+
+## Moved from OVERSEER.md 2026-09-05 — the F-PARITY-BLIND-TO-SAT-STRIDE registration, closed same day (boot-read bound)
+
+- **▶ F-PARITY-BLIND-TO-SAT-STRIDE — the frontend's strongest correctness guard cannot see the SAT entry
+  stride, found by mutating it and getting GREEN.** `pick.rs`'s `bus_parity` module is nine rows asserting
+  address-level agreement between the panel and `emulator/pixel_attribution`. **Measured at this seat on the
+  merged tree:** `SAT_ENTRY_BYTES: u32 = 8` → `16`, quoted from disk, **all nine rows stayed green**; a
+  control mutation on the same file (`tile_range`'s `lo`, `+ 32`) turned two rows red with *"the panel arms
+  $0220 but the bus names 0x00000200 — the two have DRIFTED"*, **so the runner does execute the file and the
+  survival is a blind spot rather than a stale build.**
+  **Why it is blind, and both halves are needed:** every parity case asserts `spriteIndex == 0`, so
+  `index * SAT_ENTRY_BYTES` is multiplied by zero in every row; and the rows assert `p.targets[1].lo` and
+  never `.hi`, which is the one place the stride survives at index 0 (`sat_lo + SAT_ENTRY_BYTES - 1`).
+  **Not introduced by this parcel** — the rows predate the lib move. Fix is cheap and should ride with S2a,
+  which opens these rows anyway: assert `.hi`, and exercise one non-zero sprite index.
+  ⚑ **The transferable half: a guard described as the strongest in the tree had a hole reachable in one
+  mutation, and it was found only because the mutation parameter was VARIED rather than repeated.** The
+  implementing agent proved liveness with `tile_range`; repeating that would have re-confirmed the same
+  covered path forever. Bar 19's enumeration-parameter rule, arriving on a mutation instead of a survey.

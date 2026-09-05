@@ -176,6 +176,23 @@ set (boolean negotiation), the MCP shim negotiates `want_events=False`, and the 
 strings. **So the check came back clear — but it was right to hand it over rather than assert it**, which
 is bar 24's second-instrument rule working in the direction of a peer rather than a document.
 
+**▶ RULED 2026-09-05 by the contract owner (hub, under delegation; theirs, not his): DO NOT widen the
+aether build script's dirty scope to cover `crates/oracle-player/src`.**
+
+The reasoning, transcribed because it is the reusable part: `protocol.md` §2.1 defines `serverBuild.id` as
+differing between builds whose **observable behaviour on this bus** can differ, and `dirty` as uncommitted
+source under that same claim. **The window's UI code changes what a person sees, not what the bus serves**,
+so pulling `oracle-player/src` into that scope would make the bus's flag answer a question it was not
+asked, and would widen a deliberately declarable `rerun-if-changed` set for a non-bus reason.
+**The shipped design stands:** the chip marks dirty positively only when the scope covers what the reader
+looks at, stays silent otherwise, and retires its caveat when the scope moves.
+⚑ **If the window ever wants to say "clean" about itself, that is a WINDOW-LOCAL marker computed over
+`oracle-player/src` by the window's own build step, a separate claim with a separate name, never the bus's
+flag.** Booked as `F-WINDOW-LOCAL-DIRTY` and **rated low on its merits**: the observable that actually
+settled the stale-binary incident was the executable's **mtime**, which already ships. A dirty marker helps
+somebody *editing* the window, not the owner *running* it, and he is not editing it. Revival: someone is
+regularly running a hand-built window and being misled by it.
+
 **Registered 2026-09-05, from landing S3:**
 
 - **⚑ A SHIPPED DEFECT IN THE WINDOW THE OWNER WAS USING: every palette gesture that replaced the machine
@@ -298,22 +315,7 @@ is bar 24's second-instrument rule working in the direction of a peer rather tha
 
 **Registered 2026-09-05, from landing migration slices S0-S2:**
 
-- **▶ F-PARITY-BLIND-TO-SAT-STRIDE — the frontend's strongest correctness guard cannot see the SAT entry
-  stride, found by mutating it and getting GREEN.** `pick.rs`'s `bus_parity` module is nine rows asserting
-  address-level agreement between the panel and `emulator/pixel_attribution`. **Measured at this seat on the
-  merged tree:** `SAT_ENTRY_BYTES: u32 = 8` → `16`, quoted from disk, **all nine rows stayed green**; a
-  control mutation on the same file (`tile_range`'s `lo`, `+ 32`) turned two rows red with *"the panel arms
-  $0220 but the bus names 0x00000200 — the two have DRIFTED"*, **so the runner does execute the file and the
-  survival is a blind spot rather than a stale build.**
-  **Why it is blind, and both halves are needed:** every parity case asserts `spriteIndex == 0`, so
-  `index * SAT_ENTRY_BYTES` is multiplied by zero in every row; and the rows assert `p.targets[1].lo` and
-  never `.hi`, which is the one place the stride survives at index 0 (`sat_lo + SAT_ENTRY_BYTES - 1`).
-  **Not introduced by this parcel** — the rows predate the lib move. Fix is cheap and should ride with S2a,
-  which opens these rows anyway: assert `.hi`, and exercise one non-zero sprite index.
-  ⚑ **The transferable half: a guard described as the strongest in the tree had a hole reachable in one
-  mutation, and it was found only because the mutation parameter was VARIED rather than repeated.** The
-  implementing agent proved liveness with `tile_range`; repeating that would have re-confirmed the same
-  covered path forever. Bar 19's enumeration-parameter rule, arriving on a mutation instead of a survey.
+- **✔ F-PARITY-BLIND-TO-SAT-STRIDE, registered and CLOSED the same day; the registration moved whole to `OVERSEER-LOG.md` 2026-09-05 for the boot-read bound, and the closure is recorded above. The live rule it produced: a guard called the strongest in the tree had a hole reachable in ONE mutation, found only because the mutation parameter was VARIED rather than repeated. Bar 19's enumeration-parameter rule arriving on a mutation instead of a survey.**
 
 - **⚠ OPS, two, neither a defect in the work.** (a) **A fresh worktree has no `vendor/` symlink**, and
   without it 8 `save_state` rows FAIL while the whole 68000 SingleStepTests sweep SKIPS AND PASSES — the
