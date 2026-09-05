@@ -285,6 +285,27 @@ rows. `0` in place of an unknown is a defect, because `0` is a measurement.
 Server codes and messages appear verbatim; the panel may add remedies a human at this window can act on.
 *Check:* refusal strings are `format!`s over `e.code`/`e.message`, not rewrites of them.
 
+**P9 — A panel never quotes the specification at the person reading it.**
+*Added 2026-09-05, from the owner's second capture, and it is P8's inverse rather than a repeat.* P8 stops
+a panel **paraphrasing the server**; P9 stops it **citing the contract**. A section reference —
+`protocol.md §11.3`, `§11.27`, `D15` — is addressed to somebody holding the specification, and the person
+at the window is not. The *fact* the citation carries is usually worth saying; the citation is not. So
+`"Read emulator/scanlines for the rows … protocol.md §11.3"` becomes the fact in the reader's own terms,
+with the method name kept **only** if the reader could act on it, and the `§` reference moved to the doc
+comment of the code that composes the string — where the next editor needs it and the owner never sees it.
+*Check:* `grep -nE '§[0-9]|protocol\.md|\bD1[0-9]\b' crates/oracle-player/src/*.rs | grep -vE ':\s*//'`
+returns **12** at the revision this rule was written — but **triage before treating that as the work, and
+this is the rule's own first lesson.** Eight of the twelve are **test assertion messages** inside
+`#[cfg(test)]` regions (`layout.rs:477`, `stopping.rs:1240`, `stopping.rs:1803`, `main.rs:1748`,
+`memory.rs:982`), where a `§` reference is exactly right: the reader there *is* holding the specification.
+**Three are genuine runtime violations** — `palette.rs:309` (`"…the same registry a tool reads (D15)"`),
+`ui.rs:734`, `ui.rs:1423` — plus the pick readout's `protocol.md §11.3` clause that produced this rule.
+*(The figure was first written as "5" from an ungrounded grep and corrected before this page shipped; the
+raw count and the runtime count are different questions and only the second is the work.)*
+*Why it earned a rule rather than a fix:* the pick readout it came from is **correct, and the owner liked
+it** — *"ah it's able to recognize points now"*. The defect is register, not content, which is exactly the
+kind that survives every correctness review.
+
 ---
 
 ## 4. The before-case
