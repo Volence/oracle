@@ -1006,6 +1006,49 @@ can leave someone walking left forever with nothing on screen able to say why.
 the placeholders are gone (saving a layout of placeholders buys a migration); `Tab::Registers` content is
 filler on purpose while the docking it exercises is real.
 
+## ⚑ OWNER RULING, 2026-09-02T20:05:08Z — d-25 DOCK SHAPE: **option 3 `swap-toolkit`, NOT our recommendation**
+
+⚑ **RELAYED (empyrean-c0, 2026-09-05), NOT WITNESSED HERE — verified firsthand at empyrean
+`origin/main` `33ca3b7`:docs/OVERSEER.md:389.** Banked here 2026-09-05 because it had reached this lane
+through relay only: our own `docs/decisions.jsonl` still carries d-25/d-26 with our `fixed-slots`
+recommendation and no answer, and the contract defines no closed state for a card, so **nothing in this
+tree recorded that he overruled us.**
+
+**Rebuild the window on a real UI toolkit.** His words on the old shape: *"there are some nice things
+about it but it's not like I fully designed it myself, just had some features (lenses) added in, which
+wind up either not showing enough to make space or will show too mcuh and take up too mcuh spack. Was a
+clean idea but just not good enough."*
+
+⚑ **His lens verdict — *"a clean idea but just not good enough"* — RETIRES "lenses stay for what they
+suit" from ORACLE-DEBUG-UI's goal.** Do not restate lenses as a live design direction.
+
+**The three things the ruling said to answer BEFORE building are ALL ANSWERED AND BANKED ON `main`
+(measured 2026-09-05, before an agent was spent re-asking them):** (1) **which toolkit** — `egui` 0.36 +
+`eframe` + `egui_dock` 0.21 in `crates/oracle-player`, eight real tabs in `Tab::ALL`; (2) **a measured
+frame loop under it** — `docs/2026-09-02-toolkit-spike.md`, **0.22 ms median / 0.66 ms p99, ~1.3 % of a
+16.67 ms frame**, with `docs/2026-09-02-player-pacing-design.md` putting the stall risk in *present*, not
+compute; (3) **panels in a second toolkit-drawn window beside the existing player first** — true by
+construction, `oracle-player` (egui) runs beside `oracle-frontend` (minifb).
+**So the pre-build gate is CLOSED and this is build work, not a fresh decision card.** What remains of
+item 3 is its own second half — *the player migrates later* — which is where `F-FRONTEND-PALETTE-BUS` and
+`F-STATUS-CAVEAT-NOT-ON-STRIP` live.
+⚑ **The reason this is written down rather than just acted on:** a queue row's justification ages like a
+precedent narrative. This row asked for three answers that had existed for two days, and it is the second
+time in three days that has happened here (`ATTR-RGB-LATCH` asked for a CR adopted four days earlier).
+**Re-measure a row's premise before spending an agent on it, not after.**
+
+**▶ RETIREMENT GATE ON THE minifb FRONTEND — hub ruling under delegation, 2026-09-05 (empyrean-c0;
+theirs, do not upgrade it to his).** They ruled skip-the-card and verified our side independently before
+ruling (the spike doc's 0.22/0.66 ms **and** 60.03 fps sustained over 75 s; `egui_dock` actually *used* in
+`layout.rs` and `main.rs`, not merely pinned — behaviour, not presence). The condition rides with it:
+**`oracle-frontend` is not retired until the migrated player shows 60 fps and audio pacing measured on the
+REAL player under the toolkit, in the same form as the spike doc**, and the owner's window keeps working
+across the switch.
+⚠ **Cross-lane obligation, and it has a precedent behind it: aeon reloads into the owner's window BY
+SOCKET, so tell aeon and the hub the day the binary name or socket path changes.** A wrong process name
+has already cost a night of "window closed" reports. This is bar 14's consumer-set rule arriving on a
+process identity rather than a wire key.
+
 ## ⚠ Bootstrap — read the protocol at a COMMITTED revision (stays here on purpose)
 
 *This stanza did not move to `docs/OVERSEER-REFERENCE.md` with the bars around it, and must not:
