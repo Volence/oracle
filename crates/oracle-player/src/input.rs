@@ -91,12 +91,26 @@ pub fn decide(keys: Pad, wants_text: bool, latch: &mut bool) -> Pad {
 /// [`pad_from_keys`]'s reason: the owner's hands already know them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MachineKey {
-    /// `F1` — soft reset. `emulator/reset`; SRAM contents preserved, as on real hardware.
+    /// `F1` **and `Tab`** — soft reset. `emulator/reset`; SRAM contents preserved, as on real hardware.
     ///
-    /// `oracle-frontend` also binds `Tab` to this. **`Tab` is not bound here**, and that is a decision
-    /// rather than an omission: `egui` uses `Tab` for focus traversal between widgets, and a window whose
-    /// docked panels have text boxes in them would make one keystroke mean both "move to the next field"
-    /// and "reset the console".
+    /// ⚑ **`Tab` was deliberately unbound here until 2026-09-05, and the owner overruled it.**
+    ///
+    /// The original reasoning stands as a description of the cost: `egui` uses `Tab` for focus traversal
+    /// between widgets, and this window's docked panels have text boxes in them, so one keystroke now
+    /// means both "move to the next field" and "reset the console". The owner was told that and took the
+    /// trade: *"And I don't care aobut walking focus right now."* So the mechanism was never in doubt,
+    /// only which of the two behaviours is worth more, and `oracle-frontend` binds both keys
+    /// (`main.rs:38`, `main.rs:1919`) so this is parity with the window his hands already know.
+    ///
+    /// **Reversible, and the comment says so because he said "right now".** He dismissed the cost as it
+    /// stands today, not for all time; a window that later grows a form worth tabbing through is a reason
+    /// to raise it again, not a contradiction of this.
+    ///
+    /// What keeps it safe is not that `Tab` is rare but that [`poll_machine_keys`] returns nothing at all
+    /// while `Context::egui_wants_keyboard_input()`, so no machine key fires while a widget has the
+    /// keyboard. That is a property of the caller rather than of this binding, which is exactly why
+    /// [`tab_resets_only_when_no_widget_wants_the_keyboard`](tests::tab_resets_only_when_no_widget_wants_the_keyboard)
+    /// asserts it here instead of trusting it upstream.
     Reset,
     /// `F5` — re-read the ROM file and reset. `emulator/reload_rom`.
     ReloadRom,
@@ -125,7 +139,9 @@ pub enum MachineKey {
 /// than a slot nobody can reach.
 pub fn machine_keys(pressed: impl Fn(egui::Key) -> bool) -> Vec<MachineKey> {
     let mut out = Vec::new();
-    if pressed(egui::Key::F1) {
+    // Both keys, one action, and pushed once however many of them arrived: a hand on `F1` and `Tab` in
+    // the same frame asked for one reset, not two.
+    if pressed(egui::Key::F1) || pressed(egui::Key::Tab) {
         out.push(MachineKey::Reset);
     }
     if pressed(egui::Key::F5) {
@@ -183,6 +199,90 @@ pub fn poll_machine_keys(ctx: &egui::Context) -> Vec<MachineKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⚑ **`Tab` resets the console, and only while nothing else wants the keyboard.**
+    ///
+    /// The owner overruled the decision that kept `Tab` unbound (2026-09-05), accepting the loss of focus
+    /// traversal: *"And I don't care aobut walking focus right now."* What makes that safe is
+    /// [`poll_machine_keys`]'s latch, not the rarity of the key, so **the latch is what is asserted** and
+    /// it is asserted here rather than trusted upstream: a binding whose safety lives in its caller has
+    /// no gate at all if only the binding is tested.
+    ///
+    /// A **discriminating pair**, because either leg alone is satisfied by a defect. "Tab does nothing
+    /// while a widget has the keyboard" passes on a `Tab` that was never bound; "Tab resets" passes on a
+    /// latch that has stopped working. Only the two together say what shipped.
+    ///
+    /// The focused-widget leg asserts its own precondition. `egui_wants_keyboard_input()` is
+    /// `memory.focused().is_some()`, and a fixture that failed to focus anything would render this leg
+    /// vacuous while reading exactly like a pass.
+    #[test]
+    fn tab_resets_only_when_no_widget_wants_the_keyboard() {
+        // The binding itself: two keys, one action, and one action even when both arrive together.
+        assert_eq!(
+            machine_keys(|k| k == egui::Key::Tab),
+            vec![MachineKey::Reset],
+            "Tab is bound to Reset, as `oracle-frontend` binds it"
+        );
+        assert_eq!(
+            machine_keys(|k| k == egui::Key::F1),
+            vec![MachineKey::Reset]
+        );
+        assert_eq!(
+            machine_keys(|k| matches!(k, egui::Key::Tab | egui::Key::F1)),
+            vec![MachineKey::Reset],
+            "a hand on both keys in one frame asked for one reset, not two"
+        );
+
+        let tab_press = || {
+            let mut raw = egui::RawInput::default();
+            raw.events.push(egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            raw
+        };
+
+        // (a) Nothing wants the keyboard, so the key reaches the machine.
+        let ctx = egui::Context::default();
+        let mut got = Vec::new();
+        let mut out = ctx.run_ui(tab_press(), |ui| {
+            let ctx = ui.ctx();
+            assert!(
+                !ctx.egui_wants_keyboard_input(),
+                "the control leg must start with nothing focused, or it measures the latch instead"
+            );
+            got = poll_machine_keys(ctx);
+        });
+        // `FullOutput` panics on drop with unapplied texture deltas: no backend is going to apply them
+        // here, so they are discarded explicitly rather than left to be a confusing failure.
+        out.textures_delta.clear();
+        assert_eq!(
+            got,
+            vec![MachineKey::Reset],
+            "Tab must reset when no widget has the keyboard"
+        );
+
+        // (b) A widget has the keyboard, so the same key reaches nothing.
+        let ctx = egui::Context::default();
+        let mut got = Vec::new();
+        let mut out = ctx.run_ui(tab_press(), |ui| {
+            let ctx = ui.ctx();
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("a text box")));
+            assert!(
+                ctx.egui_wants_keyboard_input(),
+                "the fixture failed to focus anything, so this leg would pass without testing the latch"
+            );
+            got = poll_machine_keys(ctx);
+        });
+        out.textures_delta.clear();
+        assert!(
+            got.is_empty(),
+            "Tab reset the console while somebody was typing: {got:?}"
+        );
+    }
 
     /// The slot keys and the slot count are one set, derived from the container's own constant. A tenth
     /// slot with no key would be a save nobody can reach; an eleventh key would index off the end.

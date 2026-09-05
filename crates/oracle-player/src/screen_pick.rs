@@ -174,14 +174,54 @@ pub fn dot_at(image: ERect, pos: Pos2, ppp: f32, src_w: usize, src_h: usize) -> 
 // The panel's state
 // -------------------------------------------------------------------------------------------------------
 
-/// One line the tab shows about the last gesture, and whether it was a refusal.
+/// What the tab shows about the last gesture, and whether it was a refusal.
 ///
 /// **`refused` is a field, never a shape of the text.** The tab colours on it. A refusal that reads like a
 /// success is the one rendering mistake a debug surface cannot afford, and matching on a `"REFUSED"` prefix
-/// would be a second encoding of the same fact — the rule [`crate::ui::Echo`] already states one file over.
+/// would be a second encoding of the same fact: the rule [`crate::ui::Echo`] already states one file over.
+///
+/// # ⚑ Three parts rather than one paragraph, and the seam is the composer's
+///
+/// The readout used to be a single `String` rendered as one wrapped block, which is the shape that makes a
+/// correct answer hard to read: the sentence naming what was clicked, the addressing that backs it up, and
+/// the count of what got armed are three different kinds of statement and they all arrived at the same
+/// weight.
+///
+/// The split is **not** made by looking for punctuation in a finished string. `pick::Pick` already carries
+/// `headline` and `detail` as separate fields because `describe` composed them separately, and the armed
+/// count is this panel's own number. Every part here is handed over by whoever made it, which is the same
+/// discipline that keeps `refused` a field: a panel that recovered structure by parsing prose would break
+/// the first time the prose changed, silently and in the reader's favour.
 pub struct Readout {
-    pub text: String,
+    /// The sentence a person reads: what was clicked, in words, with any clauses the dot earned.
+    pub head: String,
+    /// The addressing behind it, or `None` for a gesture that has none (a mode change, a refusal).
+    pub detail: Option<String>,
+    /// What the gesture did to this panel's watches. `None` when the gesture was not a pick.
+    pub outcome: Option<String>,
     pub refused: bool,
+}
+
+impl Readout {
+    /// The whole readout as one string, **for tests only**.
+    ///
+    /// The tab draws the three parts at three weights and never joins them, so this is not what any
+    /// reader sees; it is the seam an assertion works across, because a panel this crate cannot
+    /// screenshot is only checkable where it becomes text. Deliberately not offered to the renderer:
+    /// a joined string beside a laid-out one is two spellings of one answer, and the flat one is the
+    /// shape this parcel exists to get rid of.
+    #[cfg(test)]
+    pub fn text(&self) -> String {
+        let mut s = self.head.clone();
+        for part in [self.detail.as_ref(), self.outcome.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            s.push('\n');
+            s.push_str(part);
+        }
+        s
+    }
 }
 
 /// The Screen tab's own state between repaints.
@@ -251,7 +291,7 @@ impl Panel {
                 let note = a.truncation_note();
                 match self.mode.arm(a.names) {
                     Ok(name) => {
-                        let mut s = format!("spawn mode armed — a click places {name}");
+                        let mut s = format!("spawn mode armed: a click places {name}");
                         if let Some(n) = note {
                             s.push_str(&format!(" ({n})"));
                         }
@@ -268,7 +308,7 @@ impl Panel {
     pub fn disarm_spawn(&mut self) {
         self.mode.disarm();
         self.last = Some(Readout::ok(
-            "spawn mode off — a click arms a watch again".into(),
+            "spawn mode off: a click arms a watch again".into(),
         ));
     }
 
@@ -313,7 +353,7 @@ impl Panel {
             // is the one thing a refusal must not become.
             Answer::Err(e) => {
                 self.last = Some(Readout::refused(format!(
-                    "hiding {layer} was refused — {} {}",
+                    "hiding {layer} was refused. {} {}",
                     e.code, e.message
                 )))
             }
@@ -352,7 +392,7 @@ impl Panel {
             None => "there is no picture on screen yet".to_string(),
         };
         format!(
-            "{drawn}, but the machine's mask is now {} — so nothing on this glass is the picture that \
+            "{drawn}, but the machine's mask is now {}, so nothing on this glass is the picture that \
              answer would be about. Nothing was armed. This clears itself on the next frame; if it does \
              not, the masked re-render is failing and the picture you are looking at is not the one the \
              bus is describing.",
@@ -438,7 +478,7 @@ impl Panel {
                         None => String::new(),
                     };
                     refusal = Some(format!(
-                        "the pick resolved but arming it was refused — {} {}{reason}",
+                        "the pick resolved but arming it was refused. {} {}{reason}",
                         e.code, e.message
                     ));
                     break;
@@ -446,24 +486,24 @@ impl Panel {
             }
         }
 
-        self.last = Some(match refusal {
-            Some(r) => Readout {
-                text: format!("{}\n{r}", p.description),
-                refused: true,
-            },
-            None => Readout {
-                // `p.description` is the sentence a person reads, composed by `pick` and carrying §11.27's
-                // colour caveat when it applies. The armed count is appended rather than substituted,
-                // because "nothing was armed" is a real outcome (a backdrop with no writable entry) and a
-                // description alone would not show it.
-                text: format!(
-                    "{}\n{} watch{} armed by this click",
-                    p.description,
+        // `p.headline` is the sentence a person reads, composed by `pick` and carrying the colour
+        // caveat when it applies; `p.detail` is the addressing behind it. Both come from `pick` already
+        // separated, so this panel is laying out parts rather than cutting up a paragraph.
+        //
+        // The outcome is a part of its own rather than a substitution, because "nothing was armed" is a
+        // real result (a backdrop with no writable entry) and a description alone would not show it.
+        self.last = Some(Readout {
+            head: p.headline.clone(),
+            detail: Some(p.detail.clone()),
+            outcome: Some(match &refusal {
+                Some(r) => r.clone(),
+                None => format!(
+                    "{} watch{} armed by this click",
                     self.armed.len(),
                     if self.armed.len() == 1 { "" } else { "es" }
                 ),
-                refused: self.armed.is_empty(),
-            },
+            }),
+            refused: refusal.is_some() || self.armed.is_empty(),
         });
     }
 
@@ -498,7 +538,7 @@ pub fn glass_alarm(glass: Option<LayerMask>, bus_mask: LayerMask) -> Option<Stri
         return None;
     }
     Some(format!(
-        "THE PICTURE BELOW IS NOT THE MACHINE'S PICTURE — it was drawn with {}, and the machine's mask \
+        "THE PICTURE BELOW IS NOT THE MACHINE'S PICTURE. It was drawn with {}, and the machine's mask \
          is now {}. Nothing here can be read as the machine's view until the next frame.",
         describe_mask(drawn),
         describe_mask(bus_mask)
@@ -539,22 +579,27 @@ pub fn mask_statement(mask: LayerMask) -> Option<String> {
         return None;
     }
     Some(format!(
-        "HIDDEN: {} — this picture is re-rendered from current VDP state, so mid-frame palette effects \
+        "HIDDEN: {}. This picture is re-rendered from current VDP state, so mid-frame palette effects \
          are not in it",
         hidden.join(" ")
     ))
 }
 
 impl Readout {
-    fn ok(text: String) -> Self {
+    /// A one-part answer: a mode change, or anything with no addressing behind it.
+    fn ok(head: String) -> Self {
         Readout {
-            text,
+            head,
+            detail: None,
+            outcome: None,
             refused: false,
         }
     }
-    fn refused(text: String) -> Self {
+    fn refused(head: String) -> Self {
         Readout {
-            text,
+            head,
+            detail: None,
+            outcome: None,
             refused: true,
         }
     }
@@ -984,9 +1029,9 @@ mod tests {
             let r = panel.readout().expect("a toggle says what it did");
             assert!(!r.refused, "showing/hiding a real layer is not a refusal");
             assert!(
-                r.text.contains(name),
+                r.text().contains(name),
                 "it must name the layer: {:?}",
-                r.text
+                r.text()
             );
 
             // …and back, so this is a control rather than a one-way door.
@@ -996,6 +1041,165 @@ mod tests {
                 bus.layers().is_all(),
                 "restoring one layer must restore the whole mask in this fixture"
             );
+        }
+    }
+
+    /// ⚑ **The readout cites nothing at the reader, carries no dash, and arrives in three parts.**
+    ///
+    /// P9 and P10 of the style page, plus the reason this parcel touched the readout at all.
+    ///
+    /// The P9 before-case was **not in this file**, and finding that out is most of what this test is
+    /// worth writing down: the `protocol.md §11.3` clause the rule was written from lives in
+    /// `oracle_core::render::cram_divergence_caveat`, which composes the colour caveat that
+    /// `pick::resolve` folds into the headline. So it is fixed at its source, where
+    /// `emulator/pixel_attribution` reads the same sentence, and `render.rs`'s own
+    /// `the_caveat_cites_nothing_at_the_reader_and_carries_no_dash` is the gate on the string itself.
+    /// **This one is the gate on the string arriving here**, which is the half that would go unnoticed if
+    /// the two ever separated.
+    ///
+    /// Every gesture this panel can produce a readout from is driven, not just the pick: a rule checked on
+    /// one path is checked on one path.
+    #[test]
+    fn every_readout_this_panel_can_show_is_free_of_citations_and_dashes() {
+        let (mut machine, mut bus) = rig();
+        let mask = bus.layers();
+        let mut panel = Panel::default();
+
+        let mut seen: Vec<(&str, String)> = Vec::new();
+        let mut take = |what: &'static str, p: &Panel| {
+            let r = p.readout().expect("the gesture left a readout");
+            seen.push((what, r.text()));
+        };
+
+        // 1. A pick that resolves. The fixture's opaque plane-A cell is at (2,2).
+        panel.click(&mut machine, &mut bus, Some(mask), (2, 2));
+        take("a resolved pick", &panel);
+        // …and the pick's parts are three, which is what the tab lays out.
+        {
+            let r = panel.readout().expect("the pick left a readout");
+            assert!(
+                r.detail.is_some() && r.outcome.is_some(),
+                "a pick's answer is the sentence, the addressing and the outcome, and the tab draws \
+                 them at three weights: {r:?}",
+                r = (&r.head, &r.detail, &r.outcome)
+            );
+            assert!(
+                !r.head.contains('\n'),
+                "the headline is one line; the parts are fields, not a paragraph split later: {:?}",
+                r.head
+            );
+        }
+
+        // 2. A pick on the backdrop, which is the arm that carries the colour caveat's wording.
+        panel.click(&mut machine, &mut bus, Some(mask), (60, 60));
+        take("a backdrop pick", &panel);
+
+        // 3. A click while the glass and the machine disagree: the refusal path.
+        panel.click(&mut machine, &mut bus, None, (2, 2));
+        take("a refused click", &panel);
+
+        // 4. A layer toggle, through the served method.
+        panel.set_layer(&mut machine, &mut bus, "planeA", false);
+        take("a layer toggle", &panel);
+        panel.set_layer(&mut machine, &mut bus, "planeA", true);
+
+        // 5. Spawn mode, armed and disarmed.
+        panel.arm_spawn(&mut machine, &mut bus);
+        take("spawn armed", &panel);
+        panel.cycle_spawn();
+        take("spawn cycled", &panel);
+        panel.disarm_spawn();
+        take("spawn off", &panel);
+
+        // 6. The two standing statements the tab draws above the picture.
+        let hidden = {
+            // Built through the core's own vocabulary rather than from a name typed here, the same
+            // derivation the four checkboxes use.
+            let (_, layer) = LayerMask::targets()
+                .into_iter()
+                .find(|(n, _)| *n == "planeA")
+                .expect("the core publishes a planeA target");
+            let mut m = LayerMask::ALL;
+            m.set(layer, false);
+            m
+        };
+        seen.push((
+            "the mask statement",
+            mask_statement(hidden).expect("a hidden layer produces a statement"),
+        ));
+        seen.push((
+            "the glass alarm",
+            glass_alarm(Some(hidden), mask).expect("disagreeing masks produce an alarm"),
+        ));
+
+        // 7. ⚑ **Every spawn refusal, and the spawn success line.**
+        //
+        // `Panel::place` shows `spawn::Refusal::terminal` and `spawn::Placed::terminal` verbatim, so those
+        // strings are this readout's whatever crate composed them. Reached by construction rather than by
+        // driving a click, because five of the seven are engine refusals a fixture machine will not
+        // produce, and a rule checked only on the reachable ones is checked on the reachable ones. This
+        // is the gap the first version of this test had: it drove `arm_spawn` on a listing-less fixture,
+        // got the one refusal that path yields, and never saw the other six.
+        let bounds = spawn::Bounds {
+            width: 1024,
+            height: 768,
+        };
+        let remedy = pause_remedy();
+        for (what, r) in [
+            ("spawn outside the act", bounds.outside(9999, 9999)),
+            ("spawn with no act extent", spawn::Bounds::unmeasurable()),
+            ("spawn with no act loaded", spawn::Bounds::no_act()),
+            (
+                "a served spawn refusal",
+                spawn::Refusal {
+                    code: Some(-32005),
+                    reason: Some("machineRunning".into()),
+                    message: "emulator/object_spawn needs the machine paused; call emulator/pause \
+                              first"
+                        .into(),
+                    remedy: None,
+                },
+            ),
+        ] {
+            seen.push((what, r.terminal("ObjDef_Ring", Some(&remedy))));
+        }
+        // …and the success line, which is the longest sentence this readout ever shows.
+        seen.push((
+            "a placed object",
+            spawn::Placed {
+                handle: "0x8123".into(),
+                addr: "0x00FF8123".into(),
+                slot: Some(7),
+                asked: (100, 200),
+                now: (104, 200),
+                frames_advanced: 1,
+                caveat: None,
+            }
+            .terminal("ObjDef_Ring"),
+        ));
+
+        // The anti-vacuity clause: every gesture above must actually have said something.
+        assert_eq!(seen.len(), 14, "a gesture produced no readout: {seen:?}");
+        assert!(
+            seen.iter().any(|(_, t)| t.contains("planeA")),
+            "the collected readouts must include real resolved content: {seen:?}"
+        );
+
+        for (what, text) in &seen {
+            for bad in ["§", "protocol.md"] {
+                assert!(
+                    !text.contains(bad),
+                    "{what} quotes the specification at the reader ({bad:?}). A section reference is \
+                     addressed to somebody holding the contract, and the person at this window is \
+                     not:\n{text}"
+                );
+            }
+            for bad in ['\u{2014}', '\u{2013}'] {
+                assert!(
+                    !text.contains(bad),
+                    "{what} carries {bad:?}. Use a comma, a colon, a period or parentheses:\n{text}"
+                );
+            }
         }
     }
 
@@ -1053,17 +1257,17 @@ mod tests {
         assert!(
             !r.refused,
             "a click on a masked picture this window actually drew is answerable: {:?}",
-            r.text
+            r.text()
         );
         assert!(
-            r.text.contains("backdrop"),
+            r.text().contains("backdrop"),
             "with plane A hidden the dot IS the backdrop — the panel must describe the picture: {:?}",
-            r.text
+            r.text()
         );
         assert!(
-            r.text.contains("planeA"),
+            r.text().contains("planeA"),
             "and it must say the picture is a masked one, naming what is hidden: {:?}",
-            r.text
+            r.text()
         );
 
         let masked = armed_on_the_machine(&mut machine, &mut bus);
@@ -1129,16 +1333,16 @@ mod tests {
         let r = panel
             .readout()
             .expect("a refusal is a sentence, never silence");
-        assert!(r.refused, "and it must be marked as one: {:?}", r.text);
+        assert!(r.refused, "and it must be marked as one: {:?}", r.text());
         assert!(
-            r.text.contains("planeA"),
+            r.text().contains("planeA"),
             "it must name what the machine now hides: {:?}",
-            r.text
+            r.text()
         );
         assert!(
-            r.text.contains("every layer shown"),
+            r.text().contains("every layer shown"),
             "…and what the glass was drawn with, or a reader cannot tell which is which: {:?}",
-            r.text
+            r.text()
         );
 
         // …and once the picture catches up, the same click answers. The gate is a gate, not a wall.
@@ -1148,7 +1352,7 @@ mod tests {
         assert!(
             !panel.readout().expect("a readout").refused,
             "with the glass and the machine back in step the click must answer: {:?}",
-            panel.readout().map(|r| r.text.clone())
+            panel.readout().map(|r| r.text())
         );
     }
 
@@ -1163,11 +1367,11 @@ mod tests {
         assert_eq!(machine.image_mask(), None, "the precondition: no picture");
         panel.click(&mut machine, &mut bus, None, (2, 2));
         let r = panel.readout().expect("a refusal is a sentence");
-        assert!(r.refused, "{:?}", r.text);
+        assert!(r.refused, "{:?}", r.text());
         assert!(
-            r.text.contains("no picture on screen yet"),
+            r.text().contains("no picture on screen yet"),
             "it must say there is no picture rather than describe a mask: {:?}",
-            r.text
+            r.text()
         );
         assert_eq!(
             armed_on_the_machine(&mut machine, &mut bus),
@@ -1292,7 +1496,7 @@ mod tests {
         assert!(
             !panel.readout().expect("a standing readout").refused,
             "a click that armed a watch is not a refusal: {:?}",
-            panel.readout().map(|r| r.text.clone())
+            panel.readout().map(|r| r.text())
         );
 
         // --- Click the backdrop. The prior watch is retired and a CRAM entry takes its place. ---

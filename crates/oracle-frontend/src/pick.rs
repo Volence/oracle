@@ -126,10 +126,22 @@ pub struct Pick {
     /// `[planeB:won, backdrop:lostToPriority]` is the right data and the wrong answer. So the structured
     /// detail keeps its place; it just stops being the top line.
     pub headline: String,
-    /// The full human-readable line, for the terminal log — the headline, then everything the click
+    /// The full human-readable line, for the terminal log: the headline, then everything the click
     /// resolved. Kept as one string because it is what goes to stdout, and the two halves are never wanted
     /// apart there.
     pub description: String,
+    /// ⚑ **The second half of [`description`](Self::description), on its own**, for a surface that can lay
+    /// an answer out instead of printing it.
+    ///
+    /// A terminal gets one line and reads it left to right; a panel has two dimensions and can put the
+    /// sentence a person reads above the addressing they check it against. Splitting there is free
+    /// *because the composer already knows where the seam is* -- `describe` joins these two -- and the
+    /// alternative, a panel finding the seam by looking for punctuation in the finished string, is prose
+    /// sniffing of exactly the kind the panel rules forbid for refusals.
+    ///
+    /// `description` stays as it was and remains what parity is asserted against, so nothing on the wire
+    /// or in the log moves.
+    pub detail: String,
     /// A short form for the on-screen toast. The overlay draws at window resolution but a 960-pixel window
     /// still only fits ~50 characters at a legible size, so the toast names *what was armed* and the terminal
     /// keeps the detail.
@@ -174,22 +186,26 @@ const TILE_SPACE: &str = "VRAM-absolute";
 ///
 /// The clauses are a list because a dot can earn both: a masked picture whose palette entry was also
 /// repainted after its line drew is two separate things a reader has to be told, and dropping either
-/// because the other fired would be a silent choice made on the reader's behalf. Order is fixed — mask
+/// because the other fired would be a silent choice made on the reader's behalf. Order is fixed, mask
 /// first, because it says *which picture this is about* and the colour clause is about that picture.
+///
+/// Returns all three parts. The join used to be an em dash and is now a full stop: the owner's 2026-09-05
+/// ruling bars em and en dashes from a tool's user-facing text (`design/CHROME_SPEC.md`, "Text in the
+/// tools"), and a dash standing in for a full stop is a full stop.
 fn describe(
     headline: String,
     mask: LayerMask,
     colour: Option<String>,
     detail: String,
-) -> (String, String) {
+) -> (String, String, String) {
     let clauses: Vec<String> = [mask_clause(mask), colour].into_iter().flatten().collect();
     let headline = if clauses.is_empty() {
         headline
     } else {
         format!("{headline} ({})", clauses.join("; "))
     };
-    let description = format!("{headline} — {detail}");
-    (headline, description)
+    let description = format!("{headline} {detail}");
+    (headline, description, detail)
 }
 
 /// Resolve the dot at `(x, y)` into a description and the ranges worth watching, **under the display mask
@@ -245,9 +261,10 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
             // does, so the geometry here is the geometry that drew the pixel.
             let sprites = vdp.sprites_decoded();
             let Some(s) = sprites.get(usize::from(index)) else {
-                let (headline, description) = describe(
+                let (headline, description, detail) = describe(
                     format!(
-                        "That dot is a sprite, but sprite {index} is out of range — nothing to watch"
+                        "That dot is a sprite, but sprite {index} is out of range, so there is \
+                         nothing to watch"
                     ),
                     mask,
                     colour,
@@ -256,6 +273,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
                 return Pick {
                     headline,
                     description,
+                    detail,
                     toast: format!("SPRITE {index}: OUT OF RANGE"),
                     targets: Vec::new(),
                 };
@@ -307,13 +325,13 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
                         .to_string()
                 }
             };
-            let (headline, description) = describe(
+            let (headline, description, detail) = describe(
                 format!("That dot is sprite {index}, {drawn_from}."),
                 mask,
                 colour,
                 format!(
-                    "sprite {index} at ({},{}) {}x{} cells, base ${:03X}, pal {}{flips}{} — {tile_note}, \
-                     SAT entry @ VRAM ${sat_lo:04X}-${sat_hi:04X}",
+                    "sprite {index} at ({},{}) {}x{} cells, base ${:03X}, pal {}{flips}{}: \
+                     {tile_note}, SAT entry @ VRAM ${sat_lo:04X}-${sat_hi:04X}",
                     s.x,
                     s.y,
                     s.width_cells,
@@ -326,6 +344,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
             Pick {
                 headline,
                 description,
+                detail,
                 toast: format!("WATCH SPRITE {index} {short_tile} + SAT ${sat_lo:04X}"),
                 targets,
             }
@@ -334,16 +353,17 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
             // Nothing is *drawn* at a backdrop dot — the only writable thing behind it is the palette entry
             // reg $07 selects, so that is what a "who changes this?" question means here.
             let idx = u32::from(attr.cram_index);
-            let (headline, description) = describe(
+            let (headline, description, detail) = describe(
                 format!(
-                    "Nothing is drawn at ({x},{y}) — you clicked the backdrop, so the colour comes \
+                    "Nothing is drawn at ({x},{y}): you clicked the backdrop, so the colour comes \
                      straight from palette entry {}.",
                     attr.cram_index
                 ),
                 mask,
                 colour,
                 format!(
-                    "backdrop at ({x},{y}) — CRAM entry {} (palette {}, colour {}) @ CRAM ${:02X}-${:02X}",
+                    "backdrop at ({x},{y}): CRAM entry {} (palette {}, colour {}) @ CRAM \
+                     ${:02X}-${:02X}",
                     attr.cram_index,
                     attr.cram_index / 16,
                     attr.cram_index % 16,
@@ -354,6 +374,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
             Pick {
                 headline,
                 description,
+                detail,
                 toast: format!("WATCH BACKDROP CRAM {}", attr.cram_index),
                 targets: vec![WatchTarget {
                     space: Space::Cram,
@@ -372,7 +393,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
             // `cell` is `Some` for exactly these three winners (the core returns `None` only for
             // sprite/backdrop), but the fallback keeps the picker total rather than unwrapping.
             let Some(cell) = attr.cell else {
-                let (headline, description) = describe(
+                let (headline, description, detail) = describe(
                     format!("That dot is {plane}, but the VDP reported no cell for it."),
                     mask,
                     colour,
@@ -381,12 +402,13 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
                 return Pick {
                     headline,
                     description,
+                    detail,
                     toast: "NO CELL REPORTED".to_string(),
                     targets: Vec::new(),
                 };
             };
             let (lo, hi) = tile_range(cell.tile);
-            let (headline, description) = describe(
+            let (headline, description, detail) = describe(
                 format!(
                     "That dot is {plane}, drawn from {TILE_SPACE} tile ${:03X}.",
                     cell.tile
@@ -394,7 +416,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
                 mask,
                 colour,
                 format!(
-                    "{plane} tile ${:03X} (pal {}{}) @ VRAM ${lo:04X}-${hi:04X} — click ({x},{y})",
+                    "{plane} tile ${:03X} (pal {}{}) @ VRAM ${lo:04X}-${hi:04X}, click ({x},{y})",
                     cell.tile,
                     cell.palette,
                     if cell.priority { " hi-pri" } else { "" },
@@ -403,6 +425,7 @@ pub fn resolve(vdp: &Vdp, x: u16, y: u16, mask: LayerMask, now_mclk: u64) -> Pic
             Pick {
                 headline,
                 description,
+                detail,
                 toast: format!("WATCH {plane} TILE ${:03X}", cell.tile),
                 targets: vec![WatchTarget {
                     space: Space::Vram,

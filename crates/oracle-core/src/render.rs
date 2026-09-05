@@ -1030,6 +1030,21 @@ pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
 /// pre-first-frame arm and the exact boundary instant are both awkward to pose on the wire and trivial to
 /// state here (`the_caveat_turns_on_exactly_at_the_instant_the_line_drew` and its four siblings below).
 ///
+/// # ⚑ The sentence cites nothing at the reader, and carries no dash
+///
+/// The section this rule comes from is `contract/protocol.md` §11.27, and the key the caveat is served
+/// under is §11.3's `emulator/pixel_attribution` reply. **Both references belong here and neither belongs
+/// in the sentence**: a `§` reference is addressed to somebody holding the specification, and the person
+/// reading a caveat at a debug window is not (the style page's P9, whose named before-case was this exact
+/// string). The *fact* the citation carried is that the reported colour is the live one rather than the
+/// drawn one, and the sentence says that in words. `emulator/scanlines` stays, because it is the one thing
+/// in the sentence a reader can act on, and `rgb` stays as the wire's spelling of "the colour reported
+/// here" -- neither is a citation.
+///
+/// The em dash goes with it, per the owner's 2026-09-05 ruling (`design/CHROME_SPEC.md`, "Text in the
+/// tools"): no em dashes and no en dashes in a tool's user-facing text, and this sentence is user-facing
+/// on both surfaces.
+///
 /// # The wording names no consumer's field
 ///
 /// The sentence is shown to a person verbatim on **both** surfaces, so it says "the colour reported here"
@@ -1041,9 +1056,9 @@ pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) 
     let Some(last_completed) = frames_elapsed.checked_sub(1) else {
         return Some(
             "no frame has finished drawing yet, so there is nothing on screen for this colour to \
-             disagree with — the colour reported here is resolved from live VDP state, which is what \
-             this answer is about (`rgb` on the wire; protocol.md §11.3). Read `emulator/scanlines` \
-             for the rows the raster actually drew."
+             disagree with. The colour reported here is resolved from live VDP state, which is what \
+             this answer is about (`rgb` on the wire). Read `emulator/scanlines` for the rows the \
+             raster actually drew."
                 .into(),
         );
     };
@@ -1055,9 +1070,9 @@ pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) 
     (written_mclk >= line_drawn_at).then(|| {
         format!(
             "this dot's palette entry was written after line {y} of the last completed frame was \
-             drawn, so the picture on screen may show a different colour here — the colour reported \
-             here is the LIVE one (`rgb` on the wire; protocol.md §11.3). Read `emulator/scanlines` \
-             for the rows the raster actually drew."
+             drawn, so the picture on screen may show a different colour here. The colour reported \
+             here is the LIVE one (`rgb` on the wire). Read `emulator/scanlines` for the rows the \
+             raster actually drew."
         )
     })
 }
@@ -2155,6 +2170,54 @@ mod tests {
             cram_divergence_caveat(Some(written), 150, now).is_none(),
             "line 150 drew AFTER the write: the raster already carried the new colour, so silence"
         );
+    }
+
+    /// ⚑ **Neither arm quotes the specification at the reader, and neither carries a dash.**
+    ///
+    /// This sentence is the style page's P9 before-case: it used to end *"(`rgb` on the wire; protocol.md
+    /// §11.3). Read `emulator/scanlines` …"*, and a `§` reference is addressed to somebody holding the
+    /// contract while the person reading it at a debug window is not. The same sentence is also the shape
+    /// P10 bars, an em dash standing in for a full stop.
+    ///
+    /// Both halves are asserted, because a rule checked only by absence passes on a sentence that has been
+    /// emptied: **the facts have to survive**, so each arm is checked to still name the live colour, its
+    /// wire spelling, and the method a reader can go and call.
+    ///
+    /// It lives in `oracle-core` because the sentence does: `emulator/pixel_attribution` and the player's
+    /// click panel are both consumers of this one function, and a rule enforced on only one of them would
+    /// be enforced on neither.
+    #[test]
+    fn the_caveat_cites_nothing_at_the_reader_and_carries_no_dash() {
+        let arms = [
+            // The pre-first-frame arm.
+            cram_divergence_caveat(Some(0), 0, MCLK_PER_FRAME - 1).expect("no frame has completed"),
+            // The ordinary arm: a write at the instant line 0 of the last completed frame drew.
+            cram_divergence_caveat(Some(MCLK_PER_FRAME), 0, 2 * MCLK_PER_FRAME)
+                .expect("the write lands on the drawn line"),
+        ];
+        assert_ne!(arms[0], arms[1], "the two arms are different sentences");
+
+        for c in &arms {
+            for bad in ["§", "protocol.md", "\u{2014}", "\u{2013}"] {
+                assert!(
+                    !c.contains(bad),
+                    "{bad:?} reaches the reader. A section reference is addressed to somebody holding \
+                     the contract, and a dash standing in for a full stop is a full stop; got:\n{c}"
+                );
+            }
+            // …and the facts the citation used to sit beside are all still said.
+            for want in [
+                "colour reported here",
+                "`rgb` on the wire",
+                "emulator/scanlines",
+            ] {
+                assert!(
+                    c.contains(want),
+                    "the sentence dropped `{want}`. Removing a citation must not remove the fact it \
+                     was attached to; got:\n{c}"
+                );
+            }
+        }
     }
 
     /// **The pre-first-frame arm, and it is not the same sentence.** Both arms name

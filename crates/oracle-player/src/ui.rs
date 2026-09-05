@@ -377,7 +377,7 @@ impl Panels<'_> {
         // must show as it is.
         ui.horizontal(|ui| {
             ui.weak("state:");
-            if ui.button("◀").on_hover_text("F6 — previous slot").clicked() {
+            if ui.button("◀").on_hover_text("F6: previous slot").clicked() {
                 self.states.step(-1);
             }
             let slot = self.states.slot();
@@ -389,12 +389,12 @@ impl Panels<'_> {
                     "(empty)"
                 }
             ));
-            if ui.button("▶").on_hover_text("F7 — next slot").clicked() {
+            if ui.button("▶").on_hover_text("F7: next slot").clicked() {
                 self.states.step(1);
             }
             if ui
                 .button("save")
-                .on_hover_text("F2 — write this machine to the selected slot")
+                .on_hover_text("F2: write this machine to the selected slot")
                 .clicked()
             {
                 self.states.save(self.machine);
@@ -405,7 +405,7 @@ impl Panels<'_> {
             // half-restored machine on the glass.
             if ui
                 .button("load")
-                .on_hover_text("F4 — restore this machine from the selected slot")
+                .on_hover_text("F4: restore this machine from the selected slot")
                 .clicked()
             {
                 let mut said = Vec::new();
@@ -426,13 +426,48 @@ impl Panels<'_> {
             ui.colored_label(colour, &n.text);
         }
         if let Some(r) = self.screen.readout() {
+            // ⚑ **The last click's answer, laid out in three weights instead of one wrapped block.**
+            //
+            // The three parts are `screen_pick::Readout`'s own fields, handed over by whoever composed
+            // them: `pick::Pick` already carries the sentence and the addressing separately, and the
+            // outcome is this panel's own count. Nothing here recovers structure by looking at the text,
+            // which is the same rule that keeps the colour on `refused` rather than on a `"REFUSED"`
+            // prefix.
+            //
+            // The card is what makes it findable at all. A standing readout drawn as loose text under a
+            // column of controls reads as one more control's label, which is how a correct answer ends up
+            // unread.
+            //
             // Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
-            let colour = if r.refused {
-                ui.visuals().error_fg_color
-            } else {
-                ui.visuals().text_color()
-            };
-            ui.colored_label(colour, &r.text);
+            let refused = r.refused;
+            card(ui, |ui| {
+                let head = if refused {
+                    ui.visuals().error_fg_color
+                } else {
+                    ui.visuals().strong_text_color()
+                };
+                ui.label(egui::RichText::new(&r.head).color(head));
+                if let Some(d) = &r.detail {
+                    // The addressing recedes and goes monospace: it is what a reader checks the sentence
+                    // against, in the spelling they would compare with a tool's reply.
+                    ui.label(
+                        egui::RichText::new(d)
+                            .monospace()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                if let Some(o) = &r.outcome {
+                    ui.label(
+                        egui::RichText::new(o)
+                            .text_style(egui::TextStyle::Small)
+                            .color(if refused {
+                                ui.visuals().error_fg_color
+                            } else {
+                                crate::theme::SUCCESS
+                            }),
+                    );
+                }
+            });
         }
     }
 
@@ -1679,23 +1714,20 @@ fn text_w(ui: &egui::Ui, face: &egui::FontId, text: &str) -> f32 {
 /// and a symbol name has no bound: sized to its widest entry it would push the numeric columns off the
 /// panel, which is the one failure a fixed-column table exists to prevent.
 fn column_widths(ui: &egui::Ui, cols: &[objects::Col], cells: &[Vec<String>]) -> Vec<f32> {
-    let st = |t: egui::TextStyle| {
-        ui.style()
-            .text_styles
-            .get(&t)
-            .cloned()
-            .unwrap_or_else(|| egui::FontId::proportional(13.0))
-    };
-    let (mono, body, head) = (
-        st(egui::TextStyle::Monospace),
-        st(egui::TextStyle::Body),
-        st(egui::TextStyle::Small),
-    );
+    if cols.is_empty() {
+        return Vec::new();
+    }
+    let head = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Small)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(10.0));
+    let faces: Vec<egui::FontId> = cols.iter().map(|c| cell_face(ui, c)).collect();
     let mut w: Vec<f32> = cols.iter().map(|c| text_w(ui, &head, c.head)).collect();
     for row in cells {
-        for (i, cell) in row.iter().enumerate() {
-            let face = if cols[i].mono { &mono } else { &body };
-            w[i] = w[i].max(text_w(ui, face, cell));
+        for (i, cell) in row.iter().enumerate().take(cols.len()) {
+            w[i] = w[i].max(text_w(ui, &faces[i], cell));
         }
     }
     for x in w.iter_mut() {
@@ -1724,14 +1756,36 @@ fn table_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, text: &str, colour: e
         egui::Layout::left_to_right(egui::Align::Center)
     };
     let h = ui.spacing().interact_size.y;
+    // Whether this cell is going to be cut off, measured before it is drawn rather than inferred from
+    // the response afterwards: `Label::truncate` allocates the width it was given either way, so the
+    // rect it hands back says nothing about whether any glyphs were dropped.
+    let cut = text_w(ui, &cell_face(ui, c), text) > w;
     ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
         let r = ui.add(egui::Label::new(rich).truncate());
         // The short cell says the object has no name; the sentence saying *why* is a fact about the
         // listing and belongs on the hover, not in a column six characters wide.
         if text == objects::NO_NAME {
             r.on_hover_text(objects::NO_NAME_WHY);
+        } else if cut {
+            // A truncated cell is unreadable, not merely tidy, so the whole of it is one hover away.
+            r.on_hover_text(text);
         }
     });
+}
+
+/// The face a cell of `c` is drawn in. One function, so the width measurement and the `RichText` cannot
+/// disagree about which font is about to be used.
+fn cell_face(ui: &egui::Ui, c: &objects::Col) -> egui::FontId {
+    let want = if c.mono {
+        egui::TextStyle::Monospace
+    } else {
+        egui::TextStyle::Body
+    };
+    ui.style()
+        .text_styles
+        .get(&want)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(13.0))
 }
 
 /// A table of slots: a header row, hairline-separated, then one banded row per slot.

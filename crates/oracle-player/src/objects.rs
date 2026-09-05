@@ -2004,6 +2004,15 @@ mod bus_parity {
     /// The owner's ruling of 2026-09-05, filed suite-wide in `design/CHROME_SPEC.md` under "Text in the
     /// tools". A dash standing in for a colon is almost always a colon.
     ///
+    /// P9 rides along, because the refusal below is the tab's whole-panel state and one sweep answers
+    /// both questions about it.
+    ///
+    /// ⚑ **The refusals are the REAL ones**, driven through `Objects::of(None, ..)` and `player_state`,
+    /// not `RpcError`s written here. A hand-made error carries whatever text the test typed, so it would
+    /// have passed this while the sentence a person actually sees carried both an em dash and a
+    /// `protocol.md §11.25`. It did: the first version of this test built the error by hand and was green
+    /// on a defect that was on screen.
+    ///
     /// **What this covers, said plainly:** every string the tab's *data layer* composes, which is the
     /// headings, the labelled facts, every table cell, the standing sentences and the refusal. It cannot
     /// reach the literals the renderer holds inline, because those never become values this crate can
@@ -2041,10 +2050,20 @@ mod bus_parity {
             CEILING_UNKNOWN.into(),
             RINGS_WHY.into(),
             CAPACITY.into(),
-            refusal_text(&RpcError::new(
-                code::NO_SYMBOLS_LOADED,
-                "no symbol table is loaded",
-            )),
+            // The whole-tab refusal, as the tab reaches it: `decoders::derive(None)`'s own words.
+            match Objects::of(None, &sys) {
+                Objects::Refused(e) => refusal_text(&e),
+                Objects::Pool(_) => panic!("no listing must refuse, or this arm is unchecked"),
+            },
+            // …and the player section's own refusal, a different sentence from a different function,
+            // shown while the pool table beside it renders.
+            match player_state(
+                Some(&SymbolTable::parse(&listing(&pool_rows(BASE, SST)[..2])).expect("parses")),
+                &sys,
+            ) {
+                Err(e) => e.message,
+                Ok(_) => panic!("a listing with no pool partition must refuse the player section"),
+            },
         ];
         shown.extend(
             POOL_COLS
@@ -2081,6 +2100,14 @@ mod bus_parity {
                 assert!(
                     !s.contains(bad),
                     "{bad:?} reaches the reader in {s:?}. Use a comma, a colon, a period or parentheses"
+                );
+            }
+            // P9: a section reference is addressed to somebody holding the contract, and the person at
+            // this window is not.
+            for bad in ["§", "protocol.md"] {
+                assert!(
+                    !s.contains(bad),
+                    "{bad:?} quotes the specification at the reader in {s:?}"
                 );
             }
         }

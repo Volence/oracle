@@ -8333,7 +8333,7 @@ fn decoder_include_bytes_param(params: &Value) -> Result<bool, RpcError> {
 fn no_symbols() -> RpcError {
     RpcError::new(
         code::NO_SYMBOLS_LOADED,
-        "no symbol table is loaded — call emulator/load_symbols first",
+        "no symbol table is loaded. Call emulator/load_symbols first",
     )
 }
 
