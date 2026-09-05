@@ -33,6 +33,35 @@ technique aeon built. The owner said so from his first sentence and was right ev
 not the floor scene. The game evidently sets the mode per scene. A clean `$0B` wants him paused at the floor;
 the table's own contents are what carry the finding here.
 
+### The per line entries, and one more number of mine that falls
+
+| line | position 1 | position 2 | delta |
+|---|---|---|---|
+| 176 | -4 | -32 | -28 |
+| 190 | -5 | -37 | -32 |
+| 200 | -5 | -40 | -35 |
+| 210 | -6 | -43 | -37 |
+| 220 | -6 | -46 | -40 |
+| 223 | -6 | -47 | -41 |
+
+⚠ **The "the plane scrolled 96 px between positions" figure earlier in this file is WITHDRAWN.** The table
+says **37 px** at line 210 for the same pair. The 96 came from a first match index lookup into nametable
+rows where about **21 of 64 tiles repeat**, a flaw identified earlier in this same investigation and then
+quoted several more times anyway. **The table is the quantity itself rather than a proxy for it.**
+
+### The gain is not comparable across ROMs without the camera
+
+aeon measured their own floor at three cameras: `k` = -1.282, -2.113, -3.225 px/row, with `camX/|k|` =
+574.1, 575.5, 575.5, against a derived prediction of 576.0. **Linear through the origin, and it validates
+their formula on a running ROM rather than on paper.**
+
+**So "theirs is about half ours" is not a comparison and is not stated here.** If both gains are linear in
+camera x, a `k` measured at an unstated camera is a point on a line, not a property of the ROM. The
+comparable quantity is `dk/dcamX`, or equivalently `camX/|k|`. **Theirs is 575.5. Toy Story's is UNMEASURED**,
+because this lane has no camera x for that ROM: no symbols, no known camera variable, and the plane B scroll
+is not a camera position. *(That substitution was declined by aeon before it could be made, and the
+withdrawal above shows why the caution was right twice over.)*
+
 ### ⚑ THREE NULL INSTRUMENTS, READ AS POSITIVE, IN ONE INVESTIGATION
 
 This is the durable lesson and it outranks the finding.
@@ -49,6 +78,15 @@ This is the durable lesson and it outranks the finding.
 to a different question, and never carried back to the claim that depended on it.** Diagnosing an
 instrument's reach does not retract the conclusions already built on it. Those have to be walked back by
 hand, one at a time, and nothing prompts you to do it.
+
+⚑ **aeon's formulation, and it is the sharper one: a blindness identified and NOT carried backward is worse
+than one never found, because the write up makes the old claim look audited.** The file then reads as though
+the earlier result survived a review it never had.
+
+⚑ **And the detail an outside reader would never spot, also aeon's: identifying "centre" as the board that
+did not lean is a NORMALISATION THAT DELETES THE SIGNAL.** The quantity being hunted was a constant added to
+every board; re-centring subtracts exactly that constant. The method looked like careful anchoring and was
+the erasure of the measurement.
 
 ## ⚠ HISTORY: THE ORIGINAL CONCLUSION WAS SUSPENDED, AND THE ERROR WAS MINE
 
