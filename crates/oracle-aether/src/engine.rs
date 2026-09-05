@@ -6153,7 +6153,25 @@ impl Engine {
         // rewrite because the default 3,600-frame server keeps the 1,000 it always had.
         let frame_cap = self.config.max_run_frames.min(1000);
         let frames = match params.get("frames") {
-            None => 2,
+            // **The default is bounded by the same ceiling, and used not to be.** On a server whose
+            // ceiling is below 2, `{"frames": 2}` was refused while the bare call — the identical
+            // request, spelled without the number — advanced 2 anyway: the hole the paragraph above
+            // says bounding one without the other would move, moved. The *value* is unchanged at 2
+            // wherever the ceiling allows it (the fragment's `default`), so an ordinary 3,600-frame
+            // server sees no difference; this only binds the servers that set a smaller ceiling
+            // precisely because they cannot afford a longer tap.
+            //
+            // **A ceiling of 0 needs no branch of its own.** It is not a configuration a conforming
+            // server can hold — the fragment pins `limits.maxRunFrames` as `minimum: 1`, so a server
+            // advertising 0 fails schema validation at `initialize` — and nothing in this crate can
+            // produce one: `EngineConfig` has no deserialiser, no CLI and no env seam, and its only
+            // constructions are the 3,600-frame default and the hosted 120. Should an embedder set it
+            // by hand anyway, `min` keeps the invariant total rather than incidental: no `press`
+            // advances the machine past the run ceiling, at *every* value of that ceiling. At 0 it
+            // advances nothing and says `frames: 0` — a number §11.9 already makes reachable on this
+            // reply — which is the same answer the explicit path gives when it refuses every spelling
+            // there, and cheaper than an error path no conforming server could ever reach.
+            None => frame_cap.min(2),
             Some(v) => hex::parse_count("frames", v, 1, frame_cap)?,
         };
         let mut pad = merge_pads(self.live[port], self.held[port]);
