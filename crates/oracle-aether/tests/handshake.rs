@@ -22,10 +22,12 @@ use std::os::unix::fs::PermissionsExt;
 /// The number is 1 because 1 is the **measured** maximum across all ~60 rows, not because 1 happens to
 /// be the budget today; there is no slack in it. Two candidates for a wider row were checked and
 /// neither reaches here: `emulator/step_out` is clamped by `run_step` to `max_run_frames.min(600)`, and
-/// `emulator/press` — whose `frames` default of 2 *is* read before the `frame_cap` it computes from
-/// `max_run_frames`, so it really could outrun a one-frame server — never advances at all in a sweep,
-/// because `{}` fails `parse_buttons` first. That last one is an open observation about `press`, not
-/// something this row proves.
+/// `emulator/press` never advances at all in a sweep, because `{}` fails `parse_buttons` first. The
+/// second one used to carry an open observation — `press`' `frames` default of 2 was read *past* the
+/// `frame_cap` it computes from `max_run_frames`, so a bare press really could outrun a one-frame
+/// server. That is now closed at the source (the default is `frame_cap.min(2)`) and gated by
+/// `methods::a_bare_press_is_bounded_by_the_run_ceiling`, which measures the frames the machine
+/// advanced rather than the ones the reply claims. Neither fact is something this row proves.
 const SWEEP_ROW_FRAME_CEILING: i64 = 1;
 
 /// The `frame` on a reply the caller has already unwrapped to its `result`.

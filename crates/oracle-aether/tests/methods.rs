@@ -532,6 +532,59 @@ fn press_actually_advances_the_machine() {
     assert_eq!(after, before + 4);
 }
 
+/// **A bare `press` is bounded by the run ceiling its explicit spelling is bounded by.**
+///
+/// `press` computes `frame_cap = max_run_frames.min(1000)` and, until this row existed, read its own
+/// default straight past it: on a one-frame server `{"frames": 2}` was **refused** by `parse_count`
+/// while the bare call — the same request, spelled without the number — **advanced 2 frames**. The
+/// ceiling exists so one tap cannot freeze a hosted window for as long as an equally long
+/// `run_frames`; a default that outruns it moves the hole rather than closing it, which is exactly what
+/// `press`' own comment two lines above the bug said must not happen.
+///
+/// **Measured on the frames the machine actually advanced** — `emulator/status`' frame counter before
+/// and after — never on the reply's own `frames`, which is `press` reporting on itself and so cannot
+/// witness that the machine agreed.
+///
+/// Both numbers are **literals**, not values derived from the budget this server was spawned with. A
+/// ceiling derived from the thing it ratchets goes green the moment somebody raises the budget, which
+/// is how `handshake.rs`' sweep ceiling was nearly made vacuous (green in 6.62 s, wearing the runtime
+/// of the defect it had stopped catching). The advertised limit is asserted separately, so the
+/// premise — *this server really is capped at one frame* — is measured too, and a helper that quietly
+/// ignored its budget argument would fail here rather than pass vacuously.
+#[test]
+fn a_bare_press_is_bounded_by_the_run_ceiling() {
+    let h = common::spawn_with_frame_budget("presscap", oracle_core::testrom::build(), 1024, 1);
+    let mut c = Client::connect(&h);
+    let r = c.handshake(false);
+    assert_eq!(
+        r["limits"]["maxRunFrames"],
+        json!(1),
+        "the premise: this server advertises a one-frame run ceiling"
+    );
+    // The explicit spelling of the default is refused at that ceiling — the half that always worked,
+    // asserted here so both spellings of the same request are compared in one place.
+    assert_eq!(
+        c.err("emulator/press", json!({"buttons": ["start"], "frames": 2}))["code"],
+        json!(-32602),
+        "an explicit `frames: 2` is over a one-frame ceiling and is refused"
+    );
+
+    let before = c.ok("emulator/status", json!({}))["frame"]
+        .as_u64()
+        .unwrap();
+    c.ok("emulator/press", json!({"buttons": ["start"]}));
+    let after = c.ok("emulator/status", json!({}))["frame"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        after - before,
+        1,
+        "a bare `press` advanced {} frames on a server whose run ceiling is 1 frame; the default must \
+         be bounded by the same ceiling the explicit `frames` is",
+        after - before
+    );
+}
+
 // ------------------------------------------------------------------ symbols (D7, §4)
 
 #[test]
