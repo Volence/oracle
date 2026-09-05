@@ -18,7 +18,7 @@
 
 mod common;
 
-use common::spawn;
+use common::spawn_for_sweep;
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------------------------------
@@ -104,7 +104,7 @@ fn every_advertised_method_dispatches_and_every_unadvertised_one_does_not() {
     // dispatches and then refuses on its own domain terms (-32005 `machineRunning`, a bound exceeded, no
     // symbol table) "is conformant and is answering truthfully". So the assertion is on the code, and
     // deliberately not on `error`-vs-`result` — nor on the result's shape; see `EnvelopeOnlyClient`.
-    let h = spawn("item23");
+    let h = spawn_for_sweep("item23");
     let mut c = EnvelopeOnlyClient::connect(&h);
     let r = c.call(
         "initialize",
