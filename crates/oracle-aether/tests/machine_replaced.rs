@@ -45,16 +45,16 @@
 //! Every one of these was applied on disk and the named runner was watched go red, then the file was
 //! restored from the committed baseline.
 //!
-//! | # | mutation | rows that go red |
+//! | # | mutation | what actually went red, as measured |
 //! |---|---|---|
-//! | M1 | `note_machine_replaced`: drop the `self.emit(...)` line entirely | 1, 2, 3(partly), 5a, 7 — every row that waits for the event |
-//! | M2 | `note_machine_replaced`: emit `hitsDropped` only when `> 0` | **2 only**, and it fails on the **vendored schema's** `required`, which is the fragment proving itself load-bearing rather than an assertion in this file |
-//! | M3 | `note_machine_replaced`: `hits_dropped.max(1)` — schema-LEGAL, so the fragment is blind to it | **2 only**, on the row's own `== 0` |
-//! | M4 | `note_machine_replaced`: drop `self.invalidate_screen()` | **3 only** |
-//! | M5 | `note_machine_replaced`: drop `self.rom_generation += 1` | 5a's `rom_changed` half; the wire rows stay green, which is why 5a asserts the report and not only the wire |
-//! | M6 | `EngineConfig::window_gestures` default `true` | `handshake.rs`'s events comparison — the M2 negative, one door over |
-//! | M7 | `States::load`: delete the `bus.machine_replaced(...)` call | not caught here; caught by `oracle-player`'s `a_load_tells_the_bus_the_machine_was_replaced_and_a_refusal_does_not` |
-//! | M8 | `States::load`: move that call **above** the `let loaded = match …`, so a refusal signals too | same row, its negative half |
+//! | M1 | `note_machine_replaced`: delete the `self.emit(...)` line | **4 of 8** here — rows 1, 2, 5a and 7, the ones that wait for the event. Rows 3 and 4 stay green by design: 3's subject is the picture and 4's is an absence |
+//! | M2 | `note_machine_replaced`: emit `hitsDropped` only when `> 0` | **3** here — rows 2, 3 and 5a — and every one of them on the **vendored schema's** `events.emulator/machineReplaced.params: $: "hitsDropped" is a required property`, never on an assertion in this file. It is wider than row 2 because rows 3 and 5a also perform a zero-hit load and `Client::recv` validates the event they pass on their way through. That is the fragment being load-bearing, quoted from the failing run |
+//! | M3 | `note_machine_replaced`: `hits_dropped.max(1)` — schema-LEGAL, so the fragment is blind to it | **row 2 only**, on the row's own `== 0`. This is the pair that shows what the schema can and cannot see: M2 and M3 are the same key with the same fragment, and only one of them the document catches |
+//! | M4 | `note_machine_replaced`: delete `self.invalidate_screen()` | **row 3 only** |
+//! | M5 | `note_machine_replaced`: delete `self.rom_generation += 1` | **NOTHING here, and nothing in `tests/hosted.rs` or `oracle-player`'s suite either** — measured, all three green. The generation counter is on no reply and no event; it surfaces only in the `PumpReport` an embedder reads. The gate is therefore `host::tests::a_window_gesture_reports_the_machine_replacement_the_way_a_method_would`, which was **written because this mutation found nothing**, and which is red under it |
+//! | M6 | `EngineConfig::window_gestures` default `true` | `handshake.rs`'s `initialize_advertises_a_generated_method_list_that_is_the_dispatch_table` — the M2 negative, one door over |
+//! | M7 | `States::load`: delete the `bus.machine_replaced(...)` call | not here — `oracle-player`'s `states::tests::a_load_tells_the_bus_the_machine_was_replaced_and_a_refusal_does_not`, positive half |
+//! | M8 | `States::load`: move that call **above** the `let loaded = match …`, so a refusal signals too | same row, negative half |
 //!
 //! ⚑ **One mutation is caught NOWHERE, and it is named rather than left implicit.** Moving
 //! `bus.machine_replaced` above `machine.adopt_system(loaded)` — still inside the success path, just
@@ -63,6 +63,11 @@
 //! describe the timeline the load just left. Catching it needs a subscriber reading `frame`/`mclk` off
 //! the event against a machine whose clock demonstrably moved across the load, and the player's fixture
 //! has no socket. The ordering is defended by the comment at that line and by nothing else.
+//!
+//! ⚑ **M5 is the reason this table quotes measurements instead of predictions.** Its row said
+//! *"5a's `rom_changed` half"* when it was written, and row 5a asserts nothing of the kind — the
+//! mutation was applied, all three suites were run, and every one of them was green. A mutation table
+//! written from what a row *ought* to catch is the same artifact as no table at all.
 
 #![cfg(unix)]
 

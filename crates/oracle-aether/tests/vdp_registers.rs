@@ -10,11 +10,30 @@
 //!
 //! Every line a [`Client`] receives is validated against the vendored fragment closed with
 //! `unevaluatedProperties: false` (`common::schema`, §8 item 15 / item 20). So a `raw[]` of 23 or 25
-//! entries, a lower-case or unprefixed hex byte, a `status` carrying a second key, a resurrected
-//! `decoded{}`, and a `caveat` the fragment declares absent all fail here **without an assertion in this
-//! file** — and the contract's own five vectors (`the_contracts_own_vectors_pass_and_fail_exactly_as_\
-//! declared` in `tests/schema_conformance.rs`) prove those refusals actually bite rather than being
-//! asserted by a validator that accepts everything.
+//! entries, an **unprefixed** hex byte, a `status` carrying a second key, a resurrected `decoded{}` and a
+//! `caveat` the fragment declares absent all fail here **without an assertion in this file** — the first
+//! three on the published fragment's own `minItems`/`maxItems`, `pattern` and `status`'s
+//! `unevaluatedProperties: false`; the last two on item 20's closure, which lives in the harness and
+//! never in the published artifact.
+//!
+//! ⚑ **Two things this paragraph used to claim that are NOT true, corrected 2026-09-05 rather than left
+//! standing.** They are the exact failure mode this file exists to avoid — prose asserting coverage the
+//! assertions do not have — so they are named instead of quietly edited out.
+//!
+//! 1. It said a **lower-case** hex byte fails here. It does not. The fragment's pattern is
+//!    `^0x[0-9A-Fa-f]{2}$` (and `{4}` for `status.raw`), which is case-INSENSITIVE, and this file's own
+//!    `decode_raw` checks the prefix, the length and `from_str_radix`, all three case-blind. A server
+//!    emitting `"0x4a"` passes every row here and the schema besides. Whether upper case is even an
+//!    obligation is unsettled — D9 category 1 does not state a case — so this is recorded as a
+//!    NON-obligation rather than an uncovered one, and nothing is asserted about it either way.
+//! 2. It credited the contract's **five vectors** with proving all five of those refusals bite. They
+//!    prove two of them. The five are: a `params` pass on `{}`, a `params` fail on `{"reg": 4}`, a
+//!    `result` pass, a `result` fail on 23 entries, and a `result` fail on a `status` key beyond `raw`
+//!    (§11.41's own list, and `vectors.json`). The `decoded{}` and `caveat` refusals hold — through
+//!    item 20's closure and `$defs/replyFields`, which declares the stamp and `droppedEvents` and no
+//!    `caveat` — but no vector witnesses them, and `the_contracts_own_vectors_pass_and_fail_exactly_as_\
+//!    declared` in `tests/schema_conformance.rs` is the anti-vacuity evidence for the two it covers and
+//!    for nothing else.
 //!
 //! What that leaves is §8 **item 29**, which is the whole of what makes this method right rather than
 //! merely well-shaped, and which no shape check can reach:
@@ -25,8 +44,21 @@
 //! > control command begun before the call still completes as one after it), and leaves the
 //! > sprite-overflow and collision latches set if they were set.*
 //!
+//! ⚑ **Item 29 was CLARIFIED upstream on 2026-09-05, on a finding from this very serve, and the
+//! clarification is satisfied here already.** The added sentence: *"The three clauses are INDEPENDENT
+//! and a harness must assert all three: the hash clause alone cannot see a violation, because
+//! `state_hash` covers VRAM, CRAM, VSRAM and the register bytes and the toggle and latches live in none
+//! of those (oracle's serve proved it: swapping the peek for a status-port read left the hash row
+//! green)."* It also names game-agnostic recipes for the other two — write one control word so the
+//! toggle is pending, call, write the second and assert the command completed as one; and with both
+//! latches set, call twice and assert both bits still read set in `status.raw`. Those are the two rows
+//! below, and each calls the method **four** times where the recipe asks for two. Nothing needed
+//! extending; this note exists so a reader comparing the file against the amended text does not have to
+//! re-derive that.
+//!
 //! A reply that corrupted the machine on its way out is perfectly conformant to the fragment. The three
-//! rows below are the ones that can fail:
+//! rows below are the ones that can fail, on three separate fixtures, which is what "independent" means
+//! in practice:
 //!
 //! * [`the_write_pending_toggle_survives_the_call`] — the sharpest, because it catches the single most
 //!   likely implementation mistake, calling the `&mut self` `Vdp::control_read_status` where the `&self`

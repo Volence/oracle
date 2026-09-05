@@ -1092,6 +1092,67 @@ mod tests {
         );
     }
 
+    /// ★ **A window gesture reports what it moved, in the same terms a served method does** — §11.40
+    /// (CR-Q, 2026-09-05).
+    ///
+    /// The row above is the same claim for a synchronous *method*; this is the claim for a gesture that
+    /// no method produced, and it is the half the defect was. A window swapped its `System` and
+    /// `rom_generation` never moved, so nothing downstream fired: not the client's event, and not the
+    /// window's own repairs, which key off exactly this flag.
+    ///
+    /// **`rom_changed` is asserted HERE and not over a socket, and that is deliberate rather than
+    /// convenient.** It was measured: deleting `self.rom_generation += 1` from
+    /// [`Engine::note_machine_replaced`](crate::engine::Engine::note_machine_replaced) leaves every row
+    /// in `tests/machine_replaced.rs`, in `tests/hosted.rs` and in `oracle-player`'s suite **green** —
+    /// the event still goes out, the picture is still invalidated, the hits still drain. The generation
+    /// counter is not on the wire and is not observable through any reply; the one place it surfaces is
+    /// the `PumpReport` an embedder reads. So a gate for it has to be here, holding the report.
+    #[test]
+    fn a_window_gesture_reports_the_machine_replacement_the_way_a_method_would() {
+        let mut h = Host::new(HostConfig {
+            engine: EngineConfig {
+                window_gestures: true,
+                ..HostConfig::default().engine
+            },
+            ..HostConfig::default()
+        });
+        let mut sys = booted();
+        // A latched picture and a clock that is not zero, so "invalidated" and "moved" are visible as
+        // changes rather than as the state the fixture started in.
+        h.pump(&mut sys);
+        sys.run_frames(2);
+
+        let report = h.machine_replaced(&mut sys, crate::engine::MachineReplacedReason::StateLoad);
+
+        assert!(
+            report.rom_changed,
+            "the gesture replaced the machine and its own report must say so — this is the defect \
+             §11.40 closes, and it is invisible everywhere else"
+        );
+        assert!(
+            report.screen_changed,
+            "the latched picture was invalidated, so the embedder must stop presenting it"
+        );
+        assert_eq!(report.calls, 1, "one gesture, one report");
+        assert!(
+            !report.deferred,
+            "a synchronous gesture has no budget to run out"
+        );
+        assert!(
+            !report.symbols_changed,
+            "a state load keeps the cartridge, so the listing that bound to it still binds — this is \
+             `reset`'s answer, not `reload_rom`'s"
+        );
+
+        // …and the drain that follows says nothing about it, which is `call_reporting`'s gap at a third
+        // producer: an embedder that waited for the next `PumpReport` would wait forever.
+        let after = h.pump(&mut sys);
+        assert!(
+            !after.rom_changed && !after.screen_changed,
+            "the drain after a gesture reports NOTHING about it"
+        );
+    }
+
     /// Conflict 1, both directions: the host's pause state becomes the bus's `free_run`, and a client's
     /// `emulator/pause` becomes the host's.
     #[test]
