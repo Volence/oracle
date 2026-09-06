@@ -1326,6 +1326,28 @@ mod tests {
     /// **What it does NOT claim**: that two independent computations agree. There is only one, on
     /// purpose. A parity test over two derivations proves they agreed on the day it was written; this one
     /// proves the readers are readers.
+    ///
+    /// # Red-first evidence, 2026-09-06, with the parameter varied
+    ///
+    /// Four mutations were applied to the shipped source, each proven on disk before the run and each
+    /// restored from the committed baseline afterwards:
+    ///
+    /// * the panel recomputes its own fps (`facts.presented / 60.0`) — **red here**. This is the defect
+    ///   the whole arrangement exists to prevent, planted.
+    /// * the panel's fps FORMAT alone changes, `{:.2}` to `{:.1}`, with the same value behind it —
+    ///   **red here**, which is what proves this gate compares the string the tab drew rather than the
+    ///   field it was handed. A test that read `facts.fps_value` on both sides would have stayed green.
+    /// * `crate::stats::nearest_rank` answers `Some(0.0)` on an empty slice — red on
+    ///   `nothing_sampled_is_a_stated_line_on_the_tab_and_an_absent_pair_on_the_wire`, which is M3's
+    ///   loud-on-unmeasurable rule catching the single most common percentile bug there is.
+    /// * `fps_window_ms` becomes a nominal `1000` — red on
+    ///   `the_rate_and_its_window_invert_to_the_presents_that_were_counted`.
+    ///
+    /// ⚑ **The first sweep reported all four as "still green" and they were not.** The runner matched
+    /// `"test <name> ... FAILED"`, which is the harness's spelling for an *integration* test; a unit test
+    /// inside a bin is named `pacing::tests::<name>` and never matched. Recorded because it is the
+    /// six-instance lesson in this repo wearing a new hat: a matcher that cannot see a failure and a gate
+    /// that did not fire produce the same artifact.
     #[test]
     fn the_panel_and_the_served_row_cannot_show_different_numbers() {
         // A measurement with a real distribution and a real device, so every conditional arm is

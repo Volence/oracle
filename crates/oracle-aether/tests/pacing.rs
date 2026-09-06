@@ -16,6 +16,37 @@
 //! absent" as a correct one, and the CR that ordered this row was itself filed after exactly that
 //! mistake (*"the first run of this check produced NONE from an extraction that had found zero
 //! methods"*).
+//!
+//! # Red-first evidence, 2026-09-06 — every row below was planted against and went red
+//!
+//! Eleven mutations were applied to the *shipped* source, one at a time, each proven on disk with
+//! `git diff --stat` before the run and each restored from the committed baseline afterwards. **The
+//! parameter was varied rather than repeated**, because this repo's strongest guard was once found to
+//! have a hole reachable in one mutation and only a varied sweep found it. M3 in particular was mutated
+//! in **both** directions, which is what the ruling itself asks for: dropping the flag and adding a
+//! count beside it are different defects and would be caught by different assertions.
+//!
+//! | mutation applied to the server | the row that went red |
+//! |---|---|
+//! | drop `unmeasured` entirely | `an_absent_audio_device_is_stated_and_never_counted` |
+//! | emit `underruns: 0` beside `unmeasured: true` | `an_absent_audio_device_is_stated_and_never_counted` |
+//! | drop `underruns` on a MEASURED device | `a_measured_zero_is_served_as_a_zero` |
+//! | emit `p50`/`p99` as `0.0` at zero samples | `nothing_sampled_is_zero_samples_and_no_percentiles` |
+//! | emit `p50` without `p99` | `the_reply_is_the_measurement_the_process_published` |
+//! | `presents_frames` defaults to `true` | `a_headless_server_does_not_advertise_pacing` |
+//! | hide the row from `initialize` but let it dispatch | `a_headless_server_does_not_advertise_pacing` |
+//! | empty `PRESENTING_ONLY` | that row **and** `a_presenting_deployment_advertises_…` |
+//! | declare `params: &["windowMs"]` | `a_client_cannot_choose_the_measurement_window` |
+//! | serve `target_fps` as `presented` | `the_reply_is_the_measurement_the_process_published` |
+//! | **break the enumeration this file reads** | `a_headless_server_does_not_advertise_pacing`, on its CONTROL |
+//!
+//! The last one is the anti-vacuity row and the only one applied to *this file*: the `methods` key was
+//! misspelled so the array came back empty. The negative assertion still held — an empty list contains
+//! no `emulator/pacing` — and the run went red **on the positive control**, which is the whole reason
+//! the control is asserted first. A positive control validates the SEARCH, not the question.
+//!
+//! Four more were run against the player's half (the derivation and the panel); their record is on
+//! `oracle_player::pacing::Readout::of`'s parity test.
 
 #![cfg(unix)]
 
