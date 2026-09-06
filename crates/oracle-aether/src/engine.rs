@@ -596,7 +596,15 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/lookup_symbol",
         handler: Engine::lookup_symbol,
-        summary: "name -> address, or address -> nearest preceding label + displacement",
+        // The prefix fallback is named because it is half of what this row does and was invisible to
+        // anyone reading only the advertisement: a reviewer working from the old summary nearly filed
+        // prefix enumeration as a MISSING capability. "bounded" is stated and the digit is not — the
+        // bound is `EngineConfig::max_symbol_matches`, a policy number the server may change, and the
+        // reply reports the applied one in `otherMatches.limit` (§2.4 clause (a)). A summary that
+        // retyped it would be a second inventory of the same fact, which is the defect §2.1 rule 2
+        // exists to prevent.
+        summary: "name -> address (bounded prefix search when not an exact match), or address -> \
+                  nearest preceding label + displacement",
         params: &["addr", "name"],
     },
     MethodSpec {
