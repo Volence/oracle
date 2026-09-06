@@ -25,6 +25,25 @@
 #   * `Phase Table` — absent from every frozen listing; aeon's `s4*.lst` carry `PHASE-COUNT 6` and
 #     `demo*.lst` carry `PHASE-COUNT 2`. A fault in phase parsing was invisible to the frozen path by
 #     construction.
+#   * the LIVE-EFFECTS PANEL (`oracle-player/src/effects.rs`) resolves twelve names and refuses to write
+#     when the listing disagrees with the address its note recorded (`Channel::drift`). Against these
+#     frozen listings that refusal fires on EVERY channel, for two different reasons at once:
+#       - nine of the twelve are PRESENT AT A DIFFERENT ADDRESS. The parallax block is a uniform `-4`
+#         against the note (`Parallax_Current_Config` is `$FFFF88E8` here, `$FFFF88EC` there); the raster
+#         block is `-0x10E`; `BgAnim_LastStep` is `-0x128`. Presence alone reports full coverage of a
+#         panel that, on these bytes, refuses every gesture it offers — which is why `symbol_addr` exists
+#         beside `symbol_present`.
+#       - three are ABSENT outright: `BgAnim_Table_Ptr` (the bands channel's whole selector — absent from
+#         `s4.debug.lst` TOO, so the frozen DEBUG listing also predates it), `BgAnim_Table_Empty` (the
+#         bands-off target) and `Debug_Lab_Index` (the cursor `forbidden` refuses writes to). The bands
+#         channel therefore cannot be exercised at all on the frozen path, and `forbidden`'s second
+#         guard has nothing to catch.
+#     ⚑ `$FFFF8BD6` — where the note puts `Raster_Program` — IS a symbol in these listings: it is
+#     `Raster_Active_Buf`. So this drift is a restructure of `Raster_State`, not a slide, and a probe that
+#     resolved by address rather than by name would have found a plausible wrong answer.
+#     ⚑ `EditorRaster_` is NOT empty here, contrary to the report that opened this row: `s4.lst` and
+#     `s4.debug.lst` each carry one, `EditorRaster_OJZ_Act1_authored_probe`. What is absent is the
+#     `..._ramp_probe` that `effects.rs`'s own `Fake::full()` invents. The demo listings carry none.
 #   * `Level_Width` / `Level_Height` (`oracle-aether/src/objreq.rs`) — absent from every frozen listing,
 #     present in aeon's build at `$FFFFEA70`/`$FFFFEA72`. This is the pair from the field sighting behind
 #     `F-RELOAD-KEEPS-STALE-SYMBOLS`: a session trusted `symbolsDropped: false`, then got
@@ -46,13 +65,28 @@
 #   probe         how the dimension is measured, THROUGH THE PARSER CONSUMERS USE (never a re-grep):
 #                   symbol_prefix_count  SymbolTable::with_prefix(arg)          — distinct raw names
 #                   symbol_present       SymbolTable::by_name(arg).is_some()    — 1 or 0
+#                   symbol_addr          SymbolTable::by_name(arg) -> raw_addr  — `absent` when missing
 #                   equate_prefix_count  SymbolTable::equates_with_prefix(arg)  — row count
 #                   equate_rows          SymbolTable::equate_rows()             — the `N equates` trailer
 #                   phase_count          SymbolTable::phase_count()             — `absent` when no section
 #   arg           the probe's argument, or `-` when it takes none
-#   frozen        the answer the frozen bytes give: an integer, or `absent`
+#   frozen        the answer the frozen bytes give: an integer, a `$HEX` address, or `absent`
+#
+#                 ⚑ `symbol_addr` STRICTLY SUBSUMES `symbol_present` — an absent name is `absent` rather
+#                 than `0` — and it is the RAW 32-bit spelling the listing itself writes (`$FFFF88E8`,
+#                 never the 24-bit door form `$FF88E8`), because that is the spelling every consumer
+#                 holding a transcribed address compares against; `effects.rs`'s `Channel::drift` is
+#                 explicit that comparing the 24-bit form would make every channel read as drifted.
+#                 An address row MUST be written `$HEX`; `read_manifest` refuses a decimal one, because a
+#                 decimal address would measure correctly, print back in hex, and never be noticed.
+#
+#                 ⚑ AN `absent` HERE IS AN EXPECTED VALUE, NOT A HOLE. A name BECOMING PRESENT reddens
+#                 this gate exactly as a name vanishing does. A row that could only notice presence would
+#                 be half a gate.
 #   upstream      aeon path (tracked, so it is readable from the object store at a ref) that publishes
-#                 this dimension, or `-` when it has no single tracked origin
+#                 this dimension, or `-` when it has no single tracked origin — which here also covers
+#                 per-game/per-act data (`ParallaxConfig_`, `EditorRaster_`, `BgAnim_Table`) and
+#                 `Debug_Lab_Index`, whose origin this lane has not verified against aeon's tree
 #   relied_on_by  who reads this dimension. For an absent row, this names who runs blind.
 file	probe	arg	frozen	upstream	relied_on_by
 s4.lst	symbol_prefix_count	ObjDef_	3	games/sonic4/objects/	oracle-frontend/src/spawn.rs ARCHETYPE_PREFIX
@@ -79,3 +113,63 @@ demo.debug.lst	equate_rows	-	558	-	SymbolTable::is_intact / matches_declared_equ
 demo.debug.lst	phase_count	-	absent	-	oracle-core/tests/symbols_real_lst.rs phase parse
 demo.debug.lst	symbol_present	Level_Width	0	games/demo/	oracle-aether/src/objreq.rs LEVEL_WIDTH_SYMBOL
 demo.debug.lst	symbol_present	Level_Height	0	games/demo/	oracle-aether/src/objreq.rs LEVEL_HEIGHT_SYMBOL
+s4.lst	symbol_addr	Parallax_Current_Config	$FFFF88E8	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX.noted_addr / Channel::drift
+s4.lst	symbol_addr	Parallax_Target_Config	$FFFF88EC	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 2
+s4.lst	symbol_addr	Parallax_Transition_Frames	$FFFF88F0	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 3
+s4.lst	symbol_addr	Parallax_Snap_Pending	$FFFF88F1	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 4
+s4.lst	symbol_addr	Raster_Program	$FFFF8AC8	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER.noted_addr / Channel::drift
+s4.lst	symbol_addr	Raster_Pending	$FFFF8AD0	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER write-set (its whole body)
+s4.lst	symbol_addr	Raster_Program_None	$6E08	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER Off::At target
+s4.lst	symbol_addr	BgAnim_Table_Ptr	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS.noted_addr / Channel::drift
+s4.lst	symbol_addr	BgAnim_LastStep	$FFFF8DDE	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS write-set cells 2 and 3
+s4.lst	symbol_addr	BgAnim_Table	$27662	-	oracle-player/src/effects.rs BANDS Off::At blocked prose (the act's own table)
+s4.lst	symbol_addr	BgAnim_Table_Empty	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS Off::At target
+s4.lst	symbol_addr	Debug_Lab_Index	absent	-	oracle-player/src/effects.rs LAB_INDEX_ADDR / forbidden guard 2
+s4.lst	symbol_prefix_count	ParallaxConfig_	20	-	oracle-player/src/effects.rs PARALLAX.prefix candidates
+s4.lst	symbol_prefix_count	EditorRaster_	1	-	oracle-player/src/effects.rs RASTER.prefix candidates
+s4.lst	symbol_prefix_count	BgAnim_Table	1	-	oracle-player/src/effects.rs BANDS.prefix candidates
+s4.debug.lst	symbol_addr	Parallax_Current_Config	$FFFF88E8	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX.noted_addr / Channel::drift
+s4.debug.lst	symbol_addr	Parallax_Target_Config	$FFFF88EC	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 2
+s4.debug.lst	symbol_addr	Parallax_Transition_Frames	$FFFF88F0	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 3
+s4.debug.lst	symbol_addr	Parallax_Snap_Pending	$FFFF88F1	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 4
+s4.debug.lst	symbol_addr	Raster_Program	$FFFF8AC8	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER.noted_addr / Channel::drift
+s4.debug.lst	symbol_addr	Raster_Pending	$FFFF8AD0	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER write-set (its whole body)
+s4.debug.lst	symbol_addr	Raster_Program_None	$81DC	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER Off::At target
+s4.debug.lst	symbol_addr	BgAnim_Table_Ptr	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS.noted_addr / Channel::drift
+s4.debug.lst	symbol_addr	BgAnim_LastStep	$FFFF8DDE	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS write-set cells 2 and 3
+s4.debug.lst	symbol_addr	BgAnim_Table	$27F10	-	oracle-player/src/effects.rs BANDS Off::At blocked prose (the act's own table)
+s4.debug.lst	symbol_addr	BgAnim_Table_Empty	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS Off::At target
+s4.debug.lst	symbol_addr	Debug_Lab_Index	absent	-	oracle-player/src/effects.rs LAB_INDEX_ADDR / forbidden guard 2
+s4.debug.lst	symbol_prefix_count	ParallaxConfig_	20	-	oracle-player/src/effects.rs PARALLAX.prefix candidates
+s4.debug.lst	symbol_prefix_count	EditorRaster_	1	-	oracle-player/src/effects.rs RASTER.prefix candidates
+s4.debug.lst	symbol_prefix_count	BgAnim_Table	1	-	oracle-player/src/effects.rs BANDS.prefix candidates
+demo.lst	symbol_addr	Parallax_Current_Config	$FFFF88E8	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX.noted_addr / Channel::drift
+demo.lst	symbol_addr	Parallax_Target_Config	$FFFF88EC	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 2
+demo.lst	symbol_addr	Parallax_Transition_Frames	$FFFF88F0	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 3
+demo.lst	symbol_addr	Parallax_Snap_Pending	$FFFF88F1	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 4
+demo.lst	symbol_addr	Raster_Program	$FFFF8AC8	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER.noted_addr / Channel::drift
+demo.lst	symbol_addr	Raster_Pending	$FFFF8AD0	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER write-set (its whole body)
+demo.lst	symbol_addr	Raster_Program_None	$4AF4	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER Off::At target
+demo.lst	symbol_addr	BgAnim_Table_Ptr	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS.noted_addr / Channel::drift
+demo.lst	symbol_addr	BgAnim_LastStep	$FFFF8DDE	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS write-set cells 2 and 3
+demo.lst	symbol_addr	BgAnim_Table	$100FE	-	oracle-player/src/effects.rs BANDS Off::At blocked prose (the act's own table)
+demo.lst	symbol_addr	BgAnim_Table_Empty	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS Off::At target
+demo.lst	symbol_addr	Debug_Lab_Index	absent	-	oracle-player/src/effects.rs LAB_INDEX_ADDR / forbidden guard 2
+demo.lst	symbol_prefix_count	ParallaxConfig_	0	-	oracle-player/src/effects.rs PARALLAX.prefix candidates
+demo.lst	symbol_prefix_count	EditorRaster_	0	-	oracle-player/src/effects.rs RASTER.prefix candidates
+demo.lst	symbol_prefix_count	BgAnim_Table	1	-	oracle-player/src/effects.rs BANDS.prefix candidates
+demo.debug.lst	symbol_addr	Parallax_Current_Config	$FFFF88E8	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX.noted_addr / Channel::drift
+demo.debug.lst	symbol_addr	Parallax_Target_Config	$FFFF88EC	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 2
+demo.debug.lst	symbol_addr	Parallax_Transition_Frames	$FFFF88F0	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 3
+demo.debug.lst	symbol_addr	Parallax_Snap_Pending	$FFFF88F1	engine/level/parallax.emp	oracle-player/src/effects.rs PARALLAX write-set cell 4
+demo.debug.lst	symbol_addr	Raster_Program	$FFFF8AC8	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER.noted_addr / Channel::drift
+demo.debug.lst	symbol_addr	Raster_Pending	$FFFF8AD0	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER write-set (its whole body)
+demo.debug.lst	symbol_addr	Raster_Program_None	$5E50	engine/effects/raster.emp	oracle-player/src/effects.rs RASTER Off::At target
+demo.debug.lst	symbol_addr	BgAnim_Table_Ptr	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS.noted_addr / Channel::drift
+demo.debug.lst	symbol_addr	BgAnim_LastStep	$FFFF8DDE	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS write-set cells 2 and 3
+demo.debug.lst	symbol_addr	BgAnim_Table	$100FE	-	oracle-player/src/effects.rs BANDS Off::At blocked prose (the act's own table)
+demo.debug.lst	symbol_addr	BgAnim_Table_Empty	absent	engine/level/bg_anim.emp	oracle-player/src/effects.rs BANDS Off::At target
+demo.debug.lst	symbol_addr	Debug_Lab_Index	absent	-	oracle-player/src/effects.rs LAB_INDEX_ADDR / forbidden guard 2
+demo.debug.lst	symbol_prefix_count	ParallaxConfig_	0	-	oracle-player/src/effects.rs PARALLAX.prefix candidates
+demo.debug.lst	symbol_prefix_count	EditorRaster_	0	-	oracle-player/src/effects.rs RASTER.prefix candidates
+demo.debug.lst	symbol_prefix_count	BgAnim_Table	1	-	oracle-player/src/effects.rs BANDS.prefix candidates
