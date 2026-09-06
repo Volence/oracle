@@ -245,6 +245,103 @@ fn real_debug_lst_flags_its_ambiguous_demangled_names() {
     );
 }
 
+/// The `Phase Table` sigil appends after the equates trailer must be consumed, never counted as damage.
+///
+/// **Read this test's shape before trusting it.** The frozen pin in `fixtures/aeon/` predates the section
+/// entirely, so on the default path this asserts the *no-table* state — which is a real assertion (a
+/// parser that invented a section here would go red) but exercises none of the row parsing. The format
+/// coverage that cannot go vacuous lives in the module's own unit tests, which build the section from a
+/// synthetic listing that always has one. This file adds the thing only real bytes can add: that the
+/// section's **names are the listing's own symbols**, which no synthetic fixture can attest.
+///
+/// Both branches assert hard and the taken branch is printed, so a run can never be read as covering the
+/// half it did not touch. Point `ORACLE_AEON_DIR` at a live Aeon build to take the other one; measured
+/// there on 2026-09-06, `aeon/s4.debug.lst` gives `skipped_lines=0`, `is_intact=true` and 6 rows, against
+/// `skipped_lines=8`, `is_intact=false` before this parse existed.
+#[test]
+fn real_debug_lst_phase_table_is_consumed_not_counted_as_damage() {
+    let Some(text) = listing("s4.debug.lst") else {
+        return;
+    };
+    let t = SymbolTable::parse(&text).expect("s4.debug.lst must parse");
+
+    // The defect, in one line: the phase section made a healthy listing report as damaged, and a
+    // not-intact listing drops the frontend's load policy to coarser resolution.
+    assert_eq!(
+        t.skipped_lines(),
+        0,
+        "unrecognised rows in a healthy listing"
+    );
+    assert!(
+        t.is_intact(),
+        "s4.debug.lst should be a whole, undamaged listing"
+    );
+
+    if !t.has_phase_table() {
+        // The listing states no such section. Nothing may be invented for it.
+        assert_eq!(t.phase_count(), None);
+        assert!(t.phase_entries().is_empty());
+        assert_eq!(t.matches_declared_phase(), None);
+        loud(
+            "NOTE: this s4.debug.lst carries no Phase Table (the frozen pin predates it) — the \
+             row-parsing coverage in this run is the unit tests', not this file's."
+                .to_string(),
+        );
+        return;
+    }
+
+    // A stated count must agree with the rows; an *unstated* one is an older emitter, not damage.
+    if let Some(n) = t.phase_count() {
+        assert_eq!(
+            n,
+            t.phase_entries().len(),
+            "the PHASE count disagrees with its rows"
+        );
+        assert_eq!(t.matches_declared_phase(), Some(true));
+    }
+    assert!(
+        !t.phase_entries().is_empty(),
+        "a Phase Table with no rows — this branch would prove nothing"
+    );
+    // ⚑ `COUNT` is a name-shaped token, so a positional parse ingests the old-spelling count line as a
+    // phantom phased symbol. On real bytes, it must not be there.
+    assert!(
+        t.phase_of("COUNT").is_none(),
+        "the count line was ingested as a row"
+    );
+
+    for e in t.phase_entries() {
+        // The fact only real bytes can attest: every phased name is a symbol this listing also declares,
+        // at its VMA — which is what "every address above is a VMA" means, checked rather than believed.
+        let s = t
+            .by_name(&e.name)
+            .unwrap_or_else(|| panic!("phased name `{}` is not a symbol in this listing", e.name));
+        assert_eq!(
+            s.raw_addr, e.vma,
+            "`{}` is listed at ${:08X} but its phase row calls the VMA ${:08X}",
+            e.name, s.raw_addr, e.vma
+        );
+        // …and the phase row is still not a symbol: nothing here put the LMA into addr→name.
+        if e.is_relocated() {
+            assert!(
+                t.symbols_at(e.lma).iter().all(|x| x.name != e.name),
+                "`{}` answered a query at its LMA ${:08X}",
+                e.name,
+                e.lma
+            );
+        }
+    }
+    println!(
+        "s4.debug.lst: PHASE count {:?}, {} rows, {} relocated (e.g. {} runs at ${:X}, stored at ${:X})",
+        t.phase_count(),
+        t.phase_entries().len(),
+        t.phase_entries().iter().filter(|e| e.is_relocated()).count(),
+        t.phase_entries()[0].name,
+        t.phase_entries()[0].vma,
+        t.phase_entries()[0].lma,
+    );
+}
+
 /// Both halves of the file describe the same symbol list, so parsing the body lines alone must agree with
 /// parsing the `Symbol Table` section — on every one of the ~2,129 entries.
 #[test]
