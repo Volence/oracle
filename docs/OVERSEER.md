@@ -95,8 +95,17 @@ moved with them.)*
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates,
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
 sub-line arc), F-CRAMDOT, F-SUBLINE-{HGRID, ACCESSMCLK, DMASPREAD, CAPTURE-SCRATCH}, F-VCOUNT-PHASE,
-the a2 B-2 gate gap (needs an H40/mode-switch fixture), F-HOSTED-RESET-SRM (**hosted reset bypasses
-the player's .srm flush; warn clients off hosted reset until closed**), F-EQUATES-NAMESPACE,
+the a2 B-2 gate gap (needs an H40/mode-switch fixture), ~~F-HOSTED-RESET-SRM~~ (**CLOSED 2026-09-06,
+branch `fix/hosted-reset-srm`** — and the booking's mitigation never covered it: the defect is NOT
+hosted-only, the window's own F1/palette reset reaches it through the same door. Two variants, both
+now covered by rows that read the `.srm` itself: a reset landing before the first `Battery::tick`
+STRANDS the save (`System::reset` clears `sram_dirty`, so nothing arms the debounce), and a window
+reset whose next frame writes SRAM ROLLS THE FILE BACK (`after_replacement` read carried != live as
+a cartridge swap). Fixed structurally: "did the buffer survive?" is decided in `Bus::call_stamped`,
+the instant of the replacement, and carried to the drain — not re-derived from bytes a frame later.
+The guard already named for this defect, `a_reset_does_not_rewind_the_live_battery_to_the_file`, was
+green and blind: it read the machine, never the file, and its helper never ticked),
+F-EQUATES-NAMESPACE,
 F-CRAM-RAMP, F-PROF-TOTALS (superseded by delta 3), F-PALETTE-DRAG-PACE (evidence filed, rated
 minor by its own filer), ~~stock-S1 symbols~~ (**CLOSED 2026-08-20**: the `|`-reader, the 48-bit
 addresses, the forward-only equ ruling and the no-appendix binding all shipped; F-LST-AS-COLUMNS and

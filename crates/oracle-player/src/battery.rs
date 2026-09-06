@@ -45,11 +45,17 @@
 //! |---|---|---|
 //! | `emulator/reload_rom` | re-provisioned from the new header, **zeroed**, `sram_used` cleared | apply the new cartridge's `.srm` |
 //! | `emulator/restore` | the checkpoint's, rolled backwards | leave it; the snapshot's battery is the one that belongs to that machine |
-//! | `emulator/reset` | **unchanged** — a soft reset preserves SRAM, as on real hardware | leave it |
+//! | `emulator/reset` | **unchanged** — a soft reset preserves SRAM, as on real hardware | leave the bytes, ARM the debounce |
 //!
-//! The discriminant is [`System::sram_used`] and nothing else: only `load_rom` clears it, and a buffer
-//! nothing has saved into is a buffer the on-disk image is the right content for. Guessing from the ROM
-//! path instead would have been wrong on the loud case — F5 reloads *the same path*.
+//! The discriminant for the **fourth column** is [`System::sram_used`] and nothing else: only `load_rom`
+//! clears it, and a buffer nothing has saved into is a buffer the on-disk image is the right content for.
+//! Guessing from the ROM path instead would have been wrong on the loud case — F5 reloads *the same path*.
+//!
+//! The discriminant for the **third** — did the buffer the guest was holding survive? — is
+//! [`SelfInflicted::sram_preserved`](crate::bus::SelfInflicted::sram_preserved), decided at the instant
+//! of the replacement, and falling back to the carried bytes only where that instant is this drain's own
+//! (the pump). [`Battery::after_replacement`]'s ⚑ is the whole argument: a reset's row above is the one
+//! that goes wrong, in two different ways, when the bytes are asked a frame too late.
 
 use std::path::{Path, PathBuf};
 
@@ -175,26 +181,75 @@ impl Battery {
     /// engine. The order below is `oracle-frontend`'s reload order with the one step it can take first
     /// taken last instead, for the reason in the module doc.
     ///
-    /// 1. **The outgoing cartridge's bytes reach the outgoing cartridge's file.** Only when the buffer in
-    ///    the machine is *not* the one they came from: a soft reset leaves it identical, and writing then
-    ///    would be a disk write that the still-armed debounce is going to make anyway.
+    /// `preserved` is [`SelfInflicted::sram_preserved`](crate::bus::SelfInflicted::sram_preserved):
+    /// whether the battery buffer *survived* the replacement, decided at the instant of it. `None` when
+    /// nobody could witness that instant — a client's command, answered inside the pump on the line after
+    /// this drain's own carry — and there the carried bytes answer it themselves, because no frame can
+    /// have run in between. See the ⚑ below for why the bytes are **not** allowed to answer it for a
+    /// gesture.
+    ///
+    /// 1. **The outgoing cartridge's bytes reach the outgoing cartridge's file.** Only when the buffer
+    ///    the guest was holding is *gone from the machine*: a soft reset leaves it there, and writing
+    ///    then would be a disk write that the debounce is going to make anyway.
     /// 2. **The debounce is cancelled and the dirty flag cleared** in that same case, because whatever is
     ///    in the machine now belongs to another machine — the frontend's state-load rule, arriving here
     ///    for `restore` and `reload_rom` alike. Without it the next autosave would write the *rolled-back*
     ///    image over the one just rescued.
-    /// 3. **The path is re-keyed** to the cartridge now loaded, before anything can write through it.
-    /// 4. **A freshly provisioned buffer gets its cartridge's `.srm`**, keyed on [`System::sram_used`] —
+    /// 3. **A preserved buffer gets the debounce ARMED instead** — see the ⚑ below.
+    /// 4. **The path is re-keyed** to the cartridge now loaded, before anything can write through it.
+    /// 5. **A freshly provisioned buffer gets its cartridge's `.srm`**, keyed on [`System::sram_used`] —
     ///    see the module doc's table for why that predicate and not the ROM path.
-    pub fn after_replacement(&mut self, sys: &mut System, rom_path: &str) -> Vec<String> {
+    ///
+    /// # ⚑ `F-HOSTED-RESET-SRM` — a reset could strand or roll back a real save, and both halves are here
+    ///
+    /// Three rules meet on a soft reset and each one is right on its own:
+    ///
+    /// * `System::reset_with_sink` preserves the SRAM bytes and **clears `sram_dirty`** — deliberately,
+    ///   its comment calling the flag *"only a persistence throttle"*.
+    /// * Step 1 skips the write when the bytes are still in the machine — deliberately, so a reset is not
+    ///   a disk write.
+    /// * [`Battery::tick`] arms the debounce off `sram_dirty`.
+    ///
+    /// **Stranded.** If the reset lands before the first tick that saw the flag, the flag is gone and the
+    /// countdown was never armed: nothing is dirty, nothing is counting down, and a real in-game save
+    /// sits in memory until the guest happens to save again. The window is one loop iteration — ~16 ms —
+    /// which is why it was intermittent rather than constant. Step 3 closes it: a preserved buffer that
+    /// nothing owes a write for is armed here, which is the one thing the reset destroyed. It arms rather
+    /// than writes so that a reset still costs no disk write of its own, and it re-uses
+    /// [`AUTOSAVE_DEBOUNCE_FRAMES`] because `oracle-frontend` re-arms with exactly that on a failed
+    /// pre-reset flush.
+    ///
+    /// **Rolled back.** Worse, and the reason `preserved` is a parameter rather than a comparison. A
+    /// window gesture is answered by the *next* iteration's drain and that iteration runs its frame
+    /// first, so the preserved buffer can be written forward by the guest before this is ever called.
+    /// `c.bytes != sys.sram()` then reads as "the cartridge was swapped" when nothing was swapped, and
+    /// step 1 writes the **older** carry over the `.srm` while step 2 clears the countdown and the dirty
+    /// flag — the file rolled back *and* the newer bytes disowned. Asking the instant of the replacement
+    /// instead of the bytes a frame later is what makes that unreachable.
+    ///
+    /// `oracle-frontend` answers all of this with one line — flush before `sys.reset()`, `main.rs`'s
+    /// `Cmd::Reset`, whose comment names the hazard. It can, because its window is the only thing that
+    /// ever replaces its machine. This one cannot, for the reason in the module doc.
+    pub fn after_replacement(
+        &mut self,
+        sys: &mut System,
+        rom_path: &str,
+        preserved: Option<bool>,
+    ) -> Vec<String> {
         let mut said = Vec::new();
         if let Some(c) = self.carried.take() {
-            if c.bytes != sys.sram() {
+            if preserved.unwrap_or_else(|| c.bytes == sys.sram()) {
+                // A soft reset: the bytes are still in the machine, and if the guest has written since
+                // they are the *newer* ones — so the machine's buffer is what must reach disk, never this
+                // carry. All that is owed is the signal the reset cleared.
+                if self.countdown.is_none() && sys.sram_used() {
+                    self.countdown = Some(AUTOSAVE_DEBOUNCE_FRAMES);
+                }
+            } else {
                 self.write(c, "before the cartridge was replaced", &mut said);
                 self.countdown = None;
                 sys.clear_sram_dirty();
             }
-            // Identical: a soft reset. The countdown is this window's, not the machine's, so it survives
-            // and the ordinary autosave will write exactly these bytes.
         }
         self.path = sram_file::srm_path_for(Path::new(rom_path));
         if !sys.sram_used() {
@@ -442,7 +497,9 @@ mod tests {
             "the fixture swap did not clear `sram_used`"
         );
 
-        let said = battery.after_replacement(&mut sys, &incoming.display().to_string());
+        // `None`: no gesture witnessed the swap, so the carried bytes answer "was the buffer
+        // preserved?" themselves — and here they emphatically were not (`load_rom` zeroed it).
+        let said = battery.after_replacement(&mut sys, &incoming.display().to_string(), None);
         assert!(
             said.iter().any(|l| l.contains("FAILED")),
             "an unwritable rescue was silent: {said:?}"
