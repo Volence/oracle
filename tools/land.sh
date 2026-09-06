@@ -67,6 +67,17 @@
 #                                  path check this script could hand-write.
 #   G2  clean tree (a)             refuse a dirty tree BEFORE anything runs, listing the paths.
 #                                  `docs/lane-status.json` is the one tolerated path — see below.
+#   G2b lane files                 `docs/lane-status.json` and `docs/lane-log.jsonl` are parsed by a
+#                                  console that is not in this repo, and until now NOTHING here
+#                                  validated them: `git grep` finds both names in two files
+#                                  (`crates/oracle-aether/tests/hosted.rs`, `src/server.rs`) and both
+#                                  are doc-comment mentions. So a malformed entry landed clean and was
+#                                  discovered by the owner's card going dark. `tools/lane-check.py`
+#                                  parses every log line, checks the status document's shape and its
+#                                  `state` vocabulary, and refuses a future timestamp. It runs on the
+#                                  WORKING TREE (what the console reads) and on the COMMITTED blob
+#                                  (what the push publishes), because the carve-out below lets those
+#                                  two differ for exactly one of the files.
 #   G3  fast-forward               the tested SHA must be a descendant of the remote branch, so a
 #                                  landing can never rewrite pushed history.
 #   G4  cargo fmt --all --check
@@ -132,6 +143,32 @@
 #
 # Every other path — tracked or untracked — still refuses. The carve-out is one literal string,
 # not a pattern, so it cannot quietly widen.
+#
+# ============================================================================================
+# THE VALIDATING FAST PATH (G4 to G8 skipped, G2b made stricter instead)
+# ============================================================================================
+#
+# A landing that publishes nothing but lane bookkeeping still costs 25 minutes of suite. That is
+# the whole reason the fast path exists, and it is approved on one condition: **it must VALIDATE,
+# not merely skip.**
+#
+#   * **The gate computes the path set; an author never declares it.** It is
+#     `git diff --name-only $REMOTE_BEFORE $TESTED_SHA` — the NET difference between the tree the
+#     remote already carries and the tree this push would publish. A flag or a commit-message
+#     convention would be a claim; this is a measurement, and it cannot be wrong in the author's
+#     favour.
+#   * The fast path is taken **only** when that set is a non-empty subset of exactly
+#     `{docs/lane-log.jsonl, docs/lane-status.json}`. Anything else runs the full suite, **including
+#     any other file under `docs/`** — a design page is prose to us and evidence to a peer, and
+#     "docs are safe" is exactly the reasoning that widens a carve-out until it means nothing.
+#   * The argument it rests on: those two files are read by no compiled thing here (the same fact
+#     the carve-out above rests on), so G4 to G8 would be measuring, byte for byte, the tree the
+#     remote already carried when that SHA landed.
+#   * **What it does instead is more than it skips.** G2b runs on every landing, fast or full, and
+#     it is the first thing in this repo ever to check these two files at all.
+#
+# It changes nothing about G1, G2, G2b, G3, G9, G10 or the push: the tested SHA is still pushed by
+# name, the remote is still read back, and a dirty or moved tree still refuses.
 #
 # ============================================================================================
 # HOW THE EXPECTED LEG COUNT IS DERIVED  (G4)
@@ -310,6 +347,44 @@ BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"
 note "tested SHA : $TESTED_SHA  (on $BRANCH_NAME)"
 
 # --------------------------------------------------------------------------------------------
+# G2b  the lane files the console reads
+#
+# Runs on EVERY landing, fast path or full. Nothing in this repo validated these two files before
+# this gate, so a malformed entry landed clean and was found by the owner's board going dark.
+# --------------------------------------------------------------------------------------------
+hr; echo "G2b lane files (docs/lane-status.json, docs/lane-log.jsonl)"
+LANE_STATUS="docs/lane-status.json"
+LANE_LOG="docs/lane-log.jsonl"
+LANE_OK=1
+
+# (i) the working tree: the copy the console actually reads, and the one the G2 carve-out lets
+#     differ from the commit.
+if ./tools/lane-check.py --status "$ROOT/$LANE_STATUS" --log "$ROOT/$LANE_LOG" \
+        --label "working tree" > "$RUN_DIR/lane-worktree.log" 2>&1; then
+    pass "G2b working tree: $(command tail -1 "$RUN_DIR/lane-worktree.log")"
+else
+    fail "G2b the lane files in the working tree are malformed"
+    command cat "$RUN_DIR/lane-worktree.log"
+    LANE_OK=0
+fi
+
+# (ii) the committed blobs: what (e) actually publishes. The two are the same file whenever the
+#      carve-out is not in play, and the check costs milliseconds either way.
+git show "$TESTED_SHA:$LANE_STATUS" > "$RUN_DIR/lane-status.committed.json" 2>/dev/null || true
+git show "$TESTED_SHA:$LANE_LOG"    > "$RUN_DIR/lane-log.committed.jsonl"  2>/dev/null || true
+if ./tools/lane-check.py \
+        --status "$RUN_DIR/lane-status.committed.json" \
+        --log    "$RUN_DIR/lane-log.committed.jsonl" \
+        --label "as committed at ${TESTED_SHA:0:12}" > "$RUN_DIR/lane-committed.log" 2>&1; then
+    pass "G2b committed: $(command tail -1 "$RUN_DIR/lane-committed.log")"
+else
+    fail "G2b the lane files AS COMMITTED are malformed; this is what a push would publish"
+    command cat "$RUN_DIR/lane-committed.log"
+    LANE_OK=0
+fi
+[ "$LANE_OK" = 0 ] && finish_red
+
+# --------------------------------------------------------------------------------------------
 # G3  fast-forward
 # --------------------------------------------------------------------------------------------
 hr; echo "G3  fast-forward onto $REMOTE/$BRANCH"
@@ -325,6 +400,52 @@ else
     finish_red
 fi
 
+# --------------------------------------------------------------------------------------------
+# THE FAST PATH — computed here, never declared by an author
+#
+# The path set is the NET diff between what the remote already carries and what this push would
+# publish. See the header section for the argument and for why every other path under docs/ still
+# runs the full suite.
+# --------------------------------------------------------------------------------------------
+hr; echo "FAST PATH  what this landing would publish"
+FAST=0
+FASTPATH_ALLOWED="docs/lane-log.jsonl docs/lane-status.json"
+if [ -z "$REMOTE_BEFORE" ]; then
+    note "no such remote ref yet, so there is no 'already carried' tree to compare against"
+elif [ "$REMOTE_BEFORE" = "$TESTED_SHA" ]; then
+    note "the remote already carries the tested SHA; nothing is being published"
+else
+    LANDED_PATHS="$(git diff --name-only "$REMOTE_BEFORE" "$TESTED_SHA")"
+    LANDED_N="$(printf '%s\n' "$LANDED_PATHS" | command grep -c . )"
+    note "git diff --name-only $REMOTE_BEFORE $TESTED_SHA  ->  $LANDED_N path(s)"
+    printf '%s\n' "$LANDED_PATHS" | while IFS= read -r p; do [ -n "$p" ] && note "    $p"; done
+    if [ "$LANDED_N" -gt 0 ]; then
+        OUTSIDE=0
+        while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            case " $FASTPATH_ALLOWED " in
+                *" $p "*) ;;
+                *) OUTSIDE=$((OUTSIDE + 1)) ;;
+            esac
+        done <<EOF
+$LANDED_PATHS
+EOF
+        if [ "$OUTSIDE" -eq 0 ]; then
+            FAST=1
+        else
+            note "$OUTSIDE path(s) outside { $FASTPATH_ALLOWED }"
+        fi
+    fi
+fi
+if [ "$FAST" = 1 ]; then
+    pass "FAST PATH taken: this landing publishes lane bookkeeping and nothing else"
+    note "G2b has already VALIDATED both files, in the working tree and as committed. G4 to G8"
+    note "would measure, byte for byte, the tree $REMOTE/$BRANCH already carries."
+else
+    pass "FULL SUITE: this landing publishes something the suite has to measure"
+fi
+
+if [ "$FAST" = 0 ]; then
 # --------------------------------------------------------------------------------------------
 # G4  fmt
 # --------------------------------------------------------------------------------------------
@@ -428,6 +549,15 @@ else
     command grep -E '^(failures:|    [a-z_].*::)' "$RUN_DIR/suite.log" | command head -30
 fi
 
+else
+    # The fast path's own accounting. These four names are what the summary and the VERDICT file
+    # read, and they say `skipped` rather than a number, because a `0` here would be a measurement
+    # of a suite that never ran — the same untruth G8 exists to catch one page up.
+    LEGS_HEADER=skipped
+    EXPECTED_LEGS=skipped
+    T_PASS=skipped; T_FAIL=0; T_IGN=skipped
+fi
+
 # --------------------------------------------------------------------------------------------
 # G9/G10  the tree under the run  (aurora (c))
 # --------------------------------------------------------------------------------------------
@@ -455,14 +585,20 @@ fi
 # --------------------------------------------------------------------------------------------
 hr
 echo "ALL GATES GREEN for $TESTED_SHA"
-note "profile=release  legs=$LEGS_HEADER/$EXPECTED_LEGS  $T_PASS passed, $T_FAIL failed, $T_IGN ignored"
+if [ "$FAST" = 1 ]; then
+    note "FAST PATH: lane bookkeeping only, VALIDATED by G2b. The suite was not run and this line"
+    note "does not claim it was."
+    note "published paths: $(printf '%s ' $LANDED_PATHS)"
+else
+    note "profile=release  legs=$LEGS_HEADER/$EXPECTED_LEGS  $T_PASS passed, $T_FAIL failed, $T_IGN ignored"
+fi
 
 if [ "$DO_PUSH" = 0 ]; then
     hr
     echo "--no-push: stopping before the push. It WOULD have run:"
     note "    git push $REMOTE $TESTED_SHA:refs/heads/$BRANCH"
     verify_remote_unmoved
-    { echo "verdict=GREEN-NOPUSH"; echo "tested_sha=$TESTED_SHA"; echo "legs=$LEGS_HEADER/$EXPECTED_LEGS"; } > "$RUN_DIR/VERDICT"
+    { echo "verdict=GREEN-NOPUSH"; echo "tested_sha=$TESTED_SHA"; echo "legs=$LEGS_HEADER/$EXPECTED_LEGS"; echo "gates=$([ "$FAST" = 1 ] && echo fastpath-lane-files-only || echo full)"; } > "$RUN_DIR/VERDICT"
     echo "land: GREEN, not pushed. End marker: $RUN_DIR/VERDICT"
     exit 0
 fi
@@ -503,6 +639,7 @@ hr
 {
     echo "verdict=$VERDICT"
     echo "tested_sha=$TESTED_SHA"
+    echo "gates=$([ "$FAST" = 1 ] && echo fastpath-lane-files-only || echo full)"
     echo "legs=$LEGS_HEADER/$EXPECTED_LEGS"
     echo "totals=release $T_PASS passed, $T_FAIL failed, $T_IGN ignored"
     echo "remote_before=${REMOTE_BEFORE:-none}"
