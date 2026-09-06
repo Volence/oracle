@@ -537,16 +537,35 @@ impl Panel {
     /// is a wrong answer with the panel's whole authority behind it. The guard is here rather than at the
     /// two draw sites so neither can be the one that forgets it.
     pub fn preview(&self) -> Option<&crate::preview::Outcome> {
-        let sel = self.mode.selected()?;
+        let key = self.preview_key()?;
         let out = self.preview.as_ref()?;
         match out {
             crate::preview::Outcome::Ready(p) | crate::preview::Outcome::Stale(p)
-                if !p.is_of(sel, self.subtype_byte().map(u32::from)) =>
+                if !p.is_of(&key.archetype, key.subtype) =>
             {
                 None
             }
             _ => Some(out),
         }
+    }
+
+    /// ⚑ **What a click would place, as one value**: the key a picture is filed under and the key this
+    /// guard asks for, from one function because two spellings of it is a defect that shows as nothing.
+    ///
+    /// Measured, not imagined. The version this replaced built the key inside [`measure`] out of an
+    /// archetype and a subtype passed separately, and the whole suite stayed green with that
+    /// construction stamped `None`: every picture of an archetype that has subtypes would then be filed
+    /// under a key [`Panel::preview`] never asks for, so the guard rejects a picture that is perfectly
+    /// correct and the card silently stops appearing. Nothing was drawn wrongly, which is why nothing
+    /// caught it.
+    ///
+    /// With one function there is no second spelling to drift. `None` means spawn mode is off, which is
+    /// the one state that has no subject.
+    fn preview_key(&self) -> Option<crate::preview::Key> {
+        Some(crate::preview::Key {
+            archetype: self.mode.selected()?.to_string(),
+            subtype: self.subtype_byte(),
+        })
     }
 
     /// ⚑ **Retire the picture the moment the art under it is replaced.**
@@ -589,13 +608,15 @@ impl Panel {
     /// as it does for an iteration that emulated nothing. **The last thing this function does to the
     /// machine is a restore**, in every path including every refusal, which is what makes that hold.
     pub fn take_preview(&mut self, machine: &mut Machine, bus: &mut Bus) {
-        let Some(archetype) = self.mode.selected().map(str::to_string) else {
+        // ⚑ **One value, from [`Panel::preview_key`], and the probe is placed AS it.** The key the
+        // picture is filed under and the subtype the probe carries are the same field of the same
+        // struct, so a picture can only ever be filed under what was actually put into the machine.
+        let Some(key) = self.preview_key() else {
             self.preview = None;
             return;
         };
         let dot = preview_dot(machine);
-        let subtype = self.subtype_byte();
-        match paused_for(machine, bus, |m, b| measure(m, b, &archetype, subtype, dot)) {
+        match paused_for(machine, bus, |m, b| measure(m, b, &key, dot)) {
             Ok(((out, not_put_back), mut run)) => {
                 // ⚑ **`Some(0)`, and it is the whole point rather than a placeholder.** Frames really did
                 // run, and the restore put every one of them back, so the emulated time this cost the
@@ -618,8 +639,9 @@ impl Panel {
             Err(why) => {
                 self.run = None;
                 self.preview = Some(crate::preview::Outcome::Absent(format!(
-                    "the window could not pause the machine to look at {archetype}, so no picture \
-                     of it was taken. {why}"
+                    "the window could not pause the machine to look at {}, so no picture \
+                     of it was taken. {why}",
+                    key.archetype
                 )));
             }
         }
@@ -993,22 +1015,26 @@ fn run_frames(machine: &mut Machine, bus: &mut Bus, n: u64) -> Option<String> {
 /// property a test can pose directly, with a body that deliberately moves the machine, on the real bus and
 /// with no game at all. It is exactly why [`paused_for`] was extracted one function down, and it is the
 /// same argument for the same reason.
+/// ⚑ **`key` is the subject and the cache key at once**, which is why it arrives whole rather than as an
+/// archetype and a subtype this function would have to put back together. The probe is placed **as**
+/// `key`, and the picture is filed under the same value cloned. See [`Panel::preview_key`] for the defect
+/// that shape closes, which was measured rather than imagined.
 fn measure(
     machine: &mut Machine,
     bus: &mut Bus,
-    archetype: &str,
-    subtype: Option<u8>,
+    key: &crate::preview::Key,
     dot: (u16, u16),
 ) -> (crate::preview::Outcome, Option<String>) {
-    use crate::preview::{Key, Outcome};
+    use crate::preview::Outcome;
 
+    let archetype = key.archetype.as_str();
     let taken = checkpointed(machine, bus, |machine, bus, id| {
         // --- the probe --------------------------------------------------------------------------
         let placed = {
             let sys = machine.system_mut();
             // The probe is the object a click would place, subtype and all: a picture taken of some
             // other form is a picture of the wrong thing, drawn with the panel's whole authority.
-            spawn::place(&mut PlayerCaller { bus, sys }, archetype, subtype, dot)
+            spawn::place(&mut PlayerCaller { bus, sys }, archetype, key.subtype, dot)
         };
         let advanced = match placed {
             Ok(p) => p.frames_advanced,
@@ -1095,16 +1121,17 @@ fn measure(
     // The machine has been put back by now, on every path, so the picture is composed from the machine the
     // person is looking at. Composing it from the probe would answer a different question: whether the art
     // was resident in a machine that no longer exists.
-    let key = Key {
-        archetype: archetype.to_string(),
-        subtype: subtype.map(u32::from),
-    };
+    //
+    // ⚑ Filed under **the key the probe was placed as**, cloned rather than rebuilt: a second
+    // construction here is exactly where the subtype went missing in the version this replaced.
     let out = match crate::preview::appeared(&control, &probe) {
         Err(why) => Outcome::Absent(why),
-        Ok(entries) => match crate::preview::compose(&entries, dot, machine.system().vdp(), key) {
-            Ok(p) => Outcome::Ready(Box::new(p)),
-            Err(why) => Outcome::Absent(why),
-        },
+        Ok(entries) => {
+            match crate::preview::compose(&entries, dot, machine.system().vdp(), key.clone()) {
+                Ok(p) => Outcome::Ready(Box::new(p)),
+                Err(why) => Outcome::Absent(why),
+            }
+        }
     };
     (out, None)
 }
@@ -2812,7 +2839,7 @@ EQU ObjSub_Spring__Wide_Huge = $00000140
         panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Up_Yellow");
         assert_eq!(panel.subtype_byte(), Some(0x02));
 
-        let made = |subtype: Option<u32>| {
+        let made = |subtype: Option<u8>| {
             Outcome::Ready(Box::new(Preview {
                 key: Key {
                     archetype: "ObjDef_Spring".to_string(),

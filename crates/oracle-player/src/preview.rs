@@ -179,12 +179,20 @@ pub enum Art {
 
 /// What a preview is cached under.
 ///
-/// `subtype` is the byte the placement carried, or `None` for a placement that named none. See the module
-/// header for why the picture must be keyed on it.
+/// `subtype` is **the byte the placement carried**, or `None` for a placement that named none. See the
+/// module header for why the picture must be keyed on it.
+///
+/// ⚑ **A byte, not the `u32` the slot was reserved as**, and the narrowing is what closes a hole rather
+/// than tidying a type. The reservation had no width to be right about; the wire does, because
+/// `emulator/object_spawn` composes the subtype into the low byte of the placement word. Widening it here
+/// would mean the key and the request needed **two** values, and a `measure` that stamped the key with one
+/// while sending the other was measured to keep the whole suite green. At a byte the two are the same
+/// value, [`crate::screen_pick`]'s probe reads its subtype straight out of this key, and there is nothing
+/// left for a second place to disagree about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Key {
     pub archetype: String,
-    pub subtype: Option<u32>,
+    pub subtype: Option<u8>,
 }
 
 /// **One archetype's preview, and the evidence for it.**
@@ -219,7 +227,7 @@ impl Preview {
     }
 
     /// Whether this preview is of that archetype and that subtype.
-    pub fn is_of(&self, archetype: &str, subtype: Option<u32>) -> bool {
+    pub fn is_of(&self, archetype: &str, subtype: Option<u8>) -> bool {
         self.key.archetype == archetype && self.key.subtype == subtype
     }
 

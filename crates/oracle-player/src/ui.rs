@@ -2491,7 +2491,7 @@ fn preview_texture(
     let id = egui::Id::new("object-preview-texture");
     let key = (p.key.archetype.clone(), p.key.subtype, p.art_print);
     if let Some((had, tex)) =
-        ctx.data(|d| d.get_temp::<((String, Option<u32>, u64), egui::TextureHandle)>(id))
+        ctx.data(|d| d.get_temp::<((String, Option<u8>, u64), egui::TextureHandle)>(id))
     {
         if had == key {
             return Some(tex);
