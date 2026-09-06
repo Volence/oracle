@@ -413,6 +413,11 @@ impl Bus {
         // So it advertises `emulator/machineReplaced` and it emits it. A headless `oracle-aether` sets
         // neither. See `Engine::advertised_events` for why the pair is one flag.
         config.engine.window_gestures = true;
+        // §11.42 M4, the same flag shape one row over: this process puts frames on a screen and measures
+        // its own pacing for the Pacing tab, so it advertises `emulator/pacing` **and** publishes to it
+        // (`Loop::iterate` → `Bus::set_pacing`). A headless `oracle-aether` sets neither and therefore
+        // does not advertise the row at all — which `crates/oracle-aether/tests/pacing.rs` pins.
+        config.engine.presents_frames = true;
         let mut host = Host::new(config);
         host.set_machine_info(info);
         let outcome = match socket {
@@ -521,6 +526,15 @@ impl Bus {
     /// to claim, and `Loop::iterate` for why the push is after `build_ui` and not before it.
     pub fn set_screen_text(&mut self, surfaces: Vec<oracle_aether::engine::ScreenSurface>) {
         self.host.set_screen_text(surfaces);
+    }
+
+    /// **Hand the bus the pacing this window just measured** (`emulator/pacing`, §11.42).
+    ///
+    /// The delegation above, one instrument over. The value is the same one `Loop::iterate` hands the
+    /// Pacing tab in the same iteration — see [`oracle_aether::engine::PacingFacts`] for why there is
+    /// one of it and not two.
+    pub fn set_pacing(&mut self, facts: oracle_aether::engine::PacingFacts) {
+        self.host.set_pacing(facts);
     }
 
     /// **What this window says about its bus right now**, for the status strip.

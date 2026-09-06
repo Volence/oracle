@@ -195,6 +195,10 @@ pub struct Panels<'a> {
     /// click on exactly that gap rather than describing a picture that is not there.
     pub screen_mask: Option<oracle_core::render::LayerMask>,
     pub governor: &'a Governor,
+    /// **The pacing figures `emulator/pacing` is serving right now** — the one value `Loop::iterate`
+    /// derived this frame and published to the bus, borrowed rather than recomputed. §11.42's serve and
+    /// this tab are two readers of it; see [`oracle_aether::engine::PacingFacts`].
+    pub pacing: &'a oracle_aether::engine::PacingFacts,
     pub status: &'a str,
     /// The `--rom` argument as the human typed it. The strip absolutises it through the bus's own
     /// [`oracle_aether::engine::absolutise`] before showing it — see [`StatusStrip::rom_path`].
@@ -1094,9 +1098,11 @@ impl Panels<'_> {
                 dropped: d.dropped(),
             }
         });
+        // ⚑ `self.pacing` is the value `Loop::iterate` computed once this frame and handed to BOTH this
+        // panel and `Host::set_pacing`. Nothing here recomputes a rate — see `pacing::Readout::of`.
         let r = pacing::Readout::of(
             self.machine.frames(),
-            self.machine.pictures(),
+            self.pacing,
             self.governor,
             device,
             self.status,
@@ -1117,6 +1123,15 @@ impl Panels<'_> {
 
                 section(ui, "governor", None, "the loop's own rate limiter");
                 card(ui, |ui| health_grid(ui, "pacing-governor", &r.governor));
+                ui.add_space(SECTION_GAP);
+
+                section(
+                    ui,
+                    "frame time",
+                    None,
+                    "wall clock per presented frame, as a distribution",
+                );
+                card(ui, |ui| health_grid(ui, "pacing-frame-time", &r.frame_time));
                 ui.add_space(SECTION_GAP);
 
                 section(ui, "audio", None, "the clock everything else follows");
@@ -5449,14 +5464,26 @@ mod stat_shape_tests {
     /// Numbers no other part of the block can produce by accident, so a count of two is a count of the
     /// two treatments rather than of a coincidence.
     fn headline() -> Vec<pacing::Stat> {
-        let g = Governor::start(Instant::now(), pacing::FRAME_PERIOD);
-        pacing::Readout::of(987_654, 987_650, &g, None, "").headline
+        let now = Instant::now();
+        let g = Governor::start(now, pacing::FRAME_PERIOD);
+        // Presents fed to the meter rather than a `PacingFacts` typed here: the block under test draws
+        // the LIVE projection, and a hand-assembled struct would make that claim false.
+        let mut p = pacing::Presents::start(now);
+        for i in 1..=3u32 {
+            p.note(now + pacing::FRAME_PERIOD * i);
+        }
+        let facts = p.facts(
+            now + pacing::FRAME_PERIOD * 4,
+            &g,
+            oracle_aether::engine::PacingAudio::Unmeasured,
+        );
+        pacing::Readout::of(987_654, &facts, &g, None, "").headline
     }
 
     #[test]
     fn both_treatments_draw_the_same_live_numbers() {
         let stats = headline();
-        assert_eq!(stats.len(), 3, "the exemplar's three headline numbers");
+        assert_eq!(stats.len(), 4, "the exemplar's four headline numbers");
 
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);

@@ -6,6 +6,24 @@
 //! estimator was used. Carried over from `crates/oracle-panels-spike/src/stats.rs` so the two sets of
 //! numbers are computed the same way and can be compared directly.
 
+/// **The one percentile estimator in this crate**, nearest-rank, over an already-sorted slice.
+///
+/// Nearest-rank rather than an interpolating variant: with thousands of samples the interpolation choice
+/// is noise, and nearest-rank has the property that **every value reported is a value that actually
+/// happened** — which is what lets a reader join a p99 back to a stall they saw.
+///
+/// `None` on an empty slice, and that is the whole reason this is a free function rather than a private
+/// method on [`Series`]: an empty distribution has no p50, and answering `0.0` for one is the exact
+/// defect §11.42 M3 legislates against (`crate::pacing` serves these over the bus). A caller that wants
+/// the flattening asks for it, in the open — see [`Series::quantile`], the only one that does.
+pub fn nearest_rank(sorted: &[f64], q: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let idx = ((q * sorted.len() as f64).ceil() as usize).saturating_sub(1);
+    Some(sorted[idx.min(sorted.len() - 1)])
+}
+
 #[derive(Default)]
 pub struct Series {
     samples: Vec<f64>,
@@ -31,14 +49,16 @@ impl Series {
         v
     }
 
-    /// Nearest-rank. With thousands of samples the interpolation choice is noise, and nearest-rank has the
-    /// property that every value reported is a value that actually happened.
+    /// Nearest-rank, over the whole retained series. `0.0` on an empty series, which is this report's
+    /// long-standing behaviour and is safe *here* because [`Series::row`] prints `n` beside every figure.
+    ///
+    /// ⚑ It is not safe everywhere, and `emulator/pacing` is where it stops being safe: §11.42 M3 makes
+    /// "nothing sampled yet" a state that must be reported as `samples: 0` with the percentiles ABSENT,
+    /// never as a `0.0` that reads like a measured one. That is why the estimator itself now lives in
+    /// [`nearest_rank`], which answers `None` on an empty slice, and this method is the one caller that
+    /// chooses to flatten it — deliberately, in one place, with the reason written down.
     fn quantile(sorted: &[f64], q: f64) -> f64 {
-        if sorted.is_empty() {
-            return 0.0;
-        }
-        let idx = ((q * sorted.len() as f64).ceil() as usize).saturating_sub(1);
-        sorted[idx.min(sorted.len() - 1)]
+        nearest_rank(sorted, q).unwrap_or(0.0)
     }
 
     pub fn mean(&self) -> f64 {

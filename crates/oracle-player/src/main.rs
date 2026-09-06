@@ -384,6 +384,13 @@ struct Loop {
     frames_per_iter: [u64; 3],
     /// When the previous *frame-owning* iteration started, for the period series.
     last_frame_at: Option<Instant>,
+    /// **The presents meter** — the single derivation behind `emulator/pacing` and the Pacing tab
+    /// (§11.42, CR-S). Fed by exactly one call, beside the texture upload.
+    presents: pacing::Presents,
+    /// The figures that meter last produced, computed **once** per iteration and read twice: published
+    /// to the bus, and handed to the Pacing tab. Deriving it again in either reader is the defect the
+    /// arrangement exists to prevent — see [`pacing::Readout::of`].
+    pacing: oracle_aether::engine::PacingFacts,
     /// The input latch (see [`input::decide`]).
     latch: bool,
     status: String,
@@ -633,7 +640,7 @@ impl Loop {
         }
         let states = states::States::open(&rom_path, machine.system());
         println!("{}", states.announcement());
-        Self {
+        let mut lp = Self {
             machine,
             rom_path,
             bus,
@@ -672,6 +679,19 @@ impl Loop {
             frame_iterations: 0,
             frames_per_iter: [0; 3],
             last_frame_at: None,
+            presents: pacing::Presents::start(now),
+            // Overwritten two statements below, from the meter and the governor this literal just
+            // built. A `Default` here would be a second place pacing figures come from, which is the one
+            // thing `PacingFacts` exists to prevent — so the seed is the meter's own answer at zero
+            // presents, and the type has no `Default`.
+            pacing: oracle_aether::engine::PacingFacts {
+                presented: 0,
+                fps_value: 0.0,
+                fps_window_ms: 1,
+                frame_time: oracle_aether::engine::FrameTimes::Unsampled,
+                audio: oracle_aether::engine::PacingAudio::Unmeasured,
+                target_fps: 0,
+            },
             latch: false,
             status: String::from("starting"),
             dock: ui::initial_dock(),
@@ -681,7 +701,31 @@ impl Loop {
             // Nothing has replaced the machine yet — the boot load is not a replacement, it is the
             // machine.
             swap: None,
-        }
+        };
+        // ⚑ The seed, taken from the meter rather than typed: a client that attaches before the first
+        // present gets this window's real target rate and a truthful `presented: 0`, not a struct of
+        // placeholder numbers. It is replaced on the first iteration, ahead of both readers.
+        lp.pacing = lp.derive_pacing(now);
+        lp
+    }
+
+    /// **The one call that produces pacing figures**, wrapped so both the seed above and
+    /// [`Loop::iterate`] reach the derivation the same way and neither can grow its own audio branch.
+    fn derive_pacing(&self, now: Instant) -> oracle_aether::engine::PacingFacts {
+        let device = self.machine.device().map(|d| {
+            use ringbuf::traits::Observer;
+            use std::sync::atomic::Ordering;
+            pacing::DeviceFacts {
+                rate_hz: d.rate(),
+                channels: d.channels(),
+                occupied: d.prod().occupied_len(),
+                capacity: d.ring_capacity(),
+                starved_steady: d.counters().starved_steady.load(Ordering::Relaxed),
+                dropped: d.dropped(),
+            }
+        });
+        self.presents
+            .facts(now, &self.governor, pacing::audio_facts(device))
     }
 
     /// **One iteration of the player.** The order here is the design:
@@ -849,10 +893,30 @@ impl Loop {
         // that the two disagree. The flags are the drain's own answer rather than a second reading of it.
         let upload = if tick.run || self.tex.is_none() || drained.picture || drained.masked_picture
         {
-            self.upload(ctx)
+            let ms = self.upload(ctx);
+            // ⚑ **The one place a present is counted** (§11.42 M1). Inside this arm and not beside it:
+            // the `else` is an early wake re-presenting the texture already bound, which puts no new
+            // picture on the glass and must not inflate a frame rate. `now` — the iteration's own
+            // instant — rather than a fresh reading, so a gap between two presents is the loop period
+            // `Buckets::period` already records and the two cannot tell different stories about one run.
+            self.presents.note(now);
+            ms
         } else {
             0.0
         };
+        // ⚑ **Derived ONCE, here, and read twice below**: published to the bus for `emulator/pacing`,
+        // and handed to the Pacing tab by `build_ui`. See `pacing::Readout::of` for why a second
+        // derivation on either side is the defect and not a convenience.
+        //
+        // After the present and before `build_ui`, for `set_screen_text`'s reason one field over: a
+        // client reading pacing must be reading the frame that is on the glass.
+        self.pacing = self.derive_pacing(now);
+        // Gated on `is_serving` exactly as the screen-text snapshot below is, and for the same reason:
+        // with no socket bound no client can exist, so the publish is pure cost — and gating on
+        // *attachment* instead would leave a client that connects mid-session reading a refusal.
+        if self.bus.is_serving() {
+            self.bus.set_pacing(self.pacing);
+        }
         self.status = format!(
             "{} · {} frames · {} rebases",
             if self.governor.is_paced() {
@@ -1003,6 +1067,7 @@ impl Loop {
         let Loop {
             machine,
             governor,
+            pacing: pacing_facts,
             dock,
             tex,
             tex_mask,
@@ -1121,6 +1186,7 @@ impl Loop {
                     states,
                     battery,
                     governor,
+                    pacing: pacing_facts,
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),
                     symbols: symbols.as_ref(),

@@ -4,7 +4,7 @@
 mod common;
 
 use common::{spawn, spawn_for_sweep, Client};
-use oracle_aether::engine::{EVENTS, METHODS};
+use oracle_aether::engine::{advertised_methods, EVENTS, METHODS};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
@@ -83,10 +83,19 @@ fn initialize_advertises_a_generated_method_list_that_is_the_dispatch_table() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    let implemented: Vec<String> = METHODS.iter().map(|m| m.name.to_string()).collect();
+    // ⚑ **`advertised_methods(false)`, not `METHODS`, and the argument is the server under test.**
+    // Since §11.42 the dispatch table is not the same set in every process: a presenting deployment
+    // serves `emulator/pacing` and a headless one MUST NOT (M4). `spawn` below builds a headless server,
+    // so `false` is this server's own answer rather than a convenience — and D4 is unweakened, because
+    // the same predicate decides what `initialize` lists and what `dispatch` will accept. The other
+    // direction (a presenting server DOES list it, and the difference is exactly `PRESENTING_ONLY`) is
+    // `tests/pacing.rs`'s job; without that file this line could go quiet on a dropped row.
+    let implemented: Vec<String> = advertised_methods(false)
+        .map(|m| m.name.to_string())
+        .collect();
     assert_eq!(
         advertised, implemented,
-        "D4: the advertised list IS the dispatch table — there is no second list to drift"
+        "D4: the advertised list IS this deployment's dispatch table — no second list to drift"
     );
 
     // And the list is not merely equal to a constant: every advertised name must actually dispatch.
@@ -215,8 +224,11 @@ fn method_summaries_are_derived_from_the_same_registry_and_their_key_set_equals_
     // still hold if the handshake ever grew a second producer.
     assert_eq!(
         methods,
-        METHODS.iter().map(|m| m.name).collect::<BTreeSet<&str>>(),
-        "the advertised set must be the dispatch table (D4)"
+        advertised_methods(false)
+            .map(|m| m.name)
+            .collect::<BTreeSet<&str>>(),
+        "the advertised set must be this deployment's dispatch table (D4); `false` because `spawn` \
+         builds a headless server and §11.42 M4 keeps `emulator/pacing` off it"
     );
 }
 

@@ -197,6 +197,19 @@ pub struct EngineConfig {
     /// produce — and `tests/machine_replaced.rs` pins the pair in both directions rather than trusting
     /// this sentence.
     pub window_gestures: bool,
+    /// **This deployment puts frames on a screen**, so it can answer `emulator/pacing` — §11.42 (CR-S).
+    ///
+    /// [`window_gestures`](EngineConfig::window_gestures)' shape, and for the identical reason: §11.42 M4
+    /// makes advertisement per deployment in so many words — *"Only a process that presents frames
+    /// advertises `emulator/pacing` in `methods`; a headless `oracle-aether` MUST NOT."* So this is a
+    /// config flag rather than a constant, and `false` is the default: an embedder that has not wired
+    /// [`Host::set_pacing`](crate::host::Host::set_pacing) under-advertises rather than promising a
+    /// readout it cannot produce.
+    ///
+    /// **It gates the advertisement and the dispatch together** ([`Engine::serves`]), which is the only
+    /// arrangement that cannot lie — a headless server that hid the row from `initialize` and answered it
+    /// anyway would break D4's "the advertised list and the implemented set are the same set".
+    pub presents_frames: bool,
     pub server_name: String,
     pub server_version: String,
 }
@@ -260,6 +273,9 @@ impl Default for EngineConfig {
             // The safe default is the narrow one — see the field's own doc. A headless bus is the
             // arrangement this default describes, and it has no window to press a key at.
             window_gestures: false,
+            // The safe default is the narrow one, for the field above's reason: a headless bus has no
+            // glass to put a frame on, and §11.42 M4 makes advertising it there a violation.
+            presents_frames: false,
             server_name: "oracle-next".into(),
             server_version: env!("CARGO_PKG_VERSION").into(),
         }
@@ -706,7 +722,43 @@ pub const METHODS: &[MethodSpec] = &[
                   there is no window",
         params: &[],
     },
+    MethodSpec {
+        name: "emulator/pacing",
+        handler: Engine::pacing,
+        summary: "the presenting process's own pacing: presents, fps with its window, frame-time \
+                  percentiles, audio underruns, governor target",
+        params: &[],
+    },
 ];
+
+/// **Rows that only a PRESENTING deployment serves** — §11.42 M4, the §11.40 M2 shape one surface over.
+///
+/// It is a *list* rather than a field on [`MethodSpec`] because the population is one row and the field
+/// would be `Always` fifty-nine times; if it ever reaches a handful, promote it. What matters is that
+/// [`Engine::serves`] is the single reader, consulted by **both** `initialize`'s advertisement and
+/// [`Engine::dispatch`], so the advertised set and the dispatchable set stay one set (D4).
+///
+/// # ⚑ This makes the advertised METHOD list process-dependent, which is `F-BANNER-INVITES-A-PIN` again
+///
+/// [`Engine::advertised_events`] carries the full argument for the event list; it applies here unchanged
+/// and the CR that asked for this row flagged it against itself. The same commit, the same
+/// `serverBuild.id`, `oracle-player` and headless `oracle-aether`: two different `methods` arrays. A
+/// consumer asking *can I read this window's frame rate?* must test **membership** of
+/// `"emulator/pacing"`; a consumer asking *is this binary current?* wants `initialize.serverBuild`.
+/// Neither question is answered by equality against a remembered array or by a count, and aurora's
+/// harness has already been broken once by pinning `methods === '35'`.
+pub const PRESENTING_ONLY: &[&str] = &["emulator/pacing"];
+
+/// The methods a deployment with this property serves, in [`METHODS`] order.
+///
+/// Exposed so a test sweeping every row against a *particular* server asks that server's question rather
+/// than iterating [`METHODS`] and being surprised by a `-32601` — see `tests/pacing.rs`, which pins the
+/// difference between the two answers so a row cannot go quiet here without being noticed.
+pub fn advertised_methods(presents_frames: bool) -> impl Iterator<Item = &'static MethodSpec> {
+    METHODS
+        .iter()
+        .filter(move |m| presents_frames || !PRESENTING_ONLY.contains(&m.name))
+}
 
 /// The cap on how many surfaces one `emulator/screen_text` reply carries.
 ///
@@ -1565,6 +1617,11 @@ pub struct Engine {
     /// (`-32005`, `reason: "noDisplay"`) instead of serving an empty list. A headless `oracle-aether` never
     /// leaves `None`.
     screen_text: Option<Vec<ScreenSurface>>,
+    /// **What the presenting host last measured about its own pacing** (`emulator/pacing`, §11.42), or
+    /// `None` when nothing has published — which on a headless server is forever, and is why the row is
+    /// not advertised there at all. Same seam and same lifetime as [`screen_text`](Engine::screen_text)
+    /// above it.
+    pacing: Option<PacingFacts>,
 }
 
 /// Which text surface of the player one [`ScreenSurface`] came from — the contract's closed `kind` enum
@@ -1620,6 +1677,82 @@ pub struct ScreenSurface {
     /// exists: it turns a defect class with no observer into one a test can assert on. Empty when none,
     /// and REQUIRED so that "absent" and "none" are not the same artifact.
     pub unrenderable: Vec<String>,
+}
+
+/// **The pacing a PRESENTING process measures about itself** — `emulator/pacing`, §11.42 (CR-S).
+///
+/// A plain record of numbers, and deliberately *only* numbers: it is the **one derivation** that the
+/// window's own Pacing tab and this bus row both read. (§11.42's demand was filed precisely because the
+/// window computed these and nothing outside the process could see them.) The producer is
+/// `oracle_player::pacing::Presents::facts`; the two readers are `oracle_player::pacing::Readout::of`
+/// (the panel) and [`Engine::pacing`] (the wire). Neither reader computes a pacing figure of its own,
+/// which is what makes the panel and a tool structurally unable to disagree — the arrangement the
+/// owner's 2026-09-03 ruling asks for, and *not* a panel routed through a socket: contract D15 has the
+/// in-process GUI read the registry directly and never open a socket to itself.
+///
+/// # The two conditional shapes are ENUMS, so a violation is unrepresentable rather than merely refused
+///
+/// §11.42 M3 says unmeasured must be expressible and MUST NOT be reported as a zero: `audio.unmeasured`
+/// is REQUIRED and `underruns` is present *exactly* when it is false; `frameTimeMs.samples` is REQUIRED
+/// and the `p50`/`p99` pair is present *exactly* when it is above zero. Both are carried here as enums
+/// rather than as `Option` fields beside a flag, so no producer can hand the serialiser a count next to
+/// "nothing measured this", or half a percentile pair. That is [`ScreenSurface`]'s `truncated` argument
+/// applied to a conditional: the invariant lives in the type, not in a rule the next caller must recall.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PacingFacts {
+    /// Frames actually put on the glass since the process started — the window's `DRAWS` tally.
+    ///
+    /// ⚑ **Not the emulated frame index** (`emulator/status.frameToken`), and not "pictures the emulator
+    /// completed" either: an iteration that runs two emulated frames presents one, so the player's
+    /// `Machine::pictures` runs *above* this number and says so in its own doc. §11.42 M1 names the
+    /// quantity, and the quantity is presents.
+    pub presented: u64,
+    /// Presented frames per second over [`fps_window_ms`](PacingFacts::fps_window_ms). Never served as a
+    /// bare number: §11.42 M2 makes the window part of the quantity, and the window is the SERVER's to
+    /// report — no client param selects it (§8 item 22 refuses a guessed one).
+    pub fps_value: f64,
+    /// The span the figure was actually taken over, in milliseconds — **the elapsed span, not a nominal
+    /// one.** A process 200 ms old reports its rate over 200 ms rather than claiming a second that has
+    /// not happened, which is why `fps_value * fps_window_ms / 1000` is exactly the presents counted.
+    pub fps_window_ms: u32,
+    pub frame_time: FrameTimes,
+    pub audio: PacingAudio,
+    /// The frame governor's target in whole frames per second, or **0 meaning the governor is switched
+    /// off** (`--target-fps 0`). REQUIRED by §11.42 M1 so that a paced 60 and a free-running 60 cannot be
+    /// read as the same fact.
+    pub target_fps: u32,
+}
+
+/// Wall-clock milliseconds per presented frame, as a distribution — or the stated fact that nothing has
+/// been sampled yet.
+///
+/// **[`FrameTimes::Unsampled`] is not "0 ms".** See [`PacingFacts`] for why this is a type and not a
+/// pair of `Option`s.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FrameTimes {
+    /// Nothing sampled yet — a legitimate state at start-up, reported as `samples: 0` with **no**
+    /// percentiles (§11.42 M3), never as fabricated ones.
+    Unsampled,
+    /// `samples` is at least 1, and the pair is real.
+    Sampled {
+        samples: u32,
+        p50_ms: f64,
+        p99_ms: f64,
+    },
+}
+
+/// The audio device's underrun count, or the stated fact that there is no device to count them.
+///
+/// The wire spelling is `unmeasured` plus a conditional `underruns`, and the whole reason §11.42 M3 made
+/// `unmeasured` REQUIRED is that "no device opened" and "zero underruns" are opposite findings that
+/// would otherwise share a shape. The player has drawn that distinction on screen since parcel 1
+/// (`oracle_player::pacing::NO_DEVICE`); this is the same distinction, kept on the way out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PacingAudio {
+    /// No audio device is open, so no underrun count exists.
+    Unmeasured,
+    /// A device is open and this is its count — a `0` here is a real zero.
+    Measured { underruns: u64 },
 }
 
 /// What one advancing run did, in the terms its caller has to branch on.
@@ -1981,6 +2114,9 @@ impl Engine {
             // server — which is what makes `emulator/screen_text`'s refusal the truth rather than a
             // placeholder.
             screen_text: None,
+            // `None` for the whole life of a headless server, for the reason above it — and there the
+            // row is not advertised either, so nothing can even ask.
+            pacing: None,
         }
     }
 
@@ -2035,6 +2171,28 @@ impl Engine {
     /// and that is the default launch — so it must never be elided into "do not push".
     pub fn set_screen_text(&mut self, surfaces: Vec<ScreenSurface>) {
         self.screen_text = Some(surfaces);
+    }
+
+    /// Publish the pacing the host's loop just measured (`emulator/pacing`, §11.42).
+    ///
+    /// [`set_screen_text`](Engine::set_screen_text)'s properties exactly: pure state, safe outside a
+    /// drain window, invisible to every frozen currency. It stores the **whole** [`PacingFacts`] the
+    /// embedder derived rather than the pieces of it, so the serialiser below has nothing left to decide
+    /// — a serialiser that recombined fields would be the second derivation this design excludes.
+    pub fn set_pacing(&mut self, facts: PacingFacts) {
+        self.pacing = Some(facts);
+    }
+
+    /// **Does THIS process serve `name`?** — the one reader of [`PRESENTING_ONLY`].
+    ///
+    /// Both `initialize`'s advertisement and [`dispatch`](Engine::dispatch) go through here, so the
+    /// advertised set and the dispatchable set are one set by construction (D4). A headless server
+    /// therefore answers `-32601 no such method` for `emulator/pacing` — the same answer it gives for a
+    /// method that does not exist, which is exactly what "MUST NOT advertise it" means from the client's
+    /// side, and strictly better than advertising a row that always refuses.
+    pub fn serves(&self, name: &str) -> bool {
+        METHODS.iter().any(|m| m.name == name)
+            && (self.config.presents_frames || !PRESENTING_ONLY.contains(&name))
     }
 
     /// Free-run mode, set from outside. **Hosted, this is the player's own pause state**: while the player is
@@ -2767,7 +2925,12 @@ impl Engine {
     /// advertised list and the implemented set the same set by construction — and, since §11.17, the one
     /// place §2.5's params closure has to live for it to bind bus-wide.
     pub fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
-        let Some(spec) = METHODS.iter().find(|m| m.name == method) else {
+        // ⚑ `serves`, not a bare `METHODS` lookup: a row this deployment does not advertise must not be
+        // dispatchable either (§11.42 M4). Same function as the advertisement, so the two cannot differ.
+        let Some(spec) = METHODS
+            .iter()
+            .find(|m| m.name == method && self.serves(m.name))
+        else {
             return Err(
                 RpcError::new(code::METHOD_NOT_FOUND, format!("no such method: {method}"))
                     .with_data(json!({"method": method})),
@@ -2814,9 +2977,13 @@ impl Engine {
                 .with_data(json!({"supported": [rpc::PROTOCOL_VERSION], "requested": asked})));
             }
         }
-        let methods: Vec<Value> = METHODS.iter().map(|m| json!(m.name)).collect();
-        let method_docs: Map<String, Value> = METHODS
-            .iter()
+        // Filtered by what THIS deployment serves (§11.42 M4) — the same predicate `dispatch` uses. See
+        // [`PRESENTING_ONLY`] for the hazard a process-dependent method list creates and the observable
+        // a consumer must use instead of a pin.
+        let methods: Vec<Value> = advertised_methods(self.config.presents_frames)
+            .map(|m| json!(m.name))
+            .collect();
+        let method_docs: Map<String, Value> = advertised_methods(self.config.presents_frames)
             .map(|m| (m.name.to_string(), json!(m.summary)))
             .collect();
         // §2.1 (§11.23): which implementation answered, and which build of it. Both are read from
@@ -3507,6 +3674,64 @@ impl Engine {
             // same artifact. Cursor-less by §2.4 clause (b) — this method accepts no continuation, so it
             // may not mint a token that can never be handed back.
             "truncated": total > surfaces.len(),
+        }))
+    }
+
+    /// **`emulator/pacing`** — §11.42 (CR-S). Read-only, no params.
+    ///
+    /// This is a **serialiser and nothing else**: every number comes off the one [`PacingFacts`] the
+    /// presenting host derived and published, so the Pacing tab a person is looking at and the reply a
+    /// tool receives are two renderings of one value. Recomputing anything here — even something as
+    /// small as an fps from `presented` and a clock — would reintroduce the drift the arrangement
+    /// exists to make impossible.
+    ///
+    /// # The two conditional shapes come out of the enums, so a `match` is the whole enforcement
+    ///
+    /// §11.42 M3 is enforced by the schema's `if`/`then` on the wire and by
+    /// [`FrameTimes`]/[`PacingAudio`] in the type. `samples: 0` is emitted **with no percentiles**, and
+    /// `unmeasured: true` **with no count** — never a `0.0` or a `0` standing in for "nothing measured
+    /// this", which is the loud-on-unmeasurable rule this row exists to respect rather than to break.
+    fn pacing(&mut self, _params: &Value) -> Result<Value, RpcError> {
+        let Some(p) = self.pacing.as_ref() else {
+            // Reachable only on a deployment that set `presents_frames` and has not published yet — a
+            // headless server never gets here, because it does not serve the row at all.
+            return Err(RpcError::invalid_state(
+                "noPacing",
+                "this process presents frames but has not published a pacing measurement yet",
+                Value::Null,
+            ));
+        };
+        let mut frame_time = Map::new();
+        match p.frame_time {
+            FrameTimes::Unsampled => {
+                frame_time.insert("samples".into(), json!(0));
+            }
+            FrameTimes::Sampled {
+                samples,
+                p50_ms,
+                p99_ms,
+            } => {
+                frame_time.insert("samples".into(), json!(samples));
+                frame_time.insert("p50".into(), json!(p50_ms));
+                frame_time.insert("p99".into(), json!(p99_ms));
+            }
+        }
+        let mut audio = Map::new();
+        match p.audio {
+            PacingAudio::Unmeasured => {
+                audio.insert("unmeasured".into(), json!(true));
+            }
+            PacingAudio::Measured { underruns } => {
+                audio.insert("unmeasured".into(), json!(false));
+                audio.insert("underruns".into(), json!(underruns));
+            }
+        }
+        Ok(json!({
+            "presented": p.presented,
+            "fps": {"value": p.fps_value, "windowMs": p.fps_window_ms},
+            "frameTimeMs": Value::Object(frame_time),
+            "audio": Value::Object(audio),
+            "targetFps": p.target_fps,
         }))
     }
 

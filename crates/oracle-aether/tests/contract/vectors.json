@@ -4382,6 +4382,203 @@
         "hitsDropped": 0
       },
       "why": "§11.40 S1 — reason is a closed enum with one member; reset and restore are not adopted as members until a consumer asks."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "params",
+      "expect": "pass",
+      "doc": {},
+      "why": "§11.42, the row takes no params."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "params",
+      "expect": "fail",
+      "doc": {
+        "windowMs": 1000
+      },
+      "why": "§11.42 M2 / §8 item 22, the window is the SERVER's to report, not the client's to request; a client that thinks it chose the window must be refused."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "presented": 18120,
+        "fps": {
+          "value": 59.94,
+          "windowMs": 1000
+        },
+        "frameTimeMs": {
+          "samples": 120,
+          "p50": 16.7,
+          "p99": 33.4
+        },
+        "audio": {
+          "unmeasured": true
+        },
+        "targetFps": 60
+      },
+      "why": "§11.42 M1 to M3, every quantity named, fps carrying its window, audio unmeasured with no underrun count."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "presented": 18120,
+        "fps": {
+          "value": 59.94,
+          "windowMs": 1000
+        },
+        "frameTimeMs": {
+          "samples": 0
+        },
+        "audio": {
+          "unmeasured": false,
+          "underruns": 0
+        },
+        "targetFps": 60
+      },
+      "why": "§11.42 M3, nothing sampled yet is a legitimate state reported as samples 0 with the percentiles absent; a real zero underruns beside unmeasured false."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "presented": 18120,
+        "fps": {
+          "value": 59.94,
+          "windowMs": 1000
+        },
+        "frameTimeMs": {
+          "samples": 120,
+          "p50": 16.7,
+          "p99": 33.4
+        },
+        "audio": {
+          "underruns": 0
+        },
+        "targetFps": 60
+      },
+      "why": "§11.42 M3, `unmeasured` is REQUIRED: no device and zero underruns must never share a shape."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "presented": 18120,
+        "fps": {
+          "value": 59.94,
+          "windowMs": 1000
+        },
+        "frameTimeMs": {
+          "samples": 120,
+          "p50": 16.7,
+          "p99": 33.4
+        },
+        "audio": {
+          "unmeasured": true,
+          "underruns": 0
+        },
+        "targetFps": 60
+      },
+      "why": "§11.42 M3, a count reported beside unmeasured true is a fabricated zero."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "presented": 18120,
+        "fps": 59.94,
+        "frameTimeMs": {
+          "samples": 120,
+          "p50": 16.7,
+          "p99": 33.4
+        },
+        "audio": {
+          "unmeasured": true
+        },
+        "targetFps": 60
+      },
+      "why": "§11.42 M2, an fps without its measurement window is invalid; the object shape carries the window."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "presented": 18120,
+        "fps": {
+          "value": 59.94,
+          "windowMs": 1000
+        },
+        "frameTimeMs": {
+          "samples": 120,
+          "p50": 16.7
+        },
+        "audio": {
+          "unmeasured": true
+        },
+        "targetFps": 60
+      },
+      "why": "§11.42 M3, sampled percentiles come as the pair; a p50 alone is half a figure."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "presented": 18120,
+        "fps": {
+          "value": 59.94,
+          "windowMs": 1000
+        },
+        "frameTimeMs": {
+          "samples": 0,
+          "p50": 16.7,
+          "p99": 33.4
+        },
+        "audio": {
+          "unmeasured": true
+        },
+        "targetFps": 60
+      },
+      "why": "§11.42 M3, percentiles over zero samples are fabricated."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/pacing",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "presented": 18120,
+        "fps": {
+          "value": 59.94,
+          "windowMs": 1000
+        },
+        "frameTimeMs": {
+          "samples": 120,
+          "p50": 16.7,
+          "p99": 33.4
+        },
+        "audio": {
+          "unmeasured": true
+        }
+      },
+      "why": "§11.42 M1, `targetFps` is required: a paced 60 and an unpaced 60 are different facts."
     }
   ],
   "specExamples": [

@@ -60,25 +60,40 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 88d1077765d4e63bfd180e43c25e366d1d461b7e
-    pin.blob     = 83d4a7696951962ce532a827ed8b019f14767b25
-    pin.bytes    = 360485
+    pin.revision = 3f83c6c9b9cd619b9087cc54ab982e21305865cc
+    pin.blob     = 72ad05de47b124a2be6bc4e667927b4cf1059342
+    pin.bytes    = 365492
 
-    pin.vectors.revision = 88d1077765d4e63bfd180e43c25e366d1d461b7e
-    pin.vectors.blob     = 136bb7163b5a8a99eca2308d59fd189d5b150da6
-    pin.vectors.bytes    = 133091
+    pin.vectors.revision = 3f83c6c9b9cd619b9087cc54ab982e21305865cc
+    pin.vectors.blob     = e045fac1fdd32624344bab20f062acf193d3b3d0
+    pin.vectors.bytes    = 137937
 
 ## Current copy — the schema
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`88d1077765d4e63bfd180e43c25e366d1d461b7e`** (2026-09-05) — derived with `git log -1 --format=%H origin/main -- contract/schema/bus-protocol.schema.json` rather than assumed from any tip, and `git merge-base --is-ancestor 88d1077 origin/main` was **run**, not assumed (it exited 0). The tip and the recipe **DIVERGED** again: `origin/main` was `4f06042f` when these bytes were taken, a lane-log commit that wrote neither file. **69** method fragments (the `methods` object carries 70 keys, one of which is a `$comment`); all 69 declare `params`, all 69 close it with `unevaluatedProperties: false` (handshake exempt), and all 69 declare `result`; 19 `$defs`; **5** event fragments (the `events` object carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **zero leaf paths added, zero removed, exactly ONE value changed** (3047 → 3047 leaves), derived by flattening both copies to leaf paths and differencing the sets. The one changed value is the document's own top-level `/description`: *"FIVE §6 ROWS REMAIN UNSCHEMATIZED"* becomes *"FOUR"*, with `read_vdp_registers` struck from the list and a §11.41 note added. **Not one `methods` or `events` fragment differs**, which is what makes this half of the re-vendor prose-only. |
-| Last commit that touched the schema | **`88d1077765d4e63bfd180e43c25e366d1d461b7e`** — *"protocol: item 29's three clauses are independent and all asserted (the hash cannot see the toggle or latches); schema prose: four blocked rows, not five"* (2026-09-05). |
-| Git blob | `83d4a7696951962ce532a827ed8b019f14767b25` |
-| SHA-256 | `04fe4fe89c273a94c0b8297ffe3c1ec748e237f4d36ca2e965df95458dd2d648` |
-| Bytes | 360485 |
-| Vendored on | 2026-09-05 |
+| Contract repo revision | **`3f83c6c9b9cd619b9087cc54ab982e21305865cc`** (2026-09-06) — the §11.42 adoption itself, which wrote **both** paths, so the per-path recipe answers `3f83c6c` twice and the two pins carry one revision without a judgement call for the first time in three re-vendors. `git merge-base --is-ancestor 3f83c6c origin/main` was **run**, not assumed (it exited 0). **70** method fragments (the `methods` object carries 71 keys, one of which is a `$comment`); all 70 declare `params`, all 70 close it with `unevaluatedProperties: false` (handshake exempt), and all 70 declare `result`; 19 `$defs`; **5** event fragments (the `events` object carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **50 leaf paths added, ZERO removed, exactly ONE value changed**, derived by flattening both copies to leaf paths and differencing the sets. Every added path is under `methods["emulator/pacing"]`, which is the one new fragment; the set of fragment names is otherwise identical in both directions. |
+| Last commit that touched the schema | **`3f83c6c9b9cd619b9087cc54ab982e21305865cc`** — *"contract: §11.42 CR-S adjudicated, emulator/pacing (read-only pacing readout), fragment + 10 vectors, gate green"* (2026-09-06). |
+| Git blob | `72ad05de47b124a2be6bc4e667927b4cf1059342` |
+| SHA-256 | `28f741238954dc60c582e91cd2595651efb786c45788b2456095b9125031366f` |
+| Bytes | 365492 |
+| Vendored on | 2026-09-06 |
+
+> **⚑ The ONE changed value is not the pacing row, and it is recorded rather than absorbed.**
+> `methods["emulator/lookup_symbol"].result.properties.otherMatches.$comment` changed its policy
+> sentence: *"The bound is a POLICY bound (this spec chose 5; a symbol table holds thousands)"* becomes
+> *"(the server chooses the digit and reports it as `limit`; the reference server used 5 until 2026-09-06
+> and 256 since; …)"*. That is upstream catching its own prose up to **this** lane's symbol-cap change
+> (5 → 256), it is a `$comment` and therefore non-normative, and no keyword moved with it. It is written
+> down because a re-vendor whose delta is one leaf *larger* than its dispatch said is exactly the case
+> the structural diff exists to surface, and "nothing else changed" would have been false.
+>
+> **The serve lands in this same commit, and there is no red-free ordering the other way.** The new
+> fragment declares `emulator/pacing.result`, so with the bytes vendored and no `METHODS` row the name
+> falls into `SCHEMATIZED_NOT_ADVERTISED`, which is pinned by name; with the row and the old bytes,
+> `UNCOVERED_METHODS` (pinned empty) gains a member and §8 item 20's result closure refuses every reply.
+> Both directions are red, which is the standing reason the re-vendor and the serve are one commit.
 
 > **⚑ The recipe answered TWO DIFFERENT REVISIONS for the two paths, and this is the first re-vendor here
 > where it did.** Run once per path against `origin/main` at `4f06042f`:
@@ -177,11 +192,11 @@ until the vectors table describes `c5638e6e`, not the current copy.)*
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/tests/vectors.json` |
-| Contract repo revision | **`88d1077765d4e63bfd180e43c25e366d1d461b7e`** (2026-09-05) — ⚑ and the recipe (`git log -1 --format=%H origin/main -- contract/schema/tests/vectors.json`) was run for this path in its own right and answered **`887d01c7`, a DIFFERENT commit from the schema path's `88d1077`**, for the first time here. `88d1077` did not write this file; it is nonetheless the revision this copy was taken from, and the bytes at `88d1077:contract/schema/tests/vectors.json` are blob `136bb716` — the same object, unchanged since `887d01c7`. Both facts are recorded because only one of them can be a pin: see the ⚑ note under the schema table for why the pins name the newer revision and not the recipe's per-path answers. **285 cases** (`cases[]`, up from 276), of which **169** are `expect: "fail"` and **116** `expect: "pass"`; naming **41** distinct methods (up from 39), of which **10** are `emulator/lookup_equate`. **14** cases carry `group: "events"`, up from 10. All 276 previous cases are present and unchanged: nine are ADDED and zero removed, compared as whole documents. §11.41 contributes **five** on `emulator/read_vdp_registers` (a `params` pass on `{}`, a `params` fail on `{"reg": 4}`, a `result` pass, a `result` fail on 23 entries, a `result` fail on a `status` key beyond `raw`) and §11.40 contributes **four** on the `emulator/machineReplaced` event. `$comment`, `envelope`, `eventEnvelope` and `specExamples` are byte-identical. ⚑ The five §11.41 cases are **inserted at index 111**, beside the other §6 read rows, not appended — so "the leading prefix is unchanged" is FALSE here at 111 of 276, and the honest statement is the set comparison above rather than a prefix length. Every figure re-derived by parsing the bytes written in this commit. |
-| Git blob | `136bb7163b5a8a99eca2308d59fd189d5b150da6` |
-| SHA-256 | `0cde48d1283ff5110704d90d3fafc8de0d775c58c65b9aec56384b86b19acfdf` |
-| Bytes | 133091 |
-| Vendored on | 2026-09-05 |
+| Contract repo revision | **`3f83c6c9b9cd619b9087cc54ab982e21305865cc`** (2026-09-06) — the recipe was run for this path in its own right and answered `3f83c6c`, the **same** commit the schema path answers, because the §11.42 adoption wrote both files. **295 cases** (`cases[]`, up from 285), of which **176** are `expect: "fail"` and **119** `expect: "pass"`; naming **42** distinct methods (up from 41), of which **10** are `emulator/lookup_equate` and **10** are the new `emulator/pacing`. **14** cases carry `group: "events"`, unchanged. All 285 previous cases are present, unchanged, and still the **leading prefix**: the ten new cases are APPENDED, which is not what §11.41's insertion at index 111 did and is therefore stated rather than assumed — the prefix was compared as whole documents, element by element, and is identical. The ten are §11.42's own: a `params` pass on `{}`, a `params` fail on a client-supplied `{"windowMs": 1000}`, two `result` passes (full, and `samples: 0` with the percentiles absent), and six `result` fails (`unmeasured` absent, a count beside `unmeasured: true`, a bare-number `fps`, half a percentile pair, percentiles over zero samples, `targetFps` absent). `$comment`, `envelope`, `eventEnvelope` and `specExamples` (9) are byte-identical. Every figure re-derived by parsing the bytes written in this commit. |
+| Git blob | `e045fac1fdd32624344bab20f062acf193d3b3d0` |
+| SHA-256 | `63d0b5fb4932c15fc9309988dbc6cfecc59bbda417ad34661f7d58db195ea1ab` |
+| Bytes | 137937 |
+| Vendored on | 2026-09-06 |
 
 > **⚑ These bytes did not move on this re-vendor, and only the pin's revision did.** Blob `136bb716` was
 > already the vendored value and it still is — re-copied from `88d1077`'s object store rather than left

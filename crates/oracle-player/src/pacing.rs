@@ -100,6 +100,8 @@
 
 use std::time::{Duration, Instant};
 
+use oracle_aether::engine::{FrameTimes, PacingAudio, PacingFacts};
+
 use crate::audio;
 
 /// The nominal NTSC video period, 60.0 Hz. The emulator's *true* rate is set by the audio ring (layer 2);
@@ -119,6 +121,158 @@ pub const RENDER_LOW_WATER_FRAMES: usize = 2;
 /// would refuse a repaint that missed by a microsecond and hand back a zero-length wait, busy-spinning.
 /// One millisecond is above every timer's granularity here and far below a frame.
 pub const EARLY_TOLERANCE: Duration = Duration::from_millis(1);
+
+/// The span [`Presents::facts`] measures `fps` over once the process has been up that long.
+///
+/// One second, because that is the figure a person means by "frame rate" and the one the owner will
+/// quote back. It is **reported on the wire beside the value** (§11.42 M2), so this constant is a
+/// default the reader can see rather than a hidden convention — and a reader who wants a different
+/// window cannot ask for one: §8 item 22 refuses a client-chosen `windowMs`.
+pub const FPS_WINDOW: Duration = Duration::from_secs(1);
+
+/// The span the frame-time percentiles summarise, at most.
+///
+/// Ten seconds rather than the one second `fps` uses, and the difference is the point: a p99 needs
+/// enough samples that the 99th percentile is not simply the maximum. At [`FRAME_PERIOD`] that is
+/// [`FRAME_TIME_SAMPLES`] samples, and the sample count is served beside the pair so a reader never has
+/// to take this constant on trust.
+pub const FRAME_TIME_WINDOW: Duration = Duration::from_secs(10);
+
+/// How many inter-present gaps the percentiles are taken over — **derived** from
+/// [`FRAME_TIME_WINDOW`] and [`FRAME_PERIOD`] rather than picked, so the two cannot drift.
+///
+/// It bounds the ring for the reason `crate::stats::Series` does not bound its own: `Series` is a bench
+/// artefact that lives for one measured run, and this one lives for as long as the owner leaves his
+/// window open. At 599 `f64`s it is ~4.7 KB, and the sort behind a percentile is a few microseconds of a
+/// 16.667 ms frame.
+pub const FRAME_TIME_SAMPLES: usize =
+    (FRAME_TIME_WINDOW.as_nanos() / FRAME_PERIOD.as_nanos()) as usize;
+
+/// **The pacing meter: presents in, [`PacingFacts`] out.**
+///
+/// This is the single derivation §11.42 is served from, and the one the Pacing tab draws. See
+/// [`PacingFacts`] for why there is exactly one and what would be wrong with two.
+///
+/// It counts **presents** — pictures this window actually put on the glass — which is neither of the two
+/// frame tallies the player already had. [`crate::machine::Machine::frames`] is emulated frames, and
+/// [`crate::machine::Machine::pictures`] is *completed pictures*, which its own doc records as running
+/// **above** the presented count whenever an iteration emulated two frames and only the second reached
+/// the screen. §11.42 M1 asks for the third quantity by name, so the third quantity is counted here
+/// rather than one of the first two being relabelled.
+#[derive(Debug)]
+pub struct Presents {
+    /// Every present since [`Presents::start`], never windowed. `presented` on the wire.
+    total: u64,
+    /// The instants of the presents inside [`FPS_WINDOW`], oldest first.
+    window: std::collections::VecDeque<Instant>,
+    /// The last [`FRAME_TIME_SAMPLES`] gaps between consecutive presents, in milliseconds, oldest first.
+    gaps: std::collections::VecDeque<f64>,
+    /// The previous present, for the next gap. `None` before the first one — and one present is zero
+    /// gaps, which is `samples: 0` and no percentiles rather than a fabricated pair.
+    last: Option<Instant>,
+    /// When the meter started, so a window shorter than [`FPS_WINDOW`] is reported as the span it
+    /// actually covers instead of a second that has not elapsed.
+    started: Instant,
+}
+
+impl Presents {
+    pub fn start(now: Instant) -> Self {
+        Self {
+            total: 0,
+            window: std::collections::VecDeque::new(),
+            gaps: std::collections::VecDeque::new(),
+            last: None,
+            started: now,
+        }
+    }
+
+    /// **One picture reached the glass.** Called from the one place that uploads a texture, so the tally
+    /// is presents and not repaints: an iteration woken early re-presents the picture already bound and
+    /// deliberately does not count (see `Loop::iterate`).
+    pub fn note(&mut self, now: Instant) {
+        self.total += 1;
+        if let Some(prev) = self.last {
+            self.gaps
+                .push_back((now.saturating_duration_since(prev)).as_secs_f64() * 1000.0);
+            while self.gaps.len() > FRAME_TIME_SAMPLES {
+                self.gaps.pop_front();
+            }
+        }
+        self.last = Some(now);
+        self.window.push_back(now);
+        self.evict(now);
+    }
+
+    /// Drop presents that have fallen out of [`FPS_WINDOW`].
+    fn evict(&mut self, now: Instant) {
+        let Some(cut) = now.checked_sub(FPS_WINDOW) else {
+            return;
+        };
+        while self.window.front().is_some_and(|t| *t <= cut) {
+            self.window.pop_front();
+        }
+    }
+
+    /// **The derivation.** Everything `emulator/pacing` serves and everything the Pacing tab draws about
+    /// rate, in one value computed once.
+    ///
+    /// # `fps_value` and `fps_window_ms` are arithmetically consistent, on purpose
+    ///
+    /// The window is the elapsed span, clamped to [`FPS_WINDOW`] and to at least the 1 ms the schema's
+    /// `minimum` allows, and the value is the presents inside *that* span scaled to a second. So
+    /// `value * windowMs / 1000` is exactly the count that was measured, and a reader can invert the
+    /// pair — which is the whole reason §11.42 M2 refuses a bare number. A nominal 1000 here would make
+    /// a window three frames old report 3 fps and call it a second.
+    pub fn facts(&self, now: Instant, governor: &Governor, audio: PacingAudio) -> PacingFacts {
+        let span = now.saturating_duration_since(self.started).min(FPS_WINDOW);
+        // `max(1)` for the schema's `minimum: 1`, and the same integer is then used as the divisor, so
+        // the reported window is the window the value was computed against rather than a rounding of it.
+        let window_ms = (span.as_secs_f64() * 1000.0).round().max(1.0) as u32;
+        let counted = match now.checked_sub(Duration::from_millis(u64::from(window_ms))) {
+            Some(cut) => self.window.iter().filter(|t| **t > cut).count(),
+            None => self.window.len(),
+        };
+        let mut sorted: Vec<f64> = self.gaps.iter().copied().collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // ⚑ Both percentiles come from `nearest_rank`, which answers `None` on an empty slice. The
+        // `Unsampled` arm is therefore reached by the estimator's own refusal to invent a figure, not by
+        // a length test written beside it that could disagree.
+        let frame_time = match (
+            crate::stats::nearest_rank(&sorted, 0.50),
+            crate::stats::nearest_rank(&sorted, 0.99),
+        ) {
+            (Some(p50_ms), Some(p99_ms)) => FrameTimes::Sampled {
+                samples: sorted.len() as u32,
+                p50_ms,
+                p99_ms,
+            },
+            _ => FrameTimes::Unsampled,
+        };
+        PacingFacts {
+            presented: self.total,
+            fps_value: counted as f64 * 1000.0 / f64::from(window_ms),
+            fps_window_ms: window_ms,
+            frame_time,
+            audio,
+            target_fps: target_fps(governor),
+        }
+    }
+}
+
+/// The governor's target as whole frames per second, `0` when it is switched off.
+///
+/// **A whole number because the schema's `targetFps` is an integer**, and the rounding is stated rather
+/// than silent: a `--target-fps 59.94` run reports `60`. What the field exists to answer is *"is a
+/// governor holding this rate at all"* (§11.42 M1: a paced 60 and a free-running 60 are different
+/// facts), and the exact period is on the panel beside it in milliseconds.
+pub fn target_fps(governor: &Governor) -> u32 {
+    match governor.period() {
+        // `is_paced()` is false exactly when `period()` is `None` (see `Governor::unpaced`), so the
+        // `0` here is the governor being OFF and never a target that rounded to nothing.
+        None => 0,
+        Some(p) => (1.0 / p.as_secs_f64()).round().max(0.0) as u32,
+    }
+}
 
 /// What the governor says about this iteration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,11 +587,15 @@ pub struct AudioReadout {
 /// The whole Pacing tab as facts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readout {
-    /// The three numbers the tab exists to answer: how much was emulated, how much was drawn, and the
-    /// worst the governor ever ran late.
+    /// The numbers the tab exists to answer: how much was emulated, how much reached the glass, how fast
+    /// that is happening, and the worst the governor ever ran late.
     pub headline: Vec<Stat>,
     /// The governor's supporting facts, including the target period it is actually holding.
     pub governor: Vec<Fact>,
+    /// The frame-time distribution, or **one stated line** saying nothing has been sampled yet. Never a
+    /// pair of zeroes: §11.42 M3's rule is the same rule P6 already imposed on this tab, and this field
+    /// and the bus row are two readings of one [`PacingFacts`].
+    pub frame_time: Vec<Fact>,
     pub audio: Audio,
     /// The loop's own status line, verbatim. **P8**: it is not rewritten here.
     pub status: String,
@@ -467,10 +625,20 @@ impl Readout {
     /// The arguments are the raw sources rather than the `Machine` and `Device` themselves, so this
     /// function can be tested against numbers a test chooses. Wiring it to the real ones is
     /// `Panels::pacing`'s one job.
+    ///
+    /// # ⚑ `facts` is the same value `emulator/pacing` serves, and this function must not re-derive it
+    ///
+    /// The owner's 2026-09-03 ruling is that a panel shows the same answer a tool gets, and that this is
+    /// made true by **one derivation with two readers** rather than by routing the panel through a
+    /// transport. [`Presents::facts`] is that derivation; this is one reader and
+    /// `oracle_aether::engine::Engine::pacing` is the other. Every rate figure below is *formatted* from
+    /// `facts` and none is computed here — a second `presented / elapsed` on this side would be exactly
+    /// the drift the arrangement exists to make impossible, and a parity test over two independent
+    /// computations would only prove they agreed on the day it was written.
     #[allow(clippy::too_many_arguments)]
     pub fn of(
         frames: u64,
-        pictures: u64,
+        facts: &PacingFacts,
         governor: &Governor,
         device: Option<DeviceFacts>,
         status: &str,
@@ -487,12 +655,27 @@ impl Readout {
                         doing.",
             },
             Stat {
-                label: "pictures drawn",
-                value: pictures.to_string(),
+                label: "frames presented",
+                value: facts.presented.to_string(),
                 unit: None,
                 health: Health::Good,
-                hover: "Pictures uploaded to the screen. It trails frames emulated whenever an iteration \
-                        was woken early, and that is the governor working rather than a fault.",
+                hover: "Pictures this window actually put on the glass. It trails frames emulated \
+                        whenever an iteration ran two emulated frames and presented one, and that is \
+                        audio-mastered pacing working rather than a fault. This is the number \
+                        `emulator/pacing` serves as `presented`.",
+            },
+            Stat {
+                label: "presented fps",
+                value: format!("{:.2}", facts.fps_value),
+                unit: Some("fps"),
+                // Never coloured against 60: a run launched with `--target-fps 0` is *meant* to be off
+                // 60, and a "wrong" colour there would be this tab disagreeing with the flag the
+                // operator passed. The judgement a reader wants is the one on `worst late` and
+                // `rebases`, which are about the governor holding whatever target it was given.
+                health: Health::Good,
+                hover: "Presented frames per second, over the window named below it. The window is part \
+                        of the figure: a rate over 200 ms and a rate over a second differ most exactly \
+                        when something is wrong.",
             },
             Stat {
                 label: "worst late",
@@ -510,6 +693,14 @@ impl Readout {
         ];
 
         let mut gov = vec![Fact {
+            label: "fps window",
+            // The measured span, said in the same breath as the rate above it. Not a nominal one second:
+            // see `Presents::facts`.
+            value: format!("{} ms", facts.fps_window_ms),
+            mono: true,
+            health: Health::Good,
+        }];
+        gov.push(Fact {
             label: "target period",
             value: match governor.period() {
                 Some(p) => format!("{:.3} ms", p.as_secs_f64() * 1000.0),
@@ -523,7 +714,7 @@ impl Readout {
             } else {
                 Health::Unmeasured
             },
-        }];
+        });
         gov.push(Fact {
             label: "rebases",
             value: governor.rebases().to_string(),
@@ -540,15 +731,84 @@ impl Readout {
             health: Health::Good,
         });
 
+        // ⚑ **The unmeasured arm is a stated line, never a table of zeroes** — P6, and §11.42 M3 one
+        // surface over. `Health::Unmeasured` is what stops it being drawn in the same colour as a
+        // measured figure, exactly as the absent-device sentence is.
+        let frame_time = match facts.frame_time {
+            FrameTimes::Unsampled => vec![Fact {
+                label: "samples",
+                value:
+                    "0. Nothing has been sampled yet, so there is no median and no worst case to \
+                        show."
+                        .to_owned(),
+                mono: false,
+                health: Health::Unmeasured,
+            }],
+            FrameTimes::Sampled {
+                samples,
+                p50_ms,
+                p99_ms,
+            } => vec![
+                Fact {
+                    label: "median",
+                    value: format!("{p50_ms:.2} ms"),
+                    mono: true,
+                    health: Health::Good,
+                },
+                Fact {
+                    label: "p99",
+                    value: format!("{p99_ms:.2} ms"),
+                    mono: true,
+                    // A 99th percentile past a whole frame period is a visible stutter once every
+                    // hundred frames. Judged against `FRAME_PERIOD` — the constant the governor holds —
+                    // rather than against a number typed here.
+                    health: if p99_ms >= FRAME_PERIOD.as_secs_f64() * 1000.0 {
+                        Health::Watch
+                    } else {
+                        Health::Good
+                    },
+                },
+                Fact {
+                    label: "samples",
+                    value: samples.to_string(),
+                    mono: true,
+                    health: Health::Good,
+                },
+            ],
+        };
+
         Self {
             headline,
             governor: gov,
-            audio: match device {
-                None => Audio::Absent { why: NO_DEVICE },
-                Some(d) => Audio::Open(Box::new(d.into_readout())),
+            frame_time,
+            // ⚑ The arm is chosen from `facts.audio`, not from `device.is_some()`. They agree today —
+            // `Presents::facts` is handed the one derived from the other — and choosing here would be a
+            // second opinion about whether a device exists, which is precisely the pair §11.42 M3 says
+            // must never be able to disagree.
+            audio: match (facts.audio, device) {
+                (PacingAudio::Unmeasured, _) | (_, None) => Audio::Absent { why: NO_DEVICE },
+                (PacingAudio::Measured { underruns }, Some(d)) => {
+                    Audio::Open(Box::new(d.into_readout(underruns)))
+                }
             },
             status: status.to_owned(),
         }
+    }
+}
+
+/// The audio half of [`PacingFacts`], from the device facts the window already reads.
+///
+/// **One function, because it is the place "no device" becomes a wire shape.** The panel and the bus row
+/// both come off the [`PacingFacts`] this feeds, so there is no second site where `starved_steady` could
+/// be read into a zero that looks measured.
+pub fn audio_facts(device: Option<DeviceFacts>) -> PacingAudio {
+    match device {
+        None => PacingAudio::Unmeasured,
+        Some(d) => PacingAudio::Measured {
+            // `starved_steady` and not the raw starvation count: `crate::device` calls the steady-state
+            // figure "the pacing verdict", the warm-up ones being the device filling its first buffers.
+            underruns: d.starved_steady,
+        },
     }
 }
 
@@ -565,7 +825,10 @@ pub struct DeviceFacts {
 }
 
 impl DeviceFacts {
-    fn into_readout(self) -> AudioReadout {
+    /// `underruns` is passed in rather than read off `self.starved_steady`: it is the number
+    /// `emulator/pacing` serves, and taking it from the served value is what makes the tab and the wire
+    /// one reading. See [`Readout::of`].
+    fn into_readout(self, underruns: u64) -> AudioReadout {
         let frame_samples = if self.rate_hz == 0 {
             0
         } else {
@@ -589,9 +852,9 @@ impl DeviceFacts {
         let stats = vec![
             Stat {
                 label: "starved",
-                value: self.starved_steady.to_string(),
+                value: underruns.to_string(),
                 unit: None,
-                health: zero_is_healthy(self.starved_steady),
+                health: zero_is_healthy(underruns),
                 hover: "Callbacks that found the ring empty once the run had settled, each one an \
                         audible click. Zero is the only healthy value.",
             },
@@ -927,11 +1190,26 @@ mod tests {
         }
     }
 
+    /// **A measurement, taken from the meter — never a hand-written `PacingFacts` literal.**
+    ///
+    /// A test that assembles the struct itself is testing a value nothing produces, and would keep
+    /// passing after `Presents::facts` started producing a different one. So the presents are fed in at
+    /// one frame period apart, which is what the caller's `presented` count means here.
+    fn facts_for(presented: u64, governor: &Governor, device: Option<DeviceFacts>) -> PacingFacts {
+        let t0 = Instant::now();
+        let mut p = Presents::start(t0);
+        for i in 1..=presented {
+            p.note(t0 + FRAME_PERIOD * u32::try_from(i).expect("test counts fit in u32"));
+        }
+        let now = t0 + FRAME_PERIOD * u32::try_from(presented + 1).expect("fits");
+        p.facts(now, governor, audio_facts(device))
+    }
+
     fn readout(device: Option<DeviceFacts>) -> Readout {
         let g = Governor::start(Instant::now(), FRAME_PERIOD);
         Readout::of(
             1234,
-            1230,
+            &facts_for(1230, &g, device),
             &g,
             device,
             "governor on · 1234 frames · 0 rebases",
@@ -985,8 +1263,288 @@ mod tests {
             "the absent line must not read as health: {why}"
         );
         // The governor's own numbers survive the device's absence, because the governor measured them.
-        assert_eq!(r.headline.len(), 3);
+        assert_eq!(r.headline.len(), 4);
         assert_eq!(r.headline[0].value, "1234");
+        // ⚑ And the *frame-time* section survives it too, which is the same rule one instrument over:
+        // frame times are wall clock between presents and owe nothing to an audio device, so an absent
+        // device must not blank them. A real distribution is here because `readout` fed the meter 1230
+        // presents; the unsampled-is-not-zero half is `nothing_sampled_is_a_stated_line_not_a_zero`.
+        assert!(
+            r.frame_time.iter().any(|f| f.label == "p99"),
+            "an absent audio device blanked the frame-time percentiles: {:?}",
+            r.frame_time
+        );
+    }
+
+    // ---- the two readers, and the guarantee that they cannot disagree ------------------------------
+
+    /// Look a `Fact` up by label, or say which labels there were. A `None` here is the failure mode this
+    /// whole test is about, so it must not read as "nothing to compare".
+    fn fact<'a>(facts: &'a [Fact], label: &str) -> &'a str {
+        facts
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no `{label}` fact; the panel drew {:?}",
+                    facts.iter().map(|f| f.label).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    fn stat<'a>(stats: &'a [Stat], label: &str) -> &'a str {
+        stats
+            .iter()
+            .find(|s| s.label == label)
+            .map(|s| s.value.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no `{label}` stat; the panel drew {:?}",
+                    stats.iter().map(|s| s.label).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    /// **THE parity gate: the Pacing tab and `emulator/pacing` cannot show different numbers.**
+    ///
+    /// The owner's 2026-09-03 ruling is that a panel shows the same answer a tool gets. This lane makes
+    /// that true by **one derivation with two readers**, not by a transport — contract D15 has an
+    /// in-process GUI read the registry directly and never open a socket to itself, and `host.rs` says
+    /// panels draw from the same instruments the bus serves.
+    ///
+    /// So this test takes ONE `PacingFacts` out of the meter and hands it to both readers: to
+    /// [`Readout::of`], which is what the tab draws, and to `Host::set_pacing` + `Host::call`, which is
+    /// the served row down to the handler. It then compares the panel's own strings against the served
+    /// numbers.
+    ///
+    /// ⚑ **It compares STRINGS the panel actually drew, not fields it was handed.** A test that read
+    /// `facts.presented` on both sides would pass on any panel whatsoever, including one that formats a
+    /// different field into the box. What is asserted is the rendered value beside the rendered label —
+    /// which is the thing a person reads off the glass.
+    ///
+    /// **What it does NOT claim**: that two independent computations agree. There is only one, on
+    /// purpose. A parity test over two derivations proves they agreed on the day it was written; this one
+    /// proves the readers are readers.
+    #[test]
+    fn the_panel_and_the_served_row_cannot_show_different_numbers() {
+        // A measurement with a real distribution and a real device, so every conditional arm is
+        // populated: an unsampled/unmeasured fixture would compare four fields and skip the rest.
+        let t0 = Instant::now();
+        let g = Governor::start(t0, FRAME_PERIOD);
+        let device = healthy_device();
+        let mut p = Presents::start(t0);
+        // Deliberately uneven gaps: a constant period makes p50 and p99 the same number, and a test
+        // whose two percentiles are equal cannot tell them apart.
+        let mut at = t0;
+        for i in 0..90u32 {
+            at += FRAME_PERIOD + Duration::from_micros(u64::from(i) * 40);
+            p.note(at);
+        }
+        let facts = p.facts(at, &g, audio_facts(Some(device)));
+
+        // Reader 1: the panel.
+        let r = Readout::of(4321, &facts, &g, Some(device), "governor on");
+
+        // Reader 2: the bus, through the real handler on a real (in-process) host.
+        let mut sys = oracle_core::system::System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut host = oracle_aether::host::Host::new(oracle_aether::host::HostConfig {
+            engine: oracle_aether::engine::EngineConfig {
+                presents_frames: true,
+                ..oracle_aether::host::HostConfig::default().engine
+            },
+            ..oracle_aether::host::HostConfig::default()
+        });
+        host.set_pacing(facts);
+        let (reply, _) = host.call(&mut sys, "emulator/pacing", &serde_json::json!({}));
+        let wire = reply.expect("a presenting host that published serves the row");
+
+        // --- the comparison, field by field, panel string against served number ---------------------
+
+        assert_eq!(
+            stat(&r.headline, "frames presented"),
+            wire["presented"].as_u64().expect("presented").to_string(),
+            "the tab's presented count and the served `presented` are different numbers"
+        );
+        assert_eq!(
+            stat(&r.headline, "presented fps"),
+            format!("{:.2}", wire["fps"]["value"].as_f64().expect("fps.value")),
+            "the tab's fps and the served `fps.value` are different numbers"
+        );
+        assert_eq!(
+            fact(&r.governor, "fps window"),
+            format!(
+                "{} ms",
+                wire["fps"]["windowMs"].as_u64().expect("fps.windowMs")
+            ),
+            "the tab's fps is drawn over a different window than the one served with it"
+        );
+        assert_eq!(
+            fact(&r.frame_time, "samples"),
+            wire["frameTimeMs"]["samples"]
+                .as_u64()
+                .expect("samples")
+                .to_string()
+        );
+        assert_eq!(
+            fact(&r.frame_time, "median"),
+            format!(
+                "{:.2} ms",
+                wire["frameTimeMs"]["p50"].as_f64().expect("p50")
+            )
+        );
+        assert_eq!(
+            fact(&r.frame_time, "p99"),
+            format!(
+                "{:.2} ms",
+                wire["frameTimeMs"]["p99"].as_f64().expect("p99")
+            )
+        );
+        let Audio::Open(a) = &r.audio else {
+            panic!("the fixture has a device and the tab must say so");
+        };
+        assert_eq!(
+            wire["audio"]["unmeasured"],
+            serde_json::json!(false),
+            "the tab drew a device and the wire said there was none"
+        );
+        assert_eq!(
+            stat(&a.stats, "starved"),
+            wire["audio"]["underruns"]
+                .as_u64()
+                .expect("underruns")
+                .to_string(),
+            "the tab's starvation count and the served `underruns` are different numbers"
+        );
+
+        // The percentiles are distinguishable, so the two rows above compared two different values
+        // rather than one number twice. Without this the gaps could have been constant and the test
+        // would pass with `p50` and `p99` swapped.
+        assert_ne!(
+            wire["frameTimeMs"]["p50"], wire["frameTimeMs"]["p99"],
+            "the fixture produced a flat distribution, so the p50/p99 rows above prove nothing"
+        );
+    }
+
+    /// The other arm of the same parity, because the arm above populates every conditional and therefore
+    /// cannot see a reader that mishandles an ABSENT one: with nothing sampled and no device, the tab
+    /// says so in words and the wire says so in its own shape, and **neither says zero**.
+    #[test]
+    fn nothing_sampled_is_a_stated_line_on_the_tab_and_an_absent_pair_on_the_wire() {
+        let t0 = Instant::now();
+        let g = Governor::start(t0, FRAME_PERIOD);
+        let facts = Presents::start(t0).facts(t0, &g, audio_facts(None));
+        assert_eq!(facts.frame_time, FrameTimes::Unsampled);
+
+        let r = Readout::of(0, &facts, &g, None, "starting");
+        let line = fact(&r.frame_time, "samples");
+        assert!(
+            line.contains("Nothing has been sampled"),
+            "the tab must SAY nothing was sampled, not print a zero beside a median: {line:?}"
+        );
+        assert!(
+            !r.frame_time.iter().any(|f| f.label == "median"),
+            "a median over zero samples is a number nobody measured"
+        );
+        assert_eq!(
+            r.frame_time[0].health,
+            Health::Unmeasured,
+            "the unsampled line must be drawn as unmeasured, never as a healthy figure"
+        );
+        let Audio::Absent { .. } = &r.audio else {
+            panic!("no device, so the tab states it");
+        };
+
+        let mut sys = oracle_core::system::System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut host = oracle_aether::host::Host::new(oracle_aether::host::HostConfig {
+            engine: oracle_aether::engine::EngineConfig {
+                presents_frames: true,
+                ..oracle_aether::host::HostConfig::default().engine
+            },
+            ..oracle_aether::host::HostConfig::default()
+        });
+        host.set_pacing(facts);
+        let (reply, _) = host.call(&mut sys, "emulator/pacing", &serde_json::json!({}));
+        let wire = reply.expect("served");
+        assert_eq!(wire["frameTimeMs"]["samples"], serde_json::json!(0));
+        assert!(wire["frameTimeMs"].get("p50").is_none());
+        assert_eq!(wire["audio"]["unmeasured"], serde_json::json!(true));
+        assert!(wire["audio"].get("underruns").is_none());
+    }
+
+    /// **`fps.value` and `fps.windowMs` are one quantity, and the pair inverts.**
+    ///
+    /// Derived from the meter's own inputs rather than pinned: the presents fed in are counted, and the
+    /// served rate scaled back by the served window must return that count. This is what §11.42 M2 buys
+    /// — a bare number could not be checked this way by anyone.
+    #[test]
+    fn the_rate_and_its_window_invert_to_the_presents_that_were_counted() {
+        let t0 = Instant::now();
+        let g = Governor::start(t0, FRAME_PERIOD);
+        let mut p = Presents::start(t0);
+        // Half a second of presents at one frame period, all inside the one-second window.
+        let n = 30u32;
+        let mut at = t0;
+        for _ in 0..n {
+            at += FRAME_PERIOD;
+            p.note(at);
+        }
+        let f = p.facts(at, &g, audio_facts(None));
+        let counted = f.fps_value * f64::from(f.fps_window_ms) / 1000.0;
+        assert!(
+            (counted - f64::from(n)).abs() < 0.5,
+            "the pair does not invert: {} fps over {} ms is {counted} presents, and {n} were fed in",
+            f.fps_value,
+            f.fps_window_ms
+        );
+        // The window is the ELAPSED span, not a nominal second: this meter is half a second old.
+        assert!(
+            f.fps_window_ms < 1000,
+            "a meter {:?} old reported a {} ms window, which is a second that has not happened",
+            at - t0,
+            f.fps_window_ms
+        );
+    }
+
+    /// The governor's target reaches the wire as whole frames per second, and **off is 0**, derived from
+    /// the constants rather than typed: `FRAME_PERIOD` is the player's own rate.
+    #[test]
+    fn the_target_is_the_governors_own_rate_and_zero_means_off() {
+        let now = Instant::now();
+        let paced = Governor::start(now, FRAME_PERIOD);
+        assert_eq!(
+            target_fps(&paced),
+            (1.0 / FRAME_PERIOD.as_secs_f64()).round() as u32
+        );
+        assert_eq!(
+            target_fps(&Governor::unpaced(now)),
+            0,
+            "`--target-fps 0` is reported as 0, which is why the field is required"
+        );
+    }
+
+    /// A present is counted once, and an iteration that presented nothing does not inflate the rate.
+    #[test]
+    fn only_a_present_is_counted() {
+        let t0 = Instant::now();
+        let g = Governor::start(t0, FRAME_PERIOD);
+        let mut p = Presents::start(t0);
+        for i in 1..=5u32 {
+            p.note(t0 + FRAME_PERIOD * i);
+        }
+        let at = t0 + FRAME_PERIOD * 6;
+        assert_eq!(p.facts(at, &g, audio_facts(None)).presented, 5);
+        // Five presents are four gaps: the first present has nothing to be measured against, and a
+        // fifth sample here would be a gap the meter invented.
+        let FrameTimes::Sampled { samples, .. } = p.facts(at, &g, audio_facts(None)).frame_time
+        else {
+            panic!("five presents produce a distribution");
+        };
+        assert_eq!(samples, 4);
     }
 
     /// **P5's principle off refusals.** Health is decided beside the number. A renderer that decided
@@ -1004,7 +1562,7 @@ mod tests {
         let now = Instant::now();
 
         let quiet = Governor::start(now, FRAME_PERIOD);
-        let r = Readout::of(0, 0, &quiet, None, "");
+        let r = Readout::of(0, &facts_for(0, &quiet, None), &quiet, None, "");
         assert_eq!(find(&r, "rebases"), Health::Good);
 
         // Force one real rebase rather than poking the field: a 100 ms stall, which is what
@@ -1013,11 +1571,17 @@ mod tests {
         stalled.tick(now);
         stalled.tick(now + Duration::from_millis(100));
         assert_eq!(stalled.rebases(), 1, "the stall did not produce a rebase");
-        let r = Readout::of(0, 0, &stalled, None, "");
+        let r = Readout::of(0, &facts_for(0, &stalled, None), &stalled, None, "");
         assert_eq!(find(&r, "rebases"), Health::Watch);
         // ...and `worst late` went with it, because a rebase is by definition a whole period over.
-        assert_eq!(r.headline[2].label, "worst late");
-        assert_eq!(r.headline[2].health, Health::Watch);
+        // Found by label rather than by index: the headline gained a fourth stat when the pacing readout
+        // landed, and an index here would have moved silently onto a different number.
+        let worst = r
+            .headline
+            .iter()
+            .find(|s| s.label == "worst late")
+            .expect("a `worst late` stat");
+        assert_eq!(worst.health, Health::Watch);
 
         // An early wake is the governor WORKING, so it is never a warning however large it gets.
         let mut early = Governor::start(now, FRAME_PERIOD);
@@ -1026,7 +1590,7 @@ mod tests {
             early.tick(now + Duration::from_micros(i * 10));
         }
         assert!(early.early_wakes() > 10);
-        let r = Readout::of(0, 0, &early, None, "");
+        let r = Readout::of(0, &facts_for(0, &early, None), &early, None, "");
         assert_eq!(find(&r, "early wakes"), Health::Good);
 
         // The device's two counters carry the same rule.
@@ -1172,7 +1736,8 @@ mod tests {
     #[test]
     fn only_the_machine_numbers_are_monospace() {
         let unpaced = Governor::unpaced(Instant::now());
-        let r = Readout::of(0, 0, &unpaced, Some(healthy_device()), "");
+        let d = Some(healthy_device());
+        let r = Readout::of(0, &facts_for(0, &unpaced, d), &unpaced, d, "");
         let period = r
             .governor
             .iter()
@@ -1186,7 +1751,7 @@ mod tests {
 
         // With a governor running it is a duration, which lines up in a column and keeps the face.
         let paced = Governor::start(Instant::now(), FRAME_PERIOD);
-        let r = Readout::of(0, 0, &paced, Some(healthy_device()), "");
+        let r = Readout::of(0, &facts_for(0, &paced, d), &paced, d, "");
         let period = r
             .governor
             .iter()

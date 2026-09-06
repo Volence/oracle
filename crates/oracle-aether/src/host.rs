@@ -400,6 +400,23 @@ impl Host {
         self.engine.set_screen_text(surfaces);
     }
 
+    /// **Hand the bus the pacing the host's own loop just measured** — `emulator/pacing`, §11.42 (CR-S).
+    ///
+    /// [`set_screen_text`](Host::set_screen_text)'s seam exactly, one instrument over, and the paragraph
+    /// at `host.rs`'s "the instrument" section is the argument: the panel that reads these numbers
+    /// locally and the client that reads them over the socket read **one** derivation, so they cannot
+    /// drift because there is nothing to drift apart *from*. The embedder computes
+    /// [`PacingFacts`](crate::engine::PacingFacts) once per iteration and hands the same value to both.
+    ///
+    /// Calling this is also what makes the row answerable at all: an embedder that sets
+    /// [`EngineConfig::presents_frames`](crate::engine::EngineConfig::presents_frames) and never calls
+    /// this advertises a method that refuses, which `tests/pacing.rs` pins in both directions.
+    ///
+    /// Safe to call outside a drain window: engine state, never `System` state.
+    pub fn set_pacing(&mut self, facts: crate::engine::PacingFacts) {
+        self.engine.set_pacing(facts);
+    }
+
     // ---------------------------------------------------------------- the instrument (conflict 4)
 
     /// **The watchpoint instrument, lent to the host's own run loop.**

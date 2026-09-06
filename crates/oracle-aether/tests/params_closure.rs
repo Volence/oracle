@@ -354,7 +354,11 @@ fn every_advertised_method_refuses_a_key_it_does_not_declare() {
 
     // A name no fragment declares, and none plausibly will.
     const BOGUS: &str = "notARealParamName";
-    for m in METHODS {
+    // ⚑ Over what THIS server advertises, which since §11.42 M4 is not every `METHODS` row: `spawn_system`
+    // builds a headless server, and `emulator/pacing` there is `-32601`, not `-32602`. Sweeping `METHODS`
+    // regardless would turn a correct deployment rule into a failure of the params closure. The row is
+    // still swept where it exists — `tests/pacing.rs` runs this probe against a presenting server.
+    for m in oracle_aether::engine::advertised_methods(false) {
         assert!(
             !m.params.contains(&BOGUS),
             "{} declares the probe key — pick another",

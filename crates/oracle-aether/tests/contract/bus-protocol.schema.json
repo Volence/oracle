@@ -2119,7 +2119,7 @@
                 "$ref": "#/$defs/boundedList"
               }
             ],
-            "$comment": "CR-14, adopted 2026-08-15. Was `{type: array, items: {type: string}}`, which the reference server had never emitted: a bare array is exactly what §2.4 clause (a) forbids on a method §4 itself says truncates at 5, and bare strings would drop the `addr` the client asked for. The bound is a POLICY bound (this spec chose 5; a symbol table holds thousands) so total/truncated are mandatory — and there is NO cursor and NO nextCursor, because lookup_symbol accepts no continuation param and §2.4 clause (b) forbids a token that can never be handed back. Symbol BROWSING, if ever wanted, is a new cursored method and its own change request; lookup_symbol is a resolution primitive.",
+            "$comment": "CR-14, adopted 2026-08-15. Was `{type: array, items: {type: string}}`, which the reference server had never emitted: a bare array is exactly what §2.4 clause (a) forbids on a method §4 itself says truncates at 5, and bare strings would drop the `addr` the client asked for. The bound is a POLICY bound (the server chooses the digit and reports it as `limit`; the reference server used 5 until 2026-09-06 and 256 since; a symbol table holds thousands) so total/truncated are mandatory — and there is NO cursor and NO nextCursor, because lookup_symbol accepts no continuation param and §2.4 clause (b) forbids a token that can never be handed back. Symbol BROWSING, if ever wanted, is a new cursored method and its own change request; lookup_symbol is a resolution primitive.",
             "properties": {
               "items": {
                 "type": "array",
@@ -7079,6 +7079,146 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "emulator/pacing": {
+      "$comment": "protocol.md §6 (status / misc), registered by §11.42 (CR-S, oracle, 2026-09-06). A read-only readout of the pacing a PRESENTING process already measures for its own Pacing tab. Deployment-dependent: only a process that puts frames on the glass may advertise it (§11.42 M4, the §11.40 M2 shape); a headless server MUST NOT list it in `methods`. Consumers test membership, never a pinned list.",
+      "params": {
+        "type": "object",
+        "unevaluatedProperties": false
+      },
+      "result": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/replyFields"
+          }
+        ],
+        "required": [
+          "presented",
+          "fps",
+          "frameTimeMs",
+          "audio",
+          "targetFps"
+        ],
+        "properties": {
+          "presented": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Frames actually put on the glass since the process started: the window's own DRAWS tally, stated by that name. NOT `emulator/status.frameToken`, which is the emulated frame index; the two diverge exactly when something is wrong (§11.42 M1)."
+          },
+          "fps": {
+            "type": "object",
+            "required": [
+              "value",
+              "windowMs"
+            ],
+            "properties": {
+              "value": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Presented frames per second over `windowMs`."
+              },
+              "windowMs": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The measurement window the figure was taken over. REQUIRED: an fps without its window is invalid, not merely unhelpful (§11.42 M2)."
+              }
+            },
+            "description": "An object, never a bare number: the window is part of the quantity."
+          },
+          "frameTimeMs": {
+            "type": "object",
+            "required": [
+              "samples"
+            ],
+            "properties": {
+              "samples": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "How many frame times the percentiles summarise. 0 is a legitimate state (nothing sampled yet) and MUST be reported as 0 with the percentiles ABSENT, never as fabricated percentiles (§11.42 M3)."
+              },
+              "p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "p99": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "if": {
+              "properties": {
+                "samples": {
+                  "minimum": 1
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "p50",
+                "p99"
+              ]
+            },
+            "else": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "p50"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "p99"
+                    ]
+                  }
+                ]
+              }
+            },
+            "description": "Wall-clock time per presented frame in milliseconds, the percentile pair the spike doc's form uses."
+          },
+          "audio": {
+            "type": "object",
+            "required": [
+              "unmeasured"
+            ],
+            "properties": {
+              "unmeasured": {
+                "type": "boolean",
+                "description": "true when no audio device is open, so no underrun count exists. REQUIRED so that 'no device' and 'zero underruns' can never share a shape (§11.42 M3, the loud-on-unmeasurable rule)."
+              },
+              "underruns": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Audio underruns since the process started. Present exactly when `unmeasured` is false."
+              }
+            },
+            "if": {
+              "properties": {
+                "unmeasured": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "underruns"
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "underruns"
+              ]
+            }
+          },
+          "targetFps": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The frame governor's target; 0 means the governor is OFF (`--target-fps 0`), which changes what `fps.value` means (free-running, not paced). REQUIRED so a reader can tell a paced 60 from an unpaced one."
           }
         }
       }
