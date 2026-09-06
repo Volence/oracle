@@ -19,15 +19,27 @@
 //!
 //! The live-effects panel (`oracle-player/src/effects.rs`) resolves twelve names and **refuses to write
 //! when the listing's address disagrees with the one its note recorded** (`Channel::drift`). Against the
-//! frozen listings every one of those addresses disagrees: the parallax block is a uniform `+4`, the
-//! raster block `+0x10E`, `BgAnim_LastStep` `+0x128`. Not one of them is missing, so a probe that could
-//! only answer *present / absent* would report full coverage of a panel that, on these bytes, refuses
-//! every gesture it offers.
+//! frozen listings that refusal fires on every channel, and for two different reasons at once:
 //!
-//! That is why `symbol_addr` exists alongside `symbol_present`: it records **where** the frozen listing
-//! puts a name, so a shift is a red row rather than a silent one. The fixtures are the stale side here —
-//! the listings were built before the note's commit — and the manifest's job is to make that visible, not
-//! to adjudicate it.
+//! * **nine are present at a different address.** Frozen minus note: the parallax block is a uniform
+//!   `-4`, the raster block `-0x10E`, `BgAnim_LastStep` `-0x128`. A probe that could only answer
+//!   *present / absent* would report full coverage of a panel that, on these bytes, refuses every gesture
+//!   it offers. That is why `symbol_addr` exists alongside `symbol_present`.
+//! * **three are absent outright** — `BgAnim_Table_Ptr` (the bands channel's whole selector, missing from
+//!   the frozen *debug* listing too), `BgAnim_Table_Empty` (its off target) and `Debug_Lab_Index` (the
+//!   cursor `forbidden` refuses writes to). Those are recorded as `absent`, which is an **expected
+//!   value**: a name becoming present reddens this gate exactly as a name vanishing does.
+//!
+//! ⚑ `$FFFF8BD6` — where the note puts `Raster_Program` — *is* a symbol in these listings: it is
+//! `Raster_Active_Buf`. So the raster drift is a restructure of `Raster_State`, not a slide, and this is
+//! the reason `symbol_addr` resolves **by name and reports the address** rather than the reverse: an
+//! address-first probe would have found a plausible wrong answer here.
+//!
+//! The fixtures are the stale side — the listings were built before the note's commit — and this gate's
+//! job is to record what the frozen bytes say, not to adjudicate that. **Whether to refresh them is the
+//! currency question and belongs to `tools/aeon_pin_report.py` and to the owner, so these rows carry the
+//! frozen values and the gate stays green.** Pinning the *note's* addresses here would convert a recovery
+//! gate into a permanently-red currency gate, which the section below forbids in terms.
 //!
 //! [`crate::aeon_pin`]-style byte pinning cannot see any of this: the bytes are exactly the bytes we
 //! recorded, and the *shape* they carry is what moved. This file records the shape.
