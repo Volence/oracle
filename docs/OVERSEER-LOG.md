@@ -2984,3 +2984,172 @@ comparison → the moved-address row alone red.
   mutation, and it was found only because the mutation parameter was VARIED rather than repeated.** The
   implementing agent proved liveness with `tile_range`; repeating that would have re-confirmed the same
   covered path forever. Bar 19's enumeration-parameter rule, arriving on a mutation instead of a survey.
+
+
+## Moved from OVERSEER.md 2026-09-06 — closed register entries, verbatim (boot-read bound)
+
+*Each entry below was closed, or was a measurement whose live residual is now a one-line row in
+`OVERSEER.md`. Moved whole and verbatim; no rule was reworded on the way out. The blocks appear in
+the order they stood in the boot file, which is what makes the move provable as a subsequence.*
+
+### Queue item 8's foreground runtime follow-ups, all four closed, and the 2026-08-22 abandoned attempt
+
+   **FOREGROUND runtime follow-ups, never a subagent** (the emulator MCP deadlocks from background
+   agents): ~~the `step` frame-budget truncation~~ (**CLOSED 2026-09-04 by the CR-STEP-SHORTFALL
+   parcel: the CR was raised, adjudicated upstream as §11.33, and served; no probe was ever spent
+   on it**); ~~the `write_vram` SAT-cache desync~~ (**CLOSED 09-04**); and ~~**two new
+   ones from CR-B**: the tail wrap (`z80_write {addr:"0x3FFC", bytes:<8>}` then read `$0000`;
+   predicted from source: bytes 5-8 land at `$0000–$0003`) and the silent `len` clamp
+   (`z80_read {len:10000}` → `8192`, no error)~~ ⚑ **BOTH CLOSED 2026-09-04, AND THEY WERE NEVER
+   OURS.** Measured firsthand against the binary a consumer spawns: both refuse LOUDLY and WHOLE,
+   with a control proving the probe could see a write. CR-B was reading **`oracle-old`**; we did not
+   serve the Z80 pair until `0f35ae1` (08-29), built to refuse exactly these. The booking never named
+   an implementation. ~~**`step` and `write_vram` above are UNTOUCHED and may carry the same defect;
+   check which server each was read against before spending a probe.**~~ **Both are now closed and
+   neither cost a probe: `write_vram` on 09-04, and `step` by the CR-STEP-SHORTFALL parcel the same
+   day. `step`'s entry was never a which-server question: it named a contract SHAPE gap binding any
+   conformant server, which is why it survived the conflation the other three did not.** Detail in
+   the 2026-09-04 register entry.
+   ⚠ **ATTEMPTED 2026-08-22 evening and correctly
+   ABANDONED, not deferred for convenience:** my MCP client found no socket in my own
+   `$XDG_RUNTIME_DIR` (`Errno 2`, a *failing lookup*, which says nothing about the world, bar
+   16(d)). A `pgrep` showed an emulator IS live, but it is **another lane's harness** with its own
+   `XDG_RUNTIME_DIR=/tmp/oracle-harness-4av2i47x` running `aeon/s4.debug.bin`. Writing into a
+   peer's harness Z80 RAM to demonstrate a wrap bug is the shared-machine hazard itself. These stay
+   open until a lane-owned instance exists; **the CR does not depend on them**: it stands on the
+   source read, and the runtime pass would only upgrade it from derived to demonstrated.
+
+### F-PARITY-BLIND-TO-SAT-STRIDE, the closure (registered and closed 2026-09-05)
+
+- **✔ F-PARITY-BLIND-TO-SAT-STRIDE: CLOSED, and verified by this seat re-running its OWN mutation.**
+  `SAT_ENTRY_BYTES` 8→16, the mutation that left all nine rows green, now fails naming the quantity:
+  *"the panel arms $B000-$B00F, which is 16 bytes, but the bus spaces its SAT entries 8 bytes apart."*
+  The other half too: `index * SAT_ENTRY_BYTES` → `0 * …` fails with *"at SAT index 1"*, so a non-zero index
+  is genuinely exercised. Both restored from the committed baseline. **The fixture cannot move with the
+  constant under test**: nothing in the test spells `8`, `.hi` is asserted against a stride measured off the
+  wire, and the decoys are off-screen in **Y** (an on-screen `x = 0` sprite is a *mask* sprite, which would
+  have made the fixture lie in a different way).
+
+### F-FRONTEND-PALETTE-BUS, closed not built (2026-09-05)
+
+- **✔ F-FRONTEND-PALETTE-BUS: CLOSED, NOT BUILT.** Its blocker (*"needs a free-text argument mode the
+  current design lacks"*) is **true of `oracle-frontend` and moot for where the work would land**. Verified
+  firsthand: `oracle-frontend`'s `Cmd` really is `#[derive(Clone, Copy, …)]` (`commands.rs:13`), so it
+  cannot carry a payload; and **`oracle-player`'s palette already IS that free-text mode**: a method box
+  that doubles as the filter plus a JSON params box, with `serde_json`'s own line-and-column error quoted
+  whole (`palette.rs:150-167`), and a per-parameter form generator considered and rejected on the record.
+  Building the row means adding a `Cmd::BusMethod` arm to **the crate the d-25 ruling retires.**
+  ⚑ **Residual debt worth booking, and it is not the same row:** `commands.rs`'s 42 rows are frontend
+  *actions*, not bus methods, so their replacement belongs against the player, not against the palette.
+
+### F-TMP-RESIDUE, did not reproduce (2026-09-05)
+
+- **F-TMP-RESIDUE: DID NOT REPRODUCE, and the disagreement is the point.** The same agent reported 9,675
+  `/tmp/oracle_config_save_load_*_ThreadId(N)` directories, oldest 2026-08-26, leaking from outside this repo.
+  **Re-measured here minutes after their run: FOUR.** `grep -rn oracle_config_save_load crates/` returns 0
+  here, and a grep across aeon/aurora/seraph/sigil/empyrean/oracle-old returns no file at all, so the name is
+  attributable to nothing in the suite; `/tmp` is at 60%. Either the count was wrong or something reaped them
+  between the two reads, and **nothing available now can distinguish those**, which is why it was not
+  relayed to the hub as a shared-machine hazard. Recorded as a caught relay, not as a finding.
+
+### F-SHIM-SOCKDIR-RESIDUE, the process half did not reproduce and the filesystem half did (2026-09-05)
+
+- **F-SHIM-SOCKDIR-RESIDUE: the PROCESS half did not reproduce; the FILESYSTEM half did, and it is the
+  real finding.** aeon relayed (via the hub, ~08:20Z 2026-09-04) 13 leaked `oracle-aether` processes on
+  `/tmp/oracle-mcp-*` sockets, oldest 2026-08-28, ~38 MB. **Re-measured here minutes later: ZERO
+  processes**; `ps -C oracle-aether` empty, `pgrep -x` 0, against a working control (`pgrep -x zsh` = 20),
+  so the empty result is a measurement and not a broken pattern (bar 16(d)). The one `pgrep -f` hit was
+  **this lane's own subagent mid-build** and was gone on the next command: reaping by pattern would have
+  killed our own in-flight parcel, which is the shared-machine hazard arriving from the direction nobody
+  warns about. **Second relayed count in one day that did not reproduce** ([[F-TMP-RESIDUE]] was 9,675 vs 4).
+  ⚑ **But the artifact proves a real gap the process count was standing in for: 50 `/tmp/oracle-mcp-*`
+  dirs, 50 socket files, ZERO listeners (`ss -lxp`), spanning 2026-08-27 to 2026-09-03.** Nothing reaps a
+  shim's socket dir when its child dies. Disk cost is **200 K total**, not 38 MB: that figure was
+  process RSS, a different quantity, so the two reads are not in conflict about the same thing.
+  **Ruled: nothing to reap** (a 200 K write against another lane's possible live path is the wrong trade),
+  **and the shim-reaps-on-disconnect question is booked, not fixed**: the shim is
+  `oracle-old/linux-port/mcp/oracle_mcp.py`, and `oracle-old` is reference-only with the cutover existing
+  to delete it. Revival: the cutover replacing the shim, or `/tmp` pressure becoming real.
+  ⚠ **Ops fact for this session, and it is the vintage bar pointing at us:** our own `mcp__oracle__*`
+  server DISCONNECTED during this measurement, consistent with the same reap. Foreground runtime
+  follow-ups are unavailable this session until a relaunch; a `/clear` does not fix it.
+
+### CR-J §11 unmeasured flag, closed and measured on both sides (2026-09-04)
+
+- **CR-J §11 UNMEASURED FLAG: CLOSED, MEASURED, both halves.** aeon verified their side statically at
+  their `origin/master`: `Obj_Req_X/Y` on spawn go to `Load_Object` as *"integer, engine coords"*; on move
+  through `pixels_to_coord` into 16.16 `Sst.x_pos`; `Warp_Req_X/Y` clamp against `Player_Bound_Right` in the
+  same integer world-pixel space. **Ours measured live on `aeon/s4.debug.bin` at frame 240**, through a
+  channel neither lane authored, the SAT the emulated 68000 wrote: `object_list` slot 0 at world (256,256),
+  `Camera_X` (`0xFFA728`) = 96, `Camera_Y` (`0xFFA72C`) = 144, predicted dot (160,112); **SAT sprite 0 is a
+  2×2-cell sprite at (152,104), centre exactly (160,112)**, and `pixel_attribution(160,112)` names sprite 0
+  the winner. Static half read at `ba909f1`, `engine.rs:4742-4753`: `world = Camera_X + dot.x`, unbiased,
+  symbols resolved per call. **Anti-vacuity clause, and it is why the run counts: the camera was at (96,144),
+  not the origin**. A camera-space error would have shown; at (0,0) the identity is vacuous.
+  ⚠ **One asymmetry told to aeon rather than left implicit:** we read the camera as **unsigned** u16 and add
+  as u32, so we cannot express a negative world coordinate. Since their object path deliberately does NOT
+  clamp, an out-of-act click reaches them as a large positive, never as something obviously wrong.
+  The frontend comment at `bus.rs:405-408` still carries the flag as open and is now stale; fix it in the
+  next parcel that opens that file.
+
+### F-RSP-XVFB-ORPHAN, the audit that came back clean (2026-08-29)
+
+- **F-RSP-XVFB-ORPHAN**: *audited into existence by a peer's warning, and the audit came back clean on
+  the thing they warned about.* aurora relayed their O16 finding 2026-08-29: 28 of their harnesses tore
+  down with `pkill -f '<dist path>'`, an argv pattern that matched **other sessions' processes** and had
+  killed a peer's Electron mid-run three times. **It does not apply here, and that is a measurement, not
+  an assumption.** Enumerated by what *touches process teardown* rather than by the token (protocol bar
+  8): the executable surface is 16 `.sh`/`.py` files plus every `.rs`; spawn sites are five
+  (`rsp.py:43`, and four `Command::new("git")` that are `output()`-style and never outlive the call);
+  **teardown sites are exactly one: `rsp.py:157 self.p.kill()`, on the `Popen` handle that object
+  itself spawned.** Ownership by construction: no pattern, no process name. Every `pkill`/`killall`
+  string in this repo is in **docs prose warning against it** (5 in `docs/`, plus stale copies inside
+  three dead `.claude/worktrees/`), zero in code. The control run (165 bare `kill` hits) confirms the
+  grep could see what was there, so the empty result is a measurement rather than a broken pattern.
+  *(Residue, aurora's strengthening and the scope notes: `OVERSEER-LOG.md`. Revival: the differential harness run in anger again, or a stray blastem/Xvfb outliving it -- fix is a process group, not a wider pattern.)*
+
+### The hermetic-gate message's side matter, both banked (2026-09-02)
+
+**Also carried in the same message, both banked:** our landing is recorded upstream with attribution
+(**2026 passed / 0 failed / 6 ignored** cited as *our* measurement, not re-derived by them; correct
+attribution discipline); and **F-RESUME-STOP-RACE was relayed to aurora** as the suite's outbound
+client, which is the right destination: that register entry names `tests/breakpoints.rs` and
+`tests/watchpoints.rs` as still carrying the racy spelling, and aurora writes clients that will hit the
+same read-through-discarding-events shape. **No reply was requested and none is owed.**
+
+⚠ **The one thing verified against MY OWN interest, because the relay asserted it and this seat's bar
+says a claim about your own tree gets read out of the file:** the blob identity is **content-addressed
+and therefore not talkable-into-agreeing**: our vendored
+`crates/oracle-aether/tests/contract/bus-protocol.schema.json` is `125d17f03ac33872…` at our `HEAD`,
+and `git rev-parse 82982b7:contract/schema/bus-protocol.schema.json` in empyrean returns **the same
+blob id**. Byte identity by construction, checked in both trees, neither read from a working file.
+
+### The parcel-2 layout-persistence line item, and both of its corrections (2026-09-03 to 2026-09-05)
+
+~~**Parcel-2 line items this settles:** layout persistence is one `serde` flag and is deliberately OFF until
+the placeholders are gone (saving a layout of placeholders buys a migration); `Tab::Registers` content is
+filler on purpose while the docking it exercises is real.~~
+
+⚠ **BOTH HALVES ARE STALE AND THE FIRST ONE COST A PARCEL, struck 2026-09-05.** Layout persistence is
+**ON and shipped**: `crates/oracle-player/src/layout.rs` is 779 lines of eframe `Storage`/RON persistence
+with `LAYOUT_VERSION = 2` in its own storage key, and `eframe = { features = ["persistence"] }` is in the
+manifest. The condition this paragraph named, *until the placeholders are gone*, **was met, the flag was
+flipped, and this sentence was never struck.**
+⚑ **The cost, measured: this seat briefed a parcel to "decide the persistence question", and the question
+did not exist.** The agent found the source of the error here and annotated it rather than editing it,
+which is the right division: the brief was mine and the ruling is mine.
+⚑ **The class, and it is worse than the code-comment case this file already books:** a claim of the form
+*"X is off until Y"* is **a decision with an expiry date**, and it reads as a standing decision forever
+after Y happens, because nothing about it changes when Y does. **The worst place for one is the boot doc,
+which every session reads and nobody re-derives.** Operational form: when a conditional line's condition is
+met, strike the line in the same commit that meets it.
+
+> ⚑ **SUPERSEDED BY EVENTS, 2026-09-05: do not brief from the sentence above.** Layout persistence is
+> **ON and has shipped**: `crates/oracle-player/src/layout.rs` (eframe `Storage`, RON, `LAYOUT_VERSION` in
+> its own key, discard-never-migrate), with `eframe/persistence` and `egui_dock/serde` in
+> `crates/oracle-player/Cargo.toml` and the cost argued in the manifest comment. The condition the
+> sentence names was met (the placeholders went), and the flag was turned on, but the line-item was left
+> reading as a standing decision. **A brief written from it told this lane that persistence was off and
+> that turning it on was a live choice, when the only real question left was whether anything asserted
+> the property.** The paragraph is kept verbatim because it is a record of what was settled *then*; this
+> note is what makes it safe to read. The live shape of the feature is `layout.rs`'s own header.
