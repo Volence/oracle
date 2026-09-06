@@ -1200,8 +1200,9 @@ $ ps -eo pcpu,comm --sort=-pcpu | grep oracle-frontend
  22.3 oracle-frontend
 ```
 
-So a `--aether` launch of the player on this box, right now, would print `aether: NOT serving — cannot bind
-the socket (another Aether server is already live on /run/user/1000/oracle.sock)` and carry on unserved,
+So a `--aether` launch of the player on this box, right now, would print `aether: NOT serving. Cannot bind
+the socket on /run/user/1000/oracle.sock (another Aether server is already live on
+/run/user/1000/oracle.sock)` and carry on unserved,
 leaving his window untouched. That was **not** demonstrated by dialling his socket: `Server::bind`'s
 liveness probe is a connect, and connecting to an emulator this lane did not start is exactly the thing the
 standing invariants forbid. The behaviour is pinned by the test instead, against a server this process owns.
@@ -1229,6 +1230,51 @@ reproduced here, and improved on twice:
    `(none)` is a line readers learn to skip, whereas the state *this* row most needs to report is the
    quiet one, which an only-when-interesting row would render as blank space — reproducing the original
    defect inside the window.
+
+#### The half that was still missing: the row is behind a tab (`F-AETHER-BIND-FAILURE-SILENT`)
+
+Point 2 above is true and was not enough, and the gap took a live incident to find. `egui_dock` draws only
+each leaf's **active tab**, and the status strip is drawn inside Registers — so on a relaunch whose bind
+failed, the owner had a window that played perfectly, answered every command with silence, and said so
+only on a status row he was not looking at and in one launch line that had scrolled away.
+
+The row asked for the honest-looking fix: **refuse to start**. That is rejected, for two reasons and the
+second is the load-bearing one.
+
+1. The player is relaunched by another lane over a socket, so refusing on bind failure means *no window at
+   all* at exactly the moment somebody is waiting to look at panels. That is a different failure with a
+   worse floor, not a safer one.
+2. It contradicts a decision this document already made, four sections up: *a bind failure is never fatal;
+   someone who launched a game to play it is not stopped by a socket.* Nothing about the incident is
+   evidence against that rule. The incident is evidence that the window was **not saying so where anybody
+   was looking**.
+
+So the repair is the one `ARMED-STATE-VISIBLE` already made for the halting alarm, one instrument over:
+the condition goes on the **top bar**, which is drawn unconditionally outside the dock, where no tab can
+hide it. Three parts:
+
+* **`AetherStatus::alarm()` raises on `Failed` and on nothing else.** `Serving` and `NotAsked` are states
+  the reader asked for and truthfully has; only `Failed` is a window that is not what it looks like. A
+  permanent bar row for all three is refused on this repo's own thrice-stated finding (`held_row`,
+  `Transport::recording`, `Halting::headline`): a permanent all-clear row is one readers learn to skip.
+  Stating all three states persistently stays the **strip's** job, and the strip still does it.
+* **`ServeOutcome::Failed` now carries the resolved path** beside the error, because the error text does
+  not reliably contain it. `Server::bind` names the path in the three refusals it composes itself and in
+  **none** of the five it propagates from the OS, so the most ordinary failures read `Permission denied
+  (os error 13)` with no indication of *which* socket — on a launch whose path may have come from
+  `$ORACLE_SOCKET`, `$EXODUS_SOCKET`, `$XDG_RUNTIME_DIR` or a `/tmp` fallback. `Bus::new` resolves through
+  §7.1's own `default_socket_path` one frame earlier so the failure arm can name it; that is the same
+  resolver hoisted, not a second one.
+* **No button.** Unlike the halting alarm there is no remedy this window can perform: the path is held or
+  refused by something outside the process, and retrying onto a second path is precisely what `Bus::new`
+  refuses in so many words, since a bus at an address nobody dials is the same silence with more steps.
+  The advice names the two things a human can do and rides on hover.
+
+The path is prepended **uniformly**, including for the three errors that already name it, so the
+live-server case prints its path twice. That is deliberate: composing the line by inspecting whether the
+error text already contains the path is the same "reads its own text back" pattern this file rejects for
+the alarm's colour, and a reader who sees the path twice has lost nothing while a reader who sees it zero
+times has lost the action.
 
 #### Every `is_serving()`, re-read
 
