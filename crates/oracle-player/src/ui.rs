@@ -320,7 +320,7 @@ impl Panels<'_> {
                     .and_then(crate::preview::Outcome::drawable),
                 hit.hover_pos(),
             ) {
-                ghost(ui, p, pos, size.x / src.x);
+                ghost(ui, p, image_rect, pos, size.x / src.x);
             }
         }
 
@@ -2302,7 +2302,13 @@ fn preview_texture(
 ///
 /// `dot_scale` is points per screen dot, taken from the picture's own drawn size, so the ghost is exactly
 /// the size the object will be in the picture below it at every aspect mode and every display scale.
-fn ghost(ui: &egui::Ui, p: &crate::preview::Preview, at: egui::Pos2, dot_scale: f32) {
+fn ghost(
+    ui: &egui::Ui,
+    p: &crate::preview::Preview,
+    picture: egui::Rect,
+    at: egui::Pos2,
+    dot_scale: f32,
+) {
     if dot_scale <= 0.0 {
         return;
     }
@@ -2311,7 +2317,13 @@ fn ghost(ui: &egui::Ui, p: &crate::preview::Preview, at: egui::Pos2, dot_scale: 
     // object where the pointer is rather than putting its top left corner there.
     let origin = at - egui::vec2(p.anchor.0 as f32 * dot_scale, p.anchor.1 as f32 * dot_scale);
     let rect = egui::Rect::from_min_size(origin, size);
-    let painter = ui.painter().with_clip_rect(ui.clip_rect());
+    // ⚑ **Clipped to the PICTURE, not to the pane.** A ghost is a preview of a placement in the game
+    // world, and the game world ends where the picture does. Clipping to the pane instead would draw the
+    // object over the letterbox bars, which is a claim about somewhere the machine is not showing; and an
+    // object near the edge whose ghost is cut off at the edge is telling the truth, which is that part of
+    // it lands outside what is on screen. `ui.clip_rect()` here is the pane's and is what this used to
+    // pass, which made the call a no-op.
+    let painter = ui.painter().with_clip_rect(picture);
 
     match preview_texture(ui.ctx(), p) {
         Some(tex) => {
@@ -2373,9 +2385,12 @@ fn preview_card(ui: &mut egui::Ui, out: &crate::preview::Outcome) {
             let scale = (box_dots / p.w.max(p.h).max(1) as f32).floor().max(1.0);
             let size = egui::vec2(p.w as f32 * scale, p.h as f32 * scale);
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            // Clipped to what was allocated, so an object larger than the box is cut rather than
+            // spilling over the note under it.
+            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
             match preview_texture(ui.ctx(), p) {
                 Some(tex) => {
-                    ui.painter().image(
+                    painter.image(
                         tex.id(),
                         rect,
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -2383,12 +2398,14 @@ fn preview_card(ui: &mut egui::Ui, out: &crate::preview::Outcome) {
                     );
                 }
                 None => {
+                    // The silhouette, outlined rather than filled: this is the shape with the colours
+                    // honestly missing, and a filled block would read as a picture of a black object.
                     for c in &p.cells {
                         let cell = egui::Rect::from_min_size(
                             rect.min + egui::vec2(c.x as f32 * scale, c.y as f32 * scale),
                             egui::vec2(c.w as f32 * scale, c.h as f32 * scale),
                         );
-                        ui.painter().rect_stroke(
+                        painter.rect_stroke(
                             cell,
                             egui::CornerRadius::ZERO,
                             egui::Stroke::new(1.0, crate::theme::WARNING),
