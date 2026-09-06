@@ -67,17 +67,20 @@
 #                                  path check this script could hand-write.
 #   G2  clean tree (a)             refuse a dirty tree BEFORE anything runs, listing the paths.
 #                                  `docs/lane-status.json` is the one tolerated path — see below.
-#   G2b lane files                 `docs/lane-status.json` and `docs/lane-log.jsonl` are parsed by a
-#                                  console that is not in this repo, and until now NOTHING here
-#                                  validated them: `git grep` finds both names in two files
+#   G2b lane files                 `docs/lane-status.json`, `docs/lane-log.jsonl` and (since
+#                                  2026-09-06) `docs/decisions.jsonl` are parsed by a console that is
+#                                  not in this repo, and until this gate NOTHING here validated them:
+#                                  `git grep` finds the first two names in two files
 #                                  (`crates/oracle-aether/tests/hosted.rs`, `src/server.rs`) and both
 #                                  are doc-comment mentions. So a malformed entry landed clean and was
 #                                  discovered by the owner's card going dark. `tools/lane-check.py`
 #                                  parses every log line, checks the status document's shape and its
-#                                  `state` vocabulary, and refuses a future timestamp. It runs on the
-#                                  WORKING TREE (what the console reads) and on the COMMITTED blob
-#                                  (what the push publishes), because the carve-out below lets those
-#                                  two differ for exactly one of the files.
+#                                  `state` vocabulary, refuses a future timestamp, and holds the
+#                                  decision ledger's ids to being unique and its supersede links to
+#                                  naming cards that exist. It runs on the WORKING TREE (what the
+#                                  console reads) and on the COMMITTED blob (what the push
+#                                  publishes), because the carve-out below lets those differ for
+#                                  exactly one of the files.
 #   G3  fast-forward               the tested SHA must be a descendant of the remote branch, so a
 #                                  landing can never rewrite pushed history.
 #   G4  cargo fmt --all --check
@@ -158,14 +161,25 @@
 #     convention would be a claim; this is a measurement, and it cannot be wrong in the author's
 #     favour.
 #   * The fast path is taken **only** when that set is a non-empty subset of exactly
-#     `{docs/lane-log.jsonl, docs/lane-status.json}`. Anything else runs the full suite, **including
-#     any other file under `docs/`** — a design page is prose to us and evidence to a peer, and
-#     "docs are safe" is exactly the reasoning that widens a carve-out until it means nothing.
-#   * The argument it rests on: those two files are read by no compiled thing here (the same fact
+#     `{docs/lane-log.jsonl, docs/lane-status.json, docs/decisions.jsonl}`. Anything else runs the
+#     full suite, **including any other file under `docs/`** — a design page is prose to us and
+#     evidence to a peer, and "docs are safe" is exactly the reasoning that widens a carve-out until
+#     it means nothing.
+#   * The argument it rests on: those three files are read by no compiled thing here (the same fact
 #     the carve-out above rests on), so G4 to G8 would be measuring, byte for byte, the tree the
 #     remote already carried when that SHA landed.
 #   * **What it does instead is more than it skips.** G2b runs on every landing, fast or full, and
-#     it is the first thing in this repo ever to check these two files at all.
+#     it is the first thing in this repo ever to check these three files at all.
+#
+#   ⚑ **`docs/decisions.jsonl` joined the set on 2026-09-06, on the hub's ruling, and it joined the
+#   VALIDATOR in the same commit.** That order is the whole permission: the file is in scope because
+#   `tools/lane-check.py` now checks it to the same standard as the other two (every line parses, the
+#   corpus-derived required keys, no future `at`), plus two rules about the ids that link the cards —
+#   every id appears exactly once, and every non-null `supersedes` names an id that exists and is not
+#   the card's own. Those two came from a defect that had already happened: two cards were filed under
+#   ids that were already taken, and one of them superseded an id that then named two different cards.
+#   **It is the validator's scope, not a carve-out**, and a landing that widened the set without
+#   widening the checker would be the second thing rather than the first.
 #
 # It changes nothing about G1, G2, G2b, G3, G9, G10 or the push: the tested SHA is still pushed by
 # name, the remote is still read back, and a dirty or moved tree still refuses.
@@ -365,14 +379,16 @@ note "tested SHA : $TESTED_SHA  (on $BRANCH_NAME)"
 # Runs on EVERY landing, fast path or full. Nothing in this repo validated these two files before
 # this gate, so a malformed entry landed clean and was found by the owner's board going dark.
 # --------------------------------------------------------------------------------------------
-hr; echo "G2b lane files (docs/lane-status.json, docs/lane-log.jsonl)"
+hr; echo "G2b lane files (docs/lane-status.json, docs/lane-log.jsonl, docs/decisions.jsonl)"
 LANE_STATUS="docs/lane-status.json"
 LANE_LOG="docs/lane-log.jsonl"
+LANE_DECISIONS="docs/decisions.jsonl"
 LANE_OK=1
 
 # (i) the working tree: the copy the console actually reads, and the one the G2 carve-out lets
 #     differ from the commit.
 if ./tools/lane-check.py --status "$ROOT/$LANE_STATUS" --log "$ROOT/$LANE_LOG" \
+        --decisions "$ROOT/$LANE_DECISIONS" \
         --label "working tree" > "$RUN_DIR/lane-worktree.log" 2>&1; then
     pass "G2b working tree: $(command tail -1 "$RUN_DIR/lane-worktree.log")"
 else
@@ -383,11 +399,13 @@ fi
 
 # (ii) the committed blobs: what (e) actually publishes. The two are the same file whenever the
 #      carve-out is not in play, and the check costs milliseconds either way.
-git show "$TESTED_SHA:$LANE_STATUS" > "$RUN_DIR/lane-status.committed.json" 2>/dev/null || true
-git show "$TESTED_SHA:$LANE_LOG"    > "$RUN_DIR/lane-log.committed.jsonl"  2>/dev/null || true
+git show "$TESTED_SHA:$LANE_STATUS"    > "$RUN_DIR/lane-status.committed.json" 2>/dev/null || true
+git show "$TESTED_SHA:$LANE_LOG"       > "$RUN_DIR/lane-log.committed.jsonl"  2>/dev/null || true
+git show "$TESTED_SHA:$LANE_DECISIONS" > "$RUN_DIR/decisions.committed.jsonl" 2>/dev/null || true
 if ./tools/lane-check.py \
-        --status "$RUN_DIR/lane-status.committed.json" \
-        --log    "$RUN_DIR/lane-log.committed.jsonl" \
+        --status    "$RUN_DIR/lane-status.committed.json" \
+        --log       "$RUN_DIR/lane-log.committed.jsonl" \
+        --decisions "$RUN_DIR/decisions.committed.jsonl" \
         --label "as committed at ${TESTED_SHA:0:12}" > "$RUN_DIR/lane-committed.log" 2>&1; then
     pass "G2b committed: $(command tail -1 "$RUN_DIR/lane-committed.log")"
 else
@@ -423,7 +441,7 @@ fi
 # --------------------------------------------------------------------------------------------
 hr; echo "FAST PATH  what this landing would publish"
 FAST=0
-FASTPATH_ALLOWED="docs/lane-log.jsonl docs/lane-status.json"
+FASTPATH_ALLOWED="docs/lane-log.jsonl docs/lane-status.json docs/decisions.jsonl"
 if [ -z "$REMOTE_BEFORE" ]; then
     note "no such remote ref yet, so there is no 'already carried' tree to compare against"
 elif [ "$REMOTE_BEFORE" = "$TESTED_SHA" ]; then

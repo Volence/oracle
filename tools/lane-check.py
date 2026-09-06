@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the two lane files the Dominion console reads.
+"""Validate the lane files the Dominion console reads.
 
 WHY THIS EXISTS
 ===============
@@ -34,17 +34,45 @@ WHAT IT CHECKS, AND WHERE EACH RULE COMES FROM
 * **No future `updatedAt` and no future `at`.** A timestamp ahead of now is a typo'd year or a wrong
   clock, and either way the board is claiming to know something it cannot.
 
-It is deliberately stricter than "the console will accept it" in two places (`size`, duplicate ids):
-these are our own files, being stricter about them costs nothing, and the failure it prevents is one
-nobody at this seat can see.
+THE THIRD FILE: `docs/decisions.jsonl`
+======================================
+
+Added 2026-09-06 on the hub's ruling, in the same breath that put the file on `tools/land.sh`'s fast
+path. **It is this validator's scope rather than a carve-out**, and that framing is the reason the fast
+path was allowed to widen at all: a file that skips the suite has to be checked by something, and this
+is the something.
+
+The required keys are derived from the corpus, exactly as the log's three were: all 33 entries at the
+revision this was written carry `id`, `at`, `question`, `options` and `recommend`. `supersedes` is on 32,
+`detail` on 31, `refs` on 23, `answered` on 4 and `because` on 2, so none of those five is required.
+
+⚑ **Two checks here are not shape checks, and they exist because of a defect that had already happened.**
+The hub filed two cards an hour before this landed, stamped them `d-31` and `d-32` by assuming the next
+free number instead of measuring, and both ids were already taken. The new `d-32` then declared
+`supersedes: "d-31"` while **`d-31` named two different cards**, so a rotated session following the
+supersede chain would have landed on yesterday's card about something else entirely.
+
+* **Every `id` appears exactly once.** The file is append-only and its ids are its only handles, so a
+  duplicate is silent at write time and survives every other check here. The finding names both lines.
+* **Every non-null `supersedes` names an id that exists, and never the card's own.** A chain that leads
+  nowhere is worse than no chain: a reader follows it and stops, and cannot tell a missing card from a
+  typo.
+
+**The failure is invisible to the person who causes it**, which is the whole argument for putting it in a
+gate instead of in somebody's habits.
+
+It is deliberately stricter than "the console will accept it" in three places (`size`, duplicate queue
+ids, and the two rules above): these are our own files, being stricter about them costs nothing, and the
+failure it prevents is one nobody at this seat can see.
 
 USAGE
 =====
 
-    tools/lane-check.py --status docs/lane-status.json --log docs/lane-log.jsonl
+    tools/lane-check.py --status docs/lane-status.json --log docs/lane-log.jsonl \
+                        --decisions docs/decisions.jsonl
     tools/lane-check.py --status <file> --label "as committed at <sha>"
 
-Either argument may be omitted to check only the other. Exit 0 when clean, 1 when anything is wrong;
+Any argument may be omitted to check only the others. Exit 0 when clean, 1 when anything is wrong;
 every finding is printed with the file and, where there is one, the line or row it is about.
 """
 
@@ -74,6 +102,10 @@ STATUS_KEYS = (
 
 # What every log entry carries, derived from the corpus and not from taste.
 LOG_KEYS = ("at", "headline", "matters")
+
+# What every decision card carries, derived the same way. See the docstring for the counts that put
+# `supersedes`, `detail`, `refs`, `answered` and `because` outside this set.
+DECISION_KEYS = ("id", "at", "question", "options", "recommend")
 
 
 def parse_stamp(where, value, findings):
@@ -127,6 +159,108 @@ def check_log(path, label, findings):
                 findings.append(f"{label}:{n}: {key!r} is not a non-empty string")
         if isinstance(entry.get("at"), str):
             parse_stamp(f"{label}:{n}: at", entry["at"], findings)
+
+
+def check_decisions(path, label, findings):
+    """The decision ledger: the shape of a card, and the two rules about the ids that link them.
+
+    Two passes, because the second rule is about the file and not about a line: a `supersedes` may point
+    at a card written above it or below it, and a one-pass check would call a forward reference dangling.
+    """
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError as e:
+        findings.append(f"{label}: cannot be read: {e}")
+        return
+    if not text.strip():
+        findings.append(f"{label}: is empty")
+        return
+
+    cards = []
+    for n, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            findings.append(f"{label}:{n}: blank line; a JSONL file is one object per line")
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as e:
+            findings.append(f"{label}:{n}: does not parse as JSON: {e}")
+            continue
+        if not isinstance(entry, dict):
+            findings.append(f"{label}:{n}: is a {type(entry).__name__}, not an object")
+            continue
+        cards.append((n, entry))
+
+    # Pass one: the shape of each card, and where each id was first seen.
+    first_seen = {}
+    for n, entry in cards:
+        for key in DECISION_KEYS:
+            if key not in entry:
+                findings.append(f"{label}:{n}: has no {key!r}")
+        for key in ("id", "question"):
+            if key in entry and (not isinstance(entry[key], str) or not entry[key].strip()):
+                findings.append(f"{label}:{n}: {key!r} is not a non-empty string")
+        # ⚑ `recommend` is NOT a string, and assuming it was is what a first draft of this did. Measured:
+        # 31 of the 33 cards carry an object (`{key, because}`) and 2 carry a bare sentence. So the rule
+        # is that it is present and says something, and the shape is the ledger's business rather than
+        # this gate's. A stricter check here would have gone red on 31 true cards.
+        if "recommend" in entry:
+            rec = entry["recommend"]
+            empty = (isinstance(rec, str) and not rec.strip()) or (
+                isinstance(rec, (dict, list)) and not rec
+            )
+            if rec is None or empty:
+                findings.append(
+                    f"{label}:{n}: 'recommend' is empty; a card with no recommendation asks the "
+                    "owner to do the work of forming one"
+                )
+        if "options" in entry and not (
+            isinstance(entry["options"], list) and entry["options"]
+        ):
+            findings.append(
+                f"{label}:{n}: 'options' is not a non-empty array; a card with nothing to choose "
+                "between is not a decision"
+            )
+        if isinstance(entry.get("at"), str):
+            parse_stamp(f"{label}:{n}: at", entry["at"], findings)
+
+        rid = entry.get("id")
+        if isinstance(rid, str) and rid.strip():
+            if rid in first_seen:
+                # ⚑ Both lines, and the id. The writer of the second one cannot see the first, which is
+                # the whole reason this is a gate: a finding that named only "a duplicate" would send
+                # them looking for it by hand through an append-only file.
+                findings.append(
+                    f"{label}:{n}: id {rid!r} is ALREADY the id of the card on line "
+                    f"{first_seen[rid]}. The ids are this file's only handles and it is append-only, "
+                    "so two cards under one id makes every reference to it ambiguous. Measure the "
+                    "highest id in the file rather than assuming the next free number"
+                )
+            else:
+                first_seen[rid] = n
+
+    # Pass two: the links between them.
+    for n, entry in cards:
+        sup = entry.get("supersedes")
+        if sup is None or "supersedes" not in entry:
+            continue
+        rid = entry.get("id")
+        if not isinstance(sup, str) or not sup.strip():
+            findings.append(
+                f"{label}:{n}: 'supersedes' is neither null nor a non-empty string"
+            )
+            continue
+        if isinstance(rid, str) and sup == rid:
+            findings.append(
+                f"{label}:{n}: card {rid!r} supersedes ITSELF, which is a chain with no end in it"
+            )
+            continue
+        if sup not in first_seen:
+            findings.append(
+                f"{label}:{n}: card {rid!r} supersedes {sup!r}, and no card in this file has that "
+                "id. A reader following the chain stops here and cannot tell a missing card from a "
+                "typo"
+            )
 
 
 def check_status(path, label, findings):
@@ -195,14 +329,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--status", help="path to a lane-status.json to check")
     ap.add_argument("--log", help="path to a lane-log.jsonl to check")
+    ap.add_argument("--decisions", help="path to a decisions.jsonl to check")
     ap.add_argument(
         "--label",
         default="",
         help="what to call these files in the findings (e.g. 'as committed at <sha>')",
     )
     args = ap.parse_args()
-    if not args.status and not args.log:
-        ap.error("nothing to check: pass --status, --log, or both")
+    if not args.status and not args.log and not args.decisions:
+        ap.error("nothing to check: pass --status, --log, --decisions, or any combination")
 
     findings = []
     suffix = f" ({args.label})" if args.label else ""
@@ -210,6 +345,8 @@ def main():
         check_status(args.status, f"lane-status.json{suffix}", findings)
     if args.log:
         check_log(args.log, f"lane-log.jsonl{suffix}", findings)
+    if args.decisions:
+        check_decisions(args.decisions, f"decisions.jsonl{suffix}", findings)
 
     if findings:
         for f in findings:

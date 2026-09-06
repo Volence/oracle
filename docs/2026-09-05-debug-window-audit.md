@@ -515,3 +515,40 @@ Stated so the next reader can check rather than trust.
   argument. Any absence claimed from a decorated tool is worthless without a positive control.
 * `cargo clippy` exits 0 while printing lints. Only `-- -D warnings` fires. Everything claimed clean here
   was run in the deny form.
+
+---
+
+## Addendum, 2026-09-06: the window has ten tabs, and this page's stamp is unchanged
+
+*Appended, and nothing above this line is edited. That is the point of the form rather than a courtesy:
+this page is stamped to the revision its line numbers were derived at, and every citation above was
+checked against the construct it names at that revision. An edit anywhere above would break that promise
+for every reader who trusts the stamp; an append moves no earlier line, so the stamp keeps meaning what
+it says.*
+
+**What changed.** §0's paragraph on the window's real unit says there are **nine** tabs. There are now
+**ten**. `Tab::Spawn` landed at `eddc13b`, *"the spawn picker stops taking the game view's height, and
+becomes its own tab"*, on the owner's own reversal of the rule that had put the picker in the Screen
+tab's control strip:
+
+> *"the placement works well it seems! it just takes up a lot of space haha. Maybe it should be its own
+> debug tool in the right panel instead of part of screens?"*
+
+**The move, and what did not move with it.** The picker's rows are now `Panels::spawn` in `Tab::Spawn`,
+and **arming and placing are untouched**: the click that places an object is still on the picture, in the
+Screen tab, through the same `screen_pick::Panel::click`. What deliberately stayed in the Screen strip is
+the pair that must be seen without going to look for it, the spawn badge and the run-state line, because
+a standing statement that can be behind another tab in a dock leaf is not standing. `palette.rs`'s
+tabs-versus-controls rule was amended in place rather than quietly broken: the rule is about **one-shot
+gestures**, and a picker is a standing list you read.
+
+**The stamp above is unchanged and still governs everything before this heading.** The page was landed at
+`ec896b6` and its citations were re-derived at `86aa307` (2026-09-05), with `5452ba4` recording that the
+picker had been built. Nothing in this addendum re-dates any of that. Two consequences for a reader:
+
+* **Every line number above is still as of `86aa307` and several have since rotted**, which is §7's own
+  first rule arriving on schedule. Two measured here rather than asserted: §0 cites `ui.rs:68-93` for the
+  tab enum, which today spans `68` to `108`, and `Tab::ALL` is now `ui.rs:120` and declares `[Tab; 10]`.
+  **Re-derive before citing any of them**, exactly as §7 says.
+* **The tab count is the only claim this addendum corrects.** Nothing else above has been re-measured at
+  this revision, so absence of a correction here is not a statement that a line still holds.
