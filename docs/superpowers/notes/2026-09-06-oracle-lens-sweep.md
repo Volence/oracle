@@ -1091,3 +1091,42 @@ is "apply the thing next door".
 **No fixes were made.** Per the protocol, seats stayed read-only so the report stays honest; findings
 become rows and fixes are separate, owner-gated parcels. Byte-neutral items (comment truth, dead-guard
 deletion) may land immediately; anything touching emulation is measure-first.
+
+---
+
+# Addendum — ABSENT vs STALE vs FRESH: which oracle gates can tell them apart
+
+Added at the hub's request beside the CI item, prompted by **aeon's sweep finding the third form of the
+same shape**: their nightly backstop has reported COULD NOT RUN for nine consecutive nights, because the
+test lane runs *before* the ROM build, reads stale listings, fails, and exits the build — **so the
+listings never refresh and the false-red is what keeps them stale.** Nine master SHAs, one identical
+failure, nine unread notifications.
+
+**The generalisation is theirs and it is the sharpest statement of this class anyone has produced today:
+absent SKIPS, fresh PASSES, stale FAILS — and a false red can be the thing preserving the staleness.**
+Answering it for this repo:
+
+| state | can oracle tell? | mechanism |
+|---|---|---|
+| **ABSENT** | ✅ **Yes, well** | Five `vendor_data_present_when_running_in_ci` guards check **named manifests**, not path presence, and `CI=1` turns each skip into a hard failure. GATE's seat verified this and refuted the weaker `land.sh` G1 story: G1 only counts files; the real backstop is the six in-suite refusals. |
+| **STALE** | ✅ **Yes, for bytes and shape** | `fixtures/aeon/PIN.tsv` pins the frozen listings' bytes and `aeon_pin.rs` **panics** on a mismatch rather than skipping; `DIMENSIONS.tsv` pins their shape and is **re-measured through `SymbolTable` every run** with a positive control that panics on an uncovered probe kind. A fixture that *changed* cannot pass quietly. |
+| **FRESH** | ❌ **No — and this is exactly aeon's hole, one level up** | The two mechanisms that would answer *"has upstream moved past our pin?"* are both non-gating. `schema_conformance` step 3 is the branch that **always** runs, and **its SKIPPED banner is eaten by libtest** (H5), so every landing silently answers "did not check". `aeon_pin_report.py` prints UNMEASURABLE and is deliberately non-gating, which is **correct by ruling** (drift is a nightly's property, not a local run's — the 2026-09-02 hermetic-gate ruling). |
+
+⚑ **So oracle distinguishes absent from present, and changed from unchanged, but CANNOT distinguish "our
+pin is current" from "we never checked" in any gating run.** One of those two is a defect (H5's swallowed
+banner); the other is a ratified design whose companion — the nightly — **is booked and unbuilt**
+(`SCHEMA-DRIFT-NIGHTLY`). Aeon's incident is what that unbuilt nightly looks like when it exists and
+fails silently instead.
+
+**And the CI finding compounds it:** the ABSENT column above is the one oracle does well, **and it has
+been switched off for 46 days**, because the five guards that implement it live in a suite that has not
+run.
+
+## ⚑ A fourth instance of the failure this whole section is about, in the controller's own hands
+
+While gathering the table above I ran `ls fixtures/aeon/PIN.tsv fixtures/aeon/DIMENSIONS.tsv 2>/dev/null`
+and got **empty output** — which I was one step from recording as *"those files do not exist"*. They do.
+`ls` is aliased to a tool that rejects the two-argument form, and `2>/dev/null` hid the error, **so the
+tool's failure was byte-identical to its empty result** — while I was writing a section about that exact
+shape. Caught only because a `find` control disagreed with it. Recorded because the packet should not
+pretend the controller is outside the class it is documenting.
