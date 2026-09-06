@@ -327,6 +327,29 @@ pub struct SelfInflicted {
     pub rom_changed: bool,
     /// A gesture replaced the symbol listing.
     pub symbols_changed: bool,
+    /// ⚑ **Did the cartridge's SRAM buffer SURVIVE the gesture that replaced the machine?** `None` when
+    /// no gesture replaced it, and when the cartridge has never saved (nothing is owed, so the question
+    /// has no content).
+    ///
+    /// `rom_changed` has three producers that want three different things done to the battery buffer, and
+    /// the one that matters is whether the buffer the guest was holding is *still in the machine*: a soft
+    /// reset preserves it (real hardware), a `reload_rom` zeroes it, a `restore` rewinds it. Until this
+    /// existed, [`crate::battery::Battery::after_replacement`] answered that by comparing the carried
+    /// bytes against the live buffer — **and that comparison is only sound at the instant of the
+    /// replacement.** A gesture is answered by the *next* iteration's drain, and `Loop::iterate` runs its
+    /// frame before that drain, so by the time the comparison happens the guest may have written the
+    /// preserved buffer forward: identical bytes have become different bytes with no cartridge swap
+    /// anywhere, and the older carry gets written over the newer save (`F-HOSTED-RESET-SRM`).
+    ///
+    /// So the question is answered **here**, in the one place that is the instant of the replacement, and
+    /// carried to the drain as a fact rather than re-derived from evidence that has moved. The pump's
+    /// door needs no equivalent and gets `None`: a client's command is answered on the line after
+    /// [`drain`]'s own carry, with no frame in between, so there the comparison is still exactly sound.
+    ///
+    /// Not a list of methods that preserve SRAM — that is the per-site list [`Bus::call`]'s doc refuses.
+    /// It is measured off the buffer itself, so a served method added tomorrow is classified correctly
+    /// without naming it.
+    pub sram_preserved: Option<bool>,
 }
 
 impl SelfInflicted {
@@ -339,6 +362,23 @@ impl SelfInflicted {
         self.rom_changed |= r.rom_changed;
         self.symbols_changed |= r.symbols_changed;
     }
+}
+
+/// A cheap fingerprint of the cartridge's battery buffer, or `None` when the cartridge has never saved.
+///
+/// FNV-1a-64 over the bytes rather than a copy of them, because this runs on **every** [`Bus::call`] — a
+/// panel refreshing itself is a call — and an allocation per gesture is a cost the answer does not need.
+/// [`System::sram_used`] gates it, so a cartridge that has not saved (which is every cartridge until it
+/// does) pays one bool read; after that it pays one pass over a buffer that is 8 KB on the games that
+/// have one.
+///
+/// A collision would misread a replaced buffer as a preserved one. That is a 2⁻⁶⁴ event and its
+/// consequence is bounded anyway: the two buffers would have to be byte-identical to collide *usefully*,
+/// and for byte-identical buffers the two branches of
+/// [`crate::battery::Battery::after_replacement`] write the same bytes to the same file.
+fn sram_witness(sys: &System) -> Option<u64> {
+    sys.sram_used()
+        .then(|| oracle_core::state_hash::fnv1a_bytes(sys.sram()))
 }
 
 /// One command's answer, as the tool would have received it: the handler's own reply or its own refusal.
@@ -831,7 +871,17 @@ impl Bus {
         method: &str,
         params: &Value,
     ) -> (Answer, Map<String, Value>) {
+        // ⚑ **The battery buffer, fingerprinted either side of the call** — see
+        // [`SelfInflicted::sram_preserved`]. This is the only instant at which "the buffer survived"
+        // is decidable, because the drain that acts on it runs a frame later and the guest may have
+        // written the survivor forward by then. First replacement wins: a second gesture in the same
+        // iteration is looking at a machine the first one already replaced, and `after_replacement`
+        // rescues at most one carry.
+        let before = sram_witness(sys);
         let (result, stamp, report) = self.host.call_reporting(sys, method, params);
+        if report.rom_changed && self.own.sram_preserved.is_none() {
+            self.own.sram_preserved = Some(before == sram_witness(sys));
+        }
         self.own.absorb(&report);
         (
             match result {
@@ -857,6 +907,14 @@ impl Bus {
     /// — its state note names the slot and the file — and the number that matters is the one on the wire,
     /// which is the same number by construction (one drain in
     /// [`Engine::note_machine_replaced`](oracle_aether::engine::Engine::note_machine_replaced)).
+    ///
+    /// ⚑ **It records no [`SelfInflicted::sram_preserved`], and that is not an omission.** This is
+    /// called *after* [`crate::states::States::load`] has already swapped the `System`, so `sys` is the
+    /// incoming machine and there is no "before" here to witness. Nor is one needed: that path controls
+    /// its own ordering and flushes the battery ahead of the swap, and what reaches
+    /// [`crate::battery::Battery::after_replacement`] is a `None` that lets the carried bytes answer —
+    /// which is what this crate did for every producer before `F-HOSTED-RESET-SRM`, and is still sound
+    /// wherever the machine has not been advanced since the replacement.
     pub fn machine_replaced(&mut self, sys: &mut System) {
         let report = self
             .host
@@ -1127,7 +1185,12 @@ pub fn drain(
         // The three producers of `rom_changed` want three different things done to the buffer and
         // [`crate::battery::Battery::after_replacement`] is where that is decided — from
         // `System::sram_used`, not from the ROM path, because F5 reloads the same path.
-        out.battery = battery.after_replacement(machine.system_mut(), rom_path);
+        //
+        // `own.sram_preserved` is the one thing the battery cannot work out for itself by the time it
+        // is asked — see [`SelfInflicted::sram_preserved`]. `None` for a client's command (and for a
+        // state load, whose `Bus::machine_replaced` is raised *after* its own swap), where the bytes
+        // still answer the question honestly.
+        out.battery = battery.after_replacement(machine.system_mut(), rom_path, own.sram_preserved);
     }
 
     // --- ⚑ S2a: the display layer mask, read AFTER the pump and applied to the picture. ---
@@ -4094,6 +4157,206 @@ mod one_door {
         assert!(
             machine.system().sram_used(),
             "…and `sram_used` must survive a reset, or the branch above was taken for the wrong reason"
+        );
+    }
+
+    /// One turn of `Loop::iterate`'s machine half **including the autosave**, paused.
+    ///
+    /// ⚑ [`turn`] is deliberately not this. It drains and stops, which is the whole machine half for
+    /// every row above — but it means nothing in this module ever ran
+    /// [`crate::battery::Battery::tick`], and the debounce is the mechanism that carries a preserved
+    /// battery across a soft reset to disk. A row that never ticks cannot tell "the write is owed and
+    /// will land" from "nothing owes the write any more", which is exactly the difference
+    /// `F-HOSTED-RESET-SRM` is made of. The order is `Loop::iterate`'s: the drain, then the tick
+    /// (`main.rs`, the `battery.tick` loop immediately after the drain's battery lines).
+    fn turn_and_tick(
+        machine: &mut Machine,
+        bus: &mut Bus,
+        symbols: &mut Option<SymbolTable>,
+        rom_path: &mut String,
+        battery: &mut Battery,
+    ) -> Drained {
+        let d = drain(machine, bus, symbols, rom_path, battery, true);
+        battery.tick(machine.system_mut());
+        d
+    }
+
+    /// Run the debounce out, as a window that keeps repainting does. One tick per frame,
+    /// `AUTOSAVE_DEBOUNCE_FRAMES + 1` of them, which is the count
+    /// `battery::tests::the_autosave_waits_out_the_debounce_and_then_writes_once` pins.
+    fn run_out_the_debounce(battery: &mut Battery, machine: &mut Machine) {
+        for _ in 0..=crate::battery::AUTOSAVE_DEBOUNCE_FRAMES {
+            battery.tick(machine.system_mut());
+        }
+    }
+
+    /// ★ **A soft reset does not STRAND the guest's save in memory** — `F-HOSTED-RESET-SRM`, half one.
+    ///
+    /// The row above asserts on `machine.system().sram()`, and that is all it asserts on: it proves the
+    /// *machine* keeps the guest's bytes across a reset and is blind, by construction, to whether they
+    /// ever reach the `.srm`. **This one reads the file.**
+    ///
+    /// The mechanism, in three steps that are each individually deliberate:
+    ///
+    /// 1. `System::reset_with_sink` preserves the SRAM bytes but **clears `sram_dirty`** — its own
+    ///    comment says so, and calls the flag "only a persistence throttle".
+    /// 2. `Battery::after_replacement` writes only when the carried bytes *differ* from the machine's. A
+    ///    soft reset leaves them identical, so nothing is written — correct, and its comment says why:
+    ///    the debounce is this window's, survives the reset, and will write exactly those bytes.
+    /// 3. **Except when the debounce was never armed.** `Battery::tick` arms it off `sram_dirty`, and if
+    ///    the reset lands before the first tick that saw the flag, the flag is gone: nothing is dirty,
+    ///    nothing is counting down, and the bytes sit in memory until the guest happens to save again.
+    ///
+    /// So the fixture's one load-bearing omission is that it does **not** tick before the reset. That is
+    /// not an artificial squeeze — it is a ~16 ms window on every iteration, and it is why the defect is
+    /// intermittent rather than constant.
+    ///
+    /// `oracle-frontend` answers this by flushing before `sys.reset()` (`main.rs`, `Cmd::Reset`, whose
+    /// comment names this exact hazard). This window cannot: a client's `emulator/reset` is answered
+    /// inside `Host::pump` with no hook before it.
+    #[test]
+    fn a_soft_reset_does_not_strand_the_guests_save_in_memory() {
+        let carts = Cartridges::new("reset-strands");
+        let (mut machine, mut bus, mut battery, _rom) = window(&carts);
+        let mut symbols: Option<SymbolTable> = None;
+        let mut rom_path = carts.a.display().to_string();
+
+        guest_saves(machine.system_mut(), 0x5A);
+        assert!(
+            !carts.srm(&carts.a).exists(),
+            "anti-vacuity: the save file must not exist yet, or the `read` below proves nothing"
+        );
+
+        // Iteration N's drain takes the carry. **No tick** — the debounce is not armed, and that is the
+        // window the defect lives in.
+        turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        let a = bus.call(machine.system_mut(), "emulator/reset", &json!({}));
+        assert!(!a.is_err(), "the fixture's reset was refused");
+        assert!(
+            !machine.system().sram_dirty(),
+            "anti-vacuity: the reset must clear `sram_dirty`, or this row is not the defect — the \
+             ordinary autosave would arm off the flag and write the bytes with nothing to repair"
+        );
+        assert!(
+            machine.system().sram_used() && machine.system().sram()[0] == 0x5A,
+            "the guest's bytes must survive the reset in memory, or the strand below is a different bug"
+        );
+
+        // Iteration N+1: the drain that sees the replacement, then every frame after it.
+        turn_and_tick(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        run_out_the_debounce(&mut battery, &mut machine);
+
+        let on_disk = std::fs::read(carts.srm(&carts.a)).unwrap_or_else(|e| {
+            panic!(
+                "the guest's save never reached {} ({e}) — a soft reset stranded it in memory: the \
+                 reset cleared `sram_dirty` before any tick had armed the debounce, and \
+                 `Battery::after_replacement` skipped the write because the bytes were (correctly) \
+                 unchanged. Nothing owes the write any more.",
+                carts.srm(&carts.a).display()
+            )
+        });
+        assert_eq!(
+            on_disk[0],
+            0x5A,
+            "the file at {} holds {:#04X}, not the byte the guest saved",
+            carts.srm(&carts.a).display(),
+            on_disk[0]
+        );
+    }
+
+    /// ★ **A soft reset does not ROLL THE FILE BACK over a newer save** — `F-HOSTED-RESET-SRM`, half two.
+    ///
+    /// A different mechanism from the row above and a worse outcome, so it is a separate row: here the
+    /// `.srm` is *written*, with an image **older** than the one the machine is holding, and the newer
+    /// one is disowned in the same breath.
+    ///
+    /// ⚑ **The frame between the gesture and the drain is the whole of it.** `Loop::iterate` runs the
+    /// drain, *then* the machine keys and `build_ui` — so a window gesture is answered by the **next**
+    /// iteration's drain, and that iteration runs its frame first (`emulator/reset` is deliberately not
+    /// `require_paused`). The carry is exact at the instant of the gesture; what moves under it is the
+    /// **machine**, forward, on the reset cartridge. `Battery::after_replacement` then finds carried !=
+    /// live, reads that as "the buffer was replaced", rescues the older carry over the file, and clears
+    /// both the countdown and the dirty flag — so the newer bytes are neither on disk nor owed.
+    ///
+    /// The guest write after the reset stands in for that frame. It is the same
+    /// [`guest_saves`] the whole module writes with — a real write through the cartridge bus, which is
+    /// what a frame of emulation would have done — and the fixture is paused so nothing else can move.
+    ///
+    /// Both harms are asserted, because a fix for one need not be a fix for the other: the file must
+    /// hold the **newest** byte, and it must not hold the pre-reset one.
+    #[test]
+    fn a_soft_reset_does_not_roll_the_file_back_over_a_newer_save() {
+        let carts = Cartridges::new("reset-rollback");
+        let (mut machine, mut bus, mut battery, _rom) = window(&carts);
+        let mut symbols: Option<SymbolTable> = None;
+        let mut rom_path = carts.a.display().to_string();
+
+        guest_saves(machine.system_mut(), 0x5A);
+
+        // Iteration N's drain: the carry, holding `0x5A`.
+        turn(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        // Iteration N's `build_ui`: the gesture.
+        let a = bus.call(machine.system_mut(), "emulator/reset", &json!({}));
+        assert!(!a.is_err(), "the fixture's reset was refused");
+
+        // Iteration N+1's FRAME, which runs before that iteration's drain. The guest saves again on the
+        // machine the reset produced.
+        guest_saves(machine.system_mut(), 0x77);
+        assert_eq!(
+            machine.system().sram()[0],
+            0x77,
+            "anti-vacuity: the post-reset write must have landed, and it must differ from the carried \
+             0x5A, or this row cannot tell a rollback from a correct write"
+        );
+
+        // Iteration N+1's drain: the repair.
+        turn_and_tick(
+            &mut machine,
+            &mut bus,
+            &mut symbols,
+            &mut rom_path,
+            &mut battery,
+        );
+        run_out_the_debounce(&mut battery, &mut machine);
+
+        let on_disk = std::fs::read(carts.srm(&carts.a)).unwrap_or_else(|e| {
+            panic!(
+                "nothing reached {} ({e}) — the guest's save is only in memory",
+                carts.srm(&carts.a).display()
+            )
+        });
+        assert_ne!(
+            on_disk[0],
+            0x5A,
+            "the file at {} was ROLLED BACK to the pre-reset image: a soft reset made the carried \
+             bytes differ from the live buffer, `after_replacement` read that as a cartridge swap, and \
+             the older image was written over the newer save",
+            carts.srm(&carts.a).display()
+        );
+        assert_eq!(
+            on_disk[0],
+            0x77,
+            "the file at {} holds {:#04X}, not the newest byte the guest saved",
+            carts.srm(&carts.a).display(),
+            on_disk[0]
         );
     }
 }
