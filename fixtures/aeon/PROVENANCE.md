@@ -55,6 +55,30 @@ its sha256. Two things read it:
   reddens because someone else moved puts the whole gradient behind bending our side until it passes,
   and it would reintroduce the sibling-checkout dependency this freeze exists to remove.
 
+**`DIMENSIONS.tsv`, also beside this file, is the same idea one level up: it pins the listings' SHAPE.**
+Added 2026-09-06 for `F-FROZEN-FIXTURE-DRIFTS`. `PIN.tsv` answers *are our bytes the bytes we recorded?*
+and structurally cannot see the failure that row names, because in that failure the bytes **are** the
+bytes we recorded and the shape they carry is what moved. `DIMENSIONS.tsv` records, per listing, the
+answer the frozen bytes give to each structural dimension a consumer reads through `oracle_core::symbols`
+— measured **through the parser**, never by grepping the file, so a dimension that is present in the
+bytes but unreachable through `SymbolTable` counts as absent, which is what it is to a consumer.
+
+Same recovery/currency split as above, and the same two readers:
+
+* `crates/oracle-core/tests/aeon_dimensions.rs` — the hermetic gate. Asks the **recovery** question
+  (*are our shapes the shapes we recorded?*) and goes red when the pin moves without the manifest moving
+  with it. It also prints, every run, the **blind-spot inventory**: today 16 of 24 probed dimensions are
+  absent from the frozen listings, each naming the consumer that is therefore covered only synthetically.
+  A recorded `0` is worth something only because that file's positive control proves each probe can
+  return non-zero; without it a dead probe and an absent dimension are the same artifact.
+* `tools/aeon_pin_report.py` — the **currency** half, non-gating, in its `DIMENSION CURRENCY` section.
+
+⚑ **A `0` or `absent` row is not a defect and not a reason to move the pin.** It is a recorded blind
+spot. When the pin does move, move `DIMENSIONS.tsv` with it **and re-read the blind-spot rows** — a
+dimension that has appeared may now deserve real-bytes coverage, and one that vanished silently removed
+some. The rationale, and what would have to be true for the design to be wrong, is
+`docs/2026-09-06-fixture-dimension-drift.md`.
+
 The chain number is **derived, not transcribed**: it is the count of `[[entry]]` blocks in that
 revision's `crates/sigil-harness/golden/provenance.toml`. Verified at three revisions —
 `5af70797` → 186, `39c34fd2` → 189, `origin/master` (`3ad7ed02` at the time of writing) → 189.

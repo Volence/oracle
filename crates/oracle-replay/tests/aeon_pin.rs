@@ -251,6 +251,14 @@ fn the_frozen_pin_matches_its_manifest_and_the_suite_names_the_chain() {
 
     // Completeness in both directions: a file dropped into this directory without a manifest row is a
     // pin nobody recorded, which is the same failure wearing the other hat.
+    //
+    // ⚑ What is filtered out is a **category, not a list of exceptions**: prose (`*.md`) and the
+    // manifests themselves. A manifest is not an artifact and has no row of its own — `PIN.tsv` never
+    // did, and `DIMENSIONS.tsv` (the shape manifest read by `oracle-core/tests/aeon_dimensions.rs`) is
+    // the same kind of thing. Adding it made this assertion red before it was added here, which is the
+    // guard working: it caught a file arriving in the pinned directory unrecorded, and the answer is to
+    // say *why* it needs no row rather than to widen the filter by accident.
+    let manifests = ["PIN.tsv", "DIMENSIONS.tsv"];
     let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
         .expect("the frozen fixture directory must exist")
         .map(|e| {
@@ -259,7 +267,7 @@ fn the_frozen_pin_matches_its_manifest_and_the_suite_names_the_chain() {
                 .to_string_lossy()
                 .into_owned()
         })
-        .filter(|n| !n.ends_with(".md") && *n != "PIN.tsv")
+        .filter(|n| !n.ends_with(".md") && !manifests.contains(&n.as_str()))
         .collect();
     on_disk.sort();
     let mut listed: Vec<String> = rows.iter().map(|r| r.file.clone()).collect();
