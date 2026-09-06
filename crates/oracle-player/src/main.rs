@@ -64,6 +64,7 @@ mod objects;
 mod pacing;
 mod palette;
 mod planes;
+mod preview;
 mod report;
 mod screen;
 mod screen_pick;

@@ -267,6 +267,14 @@ pub struct Panel {
     /// and the resume was refused" is exactly the fact that must not disappear because you turned
     /// something off. Replaced by the next click that places.
     run: Option<spawn_picker::RunState>,
+    /// **Which gesture [`Panel::run`] is about.** Two of them pause and restore now, and a run state that
+    /// did not carry its own occasion would print an account of a placement after a selection change.
+    run_deed: spawn_picker::Deed,
+    /// **The picture of the archetype a click would place**, or the stated reason there is not one.
+    ///
+    /// Retaken once per selection change ([`Panel::take_preview`]), never per frame: it costs a checkpoint
+    /// round trip and a handful of emulated frames. See [`crate::preview`] for the whole measurement.
+    preview: Option<crate::preview::Outcome>,
 }
 
 impl Panel {
@@ -324,6 +332,8 @@ impl Panel {
         // A fresh arm re-read the listing, so a filter left over from the last one would hide rows of a
         // list the reader has not seen yet.
         self.filter.clear();
+        // ⚑ The arm selects the first archetype, so the arm is a selection change and owes a picture of it.
+        self.take_preview(machine, bus);
     }
 
     /// Turn spawn mode off. A click picks again.
@@ -334,6 +344,10 @@ impl Panel {
         self.mode.disarm();
         self.total = 0;
         self.filter.clear();
+        // The picture goes with the mode: it is a picture of what a click would place, and a click places
+        // nothing now. [`Panel::run`] deliberately does not, and the difference is that one is an answer
+        // and the other is what this window did to somebody's machine.
+        self.preview = None;
         self.last = Some(Readout::ok(
             "spawn mode off: a click arms a watch again".into(),
         ));
@@ -346,9 +360,15 @@ impl Panel {
     /// the reason the cycle key it replaces did: a control that silently does nothing is
     /// indistinguishable from a broken one, and here it would also mean the picker is drawing a name the
     /// mode no longer holds.
-    pub fn select_archetype(&mut self, name: &str) {
+    pub fn select_archetype(&mut self, machine: &mut Machine, bus: &mut Bus, name: &str) {
         match self.mode.select(name) {
-            Some(sel) => self.last = Some(Readout::ok(format!("a click now places {sel}"))),
+            Some(sel) => {
+                self.last = Some(Readout::ok(format!("a click now places {sel}")));
+                // ⚑ **Once per selection change**, which is what makes the cost bearable: a checkpoint
+                // round trip and a few emulated frames on a gesture a person makes by hand, never on a
+                // frame the loop draws by itself.
+                self.take_preview(machine, bus);
+            }
             None => {
                 self.last = Some(Readout::refused(format!(
                     "{name} is not one of the archetypes spawn mode is holding, so nothing was \
@@ -376,6 +396,111 @@ impl Panel {
     /// ⚑ **What this window last did to the machine's run state**, or `None` when it has not touched it.
     pub fn run_state(&self) -> Option<&spawn_picker::RunState> {
         self.run.as_ref()
+    }
+
+    /// **The standing run-state line and whether it is the alarming kind**, for the gesture that caused
+    /// it.
+    ///
+    /// The renderer takes both from here rather than composing the sentence itself, because the deed is
+    /// this panel's fact: it knows whether the last pause was a placement or a preview, and a strip that
+    /// picked one would be right half the time.
+    pub fn run_line(&self) -> Option<(String, bool)> {
+        self.run_state()
+            .map(|r| (r.sentence_of(self.run_deed), r.alarming()))
+    }
+
+    /// **The picture of the archetype a click would place**, or the stated reason there is not one.
+    ///
+    /// ⚑ **A picture of some other archetype is not returned at all.** The selection can move while a
+    /// picture is being kept, and a picture of the previous one drawn under a badge naming the current one
+    /// is a wrong answer with the panel's whole authority behind it. The guard is here rather than at the
+    /// two draw sites so neither can be the one that forgets it.
+    pub fn preview(&self) -> Option<&crate::preview::Outcome> {
+        let sel = self.mode.selected()?;
+        let out = self.preview.as_ref()?;
+        match out {
+            crate::preview::Outcome::Ready(p) | crate::preview::Outcome::Stale(p)
+                if !p.is_of(sel, None) =>
+            {
+                None
+            }
+            _ => Some(out),
+        }
+    }
+
+    /// ⚑ **Retire the picture the moment the art under it is replaced.**
+    ///
+    /// Cheap and per frame: [`crate::preview::fingerprint`] over the colour table and the handful of tiles
+    /// the picture was drawn from. An act change moves both, so the picture is retired the frame the new
+    /// act's art lands, and the panel says so instead of drawing a real picture of the wrong tiles.
+    ///
+    /// **Retired rather than retaken.** Retaking here would put a checkpoint round trip inside a draw pass
+    /// and, worse, would run one on **every** frame of a load, because the fingerprint is moving the whole
+    /// time the art is arriving. So this only ever moves a picture to
+    /// [`Outcome::Stale`](crate::preview::Outcome::Stale), which is not drawable, and the person takes it
+    /// again with the button the panel offers.
+    pub fn expire_preview(&mut self, vdp: &oracle_core::vdp::Vdp) {
+        let stale = matches!(
+            &self.preview,
+            Some(crate::preview::Outcome::Ready(p)) if !p.still_current(vdp)
+        );
+        if stale {
+            if let Some(crate::preview::Outcome::Ready(p)) = self.preview.take() {
+                self.preview = Some(crate::preview::Outcome::Stale(p));
+            }
+        }
+    }
+
+    /// **Take a picture of the archetype a click would place**, by putting one into the machine, reading
+    /// the sprites it drew, and putting the machine back.
+    ///
+    /// The whole measurement is [`crate::preview`]'s; this is the choreography and the run-state
+    /// accounting. It is called on an arm and on a selection change, and by the panel's own button, and
+    /// never per frame.
+    ///
+    /// # ⚑ How the measurement's own frames are kept off the glass
+    ///
+    /// They cannot reach it, and that is structural rather than a promise this function makes. Two paths
+    /// write the picture the window shows: [`Machine::step`], which is not running inside a draw pass, and
+    /// [`crate::bus::drain`]'s `adopt_frame`, which is gated on [`Bus::framebuffer`] holding a whole frame.
+    /// `emulator/restore` calls the engine's `invalidate_screen`, which drops the latched frame outright,
+    /// so by the time the drain looks there is nothing to adopt and the retained picture stays up exactly
+    /// as it does for an iteration that emulated nothing. **The last thing this function does to the
+    /// machine is a restore**, in every path including every refusal, which is what makes that hold.
+    pub fn take_preview(&mut self, machine: &mut Machine, bus: &mut Bus) {
+        let Some(archetype) = self.mode.selected().map(str::to_string) else {
+            self.preview = None;
+            return;
+        };
+        let dot = preview_dot(machine);
+        match paused_for(machine, bus, |m, b| measure(m, b, &archetype, dot)) {
+            Ok(((out, not_put_back), mut run)) => {
+                // ⚑ **`Some(0)`, and it is the whole point rather than a placeholder.** Frames really did
+                // run, and the restore put every one of them back, so the emulated time this cost the
+                // machine is zero. `None` would say "a number this window did not read", which is the one
+                // thing that is not true here.
+                if let spawn_picker::RunState::Restored { frames } = &mut run {
+                    *frames = Some(0);
+                }
+                self.run = Some(run);
+                self.run_deed = spawn_picker::PREVIEWING;
+                // ⚑ **A refused restore is the loud one.** The machine is then carrying a probe object and
+                // the frames the probe ran, neither of which the person asked for, and nothing else in
+                // this window will mention it. It goes in the standing readout card, coloured on the
+                // field, so it survives the gesture that caused it.
+                if let Some(alarm) = not_put_back {
+                    self.last = Some(Readout::refused(alarm));
+                }
+                self.preview = Some(out);
+            }
+            Err(why) => {
+                self.run = None;
+                self.preview = Some(crate::preview::Outcome::Absent(format!(
+                    "the window could not pause the machine to look at {archetype}, so no picture \
+                     of it was taken. {why}"
+                )));
+            }
+        }
     }
 
     /// Show or hide one display layer, **through the served method** `emulator/set_layer_enabled`.
@@ -628,6 +753,11 @@ impl Panel {
             *frames = placed.as_ref().ok().map(|p| p.frames_advanced);
         }
         self.run = Some(run);
+        // ⚑ **The deed comes back with the run state.** Arming and selecting also pause and restore now,
+        // so leaving this alone would make a placement print the preview's account of itself. The pair is
+        // written in one place for the reason `Machine::adopt_system` is one method: two lines that must
+        // not be separated should not be separable.
+        self.run_deed = spawn_picker::PLACING;
 
         let outcome = self.run.as_ref().map(spawn_picker::RunState::sentence);
         self.last = Some(match placed {
@@ -645,6 +775,211 @@ impl Panel {
             },
         });
     }
+}
+
+// -------------------------------------------------------------------------------------------------------
+// ⚑ The preview measurement: two runs from one checkpoint, and the machine put back after both
+// -------------------------------------------------------------------------------------------------------
+
+/// The label the probe's checkpoint carries, so a person listing checkpoints on the socket sees whose it is
+/// rather than an anonymous slot that appeared while they were not looking.
+///
+/// It is dropped in every path, including every refusal, so it should never be listable at all. The label
+/// is for the window in which it is.
+const PREVIEW_LABEL: &str = "oracle window: taking an object preview";
+
+/// **Where the probe object is put**, as a screen dot.
+///
+/// It has to be **on camera**, which is the one thing the obvious answer gets wrong: an object placed
+/// outside the view does not put sprites on the table, so a probe hidden off screen measures nothing at
+/// all. It does not have to avoid anything on screen, because the difference isolates the object's own
+/// sprites whether or not they overlap something, and the picture is assembled from the tiles rather than
+/// cropped out of the frame.
+///
+/// A quarter of the way down the middle, because that is usually air: the camera keeps the player near the
+/// middle of the picture, so a probe there is least likely to be picked up, sprung or squashed inside the
+/// one or two frames it lives for. When it is, the measurement says nothing appeared rather than guessing.
+///
+/// Read off the machine's own active display, so an H32 act gets an H32 dot instead of a constant that is
+/// off the right edge of it.
+fn preview_dot(machine: &Machine) -> (u16, u16) {
+    let (w, h) = machine.system().vdp().active_display();
+    (w / 2, h / 4)
+}
+
+/// The sprites the video chip would walk, off this machine, now.
+fn live_sprites(machine: &Machine) -> Vec<oracle_core::render::SpriteDecoded> {
+    let vdp = machine.system().vdp();
+    crate::preview::walk(&vdp.sprites_decoded(), vdp.parsed_sprite_max())
+}
+
+/// Put the machine back on the checkpoint. `Some` is the server's own refusal, and it means the machine is
+/// **not** where the person left it.
+fn restore_to(machine: &mut Machine, bus: &mut Bus, id: &str) -> Option<String> {
+    match bus.call(machine.system_mut(), "emulator/restore", &json!({"id": id})) {
+        Answer::Ok(_) => None,
+        Answer::Err(e) => Some(format!(
+            "THE MACHINE WAS NOT PUT BACK. This window checkpointed it to take a picture of an \
+             object, ran it forward and could not restore it, so it is carrying an object nobody \
+             placed and a few frames nobody asked for: {} {}",
+            e.code, e.message
+        )),
+    }
+}
+
+/// Drop the probe's checkpoint. The answer is deliberately not read: a slot that will not drop is a leak
+/// the person can clear from the socket, and it is not worth a second sentence in front of the one above.
+fn drop_checkpoint(machine: &mut Machine, bus: &mut Bus, id: &str) {
+    let _ = bus.call(
+        machine.system_mut(),
+        "emulator/checkpoint_drop",
+        &json!({"id": id}),
+    );
+}
+
+/// Advance `n` whole frames through the served method, so the probe and the control run the identical path.
+fn run_frames(machine: &mut Machine, bus: &mut Bus, n: u64) -> Option<String> {
+    match bus.call(
+        machine.system_mut(),
+        "emulator/run_frames",
+        &json!({"frames": n}),
+    ) {
+        Answer::Ok(_) => None,
+        Answer::Err(e) => Some(format!("{} {}", e.code, e.message)),
+    }
+}
+
+/// **The measurement.** See [`crate::preview`]'s header for why it needs a control and why the difference
+/// is a multiset of shapes.
+///
+/// Returns the outcome and, separately, the one thing that is not an outcome: **the machine was not put
+/// back**. That is louder than "no picture" and belongs where a refusal goes, not where a picture goes.
+///
+/// The picture is composed from the machine **after** the restore, which is the machine the person is
+/// looking at. Composing it from the probe would answer a different question: whether the art was resident
+/// in a machine that no longer exists.
+fn measure(
+    machine: &mut Machine,
+    bus: &mut Bus,
+    archetype: &str,
+    dot: (u16, u16),
+) -> (crate::preview::Outcome, Option<String>) {
+    use crate::preview::{Key, Outcome};
+
+    let id =
+        match bus.call(
+            machine.system_mut(),
+            "emulator/checkpoint",
+            &json!({"label": PREVIEW_LABEL}),
+        ) {
+            Answer::Ok(v) => match v["id"].as_str() {
+                Some(s) => s.to_string(),
+                None => return (
+                    Outcome::Absent(
+                        "the window asked for a checkpoint to take a picture of this object and \
+                         the answer carried no id, so nothing was tried on the machine."
+                            .to_string(),
+                    ),
+                    None,
+                ),
+            },
+            Answer::Err(e) => {
+                return (
+                    Outcome::Absent(format!(
+                        "no picture of {archetype} could be taken, because the window could not \
+                     checkpoint the machine first and it will not run one forward it cannot put \
+                     back. {} {}",
+                        e.code, e.message
+                    )),
+                    None,
+                )
+            }
+        };
+
+    // --- the probe ------------------------------------------------------------------------------
+    let placed = {
+        let sys = machine.system_mut();
+        spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
+    };
+    let advanced = match placed {
+        Ok(p) => p.frames_advanced,
+        Err(e) => {
+            // The spawn may have advanced frames before refusing, so the machine goes back either way.
+            let alarm = restore_to(machine, bus, &id);
+            drop_checkpoint(machine, bus, &id);
+            return (
+                Outcome::Absent(format!(
+                    "no picture of {archetype} could be taken, because putting one into the \
+                     machine to look at was refused. {}",
+                    e.terminal(archetype, Some(&pause_remedy()))
+                )),
+                alarm,
+            );
+        }
+    };
+    if let Some(why) = run_frames(machine, bus, crate::preview::EXTRA_FRAMES) {
+        let alarm = restore_to(machine, bus, &id);
+        drop_checkpoint(machine, bus, &id);
+        return (
+            Outcome::Absent(format!(
+                "one {archetype} was put into the machine, and the frame it needed to draw itself \
+                 was refused, so there was nothing to read. {why}"
+            )),
+            alarm,
+        );
+    }
+    let probe = live_sprites(machine);
+
+    // --- back, then the control over the identical number of frames -----------------------------
+    if let Some(alarm) = restore_to(machine, bus, &id) {
+        drop_checkpoint(machine, bus, &id);
+        return (
+            Outcome::Absent(format!(
+                "no picture of {archetype} was produced, because the machine could not be put back \
+                 and this window will not keep running one it has lost its place in."
+            )),
+            Some(alarm),
+        );
+    }
+    let control_frames = advanced + crate::preview::EXTRA_FRAMES;
+    if let Some(why) = run_frames(machine, bus, control_frames) {
+        let alarm = restore_to(machine, bus, &id);
+        drop_checkpoint(machine, bus, &id);
+        return (
+            Outcome::Absent(format!(
+                "the control run this picture is measured against was refused, so what the object \
+                 drew cannot be told apart from what the rest of the game drew. {why}"
+            )),
+            alarm,
+        );
+    }
+    let control = live_sprites(machine);
+
+    // --- back for good --------------------------------------------------------------------------
+    let alarm = restore_to(machine, bus, &id);
+    drop_checkpoint(machine, bus, &id);
+    if alarm.is_some() {
+        return (
+            Outcome::Absent(format!(
+                "no picture of {archetype} is shown, because the machine is not where it was and \
+                 that is the thing to deal with first."
+            )),
+            alarm,
+        );
+    }
+
+    let key = Key {
+        archetype: archetype.to_string(),
+        subtype: None,
+    };
+    let out = match crate::preview::appeared(&control, &probe) {
+        Err(why) => Outcome::Absent(why),
+        Ok(entries) => match crate::preview::compose(&entries, dot, machine.system().vdp(), key) {
+            Ok(p) => Outcome::Ready(Box::new(p)),
+            Err(why) => Outcome::Absent(why),
+        },
+    };
+    (out, None)
 }
 
 /// **Run `body` on a machine that genuinely is paused, and put the run state back the way it was found.**
@@ -1283,7 +1618,7 @@ mod tests {
         // The picker's refusal arm: a name the mode is not holding. On this fixture nothing armed, so
         // this is also the "selected while disarmed" case, and it must be a sentence rather than a
         // silent no-op for the reason the cycle key it replaces was.
-        panel.select_archetype("ObjDef_Ring");
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Ring");
         take("an archetype the mode does not hold", &panel);
         panel.disarm_spawn();
         take("spawn off", &panel);
@@ -1840,10 +2175,17 @@ mod tests {
         let (mut machine, mut bus, mut panel) = armed_rig();
         let mask = bus.layers();
         assert!(!bus.is_paused(), "the control: the fixture starts running");
+        // ⚑ **Arming already paused and restored once**, because the arm is a selection change and a
+        // selection change takes a picture ([`Panel::take_preview`]). The run state is therefore already
+        // set, and it is set under the OTHER deed, which is what the last assertion in this test is about.
+        let (armed_line, _) = panel
+            .run_line()
+            .expect("arming takes a picture, and taking one moves the run state");
         assert!(
-            panel.run_state().is_none(),
-            "nothing has touched the run state yet"
+            armed_line.contains("take a picture"),
+            "the arm's account must be the preview's and not a placement's: {armed_line:?}"
         );
+        assert!(!bus.is_paused(), "the picture put the run state back");
 
         panel.click(&mut machine, &mut bus, Some(mask), (2, 2));
 
@@ -1867,13 +2209,177 @@ mod tests {
             "the readout's outcome is the run-state sentence, so the tab cannot show one without the \
              other"
         );
+        // ⚑ **And the deed came back with it.** A placement that printed the preview's sentence would
+        // send a reader hunting for a picture nobody asked for, on the loudest standing line this tab has.
+        let (placed_line, _) = panel.run_line().expect("a placing click sets the line");
+        assert!(
+            placed_line.contains("place the object") && !placed_line.contains("take a picture"),
+            "the click's account must be the placement's: {placed_line:?}"
+        );
+    }
+
+    /// ★★ **The preview puts the machine back byte for byte**, which is the property the whole
+    /// measurement rests on and the one a person cannot check for themselves.
+    ///
+    /// Taking a picture spawns an object into the machine the owner is playing, runs it forward twice and
+    /// restores it twice. If any of that leaks, the window has silently altered a game somebody was in the
+    /// middle of, and the symptom would be an object appearing out of nowhere some seconds later.
+    ///
+    /// # ⚑ The positive control comes first, and it is the reason this row is not vacuous
+    ///
+    /// A snapshot comparison passes trivially if the measurement never ran: a refused checkpoint touches
+    /// nothing, and "nothing changed" is then a fact about a measurement that did not happen. So the test
+    /// first proves the comparison is **sensitive to a single emulated frame** on this very machine, puts
+    /// the machine back by hand, and only then takes the picture. The control validates the measurement,
+    /// not merely the search.
+    #[test]
+    fn taking_a_picture_puts_the_machine_back_byte_for_byte() {
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        let before = machine.system().snapshot();
+
+        // --- the positive control -----------------------------------------------------------------
+        let _ = bus.call(machine.system_mut(), crate::ui::PAUSE, &json!({}));
+        assert!(
+            matches!(
+                bus.call(
+                    machine.system_mut(),
+                    "emulator/run_frames",
+                    &json!({"frames": 1})
+                ),
+                Answer::Ok(_)
+            ),
+            "the control needs a frame to actually run"
+        );
+        assert_ne!(
+            machine.system().snapshot(),
+            before,
+            "one emulated frame must move this snapshot, or the assertion below witnesses nothing"
+        );
+        machine.adopt_system(
+            oracle_core::system::System::restore(&before).expect("the control's own rewind"),
+        );
+        let _ = bus.call(machine.system_mut(), crate::ui::RESUME, &json!({}));
+        assert_eq!(
+            machine.system().snapshot(),
+            before,
+            "the control put the machine back, so the measurement starts where it says it does"
+        );
+
+        // --- the measurement ----------------------------------------------------------------------
+        panel.take_preview(&mut machine, &mut bus);
+        assert_eq!(
+            machine.system().snapshot(),
+            before,
+            "taking a picture must leave the machine byte for byte where it was: an object placed to \
+             look at is an object nobody asked for"
+        );
+        assert!(
+            !bus.is_paused(),
+            "the machine was running when the picture was taken, so it must be running after it"
+        );
+
+        // The probe's checkpoint is dropped in every path, including this one. A slot left behind is a
+        // whole machine's worth of memory per selection change, and it would fill the server's cap.
+        match bus.call(machine.system_mut(), "emulator/checkpoint_list", &json!({})) {
+            Answer::Ok(v) => assert_eq!(
+                v["checkpoints"].as_array().map(Vec::len),
+                Some(0),
+                "the preview's checkpoint must not outlive the preview: {v:?}"
+            ),
+            Answer::Err(e) => panic!("listing checkpoints was refused: {} {}", e.code, e.message),
+        }
+    }
+
+    /// ★ **Every way a picture cannot be taken is a sentence, and the fixture takes one of them.**
+    ///
+    /// This listing has no `Camera_X`, so the spawn inside the measurement is refused, which is the arm
+    /// this rig can reach without a game. What it pins is P6 on the real path: the panel holds a stated
+    /// reason rather than an empty frame, the reason names the archetype, and nothing drawable survives.
+    #[test]
+    fn a_picture_that_could_not_be_taken_is_a_stated_reason_and_not_an_empty_frame() {
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        panel.take_preview(&mut machine, &mut bus);
+        let out = panel
+            .preview()
+            .expect("a selection always leaves an outcome");
+        assert!(
+            out.drawable().is_none(),
+            "this fixture cannot place anything, so nothing may be drawable"
+        );
+        let why = out.sentence();
+        assert!(
+            why.len() > 40,
+            "the reason must be a sentence rather than a label: {why:?}"
+        );
+        assert!(
+            why.contains("ObjDef_"),
+            "and it must name what could not be pictured: {why:?}"
+        );
+        for bad in ['\u{2014}', '\u{2013}'] {
+            assert!(!why.contains(bad), "P10, on the real path: {why:?}");
+        }
+    }
+
+    /// ★ **A picture of one archetype is never shown under another one's name.**
+    ///
+    /// The selection can move while a picture is held, and the badge names the selection. A picture of the
+    /// previous archetype drawn under it would be a wrong answer carrying the panel's whole authority, and
+    /// the guard is on the accessor so neither draw site can be the one that forgets it.
+    #[test]
+    fn a_picture_of_another_archetype_is_not_offered_for_this_one() {
+        use crate::preview::{Art, Cell, Key, Outcome, Preview, Shot};
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        let selected = panel
+            .listing()
+            .rows
+            .iter()
+            .find(|r| r.selected)
+            .map(|r| r.name.clone())
+            .expect("the arm selects one");
+
+        let made = |name: &str| {
+            Outcome::Ready(Box::new(Preview {
+                key: Key {
+                    archetype: name.to_string(),
+                    subtype: None,
+                },
+                w: 8,
+                h: 8,
+                anchor: (4, 4),
+                cells: vec![Cell {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                }],
+                art: Art::Captured(Shot {
+                    w: 8,
+                    h: 8,
+                    px: vec![Some((1, 2, 3)); 64],
+                }),
+                tiles: vec![1],
+                art_print: 0,
+            }))
+        };
+
+        panel.preview = Some(made(&selected));
+        assert!(
+            panel.preview().and_then(Outcome::drawable).is_some(),
+            "the control: a picture of the selected archetype IS offered"
+        );
+        panel.preview = Some(made("ObjDef_SomethingElse"));
+        assert!(
+            panel.preview().is_none(),
+            "a picture of another archetype must not reach a draw site at all"
+        );
+        let _ = (&mut machine, &mut bus);
     }
 
     /// ★ **The picker: the rows are the mode's, a click on one selects it, and the filter narrows what is
     /// drawn without changing what a click places.**
     #[test]
     fn the_picker_lists_the_modes_archetypes_and_selecting_one_moves_the_badge() {
-        let (_machine, _bus, mut panel) = armed_rig();
+        let (mut machine, mut bus, mut panel) = armed_rig();
 
         let l = panel.listing();
         let first = l.rows.first().expect("three archetypes armed").name.clone();
@@ -1888,7 +2394,7 @@ mod tests {
             "the arm selects the first row, and the badge is what says which"
         );
 
-        panel.select_archetype("ObjDef_Spring");
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Spring");
         assert!(
             panel.badge().expect("armed").contains("ObjDef_Spring"),
             "selecting a row must move the badge, which is what a click reads"

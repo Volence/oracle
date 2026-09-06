@@ -188,19 +188,61 @@ pub enum RunState {
     PriorStateUnknown,
 }
 
+/// **What the window paused the machine in order to do, and what the person did to start it.**
+///
+/// Two gestures now pause and restore: the click that places an object, and the selection that takes a
+/// picture of one ([`crate::preview`]). The four outcomes are identical for both and the sentences must not
+/// be, because *"paused the machine to place the object"* is a false account of a selection change, and a
+/// person reading it goes looking for an object that was never placed.
+///
+/// A two-field constant rather than a fifth enum variant or a second copy of [`RunState::sentence`]: the
+/// **states** are what the type is about and they did not change, so what varies is a noun and a clause,
+/// and both are supplied by the caller that knows which gesture it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deed {
+    /// The verb phrase after "paused the machine to": `place the object`.
+    pub doing: &'static str,
+    /// The clause naming what started it: `when you clicked`.
+    pub occasion: &'static str,
+}
+
+/// The click on the picture that places an object.
+pub const PLACING: Deed = Deed {
+    doing: "place the object",
+    occasion: "when you clicked",
+};
+
+impl Default for Deed {
+    /// [`PLACING`], because a panel that has not paused for anything yet has nothing to say and the one
+    /// gesture that predates this type is the click. There is no empty [`Deed`]: two empty strings would
+    /// produce a sentence with a hole in it, which is worse than the wrong noun.
+    fn default() -> Self {
+        PLACING
+    }
+}
+
+/// The selection change that takes a picture of one ([`crate::preview`]).
+pub const PREVIEWING: Deed = Deed {
+    doing: "take a picture of the object",
+    occasion: "when you chose it",
+};
+
 impl RunState {
-    /// **The standing statement.** Drawn for as long as it is the last thing that happened, never as a
-    /// toast: a toast expires and the fact that this window paused a machine and could not restart it
-    /// does not.
-    pub fn sentence(&self) -> String {
+    /// **The standing statement**, for the gesture that caused it. Drawn for as long as it is the last
+    /// thing that happened, never as a toast: a toast expires and the fact that this window paused a
+    /// machine and could not restart it does not.
+    pub fn sentence_of(&self, deed: Deed) -> String {
+        let Deed { doing, occasion } = deed;
         match self {
-            Self::AlreadyPaused => "This machine was already paused when you clicked, so the window \
-                                    neither paused nor resumed it."
-                .to_string(),
+            Self::AlreadyPaused => format!(
+                "This machine was already paused {occasion}, so the window neither paused nor \
+                 resumed it."
+            ),
             Self::Restored { frames } => {
-                let mut s = "This window paused the machine to place the object and resumed it, \
-                             because it was running when you clicked."
-                    .to_string();
+                let mut s = format!(
+                    "This window paused the machine to {doing} and resumed it, because it was \
+                     running {occasion}."
+                );
                 if let Some(n) = frames {
                     s.push_str(&format!(
                         " {} of emulated time passed while it was paused.",
@@ -210,15 +252,20 @@ impl RunState {
                 s
             }
             Self::Stranded { why } => format!(
-                "This window paused the machine to place the object and the resume was REFUSED, so it \
+                "This window paused the machine to {doing} and the resume was REFUSED, so it \
                  is still paused and nothing here will restart it on its own: {why}"
             ),
-            Self::PriorStateUnknown => "This window paused the machine to place the object and could \
-                                        not read back whether it had been running, so it left the \
-                                        machine paused rather than starting one you may have stopped \
-                                        on purpose."
-                .to_string(),
+            Self::PriorStateUnknown => format!(
+                "This window paused the machine to {doing} and could not read back whether it had \
+                 been running, so it left the machine paused rather than starting one you may have \
+                 stopped on purpose."
+            ),
         }
+    }
+
+    /// [`RunState::sentence_of`] for the gesture this type was written for.
+    pub fn sentence(&self) -> String {
+        self.sentence_of(PLACING)
     }
 
     /// Whether the machine's run state is **not** what the person left it in. The renderer colours on
@@ -433,6 +480,13 @@ mod tests {
         }
         all.extend(every_string(&listing(&[], None, 0, "")));
         all.extend(every_run_state().iter().map(RunState::sentence));
+        // ⚑ Both deeds, because a second gesture now supplies the noun and the clause: a sweep over one
+        // of them would leave the other free to draw a padded or dashed sentence.
+        all.extend(
+            every_run_state()
+                .iter()
+                .map(|s| s.sentence_of(super::PREVIEWING)),
+        );
         all.push(RunState::HELD_INPUT_HOVER.to_string());
         for s in all {
             assert!(
@@ -455,6 +509,13 @@ mod tests {
         }
         all.extend(every_string(&listing(&[], None, 0, "")));
         all.extend(every_run_state().iter().map(RunState::sentence));
+        // ⚑ Both deeds, because a second gesture now supplies the noun and the clause: a sweep over one
+        // of them would leave the other free to draw a padded or dashed sentence.
+        all.extend(
+            every_run_state()
+                .iter()
+                .map(|s| s.sentence_of(super::PREVIEWING)),
+        );
         all.push(RunState::HELD_INPUT_HOVER.to_string());
         for s in all {
             for bad in ['\u{2014}', '\u{2013}'] {

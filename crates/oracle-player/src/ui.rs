@@ -270,6 +270,11 @@ impl Panels<'_> {
             ui.centered_and_justified(|ui| ui.label("no frame yet"));
             return;
         };
+        // ⚑ **Retire a picture whose art has been replaced, immediately before the ghost can draw it.**
+        // Checked here as well as in the Spawn tab, because either surface can be the visible one and a
+        // guard at one of two use sites is a guard that is missing at the other. See
+        // [`screen_pick::Panel::expire_preview`] for why this retires rather than retakes.
+        self.screen.expire_preview(self.machine.system().vdp());
         let src = tex.size_vec2();
         let ppp = ui.pixels_per_point();
         // One reading of the available space, used for both the fit and the allocation. Two calls would
@@ -297,6 +302,27 @@ impl Panels<'_> {
             ui.id().with("screen-picture"),
             egui::Sense::click(),
         );
+
+        // ⚑ **The ghost**, under the pointer, for as long as a click would place something.
+        //
+        // The owner's ask, and the scope in his own words: *"we don't have to actually draw it in the
+        // game, like where my mouse is when placing it have roughly the size and shape of sprite as a
+        // preview from the shell of oracle."* So it is drawn by this window over the picture, and nothing
+        // about it reaches the machine.
+        //
+        // It is drawn **only while the mode is armed and the pointer is on the picture**, which is the
+        // same condition as "a click here would place one", so the ghost is never a claim about a gesture
+        // that is not available.
+        if self.screen.is_armed() {
+            if let (Some(p), Some(pos)) = (
+                self.screen
+                    .preview()
+                    .and_then(crate::preview::Outcome::drawable),
+                hit.hover_pos(),
+            ) {
+                ghost(ui, p, pos, size.x / src.x);
+            }
+        }
 
         if let (true, Some(pos)) = (hit.clicked(), hit.interact_pointer_pos()) {
             if let Some(dot) =
@@ -365,13 +391,18 @@ impl Panels<'_> {
         // click now pauses the machine for a frame or two and puts it back, and a resume the person did
         // not perform must never be a mystery. It is coloured from `RunState::alarming()` and never from
         // the shape of the sentence, which is P5's rule generalised off refusals.
-        if let Some(run) = self.screen.run_state() {
-            let colour = if run.alarming() {
+        //
+        // ⚑ **The sentence comes from the panel, deed and all.** Two gestures pause and restore now, the
+        // click that places and the selection that takes a picture, and `RunState::sentence()` would name
+        // a placement after either. The panel knows which one it was; this strip does not, and must not
+        // pick.
+        if let Some((sentence, alarming)) = self.screen.run_line() {
+            let colour = if alarming {
                 ui.visuals().error_fg_color
             } else {
                 ui.visuals().weak_text_color()
             };
-            ui.colored_label(colour, run.sentence())
+            ui.colored_label(colour, sentence)
                 .on_hover_text(crate::spawn_picker::RunState::HELD_INPUT_HOVER);
         }
         ui.horizontal(|ui| {
@@ -598,6 +629,28 @@ impl Panels<'_> {
             return;
         }
         ui.separator();
+        // ⚑ **Retire a picture whose art has been replaced, before anything can draw it.**
+        //
+        // Cheap: a fingerprint over the colour table and the handful of tiles the picture was drawn from.
+        // Retired rather than retaken, because retaking here would put a checkpoint round trip in a draw
+        // pass and would run one on every frame of an act load, while the art is still arriving. The
+        // button below is how a person takes it again, and until they do, nothing is drawn: a real picture
+        // of the wrong tiles is the failure the whole cache key exists to prevent.
+        self.screen.expire_preview(self.machine.system().vdp());
+        if let Some(out) = self.screen.preview() {
+            let out = out.clone();
+            preview_card(ui, &out);
+        }
+        if ui
+            .button("take the picture again")
+            .on_hover_text(
+                "puts one of this object into the machine, reads the sprites it draws, and puts the                  machine back where it was",
+            )
+            .clicked()
+        {
+            self.screen.take_preview(self.machine, self.bus);
+        }
+        ui.separator();
         let listing = self.screen.listing();
         ui.horizontal(|ui| {
             ui.label(
@@ -644,7 +697,7 @@ impl Panels<'_> {
             }
             None => {
                 if let Some(name) = select_list(ui, "archetype", &listing.rows, "spawn_picker") {
-                    self.screen.select_archetype(&name);
+                    self.screen.select_archetype(self.machine, self.bus, &name);
                 }
             }
         }
@@ -2186,6 +2239,180 @@ fn meter(ui: &mut egui::Ui, m: &pacing::Meter) {
             .text_style(egui::TextStyle::Small)
             .color(ui.visuals().weak_text_color()),
     );
+}
+
+// -------------------------------------------------------------------------------------------------------
+// ⚑ The object preview: one picture, drawn in two places
+// -------------------------------------------------------------------------------------------------------
+
+/// **The preview's picture as a texture**, uploaded once per picture rather than once per frame.
+///
+/// Cached in egui's own per-context store, keyed on the fingerprint the picture was taken under
+/// ([`crate::preview::Preview::art_print`]) together with the archetype. Two different objects whose art
+/// happened to fingerprint the same would otherwise share a texture, which is the one collision a hash on
+/// its own permits.
+///
+/// It lives here rather than on [`crate::screen_pick::Panel`] because a `TextureHandle` is an egui type and
+/// that panel's projection is deliberately free of them, and here rather than on [`Panels`] because
+/// `Panels` is rebuilt every frame and a handle rebuilt with it would upload the same pixels forever.
+///
+/// `None` is the silhouette case, which has no pixels to upload and is drawn as rectangles instead.
+fn preview_texture(
+    ctx: &egui::Context,
+    p: &crate::preview::Preview,
+) -> Option<egui::TextureHandle> {
+    let crate::preview::Art::Captured(shot) = &p.art else {
+        return None;
+    };
+    let id = egui::Id::new("object-preview-texture");
+    let key = (p.key.archetype.clone(), p.key.subtype, p.art_print);
+    if let Some((had, tex)) =
+        ctx.data(|d| d.get_temp::<((String, Option<u32>, u64), egui::TextureHandle)>(id))
+    {
+        if had == key {
+            return Some(tex);
+        }
+    }
+    // Transparent where the sprite is transparent, so the ghost is the object and not a box around it.
+    let img = egui::ColorImage {
+        size: [shot.w, shot.h],
+        source_size: egui::vec2(shot.w as f32, shot.h as f32),
+        pixels: shot
+            .px
+            .iter()
+            .map(|s| match s {
+                Some((r, g, b)) => egui::Color32::from_rgb(*r, *g, *b),
+                None => egui::Color32::TRANSPARENT,
+            })
+            .collect(),
+    };
+    let tex = ctx.load_texture("object-preview", img, egui::TextureOptions::NEAREST);
+    ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
+    Some(tex)
+}
+
+/// **Draw the preview under the pointer, as a ghost.**
+///
+/// ⚑ **It must not look like a placed object**, and that is a correctness requirement rather than a taste:
+/// a faithful sprite sitting under the cursor reads as something that is already there, and the person
+/// then clicks to place a second one. So it is drawn at partial alpha inside an accent outline, with a
+/// cross at the object's own origin. None of the three is decoration: the alpha says it is not real, the
+/// outline says where the footprint ends when the art is dark, and the cross says which point of the
+/// picture the click actually puts at the pointer.
+///
+/// `dot_scale` is points per screen dot, taken from the picture's own drawn size, so the ghost is exactly
+/// the size the object will be in the picture below it at every aspect mode and every display scale.
+fn ghost(ui: &egui::Ui, p: &crate::preview::Preview, at: egui::Pos2, dot_scale: f32) {
+    if dot_scale <= 0.0 {
+        return;
+    }
+    let size = egui::vec2(p.w as f32 * dot_scale, p.h as f32 * dot_scale);
+    // The anchor is the object's own position inside its own picture, so this subtraction is what puts the
+    // object where the pointer is rather than putting its top left corner there.
+    let origin = at - egui::vec2(p.anchor.0 as f32 * dot_scale, p.anchor.1 as f32 * dot_scale);
+    let rect = egui::Rect::from_min_size(origin, size);
+    let painter = ui.painter().with_clip_rect(ui.clip_rect());
+
+    match preview_texture(ui.ctx(), p) {
+        Some(tex) => {
+            painter.image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                // Not opaque, and never configurable: the whole point is that it cannot be mistaken for a
+                // sprite the machine drew.
+                egui::Color32::from_white_alpha(150),
+            );
+        }
+        None => {
+            // The silhouette: the rectangles are measured even though the colours are missing, so the
+            // shape and the size are still honest.
+            for c in &p.cells {
+                let cell = egui::Rect::from_min_size(
+                    origin + egui::vec2(c.x as f32 * dot_scale, c.y as f32 * dot_scale),
+                    egui::vec2(c.w as f32 * dot_scale, c.h as f32 * dot_scale),
+                );
+                painter.rect_filled(
+                    cell,
+                    egui::CornerRadius::ZERO,
+                    crate::theme::ACCENT.gamma_multiply(0.18),
+                );
+            }
+        }
+    }
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(1.0, crate::theme::ACCENT),
+        egui::StrokeKind::Outside,
+    );
+    // The origin cross, which is the answer to "where exactly does it land".
+    let arm = 3.0;
+    let stroke = egui::Stroke::new(1.0, crate::theme::ACCENT);
+    painter.line_segment(
+        [at - egui::vec2(arm, 0.0), at + egui::vec2(arm, 0.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [at - egui::vec2(0.0, arm), at + egui::vec2(0.0, arm)],
+        stroke,
+    );
+}
+
+/// **The preview, in the picker**, at a legible scale beside its own measurement note.
+///
+/// The scale is a whole number of screen dots per point, because a preview of a 16 dot sprite drawn at
+/// 2.7x is a blurred claim about pixel art. It is the largest whole scale that fits the box, and never
+/// smaller than 1: an object bigger than the box is drawn at 1 and clipped rather than shrunk into
+/// something nobody can identify.
+fn preview_card(ui: &mut egui::Ui, out: &crate::preview::Outcome) {
+    let weak = ui.visuals().weak_text_color();
+    card(ui, |ui| {
+        if let Some(p) = out.drawable() {
+            let box_dots = 48.0_f32;
+            let scale = (box_dots / p.w.max(p.h).max(1) as f32).floor().max(1.0);
+            let size = egui::vec2(p.w as f32 * scale, p.h as f32 * scale);
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            match preview_texture(ui.ctx(), p) {
+                Some(tex) => {
+                    ui.painter().image(
+                        tex.id(),
+                        rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                None => {
+                    for c in &p.cells {
+                        let cell = egui::Rect::from_min_size(
+                            rect.min + egui::vec2(c.x as f32 * scale, c.y as f32 * scale),
+                            egui::vec2(c.w as f32 * scale, c.h as f32 * scale),
+                        );
+                        ui.painter().rect_stroke(
+                            cell,
+                            egui::CornerRadius::ZERO,
+                            egui::Stroke::new(1.0, crate::theme::WARNING),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+            }
+            ui.label(
+                egui::RichText::new(p.size_line())
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+            );
+        }
+        // ⚑ **The sentence is drawn in every arm, including the one with a picture in it**, and that is
+        // the difference between the panel claiming a fact and the panel showing a measurement. A person
+        // looking at a wrong picture usually knows in a way no code here can, and only if the panel has
+        // told them where the picture came from.
+        ui.label(
+            egui::RichText::new(out.sentence())
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+        );
+    });
 }
 
 /// A section head: the title, what it covers, and the served row it is a direct read of.
