@@ -382,16 +382,34 @@ impl Census {
     }
 
     /// The refusal for a section with no free index. Says the two numbers it was decided from.
+    ///
+    /// ⚑ **The clause about the buffer is DERIVED, not asserted.** The obvious wording is *"the ring
+    /// buffer is not the problem here"*, and it is a lie exactly when both are full at once. The point
+    /// of splitting these two states is that a person reads one and knows what to fix; a sentence that
+    /// tells them the buffer is fine while the buffer is full sends them to fix a thing that is not
+    /// broken and leaves the thing that is. So the clause is computed from the same numbers the state
+    /// was, and it cannot say the buffer is fine unless it is.
     pub fn no_index(&self, layout: &Layout) -> Refusal {
+        let buffer = if self.buffer_used >= layout.max_ring_buffer {
+            format!(
+                "The ring buffer is full as well, at {} of {} records, so both limits are in the way \
+                 at once.",
+                self.buffer_used, layout.max_ring_buffer
+            )
+        } else {
+            format!(
+                "The ring buffer is not the problem here: it is holding {} of {} records.",
+                self.buffer_used, layout.max_ring_buffer
+            )
+        };
         Refusal::window(
             "ringSectionFull",
             format!(
                 "there is no index left in section {} for a ring to use, so nothing was placed. Its \
                  own level data already uses indexes 0 to {}, this window has since used {}, and the \
-                 engine's ceiling for the section is {}. The ring buffer is not the problem here: it \
-                 is holding {} of {} records. An index below {} would be one the level's own rings \
-                 answer to, and collecting a ring placed there would mark one of those real rings as \
-                 collected and stop it appearing.",
+                 engine's ceiling for the section is {}. {buffer} An index below {} would be one the \
+                 level's own rings answer to, and collecting a ring placed there would mark one of \
+                 those real rings as collected and stop it appearing.",
                 self.section.id,
                 self.real_rings.saturating_sub(1),
                 if self.taken.is_empty() {
@@ -404,8 +422,6 @@ impl Census {
                         .join(", ")
                 },
                 layout.max_list_entries,
-                self.buffer_used,
-                layout.max_ring_buffer,
                 self.real_rings,
             ),
             Some(
@@ -729,12 +745,16 @@ pub fn place(c: &mut impl Caller, dot: (u16, u16)) -> Result<Placed, Refusal> {
     };
 
     let cen = census(c, &l, section)?;
-    let Some(index) = cen.free_index(&l) else {
-        return Err(cen.no_index(&l));
-    };
+    // ⚑ **The buffer is asked about FIRST**, so the section's refusal is only ever reached on a buffer
+    // that genuinely has room. Both can be full at once, and when they are, "the buffer is full" is the
+    // one with the shorter way out: collect some rings or move away from a crowd of them, against moving
+    // the camera into a whole different section of the level.
     if cen.buffer_used >= l.max_ring_buffer {
         return Err(buffer_full(cen.buffer_used, &l));
     }
+    let Some(index) = cen.free_index(&l) else {
+        return Err(cen.no_index(&l));
+    };
     // Checked rather than cast. `Layout::check` has already refused a build whose ceiling could not fit,
     // so this is unreachable there and still not written as an `as`: a truncated index is the aliasing.
     let Ok(index_byte) = u8::try_from(index) else {
@@ -1202,6 +1222,46 @@ mod tests {
         assert_ne!(a.remedy, b.remedy, "two states, two next actions");
     }
 
+    /// ⚑ **When BOTH limits are hit at once, no sentence claims the other one is fine.**
+    ///
+    /// The defect this closes was in this module's own first draft: the section refusal said *"the ring
+    /// buffer is not the problem here"* unconditionally, which is a false statement in exactly the case
+    /// where a person most needs a true one. The whole reason these two states are told apart is that a
+    /// reader takes one sentence and goes and fixes the thing it names; a sentence that clears the
+    /// buffer while the buffer is full sends them to fix something that is not broken and leaves the
+    /// thing that is.
+    #[test]
+    fn a_refusal_never_clears_the_other_limit_when_both_limits_are_hit() {
+        let l = s4();
+        let s = section(3, (0, 0), 0x0001_0000);
+        let both = Census {
+            section: s,
+            real_rings: l.max_list_entries,
+            taken: Vec::new(),
+            buffer_used: l.max_ring_buffer,
+        };
+        assert_eq!(both.free_index(&l), None, "the section has nothing to give");
+        let m = both.no_index(&l).message;
+        assert!(
+            !m.contains("not the problem"),
+            "the buffer IS full, and this sentence must not say otherwise: {m:?}"
+        );
+        assert!(
+            m.contains("full as well") && m.contains("both limits"),
+            "when both limits are in the way the sentence must say so: {m:?}"
+        );
+
+        // And the ordinary case still clears the buffer, because there it is true.
+        let only_section = Census {
+            buffer_used: 4,
+            ..both
+        };
+        assert!(only_section
+            .no_index(&l)
+            .message
+            .contains("not the problem"));
+    }
+
     /// **The third state the handoff does not name**: a click in a section the camera is not tracking.
     #[test]
     fn a_click_outside_every_tracked_section_is_its_own_stated_refusal() {
@@ -1557,6 +1617,18 @@ mod tests {
         let e = place(&mut f, (10, 20)).expect_err("there is no slot to write into");
         assert_eq!(e.reason.as_deref(), Some("ringBufferFull"));
         assert!(f.wrote.is_empty(), "a refusal must write nothing");
+
+        // ⚑ **Both limits at once, over the wire**: the buffer is asked about first, because its way out
+        // is the shorter of the two (collect some rings, against move the camera to another section of
+        // the level). Either answer would be true; this is the one a person can act on where they stand.
+        let mut f = machine(l.max_list_entries, l.max_ring_buffer as u8);
+        let e = place(&mut f, (10, 20)).expect_err("neither limit has anything to give");
+        assert_eq!(
+            e.reason.as_deref(),
+            Some("ringBufferFull"),
+            "with both full, the buffer is the one reported"
+        );
+        assert!(f.wrote.is_empty());
     }
 
     /// **A section whose index space is exhausted refuses with the SECTION's sentence**, on a machine
