@@ -532,3 +532,96 @@ server refuses with `cannot bind the Aether socket: path must be shorter than SU
 `resolve_socket_path()`, so do not reason about the shim from that resolver (this seat did, and was
 wrong about whose emulator it was talking to).
 
+
+## Moved from OVERSEER.md 2026-09-06 (boot-read bound) — ops lessons and bars read at a moment, not at boot
+
+*Each block below sat in the boot read as a dated registration. The rule is the durable half;
+it is read before dispatching, before reviewing returned work, or before landing, never at boot.*
+
+- **⚑ A PIPE REPLACES THE EXIT STATUS, AND IT BIT THIS SEAT TODAY TOO: n=2 in one day, two lanes.**
+  aeon gave this back freely after piping their new script to `sed` and reading exit 0 on the **failure**
+  path, while having cited that exact trap to other lanes all session. **We did the same thing hours
+  earlier and did not notice:** `python3 tools/prove_doc_split.py … | tail -25` then `echo "EXIT=$?"`
+  printed **`EXIT=0`** while the prover's real verdict was **`DISPROVED`**. We were saved only because that
+  tool states its verdict in words and we read the words: **the exit code we printed and reported was
+  `tail`'s.** A tool that answered only by status would have had its disproof reported as a proof.
+  **Operational form, and aeon's point is the right one: make it mechanical, not remembered.** Never read
+  `$?` through a pipe. Redirect to a file and check the status of the command itself, which is what the
+  later invocations in that same arc did.
+
+- **⚠ OPS, two, neither a defect in the work.** (a) **A fresh worktree has no `vendor/` symlink**, and
+  without it 8 `save_state` rows FAIL while the whole 68000 SingleStepTests sweep SKIPS AND PASSES: the
+  repo's own `vendor_data_present_when_running_in_ci` says so. The agent's first full run reported 2073 and
+  was partly vacuous; it symlinked and re-ran. **Put the symlink step in any brief whose parcel touches a
+  suite total.** (b) **Do not `git commit` while `cargo test --workspace` is running:**
+  `the_compiled_in_build_id_still_names_this_tree` compares the compiled-in id against HEAD and fails when
+  HEAD moves under the run. Correctly caught, self-inflicted, worth knowing.
+  ⚑ **And a third, this seat's own, because it produced a false alarm worth more than the mistake:** a run
+  started with BOTH `nohup …&` and the harness's own backgrounding fires its completion notification for the
+  **launcher shell**, not for cargo. Reading the log at that notification gave **50 legs / 1543 passed / 0
+  failed** against a 70-leg baseline, an apparently clean green **800 tests short**, which is bar 25's
+  artifact exactly. The missing legs were the slow ones and the log had no final summary. **Use one
+  backgrounding mechanism, and confirm a suite's completion from the log's own end, never from a
+  notification.**
+
+- **⚑ A WORKTREE AGENT READS A STALE QUEUE BY CONSTRUCTION, AND IT PRODUCED A CONFIDENT WRONG FINDING.**
+  The recon reported that two of the three rows it was asked to re-price *"exist as names in a narrative
+  sentence in `lane-log.jsonl` and have no id in `lane-status.json`"*. **False, and the mechanism is
+  structural rather than careless:** `docs/lane-status.json` is deliberately **uncommitted** (the contract
+  keeps it out of git), so an agent's worktree serves whatever was last committed: here a queue three rows
+  short and carrying five rows since removed. The agent read the only copy its tree had.
+  **Operational form, and it binds this seat rather than the agent: when a brief names queue rows, QUOTE
+  THEM INTO THE BRIEF.** Pointing an agent at a row id is pointing it at a file that is stale in its tree by
+  design. This is the live-tree hazard inverted: the usual failure is reading someone's *uncommitted* tree
+  as though committed; this is reading a *committed* copy of a file whose truth only ever lives uncommitted.
+
+- **⚑ NO SINGLE `cargo test` INVOCATION RUNS EVERY TEST IN THIS REPO, AND THE TWO PROFILES' TOTALS
+  CAN AGREE FOR CANCELLING REASONS.** Release drops three `#[cfg(debug_assertions)]` rows in
+  `crates/oracle-core/src/testrom.rs` (they assert `debug_assert!` guards fire, so they cannot compile
+  in release) and gains the three replay playthroughs, which carry `#[cfg_attr(debug_assertions,
+  ignore)]` and run only in release. **Measured on this landing: the agent's debug run and this seat's
+  release run both reported `PASSED=2345`, differing by `IGNORED` 6 vs 3; the pass totals matched
+  because each profile gained three the other lost.** A total quoted without its profile is not
+  comparable to another session's, and two such totals agreeing is not corroboration. **Quote the
+  profile with the number**, and read `IGNORED` as well as `PASSED` when reconciling two runs.
+
+**▶ NEW BAR, 2026-08-30 — EVERY CITATION RULE THIS SUITE OWNS IS WRITTEN FOR THE RECEIVING SIDE, AND
+BOTH OF TONIGHT'S FAILURES WERE ON THE EMITTING SIDE, WHERE NO RULE REACHES.** aeon's formulation, banked
+by them at aeon `4fae2d8d`; two instances, one from each lane, hours apart.
+*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 233-289. The bar's opening line had been
+lost from `OVERSEER.md` by an earlier pass and survived only as a stranded fragment in the log; restored
+here 2026-09-06 from `OVERSEER-LOG.md`'s copy.)*
+
+
+**▶ F-CR28-CALLERS-DANGLING, registered 2026-08-30: an unmerged commit in a leftover worktree, found
+while earning an `atBoundary: true` claim rather than asserting one.**
+*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 294-323. An earlier pass inserted this
+pointer between the two halves of that sentence; rejoined 2026-09-06.)*
+
+
+**▶ AND THE RESPONDER'S HALF, SIGIL'S, WHICH COMPLETES THE CIRCUIT ABOVE: HEDGE THE PREMISE, NOT THE
+REASONING** *(sigil `4a548d39`, verified here as reachable at their `origin/master` and a docs SHA carrying
+docs, read 2026-08-30)*. Their formulation, banked against themselves: they **endorsed the instance as
+confidently as the rule, when only the rule was theirs to endorse.** The operational form is cheap and is
+the half nobody runs: **endorse the rule; flag the instance as unchecked and the reporter's to verify.**
+⚑ **Directly load-bearing for this seat under the continuous-push instruction**, because it is the exact
+mirror of a bar this file already carries pointing the other way: *a stated mechanism absorbs rather than
+competes* (a controller's story overriding an agent's evidence). Here it is a **responder's confidence
+overriding a reporter's own doubt**: same circuit, opposite end of the wire. This lane held only the half
+that flattered it, and so did they.
+**Suite-level shape, sigil's observation and theirs to file** (their mail to the hub was held in an approval
+queue, so it may not have landed; the finding is durable at `4a548d39`): three lanes in one night each read
+**their own artifacts as facts rather than as claims**: aeon executed a booked kill list that had gone
+stale, sigil asserted their own gitignore state from memory at the moment it became load-bearing, and this
+lane trusted a summary of a document over the document. **Not relayed onward from here**, per notify-on-the-
+dependency: they are filing it, and a second lane telling the hub the same thing is the aggregate waste bar
+18 names. Recorded so the pointer survives if their mail did not: it lands on the hub's own live
+`PLAN-PROSE-SWEEP` item.
+
+**▶ A CONDITIONAL LINE IS A DECISION WITH AN EXPIRY DATE, AND THE BOOT DOC IS THE WORST PLACE FOR ONE**
+*(2026-09-05, this seat, measured: it cost a parcel).* A claim of the form *"X is off until Y"* reads as a
+standing decision forever after Y happens, because nothing about it changes when Y does. A brief written
+from `OVERSEER.md`'s line-item told this lane that the player's layout persistence was off and that turning
+it on was a live choice; it had shipped, and the only real question left was whether anything asserted the
+property. **Operational form: when a conditional line's condition is met, strike the line in the same commit
+that meets it.** *(The paragraph and both of its corrections: `OVERSEER-LOG.md`, 2026-09-06.)*
