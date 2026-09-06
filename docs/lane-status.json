@@ -1,5 +1,5 @@
 {
-  "focus": "All agents in and landed. Waiting on your tab test for the lag, and the Pacing A/B.",
+  "focus": "Lens sweep complete, all 22 reviewers in. The one that matters most: your CI has not run since 22 July.",
   "inFlight": [
     {
       "what": "Lag fix, approved on condition - starts the moment your tab test confirms",
@@ -24,8 +24,64 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "Now. Everything landed and pushed, nothing running, nothing half-applied.",
+  "nextBoundary": "Now. Sweep complete and pushed, nothing running, findings booked.",
   "queue": [
+    {
+      "id": "F-CI-DEAD-46-DAYS",
+      "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "Your automated checks have not actually run since 22 July. Two breakages stacked and the second hid the first, so the whole test suite has been skipped in CI for 46 days -- including five checks that exist purely to shout when test data is missing. Local landing checks were unaffected. Fixing the obvious half returns it to the OLDER failure, not to green; the order is written down."
+    },
+    {
+      "id": "F-RESET-LOSES-SAVE",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "A reset can strand your in-game save, or in one case write an older save over a newer one. The old window flushes before resetting and says why; the new one does not. The test meant to catch this reads the emulator's memory and never the file, so it passes while blind. The only finding in the sweep that destroys your data."
+    },
+    {
+      "id": "F-Z80-PANICS-UNCONTAINED",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "About 560 real Z80 instructions crash the emulator outright rather than refusing, with nothing to catch it -- so one byte in a game's sound code kills the window or the server. Common in hand-written sound drivers, and a commercial game has already hit this class once."
+    },
+    {
+      "id": "F-Z80-RESET-IS-A-HOLD",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "The Z80 reset line only stops the clock; it resets nothing. A sound driver halted at the wrong moment stays halted forever and never restarts. Measured with controls. The rule was written into our own notes in July with 'pin it, do not let it drift' and never implemented."
+    },
+    {
+      "id": "F-FIFO-DOUBLE-CHARGE",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "Two video writes in one instruction charge the first one's delay twice -- 40 percent over-billed on the most common way games write video memory. The read path next door does it correctly. Every existing test stops one write short of triggering it."
+    },
+    {
+      "id": "F-DIMENSIONS-MISSES-EFFECTS",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "The drift check I landed this morning covers none of the eleven symbols the Effects panel depends on -- measured, zero of 25 rows. Cheap, needs no decision from you, and it is the half of the frozen-fixture question worth doing on its own."
+    },
+    {
+      "id": "LENS-PACKET",
+      "state": "open",
+      "size": "L",
+      "blockedBy": "your ranking",
+      "project": "LENS-PASS",
+      "title": "The rest of the lens sweep: 8 critical, 33 high, ~77 smaller, all in docs/superpowers/notes/2026-09-06-oracle-lens-sweep.md with the derivation for each. Nothing is fixed -- the reviewers were read-only on purpose so the report stays honest. Most of these have their fix already written elsewhere in the tree; they are gaps in coverage, not in knowledge."
+    },
     {
       "id": "LIVE-EFFECTS-PANEL",
       "state": "blocked",
@@ -139,7 +195,7 @@
       "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
     }
   ],
-  "awaiting": "Four from you, all cheap, none urgent tonight. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears; the fix is pre-approved on your answer. (2) The Pacing A/B (d-39), which still decides how every remaining panel shows a number. (3) The window icon (d-37). (4) The frozen fixtures (d-40, I recommend hold). Separately: whenever you next relaunch, that alone finishes the two things I cannot -- trying the switchboard against a running game, and taking the first live pacing reading.",
+  "awaiting": "Same as before plus the sweep's ranking. Cheapest first: (1) the ten-second tab test for the lag, fix pre-approved. (2) The Pacing A/B (d-39). (3) The icon (d-37) and the frozen fixtures (d-40 -- new evidence, I still say hold the refresh but the cheap half is now clearly worth doing alone). (4) Which lens-sweep findings you want fixed first; I would start with CI, since it is the one that stops us finding the others.",
   "atBoundary": true,
-  "updatedAt": "2026-09-06T17:27:31Z"
+  "updatedAt": "2026-09-06T18:07:21Z"
 }
