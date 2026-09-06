@@ -2066,13 +2066,50 @@ fn cell_colour(ui: &egui::Ui, c: &objects::Col, text: &str, active: bool) -> egu
     }
 }
 
-/// A JSON scalar as the panel prints it: a string without its quotes, anything else as itself.
+/// A served value as the panel prints it. **Exhaustive by construction, and that is the point.**
+///
+/// This used to be two arms: `String(s) => s.clone()` and `other => other.to_string()`. It was correct
+/// for every value the server actually sends today, because
+/// [`DecodedRecord::to_json`](oracle_core::decoders) emits only scalars and the one composite key
+/// (`"fields"`) is skipped by its caller before it ever gets here. It was correct **by luck about the
+/// wire**, not by anything this function does: the day a served key becomes an object or an array, that
+/// catch-all `to_string()` puts `{"a":1,"b":[2,3]}` on the owner's screen, which is exactly the raw JSON
+/// the style page's **P1** forbids, and no test in the crate would have gone red.
+///
+/// So the catch-all is gone and every `serde_json::Value` variant is spelled out. The two composite arms
+/// **state what arrived** instead of dumping it: a nested value is a fact about the served shape, and
+/// telling the reader that a shape they cannot see has appeared is useful, whereas printing its
+/// punctuation at them is not. If that ever becomes the wrong answer it will be because a real composite
+/// key is worth drawing, and drawing it is a panel decision with a layout attached, not a fallthrough.
+///
+/// `Null` is a stated absence rather than the four characters `null`, per **P6**: an absent fact is a
+/// line that says so.
+///
+/// Guarded by [`json_tests::no_served_value_can_put_raw_json_on_the_screen`], which walks every variant.
 fn render(v: &serde_json::Value) -> String {
     match v {
+        // A string is the payload without its quotes. This is the overwhelmingly common case.
         serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
+        // Numbers and booleans spell identically in JSON and in prose, so there is no punctuation to leak.
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        // P6: `null` on the wire means the server had nothing, and a reader is owed that in words.
+        serde_json::Value::Null => NO_VALUE.to_owned(),
+        serde_json::Value::Array(a) => format!(
+            "{} value{} in a list. This panel draws single values, so the list itself is not shown.",
+            a.len(),
+            if a.len() == 1 { "" } else { "s" }
+        ),
+        serde_json::Value::Object(m) => format!(
+            "{} key{} in a nested record. This panel draws single values, so the record is not shown.",
+            m.len(),
+            if m.len() == 1 { "" } else { "s" }
+        ),
     }
 }
+
+/// What [`render`] prints for a served `null`. A stated absence, never the token `null` and never a zero.
+const NO_VALUE: &str = "no value (the server sent nothing here)";
 
 /// One gesture's answer, coloured by whether it was a refusal.
 ///
@@ -3989,5 +4026,114 @@ mod bus_parity {
             .min()
             .unwrap_or(after.len());
         after[..end].to_string()
+    }
+}
+
+/// **P1's gate.** Nothing a server can put in a value slot can put raw JSON on the screen.
+///
+/// This module exists because the hazard it covers is invisible to every other test in the crate: the old
+/// two-arm [`render`] was safe only for as long as `DecodedRecord::to_json` happened to emit scalars, and
+/// a wire change would have made it wrong with the whole suite still green.
+///
+/// Plain `#[cfg(test)]`, deliberately, unlike `transport_tests` above: this is a statement about a pure
+/// string function and there is nothing unix-shaped about it.
+#[cfg(test)]
+mod json_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    /// The characters JSON uses to build a composite. Derived rather than remembered: `serde_json`'s own
+    /// serialisation of a nested value is asked which of them it actually emits, so this list cannot
+    /// quietly stop matching the encoder.
+    fn structural() -> Vec<char> {
+        let encoded = json!({"a": [1, "b"]}).to_string();
+        let punctuation: Vec<char> = "{}[]\"".chars().filter(|c| encoded.contains(*c)).collect();
+        assert_eq!(
+            punctuation.len(),
+            5,
+            "serde_json no longer emits all five structural characters, so this gate is measuring a \
+             smaller set than it thinks: {encoded}"
+        );
+        punctuation
+    }
+
+    /// Every `serde_json::Value` variant, the two composite ones included, rendered without a single
+    /// character of JSON punctuation reaching the string a panel draws.
+    ///
+    /// The composite cases are the ones that matter. Their assertion is deliberately **two-sided**: the
+    /// output must carry no punctuation *and* must differ from `Value::to_string()`, because a rendering
+    /// that merely stripped braces would pass the first half while still being a dump.
+    #[test]
+    fn no_served_value_can_put_raw_json_on_the_screen() {
+        let punctuation = structural();
+        let cases: Vec<Value> = vec![
+            Value::Null,
+            json!(true),
+            json!(false),
+            json!(0),
+            json!(-42),
+            json!(1.5),
+            json!("plain"),
+            json!([]),
+            json!([1, 2, 3]),
+            json!({}),
+            json!({"pool": {"base": "0x00FF8000"}}),
+            json!({"provenance": ["symbol", "scan"], "confidence": 0.9}),
+        ];
+        for v in &cases {
+            // A string is printed as the server meant it, quotes and all if it contains any: it is the
+            // payload, not a container. Every other variant is under the punctuation rule.
+            if v.is_string() {
+                continue;
+            }
+            let out = render(v);
+            for c in &punctuation {
+                assert!(
+                    !out.contains(*c),
+                    "render({v}) put the JSON character {c:?} on the screen: {out:?}"
+                );
+            }
+        }
+
+        // A string is still the payload with its quotes off, which is the whole reason the function has a
+        // `String` arm at all.
+        assert_eq!(render(&json!("plain")), "plain");
+
+        // A composite says what arrived rather than dumping it, and is not merely `to_string` with the
+        // braces filed off.
+        let obj = json!({"provenance": ["symbol", "scan"], "confidence": 0.9});
+        let rendered = render(&obj);
+        assert_ne!(
+            rendered,
+            obj.to_string(),
+            "a nested record is being dumped rather than described"
+        );
+        assert!(
+            rendered.contains('2'),
+            "a nested record must say how many keys arrived, got {rendered:?}"
+        );
+        let arr = json!([1, 2, 3]);
+        assert_ne!(render(&arr), arr.to_string());
+        assert!(render(&arr).contains('3'));
+        // ...and the singular is real, not a stray `s` on everything.
+        assert!(render(&json!([7])).contains("1 value in a list"));
+        assert!(render(&json!({"k": 1})).contains("1 key in a nested record"));
+    }
+
+    /// **P6.** A served `null` is a stated absence, never the token `null` and never a zero.
+    ///
+    /// Separated from the punctuation walk above because `null` carries no punctuation at all: the
+    /// catch-all this gate replaced would have passed that walk on `Value::Null` while printing the four
+    /// characters `null` at a person, which is not a fact anybody at this window can act on.
+    #[test]
+    fn a_served_null_is_a_stated_absence_and_not_the_token_null() {
+        let out = render(&Value::Null);
+        assert_eq!(out, NO_VALUE);
+        assert_ne!(out, Value::Null.to_string());
+        assert!(
+            !out.split_whitespace().any(|w| w == "null"),
+            "the absence is spelled in the wire's word rather than the reader's: {out:?}"
+        );
+        assert_ne!(out, "0", "an unknown rendered as a zero is a measurement");
     }
 }
