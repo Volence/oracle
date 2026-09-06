@@ -760,15 +760,17 @@ fn unestablished(inp: &Inputs, on_screen: bool) -> Vec<String> {
     } else {
         "the same single register read the viewport outline is drawn from"
     };
+    // The claim names itself in the direction this answer actually made it, so the reader is told which
+    // of the two sentences above is the one in doubt rather than left to work it out.
     let claim = if on_screen {
-        "whether the screen is showing it"
+        "that the screen is showing it"
     } else {
-        "whether the screen is showing it, which this answer says it is not,"
+        "that the screen is not showing it"
     };
     vec![format!(
         "A horizontal interrupt is armed at line {line}. The cell named above is a direct read of the \
-         map and does not depend on that, but {claim} comes from {source}, and a game that moves it part \
-         way down the frame cannot be seen from here."
+         map and does not depend on that, but the other sentence, {claim}, comes from {source}, and a \
+         game that moves it part way down the frame cannot be seen from here."
     )]
 }
 
@@ -1665,7 +1667,7 @@ mod tests {
         let said = flat.unestablished.first().expect("armed, so stated");
         assert!(said.contains("174"), "it names the line: {said}");
         assert!(said.contains("direct read of the map"), "{said}");
-        assert!(said.contains("whether the screen is showing it"), "{said}");
+        assert!(said.contains("that the screen is showing it"), "{said}");
 
         // Scrolled: the pointer was mapped through that very scroll, so the named cell itself is in
         // doubt, and the caveat has to say so instead of repeating the one above.
