@@ -65,6 +65,19 @@
 //! synthetic listing that *does* carry the dimension and must return the non-zero answer. Every `0` in
 //! the manifest is only as good as that test, which is why it is not optional.
 //!
+//! # What was mutated to prove the above, so the next reader need not re-derive it
+//!
+//! Each mutation was made on disk and restored from a committed baseline; each had to go red **on the row
+//! under test**, not merely go red.
+//!
+//! | mutation | went red as |
+//! |---|---|
+//! | a present `symbol_addr` row given the note's address instead of the frozen one | 1 of 84 rows, naming that row, both values in `$HEX` |
+//! | `BgAnim_Table_Ptr` **added** to `s4.lst` (trailer bumped with it) | 2 of 84 — the `absent` row it was pinned in *and* `symbol_prefix_count(BgAnim_Table)` 1→2. This is the proof that an absence here is an expected value: a symbol *becoming present* reddens the gate. |
+//! | `measure` returning `Symbol::addr` (24-bit door form) instead of `raw_addr` | 28 rows **and** [`every_probe_kind_can_report_presence`] — so the control witnesses `symbol_addr` rather than passing beside it |
+//! | one `symbol_addr` arm deleted from the control | the uncovered-probe panic, naming `symbol_addr`/`Debug_Lab_Index` — checked, not assumed |
+//! | an address row written in decimal | the `$HEX` spelling assert, in all three tests |
+//!
 //! # The path is the frozen directory, deliberately — not `ORACLE_AEON_DIR`
 //!
 //! The manifest describes *these committed bytes*. Under an override the rest of the suite reads a live
