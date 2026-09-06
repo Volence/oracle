@@ -18,6 +18,20 @@
 #   ./tools/land.sh --no-push    # run every gate and stop; report what a push WOULD do
 #   ./tools/land.sh --remote R --branch B
 #
+# ⚑ IT TAKES ABOUT 25 MINUTES AND CANNOT BE RUN IN THE FOREGROUND FROM AN AGENT SEAT.
+#    An agent's Bash tool caps a foreground command at ~2 minutes, so a foreground run here is
+#    KILLED partway through, and a killed run's log aggregates clean: it is a silent false green,
+#    which is the one failure this whole script exists to prevent. Measured 2026-09-05, foreground,
+#    killed at the cap. From an agent seat, detach and poll for a marker you wrote yourself:
+#
+#      cp tools/land.sh "$SCRATCH/land-$$.sh"        # a RUN-UNIQUE path: bash reads a script
+#                                                     # incrementally by byte offset, so a
+#                                                     # concurrent writer to a shared path resumes
+#                                                     # your execution inside the new bytes
+#      setsid nohup bash -c '"$SCRATCH/land-$$.sh" > "$LOG" 2>&1; echo "LAND-EXIT=$?" >> "$LOG"' &
+#      # then poll $LOG for the LAND-EXIT marker. NEVER infer the verdict from a tail:
+#      # this script prints its own verdict token, and the marker proves the run REACHED it.
+#
 # ============================================================================================
 # WHAT IT RUNS, AND WHAT IT REFUSES
 # ============================================================================================
