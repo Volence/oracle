@@ -2686,7 +2686,7 @@ mod tests {
     #[test]
     fn z80_reset_line_through_the_bus_resets_the_core_on_the_asserting_edge() {
         use crate::m68000::bus68k::Bus68k;
-        use crate::z80::{Z80, Z80Regs};
+        use crate::z80::{Z80Regs, Z80};
 
         // A dirty core: every field the Z80 `/RESET` defines is non-reset, and every field it leaves alone
         // carries a distinct sentinel so a reset that clears too much is caught too.
@@ -2795,7 +2795,10 @@ mod tests {
         s.run_frames(1);
         let r = s.z80.regs();
         assert!(r.halted, "positive control: driver v1 reached HALT");
-        assert!(!r.iff1, "positive control: it halted with interrupts masked");
+        assert!(
+            !r.iff1,
+            "positive control: it halted with interrupts masked"
+        );
 
         // Driver v2 at $0000: LD A,$77 ; LD ($1500),A ; HALT. Uploading it changes nothing on its own — a
         // halted Z80 fetches nothing. This is the capability control: it proves the sentinel below can only
