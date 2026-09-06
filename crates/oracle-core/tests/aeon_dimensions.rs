@@ -62,14 +62,7 @@ fn loud(msg: String) {
 }
 
 /// The manifest's column contract. A change here must change `DIMENSIONS.tsv`'s header in the same edit.
-const HEADER: [&str; 6] = [
-    "file",
-    "probe",
-    "arg",
-    "frozen",
-    "upstream",
-    "relied_on_by",
-];
+const HEADER: [&str; 6] = ["file", "probe", "arg", "frozen", "upstream", "relied_on_by"];
 
 /// One row of `DIMENSIONS.tsv`.
 #[derive(Debug, Clone)]
@@ -242,10 +235,31 @@ fn manifest_matches_the_frozen_listings() {
     }
 
     let rows = read_manifest();
-
-    // Parse each listing once; a per-row parse would be 16 parses of four files.
-    let mut wrong: Vec<String> = Vec::new();
     let files: BTreeSet<&str> = rows.iter().map(|r| r.file.as_str()).collect();
+
+    // Completeness, in the direction this file can be silent in. `aeon_pin.rs` already refuses an
+    // artifact in the pinned directory with no `PIN.tsv` row, so a listing cannot arrive unpinned. But
+    // a listing that IS pinned and has no row *here* would be measured for nothing at all, and this
+    // gate would go green having said nothing about it — the exact "invisible by construction" shape
+    // the manifest exists to end. So every `.lst` present must have at least one dimension row.
+    let mut unprobed: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(frozen_dir()).expect("the frozen fixture directory must exist") {
+        let name = entry.expect("readable entry").file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".lst") && !files.contains(name.as_ref()) {
+            unprobed.push(name.into_owned());
+        }
+    }
+    unprobed.sort();
+    assert!(
+        unprobed.is_empty(),
+        "these frozen listings have no row in DIMENSIONS.tsv and are measured for nothing: {}\n\
+         Add at least one dimension row each, or this gate is silent about them while looking green.",
+        unprobed.join(", ")
+    );
+
+    // Parse each listing once; a per-row parse would be 24 parses of four files.
+    let mut wrong: Vec<String> = Vec::new();
     for file in &files {
         let path = frozen_dir().join(file);
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -338,8 +352,7 @@ fn every_probe_kind_can_report_presence() {
                 ),
             };
             assert_eq!(
-                got,
-                expected,
+                got, expected,
                 "probe `{kind}({arg})` cannot see a dimension that IS present in the control \
                  listing. Every manifest row recording `0`/`absent` for this probe is therefore \
                  unwitnessed and must not be trusted."
