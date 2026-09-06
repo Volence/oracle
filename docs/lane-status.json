@@ -1,14 +1,9 @@
 {
-  "focus": "Building your live effects switchboard and the pacing readout at once; the lag still waits on one tab test.",
+  "focus": "Pacing readout landed; it fixed a wrong number on your Pacing tab. Switchboard still building.",
   "inFlight": [
     {
       "what": "Your live raster/parallax switchboard panel (LIVE-EFFECTS)",
-      "where": "agent worktree, branch off main",
-      "agent": true
-    },
-    {
-      "what": "The pacing readout so a program can read your window's frame rate (CR-S)",
-      "where": "agent worktree, branch off main",
+      "where": "agent worktree; will rebase onto the pacing landing",
       "agent": true
     },
     {
@@ -54,11 +49,11 @@
     },
     {
       "id": "CR-S-PACING-SERVE",
-      "state": "doing",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "one relaunch of your window, whenever suits you",
       "project": "ORACLE-DEFAULT",
-      "title": "Adopted today and now being built: a way for any program to ask your running window how fast it is going. Came straight out of your lag report, where I could describe the cause but not tell you a number. Also the last missing measurement blocking retirement of the old window."
+      "title": "Landed. A program can now ask your window its frame rate, frame time and whether audio is stuttering. It also fixed a real defect on the way: your Pacing tab was counting finished pictures rather than pictures put on screen, and those differ exactly when sound causes a dropped frame. Not fully closed until something reads a live figure off your window, which needs a relaunch."
     },
     {
       "id": "STYLE-NUMBER-BAKEOFF",
@@ -159,5 +154,5 @@
   ],
   "awaiting": "Two from you, cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears -- the fix is pre-approved on that answer. (2) The Pacing A/B (d-39), which still decides every remaining panel. Also open and not blocking: the icon (d-37) and the frozen fixtures (d-40, I recommend hold). The pacing readout is no longer yours to answer -- the hub ruled it in your place and you can overturn it.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T16:06:58Z"
+  "updatedAt": "2026-09-06T16:54:31Z"
 }
