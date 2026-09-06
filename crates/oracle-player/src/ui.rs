@@ -858,7 +858,9 @@ impl Panels<'_> {
                     .on_hover_text("draw this plane whole, from its nametable")
                     .clicked()
                 {
-                    self.planes.plane = p;
+                    // Through `select`, never by assignment: it is what drops a standing cell reading
+                    // about the plane you just left. See `planes::Panel::select`.
+                    self.planes.select(p);
                 }
             }
             ui.separator();
@@ -927,7 +929,43 @@ impl Panels<'_> {
         // A narrow pane cannot carry a column of facts and a plane side by side, so below this width the
         // facts go under the picture instead of squeezing it.
         let side_by_side = ui.available_width() >= 560.0;
+        let reading = self.planes.reading().cloned();
         let side = |ui: &mut egui::Ui| {
+            // **The last click's answer first**, above the standing facts, in its own card. The facts are
+            // context that does not move; this is what the person just asked for, and a standing readout
+            // drawn as loose text under a column of facts reads as one more fact's label. Same card
+            // treatment as the Screen tab's pick readout, for the same reason it has one.
+            if let Some(r) = &reading {
+                card(ui, |ui| {
+                    // The four parts at four weights, handed over by `planes::CellReading` already
+                    // separated. Nothing here recovers structure by looking at the text and nothing here
+                    // decides a colour by looking at it.
+                    ui.label(egui::RichText::new(&r.head).color(ui.visuals().strong_text_color()));
+                    ui.label(
+                        egui::RichText::new(&r.screen)
+                            .text_style(egui::TextStyle::Small)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    // The addressing recedes and goes monospace: it is what a reader checks the sentence
+                    // against, in the spelling they would compare with a tool's reply.
+                    ui.label(
+                        egui::RichText::new(&r.detail)
+                            .monospace()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    // The loud lines. Coloured on the field, never on the shape of the string, and never
+                    // omitted when present.
+                    for said in &r.unestablished {
+                        ui.add_space(SECTION_GAP);
+                        ui.label(
+                            egui::RichText::new(said)
+                                .text_style(egui::TextStyle::Small)
+                                .color(crate::theme::WARNING),
+                        );
+                    }
+                });
+                ui.add_space(SECTION_GAP);
+            }
             card(ui, |ui| {
                 fact_grid(ui, "planes_facts", &facts);
                 ui.add_space(SECTION_GAP);
@@ -966,10 +1004,10 @@ impl Panels<'_> {
             ui.horizontal_top(|ui| {
                 ui.allocate_ui(egui::vec2(260.0, ui.available_height()), side);
                 ui.add_space(SECTION_GAP);
-                self.plane_picture(ui);
+                self.plane_picture(ui, &inp);
             });
         } else {
-            self.plane_picture(ui);
+            self.plane_picture(ui, &inp);
             ui.add_space(SECTION_GAP);
             side(ui);
         }
@@ -980,28 +1018,54 @@ impl Panels<'_> {
     /// [`Aspect::Square`] rather than the Screen tab's TV default, and that is not a taste call: this
     /// picture is a **map**, and stretching it to a 4:3 raster would put a cell's width and its height in
     /// different units on a view whose whole job is counting cells.
-    fn plane_picture(&mut self, ui: &mut egui::Ui) {
+    /// `inp` is the gather this frame's texture was rasterised from, so a click is answered from the same
+    /// facts the picture is drawn from rather than from a second read taken at click time.
+    fn plane_picture(&mut self, ui: &mut egui::Ui, inp: &crate::planes::Inputs) {
         let Some(tex) = self.planes.texture() else {
             ui.centered_and_justified(|ui| ui.label("nothing rasterised yet"));
             return;
         };
         let src = tex.size_vec2();
         let avail = ui.available_size();
+        let ppp = ui.pixels_per_point();
         let size = screen_pick::fit(
             avail,
             src.x as usize,
             src.y as usize,
-            ui.pixels_per_point(),
+            ppp,
             oracle_frontend::present::Aspect::Square,
         );
         if size.x <= 0.0 || size.y <= 0.0 {
             return;
         }
-        egui::ScrollArea::both()
+        let hit = egui::ScrollArea::both()
             .id_salt("planes_picture")
             .show(ui, |ui| {
-                ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::hover()));
-            });
+                ui.add(
+                    egui::Image::new((tex.id(), size))
+                        .sense(egui::Sense::click())
+                        .texture_options(egui::TextureOptions::NEAREST),
+                )
+                .on_hover_text("click a cell to read its nametable entry")
+            })
+            .inner;
+
+        // ⚑ The inverse is `screen_pick::dot_at`, unchanged and shared: it inverts **the rectangle egui
+        // actually laid the image out in** (`Response::rect`) rather than re-deriving the fit, which is
+        // what let it survive a change of fit on the Screen tab with no edit at all. It also takes `ppp`
+        // explicitly, and that is the trap this seat cannot see: the owner's display is not at 1.0, so a
+        // forgotten points-to-pixels conversion produces a picking offset that every 1.0 harness calls
+        // correct.
+        //
+        // A picture inside a `ScrollArea` is where a second derivation would go wrong first, since the
+        // rect moves under the scroll offset while any recomputed fit would not.
+        if let (true, Some(pos)) = (hit.clicked(), hit.interact_pointer_pos()) {
+            if let Some((rx, ry)) =
+                screen_pick::dot_at(hit.rect, pos, ppp, src.x as usize, src.y as usize)
+            {
+                self.planes.click(inp, rx as usize, ry as usize);
+            }
+        }
     }
 
     /// **The audit page's exemplar.** See `docs/2026-09-05-debug-window-audit.md`.
