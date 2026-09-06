@@ -1,9 +1,19 @@
 {
-  "focus": "Chasing the lag you reported: strong candidate is the plane viewer redrawing every frame on a scrolling effect.",
+  "focus": "Building your live effects switchboard and the pacing readout at once; the lag still waits on one tab test.",
   "inFlight": [
     {
-      "what": "Lag diagnosis on your live window, measured from outside without disturbing it",
-      "where": "pid 2349009, build 0d6180c",
+      "what": "Your live raster/parallax switchboard panel (LIVE-EFFECTS)",
+      "where": "agent worktree, branch off main",
+      "agent": true
+    },
+    {
+      "what": "The pacing readout so a program can read your window's frame rate (CR-S)",
+      "where": "agent worktree, branch off main",
+      "agent": true
+    },
+    {
+      "what": "Lag fix, approved on condition - starts the moment your tab test confirms",
+      "where": "not started",
       "agent": false
     }
   ],
@@ -24,8 +34,16 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "After the lag cause is settled and your look answers are collected.",
+  "nextBoundary": "When the pacing serve lands and your tab test settles the lag.",
   "queue": [
+    {
+      "id": "LIVE-EFFECTS-PANEL",
+      "state": "doing",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LIVE-EFFECTS",
+      "title": "Your switchboard, being built: pick a scene or raster program from a list and the running game switches to it, instead of holding START and a button. Turning the raster effect off works today. Turning BANDS off is deliberately refused for now -- it looked solved, but it only works by luck of what this particular act contains, so the engine team is adding a proper two-byte target and the panel says why until then. Nudging individual numbers still waits on a small piece from them."
+    },
     {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
       "state": "doing",
@@ -33,6 +51,14 @@
       "blockedBy": "one ten-second tab test from you",
       "project": "ORACLE-DEBUG-UI",
       "title": "Your lag report. The plane viewer only redraws when its picture changes -- but on the waterline and floor-fan rows the picture changes every frame by design, so it redraws the whole plane every frame and the saving never applies. Up to half a million pixel lookups per frame. Not confirmed as YOUR lag yet; the tab test confirms or clears it."
+    },
+    {
+      "id": "CR-S-PACING-SERVE",
+      "state": "doing",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Adopted today and now being built: a way for any program to ask your running window how fast it is going. Came straight out of your lag report, where I could describe the cause but not tell you a number. Also the last missing measurement blocking retirement of the old window."
     },
     {
       "id": "STYLE-NUMBER-BAKEOFF",
@@ -121,9 +147,17 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
+    },
+    {
+      "id": "F-LOOKUP-SUMMARY-OMITS-PREFIX",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "waiting for the pacing parcel to clear the file",
+      "project": "ORACLE-DEFAULT",
+      "title": "Found while assessing your switchboard: the symbol-lookup tool can search by name prefix, but its own advertised description does not say so, so anyone writing a program against us would not know the ability exists. I nearly reported the ability as missing myself."
     }
   ],
-  "awaiting": "One ten-second test from you, sent via the hub: if the dock is on the PLANES tab, switch to any other tab and say whether the lag goes. That settles it faster than anything I can measure from outside. The Pacing A/B (d-39) is still queued behind your look session.",
+  "awaiting": "Two from you, cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears -- the fix is pre-approved on that answer. (2) The Pacing A/B (d-39), which still decides every remaining panel. Also open and not blocking: the icon (d-37) and the frozen fixtures (d-40, I recommend hold). The pacing readout is no longer yours to answer -- the hub ruled it in your place and you can overturn it.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T15:35:42Z"
+  "updatedAt": "2026-09-06T16:06:58Z"
 }
