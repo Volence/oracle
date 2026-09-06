@@ -1,137 +1,102 @@
 {
-  "focus": "The debug window has a command line now; next is the step fix the contract team just ruled on.",
-  "inFlight": [],
-  "blockedOnOwner": [],
-  "nextBoundary": "Here - palette landed and pushed, nothing running.",
+  "focus": "Driving your look session on the debug window: Pacing A/B first, then the rest one at a time.",
+  "inFlight": [
+    {
+      "what": "Your look session: build 0d6180c sent to aeon, look items queued one at a time",
+      "where": "origin/main 0d6180c, release rebuilt",
+      "agent": false
+    }
+  ],
+  "blockedOnOwner": [
+    {
+      "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
+      "since": "2026-09-06",
+      "id": "d-39"
+    },
+    {
+      "what": "whether to install the desktop icon entry into your home folder (d-37)",
+      "since": "2026-09-06",
+      "id": "d-37"
+    },
+    {
+      "what": "whether to repin the frozen symbol fixtures to a current build (FIXTURE-REPIN)",
+      "since": "2026-09-06",
+      "id": "d-40"
+    }
+  ],
+  "nextBoundary": "After your look answers are collected and reported to the hub.",
   "queue": [
     {
-      "id": "F-SPAWN-OUTSIDE-ACT",
-      "state": "next",
+      "id": "STYLE-NUMBER-BAKEOFF",
+      "state": "blocked",
       "size": "S",
-      "blockedBy": null,
-      "project": "LIVE-OBJECTS",
-      "title": "Clicking to place an object OUTSIDE the level silently does nothing: the game accepts it, then quietly throws the object away, and the window still says 'placed'. Found by the engine team answering a question we asked. The fix is ours - refuse the click before sending it - and they have offered to publish the two level-size values we need to know where the edge is."
+      "blockedBy": "your A or B (d-39)",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Waiting on you, and it is the one that holds the rest up: both ways of showing a headline number are on the Pacing tab of the build now on your screen. Say A or B and the other is deleted. Full text in docs/2026-09-06-queue-detail.md."
     },
     {
-      "id": "F-SPAWN-PICKER-PANEL-SURFACE",
-      "state": "open",
+      "id": "DATA-DISPLAY-AUDIT",
+      "state": "blocked",
+      "size": "L",
+      "blockedBy": "your look answers",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The remaining panels follow your A/B answer plus four things only your eyes can settle. I am running them past you one at a time rather than in a batch."
+    },
+    {
+      "id": "RELAUNCH-2",
+      "state": "blocked",
+      "size": "S",
+      "blockedBy": "your word on the icon (d-37)",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Say 'install the icon' and I write five icon files and one desktop entry under your home. Nothing else is touched and the dry run is exact."
+    },
+    {
+      "id": "FIXTURE-REPIN",
+      "state": "blocked",
       "size": "M",
-      "project": "LIVE-OBJECTS",
-      "blockedBy": null,
-      "title": "Click-to-place shipped in the GAME window. Your ruling said 'the Screen panel', a tab in the separate debug-tabs window, which cannot receive a click at all today. The hub ruled in your place that the game window closes this; it stays open only as a fresh parcel if you say you meant the tabs window."
+      "blockedBy": "your go or hold (d-40)",
+      "project": "ORACLE-DEFAULT",
+      "title": "Your call on refreshing our frozen copies of the game's symbol files. I recommend holding until the engine team publishes a build manifest; the silent-drift fault itself is already fixed and landed."
     },
     {
-      "id": "F-HANDSHAKE-LOAD-TIMEOUT",
-      "state": "open",
+      "id": "F-TOYSTORY-SILENT",
+      "state": "blocked",
+      "size": "M",
+      "blockedBy": "one cheap answer from you",
+      "project": "ORACLE-DEFAULT",
+      "title": "Toy Story is silent here and I have ruled out the obvious causes, so the gap is inside our sound emulation. The next question is cheap and yours: does the OLD emulator play it with sound?"
+    },
+    {
+      "id": "CR-Q-MACHINEREPLACED",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A second test fails only when the machine is heavily loaded \u2014 a different cause from the one just fixed, and present before tonight. Booked rather than called a flake, because this repo has now twice written off a load-sensitive failure as noise and been wrong about the very same test."
+      "title": "The next thing I would build, and it is owed rather than chosen: when something swaps the machine out from under a connected tool, the tool is currently never told, so it keeps reading a world that no longer exists. The contract team already adopted our request for this."
     },
     {
-      "id": "F-NAV-COLLAPSED-LEAF",
+      "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The reason I keep having to ask you to look at panels instead of reading them myself: the window can report its top bar to a connected program but not any panel. Fixing it converts a class of 'please look at this' into something I can measure."
+    },
+    {
+      "id": "F-PLANE-RASTER-UNGUARDED",
       "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "If a panel group was COLLAPSED on your screen rather than merely behind another tab, the new menu cannot expand it either \u2014 the library keeps that control private. This is the live hypothesis for why you could not open those tabs, and one answer from you settles whether it matters."
+      "title": "Nothing notices if the plane picture draws the wrong tile in every cell; I transposed its lookup and all thirty-one tests stayed green. Low stakes because a scrambled picture is obvious, but the clicked reading IS guarded, so the two halves are held to different standards."
     },
     {
-      "id": "SERVE-EQUATES",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The symbol file every tool loads carries hundreds of build-time constants and not one is reachable from anything we serve. It now has TWO named consumers found this week, both from outside the original argument: our own Objects tab cannot turn the ring buffer's measured span into a maximum ring count because the divisor is one of these constants, and the engine team has just shown that the cheap workaround for the out-of-level click check is unavailable for the same reason. Promoted on that, not on a fresh argument."
-    },
-    {
-      "id": "SCHEMA-DRIFT-NIGHTLY",
-      "title": "Our contract check stopped reading the contract team's live folder today; the honest cost is that an ordinary run no longer notices them moving on. Fix is a nightly that reports drift without blocking anyone. Nothing new to build.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null
-    },
-    {
-      "id": "VRAM-WRITE-RULE-CR",
-      "title": "Video memory can be written while the game runs and the other three memory spaces cannot. Our emulator is following the written rules exactly; the rules are what look wrong. Needs raising with the contract team; gates nothing.",
+      "id": "F-AUDIT-PAGE-CONTRADICTS-ITSELF",
       "state": "open",
       "size": "S",
       "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
-      "id": "ORACLE-SANITY-WEEKLY",
-      "title": "A weekly check that the emulator itself has not drifted, since other teams' tests run inside it and a regression there could make one of their checks pass for no reason. Existing suites only; an afternoon at most.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null
-    },
-    {
-      "id": "S1-DIALECT-FIXTURE",
-      "title": "Five checks on how we read symbol listings now sit out, because the file they compared against lives in another project and is not version-controlled. Freezing a small excerpt as our own would give the coverage back with no outside dependency.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null
-    },
-    {
-      "id": "Y-SIGN-COVERAGE",
-      "title": "Nothing on the emulator's own test side checks that a negative vertical position survives being read. Correct today; a regression would pass unnoticed.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
-      "id": "F-ACCEPT-TABLE-RAWSTRING",
-      "title": "Residual from the acceptance-table hardening: the gap in how the table reads raw strings is real, but four probes could not produce a dangerous case from it. Either prove the shape or close it as theoretical.",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null
-    },
-    {
-      "id": "ACCEPT-16",
-      "title": "Eight advertised-but-unserved debugger methods, all correctly waiting: three whose consumer asked us not to pre-build, two needing a part of the emulator not compiled in, one the consumer does not want, two parked as no-ops.",
-      "state": "open",
-      "size": "L",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT"
-    },
-    {
-      "id": "WIKI-SPIKE",
-      "title": "The wiki-emulator spike you approved, on Opus, with the report-the-wall condition.",
-      "state": "open",
-      "size": "L",
-      "blockedBy": null
-    },
-    {
-      "id": "OVERLAY-STATE",
-      "title": "Serves 56 methods, verified by spawning the binary. It reads the emulator's own chrome, not game pixels, so it does not end their eyeball requests. Left: never run against a real window.",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": "a live player window on your screen; runs only when none is open"
-    },
-    {
-      "id": "PEER-CLAIMS-SWEEP",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "title": "Our notes make claims about other teams' code that nothing can ever check \u2014 one expired tonight and sent me to the wrong task. Now also: any note that says 'oracle' as if it were ONE emulator, in prose about measurements. There are two, they disagree by a line, and a measurement whose instrument is unnamed is unreadable. The boot doc is already clean; the risk is the dated notes a peer might cite."
-    },
-    {
-      "id": "CR-STEP-SHORTFALL",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The contract team ruled on our step question within the hour: the answer now carries how many instructions actually ran. Our half is to serve that AND to fix something the ruling's text led me to find - the same command has been ignoring both limits on its input for ten days, accepting values the contract says it must refuse, while a comment beside the code claims it follows them. Same handler, so they land together."
-    },
-    {
-      "id": "REGISTER-WHICH-SERVER-SWEEP",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Our own notes sometimes describe a fault without saying WHICH of the two emulators has it. Three such entries turned out to be about the old one and cost this session real work. Scope now narrowed by a check I ran: the startup file is CLEAN (three mentions, all correctly qualified), so the exposure is the dated design notes a teammate might cite - which makes this cheaper than it looked."
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The page guiding the rest of the panel work disagrees with itself about what colour a headline number is, and I copied the wrong half onto your decision card before catching it. Fix is an appended correction, since the page's line numbers are stamped to a revision."
     },
     {
       "id": "ERROR-SURFACE-GATE",
@@ -139,18 +104,18 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Our contract checks read replies only, so they are blind to every duty to REFUSE a bad request. This was a proposal for weeks; today it has a real defect it would have caught, found by hand. Do not re-argue it from principles - it has an observation now."
+      "title": "Our contract checks read replies only, so they are blind to every duty to REFUSE a bad request. This was a proposal for weeks; it now has a real defect it would have caught. Do not re-argue it from principles."
     },
     {
-      "id": "F-FRONTEND-PALETTE-BUS",
+      "id": "SCHEMA-DRIFT-NIGHTLY",
       "state": "open",
-      "size": "M",
+      "size": "S",
       "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The GAME window has its own command line, but it can only run the window's own 30 hand-written actions - it cannot reach anything the emulator serves. The mirror image of what just shipped in the debug window. Not a row to add: it needs a free-text argument mode the current design lacks."
+      "project": "ORACLE-DEFAULT",
+      "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
     }
   ],
-  "awaiting": "One read-back when you surface, nothing blocking: by 'clicking a spot in the Screen panel' for spawn, did you mean the GAME window (where it works now) or the debug-tabs window? The hub ruled the game window closes it and I am proceeding on that. Also still parked for a look: the breakpoint alarm + release button, whether you could SEE those tab titles, and whether the colour-staleness sentence reads right on glass.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-04T10:25:08Z"
+  "awaiting": "Nothing from you directly - the hub is relaying. Aeon has the window for its five engine looks; the moment it is free I send you the Pacing A/B paragraph (d-39), then one look item per 'done'. d-37 (icon) and d-40 (fixtures, I recommend hold) still stand and are not blocking.",
+  "atBoundary": false,
+  "updatedAt": "2026-09-06T14:56:56Z"
 }
