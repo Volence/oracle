@@ -17,6 +17,15 @@
 //! mistake (*"the first run of this check produced NONE from an extraction that had found zero
 //! methods"*).
 //!
+//! # §11.42 S2 was adopted after this file landed, and it is asserted here
+//!
+//! S2 (*"`fps.value` at zero presented frames is a MEASURED 0.0, not an unmeasured arm"*) was added to
+//! the contract on 2026-09-06, **after** the serve below shipped. This server already conformed — by
+//! construction, `counted * 1000 / window_ms` is `0.0` at `counted == 0` — but conformance nobody
+//! asserts is a defect waiting for its first refactor, and this repo has already spent ten days with a
+//! handler, its comment and its test mutually consistent and all three wrong. The S1 half was asserted
+//! at landing; [`zero_presented_frames_is_a_measured_zero_fps_with_its_window`] is the S2 half.
+//!
 //! # Red-first evidence, 2026-09-06 — every row below was planted against and went red
 //!
 //! Eleven mutations were applied to the *shipped* source, one at a time, each proven on disk with
@@ -48,6 +57,26 @@
 //!
 //! Four more were run against the player's half (the derivation and the panel); their record is on
 //! `oracle_player::pacing::Readout::of`'s parity test.
+//!
+//! # Red-first evidence for the S2 row, 2026-09-06 — and three of these the schema cannot see
+//!
+//! Five more mutations were run for [`zero_presented_frames_is_a_measured_zero_fps_with_its_window`],
+//! recorded in their own table because **three of them validate clean against the vendored fragment**.
+//! That is the answer to "why a suite row when the schema already requires both keys": a schema can
+//! require a key, but it cannot know what the key must *be*.
+//!
+//! | mutation applied to the serialiser | schema verdict | what went red |
+//! |---|---|---|
+//! | drop `"value"` from the served `fps` | REJECTS | the row, on the validator |
+//! | drop `"windowMs"` from the served `fps` | REJECTS | the row, on the validator |
+//! | `"value": p.fps_value.max(1.0)` | **accepts** | the row ALONE, on `== 0.0` |
+//! | `"unmeasured": p.presented == 0` beside the zero | **accepts** | the row ALONE, on the key count |
+//! | `"windowMs": 1000` (nominal, not elapsed) | **accepts** | the row, on the window |
+//!
+//! Under each of the middle three the *other eleven rows in this file stayed green* and the fragment
+//! raised nothing: a server could have fabricated a rate at zero presents, or flagged one `unmeasured`,
+//! and every other guard in the repo would have certified it. The fourth is the defect S2 names in its
+//! own words, and until this row existed nothing anywhere refused it.
 
 #![cfg(unix)]
 
@@ -512,6 +541,92 @@ fn nothing_sampled_is_zero_samples_and_no_percentiles() {
         r["frameTimeMs"].as_object().expect("an object").len(),
         1,
         "the unsampled frame-time object is exactly `{{samples: 0}}`: {}",
+        r["frameTimeMs"]
+    );
+}
+
+/// **§11.42 S2: zero presented frames is a MEASURED `fps.value` of `0.0`, with the window beside it.**
+///
+/// The other side of the clause `nothing_sampled_is_zero_samples_and_no_percentiles` covers, and the
+/// distinction is the whole of it. A percentile over zero samples is *fabricated*, so it is absent; a
+/// **rate** over an elapsed window is not, because zero frames in 997 ms is a fact the window makes true.
+/// `unmeasured` belongs to a quantity with no instrument — audio with no device, the row above — never
+/// to a sample that happened to come back empty. So the honest reply here is a real `0.0`, and treating
+/// this state the way the audio row is treated would be the *opposite* defect from the one M3 guards.
+///
+/// Both halves are asserted because they fail differently, and a test that checked only the zero would
+/// pass against a reply that dropped the window:
+///
+/// 1. `value` is **present**, a number, and `0.0` — not absent, not `null`, not a flag.
+/// 2. `windowMs` is present beside it, carrying the fixture's own span. An fps without its window is
+///    invalid rather than merely unhelpful (M2), and the window travelling with the figure is what makes
+///    the zero readable as a measurement instead of a placeholder.
+/// 3. And the object is **exactly** those two keys, so an `unmeasured: true` bolted on beside a `0.0`
+///    cannot slip through. The schema cannot catch that one — `fps` sets no
+///    `unevaluatedProperties: false` — nor can it catch a fabricated non-zero, since `value` is only
+///    `{type: number, minimum: 0}` there. Which is why this row exists at all: the fragment can say the
+///    key must be present, but only a suite obligation can say *what it must be* at zero presents.
+///
+/// The fixture is the coherent state rather than a spliced one: nothing presented, so nothing timed
+/// either. That lets the reply show both idioms of emptiness at once — `fps.value: 0.0` **with** its
+/// window, and `frameTimeMs: {samples: 0}` with nothing else — which is the clause's closing sentence.
+#[test]
+fn zero_presented_frames_is_a_measured_zero_fps_with_its_window() {
+    let facts = PacingFacts {
+        presented: 0,
+        fps_value: 0.0,
+        frame_time: FrameTimes::Unsampled,
+        ..a_measurement()
+    };
+    let p = Presenter::start("pacing-zerofps", Some(facts));
+    let mut w = Wire::connect(&p);
+    w.handshake();
+    let r = w.ok("emulator/pacing", json!({}));
+
+    assert_eq!(
+        r["presented"],
+        json!(0),
+        "the fixture presented nothing: {r}"
+    );
+    // (1) A number, and the number is zero. `json!(0.0)` will not compare equal to `Value::Null`, so
+    // this rejects a null arm as well as a wrong figure; `is_number` states the absent case by name
+    // rather than leaving it to a confusing `Null == 0.0` failure message.
+    assert!(
+        r["fps"].get("value").is_some_and(Value::is_number),
+        "§11.42 S2: `fps.value` at zero presented frames is a MEASURED 0.0, not an absent or \
+         unmeasured arm — zero frames over an elapsed window is a fact about the window. Got: {}",
+        r["fps"]
+    );
+    assert_eq!(
+        r["fps"]["value"],
+        json!(0.0),
+        "§11.42 S2: the honest figure at zero presents is exactly 0.0: {}",
+        r["fps"]
+    );
+    // (2) The window beside it, read back off the fixture rather than retyped.
+    assert_eq!(
+        r["fps"]["windowMs"],
+        json!(facts.fps_window_ms),
+        "§11.42 S2/M2: the window travels WITH the figure — an fps without its window is invalid, \
+         and the zero is only readable as a measurement because the span is there: {}",
+        r["fps"]
+    );
+    // (3) …and nothing else, so an `unmeasured` flag cannot be smuggled in beside the zero.
+    assert_eq!(
+        r["fps"].as_object().expect("an object").len(),
+        2,
+        "§11.42 S2: the fps object is exactly `{{value, windowMs}}`; `unmeasured` is M3's word for a \
+         quantity with no instrument and has no place on a rate: {}",
+        r["fps"]
+    );
+
+    // The clause's closing sentence: the same moment, the other field, the other idiom. Empty samples
+    // ARE absent percentiles — which is what makes the presence of `fps.value` above a decision.
+    assert_eq!(r["frameTimeMs"]["samples"], json!(0));
+    assert!(
+        r["frameTimeMs"].get("p50").is_none() && r["frameTimeMs"].get("p99").is_none(),
+        "§11.42 S2: at the same moment, a percentile over zero samples IS omitted — the two fields \
+         differ on purpose, and a server that treated them alike got one of them wrong: {}",
         r["frameTimeMs"]
     );
 }
