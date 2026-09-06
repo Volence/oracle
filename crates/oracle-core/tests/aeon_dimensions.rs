@@ -15,6 +15,20 @@
 //! * no frozen listing carries a `Phase Table` at all, so the phase parse's row handling is untouched by
 //!   the default path.
 //!
+//! # A dimension can move without ever becoming absent — so presence is only half a probe
+//!
+//! The live-effects panel (`oracle-player/src/effects.rs`) resolves twelve names and **refuses to write
+//! when the listing's address disagrees with the one its note recorded** (`Channel::drift`). Against the
+//! frozen listings every one of those addresses disagrees: the parallax block is a uniform `+4`, the
+//! raster block `+0x10E`, `BgAnim_LastStep` `+0x128`. Not one of them is missing, so a probe that could
+//! only answer *present / absent* would report full coverage of a panel that, on these bytes, refuses
+//! every gesture it offers.
+//!
+//! That is why `symbol_addr` exists alongside `symbol_present`: it records **where** the frozen listing
+//! puts a name, so a shift is a red row rather than a silent one. The fixtures are the stale side here —
+//! the listings were built before the note's commit — and the manifest's job is to make that visible, not
+//! to adjudicate it.
+//!
 //! [`crate::aeon_pin`]-style byte pinning cannot see any of this: the bytes are exactly the bytes we
 //! recorded, and the *shape* they carry is what moved. This file records the shape.
 //!
@@ -88,11 +102,26 @@ impl DimRow {
         }
     }
 
-    fn frozen_str(&self) -> String {
-        match self.frozen {
+    /// Whether this row's value is an ADDRESS rather than a count. Decided by the probe, not by how the
+    /// literal happens to be written, so a measured value and a manifest value are always printed in the
+    /// same spelling — otherwise a failure would read `manifest says $FFFF88E8, the frozen bytes give
+    /// 4294936300` and nobody could diff it.
+    fn is_addr(&self) -> bool {
+        self.probe == "symbol_addr"
+    }
+
+    /// Format a value in this row's own spelling: `$HEX` for an address, decimal for a count, `absent`
+    /// for nothing.
+    fn fmt(&self, v: Option<usize>) -> String {
+        match v {
+            Some(n) if self.is_addr() => format!("${n:X}"),
             Some(n) => n.to_string(),
             None => "absent".to_string(),
         }
+    }
+
+    fn frozen_str(&self) -> String {
+        self.fmt(self.frozen)
     }
 }
 
@@ -122,19 +151,34 @@ fn read_manifest() -> Vec<DimRow> {
         }
         let frozen = match f[3] {
             "absent" => None,
-            n => Some(
-                n.parse::<usize>()
-                    .unwrap_or_else(|_| panic!("`frozen` must be an integer or `absent`: {n:?}")),
+            // `$FFFF88E8` — the listing's own spelling for an address. Decimal here would be unreadable
+            // and unmatchable against the file it was copied from.
+            n if n.starts_with('$') => Some(
+                usize::from_str_radix(&n[1..], 16)
+                    .unwrap_or_else(|_| panic!("`frozen` is not hexadecimal after the `$`: {n:?}")),
             ),
+            n => Some(n.parse::<usize>().unwrap_or_else(|_| {
+                panic!("`frozen` must be an integer, a `$hex` address or `absent`: {n:?}")
+            })),
         };
-        rows.push(DimRow {
+        let row = DimRow {
             file: f[0].to_string(),
             probe: f[1].to_string(),
             arg: f[2].to_string(),
             frozen,
             upstream: f[4].to_string(),
             relied_on_by: f[5].to_string(),
-        });
+        };
+        // One spelling per kind, enforced rather than conventional: a decimal address row would still
+        // measure correctly and would still print back in hex, so nothing would ever notice the drift
+        // between the file and the messages it produces.
+        assert!(
+            !(row.is_addr() && frozen.is_some() && !f[3].starts_with('$')),
+            "an address row must write its value as `$HEX`, not `{}`: {}",
+            f[3],
+            row.ident()
+        );
+        rows.push(row);
     }
     assert!(header_seen, "DIMENSIONS.tsv has no header row");
     assert!(!rows.is_empty(), "DIMENSIONS.tsv lists no dimensions");
@@ -160,6 +204,12 @@ fn measure(t: &SymbolTable, probe: &str, arg: &str) -> Option<usize> {
         // 1/0 rather than a bool, so a single integer column covers every probe. This is the probe for
         // a dimension that is one specific name rather than a namespace.
         "symbol_present" => Some(usize::from(t.by_name(arg).is_some())),
+        // Presence AND location in one row. `raw_addr`, not `addr`: the 32-bit spelling the listing
+        // itself writes and the one every consumer that carries a transcribed address compares against
+        // (`oracle-player/src/effects.rs`'s `Channel::drift` is explicit that the 24-bit door form would
+        // make every channel read as drifted). `None` here means the name is absent, which is exactly
+        // what `symbol_present` would have called `0`, so this probe strictly subsumes that one.
+        "symbol_addr" => t.by_name(arg).map(|s| s.raw_addr as usize),
         "equate_prefix_count" => Some(t.equates_with_prefix(arg).len()),
         "equate_rows" => t.equate_rows(),
         "phase_count" => {
@@ -191,6 +241,14 @@ fn probe_kinds(rows: &[DimRow]) -> Vec<String> {
 /// Deliberately hand-built rather than borrowed from the fixture: the fixture is the thing under
 /// measurement, and a control taken from it could not distinguish a dead probe from an absent dimension.
 /// The counts in the trailers are the real counts, so `is_intact` holds and the parser accepts it.
+///
+/// ⚑ The effects-panel addresses below are the ones **`oracle-player/src/effects.rs`'s note records**
+/// (aeon `c4c5c3d8`), which are deliberately NOT the addresses the frozen listings give. So a
+/// `symbol_addr` probe that had somehow started reading the fixture instead of the string it was handed
+/// would return the frozen address here and fail, rather than agreeing for the wrong reason.
+/// (`BgAnim_Table_Empty`'s is the one exception and is openly synthetic — the note predates that symbol
+/// and records no address for it — which costs nothing, because the control's job is only to prove the
+/// probe can find a name that is there.)
 const CONTROL_LST: &str = "\
   Symbol Table (* = unused):
   --------------------------
@@ -201,8 +259,23 @@ const CONTROL_LST: &str = "\
  SoundTablesZ80_Head : 8000 C |
  Level_Height : FFFFEA72 C |
  Level_Width : FFFFEA70 C |
+ Parallax_Current_Config : FFFF88EC C |
+ Parallax_Target_Config : FFFF88F0 C |
+ Parallax_Transition_Frames : FFFF88F4 C |
+ Parallax_Snap_Pending : FFFF88F5 C |
+ ParallaxConfig_Haze : 12C6C C |
+ ParallaxConfig_OJZ_Default : 1267A C |
+ Raster_Program : FFFF8BD6 C |
+ Raster_Pending : FFFF8BDE C |
+ Raster_Program_None : 881E C |
+ EditorRaster_OJZ_Act1_ramp_probe : 14652 C |
+ BgAnim_Table_Ptr : FFFFE91A C |
+ BgAnim_LastStep : FFFF8F06 C |
+ BgAnim_Table : 28BD4 C |
+ BgAnim_Table_Empty : 28BE0 C |
+ Debug_Lab_Index : FFFFEE0D C |
 
-    6 symbols
+    21 symbols
     0 unused symbols
 
   Equate Table (name = value; values, not addresses):
@@ -278,7 +351,7 @@ fn manifest_matches_the_frozen_listings() {
                     "  {} — manifest says {}, the frozen bytes give {}",
                     r.ident(),
                     r.frozen_str(),
-                    got.map_or("absent".to_string(), |n| n.to_string())
+                    r.fmt(got)
                 ));
             }
         }
@@ -334,9 +407,33 @@ fn every_probe_kind_can_report_presence() {
                 // Derived from CONTROL_LST above, not copied from a nearby pin: it declares
                 // `ObjDef_Ring` and `ObjDef_Spring`.
                 ("symbol_prefix_count", "ObjDef_") => Some(2),
+                // The effects panel's three option namespaces. Two scenes and one authored program:
+                // asymmetric on purpose, because the number that matters is that each is the count of
+                // ITS OWN prefix — a probe that ignored its argument would return 21 for all three.
+                ("symbol_prefix_count", "ParallaxConfig_") => Some(2),
+                ("symbol_prefix_count", "EditorRaster_") => Some(1),
+                // `BgAnim_Table`, `BgAnim_Table_Empty` and `BgAnim_Table_Ptr` — the prefix genuinely
+                // catches the channel's own live cell, which is why the panel draws that row without
+                // offering it. The control has to carry that overlap or it would not be the real shape.
+                ("symbol_prefix_count", "BgAnim_Table") => Some(3),
                 // Declared above, so a probe that had stopped resolving names would report 0 here
                 // and agree with the manifest's 0 on the fixture for the wrong reason.
                 ("symbol_present", "Level_Width" | "Level_Height") => Some(1),
+                // Every cell the effects panel resolves, at the address its note records — so a
+                // `symbol_addr` row reading `absent` on the fixture is witnessed as a real absence, and
+                // one reading an address is witnessed as a real read rather than a constant.
+                ("symbol_addr", "Parallax_Current_Config") => Some(0xFFFF_88EC),
+                ("symbol_addr", "Parallax_Target_Config") => Some(0xFFFF_88F0),
+                ("symbol_addr", "Parallax_Transition_Frames") => Some(0xFFFF_88F4),
+                ("symbol_addr", "Parallax_Snap_Pending") => Some(0xFFFF_88F5),
+                ("symbol_addr", "Raster_Program") => Some(0xFFFF_8BD6),
+                ("symbol_addr", "Raster_Pending") => Some(0xFFFF_8BDE),
+                ("symbol_addr", "Raster_Program_None") => Some(0x0000_881E),
+                ("symbol_addr", "BgAnim_Table_Ptr") => Some(0xFFFF_E91A),
+                ("symbol_addr", "BgAnim_LastStep") => Some(0xFFFF_8F06),
+                ("symbol_addr", "BgAnim_Table") => Some(0x0002_8BD4),
+                ("symbol_addr", "BgAnim_Table_Empty") => Some(0x0002_8BE0),
+                ("symbol_addr", "Debug_Lab_Index") => Some(0xFFFF_EE0D),
                 // `ObjSub_Spring__Up_Red` and `ObjSub_Spring__Up_Yellow` — the third equate,
                 // `frame_count`, is deliberately outside the prefix so a probe that ignored its
                 // argument and returned "all equates" would fail here rather than pass.
