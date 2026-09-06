@@ -32,6 +32,38 @@ jobs:
           toolchain: "1.96.0"
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # THE ONLY JOB THAT NEEDS SYSTEM LIBRARIES, and the reason CI died on 2026-08-13.
+      #
+      # `cargo clippy --all-targets` and `cargo test --workspace` build EVERY member, which is what
+      # drags `oracle-frontend` (default features `audio` + `gamepad`) and `oracle-player` in. Two of
+      # their transitive `-sys` crates hard-`unwrap()` a pkg-config probe in their build script, and
+      # ubuntu-latest ships neither `.pc` file:
+      #
+      #   * cpal   -> alsa-sys 0.3.1   -> pkg-config `alsa`   -> libasound2-dev
+      #   * gilrs  -> libudev-sys 0.1.4 -> pkg-config `libudev` -> libudev-dev
+      #
+      # BOTH are required. The observed failure names only `alsa-sys` because cargo aborts on the
+      # first build-script panic ("build failed, waiting for other jobs to finish") — `libudev-sys`
+      # was compiling in the same batch and simply never got to report. Installing one would return
+      # this step to red on the other.
+      #
+      # The other two jobs deliberately get NOTHING: `determinism-gate` runs `-p oracle-core` and
+      # `replay-playthroughs` runs `-p oracle-replay`, and `cargo tree -e normal,build` on both shows
+      # a five-crate graph (oracle-core, oracle-replay, bincode, unty, virtue) with no windowing,
+      # audio or gamepad edge. Both are green on today's runs, which is the empirical half of the
+      # same claim. If either ever grows an `oracle-frontend`/`oracle-player` edge it will need this
+      # step too.
+      #
+      # Exhaustive, not a guess: of the 310 packages in the workspace graph, nine carry a build
+      # script that mentions pkg-config. Seven cannot fail here — `x11-dl` swallows the error
+      # (`Err(_) => "None"`), `inotify-sys` probes only on netbsd/openbsd, `khronos-egl` resolves to
+      # `dynamic` (not `static`), `smithay-client-toolkit` x2 resolves without `xkbcommon`, and
+      # `wayland-sys` x2 resolves with `dlopen`, whose build script returns before probing. That
+      # leaves exactly these two.
+      - name: System libraries for the frontend/player build (alsa, udev)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy (deny warnings)
