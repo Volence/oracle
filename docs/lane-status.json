@@ -1,6 +1,16 @@
 {
-  "focus": "Lens sweep complete, all 22 reviewers in. The one that matters most: your CI has not run since 22 July.",
+  "focus": "CI fix pushed and the run is live -- first real test since 22 July. Three more critical fixes behind it.",
   "inFlight": [
+    {
+      "what": "Watching the CI run on the fix (first green attempt in 46 days)",
+      "where": "origin/main f844a23",
+      "agent": false
+    },
+    {
+      "what": "Three more critical fixes queued: the save-losing reset, the sound-chip crashes, the reset that does not reset",
+      "where": "not started",
+      "agent": false
+    },
     {
       "what": "Lag fix, approved on condition - starts the moment your tab test confirms",
       "where": "not started",
@@ -24,11 +34,11 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "Now. Sweep complete and pushed, nothing running, findings booked.",
+  "nextBoundary": "After the four critical fixes land.",
   "queue": [
     {
       "id": "F-CI-DEAD-46-DAYS",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "LENS-PASS",
@@ -193,9 +203,17 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
+    },
+    {
+      "id": "LIVE-EFFECTS-NUDGES",
+      "state": "open",
+      "size": "M",
+      "blockedBy": "the four critical fixes ahead of it",
+      "project": "LIVE-EFFECTS",
+      "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
   "awaiting": "Same as before plus the sweep's ranking. Cheapest first: (1) the ten-second tab test for the lag, fix pre-approved. (2) The Pacing A/B (d-39). (3) The icon (d-37) and the frozen fixtures (d-40 -- new evidence, I still say hold the refresh but the cheap half is now clearly worth doing alone). (4) Which lens-sweep findings you want fixed first; I would start with CI, since it is the one that stops us finding the others.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-06T18:07:21Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-06T18:40:06Z"
 }
