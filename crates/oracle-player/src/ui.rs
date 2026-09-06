@@ -651,6 +651,8 @@ impl Panels<'_> {
             self.screen.take_preview(self.machine, self.bus);
         }
         ui.separator();
+        self.subtypes(ui);
+        ui.separator();
         let listing = self.screen.listing();
         ui.horizontal(|ui| {
             ui.label(
@@ -698,6 +700,74 @@ impl Panels<'_> {
             None => {
                 if let Some(name) = select_list(ui, "archetype", &listing.rows, "spawn_picker") {
                     self.screen.select_archetype(self.machine, self.bus, &name);
+                }
+            }
+        }
+    }
+
+    /// **The subtype section of the Spawn tab**: which form of the selected archetype a click places.
+    ///
+    /// The owner's ask, in his words: *"remember I have to be able to choose subtypes for spawn"*. Springs
+    /// come in strengths and directions and he wants to pick one before placing it.
+    ///
+    /// It sits **above** the archetype list rather than below it because the archetype list is the pane's
+    /// long content and takes whatever height is left; a short, bounded list under an unbounded one is a
+    /// list nobody scrolls to. Four things that are not rows are drawn before them, each a different
+    /// finding: the standing statement of what is armed, a namespace clash, a cut-short search, and the
+    /// stated absence that stands in for rows when there are none (P6).
+    fn subtypes(&mut self, ui: &mut egui::Ui) {
+        let weak = ui.visuals().weak_text_color();
+        let listing = match self.screen.subtype_listing() {
+            Ok(l) => l,
+            // P4: a source that could not be read renders the refusal, never zero rows.
+            Err(why) => {
+                ui.label(
+                    egui::RichText::new(why)
+                        .text_style(egui::TextStyle::Small)
+                        .color(ui.visuals().error_fg_color),
+                );
+                return;
+            }
+        };
+        // ⚑ The standing statement of what a click carries, in words rather than as a highlighted row.
+        // A reader who has scrolled this list, or the archetype list under it, must never be left
+        // inferring the armed form from a fill colour: this is the badge's own rule one level down.
+        ui.label(
+            egui::RichText::new(&listing.armed)
+                .text_style(egui::TextStyle::Small)
+                .color(ui.visuals().strong_text_color()),
+        );
+        // Two namespaces that overlap. Loud, because the rows below may not all belong to this object and
+        // nothing else on the glass would say so.
+        if let Some(c) = &listing.collision {
+            ui.label(
+                egui::RichText::new(c)
+                    .text_style(egui::TextStyle::Small)
+                    .color(crate::theme::WARNING),
+            );
+        }
+        // ⚑ **The one absence with no symptom.** A cut-short subtype list does not look cut short: it
+        // looks like an object with fewer subtypes, and he would pick from three when there are twelve
+        // with nothing wrong on screen. So it is said, in the words the model composed for it.
+        if let Some(t) = &listing.truncation {
+            ui.label(
+                egui::RichText::new(t)
+                    .text_style(egui::TextStyle::Small)
+                    .color(crate::theme::WARNING),
+            );
+        }
+        match &listing.absence {
+            Some(a) => {
+                ui.label(
+                    egui::RichText::new(a)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+            }
+            None => {
+                if let Some(name) = subtype_list(ui, &listing, "spawn_subtypes") {
+                    self.screen
+                        .select_subtype(self.machine, self.bus, name.as_str());
                 }
             }
         }
@@ -2734,6 +2804,91 @@ fn row_fill(ui: &egui::Ui, chosen: bool, hovered: bool, i: usize) -> egui::Color
 ///
 /// The name is drawn in the monospace face, which is P3's carve-out for *symbol names as they appear in a
 /// listing* and not a licence for the prose around it.
+/// **The subtype list**: one banded, selectable row per form, with the listing's own value beside it.
+///
+/// Not [`select_list`], and the difference is two columns rather than a preference. A subtype row carries
+/// a **label and a value**, and the value is the whole point of the row: it is the byte a placement will
+/// carry, read out of the listing, and a picker that showed only names would be offering a choice whose
+/// consequence is invisible. It takes the piece of furniture that genuinely is shared ([`row_fill`]) and
+/// nothing else, exactly as [`select_list`] does, and folds into the generalised table when that lands.
+///
+/// **A row that cannot be chosen is drawn and not offered.** Its reason is on the hover and it takes no
+/// click, because hiding it would be this window deciding the listing is wrong, and cutting the value down
+/// to a byte would place a different form than the row names.
+///
+/// Capped in height, unlike [`select_list`], and for that function's own stated reason inverted: the
+/// archetype list is this pane's whole content and should take the pane, so the short list above it must
+/// not grow into the space the long one needs.
+fn subtype_list(
+    ui: &mut egui::Ui,
+    listing: &crate::spawn_picker::SubtypeListing,
+    salt: &str,
+) -> Option<String> {
+    let mut hit = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+        let weak = ui.visuals().weak_text_color();
+        ui.label(
+            egui::RichText::new(&listing.count)
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+        );
+        let y = ui.cursor().top();
+        ui.painter().hline(
+            ui.max_rect().x_range(),
+            y,
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+        ui.add_space(3.0);
+        // P7: an explicit, stable salt, so this scroll position is its own and not the archetype list's.
+        egui::ScrollArea::vertical()
+            .id_salt(salt)
+            .max_height(132.0)
+            .show(ui, |ui| {
+                let strong = ui.visuals().strong_text_color();
+                for (i, r) in listing.rows.iter().enumerate() {
+                    let ink = if r.offered { strong } else { weak };
+                    let bg = ui.painter().add(egui::Shape::Noop);
+                    let inner = ui.horizontal(|ui| {
+                        // P3's carve-out: the value is hex out of a listing, so it is monospace, and it
+                        // leads because the rows line up on it.
+                        ui.label(egui::RichText::new(&r.value).monospace().color(ink));
+                        ui.label(egui::RichText::new(&r.label).monospace().color(ink));
+                    });
+                    let band = egui::Rect::from_x_y_ranges(
+                        ui.max_rect().x_range(),
+                        inner.response.rect.y_range(),
+                    )
+                    .expand2(egui::vec2(0.0, 1.0));
+                    let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
+                    ui.painter().set(
+                        bg,
+                        egui::Shape::rect_filled(
+                            band,
+                            0.0,
+                            row_fill(ui, r.selected, r.offered && resp.hovered(), i),
+                        ),
+                    );
+                    match &r.note {
+                        // The reason it cannot be chosen, on the row itself. No click is taken.
+                        Some(n) => {
+                            resp.on_hover_text(n);
+                        }
+                        None => {
+                            if resp
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                hit = Some(r.name.clone());
+                            }
+                        }
+                    }
+                }
+            });
+    });
+    hit
+}
+
 fn select_list(
     ui: &mut egui::Ui,
     head: &str,

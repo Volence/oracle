@@ -225,6 +225,7 @@ impl Bus {
         &mut self,
         _sys: &mut System,
         _archetype: &str,
+        _subtype: Option<u8>,
         _dot: (u16, u16),
     ) -> Result<crate::spawn::Placed, crate::spawn::Refusal> {
         Err(crate::spawn::Refusal::local(NO_BUS))
@@ -282,7 +283,8 @@ mod tests {
             e.message
         );
         assert_eq!(
-            b.spawn_at(&mut sys, "ObjDef_Ring", (10, 10)).unwrap_err(),
+            b.spawn_at(&mut sys, "ObjDef_Ring", None, (10, 10))
+                .unwrap_err(),
             e,
             "both halves must give one reason"
         );

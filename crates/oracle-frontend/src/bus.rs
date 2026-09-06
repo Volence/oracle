@@ -386,10 +386,17 @@ impl Bus {
         &mut self,
         sys: &mut System,
         archetype: &str,
+        subtype: Option<u8>,
         dot: (u16, u16),
     ) -> Result<spawn::Placed, spawn::Refusal> {
-        spawn::place(&mut HostCaller { bus: self, sys }, archetype, dot)
+        spawn::place(&mut HostCaller { bus: self, sys }, archetype, subtype, dot)
     }
+
+    // ⚑ **There is deliberately no `subtypes` adapter here**, and the absence is a decision rather than
+    // an omission. [`spawn::subtypes`] exists and `oracle-player`'s Spawn tab calls it through its own
+    // `Caller`, exactly as it calls [`spawn::archetypes`]; this window has no surface a subtype could be
+    // chosen on, so an adapter here would be dead code that reads as parity. Its `spawn_at` names `None`
+    // out loud at the call site instead, which is where a reader asks the question.
 
     /// One synchronous in-process dispatch, with the error translated into this crate's vocabulary and
     /// **nothing else** — the message is moved, never rewritten.
@@ -902,6 +909,10 @@ mod tests {
         const W_X: u32 = 0x00FF_9714;
         const W_Y: u32 = 0x00FF_9716;
         const W_OP: u32 = 0x00FF_971C;
+        /// ⚑ **The placement word the machine consumed**, whose low byte is the subtype. Witnessed for
+        /// the witness area's whole reason: the reply cannot show that the byte the listing published
+        /// travelled, because the reply is composed on the same side that composed the request.
+        const W_PLACE: u32 = 0x00FF_9720;
 
         /// The camera, which is what turns a screen dot into a world pixel (§11.26).
         const CAMERA_X: u32 = 0x00FF_9800;
@@ -1027,6 +1038,7 @@ mod tests {
             a.mov(MOVE_W, MB_X, W_X);
             a.mov(MOVE_W, MB_Y, W_Y);
             a.mov(MOVE_B, MB_OP, W_OP);
+            a.mov(MOVE_W, MB_PLACE, W_PLACE);
             a.mov(MOVE_W, SCRIPT_HANDLE, MB_SLOT);
             a.mov(MOVE_B, SCRIPT_STATUS, MB_STATUS);
             a.clr_b(MB_FLAG);
@@ -1076,12 +1088,49 @@ mod tests {
             ]
         }
 
+        /// **The spring subtypes this fixture's build publishes**, and every number in it is chosen to
+        /// make a defect visible rather than to look plausible.
+        ///
+        /// ⚑ **The fixture differs from the live listing in the dimension under test, on purpose.** The
+        /// real build publishes eight spring subtypes whose values happen to run `$00 $02 $10 $12 $20
+        /// $22 $50 $52`; a fixture that copied it would leave two guards vacuous. So:
+        ///
+        /// * **name order and value order disagree completely.** Alphabetically this is `Angled_Blue`,
+        ///   `Down_Red`, `Up_Red`, `Up_Yellow`, `Wide_Huge`; by value it is `Up_Red`, `Up_Yellow`,
+        ///   `Angled_Blue`, `Down_Red`, `Wide_Huge`. The listing's own map is name ordered, so an
+        ///   implementation that forgot to sort passes on a corpus where the two agree and fails here.
+        /// * **one value does not fit in a byte** (`$140`). Nothing in the real listing exceeds `$52`, so
+        ///   the rail that refuses to cut a value down to a byte is unexercised by every real build and
+        ///   would be dead-but-green without this row.
+        /// * **the lowest value is not the first name**, which is what makes the armed default worth an
+        ///   assertion at all.
+        ///
+        /// The single underscores inside `Up_Red` are the other half: a picker that split a name on an
+        /// underscore would read this as an object called `Up`.
+        const SUBTYPES: &[(&str, u32)] = &[
+            ("ObjSub_Spring__Angled_Blue", 0x11),
+            ("ObjSub_Spring__Down_Red", 0x20),
+            ("ObjSub_Spring__Up_Red", 0x00),
+            ("ObjSub_Spring__Up_Yellow", 0x02),
+            ("ObjSub_Spring__Wide_Huge", 0x140),
+            // `ObjDef_Ring` deliberately publishes NONE, so the stated-absence path has a subject in the
+            // same build as the populated one. Two archetypes that behave differently is the point.
+        ];
+
         fn listing(rows: &[(String, u32)]) -> String {
             let mut s = String::from("  Symbol Table (* = unused):\n\n");
             for (name, addr) in rows {
                 s.push_str(&format!(" {name} : {addr:X} C |\n"));
             }
             s.push_str(&format!("\n{:>4} symbols\n", rows.len()));
+            // The subtypes live in the `Equate Table`, which is a **different section** from the one
+            // above, and that is the whole reason `lookup_equate` exists: a symbol query against one of
+            // these names refuses in a way that reads exactly like the name not existing.
+            s.push_str("\n  Equate Table (name = value; values, not addresses):\n\n");
+            for (name, value) in SUBTYPES {
+                s.push_str(&format!("EQU {name} = ${value:08X}\n"));
+            }
+            s.push_str(&format!("\n{:>4} equates\n", SUBTYPES.len()));
             s
         }
 
@@ -1183,7 +1232,7 @@ mod tests {
             f.poke(a + 6, u64::from(RECORD_AT.1), 2);
             // The witness area, cleared, so "the double wrote nothing" is distinguishable from "the seed
             // happened to look like a spawn".
-            for c in [W_DEF, W_DEF + 2, W_X, W_Y, W_OP] {
+            for c in [W_DEF, W_DEF + 2, W_X, W_Y, W_OP, W_PLACE] {
                 f.poke(c, 0, 2);
             }
             f
@@ -1193,6 +1242,182 @@ mod tests {
         /// than pinned, so a change to either moves the expectation with it.
         fn expected_world() -> (u32, u32) {
             (CAM.0 + u32::from(DOT.0), CAM.1 + u32::from(DOT.1))
+        }
+
+        /// ## ★ **The subtype byte the LISTING published is the byte the machine consumes.**
+        ///
+        /// # The anchor is the placement word the 68000 copied, and nothing above it
+        ///
+        /// Everything softer than that is two halves of this repo agreeing. The reply's fields are
+        /// composed on the same side that composed the request, so a `place` that dropped the subtype, or
+        /// that computed one from the name, would produce a perfectly consistent reply and a perfectly
+        /// consistent panel. `W_PLACE` is written by the **emulated machine** at the moment it saw the
+        /// flag go up, so it is the one number in this file that neither the window nor the server can
+        /// author.
+        ///
+        /// # Why `$02` and not `$00`
+        ///
+        /// The mailbox's placement word is `0` when nothing is sent, and `ObjSub_Spring__Up_Red` is `$00`
+        /// too. Asserting the **first** subtype would therefore stay green against an implementation
+        /// that sent no subtype at all, which is the vacuous-guard shape this suite has been bitten by
+        /// twice. `Up_Yellow` is `$02`, so a dropped subtype reads `$0000` and goes red; and the whole
+        /// word is compared rather than its low byte, so a subtype leaking into the flip bits is caught
+        /// in the same assertion instead of being masked away by the test.
+        #[test]
+        fn the_subtype_byte_the_listing_published_is_the_byte_the_machine_consumes() {
+            let mut f = fixture(rows());
+            let names = vec!["ObjDef_Ring".to_string(), "ObjDef_Spring".to_string()];
+
+            let found = spawn::subtypes(
+                &mut HostCaller {
+                    bus: &mut f.bus,
+                    sys: &mut f.sys,
+                },
+                "ObjDef_Spring",
+                &names,
+            )
+            .expect("the fixture's listing publishes an Equate Table");
+
+            // ---- (1) The door answered at all. Without this every clause below is vacuous, and it is
+            // the door that reads like a missing name when it is asked the wrong way.
+            assert_eq!(
+                found.prefix.as_deref(),
+                Some("ObjSub_Spring__"),
+                "the prefix is a substitution on the archetype's own name, doubled at the boundary"
+            );
+            assert_eq!(
+                found.entries.len(),
+                SUBTYPES.len(),
+                "every equate under the prefix must be found: {:?}",
+                found.entries
+            );
+
+            // ---- (2) ORDERED BY VALUE, and the fixture is built so that is not the name order.
+            let by_value: Vec<&str> = found.entries.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(
+                by_value,
+                [
+                    "ObjSub_Spring__Up_Red",
+                    "ObjSub_Spring__Up_Yellow",
+                    "ObjSub_Spring__Angled_Blue",
+                    "ObjSub_Spring__Down_Red",
+                    "ObjSub_Spring__Wide_Huge",
+                ],
+                "the rows must be in value order"
+            );
+            let mut by_name: Vec<&str> = SUBTYPES.iter().map(|(n, _)| *n).collect();
+            by_name.sort_unstable();
+            assert_ne!(
+                by_value, by_name,
+                "the fixture must differ from a name-ordered list in the dimension under test, or \
+                 this row cannot tell a sort from the absence of one"
+            );
+
+            // ---- (3) The value is the listing's, and the one that does not fit a byte says so rather
+            // than being cut down to one.
+            let yellow = found
+                .get("ObjSub_Spring__Up_Yellow")
+                .expect("the set is holding it by name");
+            assert_eq!(yellow.byte(), Some(0x02));
+            assert_eq!(
+                found
+                    .get("ObjSub_Spring__Wide_Huge")
+                    .map(spawn::Subtype::byte),
+                Some(None),
+                "a value past a byte is carried whole and offered as nothing, never masked"
+            );
+            assert_eq!(
+                found.default_choice().map(|e| e.name.as_str()),
+                Some("ObjSub_Spring__Up_Red"),
+                "the armed default is the lowest valued one that fits"
+            );
+
+            // ---- (4) THE ANCHOR. The machine consumed that byte.
+            let byte = yellow.byte();
+            f.bus
+                .spawn_at(&mut f.sys, "ObjDef_Spring", byte, DOT)
+                .unwrap_or_else(|e| panic!("the click was refused: {}", e.message));
+            assert_eq!(
+                f.peek8(W_OP),
+                objreq::OP_SPAWN,
+                "the machine never consumed a spawn request, so the placement word below is a seed \
+                 value and not a measurement"
+            );
+            assert_eq!(
+                f.peek16(W_PLACE),
+                0x0002,
+                "the placement word the machine consumed must carry the listing's own $02 and nothing \
+                 else: $0000 means the subtype never travelled, and anything in the high byte means it \
+                 leaked into the flip bits"
+            );
+        }
+
+        /// ## **A placement that names no subtype sends none**, and the machine sees a clear word.
+        ///
+        /// The other half of the row above, and it is what makes that one's `$02` mean something: this
+        /// pins the floor the anchor is measured against. It is also the frontend window's own path,
+        /// which has no subtype surface and passes `None` on purpose.
+        #[test]
+        fn a_placement_that_names_no_subtype_leaves_the_placement_word_clear() {
+            let mut f = fixture(rows());
+            f.bus
+                .spawn_at(&mut f.sys, "ObjDef_Spring", None, DOT)
+                .unwrap_or_else(|e| panic!("the click was refused: {}", e.message));
+            assert_eq!(f.peek8(W_OP), objreq::OP_SPAWN);
+            assert_eq!(
+                f.peek16(W_PLACE),
+                0x0000,
+                "no subtype was named, so no subtype may appear in the placement word"
+            );
+        }
+
+        /// ## **An archetype the listing names no subtypes for gets a sentence, not an empty box** (P6).
+        ///
+        /// ⚑ **With its own positive control in the same build.** `ObjDef_Ring` publishing nothing is
+        /// only a measurement if the equate door demonstrably answers for `ObjDef_Spring` in the same
+        /// listing, in the same test: otherwise a door that had stopped working entirely would produce
+        /// this exact green. That is the lesson the last agent on this arc paid for, which is that a
+        /// control validates the search and not the question.
+        #[test]
+        fn an_archetype_with_no_subtypes_says_so_while_the_door_is_proven_open() {
+            let mut f = fixture(rows());
+            let names = vec!["ObjDef_Ring".to_string(), "ObjDef_Spring".to_string()];
+
+            let mut ask = |a: &str| {
+                spawn::subtypes(
+                    &mut HostCaller {
+                        bus: &mut f.bus,
+                        sys: &mut f.sys,
+                    },
+                    a,
+                    &names,
+                )
+                .expect("the listing is loaded")
+            };
+
+            // The control: the same door, the same build, a name it does publish.
+            let spring = ask("ObjDef_Spring");
+            assert!(
+                !spring.entries.is_empty(),
+                "the control failed: the equate door answered nothing for an archetype the fixture \
+                 publishes five subtypes for, so the empty answer below measures nothing"
+            );
+
+            let ring = ask("ObjDef_Ring");
+            assert!(ring.entries.is_empty());
+            assert_eq!(
+                ring.truncation_note(),
+                None,
+                "an empty list is not a cut one"
+            );
+            assert_eq!(ring.collision_note(), None);
+            let line = ring
+                .absence()
+                .expect("an archetype with no subtypes owes the reader a line");
+            assert!(
+                line.contains("ObjSub_Ring__") && line.contains("ObjDef_Ring"),
+                "the line must name the archetype and the namespace that was searched: {line:?}"
+            );
         }
 
         /// ## ★ A click places an object, and **the machine is what says so**.
@@ -1236,7 +1461,7 @@ mod tests {
 
             let placed = f
                 .bus
-                .spawn_at(&mut f.sys, &name, DOT)
+                .spawn_at(&mut f.sys, &name, None, DOT)
                 .unwrap_or_else(|e| panic!("the click was refused: {}", e.message));
 
             // ---- (1) THE ANCHOR. Not agreement — the machine actually consumed a spawn request. ----
@@ -1311,7 +1536,7 @@ mod tests {
 
             let e = f
                 .bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .expect_err("a running machine must refuse the write");
             assert_eq!(e.reason.as_deref(), Some("machineRunning"), "{e:?}");
             assert_eq!(e.code, Some(-32005), "{e:?}");
@@ -1359,7 +1584,7 @@ mod tests {
             f.bus.set_paused(true);
             f.bus.pump(&mut f.sys);
             f.bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .expect("the same click lands once the machine is paused");
         }
 
@@ -1380,7 +1605,7 @@ mod tests {
 
             let e = f
                 .bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .expect_err("a build with no mailbox must refuse");
             assert_eq!(
                 e.code,
@@ -1419,7 +1644,7 @@ mod tests {
 
             let e = f
                 .bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .expect_err("no camera, no world position");
             assert_eq!(e.code, None, "this refusal is the window's own: {e:?}");
             assert!(
@@ -1473,7 +1698,7 @@ mod tests {
         fn aim_at(f: &mut Fix, world: (u32, u32)) {
             f.poke(CAMERA_X, u64::from(world.0 - u32::from(DOT.0)), 2);
             f.poke(CAMERA_Y, u64::from(world.1 - u32::from(DOT.1)), 2);
-            for c in [W_DEF, W_DEF + 2, W_X, W_Y, W_OP] {
+            for c in [W_DEF, W_DEF + 2, W_X, W_Y, W_OP, W_PLACE] {
                 f.poke(c, 0, 2);
             }
         }
@@ -1518,7 +1743,7 @@ mod tests {
             aim_at(&mut f, just_outside);
             let e = f
                 .bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .expect_err("Level_Width itself is outside the act");
 
             // ---- (1) THE ANCHOR: the machine's own testimony that nothing was asked of it. ----
@@ -1569,7 +1794,7 @@ mod tests {
             aim_at(&mut f, inside);
             let placed = f
                 .bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .unwrap_or_else(|e| {
                     panic!(
                         "the last legal pixel of the act must still place: {}",
@@ -1626,7 +1851,7 @@ mod tests {
 
             let placed = f
                 .bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .unwrap_or_else(|e| {
                     panic!(
                         "a placement between Player_Bound_Right ({}) and Level_Width ({}) is LEGAL and \
@@ -1664,7 +1889,7 @@ mod tests {
                 let rows: Vec<_> = rows().into_iter().filter(|(n, _)| n != missing).collect();
                 let mut f = fixture(rows);
 
-                let e = match f.bus.spawn_at(&mut f.sys, "ObjDef_Ring", DOT) {
+                let e = match f.bus.spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT) {
                     Err(e) => e,
                     Ok(p) => panic!(
                         "a listing missing {missing} must refuse, not place: {p:?} — an unchecked \
@@ -1709,7 +1934,7 @@ mod tests {
 
             let e = f
                 .bus
-                .spawn_at(&mut f.sys, "ObjDef_Ring", DOT)
+                .spawn_at(&mut f.sys, "ObjDef_Ring", None, DOT)
                 .expect_err("a boot-cleared extent has no act to place into");
             assert_eq!(e.reason.as_deref(), Some("noActLoaded"), "{e:?}");
             assert_ne!(

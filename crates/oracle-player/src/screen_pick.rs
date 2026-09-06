@@ -252,6 +252,26 @@ pub struct Panel {
     armed: Vec<String>,
     /// Spawn mode: whether a click places instead of picks, and what it places.
     mode: spawn::Mode,
+    /// **The subtypes the selected archetype offers**, read out of the listing's equate table.
+    ///
+    /// Re-read on every archetype change rather than kept for the whole arm, because it is a fact about
+    /// one archetype and holding a set past its own selection is how a picker offers `ObjDef_Ring` the
+    /// spring's strengths. Empty for an archetype the listing names no subtypes for, which is an answer
+    /// and gets a sentence rather than an empty box.
+    subtypes: spawn::Subtypes,
+    /// **The armed subtype's whole equate name**, or `None` when there is nothing armable.
+    ///
+    /// The name and not the value, for `spawn::Mode`'s reason one level up: a re-read under a new listing
+    /// must not silently arm whichever subtype inherited a number. The byte a click carries is looked up
+    /// from this name each time ([`Panel::subtype_byte`]), so it is always the value the listing
+    /// published rather than one this window remembered.
+    subtype: Option<String>,
+    /// Why the subtype list could not be read, when it could not be.
+    ///
+    /// P4, kept apart from an empty [`Panel::subtypes`] on purpose: *the listing names none* and *the
+    /// window could not ask* are two different findings, and an empty set standing in for a refusal is
+    /// the true-sounding sentence about the wrong thing that `bus_stub`'s twin refuses for.
+    subtype_refusal: Option<String>,
     /// What the bounded symbol search said the listing holds, from the arm that filled [`Panel::mode`].
     ///
     /// Kept beside the mode rather than inside it because it is a fact about the *search*, not about the
@@ -332,7 +352,10 @@ impl Panel {
         // A fresh arm re-read the listing, so a filter left over from the last one would hide rows of a
         // list the reader has not seen yet.
         self.filter.clear();
-        // ⚑ The arm selects the first archetype, so the arm is a selection change and owes a picture of it.
+        // ⚑ **Before the picture, not after.** The arm selects the first archetype, so it is a selection
+        // change: it owes both the subtypes that archetype offers and a picture of what a click now
+        // places. The subtypes come first because the picture is keyed on the armed one.
+        self.refresh_subtypes(machine, bus);
         self.take_preview(machine, bus);
     }
 
@@ -344,6 +367,11 @@ impl Panel {
         self.mode.disarm();
         self.total = 0;
         self.filter.clear();
+        // The subtypes go with the mode for the picture's reason: they are the forms of an archetype a
+        // click would place, and a click places nothing now.
+        self.subtypes = spawn::Subtypes::default();
+        self.subtype = None;
+        self.subtype_refusal = None;
         // The picture goes with the mode: it is a picture of what a click would place, and a click places
         // nothing now. [`Panel::run`] deliberately does not, and the difference is that one is an answer
         // and the other is what this window did to somebody's machine.
@@ -363,7 +391,12 @@ impl Panel {
     pub fn select_archetype(&mut self, machine: &mut Machine, bus: &mut Bus, name: &str) {
         match self.mode.select(name) {
             Some(sel) => {
+                let sel = sel.to_string();
                 self.last = Some(Readout::ok(format!("a click now places {sel}")));
+                // ⚑ The subtypes belong to the archetype, so they are re-read here and the armed one is
+                // reset: a subtype name carried across an archetype change would put one object's form
+                // on another, and the byte would still be a real byte.
+                self.refresh_subtypes(machine, bus);
                 // ⚑ **Once per selection change**, which is what makes the cost bearable: a checkpoint
                 // round trip and a few emulated frames on a gesture a person makes by hand, never on a
                 // frame the loop draws by itself.
@@ -375,6 +408,94 @@ impl Panel {
                      selected. Re-arm spawn mode to read the listing again."
                 )))
             }
+        }
+    }
+
+    /// **Re-read the selected archetype's subtypes**, and arm the lowest valued one.
+    ///
+    /// Called on an arm and on every archetype change, never per frame: it is one bus call, and the thing
+    /// it must not do is go stale. The armed subtype is reset here rather than carried, because a name
+    /// that survived an archetype change would be this window placing one object's form on another.
+    ///
+    /// ⚑ **The default is armed and named rather than left unchosen**, which is the safer of the two.
+    /// `emulator/object_spawn` composes a subtype byte whether or not one is sent, so a picker with an
+    /// unchosen state would be arming a subtype in silence while showing an empty selection. Arming the
+    /// lowest and printing which it is places exactly what a click placed before this list existed.
+    fn refresh_subtypes(&mut self, machine: &mut Machine, bus: &mut Bus) {
+        let Some(archetype) = self.mode.selected().map(str::to_string) else {
+            self.subtypes = spawn::Subtypes::default();
+            self.subtype = None;
+            self.subtype_refusal = None;
+            return;
+        };
+        let all = self.mode.names().to_vec();
+        let sys = machine.system_mut();
+        match spawn::subtypes(&mut PlayerCaller { bus, sys }, &archetype, &all) {
+            Ok(s) => {
+                self.subtype = s.default_choice().map(|e| e.name.clone());
+                self.subtypes = s;
+                self.subtype_refusal = None;
+            }
+            Err(e) => {
+                self.subtype = None;
+                self.subtypes = spawn::Subtypes::none_for(&archetype);
+                self.subtype_refusal = Some(e.terminal(&archetype, None));
+            }
+        }
+    }
+
+    /// **Arm one subtype**, by its whole equate name, from the rows the picker drew.
+    ///
+    /// The `None` arm reports rather than swallowing, for [`Panel::select_archetype`]'s reason: a control
+    /// that silently does nothing is indistinguishable from a broken one, and here it would also mean the
+    /// picker is drawing a name the set no longer holds.
+    pub fn select_subtype(&mut self, machine: &mut Machine, bus: &mut Bus, name: &str) {
+        let Some(entry) = self.subtypes.get(name) else {
+            self.last = Some(Readout::refused(format!(
+                "{name} is not one of the subtypes read for {}, so nothing was armed. Choose the \
+                 archetype again to read its subtypes afresh.",
+                self.subtypes.archetype
+            )));
+            return;
+        };
+        let Some(byte) = entry.byte() else {
+            self.last = Some(Readout::refused(format!(
+                "{name} was not armed: this listing gives it the value {}, and a placement carries \
+                 one byte of subtype. Sending it cut down to a byte would place a different form \
+                 than the row names.",
+                entry.value
+            )));
+            return;
+        };
+        let short = entry.short(self.subtypes.prefix.as_deref().unwrap_or_default());
+        self.last = Some(Readout::ok(format!(
+            "a click now places {} as {short} (${byte:02X})",
+            self.subtypes.archetype
+        )));
+        self.subtype = Some(name.to_string());
+        // ⚑ A subtype change is a selection change and owes a picture of what it now places: the whole
+        // point of choosing a strength is that it looks different, and a preview left over from the
+        // previous one would be a wrong answer with the panel's authority behind it. The key carries the
+        // subtype, so the guard in [`Panel::preview`] catches the stale one either way.
+        self.take_preview(machine, bus);
+    }
+
+    /// **The byte a click carries**, looked up from the armed name every time rather than remembered.
+    pub fn subtype_byte(&self) -> Option<u8> {
+        self.subtype
+            .as_deref()
+            .and_then(|n| self.subtypes.get(n))
+            .and_then(spawn::Subtype::byte)
+    }
+
+    /// **The subtype picker's surface**, or the stated reason it could not be read (P4).
+    pub fn subtype_listing(&self) -> Result<spawn_picker::SubtypeListing, &str> {
+        match &self.subtype_refusal {
+            Some(why) => Err(why.as_str()),
+            None => Ok(spawn_picker::subtype_listing(
+                &self.subtypes,
+                self.subtype.as_deref(),
+            )),
         }
     }
 
@@ -420,7 +541,7 @@ impl Panel {
         let out = self.preview.as_ref()?;
         match out {
             crate::preview::Outcome::Ready(p) | crate::preview::Outcome::Stale(p)
-                if !p.is_of(sel, None) =>
+                if !p.is_of(sel, self.subtype_byte().map(u32::from)) =>
             {
                 None
             }
@@ -473,7 +594,8 @@ impl Panel {
             return;
         };
         let dot = preview_dot(machine);
-        match paused_for(machine, bus, |m, b| measure(m, b, &archetype, dot)) {
+        let subtype = self.subtype_byte();
+        match paused_for(machine, bus, |m, b| measure(m, b, &archetype, subtype, dot)) {
             Ok(((out, not_put_back), mut run)) => {
                 // ⚑ **`Some(0)`, and it is the whole point rather than a placeholder.** Frames really did
                 // run, and the restore put every one of them back, so the emulated time this cost the
@@ -730,9 +852,12 @@ impl Panel {
     /// lesson the mask statement and the lens episode both paid for.
     fn place(&mut self, machine: &mut Machine, bus: &mut Bus, archetype: &str, dot: (u16, u16)) {
         let remedy = pause_remedy();
+        // ⚑ **The byte the listing gave**, read back out of the armed name rather than derived from it.
+        // Nothing in this window computes a subtype from a spelling.
+        let subtype = self.subtype_byte();
         let (placed, mut run) = match paused_for(machine, bus, |machine, bus| {
             let sys = machine.system_mut();
-            spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
+            spawn::place(&mut PlayerCaller { bus, sys }, archetype, subtype, dot)
         }) {
             Ok(both) => both,
             // The window never got as far as touching the run state, so there is nothing to restore and
@@ -872,6 +997,7 @@ fn measure(
     machine: &mut Machine,
     bus: &mut Bus,
     archetype: &str,
+    subtype: Option<u8>,
     dot: (u16, u16),
 ) -> (crate::preview::Outcome, Option<String>) {
     use crate::preview::{Key, Outcome};
@@ -880,7 +1006,9 @@ fn measure(
         // --- the probe --------------------------------------------------------------------------
         let placed = {
             let sys = machine.system_mut();
-            spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
+            // The probe is the object a click would place, subtype and all: a picture taken of some
+            // other form is a picture of the wrong thing, drawn with the panel's whole authority.
+            spawn::place(&mut PlayerCaller { bus, sys }, archetype, subtype, dot)
         };
         let advanced = match placed {
             Ok(p) => p.frames_advanced,
@@ -969,7 +1097,7 @@ fn measure(
     // was resident in a machine that no longer exists.
     let key = Key {
         archetype: archetype.to_string(),
-        subtype: None,
+        subtype: subtype.map(u32::from),
     };
     let out = match crate::preview::appeared(&control, &probe) {
         Err(why) => Outcome::Absent(why),
@@ -1615,6 +1743,109 @@ mod tests {
                 "restoring one layer must restore the whole mask in this fixture"
             );
         }
+    }
+
+    /// ⚑ **The armed subtype is looked up by name every time, and a refused choice does not disarm.**
+    ///
+    /// The wiring rather than the model. Three things go wrong here and nowhere else:
+    ///
+    /// * a byte **remembered** instead of looked up would survive a listing change and place a form under
+    ///   a name that no longer carries it, which is the stale-archetype hazard one level down;
+    /// * a refusal that also cleared the armed subtype would leave the badge and the machine disagreeing
+    ///   about what a click does, silently, after a gesture the reader thought did nothing;
+    /// * and a subtype the set is not holding must be a **sentence**, for the reason the archetype
+    ///   picker's own miss arm is one: a control that quietly does nothing is indistinguishable from a
+    ///   broken one.
+    #[test]
+    fn a_subtype_is_resolved_by_name_and_a_refused_choice_leaves_the_armed_one_alone() {
+        let (mut machine, mut bus) = rig();
+        let mut panel = Panel {
+            subtypes: spawn::Subtypes {
+                archetype: "ObjDef_Spring".into(),
+                prefix: Some("ObjSub_Spring__".into()),
+                entries: vec![
+                    spawn::Subtype {
+                        name: "ObjSub_Spring__Up_Yellow".into(),
+                        value: 0x02,
+                    },
+                    // The value that cannot be sent, which is the rail no real build exercises today.
+                    spawn::Subtype {
+                        name: "ObjSub_Spring__Wide_Huge".into(),
+                        value: 0x140,
+                    },
+                ],
+                truncated: false,
+                collisions: Vec::new(),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            panel.subtype_byte(),
+            None,
+            "nothing is armed until something is chosen"
+        );
+
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Up_Yellow");
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x02),
+            "the armed byte is the listing's, resolved from the name the row carried"
+        );
+
+        // A value that cannot be sent is refused, and the armed one survives the refusal.
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Wide_Huge");
+        let r = panel.readout().expect("a refused choice owes a sentence");
+        assert!(
+            r.refused,
+            "and it is coloured on the field, never on the prose"
+        );
+        assert!(
+            r.head.contains("320"),
+            "the refusal quotes the value the listing gave: {:?}",
+            r.head
+        );
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x02),
+            "a refused choice must not disarm the one that was working"
+        );
+
+        // A name the set is not holding is the other sentence.
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Sideways");
+        let r = panel.readout().expect("a miss owes a sentence too");
+        assert!(
+            r.refused && r.head.contains("ObjSub_Spring__Sideways"),
+            "{r:?}",
+            r = r.head
+        );
+        assert_eq!(panel.subtype_byte(), Some(0x02));
+
+        // ⚑ The lookup is by NAME and is redone every time: swap the set for one where the same name
+        // carries a different value, and the armed byte moves with the listing rather than with memory.
+        panel.subtypes.entries[0].value = 0x52;
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x52),
+            "the byte is read out of the set on every call, so a rebuilt listing is followed rather \
+             than a remembered number being placed"
+        );
+
+        // And the projection agrees with what a click would carry.
+        let l = panel
+            .subtype_listing()
+            .expect("nothing refused the read, so there are rows");
+        assert!(l.armed.contains("Up_Yellow") && l.armed.contains("$52"));
+        assert!(
+            l.rows.iter().filter(|r| r.selected).count() == 1,
+            "exactly one row is armed"
+        );
+
+        // Disarming spawn mode takes the subtypes with it: a click places nothing, so there is no form
+        // for it to place. The run state deliberately does not go, and that is a different field.
+        panel.disarm_spawn();
+        assert_eq!(panel.subtype_byte(), None);
+        assert!(panel.subtypes.entries.is_empty());
     }
 
     /// ⚑ **The readout cites nothing at the reader, carries no dash, and arrives in three parts.**

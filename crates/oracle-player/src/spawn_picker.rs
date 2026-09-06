@@ -146,6 +146,125 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 // -------------------------------------------------------------------------------------------------------
+// The subtype list — which one of an archetype's forms a click places
+// -------------------------------------------------------------------------------------------------------
+
+/// One subtype as the picker draws it.
+///
+/// The whole equate name is carried alongside the label because the label is a **shortening for reading**
+/// and the name is what a selection is made by: [`spawn::Subtypes::get`] is asked for the name, exactly as
+/// `spawn::Mode::select` is asked for the archetype's, and for the same reason. A picker that selected by
+/// its own abbreviation would be choosing by a string the listing never published.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubtypeRow {
+    /// The equate's whole name, in the listing's own spelling. What a click sends back.
+    pub name: String,
+    /// The name with the object's half taken off, which is what the row reads as: `Up_Red`.
+    pub label: String,
+    /// The listing's value, in the monospace hex form P3 carves out for exactly this.
+    pub value: String,
+    /// Whether a click on the picture carries **this** one right now.
+    pub selected: bool,
+    /// Whether it can be chosen at all. `false` only for the case below.
+    pub offered: bool,
+    /// Why it cannot be chosen, when [`SubtypeRow::offered`] is `false`. P6: the row is drawn with the
+    /// reason on it rather than dropped, because a row that vanishes teaches nothing and a masked value
+    /// would place a different object than the row names.
+    pub note: Option<String>,
+}
+
+/// **The subtype picker's whole surface, as facts.**
+///
+/// Four things that are not rows, and each is a different finding: nothing to choose from, a list that is
+/// short without looking short, two namespaces that overlap, and what a click is carrying right now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubtypeListing {
+    /// The rows to draw, ordered by value. Empty **iff** [`SubtypeListing::absence`] is `Some`.
+    pub rows: Vec<SubtypeRow>,
+    /// How many there are, in one small line.
+    pub count: String,
+    /// The stated line drawn **instead of** rows (P6).
+    pub absence: Option<String>,
+    /// ⚑ The search was cut short. [`spawn::Subtypes::truncation_note`]'s words, not a second wording.
+    pub truncation: Option<String>,
+    /// Two archetypes' namespaces overlap. [`spawn::Subtypes::collision_note`]'s words.
+    pub collision: Option<String>,
+    /// **The standing statement of what a click carries**, always present.
+    ///
+    /// Standing rather than implied by which row is filled, on the badge's own rule: the thing that
+    /// changes what a click **does** says so in words, so a reader who has scrolled the list or filtered
+    /// the archetypes above it is never left inferring the armed subtype from a highlight.
+    pub armed: String,
+}
+
+/// **The subtype picker, projected.**
+///
+/// `chosen` is the whole equate name of the armed subtype, or `None` when nothing is armed, which happens
+/// only when there is nothing armable: [`spawn::Subtypes::default_choice`] arms the lowest valued one the
+/// moment an archetype with subtypes is selected, so that "nothing chosen" and "nothing to choose" are
+/// the same state rather than two that look alike.
+pub fn subtype_listing(s: &spawn::Subtypes, chosen: Option<&str>) -> SubtypeListing {
+    let prefix = s.prefix.clone().unwrap_or_default();
+    let rows: Vec<SubtypeRow> = s
+        .entries
+        .iter()
+        .map(|e| {
+            let byte = e.byte();
+            SubtypeRow {
+                name: e.name.clone(),
+                label: e.short(&prefix).to_string(),
+                value: match byte {
+                    Some(b) => format!("${b:02X}"),
+                    None => format!("${:X}", e.value),
+                },
+                selected: chosen == Some(e.name.as_str()),
+                offered: byte.is_some(),
+                note: byte.is_none().then(|| {
+                    format!(
+                        "not offered: a placement carries one byte of subtype and this listing gives \
+                         {} the value {}, which does not fit in one. Sending it would place a \
+                         different form than this row names, so it is shown and left unselectable \
+                         rather than quietly cut down.",
+                        e.name, e.value
+                    )
+                }),
+            }
+        })
+        .collect();
+
+    let armed = match chosen.and_then(|c| s.get(c)) {
+        Some(e) => format!(
+            "A click places {} as {} ({}), and that is the value this build's listing publishes for it.",
+            s.archetype,
+            e.short(&prefix),
+            match e.byte() {
+                Some(b) => format!("${b:02X}"),
+                None => format!("${:X}", e.value),
+            },
+        ),
+        None if s.entries.is_empty() => format!(
+            "A click places {}, which is the only form this build's listing names for it.",
+            s.archetype
+        ),
+        None => format!(
+            "No subtype is armed for {}, because none of the {} below fits in the one byte a \
+             placement carries. A click places the archetype's own default form.",
+            s.archetype,
+            plural(s.entries.len(), "subtype", "subtypes"),
+        ),
+    };
+
+    SubtypeListing {
+        count: plural(rows.len(), "subtype", "subtypes"),
+        rows,
+        absence: s.absence(),
+        truncation: s.truncation_note(),
+        collision: s.collision_note(),
+        armed,
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------
 // ⚑ What the window did to the run state, and the standing statement that says so
 // -------------------------------------------------------------------------------------------------------
 
@@ -488,6 +607,10 @@ mod tests {
                 .map(|s| s.sentence_of(super::PREVIEWING)),
         );
         all.push(RunState::HELD_INPUT_HOVER.to_string());
+        // ⚑ The subtype picker's strings are swept by the same two rules and in every arm: a rule
+        // checked on one path is checked on one path, and this is a second surface with its own
+        // sentences rather than more rows of the first one's.
+        all.extend(every_subtype_arm());
         for s in all {
             assert!(
                 !s.contains("  "),
@@ -496,6 +619,211 @@ mod tests {
             );
             assert!(!s.contains('\t'), "a tab is the same defect: {s:?}");
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The subtype picker
+    // ---------------------------------------------------------------------------------------------
+
+    /// The set the subtype rows are projected from.
+    ///
+    /// ⚑ **Deliberately unlike the live listing in the two dimensions under test.** The real build's eight
+    /// spring subtypes run `$00 $02 $10 $12 $20 $22 $50 $52` and none of them exceeds a byte, so a fixture
+    /// that copied it would leave the unsendable-value rail dead-but-green and would make a value-ordered
+    /// list hard to tell from a name-ordered one. Here the value order (`Up_Red`, `Up_Yellow`,
+    /// `Angled_Blue`, `Wide_Huge`) is not the name order, and one value does not fit in a byte.
+    fn springs() -> spawn::Subtypes {
+        spawn::Subtypes {
+            archetype: "ObjDef_Spring".into(),
+            prefix: Some("ObjSub_Spring__".into()),
+            entries: vec![
+                spawn::Subtype {
+                    name: "ObjSub_Spring__Up_Red".into(),
+                    value: 0x00,
+                },
+                spawn::Subtype {
+                    name: "ObjSub_Spring__Up_Yellow".into(),
+                    value: 0x02,
+                },
+                spawn::Subtype {
+                    name: "ObjSub_Spring__Angled_Blue".into(),
+                    value: 0x11,
+                },
+                spawn::Subtype {
+                    name: "ObjSub_Spring__Wide_Huge".into(),
+                    value: 0x140,
+                },
+            ],
+            truncated: false,
+            collisions: Vec::new(),
+        }
+    }
+
+    /// Every string the subtype picker can draw, over every arm, for the two style sweeps.
+    ///
+    /// **Assembled from the projection** rather than from a list of literals, so a sentence added later
+    /// is swept without anybody remembering to add it here.
+    fn every_subtype_arm() -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        // Rows, armed, and both quiet notes.
+        v.extend(every_subtype_string(&subtype_listing(
+            &springs(),
+            Some("ObjSub_Spring__Up_Yellow"),
+        )));
+        // Both loud notes at once.
+        let mut loud = springs();
+        loud.truncated = true;
+        loud.collisions.push("ObjDef_Spring_".into());
+        v.extend(every_subtype_string(&subtype_listing(&loud, None)));
+        // The two absences, which are two different sentences.
+        v.extend(every_subtype_string(&subtype_listing(
+            &spawn::Subtypes::none_for("ObjDef_Ring"),
+            None,
+        )));
+        v.extend(every_subtype_string(&subtype_listing(
+            &spawn::Subtypes::none_for("ObjDef_"),
+            None,
+        )));
+        // The armed line's third arm: subtypes exist and none of them can be sent.
+        let unsendable = spawn::Subtypes {
+            entries: vec![spawn::Subtype {
+                name: "ObjSub_Spring__Wide_Huge".into(),
+                value: 0x140,
+            }],
+            ..springs()
+        };
+        v.extend(every_subtype_string(&subtype_listing(&unsendable, None)));
+        v
+    }
+
+    fn every_subtype_string(l: &SubtypeListing) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for r in &l.rows {
+            v.push(r.label.clone());
+            v.push(r.value.clone());
+            v.extend(r.note.clone());
+        }
+        v.push(l.count.clone());
+        v.push(l.armed.clone());
+        v.extend(l.absence.clone());
+        v.extend(l.truncation.clone());
+        v.extend(l.collision.clone());
+        v
+    }
+
+    /// **A row reads as the subtype's own name and the listing's own value**, and the one that cannot be
+    /// sent is drawn with the reason on it rather than dropped.
+    #[test]
+    fn a_subtype_row_carries_the_listings_label_and_value_and_says_when_it_cannot_be_sent() {
+        let s = springs();
+        let l = subtype_listing(&s, Some("ObjSub_Spring__Up_Yellow"));
+
+        assert_eq!(l.rows.len(), 4);
+        assert_eq!(l.count, "4 subtypes");
+        assert_eq!(
+            l.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            ["Up_Red", "Up_Yellow", "Angled_Blue", "Wide_Huge"],
+            "the label is the subtype's own half of the name, and the single underscore inside it \
+             survives: a picker that split on underscores would offer an object called Up"
+        );
+        assert_eq!(
+            l.rows.iter().map(|r| r.value.as_str()).collect::<Vec<_>>(),
+            ["$00", "$02", "$11", "$140"],
+            "the value shown is the listing's, in hex, and the oversized one is not cut to a byte"
+        );
+
+        // Exactly one row is armed, and it is the one the caller named.
+        assert_eq!(l.rows.iter().filter(|r| r.selected).count(), 1);
+        assert!(l.rows[1].selected);
+
+        // The unsendable row is drawn, not offered, and says why on itself.
+        let huge = &l.rows[3];
+        assert!(!huge.offered);
+        let note = huge
+            .note
+            .as_deref()
+            .expect("an unofferable row owes a reason");
+        assert!(
+            note.contains("320") || note.contains(&format!("{}", 0x140)),
+            "the reason must quote the value the listing gave: {note:?}"
+        );
+        assert!(
+            l.rows[..3].iter().all(|r| r.offered && r.note.is_none()),
+            "every row that fits a byte is offered and carries no excuse"
+        );
+    }
+
+    /// ⚑ **The armed subtype is stated in words, in all three arms.**
+    ///
+    /// Standing rather than carried by a fill colour, on the spawn badge's own rule one level up: the
+    /// thing that changes what a click **does** says so, because a reader who has scrolled either list is
+    /// otherwise inferring it from a highlight they cannot see.
+    #[test]
+    fn what_a_click_carries_is_stated_in_words_in_every_arm() {
+        let s = springs();
+
+        let armed = subtype_listing(&s, Some("ObjSub_Spring__Up_Yellow")).armed;
+        assert!(
+            armed.contains("Up_Yellow") && armed.contains("$02") && armed.contains("ObjDef_Spring"),
+            "the armed line names the archetype, the form and the byte: {armed:?}"
+        );
+
+        // An archetype the listing names nothing for: one form, and it says so rather than going quiet.
+        let none = subtype_listing(&spawn::Subtypes::none_for("ObjDef_Ring"), None).armed;
+        assert!(
+            none.contains("ObjDef_Ring") && none.contains("only form"),
+            "an archetype with no subtypes still says what a click does: {none:?}"
+        );
+        assert_ne!(armed, none);
+
+        // The third arm: subtypes exist and not one of them can be sent.
+        let unsendable = spawn::Subtypes {
+            entries: vec![spawn::Subtype {
+                name: "ObjSub_Spring__Wide_Huge".into(),
+                value: 0x140,
+            }],
+            ..springs()
+        };
+        let line = subtype_listing(&unsendable, None).armed;
+        assert!(
+            line.contains("No subtype is armed") && line.contains("ObjDef_Spring"),
+            "a set with nothing armable must say so rather than reading like an absent list: {line:?}"
+        );
+    }
+
+    /// **The three lines that are not rows are the model's own sentences**, not second wordings of them.
+    ///
+    /// The truncation clause is the one that matters: a cut-short subtype list looks exactly like an
+    /// object with fewer subtypes, and two accounts of one cut-short search is how the two drift until
+    /// one of them stops being true.
+    #[test]
+    fn the_notes_are_the_models_own_sentences_and_an_empty_set_is_a_line_not_a_box() {
+        let quiet = subtype_listing(&springs(), None);
+        assert_eq!(quiet.absence, None, "four rows is not an absence");
+        assert_eq!(quiet.truncation, None);
+        assert_eq!(quiet.collision, None);
+
+        let mut loud = springs();
+        loud.truncated = true;
+        loud.collisions.push("ObjDef_Spring_".into());
+        let l = subtype_listing(&loud, None);
+        assert_eq!(
+            l.truncation,
+            loud.truncation_note(),
+            "this must BE the model's sentence, not a copy that can drift from it"
+        );
+        assert_eq!(l.collision, loud.collision_note());
+
+        // P6: no rows is a stated line, and it is the model's.
+        let empty = spawn::Subtypes::none_for("ObjDef_Ring");
+        let l = subtype_listing(&empty, None);
+        assert!(l.rows.is_empty());
+        assert_eq!(l.count, "0 subtypes");
+        assert_eq!(
+            l.absence,
+            empty.absence(),
+            "an empty box is never drawn, and the line is the model's"
+        );
     }
 
     /// **P10** (no em or en dashes) and **P9** (no specification citations) over everything this panel can
@@ -517,6 +845,10 @@ mod tests {
                 .map(|s| s.sentence_of(super::PREVIEWING)),
         );
         all.push(RunState::HELD_INPUT_HOVER.to_string());
+        // ⚑ The subtype picker's strings are swept by the same two rules and in every arm: a rule
+        // checked on one path is checked on one path, and this is a second surface with its own
+        // sentences rather than more rows of the first one's.
+        all.extend(every_subtype_arm());
         for s in all {
             for bad in ['\u{2014}', '\u{2013}'] {
                 assert!(

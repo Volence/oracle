@@ -208,6 +208,276 @@ impl Archetypes {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Subtypes — the strengths, colours and directions one archetype comes in
+// ---------------------------------------------------------------------------------------------------
+
+/// The namespace an archetype's **subtypes** are published under.
+///
+/// The owner's ask is *"remember I have to be able to choose subtypes for spawn"*: springs come in
+/// strengths and directions, and he wants to pick one before placing it. aeon publishes them as equates
+/// in the game's own listing, so this crate **reads** them on [`ARCHETYPE_PREFIX`]'s standing rule rather
+/// than typing them, because a table of subtypes written here would be this crate asserting facts about
+/// somebody else's game, and it would be wrong the first time that game changed.
+///
+/// ⚑ **Read with `emulator/lookup_equate`, never `emulator/lookup_symbol`.** The two read **disjoint
+/// sections** of the listing, and a symbol query against an equate refuses in a way that reads exactly
+/// like the name not existing. That distinction cost the engine lane an hour and this lane a wrong design
+/// decision on the same evening; it is written down in `docs/2026-09-06-ring-placement-rules.md`
+/// precisely because the channel between the two repos cannot carry it.
+pub const SUBTYPE_PREFIX: &str = "ObjSub_";
+
+/// The **double** underscore at the object-to-subtype boundary, and it is a safety property rather than a
+/// spelling.
+///
+/// Single underscores inside a subtype's own name are free: `Up_Red` is one subtype name, not two words
+/// to be split on. The picker therefore **prefix-searches and never splits a name on an underscore**, and
+/// the doubled boundary is what makes that safe: an object called `Spring_Board` publishes under
+/// `ObjSub_Spring_Board__`, which does not begin with `ObjSub_Spring__`, so its subtypes cannot be filed
+/// under `Spring`.
+///
+/// ⚑ [`swallowed_by`] exists anyway, and the engine lane's own argument is why: *"a rule that depends on
+/// every future author remembering a convention is not a rule."*
+pub const SUBTYPE_BOUNDARY: &str = "__";
+
+/// **The equate prefix `archetype`'s subtypes are published under**, by substitution on its own name:
+/// `ObjDef_Spring` becomes `ObjSub_Spring__`.
+///
+/// `None` when no prefix can be derived, which is exactly two cases and both are stated rather than
+/// guessed at: a name that is not an archetype name at all, and the degenerate symbol literally called
+/// `ObjDef_` (which [`archetypes`] handles as an exact hit) whose stem is empty and which therefore names
+/// no object to hang a namespace on.
+pub fn subtype_prefix(archetype: &str) -> Option<String> {
+    let stem = archetype.strip_prefix(ARCHETYPE_PREFIX)?;
+    if stem.is_empty() {
+        return None;
+    }
+    Some(format!("{SUBTYPE_PREFIX}{stem}{SUBTYPE_BOUNDARY}"))
+}
+
+/// **Every other archetype whose subtypes would be swept up by `archetype`'s prefix search**, which is
+/// the collision the doubled boundary is meant to prevent and this function refuses to assume it did.
+///
+/// The test is the mechanism itself rather than a remembered convention: `b`'s subtypes land in `a`'s
+/// search exactly when `b`'s own prefix **starts with** `a`'s, so that is what is asked, over the same
+/// list the picker is drawing. Stated rather than filtered: this crate can see that two namespaces
+/// overlap and cannot know which rows belong to which object, so it names the other archetype and lets
+/// the person reading decide, instead of silently filing subtypes under the wrong one.
+///
+/// ⚑ It catches **two** shapes and not one. `b == a + "_"` is the obvious one (`ObjDef_Spring` against
+/// `ObjDef_Spring_`), and `b` starting with `a + "__"` is the other (`ObjDef_Spring` against
+/// `ObjDef_Spring__Tall`), which a rule written as "another name plus an underscore" misses. Asking the
+/// prefixes directly gets both without enumerating either.
+pub fn swallowed_by(archetype: &str, all: &[String]) -> Vec<String> {
+    let Some(mine) = subtype_prefix(archetype) else {
+        return Vec::new();
+    };
+    all.iter()
+        .filter(|b| b.as_str() != archetype)
+        .filter(|b| subtype_prefix(b).is_some_and(|theirs| theirs.starts_with(&mine)))
+        .cloned()
+        .collect()
+}
+
+/// **The largest subtype `emulator/object_spawn` will take**, because it is composed into the low byte of
+/// the placement word.
+///
+/// A listing is free to publish a larger number under the subtype namespace, and this crate does not mask
+/// it: the value is carried whole and the row is drawn and **not offered**, with the reason said out loud.
+/// Masking would place a different object than the row names, and hiding the row would be this window
+/// deciding the listing is wrong.
+pub const MAX_SUBTYPE: u64 = 255;
+
+/// **One subtype, exactly as the listing published it.**
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subtype {
+    /// The equate's whole name, in the listing's own spelling.
+    pub name: String,
+    /// The equate's value, **unmodified**. Not masked, not range-checked, and never an address: the
+    /// bus's own ruling on `lookup_equate` is that the value is a plain integer, and this carries it.
+    pub value: u64,
+}
+
+impl Subtype {
+    /// **The byte a placement carries**, or `None` when the listing's value does not fit in one.
+    pub fn byte(&self) -> Option<u8> {
+        u8::try_from(self.value).ok()
+    }
+
+    /// The subtype's own name with the object's half taken off: `ObjSub_Spring__Up_Red` under
+    /// `ObjSub_Spring__` reads as `Up_Red`.
+    ///
+    /// The whole name is what is carried and compared; this is only what a row is **labelled**, and it
+    /// falls back to the whole name rather than to an empty label if the prefix does not match.
+    pub fn short<'a>(&'a self, prefix: &str) -> &'a str {
+        let short = self.name.strip_prefix(prefix).unwrap_or(&self.name);
+        if short.is_empty() {
+            &self.name
+        } else {
+            short
+        }
+    }
+}
+
+/// **What one archetype's subtype search found**, and everything about it that is not a row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Subtypes {
+    /// The archetype these belong to, so a stale set cannot be drawn under a new selection.
+    pub archetype: String,
+    /// The prefix that was searched, or `None` when none could be derived ([`subtype_prefix`]).
+    pub prefix: Option<String>,
+    /// The subtypes, **ordered by value**. The value arrives beside the name, so the ordering costs
+    /// nothing and it is the order the numbers are in rather than the order the letters are in: the
+    /// listing's own map is name ordered, and on the one build measured here that puts `Down` first and
+    /// the `$00` one fourth.
+    pub entries: Vec<Subtype>,
+    /// ⚑ **The search was cut short**, straight off the reply's own `truncated`.
+    ///
+    /// There is no `total` beside it and none is invented: the prefix reply carries `query`, `matches`
+    /// and `truncated`, and a count of what was left behind is not among them.
+    pub truncated: bool,
+    /// Other archetypes whose namespaces overlap this one's ([`swallowed_by`]).
+    pub collisions: Vec<String>,
+}
+
+impl Subtypes {
+    /// The set nothing was read for, so a panel drawn before any search has a shape to hold.
+    pub fn none_for(archetype: &str) -> Self {
+        Self {
+            archetype: archetype.to_string(),
+            prefix: subtype_prefix(archetype),
+            ..Self::default()
+        }
+    }
+
+    /// **The subtype a click carries when the person has not chosen one**: the lowest valued one that
+    /// fits in a byte, or `None` when there is nothing to arm.
+    ///
+    /// A default rather than an unchosen state, and that is the safer of the two. `emulator/object_spawn`
+    /// composes a subtype byte whether or not one is sent, so an "unchosen" picker would be arming a
+    /// subtype silently while claiming it had armed none. Arming the lowest and **naming it** places
+    /// exactly what a click placed before this list existed, and says which one that is.
+    pub fn default_choice(&self) -> Option<&Subtype> {
+        self.entries.iter().find(|s| s.byte().is_some())
+    }
+
+    /// The subtype with this name, or `None` when this set is not holding it.
+    ///
+    /// By name and not by row, for [`Mode::select`]'s reason: the row a person clicks is a row of
+    /// whatever is drawn, and a set that has been re-read under a new listing must not silently hand back
+    /// whichever subtype took that position.
+    pub fn get(&self, name: &str) -> Option<&Subtype> {
+        self.entries.iter().find(|s| s.name == name)
+    }
+
+    /// ⚑ **The line a truncated list owes the reader, in words that say what is wrong with it.**
+    ///
+    /// This is the one absence with no visible symptom. A cut-short subtype list **does not look cut
+    /// short**: it looks like an object with fewer subtypes, and the reader picks from three when there
+    /// are twelve with nothing on the glass to argue with. The cap is high enough that this should not
+    /// happen, which is a reason to say it loudly when it does rather than a reason to leave it unsaid.
+    pub fn truncation_note(&self) -> Option<String> {
+        self.truncated.then(|| {
+            format!(
+                "This list is CUT SHORT. {} names more subtypes for {} than the search would return, \
+                 and the ones missing are not marked because a shortened list looks exactly like an \
+                 object with fewer subtypes. Do not read the rows below as all of them.",
+                self.prefix.as_deref().unwrap_or("this build"),
+                self.archetype,
+            )
+        })
+    }
+
+    /// The line an overlapping namespace owes the reader, or `None` when nothing overlaps.
+    pub fn collision_note(&self) -> Option<String> {
+        if self.collisions.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "NAME CLASH: {} publishes subtypes under a name that also begins with {}, so rows below \
+             may belong to it rather than to {}. Nothing has been hidden or reassigned, because this \
+             window cannot tell which object a clashing name was written for.",
+            self.collisions.join(", "),
+            self.prefix.as_deref().unwrap_or(&self.archetype),
+            self.archetype,
+        ))
+    }
+
+    /// **The stated line drawn instead of rows**, or `None` when there are rows to draw.
+    ///
+    /// P6, and the two reasons there are no rows are two different findings that must not read alike: a
+    /// name this crate cannot build a namespace out of, against a listing that publishes nothing under a
+    /// namespace it could. Neither is a refusal and neither is an empty box.
+    pub fn absence(&self) -> Option<String> {
+        if !self.entries.is_empty() {
+            return None;
+        }
+        Some(match &self.prefix {
+            Some(p) => format!(
+                "This build's listing names no subtypes under {p}, so {} has one form and a click \
+                 places it. Subtypes are read from the listing, so a build that adds some will show \
+                 them here without anything changing in this window.",
+                self.archetype,
+            ),
+            None => format!(
+                "{} carries no object name after {ARCHETYPE_PREFIX}, so there is no name to look its \
+                 subtypes up under and none were searched for.",
+                self.archetype,
+            ),
+        })
+    }
+}
+
+/// **The subtypes `archetype` offers in the listing loaded right now**, discovered rather than listed.
+///
+/// One call, on the equate door. `all` is the archetype list the picker is already holding, and it is
+/// passed rather than re-read so the clash check is made against the same names the person is looking at.
+///
+/// ⚑ **The reply's shape is `{query, matches, truncated}` and there is no `total` in it.** A count of
+/// what a cut-short search left behind is a fact the equate door does not publish, so
+/// [`Subtypes::truncation_note`] says the list is short without claiming a number, and nothing here
+/// reaches for `total` and quietly gets a zero.
+///
+/// An empty `matches` is an **answer**, not a refusal: the equate door was built that way on purpose, so
+/// an archetype with no subtypes reaches [`Subtypes::absence`] and gets a sentence.
+#[cfg(feature = "aether")]
+pub fn subtypes(c: &mut impl Caller, archetype: &str, all: &[String]) -> Result<Subtypes, Refusal> {
+    let collisions = swallowed_by(archetype, all);
+    let Some(prefix) = subtype_prefix(archetype) else {
+        return Ok(Subtypes {
+            collisions,
+            ..Subtypes::none_for(archetype)
+        });
+    };
+    let v = c.call(
+        "emulator/lookup_equate",
+        serde_json::json!({"prefix": prefix}),
+    )?;
+    let mut entries: Vec<Subtype> = v["matches"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    Some(Subtype {
+                        name: m["name"].as_str()?.to_string(),
+                        value: m["value"].as_u64()?,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Ordered by value, with the name breaking a tie so the order is total and a redraw cannot shuffle
+    // two equal-valued rows past each other.
+    entries.sort_by(|a, b| a.value.cmp(&b.value).then_with(|| a.name.cmp(&b.name)));
+    Ok(Subtypes {
+        archetype: archetype.to_string(),
+        prefix: Some(prefix),
+        entries,
+        truncated: v["truncated"] == serde_json::json!(true),
+        collisions,
+    })
+}
+
 /// **A refusal, on its way to a person.** Never a silent failure and never rendered as a success.
 ///
 /// `code` and `reason` are the server's own discriminants (§11.32 §6). They are carried rather than
@@ -662,8 +932,19 @@ fn read_u16(c: &mut impl Caller, addr: u32) -> Result<u16, Refusal> {
 /// the same flat world-pixel space `Obj_Req_X`/`Y` want. Aeon states it is *"the same convention as
 /// `Warp_Req_X/Y`"*; nothing in this repo has confirmed the two agree against a running game, and if they do
 /// not, this needs a conversion that no CR has specified.
+/// **`subtype` is the byte the listing gave**, or `None` for a placement that names none.
+///
+/// It is a parameter rather than something derived here, and the derivation it replaces is the one that
+/// must never exist: a subtype worked out from a name would be this crate inventing a number for somebody
+/// else's game. What travels is [`Subtype::byte`] of an entry [`subtypes`] read out of the listing, and
+/// nothing else can reach this argument.
 #[cfg(feature = "aether")]
-pub fn place(c: &mut impl Caller, archetype: &str, dot: (u16, u16)) -> Result<Placed, Refusal> {
+pub fn place(
+    c: &mut impl Caller,
+    archetype: &str,
+    subtype: Option<u8>,
+    dot: (u16, u16),
+) -> Result<Placed, Refusal> {
     let (dx, dy) = dot;
     let at = c.call("emulator/object_at", serde_json::json!({"x": dx, "y": dy}))?;
     let source = at["worldSource"].as_str().unwrap_or("unavailable");
@@ -709,10 +990,13 @@ pub fn place(c: &mut impl Caller, archetype: &str, dot: (u16, u16)) -> Result<Pl
         return Err(bounds.outside(world.0, world.1));
     }
 
-    let placed = c.call(
-        "emulator/object_spawn",
-        serde_json::json!({"defSymbol": archetype, "x": world.0, "y": world.1}),
-    )?;
+    let mut req = serde_json::json!({"defSymbol": archetype, "x": world.0, "y": world.1});
+    // Sent only when one was chosen, so a build with no subtypes puts no key on the wire rather than
+    // asserting a zero it never read. The value is the listing's own byte, carried, never computed.
+    if let Some(s) = subtype {
+        req["subtype"] = serde_json::json!(s);
+    }
+    let placed = c.call("emulator/object_spawn", req)?;
     Ok(Placed {
         handle: placed["handle"].as_str().unwrap_or_default().to_string(),
         addr: placed["addr"].as_str().unwrap_or_default().to_string(),
@@ -1092,6 +1376,374 @@ mod tests {
         assert!(
             p.toast("ObjDef_Ring").contains("0x8E62"),
             "with no slot the toast falls back to the handle"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Subtypes: the prefix, the clash detector, and the sentences
+    // ---------------------------------------------------------------------------------------------
+
+    /// **The prefix is a substitution on the archetype's own name, doubled at the boundary.**
+    ///
+    /// The single underscores inside a subtype's own name are the half that matters: the picker
+    /// prefix-searches and never splits a name, so `Up_Red` has to survive as one name. A row that only
+    /// checked `ObjDef_Spring` would pass against an implementation that split on the first underscore
+    /// and offered the subtypes of an object called `Up`.
+    #[test]
+    fn the_subtype_prefix_is_a_substitution_and_the_boundary_is_doubled() {
+        assert_eq!(
+            subtype_prefix("ObjDef_Spring").as_deref(),
+            Some("ObjSub_Spring__")
+        );
+        // An object name that already carries an underscore keeps it whole, which is the case the
+        // doubled boundary exists for.
+        assert_eq!(
+            subtype_prefix("ObjDef_Spring_Board").as_deref(),
+            Some("ObjSub_Spring_Board__")
+        );
+        // ⚑ And the two do not overlap, which is the property the whole convention buys.
+        let spring = subtype_prefix("ObjDef_Spring").unwrap();
+        let board = subtype_prefix("ObjDef_Spring_Board").unwrap();
+        assert!(
+            !board.starts_with(&spring),
+            "a longer object name must not file its subtypes under a shorter one: {board} against \
+             {spring}"
+        );
+
+        // Nothing to derive a namespace from is `None`, never a guess.
+        assert_eq!(
+            subtype_prefix("ObjDef_"),
+            None,
+            "an empty stem names no object"
+        );
+        assert_eq!(
+            subtype_prefix("Player_1"),
+            None,
+            "not an archetype name at all"
+        );
+    }
+
+    /// **The clash detector catches both shapes, and stays quiet on the safe one.**
+    ///
+    /// It exists in spite of the convention, on the engine lane's own argument: *a rule that depends on
+    /// every future author remembering a convention is not a rule.* The second shape is the one a rule
+    /// phrased as "another name plus an underscore" misses, and it is here because the mechanism is
+    /// asked directly rather than the phrasing being trusted.
+    #[test]
+    fn the_clash_detector_catches_both_shapes_and_leaves_the_safe_one_alone() {
+        let all = vec![
+            "ObjDef_Spring".to_string(),
+            // Shape one: another name plus a single underscore.
+            "ObjDef_Spring_".to_string(),
+            // Shape two: another name plus the doubled boundary. Its own namespace begins with
+            // `ObjSub_Spring__`, so its subtypes land in the spring's search.
+            "ObjDef_Spring__Tall".to_string(),
+            // The safe one. `ObjSub_Spring_Board__` does not begin with `ObjSub_Spring__`.
+            "ObjDef_Spring_Board".to_string(),
+            "ObjDef_Ring".to_string(),
+        ];
+        let mut hit = swallowed_by("ObjDef_Spring", &all);
+        hit.sort();
+        assert_eq!(
+            hit,
+            ["ObjDef_Spring_", "ObjDef_Spring__Tall"],
+            "both swallowing shapes must be named, and the safe neighbour must not be"
+        );
+        // An ordinary build says nothing, so the note is never standing decoration.
+        assert!(swallowed_by(
+            "ObjDef_Spring",
+            &["ObjDef_Spring".to_string(), "ObjDef_Ring".to_string()]
+        )
+        .is_empty());
+    }
+
+    /// **A value past a byte is carried whole and offered as nothing.**
+    #[test]
+    fn a_subtype_too_large_for_a_byte_is_carried_and_not_cut_down() {
+        let big = Subtype {
+            name: "ObjSub_Spring__Wide_Huge".into(),
+            value: MAX_SUBTYPE + 1,
+        };
+        assert_eq!(big.byte(), None, "256 must not become 0");
+        assert_eq!(
+            Subtype {
+                name: "x".into(),
+                value: MAX_SUBTYPE
+            }
+            .byte(),
+            Some(255),
+            "the boundary itself fits"
+        );
+        assert_eq!(big.short("ObjSub_Spring__"), "Wide_Huge");
+        assert_eq!(
+            big.short("ObjSub_Ring__"),
+            "ObjSub_Spring__Wide_Huge",
+            "a prefix that does not match leaves the whole name rather than an empty label"
+        );
+
+        // And the armed default steps over it rather than arming something unsendable.
+        let s = Subtypes {
+            archetype: "ObjDef_Spring".into(),
+            prefix: Some("ObjSub_Spring__".into()),
+            entries: vec![
+                big.clone(),
+                Subtype {
+                    name: "ObjSub_Spring__Up_Red".into(),
+                    value: 0,
+                },
+            ],
+            truncated: false,
+            collisions: Vec::new(),
+        };
+        assert_eq!(
+            s.default_choice().map(|e| e.name.as_str()),
+            Some("ObjSub_Spring__Up_Red"),
+            "the default must be armable, so an oversized first entry is stepped over"
+        );
+        // Nothing armable at all is `None`, never a byte this crate invented.
+        let none = Subtypes {
+            entries: vec![big],
+            ..s
+        };
+        assert_eq!(none.default_choice(), None);
+    }
+
+    /// ⚑ **A cut-short list says it is cut short, in words that name the failure.**
+    ///
+    /// This is the absence with no visible symptom: a shortened subtype list looks exactly like an object
+    /// with fewer subtypes, so a reader picks from three when there are twelve and nothing on the glass
+    /// argues with them. The sentence therefore has to say the list is incomplete rather than merely
+    /// mention that a limit exists.
+    #[test]
+    fn a_cut_short_subtype_list_says_so_and_a_complete_one_claims_nothing() {
+        let mut s = Subtypes::none_for("ObjDef_Spring");
+        s.entries.push(Subtype {
+            name: "ObjSub_Spring__Up_Red".into(),
+            value: 0,
+        });
+        assert_eq!(
+            s.truncation_note(),
+            None,
+            "a complete list must not carry a note, or the note means nothing when it appears"
+        );
+
+        s.truncated = true;
+        let note = s
+            .truncation_note()
+            .expect("a cut list owes the reader a line");
+        assert!(
+            note.contains("CUT SHORT") && note.contains("ObjDef_Spring"),
+            "the note must say the list is incomplete and name whose it is: {note:?}"
+        );
+        assert!(
+            note.contains("not to read the rows below as all of them")
+                || note.contains("all of them"),
+            "it must tell the reader what NOT to conclude, which is the whole hazard: {note:?}"
+        );
+    }
+
+    /// **The two absences are two different findings and must not read alike** (P6).
+    #[test]
+    fn the_two_reasons_for_no_subtypes_are_two_different_sentences() {
+        let named = Subtypes::none_for("ObjDef_Ring");
+        let a = named.absence().expect("an empty set owes a line");
+        assert!(
+            a.contains("ObjSub_Ring__"),
+            "a listing that publishes nothing under a namespace names the namespace: {a:?}"
+        );
+
+        let unnameable = Subtypes::none_for("ObjDef_");
+        assert_eq!(unnameable.prefix, None);
+        let b = unnameable.absence().expect("this owes a line too");
+        assert_ne!(a, b, "two different findings must not be one sentence");
+        assert!(
+            b.contains("no object name"),
+            "a name with no object in it says that, rather than claiming the listing is empty: {b:?}"
+        );
+
+        // A set with rows owes nothing.
+        let mut full = named.clone();
+        full.entries.push(Subtype {
+            name: "ObjSub_Ring__A".into(),
+            value: 1,
+        });
+        assert_eq!(full.absence(), None);
+    }
+
+    /// **A clash is stated and nothing is hidden or reassigned.**
+    #[test]
+    fn a_namespace_clash_is_stated_and_names_the_other_archetype() {
+        let mut s = Subtypes::none_for("ObjDef_Spring");
+        assert_eq!(s.collision_note(), None, "an ordinary build says nothing");
+        s.collisions.push("ObjDef_Spring_".into());
+        let note = s.collision_note().expect("a clash owes the reader a line");
+        assert!(
+            note.contains("ObjDef_Spring_") && note.contains("ObjSub_Spring__"),
+            "the note must name the other archetype and the namespace they share: {note:?}"
+        );
+        assert!(
+            note.contains("Nothing has been hidden"),
+            "the reader must be told the rows were left alone, since this window cannot know which \
+             object a clashing name was written for: {note:?}"
+        );
+    }
+
+    /// **No sentence this module composes for a person carries a dash or cites the specification**
+    /// (P10, P9), and none pads itself into a column (P2).
+    #[test]
+    fn no_subtype_sentence_carries_a_dash_or_a_citation_or_a_drawn_column() {
+        let mut all: Vec<String> = Vec::new();
+        let visit = |s: &Subtypes, all: &mut Vec<String>| {
+            all.extend(s.absence());
+            all.extend(s.truncation_note());
+            all.extend(s.collision_note());
+        };
+        let populated = Subtypes {
+            archetype: "ObjDef_Spring".into(),
+            prefix: Some("ObjSub_Spring__".into()),
+            entries: Vec::new(),
+            truncated: true,
+            collisions: vec!["ObjDef_Spring_".into()],
+        };
+        visit(&populated, &mut all);
+        // The other absence arm, which is a different sentence and must be swept too.
+        let mut unnameable = Subtypes::none_for("ObjDef_");
+        unnameable.truncated = true;
+        visit(&unnameable, &mut all);
+        assert!(all.len() >= 5, "the sweep must reach every arm: {all:?}");
+        for t in all {
+            for bad in ['\u{2014}', '\u{2013}'] {
+                assert!(!t.contains(bad), "user-facing text carries {bad:?}: {t:?}");
+            }
+            assert!(
+                !t.contains('\u{a7}') && !t.contains("protocol.md"),
+                "the person at this window is not holding the specification: {t:?}"
+            );
+            assert!(
+                !t.contains("  ") && !t.contains('\t'),
+                "a column drawn inside a string: {t:?}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The wire: what the equate reply is read for, and what the placement carries
+    // ---------------------------------------------------------------------------------------------
+
+    /// A [`Caller`] that answers from a script and records what it was asked.
+    ///
+    /// It is here for the two properties a real machine cannot show cheaply: that a reply saying it was
+    /// truncated is believed, and that a request carries the subtype key only when one was named.
+    #[cfg(feature = "aether")]
+    struct Scripted {
+        reply: serde_json::Value,
+        seen: Vec<(String, serde_json::Value)>,
+    }
+
+    #[cfg(feature = "aether")]
+    impl Caller for Scripted {
+        fn call(
+            &mut self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, Refusal> {
+            self.seen.push((method.to_string(), params.clone()));
+            match method {
+                "emulator/lookup_equate" => Ok(self.reply.clone()),
+                "emulator/object_at" => Ok(serde_json::json!({
+                    "worldSource": "camera", "world": {"x": 10, "y": 20}
+                })),
+                "emulator/read_memory" => Ok(serde_json::json!({"bytes": "0x0400"})),
+                "emulator/object_spawn" => Ok(serde_json::json!({
+                    "handle": "0x1", "addr": "0x2", "x": 1, "y": 2, "framesAdvanced": 1
+                })),
+                other => panic!("unscripted call to {other}"),
+            }
+        }
+        fn address_of(&mut self, _symbol: &str) -> Option<u32> {
+            Some(0x00FF_0000)
+        }
+    }
+
+    /// ⚑ **`truncated` is read off the reply's own flag, and there is no `total` to reach for.**
+    ///
+    /// The prefix reply carries `query`, `matches` and `truncated`, and **no count of what was left
+    /// behind**. So this reply deliberately has no `total` key: an implementation that reconstructed
+    /// truncation as `total > matches.len()` would read a missing key as zero, conclude the list was
+    /// whole, and draw a short list that looks complete. That is the exact failure the note exists for,
+    /// arriving through the field that does not exist.
+    #[cfg(feature = "aether")]
+    #[test]
+    fn a_truncated_equate_reply_is_believed_and_no_total_is_reached_for() {
+        let mut c = Scripted {
+            reply: serde_json::json!({
+                "query": "ObjSub_Spring__",
+                "matches": [
+                    {"name": "ObjSub_Spring__Down_Red", "value": 0x20},
+                    {"name": "ObjSub_Spring__Up_Red", "value": 0x00}
+                ],
+                "truncated": true
+            }),
+            seen: Vec::new(),
+        };
+        let s = subtypes(&mut c, "ObjDef_Spring", &["ObjDef_Spring".to_string()]).unwrap();
+        assert!(
+            s.truncated,
+            "the reply said it was cut short and nothing here may decide otherwise"
+        );
+        assert!(s.truncation_note().is_some());
+        assert_eq!(
+            s.entries.iter().map(|e| e.value).collect::<Vec<_>>(),
+            [0x00, 0x20],
+            "and the rows are in value order, not the order they arrived in"
+        );
+        // The door that was knocked on is the equate door, which is the whole point of the row.
+        assert_eq!(c.seen[0].0, "emulator/lookup_equate");
+        assert_eq!(c.seen[0].1["prefix"], serde_json::json!("ObjSub_Spring__"));
+
+        // The other direction: a reply that says it is whole is taken at its word too.
+        let mut c = Scripted {
+            reply: serde_json::json!({"query": "x", "matches": [], "truncated": false}),
+            seen: Vec::new(),
+        };
+        let s = subtypes(&mut c, "ObjDef_Spring", &[]).unwrap();
+        assert!(!s.truncated);
+        assert_eq!(s.truncation_note(), None);
+    }
+
+    /// **The placement carries the subtype key only when one was named**, and carries the byte it was
+    /// given rather than one derived from anything.
+    #[cfg(feature = "aether")]
+    #[test]
+    fn the_placement_sends_the_byte_it_was_given_and_omits_the_key_when_given_none() {
+        let mut c = Scripted {
+            reply: serde_json::json!({}),
+            seen: Vec::new(),
+        };
+        place(&mut c, "ObjDef_Spring", Some(0x02), (1, 2)).expect("the scripted spawn succeeds");
+        let (_, params) = c
+            .seen
+            .iter()
+            .find(|(m, _)| m == "emulator/object_spawn")
+            .expect("a spawn was requested");
+        assert_eq!(params["subtype"], serde_json::json!(2));
+        assert_eq!(params["defSymbol"], serde_json::json!("ObjDef_Spring"));
+
+        let mut c = Scripted {
+            reply: serde_json::json!({}),
+            seen: Vec::new(),
+        };
+        place(&mut c, "ObjDef_Spring", None, (1, 2)).expect("the scripted spawn succeeds");
+        let (_, params) = c
+            .seen
+            .iter()
+            .find(|(m, _)| m == "emulator/object_spawn")
+            .expect("a spawn was requested");
+        assert_eq!(
+            params.get("subtype"),
+            None,
+            "no subtype was named, so no key may appear: sending a zero would assert a value this \
+             window never read"
         );
     }
 }
