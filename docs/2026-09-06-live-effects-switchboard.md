@@ -228,7 +228,8 @@ gate on it.
 ## 6. Gates
 
 Nine mutations, applied to the committed baseline `cfcf117`, each read back from disk before the run and
-restored from that same commit afterwards. **All nine red.** The parameter was varied deliberately —
+restored from that same commit afterwards. **All nine red**, and two more follow below. The parameter was
+varied deliberately —
 which cell, which symbol, which guard branch, which constant, which order, which persistence door — rather
 than repeating one shape.
 
@@ -260,9 +261,50 @@ Three controls are load-bearing and named as such:
 * `bands_off_needs_the_destination_pointer_too_not_only_the_empty_table` has a control proving it is about
   the **order** rather than about refusing whenever anything is missing.
 
-**Aggregates at the tip:** `cargo test -p oracle-player` 344 passed / 0 failed, plus 4 in
-`tests/p10_no_dashes_in_shipped_text.rs`. `cargo fmt --all --check` clean.
-`cargo clippy -p oracle-player --all-targets` zero warnings.
+Two more landed with the readout fixes, on the same harness against baseline `4c66e79`:
+
+| # | mutation, quoted from disk | red row |
+|---|---|---|
+| M10 | `available(c, channel)?;` (the drift check deleted from the READ path) | `a_drifted_selector_refuses_the_readback_as_well_as_the_write` |
+| M11 | `if false && self.value == 0 {` | `a_zero_live_cell_reads_as_that_channels_own_documented_meaning` |
+
+**Eleven mutations, eleven red.**
+
+### 6.1 Two defects the gates found in my own work before any mutation ran
+
+* **`forbidden`'s address route was dead.** See §2. Found because `Channel::drift` had the same
+  raw-versus-door confusion with the sign flipped and refused every legitimate selection, which is what
+  actually went red. The lab-index row went on passing throughout, because it fed the guard the constant.
+* **A zero live cell read as *"the listing names nothing there"* on all three channels.** It is a
+  different fact on each and `NOTE` documents two of them: a zero raster program is a documented off
+  state, and a zero band pointer is a machine that has not initialised. The readout was reporting one as
+  unreadable and the other as ordinary. `Channel::zero` now carries each.
+
+### 6.2 Aggregates, and one that is NOT a pass
+
+| suite | result |
+|---|---|
+| `cargo test -p oracle-player` | **346 passed, 0 failed** (+ 4 in `tests/p10_no_dashes_in_shipped_text.rs`) |
+| `cargo test -p oracle-frontend` | **389 passed, 0 failed, 1 ignored** over 5 legs |
+| `cargo test -p oracle-aether` | **587 passed, 0 failed, 2 ignored** over 45 legs |
+| `cargo test -p oracle-replay` | 0 tests |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy -p oracle-player --all-targets` | zero warnings |
+
+⚑ **`cargo test --workspace` was NOT run to completion and is not claimed green.** Two attempts were
+reaped by the harness's time cap, the second at 54 of ~65 legs with 0 failures so far. A reaped run is not
+a pass, so the suites above were run per crate instead. `oracle-core` is reported separately for the same
+reason: it carries the multi-minute SST sweep.
+
+⚑ **And an environmental failure that looks exactly like a regression.** A worktree without
+`vendor/TestRoms/` fails 8 `save_state::tests::*` rows in `oracle-frontend` — *"vendored test ROM … is
+missing … these tests must not skip silently"*, which is the right design and not a flake. Symlinking the
+main checkout's `vendor/` in makes them 12 passed / 0 failed; `vendor` is gitignored, so the symlink does
+not dirty the tree. Worth knowing before anyone reads those eight names as this branch's doing.
+
+⚑ **A background run's completion notice reported "exit code 0" while cargo had exited 101.** The notice
+carries the *wrapper's* status. The real code was visible only because the wrapper wrote it into the log.
+Anything reading a background suite's verdict off the notification alone is reading the wrong number.
 
 ---
 

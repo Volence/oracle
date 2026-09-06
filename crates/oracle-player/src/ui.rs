@@ -801,6 +801,14 @@ impl Panels<'_> {
                 }
             }
         });
+        // ⚑ **Re-read after the row, because a click in it just changed the answer.** `channel` above was
+        // taken before the buttons were drawn, and everything below this line describes a channel: the
+        // subject sentence, the off control, the readback, the prefix box, the write-set. Keeping the
+        // stale binding would draw one frame of the OUTGOING channel's headings over the INCOMING
+        // channel's state, which is a label that does not match what it labels. One frame is enough:
+        // that is the whole failure class this panel is written against, and there is no reason to
+        // produce a small instance of it inside the panel that exists to prevent the large one.
+        let channel = self.effects.channel();
         ui.label(
             egui::RichText::new(channel.subject)
                 .text_style(egui::TextStyle::Small)
