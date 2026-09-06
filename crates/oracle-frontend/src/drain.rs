@@ -150,7 +150,7 @@ pub fn drain(sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Drained {
         crate::notify(
             r.ov,
             ACCENT,
-            "aether: the cartridge was replaced over the bus — save-state slots re-keyed",
+            "aether: the cartridge was replaced over the bus; save-state slots re-keyed",
         );
     }
     if pumped.symbols_changed {
@@ -173,7 +173,7 @@ pub fn drain(sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Drained {
             ACCENT,
             match r.symbols.as_ref() {
                 Some(t) => format!(
-                    "aether: symbol listing replaced over the bus — {} symbols",
+                    "aether: symbol listing replaced over the bus, {} symbols",
                     t.len()
                 ),
                 None => "aether: the symbol listing was dropped over the bus".to_string(),
@@ -196,7 +196,8 @@ pub fn drain(sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Drained {
             crate::notify(
                 r.ov,
                 ACCENT,
-                "spawn mode disarmed — the symbol listing changed, so its archetypes may now name                  different addresses",
+                "spawn mode disarmed: the symbol listing changed, so its archetypes may now name \
+                 different addresses",
             );
         }
     }
@@ -632,7 +633,7 @@ mod tests {
             "…and it must resolve the symbol the listing declares"
         );
         assert!(
-            win.said("symbol listing replaced over the bus — 2 symbols"),
+            win.said("symbol listing replaced over the bus, 2 symbols"),
             "{:?}",
             win.toasts()
         );

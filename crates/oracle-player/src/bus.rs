@@ -137,7 +137,7 @@ impl ServeOutcome {
     pub fn sentence(&self) -> String {
         match self {
             ServeOutcome::NotAsked => String::from(
-                "not serving — no --aether given, so nothing can attach to this window \
+                "not serving. No --aether given, so nothing can attach to this window \
                  (pass --aether, or --socket PATH, or set ORACLE_AETHER=1)",
             ),
             ServeOutcome::Serving(p) => format!(
@@ -147,7 +147,7 @@ impl ServeOutcome {
                 oracle_aether::rpc::PROTOCOL_VERSION
             ),
             ServeOutcome::Failed(e) => {
-                format!("NOT serving — cannot bind the socket ({e})")
+                format!("NOT serving. Cannot bind the socket ({e})")
             }
         }
     }
@@ -175,8 +175,8 @@ impl AetherStatus {
     pub fn sentence(&self) -> String {
         let base = self.outcome.sentence();
         match (&self.outcome, self.attached) {
-            (ServeOutcome::Serving(_), true) => format!("{base} — a client is attached"),
-            (ServeOutcome::Serving(_), false) => format!("{base} — nothing attached yet"),
+            (ServeOutcome::Serving(_), true) => format!("{base}, with a client attached"),
+            (ServeOutcome::Serving(_), false) => format!("{base}, with nothing attached yet"),
             _ => base,
         }
     }

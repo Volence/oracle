@@ -143,21 +143,21 @@ impl SymbolWatch {
             let name = &spec.symbol;
             let Some(symbols) = symbols else {
                 problems.push(format!(
-                    "symbol watch: cannot watch `{name}` — no symbol listing is loaded \
+                    "symbol watch: cannot watch `{name}`: no symbol listing is loaded \
                      (build with `sigil build --emit-lst`, or check the earlier `symbols:` line)"
                 ));
                 continue;
             };
             let Some(addr) = symbols.address_of(name) else {
                 problems.push(format!(
-                    "symbol watch: cannot watch `{name}` — this ROM's listing has no such symbol \
+                    "symbol watch: cannot watch `{name}`: this ROM's listing has no such symbol \
                      (nothing will be reported for it)"
                 ));
                 continue;
             };
             if AddrSpace::of(addr) != AddrSpace::Ram {
                 problems.push(format!(
-                    "symbol watch: cannot watch `{name}` — it is at ${addr:06X}, which is not work RAM, \
+                    "symbol watch: cannot watch `{name}`: it is at ${addr:06X}, which is not work RAM, \
                      so its value cannot change while the game runs"
                 ));
                 continue;
@@ -167,7 +167,7 @@ impl SymbolWatch {
             let index = (addr as usize) & (RAM_SIZE - 1);
             let Some(&last) = ram.get(index) else {
                 problems.push(format!(
-                    "symbol watch: cannot watch `{name}` — ${addr:06X} lands at RAM index {index}, past \
+                    "symbol watch: cannot watch `{name}`: ${addr:06X} lands at RAM index {index}, past \
                      the {} bytes this machine has",
                     ram.len()
                 ));
@@ -201,7 +201,8 @@ impl SymbolWatch {
 
 /// The line the owner reads. Four shapes, because there are four honestly different things to say.
 ///
-/// The labelled case is the format the brief specified and the owner asked for, verbatim: `8/20 — Haze`.
+/// The labelled case is the format the brief specified and the owner asked for, `8/20: Haze` (the brief
+/// spelled the separator as an em dash; P10 of the debug-window style rules replaced it with a colon).
 /// The other three name the symbol, because without a label there is nothing else in the line to say
 /// *which* watch spoke. None of them invents a name for a value that has none — the house rule is refuse
 /// rather than guess, but never go quiet.
@@ -213,12 +214,12 @@ fn describe(spec: &WatchSpec, v: u8) -> String {
     let Some(label) = spec.labels.get(v as usize) else {
         // Outside the list. `{v+1}/{n}` would read `23/20`, which is a lie about the list's length, so the
         // raw value is named instead and the shortfall is stated.
-        return format!("{} = {v} — outside the {n} labels configured", spec.symbol);
+        return format!("{} = {v}, outside the {n} labels configured", spec.symbol);
     };
     if label.is_empty() {
-        format!("{}/{n} — <no label> ({})", v as usize + 1, spec.symbol)
+        format!("{}/{n}: <no label> ({})", v as usize + 1, spec.symbol)
     } else {
-        format!("{}/{n} — {label}", v as usize + 1)
+        format!("{}/{n}: {label}", v as usize + 1)
     }
 }
 
@@ -444,10 +445,7 @@ mod tests {
         let table = listing("Debug_Scene_Index", 0xFFFF_E50D);
         let (mut w, _) = SymbolWatch::arm(&[scenes()], Some(&table), &vec![0u8; RAM_SIZE]);
         // The owner's own example: index 7 is `Haze`, and he wants to read `8/20`.
-        assert_eq!(
-            w.poll(&ram_with(0xE50D, 7)),
-            vec!["8/20 — Haze".to_string()]
-        );
+        assert_eq!(w.poll(&ram_with(0xE50D, 7)), vec!["8/20: Haze".to_string()]);
         // Only on the edge — a value that stays put says nothing on the frames after.
         assert!(w.poll(&ram_with(0xE50D, 7)).is_empty());
         assert_eq!(
@@ -465,13 +463,13 @@ mod tests {
         let (mut w, _) = SymbolWatch::arm(&[spec], Some(&table), &vec![0u8; RAM_SIZE]);
         // Index 1's label is blank.
         let blank = w.poll(&ram_with(0xE50D, 1));
-        assert_eq!(blank, vec!["2/3 — <no label> (Gap)".to_string()]);
+        assert_eq!(blank, vec!["2/3: <no label> (Gap)".to_string()]);
         // Index 5 is off the end of a three-entry list. `6/3` would be a lie about the list, so the raw
         // value is named and the shortfall stated.
         let past = w.poll(&ram_with(0xE50D, 5));
         assert_eq!(
             past,
-            vec!["Gap = 5 — outside the 3 labels configured".to_string()]
+            vec!["Gap = 5, outside the 3 labels configured".to_string()]
         );
         // Neither case is silent, which is the property that matters.
         assert!(!blank.is_empty() && !past.is_empty());

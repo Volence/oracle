@@ -101,7 +101,7 @@ fn short_disp(to: u32, at: u32) -> u8 {
         (-128..=127).contains(&delta) && delta != 0,
         "testrom short branch at {at:#X} -> {to:#X}: displacement {delta} is outside the signed-byte \
          window (-128..=127, and 0 is the word-displacement encoding). `as i8` would truncate it into a \
-         different VALID branch and the fixture would boot and measure the wrong thing — shorten the loop \
+         different VALID branch and the fixture would boot and measure the wrong thing. Shorten the loop \
          body, or emit a word branch via `disp16`."
     );
     delta as i8 as u8

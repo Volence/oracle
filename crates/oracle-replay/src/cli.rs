@@ -121,7 +121,7 @@ pub enum Parsed {
 }
 
 pub const USAGE: &str = "\
-replay_runner — headless runner for Aeon's embedded input-replay regression net
+replay_runner: headless runner for Aeon's embedded input-replay regression net
 
 USAGE:
     replay_runner --rom <path> --lst <path> [options]
@@ -152,8 +152,8 @@ RE-STAMPING:
                             Required to emit a re-stamped fixture; the artifact of record.
     --out <dir>             Write the patch report (and the re-stamped fixture, when --fixture-bin is
                             given) here. Omit for a pure dry run.
-    --emit-rom              Also write the re-stamped ROM image into --out. Off by default — the ROM is a
-                            build output, and the durable repair belongs in the fixture .bin.
+    --emit-rom              Also write the re-stamped ROM image into --out. Off by default: the ROM is
+                            a build output, and the durable repair belongs in the fixture .bin.
     --allow-source-write    Permit --out to resolve INSIDE the git repository the ROM/listing came from.
                             Those are owner artifacts; writing into them is never the default.
     --force                 Permit overwriting files that already exist.
@@ -163,11 +163,11 @@ EXIT CODES:
        the repair was computed and verified)
     1  usage error, or a refusal (release ROM / mismatched listing / unresolved symbol / a stream
        --restamp will not vouch for / a write that would land somewhere it may not)
-    2  DESYNC — a checkpoint mismatch
-    3  FAULT — some other trap fired during the replay
-    4  TIMEOUT — wedged, or the frame cap was reached
+    2  DESYNC: a checkpoint mismatch
+    3  FAULT: some other trap fired during the replay
+    4  TIMEOUT: wedged, or the frame cap was reached
     5  the negative control did NOT trip: the gate is inverted and proves nothing
-    6  SHORT COMPLETION — Replay_Done was set, but the run verified less than it claims (a
+    6  SHORT COMPLETION: Replay_Done was set, but the run verified less than it claims (a
        truncated or mis-packed stream). This is the case a bare Replay_Done compare called a PASS.
     7  --restamp computed a repair, but the re-stamped image did not verify. Nothing was written.
 ";
@@ -200,7 +200,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Parsed, String> 
             "--fixture" => {
                 let v = value("--fixture")?;
                 fixture = Fixture::parse(&v).ok_or_else(|| {
-                    format!("unknown fixture `{v}` — expected ojz_fixture or ojz_slide_fixture")
+                    format!("unknown fixture `{v}`, expected ojz_fixture or ojz_slide_fixture")
                 })?;
             }
             "--negative-control" => negative_control = true,

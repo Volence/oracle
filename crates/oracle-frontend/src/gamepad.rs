@@ -193,11 +193,11 @@ impl Gamepads {
             // `NotImplemented` carries a usable dummy context, but a dummy reports no gamepads forever — the
             // honest report is "no gamepad support here", on the same keyboard-only path as a hard error.
             Err(gilrs::Error::NotImplemented(_)) => {
-                eprintln!("gamepad: not supported on this platform — keyboard only");
+                eprintln!("gamepad: not supported on this platform, keyboard only");
                 return None;
             }
             Err(e) => {
-                eprintln!("gamepad: init failed ({e}) — keyboard only");
+                eprintln!("gamepad: init failed ({e}), keyboard only");
                 return None;
             }
         };
@@ -205,7 +205,7 @@ impl Gamepads {
         let mut ports = [None; PORTS];
         for (id, gp) in gilrs.gamepads() {
             match assign_port(&mut ports, id) {
-                Some(port) => println!("gamepad: port {} = {} — connected", port + 1, gp.name()),
+                Some(port) => println!("gamepad: port {} = {}, connected", port + 1, gp.name()),
                 None => println!(
                     "gamepad: ignoring extra controller {} (both ports in use)",
                     gp.name()
@@ -213,9 +213,7 @@ impl Gamepads {
             }
         }
         if ports.iter().all(Option::is_none) {
-            println!(
-                "gamepad: no controllers detected — keyboard only (hotplug is picked up live)"
-            );
+            println!("gamepad: no controllers detected, keyboard only (hotplug is picked up live)");
         }
         Some(Self {
             gilrs,
@@ -237,7 +235,7 @@ impl Gamepads {
                 EventType::Connected => {
                     let name = self.gilrs.gamepad(id).name().to_string();
                     match assign_port(&mut self.ports, id) {
-                        Some(port) => println!("gamepad: port {} = {name} — connected", port + 1),
+                        Some(port) => println!("gamepad: port {} = {name}, connected", port + 1),
                         None => println!(
                             "gamepad: ignoring extra controller {name} (both ports in use)"
                         ),
@@ -246,7 +244,7 @@ impl Gamepads {
                 EventType::Disconnected => {
                     if let Some(port) = release_port(&mut self.ports, id) {
                         println!(
-                            "gamepad: port {} disconnected — keyboard only for that player",
+                            "gamepad: port {} disconnected, keyboard only for that player",
                             port + 1
                         );
                     }

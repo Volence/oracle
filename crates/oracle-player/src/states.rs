@@ -107,7 +107,7 @@ impl States {
     /// The launch line: how many slots, where they go, and which are occupied.
     pub fn announcement(&self) -> String {
         format!(
-            "states: {SLOT_COUNT} slots, {} occupied — F2 saves, F4 loads, F6/F7 pick (slot {} now, e.g. {})",
+            "states: {SLOT_COUNT} slots, {} occupied. F2 saves, F4 loads, F6/F7 pick (slot {} now, e.g. {})",
             self.on_disk.iter().filter(|b| **b).count(),
             self.slot,
             save_state::state_path_for(Path::new(&self.rom_path), self.slot).display()

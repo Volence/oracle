@@ -442,7 +442,7 @@ fn an_undeclared_param_key_is_refused_by_the_params_closure() {
     let e = c.err("emulator/get_layer_states", json!({"layer": "planeA"}));
     assert_eq!(e["code"], json!(-32602));
     assert!(
-        message(&e).contains("none — this method takes no params"),
+        message(&e).contains("none, this method takes no params"),
         "the getter takes no params: {}",
         message(&e)
     );

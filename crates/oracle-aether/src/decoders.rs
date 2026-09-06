@@ -378,7 +378,7 @@ impl ObjectLayout {
         }
         if !unknown.is_empty() {
             return Err(RpcError::invalid_params(format!(
-                "layout `{}` does not name {} — a `fields` name must be one this layout declares, and \
+                "layout `{}` does not name {}: a `fields` name must be one this layout declares, and \
                  an unknown one is refused before any decode, so nothing was read",
                 self.spec.engine,
                 unknown
@@ -468,7 +468,7 @@ pub fn derive(table: Option<&SymbolTable>) -> Result<ObjectLayout, RpcError> {
             table,
             &format!(
                 "the loaded build's record is ${slot_bytes:X} bytes but this server's `{}` field \
-                 catalogue was written for ${:X} — the field offsets would not describe this build, so \
+                 catalogue was written for ${:X}: the field offsets would not describe this build, so \
                  the decode is refused rather than answered wrongly",
                 spec.engine, spec.table_slot_bytes
             ),

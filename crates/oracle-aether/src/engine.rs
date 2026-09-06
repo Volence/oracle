@@ -417,13 +417,13 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/watchpoint_hits",
         handler: Engine::watchpoint_hits,
-        summary: "the recorded hit log — polled, non-destructive, with dropped/seen/matched beside it",
+        summary: "the recorded hit log: polled, non-destructive, with dropped/seen/matched beside it",
         params: &["cursor", "limit", "watch"],
     },
     MethodSpec {
         name: "emulator/read",
         handler: Engine::read,
-        summary: "one byte read across the bus/vram/cram/vsram spaces — the read half of the watch surface",
+        summary: "one byte read across the bus/vram/cram/vsram spaces: the read half of the watch surface",
         params: &["addr", "len", "space", "symbol"],
     },
     MethodSpec {
@@ -580,19 +580,19 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/reset",
         handler: Engine::reset,
-        summary: "drive the /RESET sequence — back to the power-on anchor, SRAM and symbols kept",
+        summary: "drive the /RESET sequence: back to the power-on anchor, SRAM and symbols kept",
         params: &[],
     },
     MethodSpec {
         name: "emulator/memory_hash",
         handler: Engine::memory_hash,
-        summary: "fingerprint a byte range (FNV-1a-64 + CRC-32) without moving it — the hash state_hash cannot give",
+        summary: "fingerprint a byte range (FNV-1a-64 + CRC-32) without moving it: the hash state_hash cannot give",
         params: &["addr", "len", "symbol"],
     },
     MethodSpec {
         name: "emulator/scanlines",
         handler: Engine::scanlines,
-        summary: "read the drawn rows back — the live raster when a frame is retained, and the reply says which",
+        summary: "read the drawn rows back: the live raster when a frame is retained, and the reply says which",
         params: &["count", "startLine"],
     },
     // §6's `object / player decoders ⚙` group, schematized 2026-08-26 by §11.25 (CR-D). All three are
@@ -614,7 +614,7 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/object_slot",
         handler: Engine::object_slot,
-        summary: "one addressed object slot, decoded — or `active: false` when nothing lives there",
+        summary: "one addressed object slot, decoded, or `active: false` when nothing lives there",
         params: &["fields", "includeBytes", "slot"],
     },
     MethodSpec {
@@ -626,14 +626,14 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/z80_write",
         handler: Engine::z80_write,
-        summary: "one byte, or a low-address-first `bytes` payload, into the Z80's window — paused only",
+        summary: "one byte, or a low-address-first `bytes` payload, into the Z80's window, paused only",
         params: &["addr", "bytes", "value"],
     },
     MethodSpec {
         name: "emulator/object_at",
         handler: Engine::object_at,
         summary: "what is showing at one screen dot: the layer, the act-world point, and the object slot \
-                  that drew it — with each half naming its own unavailability",
+                  that drew it, with each half naming its own unavailability",
         params: &["x", "y"],
     },
     // §6's three object **MUTATION** rows, adopted 2026-09-03 by §11.32 (CR-J). Three rows and not one
@@ -660,7 +660,7 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/object_move",
         handler: Engine::object_move,
-        summary: "move one live dynamic object — POSITION ONLY, no clamp, velocity and animation untouched",
+        summary: "move one live dynamic object: POSITION ONLY, no clamp, velocity and animation untouched",
         params: &["expectFrameToken", "handle", "maxFrames", "slot", "x", "y"],
     },
     MethodSpec {
@@ -672,7 +672,7 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/screen_text",
         handler: Engine::screen_text,
-        summary: "the text on the player's window — source and rendered both, per surface; refuses when \
+        summary: "the text on the player's window: source and rendered both, per surface; refuses when \
                   there is no window",
         params: &[],
     },
@@ -1018,7 +1018,7 @@ impl ListingFreshness {
                  been rewritten since it was loaded and no longer describes the table this server is \
                  resolving against ({held_rows} row(s) held, {disk_rows} row(s) in the file now). A \
                  name the new build added will not resolve, and a name whose address moved will resolve \
-                 to the old one — silently, and looking exactly like an answer. `symbolsDropped: false` \
+                 to the old one, silently, and looking exactly like an answer. `symbolsDropped: false` \
                  says only that the held table still binds to the image's shape. Re-read it: \
                  emulator/load_symbols."
             )),
@@ -1065,7 +1065,7 @@ impl ListingFreshness {
         match self {
             Self::Current { path, rows } => format!(
                 "The listing was re-checked just now: {path} still parses to exactly the {rows} row(s) \
-                 held, so the table is CURRENT and this name is genuinely not in it — check the \
+                 held, so the table is CURRENT and this name is genuinely not in it. Check the \
                  spelling or the build, not the freshness of the listing."
             ),
             Self::Stale {
@@ -1080,7 +1080,7 @@ impl ListingFreshness {
             ),
             Self::Unmeasurable { held_rows, why } => format!(
                 "Whether the {held_rows}-row listing is still current could NOT be checked ({why}), so \
-                 this absence is not evidence that the name does not exist — a stale table has not been \
+                 this absence is not evidence that the name does not exist: a stale table has not been \
                  ruled out.",
                 why = why.clause()
             ),
@@ -1175,7 +1175,7 @@ impl RomFreshness {
     fn caveat(&self) -> Option<String> {
         // One spelling of the scope limit, so the three sentences cannot drift apart on it.
         const SCOPE: &str =
-            "This compares the running bytes against that path and nothing else — it \
+            "This compares the running bytes against that path and nothing else: it \
                              cannot tell you the path is the build you meant.";
         match self {
             Self::Current { .. } => None,
@@ -1187,7 +1187,7 @@ impl RomFreshness {
                 "the image this server is RUNNING is not the file at {path}: it holds {held_bytes} \
                  byte(s) and that file is {disk_bytes} byte(s) now, so the image was rebuilt or replaced \
                  after it was loaded. Every address, breakpoint and measurement in this session \
-                 describes the OLD image — nothing errors, no method fails, and the numbers look \
+                 describes the OLD image: nothing errors, no method fails, and the numbers look \
                  plausible. `romBytes` reports the size of what is held, which is a size and not an \
                  identity. Re-read it: emulator/reload_rom. {SCOPE}"
             )),
@@ -1198,15 +1198,15 @@ impl RomFreshness {
                 differing,
             } => Some(format!(
                 "the image this server is RUNNING is not the file at {path}: that file is still {bytes} \
-                 byte(s) — the SAME size as the image held, so a size check alone would have called this \
-                 current — but {differing} byte(s) differ, the first at ${first_diff:06X}. Every \
-                 address, breakpoint and measurement in this session describes the OLD image — nothing \
+                 byte(s) (the SAME size as the image held, so a size check alone would have called this \
+                 current), but {differing} byte(s) differ, the first at ${first_diff:06X}. Every \
+                 address, breakpoint and measurement in this session describes the OLD image: nothing \
                  errors, no method fails, and the numbers look plausible. Re-read it: \
                  emulator/reload_rom. {SCOPE}"
             )),
             Self::Unmeasurable { held_bytes, why } => Some(format!(
                 "whether the {held_bytes}-byte image this server is RUNNING is still the file it was \
-                 loaded from could NOT be checked ({why}), so it has NOT been shown to be current — and \
+                 loaded from could NOT be checked ({why}), so it has NOT been shown to be current, and \
                  unknown is not fresh. `romBytes` reports the size of what is held, which is a size and \
                  not an identity. {SCOPE}",
                 why = why.clause()
@@ -3106,7 +3106,7 @@ impl Engine {
     fn resolve_exclusive_target(&mut self, params: &Value) -> Result<u32, RpcError> {
         if params.get("addr").is_some() && params.get("symbol").is_some() {
             return Err(RpcError::invalid_params(
-                "`addr` and `symbol` are alternatives — pass exactly one. Both were given, and the two \
+                "`addr` and `symbol` are alternatives: pass exactly one. Both were given, and the two \
                  can name different places: resolving one and dropping the other would answer a question \
                  that was not asked",
             )
@@ -3122,13 +3122,13 @@ impl Engine {
         };
         if params.get("symbol").is_none() {
             return Err(RpcError::invalid_params(
-                "`disp` is valid only with `symbol` — with `addr` it is arithmetic the caller has \
+                "`disp` is valid only with `symbol`: with `addr` it is arithmetic the caller has \
                  already done",
             ));
         }
         let Some(d) = v.as_u64() else {
             return Err(RpcError::invalid_params(
-                "`disp` must be a non-negative integer — it mirrors `symbolDisp`, a displacement from \
+                "`disp` must be a non-negative integer: it mirrors `symbolDisp`, a displacement from \
                  the nearest preceding symbol, which cannot be negative",
             ));
         };
@@ -3298,7 +3298,7 @@ impl Engine {
         }
         Some(format!(
             "A display layer mask is hiding {}, and `framebuffer` deliberately fingerprints the UNMASKED \
-             picture — so it does NOT match what emulator/screenshot and emulator/scanlines are currently \
+             picture, so it does NOT match what emulator/screenshot and emulator/scanlines are currently \
              showing you. That is on purpose: a determinism fingerprint that moved because someone hid a \
              layer would make two identical machines disagree for a reason that has nothing to do with \
              either machine. Clear the mask to fingerprint the picture you are looking at.",
@@ -3320,10 +3320,10 @@ impl Engine {
         }
         Some(format!(
             "a display layer mask is active ({}), so this {kind} is composited from the VDP state as it \
-             stands right now rather than taken from a retained raster frame — those are always drawn \
-             unmasked. Mid-frame CRAM/scroll changes that a real raster would show on different lines are \
-             NOT reproduced. The mask is a DISPLAY mask: it has not changed the machine, and \
-             emulator/state_hash still fingerprints the unmasked picture.",
+             stands right now rather than taken from a retained raster frame. Retained frames are \
+             always drawn unmasked. Mid-frame CRAM/scroll changes that a real raster would show on \
+             different lines are NOT reproduced. The mask is a DISPLAY mask: it has not changed the \
+             machine, and emulator/state_hash still fingerprints the unmasked picture.",
             masked.join(", ")
         ))
     }
@@ -3583,19 +3583,19 @@ impl Engine {
         }
         if let Some(id) = run.broke_at {
             out["caveat"] = json!(format!(
-                "the target PC was never reached — breakpoint {} halted the run first, so NOTHING about \
+                "the target PC was never reached: breakpoint {} halted the run first, so NOTHING about \
                  the machine state follows from where it stopped",
                 breakpoint_wire_id(id)
             ));
         } else if let Some(id) = run.stopped_by {
             out["caveat"] = json!(format!(
-                "the target PC was never reached — watch {} hit its stopAfter threshold and ended the \
+                "the target PC was never reached: watch {} hit its stopAfter threshold and ended the \
                  run first, so NOTHING about the machine state follows from where it stopped",
                 watch_wire_id(id)
             ));
         } else if !run.predicate_fired {
             out["caveat"] = json!(
-                "the target PC was never reached within maxFrames — the run ended on its bound, so \
+                "the target PC was never reached within maxFrames: the run ended on its bound, so \
                  NOTHING about the machine state follows from where it stopped"
             );
         }
@@ -3651,7 +3651,7 @@ impl Engine {
         let line = match params.get("line") {
             None => {
                 return Err(RpcError::invalid_params(
-                    "`line` is required — the scanline to run to (integer 0-511)",
+                    "`line` is required: the scanline to run to (integer 0-511)",
                 ))
             }
             Some(v) => hex::parse_count("line", v, 0, MAX_SCANLINE_TARGET)?,
@@ -3693,13 +3693,13 @@ impl Engine {
         });
         if let Some(id) = run.broke_at {
             out["caveat"] = json!(format!(
-                "scanline {line} was never reached — breakpoint {} halted the run first, so NOTHING about \
+                "scanline {line} was never reached: breakpoint {} halted the run first, so NOTHING about \
                  the machine state follows from where it stopped",
                 breakpoint_wire_id(id)
             ));
         } else if let Some(id) = run.stopped_by {
             out["caveat"] = json!(format!(
-                "scanline {line} was never reached — watch {} hit its stopAfter threshold and ended the \
+                "scanline {line} was never reached: watch {} hit its stopAfter threshold and ended the \
                  run first, so NOTHING about the machine state follows from where it stopped",
                 watch_wire_id(id)
             ));
@@ -3708,14 +3708,14 @@ impl Engine {
             // that cannot exist would send a caller to raise `maxFrames` forever.
             out["caveat"] = json!(if line >= LINES_PER_FRAME as u32 {
                 format!(
-                    "scanline {line} cannot occur in this video mode — the frame is {LINES_PER_FRAME} \
+                    "scanline {line} cannot occur in this video mode: the frame is {LINES_PER_FRAME} \
                      lines (0-{}), so the run ended on its maxFrames bound and NOTHING about the machine \
                      state follows from where it stopped",
                     LINES_PER_FRAME - 1
                 )
             } else {
                 format!(
-                    "scanline {line} was never reached within maxFrames — the run ended on its bound, so \
+                    "scanline {line} was never reached within maxFrames: the run ended on its bound, so \
                      NOTHING about the machine state follows from where it stopped"
                 )
             });
@@ -3952,7 +3952,7 @@ impl Engine {
             "len": data.len(),
             "bytes": hex::bytes(&data),
             "region": region,
-            "caveat": "debug read: taken straight from the region, bypassing the bus — no open-bus \
+            "caveat": "debug read: taken straight from the region, bypassing the bus. No open-bus \
                        latch, no VDP port path, no side effects. A CPU read at this address can differ.",
         });
         if let Some((name, disp)) = self.symbol_at(addr) {
@@ -3976,7 +3976,7 @@ impl Engine {
         let data: Vec<u8> = match (params.get("bytes"), params.get("value")) {
             (Some(_), Some(_)) => {
                 return Err(RpcError::invalid_params(
-                    "`bytes` and `value` are alternatives — pass exactly one",
+                    "`bytes` and `value` are alternatives: pass exactly one",
                 ))
             }
             (Some(b), None) => {
@@ -3988,12 +3988,12 @@ impl Engine {
                 let d = hex::parse_bytes("bytes", b)?;
                 if d.is_empty() {
                     return Err(RpcError::invalid_params(
-                        "`bytes` is empty — nothing to write",
+                        "`bytes` is empty: nothing to write",
                     ));
                 }
                 if d.len() as u64 > self.config.max_write_len {
                     return Err(RpcError::invalid_params(format!(
-                        "`bytes` is {} bytes; the ceiling is limits.maxWriteLen = {} — refused, never truncated",
+                        "`bytes` is {} bytes; the ceiling is limits.maxWriteLen = {}. Refused, never truncated",
                         d.len(),
                         self.config.max_write_len
                     )));
@@ -4062,7 +4062,7 @@ impl Engine {
         // real mistake rather than "no symbol named …".
         if params.get("symbol").is_some() && space != WatchSpace::Bus {
             return Err(RpcError::invalid_params(format!(
-                "`symbol` is valid only with space \"bus\" — a VDP-internal byte address has no symbol \
+                "`symbol` is valid only with space \"bus\": a VDP-internal byte address has no symbol \
                  (got space {:?})",
                 space_name(space)
             )));
@@ -4244,7 +4244,7 @@ impl Engine {
                 Some(n) if n <= 15 => n as u8,
                 Some(n) => {
                     return Err(RpcError::invalid_params(format!(
-                        "`index` {n} is outside 0-15 — refused, never clipped"
+                        "`index` {n} is outside 0-15: refused, never clipped"
                     )))
                 }
                 None => {
@@ -4261,7 +4261,7 @@ impl Engine {
         let word = match (any_component, params.get("raw")) {
             (true, Some(_)) => {
                 return Err(RpcError::invalid_params(
-                    "`r`/`g`/`b` and `raw` are alternatives — pass exactly one spelling",
+                    "`r`/`g`/`b` and `raw` are alternatives: pass exactly one spelling",
                 ))
             }
             (false, None) => return Err(RpcError::invalid_params(
@@ -4272,7 +4272,7 @@ impl Engine {
                 for (slot, (name, v)) in c.iter_mut().zip(["r", "g", "b"].iter().zip(triple)) {
                     let Some(v) = v else {
                         return Err(RpcError::invalid_params(format!(
-                            "`{name}` is missing — `r`, `g` and `b` travel together; a partial triple \
+                            "`{name}` is missing: `r`, `g` and `b` travel together; a partial triple \
                              is refused"
                         )));
                     };
@@ -4280,7 +4280,7 @@ impl Engine {
                         Some(n) if n <= 7 => *slot = n as u16,
                         Some(n) => {
                             return Err(RpcError::invalid_params(format!(
-                                "`{name}` {n} is outside 0-7 — a stored component is 3-bit"
+                                "`{name}` {n} is outside 0-7: a stored component is 3-bit"
                             )))
                         }
                         None => {
@@ -4305,7 +4305,7 @@ impl Engine {
                 if n & !0x0EEE != 0 {
                     return Err(RpcError::invalid_params(format!(
                         "`raw` {n:#06X} carries bits outside the chip's 0x0EEE mask \
-                         (---- BBB- GGG- RRR-) — refused, never masked"
+                         (---- BBB- GGG- RRR-): refused, never masked"
                     )));
                 }
                 n as u16
@@ -4405,13 +4405,13 @@ impl Engine {
         };
         let Some(b) = params.get("bytes") else {
             return Err(RpcError::invalid_params(
-                "`bytes` is required — a hex payload is this row's only spelling",
+                "`bytes` is required: a hex payload is this row's only spelling",
             ));
         };
         let data = hex::parse_bytes("bytes", b)?;
         if data.is_empty() {
             return Err(RpcError::invalid_params(
-                "`bytes` is empty — nothing to write",
+                "`bytes` is empty: nothing to write",
             ));
         }
 
@@ -4423,7 +4423,7 @@ impl Engine {
         if end > size {
             return Err(out_of_range(
                 addr,
-                "the write would run past the end of VRAM ($0000-$FFFF) — refused whole, never clipped",
+                "the write would run past the end of VRAM ($0000-$FFFF): refused whole, never clipped",
             ));
         }
 
@@ -4493,7 +4493,7 @@ impl Engine {
             return Err(RpcError::new(
                 code::ADDRESS_OUT_OF_RANGE,
                 format!(
-                    "({x},{y}) is outside the active display ({width}x{height}) — the dot does not \
+                    "({x},{y}) is outside the active display ({width}x{height}): the dot does not \
                      exist, so there is nothing to attribute it to"
                 ),
             )
@@ -4620,7 +4620,7 @@ impl Engine {
             "vsram": hex_of(h.vsram),
             "regs": hex_of(h.regs),
             "combined": hex_of(h.combined),
-            "caveat": "these fingerprints cover VDP state only (VRAM, CRAM, VSRAM, VDP registers) — \
+            "caveat": "these fingerprints cover VDP state only (VRAM, CRAM, VSRAM, VDP registers): \
                        they say nothing about the CPU, work RAM, the Z80, SRAM or audio. Two machines \
                        agreeing here can still differ.",
         });
@@ -4671,7 +4671,7 @@ impl Engine {
         let addr = self.resolve_exclusive_target(params)?;
         let Some(l) = params.get("len") else {
             return Err(RpcError::invalid_params(
-                "`len` is required — a hash without a length hashes nothing",
+                "`len` is required: a hash without a length hashes nothing",
             ));
         };
         let len = hex::parse_count("len", l, 1, self.config.max_hash_len)?;
@@ -4838,7 +4838,7 @@ impl Engine {
                     return Err(RpcError::new(
                         code::INVALID_STATE,
                         "`frames` bounds the per-frame list, and this sample was not armed with \
-                         set_profiler{perFrame:true} — arm it and re-run, or drop the param",
+                         set_profiler{perFrame:true}. Arm it and re-run, or drop the param",
                     )
                     .with_data(json!({"reason": "perFrameNotArmed"})));
                 }
@@ -4856,7 +4856,7 @@ impl Engine {
                     return Err(RpcError::new(
                         code::INVALID_STATE,
                         "`topCallers` bounds each routine row's caller list, and this sample was not \
-                         armed with set_profiler{callers:true} — arm it and re-run, or drop the param",
+                         armed with set_profiler{callers:true}. Arm it and re-run, or drop the param",
                     )
                     .with_data(json!({"reason": "callersNotArmed"})));
                 }
@@ -5244,7 +5244,7 @@ impl Engine {
         if start + count > lines {
             return Err(RpcError::invalid_params(format!(
                 "`startLine` {start} + `count` {count} runs past the active display \
-                 (lines 0..={}) — refused, never clipped",
+                 (lines 0..={}): refused, never clipped",
                 lines - 1
             )));
         }
@@ -5284,10 +5284,10 @@ impl Engine {
             // these rows are post-hoc and the sentence below would be false. The unmasked text is
             // untouched.
             out["caveat"] = json!(self.mask_caveat("readback").unwrap_or_else(|| {
-                "no completed frame is retained — the machine has not drawn one yet, or reset/reload_rom/\
-                 restore dropped it — so these rows are rendered from the VDP state as it stands right \
+                "no completed frame is retained (the machine has not drawn one yet, or reset/reload_rom/\
+                 restore dropped it), so these rows are rendered from the VDP state as it stands right \
                  now. Mid-frame CRAM/scroll changes that a real raster would show on different lines are \
-                 NOT reproduced — run at least one frame for a scanline-accurate readback."
+                 NOT reproduced. Run at least one frame for a scanline-accurate readback."
                     .to_string()
             }));
         }
@@ -5489,7 +5489,7 @@ impl Engine {
         let payload = match (params.get("bytes"), params.get("value")) {
             (Some(_), Some(_)) => {
                 return Err(RpcError::invalid_params(
-                    "`bytes` and `value` are two spellings of one payload — send one",
+                    "`bytes` and `value` are two spellings of one payload: send one",
                 ))
             }
             (Some(b), None) => hex::parse_bytes("bytes", b)?,
@@ -5635,7 +5635,7 @@ impl Engine {
         let include_bytes = decoder_include_bytes_param(params)?;
         let Some(raw_slot) = params.get("slot") else {
             return Err(RpcError::invalid_params(
-                "`slot` is required — this row addresses one slot",
+                "`slot` is required: this row addresses one slot",
             ));
         };
         let layout = decoders::derive(self.symbols.as_deref())?;
@@ -5650,7 +5650,7 @@ impl Engine {
             .map_err(|e| {
             if raw_slot.as_u64().is_some() {
                 RpcError::invalid_params(format!(
-                    "`slot` {} is past the end of the object pool — this build has {slot_count} \
+                    "`slot` {} is past the end of the object pool: this build has {slot_count} \
                          slots (0..={}), and the bound is refused rather than clamped",
                     raw_slot,
                     slot_count - 1
@@ -5745,7 +5745,7 @@ impl Engine {
                     "frameMoved",
                     format!(
                         "the machine is at frame {have}, not the frame {want} this request was built \
-                         against — refusing rather than acting on a machine that moved under the caller. \
+                         against. Refusing rather than acting on a machine that moved under the caller. \
                          Re-read the state you are addressing and try again."
                     ),
                     json!({"expectFrameToken": want, "frameToken": have, "framesAdvanced": 0}),
@@ -5990,7 +5990,7 @@ impl Engine {
                 code::INTERNAL_ERROR,
                 format!(
                     "the engine reported success and published handle {}, which does not seat in the \
-                     object pool this server decoded — the reply would describe bytes that are not a \
+                     object pool this server decoded: the reply would describe bytes that are not a \
                      record, so it is refused instead.",
                     hex::u16_hex(handle)
                 ),
@@ -6142,7 +6142,7 @@ impl Engine {
     fn objreq_def_param(&mut self, params: &Value) -> Result<u32, RpcError> {
         match (params.get("def"), params.get("defSymbol")) {
             (Some(_), Some(_)) => Err(RpcError::invalid_params(
-                "exactly one of `def` (hex string) and `defSymbol` (name) — both were given",
+                "exactly one of `def` (hex string) and `defSymbol` (name): both were given",
             )),
             (None, None) => Err(RpcError::invalid_params(
                 "exactly one of `def` (hex string) and `defSymbol` (name) is required: the archetype to \
@@ -6181,12 +6181,12 @@ impl Engine {
         let handle = match (params.get("handle"), params.get("slot")) {
             (Some(_), Some(_)) => {
                 return Err(RpcError::invalid_params(
-                    "exactly one of `handle` (hex string) and `slot` (pool index) — both were given",
+                    "exactly one of `handle` (hex string) and `slot` (pool index): both were given",
                 ))
             }
             (None, None) => {
                 return Err(RpcError::invalid_params(
-                    "exactly one of `handle` (hex string) and `slot` (pool index) is required — this row \
+                    "exactly one of `handle` (hex string) and `slot` (pool index) is required: this row \
                      names an object, and a request that names none is not a smaller request",
                 ))
             }
@@ -6194,7 +6194,7 @@ impl Engine {
                 let raw = hex::parse_addr("handle", h)?;
                 if raw > 0xFFFF {
                     return Err(RpcError::invalid_params(format!(
-                        "`handle` {} is wider than 16 bits — a handle is the LOW WORD of an object's \
+                        "`handle` {} is wider than 16 bits: a handle is the LOW WORD of an object's \
                          `addr`, not the whole address",
                         hex::addr(raw)
                     ))
@@ -6325,7 +6325,7 @@ impl Engine {
         let applied = self.layers.set(layer, enabled);
         debug_assert!(
             applied,
-            "`{name}` came out of mask_targets() but LayerMask::set refused it — the two derivations \
+            "`{name}` came out of mask_targets() but LayerMask::set refused it: the two derivations \
              from Layer have drifted"
         );
         Ok(json!({ "layer": name, "enabled": self.layers.shows(layer) }))
@@ -6374,7 +6374,7 @@ impl Engine {
             out["caveat"] = json!(self.mask_caveat("capture").unwrap_or_else(|| {
                 "no whole frame has been drawn yet, so this is rendered from the VDP state as it stands \
                  right now. Mid-frame CRAM/scroll changes that a real raster would show on different \
-                 lines are NOT reproduced — run at least one frame for a scanline-accurate capture."
+                 lines are NOT reproduced. Run at least one frame for a scanline-accurate capture."
                     .to_string()
             }));
         }
@@ -6603,7 +6603,7 @@ impl Engine {
             if r.symbol.demangled_ambiguous {
                 out["caveat"] = json!(
                     "several different addresses share this readable name (a macro expanded more than \
-                     once), so `demangled` does not identify a location — `name` is the unique one."
+                     once), so `demangled` does not identify a location. `name` is the unique one."
                 );
             }
             return Ok(out);
@@ -6736,7 +6736,7 @@ impl Engine {
         let query = match (name, prefix) {
             (Some(_), Some(_)) => {
                 return Err(RpcError::invalid_params(
-                    "exactly one of `name` (exact) or `prefix` (bounded search) — both were given",
+                    "exactly one of `name` (exact) or `prefix` (bounded search): both were given",
                 ))
             }
             (None, None) => return Err(RpcError::invalid_params(
@@ -6769,7 +6769,7 @@ impl Engine {
                     // make a client choose, which is the drift §4's `rawName` was struck for.
                     let e = RpcError::new(
                         code::SYMBOL_NOT_FOUND,
-                        format!("no equate named {name} — {why}"),
+                        format!("no equate named {name}: {why}"),
                     )
                     .with_data(json!({"missing": name}));
                     return Err(self.with_symbol_freshness(e));
@@ -6858,7 +6858,7 @@ impl Engine {
                 true,
                 Some(format!(
                     "this listing declares EndOfRom at exactly the image's end (${rom_len:X} bytes), \
-                     which is the no-appendix shape a stock AS disassembly has — `RomEndLoc: dc.l \
+                     which is the no-appendix shape a stock AS disassembly has. `RomEndLoc: dc.l \
                      EndOfRom-1` puts the symbol one past the last byte, so there is nothing to probe \
                      rather than a probe that failed. Accepted unverified because it is internally \
                      intact.",
@@ -6894,7 +6894,7 @@ impl Engine {
             (c, n) => {
                 let note = format!(
                     "{n} row(s) in this listing declare a value that is not an address (AS emits its \
-                     build metadata — ARCHITECTURE, DATE, TIME — as pseudo-symbols), so they are \
+                     build metadata ARCHITECTURE, DATE and TIME as pseudo-symbols), so they are \
                      counted by the file's own `N symbols` footer but cannot answer a lookup and are \
                      not in symbolCount."
                 );
@@ -7753,7 +7753,7 @@ impl Engine {
         if all {
             if params.get("id").is_some() {
                 return Err(RpcError::invalid_params(
-                    "`id` and `all` are mutually exclusive — pass one",
+                    "`id` and `all` are mutually exclusive: pass one",
                 ));
             }
             let removed = self.checkpoints.len();
@@ -7793,7 +7793,7 @@ impl Engine {
         // resolution so the refusal names the real mistake instead of "no symbol named …".
         if params.get("symbol").is_some() && space != WatchSpace::Bus {
             return Err(RpcError::invalid_params(format!(
-                "`symbol` is valid only with space \"bus\" — a VDP-internal byte address has no symbol \
+                "`symbol` is valid only with space \"bus\": a VDP-internal byte address has no symbol \
                  (got space {:?})",
                 space_name(space)
             )));
@@ -7891,7 +7891,7 @@ impl Engine {
         if all {
             if params.get("watch").is_some() {
                 return Err(RpcError::invalid_params(
-                    "`watch` and `all` are mutually exclusive — pass one",
+                    "`watch` and `all` are mutually exclusive: pass one",
                 ));
             }
             let removed = self.watchpoints.watch_count();
@@ -7969,7 +7969,7 @@ impl Engine {
             out.insert(
                 "caveat".into(),
                 json!(
-                    "at least one listed watch groups by a census key this bus does not expose, so its                      `censusKey` is absent while its `census` counts are real — the watch was armed                      locally rather than over this socket"
+                    "at least one listed watch groups by a census key this bus does not expose, so its                      `censusKey` is absent while its `census` counts are real: the watch was armed                      locally rather than over this socket"
                 ),
             );
         }
@@ -8107,7 +8107,7 @@ impl Engine {
             Some(Value::Bool(b)) => *b,
             Some(other) => {
                 return Err(RpcError::invalid_params(format!(
-                    "`enabled` must be a boolean (D9 category 2) — got {}",
+                    "`enabled` must be a boolean (D9 category 2): got {}",
                     hex::kind_of(other)
                 )))
             }
@@ -8169,12 +8169,12 @@ impl Engine {
         let enabled = match params.get("enabled") {
             Some(Value::Bool(b)) => *b,
             None | Some(Value::Null) => return Err(RpcError::invalid_params(
-                "`enabled` is required — the state to set. A toggle whose argument may be omitted \
+                "`enabled` is required: the state to set. A toggle whose argument may be omitted \
                      is a toggle whose caller cannot tell which way it went",
             )),
             Some(other) => {
                 return Err(RpcError::invalid_params(format!(
-                    "`enabled` must be a boolean (D9 category 2) — got {}",
+                    "`enabled` must be a boolean (D9 category 2): got {}",
                     hex::kind_of(other)
                 )))
             }
@@ -8185,7 +8185,7 @@ impl Engine {
             return Err(RpcError::invalid_state(
                 "unknownBreakpoint",
                 format!(
-                    "{handle:?} is not a breakpoint this server holds — it was cleared, or never issued"
+                    "{handle:?} is not a breakpoint this server holds: it was cleared, or never issued"
                 ),
                 json!({ "breakpoint": handle }),
             ));
@@ -8283,7 +8283,7 @@ impl Engine {
         if all {
             if params.get("breakpoint").is_some() {
                 return Err(RpcError::invalid_params(
-                    "`breakpoint` and `all` are mutually exclusive — pass one",
+                    "`breakpoint` and `all` are mutually exclusive: pass one",
                 ));
             }
             return Ok(json!({"removed": self.breakpoints.clear()}));
@@ -8389,7 +8389,7 @@ impl Engine {
             .filter(|id| self.breakpoints.was_issued(*id))
             .ok_or_else(|| {
                 RpcError::invalid_params(format!(
-                    "`cursor`: {handle:?} is not a handle this server issued — pass back the one \
+                    "`cursor`: {handle:?} is not a handle this server issued: pass back the one \
                      emulator/breakpoint_list returned"
                 ))
             })
@@ -8414,7 +8414,7 @@ impl Engine {
             .filter(|id| id.0 < self.watches_issued)
             .ok_or_else(|| {
                 RpcError::invalid_params(format!(
-                    "`{field}`: {handle:?} is not a handle this server issued — pass back one \
+                    "`{field}`: {handle:?} is not a handle this server issued: pass back one \
                      emulator/watchpoint_add returned"
                 ))
             })
@@ -8451,13 +8451,13 @@ fn parse_checkpoint_id(params: &Value) -> Result<String, RpcError> {
         // `#/$defs/handle` is `{"type":"string","minLength":1}`; an empty handle is a shape violation,
         // not an unknown checkpoint, so it is refused here rather than looked up and missed.
         Some(Value::String(_)) => Err(RpcError::invalid_params(
-            "`id` must be a non-empty string — pass back the handle `emulator/checkpoint` returned",
+            "`id` must be a non-empty string: pass back the handle `emulator/checkpoint` returned",
         )),
         None | Some(Value::Null) => Err(RpcError::invalid_params(
             "`id` (the opaque string handle returned by emulator/checkpoint) is required",
         )),
         Some(other) => Err(RpcError::invalid_params(format!(
-            "`id` must be a JSON string — the handle is opaque and a client must not compute on it \
+            "`id` must be a JSON string: the handle is opaque and a client must not compute on it \
              (D9 category 4); got {}",
             hex::kind_of(other)
         ))),
@@ -8499,7 +8499,7 @@ fn parse_cursor(v: &Value, max: u64) -> Result<u64, RpcError> {
         };
         return Err(RpcError::invalid_params(format!(
             "`cursor` must be a token returned by a previous `checkpoint_list` (a JSON string; a bare \
-             number is also accepted, for clients written against the older numeric spelling) — {got}"
+             number is also accepted, for clients written against the older numeric spelling): {got}"
         )));
     };
     // Range-check through the house's shared counted-field rule so the bound and its error message
@@ -8515,7 +8515,7 @@ fn unknown_checkpoint(id: &str) -> RpcError {
         "unknownCheckpoint",
         // Quoted, because the id is now an arbitrary client-supplied string: unquoted, an id of `""` or
         // `" "` would produce a message with a hole in it.
-        format!("no checkpoint {id:?} — it was never taken, or it has been dropped"),
+        format!("no checkpoint {id:?}: it was never taken, or it has been dropped"),
         json!({ "id": id }),
     )
 }
@@ -8657,13 +8657,13 @@ fn parse_breakpoint_handle(params: &Value, field: &str) -> Result<String, RpcErr
     match params.get(field) {
         Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
         Some(Value::String(_)) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be a non-empty string — pass back the handle emulator/breakpoint_add returned"
+            "`{field}` must be a non-empty string: pass back the handle emulator/breakpoint_add returned"
         ))),
         None | Some(Value::Null) => Err(RpcError::invalid_params(format!(
             "`{field}` (the opaque string handle returned by emulator/breakpoint_add) is required"
         ))),
         Some(other) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be a JSON string — the handle is opaque and a client must not compute on it \
+            "`{field}` must be a JSON string: the handle is opaque and a client must not compute on it \
              (D9 category 4); got {}",
             hex::kind_of(other)
         ))),
@@ -8677,13 +8677,13 @@ fn parse_watch_handle(params: &Value, field: &str) -> Result<String, RpcError> {
     match params.get(field) {
         Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
         Some(Value::String(_)) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be a non-empty string — pass back the handle emulator/watchpoint_add returned"
+            "`{field}` must be a non-empty string: pass back the handle emulator/watchpoint_add returned"
         ))),
         None | Some(Value::Null) => Err(RpcError::invalid_params(format!(
             "`{field}` (the opaque string handle returned by emulator/watchpoint_add) is required"
         ))),
         Some(other) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be a JSON string — the handle is opaque and a client must not compute on it \
+            "`{field}` must be a JSON string: the handle is opaque and a client must not compute on it \
              (D9 category 4); got {}",
             hex::kind_of(other)
         ))),
@@ -8732,7 +8732,7 @@ fn parse_mask_layer(params: &Value) -> Result<(&'static str, Layer), RpcError> {
         .join(", ");
     match params.get("layer") {
         None | Some(Value::Null) => Err(RpcError::invalid_params(format!(
-            "`layer` is required — one of {accepted}"
+            "`layer` is required: one of {accepted}"
         ))
         .with_data(json!({ "accepted": names }))),
         Some(Value::String(s)) => targets
@@ -8744,7 +8744,7 @@ fn parse_mask_layer(params: &Value) -> Result<(&'static str, Layer), RpcError> {
                     .with_data(json!({ "layer": s, "accepted": names }))
             }),
         Some(other) => Err(RpcError::invalid_params(format!(
-            "`layer` must be a string — one of {accepted}; got {}",
+            "`layer` must be a string: one of {accepted}; got {}",
             hex::kind_of(other)
         ))
         .with_data(json!({ "accepted": names }))),
@@ -8757,7 +8757,7 @@ fn parse_mask_enabled(params: &Value) -> Result<bool, RpcError> {
     match params.get("enabled") {
         Some(Value::Bool(b)) => Ok(*b),
         None | Some(Value::Null) => Err(RpcError::invalid_params(
-            "`enabled` is required — a boolean saying whether the layer is drawn (D9 category 2)",
+            "`enabled` is required: a boolean saying whether the layer is drawn (D9 category 2)",
         )),
         Some(other) => Err(RpcError::invalid_params(format!(
             "`enabled` must be a boolean (D9); got {}",
@@ -8795,7 +8795,7 @@ fn parse_watch_op(params: &Value) -> Result<WatchOp, RpcError> {
         // matches nothing, and is named rather than silently turned into a write watch.
         (false, false) if read.is_none() && write.is_none() => Ok(WatchOp::Write),
         (false, false) => Err(RpcError::invalid_params(
-            "`read: false, write: false` arms a watch that can never match — omit both for the \
+            "`read: false, write: false` arms a watch that can never match. Omit both for the \
              write-only default, or set at least one true",
         )),
     }
@@ -8846,11 +8846,11 @@ fn parse_watch_mode(params: &Value) -> Result<(WatchMode, Option<CensusKey>), Rp
     match (census, key) {
         (true, Some(k)) => Ok((WatchMode::Census(k), Some(k))),
         (true, None) => Err(RpcError::invalid_params(
-            "`mode: \"census\"` requires `censusKey` — a census with no key has nothing to group by",
+            "`mode: \"census\"` requires `censusKey`: a census with no key has nothing to group by",
         )),
         (false, Some(_)) => Err(RpcError::invalid_params(
             "`censusKey` is only meaningful with `mode: \"census\"` and is refused without it rather \
-             than ignored — a param this bus dropped silently would be a caller believing it asked for \
+             than ignored: a param this bus dropped silently would be a caller believing it asked for \
              a grouping it did not get",
         )),
         (false, None) => Ok((WatchMode::Record, None)),
@@ -9079,7 +9079,7 @@ fn unknown_params(spec: &MethodSpec, params: &Value) -> Option<RpcError> {
         return None;
     }
     let accepted = if spec.params.is_empty() {
-        "none — this method takes no params".to_string()
+        "none, this method takes no params".to_string()
     } else {
         spec.params.join(", ")
     };
@@ -9103,7 +9103,7 @@ fn parse_cram_line(v: &Value) -> Result<u8, RpcError> {
     match v.as_u64() {
         Some(n) if n <= 3 => Ok(n as u8),
         Some(n) => Err(RpcError::invalid_params(format!(
-            "`line` {n} is outside 0-3 — refused, never clipped"
+            "`line` {n} is outside 0-3: refused, never clipped"
         ))),
         // D9 category 2: an index is a JSON number, never a hex string.
         None => Err(RpcError::invalid_params(
@@ -9244,7 +9244,7 @@ pub fn z80_window(addr: u32, len: usize) -> Result<(), RpcError> {
         return Err(RpcError::new(
             code::ADDRESS_OUT_OF_RANGE,
             format!(
-                "the Z80 window is 0x0000-0x3FFF and this access ends at {} — refused whole rather \
+                "the Z80 window is 0x0000-0x3FFF and this access ends at {}: refused whole rather \
                  than wrapped, because a wrapped write lands on 0x0000 and reports success",
                 hex::addr(end.min(u64::from(u32::MAX)) as u32)
             ),
@@ -9482,7 +9482,7 @@ fn describe_fault(f: BindingFault) -> String {
             hex::addr(end_of_rom)
         ),
         BindingFault::NoAppendixMagic { offset, found } => format!(
-            "no deb2 symbol appendix at its EndOfRom ({}) — found {:02X} {:02X}",
+            "no deb2 symbol appendix at its EndOfRom ({}): found {:02X} {:02X}",
             hex::addr(offset),
             found[0],
             found[1]
@@ -9546,7 +9546,7 @@ fn parse_input_rows(params: &Value, cap: usize) -> Result<Vec<InputRow>, RpcErro
     // An empty timeline is a request to do nothing, refused rather than silently satisfied.
     if arr.is_empty() {
         return Err(RpcError::invalid_params(
-            "`rows` is empty — a timeline that applies to no frame is refused rather than treated as a \
+            "`rows` is empty: a timeline that applies to no frame is refused rather than treated as a \
              no-op, so a script cannot look like it ran when it did not",
         ));
     }
@@ -9576,7 +9576,7 @@ fn parse_input_rows(params: &Value, cap: usize) -> Result<Vec<InputRow>, RpcErro
         let (start, end) = (num("start")?, num("end")?);
         if end <= start {
             return Err(RpcError::invalid_params(at(&format!(
-                "`end` ({end}) must be greater than `start` ({start}) — the interval is half-open \
+                "`end` ({end}) must be greater than `start` ({start}): the interval is half-open \
                  [start, end), so an empty one is a row that says nothing"
             ))));
         }

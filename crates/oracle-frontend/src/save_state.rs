@@ -146,17 +146,17 @@ impl std::fmt::Display for StateError {
             StateError::BadMagic => write!(f, "not a save state: bad magic"),
             StateError::Version { found, expected } => write!(
                 f,
-                "save-state format v{found}, this build writes v{expected} — state discarded"
+                "save-state format v{found}, this build writes v{expected}; state discarded"
             ),
             StateError::Layout { found, expected } => write!(
                 f,
                 "stale save state: written by a build with a different machine layout \
-                 (fingerprint {found:#018x}, this build {expected:#018x}) — state discarded"
+                 (fingerprint {found:#018x}, this build {expected:#018x}); state discarded"
             ),
             StateError::Rom { found, expected } => write!(
                 f,
                 "save state belongs to a different ROM (fingerprint {found:#018x}, \
-                 loaded ROM {expected:#018x}) — state discarded"
+                 loaded ROM {expected:#018x}); state discarded"
             ),
             StateError::Length { declared, actual } => write!(
                 f,

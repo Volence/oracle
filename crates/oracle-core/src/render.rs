@@ -639,14 +639,14 @@ impl ScanlineScaffold {
         debug_assert_eq!(
             (mclk / crate::vdp::MCLK_PER_LINE) % crate::vdp::LINES_PER_FRAME,
             u64::from(row.report.line),
-            "a CRAM write stamped on one line was journalled against another row's decode — reducing the \
+            "a CRAM write stamped on one line was journalled against another row's decode: reducing the \
              clock mod the line would have hidden it at a plausible x"
         );
         let d_mclk = mclk % crate::vdp::MCLK_PER_LINE;
         let x = crate::vdp::subline_x(d_mclk, row.report.h40);
         debug_assert!(
             row.journal.last().is_none_or(|l| l.x <= x),
-            "landings arrive in pixel order — the coalescing tail-scan and the segmented decode both rely \
+            "landings arrive in pixel order: the coalescing tail-scan and the segmented decode both rely \
              on it, and a backwards x means a write was stamped outside the row's own line"
         );
         for l in row.journal.iter_mut().rev() {

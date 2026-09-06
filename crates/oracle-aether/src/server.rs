@@ -361,7 +361,7 @@ impl Server {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::AlreadyExists,
                             format!(
-                                "{} exists and is not a socket ({ft:?}) — refusing to delete it. \
+                                "{} exists and is not a socket ({ft:?}). Refusing to delete it. \
                                  Point --socket somewhere else, or remove the file yourself.",
                                 path.display()
                             ),

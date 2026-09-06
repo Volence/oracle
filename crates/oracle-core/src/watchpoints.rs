@@ -820,7 +820,7 @@ impl Watchpoints {
         if self.vdp_matched > 0 {
             out.push(format!(
                 "{} VDP-internal hit(s): `mclk` is the write's own instant, but it is \
-                 instruction-granular — the bus clock is frozen for one 68000 instruction, so a write is \
+                 instruction-granular. The bus clock is frozen for one 68000 instruction, so a write is \
                  located to the start of the instruction that drove it, and every word of one DMA burst \
                  shares the transfer's instant (F-SUBLINE-ACCESSMCLK, F-SUBLINE-DMASPREAD).",
                 self.vdp_matched
@@ -832,7 +832,7 @@ impl Watchpoints {
                 && (overlaps(s, 0x7F11) || overlaps(s, 0xC0_0011))
             {
                 out.push(format!(
-                    "watch #{} '{}': an fc census over the PSG port cannot attribute a master — a 68000 \
+                    "watch #{} '{}': an fc census over the PSG port cannot attribute a master. A 68000 \
                      write through the Z80 window is re-emitted Z80-shaped (addr $7F11, fc 0), so both \
                      master signals read as Z80 there (F-TRACE-MASTER).",
                     s.id.0, s.label
@@ -840,7 +840,7 @@ impl Watchpoints {
             }
             if s.keys_capped {
                 out.push(format!(
-                    "watch #{} '{}': census hit its {}-key cap — distinct_keys is a LOWER BOUND and {} \
+                    "watch #{} '{}': census hit its {}-key cap, so distinct_keys is a LOWER BOUND and {} \
                      further access(es) carried keys it could not retain.",
                     s.id.0, s.label, s.key_cap, s.census_overflow
                 ));

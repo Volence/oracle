@@ -151,7 +151,7 @@ impl fmt::Display for Shortfall {
                 required,
             } => write!(
                 f,
-                "Logic_Tick is {logic_tick}, but the stream declares {required} ticks — the playback \
+                "Logic_Tick is {logic_tick}, but the stream declares {required} ticks. The playback \
                  reached an end-of-stream opcode {} ticks early, so most of the stream was never \
                  replayed and most of its checkpoints were never compared (a truncated or mis-packed \
                  stream looks exactly like this)",
@@ -159,13 +159,13 @@ impl fmt::Display for Shortfall {
             ),
             Self::InputSourceNotCleared { input_source } => write!(
                 f,
-                "Input_Source is ${input_source:02X}, not $00 — the completion path clears it on the \
+                "Input_Source is ${input_source:02X}, not $00. The completion path clears it on the \
                  same instruction pair that sets Replay_Done, so this flag was not set by that path"
             ),
             Self::CursorInHeader { offset } => write!(
                 f,
-                "Replay_Ptr is only fixture+{offset}, still inside the {REPLAY_HEADER_LEN}-byte header \
-                 — the arm never took"
+                "Replay_Ptr is only fixture+{offset}, still inside the {REPLAY_HEADER_LEN}-byte \
+                 header: the arm never took"
             ),
         }
     }

@@ -51,7 +51,7 @@ pub fn parse_addr(field: &str, v: &Value) -> Result<u32, RpcError> {
     };
     let digits = strip_prefix(s).ok_or_else(|| {
         RpcError::invalid_params(format!(
-            "`{field}` must start with \"0x\" or \"$\" — a bare \"{s}\" is ambiguous between decimal and hex"
+            "`{field}` must start with \"0x\" or \"$\": a bare \"{s}\" is ambiguous between decimal and hex"
         ))
     })?;
     if digits.is_empty() || digits.len() > 8 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {

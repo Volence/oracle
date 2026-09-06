@@ -838,7 +838,7 @@ impl Panels<'_> {
         ui.separator();
         // Said out loud, because a panel that silently shows one number twice is a new wrong answer.
         ui.small(
-            "A7 and SP are one register: the stack pointer the CPU is using right now — SSP in \
+            "A7 and SP are one register: the stack pointer the CPU is using right now, SSP in \
              supervisor mode, USP in user. USP and SSP below it are the two storage slots, both shown \
              whichever mode the machine is in.",
         );
@@ -894,13 +894,13 @@ impl Panels<'_> {
                     memory::Resolved::Hex(a) => {
                         self.mem.base = a;
                         memory::Line::plain(format!(
-                            "{} — a hex literal, taken as typed",
+                            "{}: a hex literal, taken as typed",
                             oracle_aether::hex::addr(a)
                         ))
                     }
                     memory::Resolved::Symbol { addr, reply } => {
                         self.mem.base = addr;
-                        memory::Line::plain(format!("ok — {reply}"))
+                        memory::Line::plain(format!("ok: {reply}"))
                     }
                     memory::Resolved::Refused(e) => {
                         memory::answer_line(&crate::bus::Answer::Err(e))
@@ -951,7 +951,7 @@ impl Panels<'_> {
                 }
                 if let Some(n) = v.truncated_to {
                     ui.small(format!(
-                        "showing {n} bytes from {} — the space ends before a full page",
+                        "showing {n} bytes from {}: the space ends before a full page",
                         oracle_aether::hex::addr(v.base)
                     ));
                 }
@@ -1043,7 +1043,7 @@ impl Panels<'_> {
                 ui.monospace(format!(
                     "{:<22} {}  {}",
                     space.label(),
-                    if g.is_open() { "WRITE" } else { "  —  " },
+                    if g.is_open() { "WRITE" } else { "  no " },
                     g.why()
                 ));
             }
@@ -1347,7 +1347,7 @@ impl Panels<'_> {
             ui,
             view.live,
             &format!(
-                "{} of {} breakpoint{} armed — the machine will halt at {}",
+                "{} of {} breakpoint{} armed, so the machine will halt at {}",
                 view.armed,
                 view.rows.len(),
                 if view.rows.len() == 1 { "" } else { "s" },
@@ -1413,7 +1413,7 @@ impl Panels<'_> {
                 .button("arm")
                 .on_hover_text(
                     "emulator/breakpoint_add. A name goes to the server as `symbol` and the server \
-                     resolves it — the reply carries the address it landed on. A second add at an \
+                     resolves it: the reply carries the address it landed on. A second add at an \
                      occupied address is a SECOND breakpoint, never a duplicate error.",
                 )
                 .clicked()
@@ -1431,7 +1431,7 @@ impl Panels<'_> {
                 if ui
                     .button("clear all")
                     .on_hover_text(
-                        "emulator/breakpoint_clear {all:true} — EVERY breakpoint on this server, \
+                        "emulator/breakpoint_clear {all:true}: EVERY breakpoint on this server, \
                          including ones another client armed. It is a separate spelling from a handle \
                          precisely because it is not the same gesture.",
                     )
@@ -1464,7 +1464,7 @@ impl Panels<'_> {
                                 .checkbox(&mut on, "")
                                 .on_hover_text(
                                     "emulator/breakpoint_set_enabled. `hits` is carried ACROSS the \
-                                     toggle — this surface never resets a count; a fresh one means \
+                                     toggle: this surface never resets a count; a fresh one means \
                                      clear and re-add.",
                                 )
                                 .changed()
@@ -1572,7 +1572,7 @@ impl Panels<'_> {
                 .on_hover_text(
                     "The op is these two BOOLEANS; `emulator/watchpoint_add` has no `op` param at all \
                      (`op` is a key of its reply, saying what the pair became). Both unticked is refused \
-                     by the handler — a watch that can never match — and this panel lets it say so.",
+                     by the handler (a watch that can never match), and this panel lets it say so.",
                 );
             ui.label("stopAfter");
             ui.add(
@@ -1609,7 +1609,7 @@ impl Panels<'_> {
         ));
         ui.small(
             "`seen` counts every access the instrument looked at. seen > 0 with matched == 0 is a real \
-             negative finding — the range was watched and nothing touched it — and it is only \
+             negative finding (the range was watched and nothing touched it), and it is only \
              distinguishable from a watch that never armed because both numbers are here.",
         );
         for c in &view.caveats {
@@ -1630,7 +1630,7 @@ impl Panels<'_> {
                                 .small_button("✕")
                                 .on_hover_text(
                                     "emulator/watchpoint_clear. The watch goes; its recorded HITS stay, \
-                                     deliberately — a destructive clear would let one client erase \
+                                     deliberately: a destructive clear would let one client erase \
                                      another's evidence. The headline above changes to STOPPED.",
                                 )
                                 .clicked()
@@ -1667,7 +1667,7 @@ impl Panels<'_> {
         if !view.hits.is_empty() {
             ui.separator();
             ui.strong(format!(
-                "hit log — {} retained{}",
+                "hit log: {} retained{}",
                 view.hits.len(),
                 if view.dropped > 0 {
                     format!(", {} dropped (a gap in `seq` marks them)", view.dropped)
@@ -1764,7 +1764,7 @@ impl Panels<'_> {
             ),
             &if matches!(view.live, Live::Never) {
                 "The profiler has never been armed in this session, so there is no sample to show. This \
-                 is not `no hot code` — it is `nothing was measured`. Arm it below."
+                 is not `no hot code`. It is `nothing was measured`. Arm it below."
                     .to_owned()
             } else {
                 format!(
@@ -1787,7 +1787,7 @@ impl Panels<'_> {
             if ui
                 .button(if view.armed { "disarm" } else { "arm" })
                 .on_hover_text(
-                    "emulator/set_profiler. ⚑ ARMING RESETS THE SAMPLE — every arming flag resets \
+                    "emulator/set_profiler. ⚑ ARMING RESETS THE SAMPLE: every arming flag resets \
                      together (§11.18), so ticking `callers` on a running measurement and re-arming \
                      starts a FRESH sample under the lenses this click names, and the one you were \
                      watching is gone. Disarming keeps it.",
@@ -1821,7 +1821,7 @@ impl Panels<'_> {
             );
             ui.separator();
             ui.strong(format!(
-                "hottest routines — top {} of {}",
+                "hottest routines: top {} of {}",
                 view.top.len(),
                 view.routine_count
             ));
@@ -1853,7 +1853,7 @@ impl Panels<'_> {
                 ui.small(format!(
                     "{} further routine{} in the sample are not drawn. The full list is \
                      `emulator/get_profiler_frames`, whose `top` refuses a request above its cap rather \
-                     than clamping — so a client can always tell a full list from a clipped one.",
+                     than clamping, so a client can always tell a full list from a clipped one.",
                     view.routine_count - view.top.len(),
                     if view.routine_count - view.top.len() == 1 {
                         ""
@@ -2692,7 +2692,7 @@ impl StatusStrip {
         (
             AETHER_LABEL,
             match &self.aether {
-                None => "NOT MEASURED — this strip was built with no bus to ask".into(),
+                None => "NOT MEASURED: this strip was built with no bus to ask".into(),
                 Some(o) => o.sentence(),
             },
         )
@@ -2722,7 +2722,7 @@ impl StatusStrip {
         let Some(pads) = self.held else {
             return Some((
                 HELD_LABEL,
-                "NOT MEASURED — this strip was built with no bus to ask".into(),
+                "NOT MEASURED: this strip was built with no bus to ask".into(),
             ));
         };
         let by_port: Vec<String> = pads
@@ -2739,7 +2739,7 @@ impl StatusStrip {
         Some((
             HELD_LABEL,
             format!(
-                "{} — a bus client is holding these, not you; emulator/release_all clears them",
+                "{} (a bus client is holding these, not you; emulator/release_all clears them)",
                 by_port.join(" · ")
             ),
         ))
@@ -2764,12 +2764,12 @@ impl StatusStrip {
         let Some(h) = &self.halting else {
             return Some((
                 HALTING_LABEL,
-                "NOT MEASURED — this strip was built with no bus to ask".into(),
+                "NOT MEASURED: this strip was built with no bus to ask".into(),
             ));
         };
         let head = h.headline()?;
         match h.advice() {
-            Some(a) => Some((HALTING_LABEL, format!("{head} — {a}"))),
+            Some(a) => Some((HALTING_LABEL, format!("{head} · {a}"))),
             None => Some((HALTING_LABEL, head)),
         }
     }
@@ -2811,10 +2811,10 @@ impl StatusStrip {
                 match (&self.symbol_at_pc, self.symbol_count) {
                     (Some((name, 0)), _) => name.clone(),
                     (Some((name, disp)), _) => format!("{name}+${disp:X}"),
-                    (None, None) => "— no listing loaded".into(),
+                    (None, None) => "no listing loaded".into(),
                     // A table that resolves nothing at this address is a real answer and a different one:
                     // the listing is there and the PC is before its first symbol (or past its end).
-                    (None, Some(_)) => "— the listing names no symbol at or before pc".into(),
+                    (None, Some(_)) => "the listing names no symbol at or before pc".into(),
                 },
             ),
         ]);
@@ -3091,7 +3091,7 @@ impl Transport {
             let line = e.line();
             ui.colored_label(colour, &line).on_hover_text(
                 "the bus's own reply, verbatim. The bracketed word is `error.data.reason`, the \
-                 discriminant clients branch on — never the message text.",
+                 discriminant clients branch on, never the message text.",
             );
             drew.push(screen::Run::after_sep(line));
         }
@@ -3759,7 +3759,7 @@ mod bus_parity {
             row(&rows, "symbols"),
             "none loaded (no --symbols, and no .lst beside the ROM)"
         );
-        assert_eq!(row(&rows, "symbol at pc"), "— no listing loaded");
+        assert_eq!(row(&rows, "symbol at pc"), "no listing loaded");
         // Nothing in the strip may be rendered as a bare `0` or a blank — an unmeasurable shown as a
         // number is the wrong answer this row exists to avoid.
         for (label, value) in &rows {
@@ -4364,8 +4364,10 @@ mod bus_parity {
             .split_once(&format!("port {port}: "))
             .unwrap_or_else(|| panic!("the row names no port {port}: {value:?}"))
             .1;
-        // The row is `port N: a, b [· port M: …] — <remedy>`; stop at whichever separator comes first.
-        let end = [" · ", " — "]
+        // The row is `port N: a, b [· port M: …] (<remedy>)`; stop at whichever separator comes first.
+        // The remedy used to be introduced by ` — `, and P10 replaced it with a parenthesis rather than
+        // a colon precisely so this parse stays unambiguous against the row's own `port N: ` colons.
+        let end = [" · ", " ("]
             .iter()
             .filter_map(|s| after.find(s))
             .min()

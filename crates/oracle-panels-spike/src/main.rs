@@ -111,22 +111,20 @@ fn build_audio() -> Option<AudioState> {
     let device = match host.default_output_device() {
         Some(d) => d,
         None => {
-            eprintln!("audio: no default output device — audio measurement NOT POSSIBLE here");
+            eprintln!("audio: no default output device. Audio measurement NOT POSSIBLE here");
             return None;
         }
     };
     let default_cfg = match device.default_output_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "audio: no default output config ({e}) — audio measurement NOT POSSIBLE here"
-            );
+            eprintln!("audio: no default output config ({e}). Audio measurement NOT POSSIBLE here");
             return None;
         }
     };
     if default_cfg.sample_format() != cpal::SampleFormat::F32 {
         eprintln!(
-            "audio: device sample format {:?} is not f32 — audio measurement NOT POSSIBLE here",
+            "audio: device sample format {:?} is not f32. Audio measurement NOT POSSIBLE here",
             default_cfg.sample_format()
         );
         return None;
@@ -183,14 +181,14 @@ fn build_audio() -> Option<AudioState> {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "audio: failed to build output stream ({e}) — audio measurement NOT POSSIBLE here"
+                "audio: failed to build output stream ({e}). Audio measurement NOT POSSIBLE here"
             );
             return None;
         }
     };
     if let Err(e) = stream.play() {
         eprintln!(
-            "audio: failed to start output stream ({e}) — audio measurement NOT POSSIBLE here"
+            "audio: failed to start output stream ({e}). Audio measurement NOT POSSIBLE here"
         );
         return None;
     }
@@ -688,7 +686,7 @@ impl eframe::App for SpikeApp {
                     if (m.x.round() as u32, m.y.round() as u32) != (ew, eh) {
                         eprintln!(
                             "ABORT: the toolkit reports a {}x{} screen but this run demanded {ew}x{eh}. \
-                             That is NOT the Xvfb display this run created — it is somebody's real \
+                             That is NOT the Xvfb display this run created. It is somebody's real \
                              compositor. Refusing to draw.",
                             m.x, m.y
                         );
@@ -834,7 +832,7 @@ fn report(mode: &str, eng: &Engine, elapsed: f64, screen: Option<(f32, f32)>, wa
                 }
             );
         }
-        None => println!("last picture         NONE — the run never completed a frame"),
+        None => println!("last picture         NONE: the run never completed a frame"),
     }
     println!("\n-- per-iteration CPU cost, milliseconds --");
     println!(
@@ -897,7 +895,7 @@ fn report(mode: &str, eng: &Engine, elapsed: f64, screen: Option<(f32, f32)>, wa
         None if wanted_audio => {
             println!("\n-- audio --");
             println!(
-                "NOT MEASURED — audio was REQUESTED but no usable output device exists in this \
+                "NOT MEASURED: audio was REQUESTED but no usable output device exists in this \
                  environment (see the warning above). The zero underruns you would otherwise read here \
                  would come from a sink that never ran."
             );

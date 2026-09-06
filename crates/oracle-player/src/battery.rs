@@ -222,7 +222,7 @@ impl Battery {
         if let Some(o) = self.orphan.take() {
             self.write(
                 o,
-                "(retry — these bytes outlived their cartridge)",
+                "(retry: these bytes outlived their cartridge)",
                 &mut said,
             );
         }
@@ -306,7 +306,7 @@ impl Battery {
             )),
             Err(e) => {
                 said.push(format!(
-                    "SRAM: save {why} FAILED ({}): {e} — the bytes are still held in memory and the \
+                    "SRAM: save {why} FAILED ({}): {e}. The bytes are still held in memory and the \
                      write will be retried every frame",
                     p.path.display()
                 ));

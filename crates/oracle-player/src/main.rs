@@ -505,7 +505,7 @@ impl SwapNotice {
             s.push('\n');
         }
         s.push_str(
-            "Something replaced the machine in this window — a reload, a reset or a restore, from here \
+            "Something replaced the machine in this window: a reload, a reset or a restore, from here \
              or from a program driving it. Anything you read now comes from the new one. Click to \
              dismiss.",
         );
@@ -652,7 +652,7 @@ impl Loop {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
                     loud(
-                        "GOVERNOR OFF (--target-fps 0). This is the CONTROL — the spike's arrangement, \
+                        "GOVERNOR OFF (--target-fps 0). This is the CONTROL: the spike's arrangement, \
                          with layer 1 removed. Nothing measured under it is the player's behaviour.",
                     );
                     Governor::unpaced(now)
@@ -1070,7 +1070,7 @@ impl Loop {
                 if ui
                     .button(palette::PALETTE_LABEL)
                     .on_hover_text(format!(
-                        "{} — every method this build serves, invoked in-process through the same \
+                        "{}: every method this build serves, invoked in-process through the same \
                          registry a tool reads",
                         palette::SHORTCUT_LABEL
                     ))
@@ -1221,8 +1221,8 @@ fn arm_for_measurement(lp: &mut Loop) {
         std::process::exit(2);
     }
     loud(&format!(
-        "bench-arm: {breakpoints} breakpoints (disabled), {watches} watch, profiler armed with perFrame \
-         — the panels have rows"
+        "bench-arm: {breakpoints} breakpoints (disabled), {watches} watch, profiler armed with perFrame, \
+         so the panels have rows"
     ));
 }
 
@@ -1247,7 +1247,7 @@ fn run_bench_cpu(machine: Machine, args: &Args, loaded: symbols::Loaded) {
     if args.dock_every_tab {
         // The measurement arrangement. Announced, because a run whose layout differs from the default
         // must say so in its own output or its numbers get compared against ones taken under the other.
-        loud("dock: EVERY TAB IN ITS OWN LEAF — every panel body runs every frame (--dock every-tab)");
+        loud("dock: EVERY TAB IN ITS OWN LEAF, so every panel body runs every frame (--dock every-tab)");
         lp.dock = ui::every_tab_dock();
     }
     if args.bench_arm {
@@ -1396,7 +1396,7 @@ impl eframe::App for App {
                     if (m.x.round() as u32, m.y.round() as u32) != (ew, eh) {
                         loud(&format!(
                             "ABORT: the toolkit reports a {}x{} screen but this run demanded {ew}x{eh}. \
-                             That is NOT the display this run created — it is somebody's real compositor. \
+                             That is NOT the display this run created. It is somebody's real compositor. \
                              Refusing to draw.",
                             m.x, m.y
                         ));
@@ -1492,7 +1492,7 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         persist,
     };
     if args.dock_every_tab {
-        loud("dock: EVERY TAB IN ITS OWN LEAF — layout persistence is OFF for this run (--dock every-tab)");
+        loud("dock: EVERY TAB IN ITS OWN LEAF, and layout persistence is OFF for this run (--dock every-tab)");
         app.lp.dock = ui::every_tab_dock();
     }
     if args.bench_arm {
@@ -1529,7 +1529,7 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
             });
         }
         None => {
-            loud("note: the embedded window icon did not decode — the window opens without one")
+            loud("note: the embedded window icon did not decode, so the window opens without one")
         }
     }
     let opts = eframe::NativeOptions {
@@ -1555,7 +1555,7 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
                 match outcome {
                     layout::Outcome::Restored => loud("layout: restored from the last session"),
                     layout::Outcome::Absent => {
-                        loud("layout: none stored yet — the default arrangement")
+                        loud("layout: none stored yet (the default arrangement)")
                     }
                     // Reported, never raised. A layout that will not load is not a question the user has
                     // to answer; they get the default back and the reason goes to stderr with everything

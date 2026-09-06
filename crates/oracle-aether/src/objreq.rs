@@ -181,7 +181,7 @@ impl ActExtent {
     /// have been silently culled knows the refusal is the useful half.
     pub fn outside(&self, x: u32, y: u32) -> RpcError {
         RpcError::invalid_params(format!(
-            "world ({x}, {y}) is outside the loaded act, whose extent is {} x {} pixels — the valid box \
+            "world ({x}, {y}) is outside the loaded act, whose extent is {} x {} pixels: the valid box \
              is [0, {}) x [0, {}), read just now from `{LEVEL_WIDTH_SYMBOL}` and \
              `{LEVEL_HEIGHT_SYMBOL}`. An object placed there is culled by the engine on camera distance \
              with no error and nothing on screen, so this is refused BEFORE anything is written rather \
@@ -213,7 +213,7 @@ impl ActExtent {
             "this server cannot tell whether this placement is inside the act: {} not in the loaded \
              listing, so there is no measurement to check it against. An object placed outside the act \
              is culled by the engine with no error and nothing on screen, and a request sent unchecked \
-             would be acked as placed and then vanish — so this refuses rather than treating the act as \
+             would be acked as placed and then vanish, so this refuses rather than treating the act as \
              infinite.",
             match missing {
                 [one] => format!("`{one}` is"),
@@ -231,7 +231,7 @@ impl ActExtent {
     pub fn no_act() -> RpcError {
         RpcError::invalid_params(format!(
             "`{LEVEL_WIDTH_SYMBOL}` and `{LEVEL_HEIGHT_SYMBOL}` read 0, which is what they hold until an \
-             act has initialised — there is no act for an object to be inside of, and anything placed \
+             act has initialised: there is no act for an object to be inside of, and anything placed \
              now would be culled the moment objects run. This is deliberately NOT `outsideAct`: there is \
              no level edge to be outside of yet, and saying so would send the caller hunting for one."
         ))
@@ -321,7 +321,7 @@ pub fn resolve(table: Option<&SymbolTable>) -> Result<Mailbox, RpcError> {
         return Err(RpcError::new(
             code::NO_SYMBOLS_LOADED,
             "no symbol table is loaded, and this row resolves the live-object mailbox by symbol on every \
-             call — call emulator/load_symbols first",
+             call. Call emulator/load_symbols first",
         ));
     };
     let mut addrs = [0u32; 8];
@@ -338,7 +338,7 @@ pub fn resolve(table: Option<&SymbolTable>) -> Result<Mailbox, RpcError> {
             format!(
                 "this build has no live-object mailbox: {} of the {} `Obj_Req_*` cells are absent from \
                  the loaded symbol table. The mailbox is a DEBUG-shape interface, so a release ROM \
-                 resolves none of it — and nothing is written at a computed address when a name is \
+                 resolves none of it. Nothing is written at a computed address when a name is \
                  missing.",
                 missing.len(),
                 CELLS.len(),
@@ -407,7 +407,7 @@ pub fn status_error(status: u8, frames_advanced: u64, ctx: &StatusContext) -> Rp
         }
         ERR_FULL => RpcError::invalid_state(
             "objectPoolFull",
-            "the dynamic object pool is exhausted, so nothing was spawned — and NOTHING WAS EVICTED: \
+            "the dynamic object pool is exhausted, so nothing was spawned, and NOTHING WAS EVICTED: \
              the engine allocates from its own free stack and refuses rather than reclaiming a live \
              slot. Retrying harder will not help; the same request succeeds once a slot frees.",
             json!({"dynamicSlots": ctx.dynamic_slots, "framesAdvanced": frames}),
@@ -422,14 +422,14 @@ pub fn status_error(status: u8, frames_advanced: u64, ctx: &StatusContext) -> Rp
         ERR_OWNED => RpcError::invalid_state(
             "slotOwnedByEntityWindow",
             "that slot belongs to the entity window, which clears the entity's loaded bit before it \
-             deletes — so a bare delete here would leave the window believing the entity is still \
+             deletes, so a bare delete here would leave the window believing the entity is still \
              spawned. It despawns on its own when its section stops being tracked, and \
              emulator/object_move IS allowed on it.",
             json!({"handle": ctx.handle, "framesAdvanced": frames}),
         ),
         ERR_OP => RpcError::new(
             code::INTERNAL_ERROR,
-            "the engine did not recognise the op byte — which this server wrote, so this is our bug and \
+            "the engine did not recognise the op byte, which this server wrote, so this is our bug and \
              not the caller's. The row is unreachable by construction and is mapped rather than left \
              silently impossible.",
         )

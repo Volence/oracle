@@ -114,7 +114,7 @@ pub fn print(r: &Run) {
             r.frame_iterations as f64 / r.elapsed
         ),
         Reach::SoftwareRasteriser => println!(
-            "presented frame rate REFUSED — this run rasterises in software (llvmpipe on Xvfb) on the \
+            "presented frame rate REFUSED: this run rasterises in software (llvmpipe on Xvfb) on the \
              same cores as the emulator. Its present cost is not this machine's."
         ),
     }
@@ -138,18 +138,22 @@ pub fn print(r: &Run) {
                 c.len()
             );
         }
-        None => println!("last picture         NONE — THE RUN NEVER COMPLETED A FRAME; ignore every number above"),
+        None => println!(
+            "last picture         NONE: THE RUN NEVER COMPLETED A FRAME; ignore every number above"
+        ),
     }
 
     // The headline, in the two numbers a mean would have hidden.
     if !r.governor.is_paced() {
         println!(
-            "\n*** GOVERNOR OFF — this is the CONTROL run, the toolkit spike's arrangement with layer 1 \
+            "\n*** GOVERNOR OFF: this is the CONTROL run, the toolkit spike's arrangement with layer 1 \
              removed. Nothing below is the player's behaviour. ***"
         );
     }
     if r.buckets.period.is_empty() {
-        println!("\nFRAME PERIOD         NOT MEASURED — fewer than two frame-owning iterations completed");
+        println!(
+            "\nFRAME PERIOD         NOT MEASURED: fewer than two frame-owning iterations completed"
+        );
     } else {
         println!(
             "\nFRAME PERIOD         median {:.3} ms, WORST {:.3} ms  (target {})",
@@ -157,7 +161,7 @@ pub fn print(r: &Run) {
             r.buckets.period.max(),
             match r.governor.period() {
                 Some(p) => format!("{:.3} ms", p.as_secs_f64() * 1000.0),
-                None => "NONE — governor off".to_string(),
+                None => "NONE (governor off)".to_string(),
             }
         );
     }
@@ -210,7 +214,7 @@ pub fn print(r: &Run) {
         None if r.wanted_audio => {
             println!("\n-- audio --");
             println!(
-                "NOT MEASURED — audio was REQUESTED and no usable output device exists here. The pacing \
+                "NOT MEASURED: audio was REQUESTED and no usable output device exists here. The pacing \
                  verdict is UNAVAILABLE for this run, not favourable."
             );
         }

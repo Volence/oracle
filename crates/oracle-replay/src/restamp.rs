@@ -166,18 +166,18 @@ impl fmt::Display for StreamError {
             ),
             Self::TickMismatch { walked, declared } => write!(
                 f,
-                "the RLE runs account for {walked} ticks, but the header declares {declared} — this is \
+                "the RLE runs account for {walked} ticks, but the header declares {declared}: this is \
                  a truncated or mis-packed stream, and re-stamping one would write fresh hashes into a \
                  fixture that verifies almost nothing while looking green"
             ),
             Self::RingOffGrid { index, ring } => write!(
                 f,
-                "checkpoint {index} sits at ring {ring}, not {} — record and playback disagree about \
+                "checkpoint {index} sits at ring {ring}, not {}: record and playback disagree about \
                  what a ring index means, so the payload offsets cannot be vouched for",
                 *index as u32 * RING_STRIDE
             ),
             Self::NoCheckpoints => {
-                f.write_str("the stream carries no checkpoints — there is nothing to re-stamp")
+                f.write_str("the stream carries no checkpoints, so there is nothing to re-stamp")
             }
         }
     }
@@ -314,14 +314,14 @@ pub fn build_recovery_stub(rom: &[u8], a: &StubAnchors) -> Result<RecoveryStub, 
     // --- what we copy ------------------------------------------------------------------------------
     let copied_len = a.fetch_a0.checked_sub(a.fetch).ok_or_else(|| {
         format!(
-            "`Input_Tick.fetch_a0` (${:06X}) is not after `Input_Tick.fetch` (${:06X}) — the listing \
+            "`Input_Tick.fetch_a0` (${:06X}) is not after `Input_Tick.fetch` (${:06X}): the listing \
              does not describe the loop this stub rejoins",
             a.fetch_a0, a.fetch
         )
     })?;
     if copied_len != 4 {
         return Err(format!(
-            "`Input_Tick.fetch` is {copied_len} bytes long, not 4 — it is supposed to be the single \
+            "`Input_Tick.fetch` is {copied_len} bytes long, not 4: it is supposed to be the single \
              `movea.l (Replay_Ptr).w, a0` the match path repeats. The engine has changed shape; refusing \
              to patch code into it"
         ));
@@ -331,7 +331,7 @@ pub fn build_recovery_stub(rom: &[u8], a: &StubAnchors) -> Result<RecoveryStub, 
     if fetch_op != MOVEA_L_ABS_W_A0 {
         return Err(format!(
             "`Input_Tick.fetch` at ${:06X} opens {fetch_op:02X?}, not {MOVEA_L_ABS_W_A0:02X?} \
-             (`movea.l (xxx).w, a0`) — refusing to copy an instruction that is not the one this stub \
+             (`movea.l (xxx).w, a0`). Refusing to copy an instruction that is not the one this stub \
              needs",
             a.fetch
         ));
@@ -340,7 +340,7 @@ pub fn build_recovery_stub(rom: &[u8], a: &StubAnchors) -> Result<RecoveryStub, 
         u16::from_be_bytes(read2(rom, a.fetch + 2).expect("in range: checked above"));
     if abs_w_target(fetch_operand) != a.replay_ptr {
         return Err(format!(
-            "`Input_Tick.fetch` loads from ${:06X}, but `Replay_Ptr` resolves to ${:06X} — the \
+            "`Input_Tick.fetch` loads from ${:06X}, but `Replay_Ptr` resolves to ${:06X}: the \
              instruction this stub copies does not reload the stream cursor",
             abs_w_target(fetch_operand),
             a.replay_ptr
@@ -370,7 +370,7 @@ pub fn build_recovery_stub(rom: &[u8], a: &StubAnchors) -> Result<RecoveryStub, 
     let d1_operand = u16::from_be_bytes([old[2], old[3]]);
     if abs_w_target(d1_operand) != a.logic_tick {
         return Err(format!(
-            "`Input_Tick.desync` loads d1 from ${:06X}, but `Logic_Tick` resolves to ${:06X} — this is \
+            "`Input_Tick.desync` loads d1 from ${:06X}, but `Logic_Tick` resolves to ${:06X}: this is \
              not the raise site's `move.l Logic_Tick, d1`",
             abs_w_target(d1_operand),
             a.logic_tick
@@ -378,7 +378,7 @@ pub fn build_recovery_stub(rom: &[u8], a: &StubAnchors) -> Result<RecoveryStub, 
     }
     if old[4..6] != JSR_ABS_L {
         return Err(format!(
-            "`Input_Tick.desync` + 4 is {:02X?}, not {JSR_ABS_L:02X?} (`jsr xxx.l`) — the raise site is \
+            "`Input_Tick.desync` + 4 is {:02X?}, not {JSR_ABS_L:02X?} (`jsr xxx.l`): the raise site is \
              not the two-instruction shape this stub replaces",
             &old[4..6]
         ));
@@ -387,7 +387,7 @@ pub fn build_recovery_stub(rom: &[u8], a: &StubAnchors) -> Result<RecoveryStub, 
     if jsr_target != a.error_handler {
         return Err(format!(
             "`Input_Tick.desync`'s jsr targets ${jsr_target:06X}, but `ErrorHandlerBlob` resolves to \
-             ${:06X} — refusing to overwrite a call to something else",
+             ${:06X}. Refusing to overwrite a call to something else",
             a.error_handler
         ));
     }
@@ -468,8 +468,8 @@ impl RestampPlan {
     pub fn apply_to_rom(&self, rom: &mut [u8]) -> Result<(), String> {
         if rom.len() != self.rom_len {
             return Err(format!(
-                "this plan was computed against a {}-byte image but was handed a {}-byte one — \
-                 refusing, because the offsets would not mean the same thing",
+                "this plan was computed against a {}-byte image but was handed a {}-byte one. \
+                 Refusing, because the offsets would not mean the same thing",
                 self.rom_len,
                 rom.len()
             ));
@@ -504,7 +504,7 @@ fn patch4(buf: &mut [u8], at: u32, expect_old: u32, new: u32, what: &str) -> Res
     if found != expect_old {
         return Err(format!(
             "the {what} bytes at ${at:06X} hold ${found:08X}, but this plan expects the stale \
-             ${expect_old:08X} there — the image is not the one the plan was computed from. Refusing"
+             ${expect_old:08X} there: the image is not the one the plan was computed from. Refusing"
         ));
     }
     slot.copy_from_slice(&new.to_be_bytes());
@@ -528,7 +528,7 @@ pub fn verify_fixture_embedding(rom: &[u8], base: u32, blob: &[u8]) -> Result<()
             .position(|(a, b)| a != b)
             .unwrap_or(0);
         return Err(format!(
-            "the fixture file does not match the copy embedded in the ROM — first difference at file \
+            "the fixture file does not match the copy embedded in the ROM: first difference at file \
              offset {at} (ROM ${:02X} vs file ${:02X}). This is a different build than the one that \
              produced the ROM, and its offsets cannot be trusted",
             slice[at], blob[at]

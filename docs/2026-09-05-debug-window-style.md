@@ -338,12 +338,46 @@ kind that survives every correctness review.
 an of our tools." Filed by the hub in `design/CHROME_SPEC.md` under "Text in the tools"; this is oracle's
 copy of it, and it binds every tool, not only this window.* Use a comma, a colon, parentheses, or two
 sentences. A dash standing in for a colon is almost always a colon.
-*Check:* `grep -rnP '[\x{2014}\x{2013}]' crates/*/src/*.rs | grep -vE ':\s*//[/!]?'` returns 0.
-**Measured at the ruling: 742 across the workspace's runtime strings, 239 of them in
-`crates/oracle-player/src/`.** That is a large number and most of it is refusal prose rather than labels,
-so this is a sweep to sequence, not a blocker on any one panel.
-⚠ **The check is deliberately not `grep -c` on the file**: doc comments (`//`, `///`, `//!`) are exempt and
-are the bulk of the raw hits. Only what a person reads at runtime is in scope.
+*Check:* `cargo test -p oracle-player --test p10_no_dashes_in_shipped_text`. **The sweep landed
+2026-09-05 and the rule is now a gate**, not a grep to remember to run.
+
+⚠ **The check used to be a grep, and the grep could not enforce the rule it was asked to enforce.** It was
+`grep -rnP '[\x{2014}\x{2013}]' crates/*/src/*.rs | grep -vE ':\s*//[/!]?'`, and it is recorded here as a
+worked example of a measurement that reads as authoritative while being wrong in both directions:
+
+* **It cannot exclude test modules.** No character filter can. It counted every string dash in
+  `crates/*/src/**`, shipped or test-only, and so **over-reported the in-scope set by 1.84x**.
+* **`crates/*/src/*.rs` does not recurse**, and `-r` does not rescue a glob the shell has already expanded
+  to plain files. Measured blind spot: 3 occurrences in `crates/oracle-core/src/z80/mod.rs`.
+
+**The figures previously recorded here, "742 across the workspace's runtime strings, 239 of them in
+`crates/oracle-player/src/`", do not reproduce.** Re-run against the pre-sweep tree (`1c3aea2`) that
+command returns **697** and **214**. Neither pair was ever the answer: lexing the same tree gives the true
+in-scope totals as **379** workspace-wide (380 counting `oracle-aether/build.rs`) and **91** in
+`crates/oracle-player/src/`, out of 11,515 raw dashes in tracked `.rs` files. The rest are doc comments,
+`//` comments and test-module strings, all exempt because **no person reads them in the tool**; sweeping
+them would buy nothing and cost every future `git blame`.
+
+⚠ **The 1.84x figure has a second lesson in it, and it is the expensive one.** The first version of the
+lexer replacing that grep matched the literal `#[cfg(test)]`, which is the spelling everyone pictures. This
+workspace also writes **`#[cfg(all(test, unix))]`** (eight modules in `oracle-player`) and
+**`#[cfg(all(test, feature = "aether"))]`** (`oracle-frontend/src/drain.rs`), and the literal match saw
+none of them. That put the in-scope count at 480 rather than 379 and sent an agent to sweep 91 test
+assertions in `oracle-player` alone. It was caught by a sweeping agent noticing its residual count would
+not go to zero, not by the two independent implementations that had already agreed on the wrong number,
+because both were written by the same author and carried the same assumption. **Two implementations
+agreeing is not independence when one person wrote both.**
+
+The gate lexes each file, so it exempts comments and `#[cfg(test)]` modules *as such* rather than by
+guessing from a line's shape, and it recurses. It carries its own anti-vacuity proofs: a floor on the file
+count, a planted-sample test that pins the classifier against the cases a naive matcher gets wrong (a dash
+in a raw string, in a char literal, on a line holding a lifetime), and a partition test forbidding a dash
+from falling between two categories. See the file's own header for the full scope argument.
+
+⚠ **Escaped `\u{2014}` is not text and is deliberately in the clear**: the bitmap font must keep an em-dash
+glyph so a dash arriving from anywhere else renders as a dash instead of a missing-glyph box, and the P10
+guards themselves spell their needle that way. Note that this also means **a character grep cannot see the
+guards** — a decoded or escaped dash passes a literal-character search.
 *Before-case named by the hub:* the Objects tab's own headings, e.g.
 `players — emulator/player_state — 2 of 66 slots`, which uses two em dashes to do a colon's work and a
 parenthesis's work in one line.

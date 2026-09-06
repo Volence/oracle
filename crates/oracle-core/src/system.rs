@@ -1164,7 +1164,7 @@ impl System {
         debug_assert_eq!(
             &working[..],
             self.vdp.cram(),
-            "row {}: the journal did not account for every CRAM write of its line — the emitter's working \
+            "row {}: the journal did not account for every CRAM write of its line. The emitter's working \
              copy and the machine's CRAM have diverged",
             row.report.line
         );

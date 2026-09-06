@@ -89,7 +89,7 @@ impl fmt::Display for HeaderError {
             ),
             Self::BadMagic(got) => write!(
                 f,
-                "bad magic {got:02X?} — expected {:02X?} (\"ARP0\")",
+                "bad magic {got:02X?}, expected {:02X?} (\"ARP0\")",
                 REPLAY_MAGIC
             ),
             Self::PadNotZero(v) => write!(f, "header pad byte is ${v:02X}, must be $00"),
@@ -100,13 +100,13 @@ impl fmt::Display for HeaderError {
                 f,
                 "header rng_seed is ${v:08X}, but the packer documents the field as \"reserved, 0 until \
                  an RNG exists\" (replay_pack.py:18) and nothing in replay.emp reads it. This runner \
-                 pins its own power-on seed, so it cannot honour a recorded one — a non-zero seed would \
+                 pins its own power-on seed, so it cannot honour a recorded one: a non-zero seed would \
                  mean the run is not the run that was recorded, silently. Refusing"
             ),
             Self::BodyNotCheckpoint(got) => write!(
                 f,
-                "the stream opens with {got:02X?}, not FF 01 (a ring-0 checkpoint) — \
-                 is this really the fixture?"
+                "the stream opens with {got:02X?}, not FF 01 (a ring-0 checkpoint). \
+                 Is this really the fixture?"
             ),
         }
     }

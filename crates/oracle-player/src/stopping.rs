@@ -88,12 +88,12 @@ impl Live {
     /// words in the next.
     pub fn sentence(self, armed_noun: &str, retained_noun: &str) -> String {
         match self {
-            Live::Yes => format!("RECORDING — {armed_noun}"),
+            Live::Yes => format!("RECORDING: {armed_noun}"),
             Live::Retained => format!(
-                "STOPPED — nothing is armed. {retained_noun} These figures are what was recorded before \
+                "STOPPED: nothing is armed. {retained_noun} These figures are what was recorded before \
                  it stopped; they will not move."
             ),
-            Live::Never => format!("NEVER ARMED — {retained_noun}"),
+            Live::Never => format!("NEVER ARMED: {retained_noun}"),
         }
     }
 
@@ -576,26 +576,26 @@ impl Halting {
             // ("it just halted") would flicker and then go quiet, and a window that has gone quiet is the
             // one that gets read as broken.
             (Some(b), true) => Some(format!(
-                "⏹ HALTED BY BREAKPOINT {} at {where_} — {halts} halt{}; {} still armed",
+                "⏹ HALTED BY BREAKPOINT {} at {where_} ({halts} halt{}; {} still armed)",
                 breakpoint_wire_id(b.id),
                 if halts == 1 { "" } else { "s" },
                 self.armed,
             )),
             // Stopped at a breakpoint, and it has since been disarmed or cleared. Resume will run.
             (Some(b), false) => Some(format!(
-                "⏹ stopped at breakpoint {} at {where_} — {halts} halt{}; nothing is armed now, so \
-                 resume will run",
+                "⏹ stopped at breakpoint {} at {where_} ({halts} halt{}; nothing is armed now, so \
+                 resume will run)",
                 breakpoint_wire_id(b.id),
                 if halts == 1 { "" } else { "s" },
             )),
             // Armed and running (or stopped for some other reason — the `frames_since` clause says which
             // rather than claiming the breakpoint did it).
             (None, true) => Some(format!(
-                "⚠ ARMED TO HALT — {} breakpoint{} at {}{}{}",
+                "⚠ ARMED TO HALT: {} breakpoint{} at {}{}{}",
                 self.armed,
                 if self.armed == 1 { "" } else { "s" },
                 if self.armed_at.is_empty() {
-                    "—".to_owned()
+                    "(unknown)".to_owned()
                 } else {
                     self.armed_at.join(", ")
                 },
@@ -838,7 +838,7 @@ pub fn watch_add_params(
     if !len.is_empty() {
         let n: u64 = len
             .parse()
-            .map_err(|e| format!("len {len:?}: {e} — `len` is a decimal byte count, not hex"))?;
+            .map_err(|e| format!("len {len:?}: {e}. `len` is a decimal byte count, not hex"))?;
         v["len"] = json!(n);
     }
     v["space"] = json!(space);
@@ -848,7 +848,7 @@ pub fn watch_add_params(
     if !stop.is_empty() {
         let n: u64 = stop
             .parse()
-            .map_err(|e| format!("stopAfter {stop:?}: {e} — a decimal count of matches"))?;
+            .map_err(|e| format!("stopAfter {stop:?}: {e}, a decimal count of matches"))?;
         v["stopAfter"] = json!(n);
     }
     let label = label.trim();

@@ -80,7 +80,7 @@ fn go(args: &Args) -> Result<i32, String> {
         planted = Some((at, was));
         println!(
             "  NEGATIVE CONTROL: checkpoint payload at ${at:06X} patched ${was:08X} -> \
-             ${NEGATIVE_CONTROL_PAYLOAD:08X} — the trap MUST fire"
+             ${NEGATIVE_CONTROL_PAYLOAD:08X}. The trap MUST fire"
         );
     }
 
@@ -120,7 +120,7 @@ fn go(args: &Args) -> Result<i32, String> {
         // confident wrong answer where an honest "inconclusive" was available.
         if let Verdict::Timeout(t) = &report.verdict {
             eprintln!(
-                "\nNEGATIVE CONTROL INCONCLUSIVE — the run timed out ({}) before it could either trap \
+                "\nNEGATIVE CONTROL INCONCLUSIVE: the run timed out ({}) before it could either trap \
                  or complete, so it says nothing about whether the gate works. Diagnose the timeout \
                  above first; this is NOT evidence of an inverted gate.",
                 match t.reason {
@@ -138,12 +138,12 @@ fn go(args: &Args) -> Result<i32, String> {
         return Ok(
             match runner::judge_negative_control(fault, NEGATIVE_CONTROL_PAYLOAD) {
                 Ok(why) => {
-                    println!("\nNEGATIVE CONTROL PASSED — {why}");
+                    println!("\nNEGATIVE CONTROL PASSED: {why}");
                     println!("  (the corruption was planted at ${at:06X}; the gate demonstrably fails when it should)");
                     exit::PASS
                 }
                 Err(why) => {
-                    eprintln!("\nNEGATIVE CONTROL FAILED — {why}");
+                    eprintln!("\nNEGATIVE CONTROL FAILED: {why}");
                     exit::GATE_INVERTED
                 }
             },
@@ -191,7 +191,7 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
     // 1. The authoritative slot map.
     let map = prepared.stream_map()?;
     println!(
-        "  stream   walked {} checkpoints over {} ticks — reconciles with the header, so its payload \
+        "  stream   walked {} checkpoints over {} ticks, reconciling with the header, so its payload \
          offsets can be vouched for",
         map.slots.len(),
         map.total_ticks
@@ -235,7 +235,7 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
     let targets = planned_targets(args, fixture_blob.is_some());
     if targets.is_empty() {
         println!(
-            "  output   DRY RUN — no --out, so nothing will be written anywhere; the repair is \
+            "  output   DRY RUN: no --out, so nothing will be written anywhere; the repair is \
              reported on stdout"
         );
     }
@@ -266,7 +266,7 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
 
     if !matches!(report.verdict, Verdict::Pass) {
         eprintln!(
-            "\nRESTAMP ABORTED — the pass stopped before the end of the stream, so it cannot have seen \
+            "\nRESTAMP ABORTED: the pass stopped before the end of the stream, so it cannot have seen \
              every checkpoint. {found} stale checkpoint(s) were found on the way, and they are NOT \
              reported as a repair: a plan built from a partial pass would half-repair the fixture, which \
              is worse than not repairing it. Diagnose the verdict above first."
@@ -276,7 +276,7 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
 
     let plan = session.into_plan(pristine.len());
     println!(
-        "\nRESTAMP PASS COMPLETE — one pass, {:.2} s, {} of {} checkpoints stale.",
+        "\nRESTAMP PASS COMPLETE: one pass, {:.2} s, {} of {} checkpoints stale.",
         pass_secs,
         plan.stale.len(),
         plan.total_checkpoints
@@ -288,7 +288,7 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
 
     if plan.is_clean() {
         println!(
-            "\nNOTHING TO RE-STAMP — every checkpoint matched. The fixture is already current, and no \
+            "\nNOTHING TO RE-STAMP: every checkpoint matched. The fixture is already current, and no \
              artifact is emitted (there is no repair to review)."
         );
         return Ok(exit::PASS);
@@ -298,10 +298,10 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
     let mut restamped = pristine.clone();
     plan.apply_to_rom(&mut restamped)?;
     if restamped.len() != pristine.len() {
-        return Err("the re-stamped image changed length — impossible for a re-stamp".into());
+        return Err("the re-stamped image changed length, impossible for a re-stamp".into());
     }
     println!(
-        "\n  length   {} bytes before and after — a re-stamp changes hash payloads only, so EndOfRom \
+        "\n  length   {} bytes before and after: a re-stamp changes hash payloads only, so EndOfRom \
          does not move and no sigil repin is needed",
         restamped.len()
     );
@@ -314,14 +314,14 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
     if !matches!(verified.verdict, Verdict::Pass) {
         print_verdict(&verified);
         eprintln!(
-            "\nRESTAMP UNVERIFIED — the re-stamped image does not run clean. The repair is NOT written. \
+            "\nRESTAMP UNVERIFIED: the re-stamped image does not run clean. The repair is NOT written. \
              This is the check that catches an instrumented pass whose behaviour differed from a plain \
              run; treat the verdict above as the finding, not this tool's output."
         );
         return Ok(exit::RESTAMP_UNVERIFIED);
     }
     println!(
-        "  clean run  PASS in {verify_secs:.2} s — Logic_Tick {} over the header's {} ticks, every one \
+        "  clean run  PASS in {verify_secs:.2} s: Logic_Tick {} over the header's {} ticks, every one \
          of the {} checkpoints compared and matched",
         verified.probe.logic_tick, verified.header.tick_count, plan.total_checkpoints
     );
@@ -335,12 +335,12 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
     };
     match runner::judge_negative_control(control_fault, NEGATIVE_CONTROL_PAYLOAD) {
         Ok(why) => println!(
-            "  control    still trips on the re-stamped image — {why}\n             (planted at \
+            "  control    still trips on the re-stamped image: {why}\n             (planted at \
              ${at:06X}, over ${was:08X})"
         ),
         Err(why) => {
             eprintln!(
-                "\nRESTAMP UNVERIFIED — the re-stamped image runs clean, but the negative control no \
+                "\nRESTAMP UNVERIFIED: the re-stamped image runs clean, but the negative control no \
                  longer trips on it: {why}\nA fixture that cannot fail is not a fixture. The repair is \
                  NOT written."
             );
@@ -368,7 +368,7 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
         print!("{patch}");
         println!("--- end ---");
         println!(
-            "\nDRY RUN — verified, and NOTHING was written. Re-run with --out <dir> to emit the patch \
+            "\nDRY RUN: verified, and NOTHING was written. Re-run with --out <dir> to emit the patch \
              report{}.",
             if fixture_blob.is_some() {
                 " and the re-stamped fixture .bin"
@@ -466,19 +466,19 @@ fn print_verdict(r: &RunReport) {
     );
     match &r.verdict {
         Verdict::Pass => {
-            println!("\nPASS — the stream ran to its end, corroborated three ways.");
+            println!("\nPASS: the stream ran to its end, corroborated three ways.");
             println!("  Replay_Done  = $FF");
             println!(
-                "  Logic_Tick   = {} >= the {} ticks the header declares (an overshoot is normal — the \
+                "  Logic_Tick   = {} >= the {} ticks the header declares (an overshoot is normal: the \
                  game keeps running on live input after end-of-stream)",
                 r.probe.logic_tick, r.header.tick_count
             );
             println!(
-                "  Input_Source = ${:02X} — self-cleared on the completion path",
+                "  Input_Source = ${:02X}, self-cleared on the completion path",
                 r.probe.input_source
             );
             println!(
-                "  Replay_Ptr   = ${:08X} — fixture+{}, well past the {REPLAY_HEADER_LEN}-byte header",
+                "  Replay_Ptr   = ${:08X} (fixture+{}), well past the {REPLAY_HEADER_LEN}-byte header",
                 r.probe.replay_ptr,
                 r.probe.stream_offset(r.anchors.fixture)
             );
@@ -491,7 +491,7 @@ fn print_verdict(r: &RunReport) {
 
 /// The failure that used to be a PASS: `Replay_Done` set, corroborations missing.
 fn print_short(s: &ShortReport, r: &RunReport) {
-    println!("\nSHORT COMPLETION — Replay_Done is $FF, but this run verified less than it claims.");
+    println!("\nSHORT COMPLETION: Replay_Done is $FF, but this run verified less than it claims.");
     println!(
         "  The playback path reached an end-of-stream opcode, so the flag is honestly set. What is \
          wrong is WHICH end it reached:"
@@ -518,24 +518,24 @@ fn print_short(s: &ShortReport, r: &RunReport) {
 fn print_trap(t: &TrapReport, r: &RunReport) {
     if t.phase == Phase::Boot {
         println!(
-            "\n(this trap fired BEFORE the arm — during boot or level load. The stream was never armed, \
+            "\n(this trap fired BEFORE the arm, during boot or level load. The stream was never armed, \
              so nothing below implicates the fixture; the replay cells are whatever boot left there.)"
         );
     }
     match &t.decoded {
         Ok(f) if f.is_desync() => {
             let d = f.desync.expect("a desync carries its detail");
-            println!("\nDESYNC — a checkpoint did not match.");
+            println!("\nDESYNC: a checkpoint did not match.");
             println!(
                 "  Logic_Tick {}   expected ${:08X}   actual ${:08X}",
                 d.logic_tick, d.expected, d.actual
             );
         }
         Ok(f) => {
-            println!("\nFAULT — `{}` was raised during the replay.", f.message);
+            println!("\nFAULT: `{}` was raised during the replay.", f.message);
         }
         Err(e) => {
-            println!("\nFAULT — the machine stopped at ErrorHandlerBlob, but the frame is not decodable: {e}");
+            println!("\nFAULT: the machine stopped at ErrorHandlerBlob, but the frame is not decodable: {e}");
         }
     }
     if let Ok(f) = &t.decoded {
@@ -543,7 +543,7 @@ fn print_trap(t: &TrapReport, r: &RunReport) {
             "  message  \"{}\"{} at ${:06X}",
             f.message,
             if f.truncated {
-                " (readable prefix; the rest is MD Debugger format-control bytes — every `assert` site \
+                " (readable prefix; the rest is MD Debugger format-control bytes, and every `assert` site \
                  carries them)"
             } else {
                 ""
@@ -562,7 +562,7 @@ fn print_trap(t: &TrapReport, r: &RunReport) {
     if let Some(sp) = t.stack_top {
         println!("  (A7).l   ${sp:08X}");
     }
-    println!("  registers (PRE-CLOBBER — stopped at blob+0, before the handler draws its screen):");
+    println!("  registers (PRE-CLOBBER, stopped at blob+0, before the handler draws its screen):");
     println!("{}", t.regs);
     println!(
         "  work RAM Logic_Tick={} Replay_Done=${:02X} Input_Source=${:02X} stream offset {}",
@@ -581,10 +581,10 @@ fn print_timeout(t: &TimeoutReport, r: &RunReport) {
         TimeoutReason::Deadline => format!("the {} frame cap was reached", t.frames),
     };
     let phase = match t.phase {
-        Phase::Boot => "before the arm — the machine never reached GameState_OJZScroll_Init",
+        Phase::Boot => "before the arm: the machine never reached GameState_OJZScroll_Init",
         Phase::Replay => "after the arm",
     };
-    println!("\nTIMEOUT — {what} ({phase}).");
+    println!("\nTIMEOUT: {what} ({phase}).");
     println!(
         "  pc       ${:06X}{}",
         t.pc,
@@ -616,7 +616,7 @@ fn print_timeout(t: &TimeoutReport, r: &RunReport) {
     // something the boot path had not checked.
     if t.phase == Phase::Replay {
         println!(
-            "  (the trap predicate was checked first — the machine is not sitting at ErrorHandlerBlob, \
+            "  (the trap predicate was checked first: the machine is not sitting at ErrorHandlerBlob, \
              so this is a genuine stall rather than a desync wearing a hang's clothes)"
         );
     }

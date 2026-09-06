@@ -94,7 +94,7 @@ pub struct Pumped {
 /// (same opening words, a different reason), and a test in each file pins that opening so the two builds
 /// cannot start describing the same state differently.
 const NOT_SERVING: &str =
-    "aether: not serving — no --aether given, so nothing can attach to this window \
+    "aether: not serving. No --aether given, so nothing can attach to this window \
      (pass --aether, or --socket PATH, or set ORACLE_AETHER=1)";
 
 /// The hosted capability layer, or an inert placeholder when `--aether` was not asked for.
@@ -141,7 +141,7 @@ impl Bus {
                     oracle_aether::engine::METHODS.len(),
                     oracle_aether::rpc::PROTOCOL_VERSION
                 ),
-                Err(e) => eprintln!("aether: NOT serving — cannot bind the socket ({e})"),
+                Err(e) => eprintln!("aether: NOT serving. Cannot bind the socket ({e})"),
             },
             None => println!("{NOT_SERVING}"),
         }
@@ -1351,7 +1351,7 @@ mod tests {
             assert!(line.contains("nothing was placed"), "{line:?}");
             assert_eq!(
                 e.toast(Some("Space")),
-                "SPAWN REFUSED — press Space to pause this window, then click the spot again",
+                "SPAWN REFUSED: press Space to pause this window, then click the spot again",
                 "the glass must carry the next action, in this window's vocabulary"
             );
 

@@ -488,7 +488,7 @@ fn notify_err(ov: &mut Overlay, msg: impl AsRef<str> + Into<String>) {
 /// as a complete sentence — F-TOAST-TRUNCATES. The reason is the one part that answers the question; the
 /// path the person mostly already knows, because they just picked it.
 fn cannot_read_toast(what: &str, e: &std::io::Error, path: impl std::fmt::Display) -> String {
-    format!("{what}: {} — cannot read {path}", io_reason(e))
+    format!("{what}: {}, cannot read {path}", io_reason(e))
 }
 
 /// An `io::Error`'s text without the ` (os error N)` tail the standard library appends to OS errors.
@@ -1020,7 +1020,7 @@ fn next_console_model(model: oracle_core::synth::ConsoleModel) -> oracle_core::s
 fn filter_effect(model: oracle_core::synth::ConsoleModel) -> String {
     match model.cutoff_hz() {
         Some(hz) => format!("low-pass {} Hz", hz.round()),
-        None => "no filter — the raw chip mix".to_string(),
+        None => "no filter: the raw chip mix".to_string(),
     }
 }
 
@@ -1029,7 +1029,7 @@ fn filter_effect(model: oracle_core::synth::ConsoleModel) -> String {
 #[cfg(feature = "audio")]
 fn console_stage_line(model: oracle_core::synth::ConsoleModel, source: FilterSource) -> String {
     format!(
-        "audio: console output stage = {} ({}) — {}; F cycles it (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides for one run",
+        "audio: console output stage = {} ({}), {}; F cycles it (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides for one run",
         model.name(),
         filter_effect(model),
         source.describe()
@@ -1044,7 +1044,7 @@ fn filter_toast(model: oracle_core::synth::ConsoleModel) -> String {
         Some(hz) => format!("low-pass {} Hz", hz.round()),
         None => "no low-pass".to_string(),
     };
-    format!("audio: {}, {effect} — remembered", filter_label(model))
+    format!("audio: {}, {effect} (remembered)", filter_label(model))
 }
 
 /// Build the cpal output stream for `device` (design §3). Returns `None` — **run video-only** — on ANY
@@ -1066,13 +1066,13 @@ fn build_audio(
     use cpal::traits::{DeviceTrait, StreamTrait};
 
     let Some(device) = device else {
-        eprintln!("audio: no default output device — running video-only");
+        eprintln!("audio: no default output device, running video-only");
         return None;
     };
     let default_cfg = match device.default_output_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("audio: no default output config ({e}) — running video-only");
+            eprintln!("audio: no default output config ({e}), running video-only");
             return None;
         }
     };
@@ -1080,7 +1080,7 @@ fn build_audio(
     // pass, design §3.3). Anything else → video-only rather than a wrong-format stream.
     if default_cfg.sample_format() != cpal::SampleFormat::F32 {
         eprintln!(
-            "audio: device sample format {:?} is not f32 (first cut requires f32) — running video-only",
+            "audio: device sample format {:?} is not f32 (first cut requires f32), running video-only",
             default_cfg.sample_format()
         );
         return None;
@@ -1101,7 +1101,7 @@ fn build_audio(
     let resolved = resolve_console_filter(env.as_deref(), remembered);
     if resolved.env_rejected {
         eprintln!(
-            "audio: ORACLE_CONSOLE_FILTER={:?} is not a known console revision (try va0, va3, or off) — \
+            "audio: ORACLE_CONSOLE_FILTER={:?} is not a known console revision (try va0, va3, or off), \
              ignoring it; {}",
             env.unwrap_or_default(),
             resolved.source.describe()
@@ -1130,17 +1130,17 @@ fn build_audio(
     let stream = match device.build_output_stream::<f32, _, _>(&config, data_cb, err_cb, None) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("audio: failed to build output stream ({e}) — running video-only");
+            eprintln!("audio: failed to build output stream ({e}), running video-only");
             return None;
         }
     };
     if let Err(e) = stream.play() {
-        eprintln!("audio: failed to start output stream ({e}) — running video-only");
+        eprintln!("audio: failed to start output stream ({e}), running video-only");
         return None;
     }
 
     println!(
-        "audio: {sample_rate} Hz, {channels} ch (f32) — streaming ({} ms pre-roll, {} ms ring)",
+        "audio: {sample_rate} Hz, {channels} ch (f32), streaming ({} ms pre-roll, {} ms ring)",
         prerolled * 500 / sample_rate.max(1) as usize,
         audio::ring_capacity(&prod) * 500 / sample_rate.max(1) as usize,
     );
@@ -1163,13 +1163,13 @@ fn main() {
             eprintln!(
                 "usage: oracle-frontend <rom.bin> [--scale N] [--aspect tv|square|integer] \
                  [--aether] [--socket PATH] [--x11]\n  \
-                 --scale   N = 1..=8 (default 3) — multiples of the 224-line frame height\n  \
+                 --scale   N = 1..=8 (default 3): multiples of the 224-line frame height\n  \
                  --aspect  tv = the console's own 4:3 (default), square = square pixels, \
                  integer = square pixels at a whole scale\n  \
                  --aether  serve the Aether control bus from this process (also: ORACLE_AETHER=1). \
-                 Off by default — no socket is created.\n  \
+                 Off by default: no socket is created.\n  \
                  --socket  serve on PATH instead of the contract's default; implies --aether\n  \
-                 --x11     open the window under X11 (XWayland on Wayland) — the backend where the \
+                 --x11     open the window under X11 (XWayland on Wayland): the backend where the \
                  window can carry its own icon and WM class\n  \
                  An unset --scale/--aspect falls back to ~/.config/oracle/player.conf (or \
                  $XDG_CONFIG_HOME/oracle/player.conf), then to the defaults above."
@@ -1245,7 +1245,7 @@ fn main() {
         None => config::Loaded {
             config: config::Config::default(),
             warnings: vec![
-                "config: no $XDG_CONFIG_HOME or $HOME — settings will not persist".into(),
+                "config: no $XDG_CONFIG_HOME or $HOME; settings will not persist".into(),
             ],
             recovered: false,
         },
@@ -1281,7 +1281,7 @@ fn main() {
     match icon::apply(&mut window) {
         icon::Applied::X11 => {}
         icon::Applied::Wayland => eprintln!(
-            "note: Wayland window — minifb cannot set an icon or app id here; install \
+            "note: Wayland window, so minifb cannot set an icon or app id here; install \
              crates/oracle-frontend/assets/oracle.desktop (install-desktop.sh) so the desktop resolves the \
              Oracle icon, or run with --x11"
         ),
@@ -1291,7 +1291,7 @@ fn main() {
     window.set_target_fps(60);
 
     println!(
-        "window {win_w}x{win_h}, resizable, aspect {} — keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list); lenses in the palette's LENSES group",
+        "window {win_w}x{win_h}, resizable, aspect {}. Keyboard (P1): arrows=D-pad, A/S/D=A/B/C, Enter=Start; Space=pause, .=step, click=watch, W=dump, C=clear, F3=status line, Tab=reset, `=command palette (the full list); lenses in the palette's LENSES group",
         aspect.name()
     );
     println!(
@@ -1675,7 +1675,7 @@ fn main() {
                         notify(
                             &mut ov,
                             ERROR,
-                            format!("{name} is not a mask target — nothing was hidden"),
+                            format!("{name} is not a mask target: nothing was hidden"),
                         );
                     } else {
                         let hidden = bus.layers().hidden();
@@ -1683,16 +1683,16 @@ fn main() {
                         // half is the standing statement's transient companion — the badge says *that* a
                         // mask is on for as long as it is, this says what just moved and what it costs.
                         let line = if hidden.is_empty() {
-                            "every layer is drawn again — back to the captured picture".to_string()
+                            "every layer is drawn again, back to the captured picture".to_string()
                         } else {
                             format!(
-                                "hidden: {} — the picture is re-derived from VDP state, so mid-frame \
+                                "hidden: {}; the picture is re-derived from VDP state, so mid-frame \
                                  palette effects are not shown",
                                 hidden.join(", ")
                             )
                         };
                         println!(
-                            "layers: {name} {} — {line}",
+                            "layers: {name} {}, {line}",
                             if showing { "hidden" } else { "shown" }
                         );
                         notify(
@@ -1711,7 +1711,7 @@ fn main() {
                         notify(
                             &mut ov,
                             ACCENT,
-                            "SPAWN MODE OFF — a click arms a watch again",
+                            "SPAWN MODE OFF: a click arms a watch again",
                         );
                     } else {
                         // Read at arm time, never cached: `load_symbols` may be called at any point
@@ -1728,7 +1728,9 @@ fn main() {
                                 // the bounded search actually saw; the glass gets the badge, which is
                                 // standing and does not need repeating in a toast.
                                 let mut line = format!(
-                                    "spawn mode ON — a left-click now places {name};                                      {} cycles archetypes. Debug only: nothing here is saved into the                                      level, and the machine must be paused for a click to land.",
+                                    "spawn mode ON: a left-click now places {name}; \
+                                     {} cycles archetypes. Debug only: nothing here is saved into the \
+                                     level, and the machine must be paused for a click to land.",
                                     reg.iter()
                                         .find(|c| matches!(c.cmd, commands::Cmd::NextArchetype))
                                         .and_then(|c| c.hotkey)
@@ -1738,14 +1740,14 @@ fn main() {
                                     line.push_str(&format!(" ({n})"));
                                 }
                                 println!("{line}");
-                                ov.push(format!("SPAWN MODE ON — PLACING {name}"), ACCENT);
+                                ov.push(format!("SPAWN MODE ON: PLACING {name}"), ACCENT);
                             }
                             Err(e) => {
                                 eprintln!(
-                                    "spawn mode not armed — nothing will be placed: {}",
+                                    "spawn mode not armed; nothing will be placed: {}",
                                     e.message
                                 );
-                                ov.push(format!("SPAWN MODE OFF — {}", e.message), ERROR);
+                                ov.push(format!("SPAWN MODE OFF: {}", e.message), ERROR);
                             }
                         }
                     }
@@ -1757,7 +1759,7 @@ fn main() {
                     None => notify(
                         &mut ov,
                         ERROR,
-                        "spawn mode is off — nothing to cycle through",
+                        "spawn mode is off: nothing to cycle through",
                     ),
                 },
                 // W dumps the recorded hits; C disarms the watch (dropping it back out of the run's sink).
@@ -1781,7 +1783,7 @@ fn main() {
                         wp.remove(id);
                     }
                     watched_pixel = None;
-                    notify(&mut ov, INFO, "watch cleared — no longer recording writes");
+                    notify(&mut ov, INFO, "watch cleared: no longer recording writes");
                 }
                 // --- Save states (usable while paused too). Slot selection: F6/F7 step, 0-9 pick directly,
                 // and the palette's picker runs the same `SlotSelect`. ---
@@ -1951,7 +1953,7 @@ fn main() {
                     notify(
                         &mut ov,
                         ACCENT,
-                        "reset: soft reset — SRAM contents preserved, as on real hardware",
+                        "reset: soft reset; SRAM contents preserved, as on real hardware",
                     );
                 }
                 // Both ways of swapping a cartridge record their target here and let the shared block below
@@ -2036,7 +2038,7 @@ fn main() {
                     }
                     None => notify_err(
                         &mut ov,
-                        "audio filter: no output device this run — nothing to hear it by, so the setting was left alone",
+                        "audio filter: no output device this run; nothing to hear it by, so the setting was left alone",
                     ),
                 },
             }
@@ -2079,7 +2081,7 @@ fn main() {
                     notify_err(
                         &mut ov,
                         format!(
-                            "{what}: ABORTED — unsaved battery data could not be written to {}, and \
+                            "{what}: ABORTED. Unsaved battery data could not be written to {}, and \
                              swapping would zero it. Fix the write error and try again.",
                             srm_path.display()
                         ),
@@ -2450,9 +2452,9 @@ fn main() {
         };
         // The same `DRAWS n` tally the status line and the CPU chip carry, spelled to match them.
         let title = if paused {
-            format!("Oracle — draws {draws} [PAUSED]")
+            format!("Oracle: draws {draws} [PAUSED]")
         } else {
-            format!("Oracle — draws {draws}")
+            format!("Oracle: draws {draws}")
         };
         window.set_title(&title);
 

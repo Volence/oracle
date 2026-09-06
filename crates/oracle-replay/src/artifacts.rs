@@ -63,7 +63,7 @@ impl SourceGuard {
         match self.check(&resolved, target.exists()) {
             Ok(()) => Ok(()),
             Err(WriteRefusal::InsideSourceRepo { repo }) => Err(format!(
-                "REFUSING to write {} — it resolves inside {}, the repository the ROM and listing came \
+                "REFUSING to write {}: it resolves inside {}, the repository the ROM and listing came \
                  from. Those are the owner's artifacts, and a re-stamp is a change to review before it \
                  lands. Write the repair somewhere else and apply it deliberately, or pass \
                  --allow-source-write if writing in place is genuinely what you want.",
@@ -71,7 +71,7 @@ impl SourceGuard {
                 repo.display()
             )),
             Err(WriteRefusal::WouldOverwrite) => Err(format!(
-                "REFUSING to overwrite {} — it already exists. Pass --force if replacing it is what you \
+                "REFUSING to overwrite {}: it already exists. Pass --force if replacing it is what you \
                  want.",
                 target.display()
             )),

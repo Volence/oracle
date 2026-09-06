@@ -114,7 +114,7 @@ fn kept_warning(singular: &str, plural: &str, names: &[String]) -> String {
         ""
     };
     format!(
-        "config: kept {} {noun} this build does not understand ({shown}{more}) — written back unchanged",
+        "config: kept {} {noun} this build does not understand ({shown}{more}); written back unchanged",
         names.len()
     )
 }
@@ -261,7 +261,7 @@ pub fn serialize(c: &Config) -> String {
     use std::fmt::Write as _;
     let on_off = |b: bool| if b { "on" } else { "off" };
     let mut out = format!(
-        "# oracle player settings — edited in-app. Hand edits are fine; keys this build does not\n\
+        "# oracle player settings, edited in-app. Hand edits are fine; keys this build does not\n\
          # know are warned about at load and written back unchanged (a malformed line backs the file up to .bak).\n\
          volume = {}\nmuted = {}\naspect = {}\nscale = {}\nstatus_line = {}\ndeadzone = {}\nlenses = {}\n",
         c.volume,
@@ -357,13 +357,13 @@ fn back_up(path: &std::path::Path, why: String) -> Loaded {
         // The live corrupt file stays put — the next in-session save overwrites it with a
         // good config, and the original backup remains intact.
         format!(
-            "{why} — a previous backup already exists at {}; using defaults, file left in place",
+            "{why}. A previous backup already exists at {}; using defaults, file left in place",
             bak.display()
         )
     } else if std::fs::rename(path, &bak).is_ok() {
-        format!("{why} — backed up to {} and using defaults", bak.display())
+        format!("{why}. Backed up to {} and using defaults", bak.display())
     } else {
-        format!("{why} — could not back it up; using defaults, file left in place")
+        format!("{why}. Could not back it up; using defaults, file left in place")
     }];
     Loaded {
         config: Config::default(),
@@ -418,9 +418,9 @@ mod tests {
         assert_eq!(
             p.warnings,
             vec![
-                "config: kept 1 setting this build does not understand (kept) — written back unchanged"
+                "config: kept 1 setting this build does not understand (kept); written back unchanged"
                     .to_string(),
-                "config: kept 1 lens name this build does not understand (heatmap) — written back unchanged"
+                "config: kept 1 lens name this build does not understand (heatmap); written back unchanged"
                     .to_string(),
             ],
             "own output warned about a known key"

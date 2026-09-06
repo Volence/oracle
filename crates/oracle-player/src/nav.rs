@@ -252,9 +252,9 @@ impl Entry {
     /// widget and the highlight alone cannot say that a click on the highlighted row removes the panel.
     pub fn hint(&self) -> &'static str {
         match self.state {
-            State::Showing => "in front — click to CLOSE it",
-            State::Hidden => "open, behind another tab in its pane — click to bring it forward",
-            State::Closed => "not in your layout — click to put it back",
+            State::Showing => "in front (click to CLOSE it)",
+            State::Hidden => "open, behind another tab in its pane (click to bring it forward)",
+            State::Closed => "not in your layout (click to put it back)",
         }
     }
 }
@@ -436,7 +436,7 @@ pub fn bar(ui: &mut egui::Ui, dock: &mut DockState<Tab>) -> Vec<screen::Run> {
         if ui
             .button(RESET_LABEL)
             .on_hover_text(
-                "put every panel back where this build starts them — discards the arrangement you made, \
+                "put every panel back where this build starts them. This discards the arrangement you made, \
                  and is the way back from a layout you cannot use",
             )
             .clicked()

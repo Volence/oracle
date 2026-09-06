@@ -138,14 +138,14 @@ fn load_symbols(path: &Path, rom: &[u8]) -> (Option<SymbolTable>, Option<String>
     match table.validate_against_rom(rom) {
         RomBinding::Mismatch(fault) => {
             eprintln!(
-                "symbols: REFUSED — {} does not describe this ROM image ({fault:?})",
+                "symbols: REFUSED. {} does not describe this ROM image ({fault:?})",
                 path.display()
             );
             (None, None)
         }
         RomBinding::Indeterminate(_) if !table.is_intact() => {
             eprintln!(
-                "symbols: REFUSED — {} cannot be bound to the ROM and is not internally intact",
+                "symbols: REFUSED. {} cannot be bound to the ROM and is not internally intact",
                 path.display()
             );
             (None, None)
@@ -174,14 +174,14 @@ fn binding_note(binding: &RomBinding) -> &'static str {
     match binding {
         RomBinding::Match { .. } => "bound to this image",
         RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { .. }) => {
-            "UNVERIFIED — EndOfRom is the image's end, the no-appendix shape"
+            "UNVERIFIED: EndOfRom is the image's end, the no-appendix shape"
         }
         RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol) => {
-            "UNVERIFIED — no EndOfRom to probe"
+            "UNVERIFIED: no EndOfRom to probe"
         }
         // Not reachable from the caller (a Mismatch returns before this), but spelled out rather than
         // wildcarded so adding a BindingFault cannot quietly land here.
-        RomBinding::Mismatch(_) => "REFUSED — does not describe this image",
+        RomBinding::Mismatch(_) => "REFUSED: does not describe this image",
     }
 }
 

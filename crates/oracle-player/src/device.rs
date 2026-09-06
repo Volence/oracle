@@ -85,7 +85,7 @@ impl Device {
             Some(d) => d,
             None => {
                 loud(
-                    "audio: NO default output device — pacing is UNMEASURED, not measured-and-fine",
+                    "audio: NO default output device. Pacing is UNMEASURED, not measured-and-fine",
                 );
                 return None;
             }
@@ -94,14 +94,14 @@ impl Device {
             Ok(c) => c,
             Err(e) => {
                 loud(&format!(
-                    "audio: no default output config ({e}) — pacing is UNMEASURED"
+                    "audio: no default output config ({e}). Pacing is UNMEASURED"
                 ));
                 return None;
             }
         };
         if default_cfg.sample_format() != cpal::SampleFormat::F32 {
             loud(&format!(
-                "audio: device sample format {:?} is not f32 — pacing is UNMEASURED",
+                "audio: device sample format {:?} is not f32. Pacing is UNMEASURED",
                 default_cfg.sample_format()
             ));
             return None;
@@ -157,21 +157,21 @@ impl Device {
             Ok(s) => s,
             Err(e) => {
                 loud(&format!(
-                    "audio: failed to build output stream ({e}) — pacing is UNMEASURED"
+                    "audio: failed to build output stream ({e}). Pacing is UNMEASURED"
                 ));
                 return None;
             }
         };
         if let Err(e) = stream.play() {
             loud(&format!(
-                "audio: failed to start output stream ({e}) — pacing is UNMEASURED"
+                "audio: failed to start output stream ({e}). Pacing is UNMEASURED"
             ));
             return None;
         }
         loud(&format!(
             "audio: real device open at {rate} Hz / {channels} ch, gain {gain}{}",
             if gain == 0.0 {
-                "  (SILENT BY CONSTRUCTION — ring dynamics real, amplitude exactly zero)"
+                "  (SILENT BY CONSTRUCTION: ring dynamics real, amplitude exactly zero)"
             } else {
                 ""
             }

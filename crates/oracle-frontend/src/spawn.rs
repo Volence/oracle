@@ -331,7 +331,7 @@ impl Refusal {
         let body = self
             .remedy(pause_key)
             .unwrap_or_else(|| self.message.clone());
-        format!("SPAWN REFUSED — {body}")
+        format!("SPAWN REFUSED: {body}")
     }
 }
 
@@ -907,7 +907,7 @@ mod tests {
             // Every one of them ends in a sentence with a next action, and the toast carries the action
             // rather than the essay — a toast is cut from the right and these messages are long.
             let toast = r.toast(Some("Space"));
-            assert!(toast.starts_with("SPAWN REFUSED — "), "{toast:?}");
+            assert!(toast.starts_with("SPAWN REFUSED: "), "{toast:?}");
             assert!(
                 toast.len() < r.message.len(),
                 "the glass must get the remedy, not the whole explanation: {toast:?}"
@@ -1007,7 +1007,7 @@ mod tests {
         };
         let toast = r.toast(Some("Space"));
         assert_eq!(
-            toast, "SPAWN REFUSED — press Space to pause this window, then click the spot again",
+            toast, "SPAWN REFUSED: press Space to pause this window, then click the spot again",
             "the glass must carry the next action"
         );
         // Rebinding the key rebinds the sentence: nothing here transcribes "Space".

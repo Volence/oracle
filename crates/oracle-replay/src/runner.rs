@@ -68,8 +68,8 @@ impl Anchors {
             table.address_of(name).ok_or_else(|| {
                 format!(
                     "the listing does not resolve `{name}` to a single address (missing, or the \
-                     spelling is ambiguous). Every address this runner uses is resolved by name — the \
-                     documented literals are all stale — so this is fatal."
+                     spelling is ambiguous). Every address this runner uses is resolved by name (the \
+                     documented literals are all stale), so this is fatal."
                 )
             })
         };
@@ -111,15 +111,14 @@ impl Prepared {
         // Refusal 2 first: it is decisive where the shape binding is only suggestive, and it needs no
         // listing at all, so a release ROM is named as a release ROM rather than as a symbol problem.
         policy::require_debug_rom(&rom)?;
-        notes
-            .push("rom: contains `REPLAY DESYNC` — the DEBUG checkpoint compare is present".into());
+        notes.push("rom: contains `REPLAY DESYNC`; the DEBUG checkpoint compare is present".into());
 
         let table = SymbolTable::parse(lst_text)
-            .map_err(|e| format!("the listing is not usable ({e}) — cannot resolve any address"))?;
+            .map_err(|e| format!("the listing is not usable ({e}): cannot resolve any address"))?;
 
         // Refusal 1: the shape binding.
         match policy::judge_listing(&table, &rom) {
-            LstVerdict::Refuse { reason } => return Err(format!("listing REFUSED — {reason}")),
+            LstVerdict::Refuse { reason } => return Err(format!("listing REFUSED: {reason}")),
             LstVerdict::Accept { note } => notes.push(format!("lst: {note}")),
             LstVerdict::AcceptUnverified { note } => notes.push(format!("lst: WARNING {note}")),
         }
@@ -150,7 +149,7 @@ impl Prepared {
     /// `(address, original value)`. This is Slice 1n: *a gate you have never seen fail is not a gate.*
     pub fn corrupt_first_checkpoint(&mut self) -> Result<(u32, u32), String> {
         let at = self.header.first_checkpoint_payload(&self.rom).ok_or(
-            "the stream carries no checkpoint to corrupt — the negative control cannot run",
+            "the stream carries no checkpoint to corrupt, so the negative control cannot run",
         )?;
         let i = at as usize;
         let original = u32::from_be_bytes([
@@ -182,7 +181,7 @@ impl Prepared {
     pub fn with_rom(&self, rom: Vec<u8>) -> Result<Self, String> {
         if rom.len() != self.rom.len() {
             return Err(format!(
-                "the replacement image is {} bytes and the original is {} — a re-stamp changes hash \
+                "the replacement image is {} bytes and the original is {}: a re-stamp changes hash \
                  payloads only, so any length change means the anchors resolved from the listing no \
                  longer describe it",
                 rom.len(),
@@ -222,7 +221,7 @@ impl Prepared {
         let before = self.rom.len();
         stub.install(&mut self.rom)?;
         if self.rom.len() != before {
-            return Err("installing the stub changed the image length — impossible".into());
+            return Err("installing the stub changed the image length, which is impossible".into());
         }
         Ok(stub)
     }
@@ -324,7 +323,7 @@ impl<'a> RestampSession<'a> {
         // else would ever bound this loop.
         if self.stale.len() >= self.map.slots.len() {
             return Err(format!(
-                "the recovery stub was reached {} times, but the stream only has {} checkpoints — \
+                "the recovery stub was reached {} times, but the stream only has {} checkpoints, so \
                  something other than the checkpoint compare is branching to `Input_Tick.desync`. \
                  Refusing to record any more",
                 self.stale.len() + 1,
@@ -342,7 +341,7 @@ impl<'a> RestampSession<'a> {
         // `move.l a0, Replay_Ptr` runs *before* `Replay_Hash`, so the cursor is one longword past the
         // payload at the compare. This is read from work RAM, never guessed.
         let payload = cursor.checked_sub(PAYLOAD_LEN).ok_or_else(|| {
-            format!("Replay_Ptr reads ${cursor:08X} at the stub — there is no payload before it")
+            format!("Replay_Ptr reads ${cursor:08X} at the stub, so there is no payload before it")
         })?;
         let slot = *self.map.slot_for_payload(payload).ok_or_else(|| {
             format!(
@@ -354,20 +353,20 @@ impl<'a> RestampSession<'a> {
         if slot.expected != expected {
             return Err(format!(
                 "at checkpoint {} (ring {}) the guest compared against ${expected:08X}, but the ROM \
-                 holds ${:08X} at ${payload:06X} — the running image and the image we walked disagree",
+                 holds ${:08X} at ${payload:06X}: the running image and the image we walked disagree",
                 slot.index, slot.ring, slot.expected
             ));
         }
         if actual == expected {
             return Err(format!(
-                "the stub was reached at checkpoint {} (ring {}) with d0 == d2 == ${actual:08X} — the \
+                "the stub was reached at checkpoint {} (ring {}) with d0 == d2 == ${actual:08X}: the \
                  hashes matched, so this is not a desync and something else branched here",
                 slot.index, slot.ring
             ));
         }
         if self.stale.iter().any(|s| s.index == slot.index) {
             return Err(format!(
-                "checkpoint {} (ring {}) tripped the stub twice — the stream is being replayed more \
+                "checkpoint {} (ring {}) tripped the stub twice: the stream is being replayed more \
                  than once, which no re-stamp can express",
                 slot.index, slot.ring
             ));
@@ -375,7 +374,7 @@ impl<'a> RestampSession<'a> {
         // The arm point fixes `Logic_Tick - ring`; it is the same at every checkpoint of a healthy pass.
         let offset = logic_tick.checked_sub(slot.ring).ok_or_else(|| {
             format!(
-                "Logic_Tick is {logic_tick} at checkpoint {} (ring {}) — the tick clock is behind the \
+                "Logic_Tick is {logic_tick} at checkpoint {} (ring {}): the tick clock is behind the \
                  stream's own ring index, which cannot happen on a run that replayed to here",
                 slot.index, slot.ring
             )
@@ -556,7 +555,7 @@ fn run_inner(
     // live `Ctrl_1_Press` *before* the playback overwrite and sets `Replay_Exit_Request` on Start.
     if sys.pad(0) != Pad::default() || sys.pad(1) != Pad::default() {
         return Err(
-            "the machine powered on with a non-empty pad — pressing Start would set \
+            "the machine powered on with a non-empty pad: pressing Start would set \
                     Replay_Exit_Request and end the replay early"
                 .into(),
         );
@@ -796,14 +795,14 @@ pub fn judge_negative_control(
     let Some(f) = fault else {
         return Err(
             "the corrupted checkpoint did NOT trap. Either the arm silently failed, or this ROM is \
-             not comparing checkpoints at all — in both cases a green from this runner would mean \
+             not comparing checkpoints at all. In both cases a green from this runner would mean \
              nothing. THE GATE IS INVERTED."
                 .into(),
         );
     };
     let Some(d) = f.desync else {
         return Err(format!(
-            "a trap fired, but it was `{}`, not `{}` — the corruption did not reach the checkpoint \
+            "a trap fired, but it was `{}`, not `{}`: the corruption did not reach the checkpoint \
              compare, so this run does not demonstrate the gate works",
             f.message,
             fault::DESYNC_MESSAGE
@@ -812,7 +811,7 @@ pub fn judge_negative_control(
     if d.expected != expected_payload {
         return Err(format!(
             "a desync fired, but it expected ${:08X} rather than the ${expected_payload:08X} we \
-             wrote — a DIFFERENT checkpoint mismatched, so the corruption is not what tripped it",
+             wrote. A DIFFERENT checkpoint mismatched, so the corruption is not what tripped it",
             d.expected
         ));
     }

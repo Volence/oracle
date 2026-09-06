@@ -204,7 +204,7 @@ fn compose_detail(dirty: Option<bool>, age: Option<String>) -> String {
         s.push_str(&format!("Built from revision {}\n", revision()));
     } else {
         s.push_str(&format!(
-            "Built without version control, so there is no revision to name — this build calls itself \
+            "Built without version control, so there is no revision to name: this build calls itself \
              {}\n",
             revision()
         ));
@@ -226,7 +226,7 @@ fn compose_detail(dirty: Option<bool>, age: Option<String>) -> String {
     s.push('\n');
     s.push_str(
         "It cannot tell whether your checkout has moved since. It knows the revision it was built from, \
-         not the one on disk now — compare them yourself if a fix you expect seems to be missing.\n",
+         not the one on disk now. Compare them yourself if a fix you expect seems to be missing.\n",
     );
     if !dirty_scope_covers_this_window() {
         s.push_str(

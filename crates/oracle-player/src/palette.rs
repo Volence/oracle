@@ -140,7 +140,7 @@ pub fn resolve(typed: &str) -> Result<&'static MethodSpec, String> {
     let name = typed.trim();
     METHODS.iter().find(|m| m.name == name).ok_or_else(|| {
         format!(
-            "no method named `{name}` is served by this build — {} are, and the list above is all of \
+            "no method named `{name}` is served by this build. {} are, and the list above is all of \
              them. Nothing was sent.",
             METHODS.len()
         )
@@ -167,7 +167,7 @@ pub fn parse_args(text: &str) -> Result<Value, String> {
         // The parser's own words, whole: line and column included. Nothing was sent.
         Err(e) => Err(format!("that is not JSON: {e}. Nothing was sent.")),
         Ok(v) if !v.is_object() => Err(format!(
-            "arguments must be a JSON object like {{\"addr\": \"0xFF0000\"}} — this is {}. Nothing was \
+            "arguments must be a JSON object like {{\"addr\": \"0xFF0000\"}}. This is {}. Nothing was \
              sent.",
             match &v {
                 Value::Null => "null",
@@ -196,7 +196,7 @@ pub fn parse_args(text: &str) -> Result<Value, String> {
 pub fn remedy(reason: Option<&str>) -> Option<String> {
     match reason {
         Some("machineRunning") => Some(format!(
-            "the machine is running — press `{}` on the top bar (or run `{}` from here), then try again",
+            "the machine is running: press `{}` on the top bar (or run `{}` from here), then try again",
             crate::ui::PAUSE_LABEL,
             crate::ui::PAUSE,
         )),
@@ -306,7 +306,7 @@ impl Palette {
                 // **The headline is derived twice over and pinned nowhere**: how many rows match, out of
                 // how many the build serves.
                 let head = format!(
-                    "{} of {} served methods — in-process, through the same registry a tool reads (D15)",
+                    "{} of {} served methods: in-process, through the same registry a tool reads (D15)",
                     rows.len(),
                     METHODS.len()
                 );
@@ -317,7 +317,7 @@ impl Palette {
                     ui.label("method");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.query)
-                            .hint_text("emulator/…  — filter, or type a full name and press Run")
+                            .hint_text("emulator/…: filter, or type a full name and press Run")
                             .desired_width(340.0),
                     );
                 });
@@ -325,7 +325,7 @@ impl Palette {
                     ui.label("params");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.args)
-                            .hint_text("{} — a JSON object, or empty for none")
+                            .hint_text("{}: a JSON object, or empty for none")
                             .desired_width(340.0),
                     );
                     if ui.button("Run").clicked() {
@@ -360,7 +360,7 @@ impl Palette {
                     ui.separator();
                     // Coloured on being a refusal, never on the shape of the string.
                     ui.colored_label(ui.visuals().error_fg_color, msg)
-                        .on_hover_text("this window's own refusal — the command never reached the bus");
+                        .on_hover_text("this window's own refusal: the command never reached the bus");
                     drew.push(screen::Run::after_sep(msg.clone()));
                 }
                 if let Some(e) = &self.last {
@@ -373,7 +373,7 @@ impl Palette {
                     let line = e.line();
                     ui.colored_label(colour, &line).on_hover_text(
                         "the bus's own reply, verbatim. The bracketed word is `error.data.reason`, the \
-                         discriminant clients branch on — never the message text.",
+                         discriminant clients branch on, never the message text.",
                     );
                     drew.push(screen::Run::after_sep(line));
                     if let Some(r) = remedy(e.reason.as_deref()) {

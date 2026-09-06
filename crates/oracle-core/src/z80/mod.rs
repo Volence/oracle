@@ -1307,7 +1307,7 @@ impl Z80 {
             // (`$4C/$54/...`), `RETN`/`RETI` (`$55/$5D/...`), `IM` (`$4E/$66/...`), and the flags-only
             // `IN (C)` / `OUT (C),0` pair (`$70`/`$71`). Still deferred (they are NOT no-ops).
             other => unimplemented!(
-                "Z80 ED opcode {other:#04X} is an undocumented NEG/RETN/IM/IN/OUT mirror — deferred"
+                "Z80 ED opcode {other:#04X} is an undocumented NEG/RETN/IM/IN/OUT mirror, deferred"
             ),
         }
     }
@@ -1794,7 +1794,7 @@ impl Z80 {
             | 0xB4..=0xB5
             | 0xBC..=0xBD => unimplemented!(
                 "Z80 {idx:?}-prefixed base opcode {op:#04X} is an undocumented IXH/IXL \
-                 half-register op — deferred past the DD/FD base slice"
+                 half-register op, deferred past the DD/FD base slice"
             ),
 
             // ---- Every other base opcode has NO H/L/HL involvement, so the DD/FD prefix is IGNORED on
@@ -1865,7 +1865,7 @@ impl Z80 {
         if op & 7 != 6 {
             unimplemented!(
                 "Z80 {idx:?}CB opcode {op:#04X} (d={d}) is an undocumented register-copy variant \
-                 (op low 3 bits != 6) — deferred to the ZEXALL/undocumented slice"
+                 (op low 3 bits != 6), deferred to the ZEXALL/undocumented slice"
             );
         }
         let addr = self.idx_get(idx).wrapping_add(d as u16);

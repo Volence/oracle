@@ -61,7 +61,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
         Ok(t) => t,
         Err(e) => {
             eprintln!(
-                "symbols: {} is not a usable listing ({e}) — running with raw addresses",
+                "symbols: {} is not a usable listing ({e}); running with raw addresses",
                 path.display()
             );
             return None;
@@ -72,7 +72,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
         RomBinding::Mismatch(fault) => {
             // Refuse rather than tolerate: see the module doc.
             eprintln!(
-                "symbols: REFUSED {} — it does not describe this ROM ({fault:?}). Rebuild, or point at \
+                "symbols: REFUSED {}. It does not describe this ROM ({fault:?}). Rebuild, or point at \
                  the matching listing; running with raw addresses.",
                 path.display()
             );
@@ -82,7 +82,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
             // "No fingerprint" plus "damaged file" most likely means the fingerprint symbol fell off a
             // truncated end — so this may be a mismatch wearing a disguise. Refuse; see the module doc.
             eprintln!(
-                "symbols: REFUSED {} — no build fingerprint ({why:?}) AND the file is not intact \
+                "symbols: REFUSED {}. No build fingerprint ({why:?}) AND the file is not intact \
                  ({}); it may be a truncated listing for a different ROM. Running with raw addresses.",
                 path.display(),
                 integrity_note(&table)
@@ -91,7 +91,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
         }
         RomBinding::Indeterminate(why) => {
             eprintln!(
-                "symbols: {} carries no build fingerprint ({why:?}) — loading it unverified",
+                "symbols: {} carries no build fingerprint ({why:?}); loading it unverified",
                 path.display()
             );
         }
@@ -100,7 +100,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
             appendix_len,
         } => {
             println!(
-                "symbols: {} loaded from {} (matches this ROM — deb2 appendix at ${appendix_offset:06X}, \
+                "symbols: {} loaded from {} (matches this ROM, deb2 appendix at ${appendix_offset:06X}, \
                  {appendix_len} bytes)",
                 table.len(),
                 path.display()
@@ -113,7 +113,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
     // loud (the coarser name looks perfectly healthy) but do not refuse.
     if !table.is_intact() {
         eprintln!(
-            "symbols: warning — {} does not look intact ({}); addresses will resolve to coarser names",
+            "symbols: WARNING {} does not look intact ({}); addresses will resolve to coarser names",
             path.display(),
             integrity_note(&table)
         );
@@ -125,7 +125,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
 fn integrity_note(table: &SymbolTable) -> String {
     let mut why = Vec::new();
     if table.source() != TableSource::SymbolTable {
-        why.push("no `Symbol Table` section — fell back to the body lines".to_string());
+        why.push("no `Symbol Table` section (fell back to the body lines)".to_string());
     }
     match table.matches_declared_count() {
         None => why.push("no `N symbols` footer".to_string()),

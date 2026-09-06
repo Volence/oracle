@@ -164,11 +164,11 @@ impl fmt::Display for FaultDecodeError {
             ),
             Self::Unterminated { addr, limit } => write!(
                 f,
-                "no NUL within {limit} bytes of ${addr:06X} — (A7) does not point at a message"
+                "no NUL within {limit} bytes of ${addr:06X}, so (A7) does not point at a message"
             ),
             Self::NotAscii { addr, byte } => write!(
                 f,
-                "${addr:06X} starts with ${byte:02X}, which is neither printable nor a NUL — there is \
+                "${addr:06X} starts with ${byte:02X}, which is neither printable nor a NUL. There is \
                  not even a readable prefix here, so (A7) does not point at a message"
             ),
             Self::StackNotInWorkRam { a7 } => write!(

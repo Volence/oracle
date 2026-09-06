@@ -66,7 +66,7 @@ pub fn judge_listing(table: &SymbolTable, rom: &[u8]) -> LstVerdict {
             ),
         },
         RomBinding::Indeterminate(why) => LstVerdict::AcceptUnverified {
-            note: format!("carries no build fingerprint ({why:?}) — loaded unverified"),
+            note: format!("carries no build fingerprint ({why:?}), loaded unverified"),
         },
         RomBinding::Match {
             appendix_offset,
@@ -85,7 +85,7 @@ pub fn judge_listing(table: &SymbolTable, rom: &[u8]) -> LstVerdict {
 pub fn integrity_note(table: &SymbolTable) -> String {
     let mut why = Vec::new();
     if table.source() != TableSource::SymbolTable {
-        why.push("no `Symbol Table` section — fell back to the body lines".to_string());
+        why.push("no `Symbol Table` section (fell back to the body lines)".to_string());
     }
     match table.matches_declared_count() {
         None => why.push("no `N symbols` footer".to_string()),
@@ -115,7 +115,7 @@ pub fn require_debug_rom(rom: &[u8]) -> Result<(), String> {
         Err(format!(
             "this ROM does not contain the bytes `{}`, so its checkpoint compare was assembled out \
              (`replay.emp:174-186` gates it on DEBUG == 1). A release ROM replays the stream to \
-             completion having verified NOTHING and reports a false green — refusing. Build the DEBUG \
+             completion having verified NOTHING and reports a false green. Refusing. Build the DEBUG \
              shape (e.g. s4.debug.bin)",
             String::from_utf8_lossy(DESYNC_TRAP_STRING)
         ))

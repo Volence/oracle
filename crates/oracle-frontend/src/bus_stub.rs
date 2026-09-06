@@ -86,7 +86,7 @@ impl Default for Bus {
 /// statement this window owes its user either way, and a build that can never serve is the one case where
 /// silence would be most easily mistaken for a bus that is merely idle.
 const NOT_SERVING: &str =
-    "aether: not serving — this binary was built without the `aether` feature, \
+    "aether: not serving. This binary was built without the `aether` feature, \
      so nothing can attach to this window";
 
 impl Bus {
@@ -95,7 +95,7 @@ impl Bus {
         // is the one whose deletion nothing else could notice.
         match socket {
             Some(_) => eprintln!(
-                "aether: NOT serving — this binary was built without the `aether` feature. \
+                "aether: NOT serving. This binary was built without the `aether` feature. \
                  Rebuild with it to serve the bus."
             ),
             None => println!("{NOT_SERVING}"),
@@ -235,7 +235,7 @@ impl Bus {
 /// giving different reasons for the same fact.
 const NO_BUS: &str =
     "this binary was built without the `aether` feature, so it has no object-mutation \
-                      rows to spawn through — rebuild with it to place objects";
+                      rows to spawn through. Rebuild with it to place objects";
 
 /// The served build's [`break_observed`](crate::bus::break_observed) twin, and in this build it is a
 /// function that can only answer `None` — [`Bus::run_sinks`] never hands out a sink, so the argument is

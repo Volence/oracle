@@ -309,11 +309,11 @@ impl Gate {
                 code,
                 reason,
                 message,
-            } => format!("{method} refuses right now — {code} {reason}: {message}"),
+            } => format!("{method} refuses right now ({code} {reason}): {message}"),
             Gate::Unserved { method } => format!(
                 "this build serves no method named {method}, so the panel has nothing to write through"
             ),
-            Gate::NoMethod => "no served method writes this space — the bus has read rows for vsram \
+            Gate::NoMethod => "no served method writes this space: the bus has read rows for vsram \
                                (emulator/read) and no write row at all, so this is the surface's own \
                                limit and not a missing control"
                 .into(),
@@ -394,7 +394,7 @@ pub fn probe_all_gates(bus: &mut Bus, sys: &mut System) -> [Gate; 5] {
 pub fn write_params(space: Space, addr: u32, payload: &str) -> Result<Value, String> {
     let clean = payload.trim().trim_start_matches("0x").replace(' ', "");
     if clean.is_empty() {
-        return Err("nothing to write — type hex bytes".into());
+        return Err("nothing to write: type hex bytes".into());
     }
     if !clean.len().is_multiple_of(2) || !clean.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!(
@@ -418,7 +418,7 @@ pub fn write_params(space: Space, addr: u32, payload: &str) -> Result<Value, Str
             }
             if !addr.is_multiple_of(2) {
                 return Err(format!(
-                    "{} is an odd byte address and a CRAM entry is two bytes wide — refused rather \
+                    "{} is an odd byte address and a CRAM entry is two bytes wide, refused rather \
                      than rounded down onto the neighbouring colour",
                     oracle_aether::hex::addr(addr)
                 ));
@@ -557,8 +557,8 @@ pub fn hash_gate(space: Space) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "{name} declares no `space` param (its keys are {:?}), so it hashes the 68000 bus only — \
-         switch the selector to `bus` to hash a range",
+        "{name} declares no `space` param (its keys are {:?}), so it hashes the 68000 bus only. \
+         Switch the selector to `bus` to hash a range",
         spec.params
     ))
 }
@@ -669,7 +669,7 @@ pub fn answer_line(a: &Answer) -> Line {
     Line {
         refused: a.is_err(),
         text: match a {
-            Answer::Ok(v) => format!("ok — {v}"),
+            Answer::Ok(v) => format!("ok: {v}"),
             Answer::Err(e) => match a.reason() {
                 Some(r) => format!("REFUSED {} {r}: {}", e.code, e.message),
                 None => format!("REFUSED {}: {}", e.code, e.message),
