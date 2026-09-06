@@ -46,10 +46,19 @@ const VENDOR_DIR: &str = concat!(
 /// vendored file is still missing in CI, that fetch regressed and this test must fail. Locally (no
 /// `CI` env var) this is a no-op — fetching is optional for dev and the per-file `SKIP` guards keep
 /// the suite friendly.
+///
+/// It PRINTS what it checked, and the banner is load-bearing rather than decorative. libtest writes
+/// `test vendor_data_present_when_running_in_ci ... ok` identically whether this guard verified 124
+/// files or returned on line one because `CI` was unset — so the guard's NAME in a green log is not
+/// evidence that the corpus was there. The banner is, and it is printed only AFTER every assertion
+/// has held, so a banner means "verified", never "reached". `tools/ci-corpus-guards.sh` runs the six
+/// guards with `--nocapture` and requires exactly six banners.
 #[test]
 fn vendor_data_present_when_running_in_ci() {
     if std::env::var_os("CI").is_none() {
-        return; // local dev: the per-file SKIP guards handle an absent vendor dir
+        // local dev: the per-file SKIP guards handle an absent vendor dir
+        println!("CORPUS GUARD singlestep_m68000: SKIPPED (no CI env var; local dev)");
+        return;
     }
     assert!(
         Path::new(VENDOR_DIR).exists(),
@@ -64,6 +73,10 @@ fn vendor_data_present_when_running_in_ci() {
              suite (the SST sweep would silently skip this family)"
         );
     }
+    println!(
+        "CORPUS GUARD singlestep_m68000: OK — {} pinned SingleStepTests 68000 files present under {VENDOR_DIR}",
+        FILES.len()
+    );
 }
 
 /// Mnemonic files driven by the current decode. Extend as opcode coverage grows (keep in sync with

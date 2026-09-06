@@ -795,10 +795,16 @@ fn baseline_covers_every_rom() {
 /// CI guard: the vendored test ROMs MUST be present under CI, so a fetch failure fails LOUDLY instead of
 /// every ROM skipping cleanly and the scorecard passing VACUOUSLY. Locally (no `CI` env var) this is a
 /// no-op — fetching is optional for dev and the per-ROM `SKIP` guards keep the suite friendly.
+///
+/// The `CORPUS GUARD ...: OK` banner is printed only after every assertion has held — a name in a green log
+/// is not evidence, because libtest prints `... ok` identically for a guard that returned on line one. See
+/// `singlestep_m68000.rs`'s guard and `tools/ci-corpus-guards.sh`.
 #[test]
 fn vendor_data_present_when_running_in_ci() {
     if std::env::var_os("CI").is_none() {
-        return; // local dev: the per-ROM SKIP guards handle an absent vendor dir
+        // local dev: the per-ROM SKIP guards handle an absent vendor dir
+        println!("CORPUS GUARD conformance_roms: SKIPPED (no CI env var; local dev)");
+        return;
     }
     assert!(
         Path::new(VENDOR_DIR).exists(),
@@ -812,4 +818,8 @@ fn vendor_data_present_when_running_in_ci() {
             "CI: vendored test ROM {p} is missing — tools/fetch-testroms.sh did not fetch the full corpus"
         );
     }
+    println!(
+        "CORPUS GUARD conformance_roms: OK — {} pinned test ROMs present under {VENDOR_DIR}",
+        ROMS.len()
+    );
 }

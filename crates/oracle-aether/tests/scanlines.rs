@@ -40,6 +40,32 @@ fn vendored(name: &str) -> Option<Vec<u8>> {
     std::fs::read(p).ok()
 }
 
+/// CI guard, as a STANDALONE named test rather than only the inline assertion inside
+/// `restore_drops_the_frame_and_the_same_machine_answers_staterender`.
+///
+/// The inline one is correct and stays, but it is unreachable by name — it fires from inside a test whose
+/// filter nobody types, so `--nocapture` cannot surface it and a green log cannot be made to say the corpus
+/// was there. This is the same guard, addressable, and the sixth of the six that `tools/ci-corpus-guards.sh`
+/// runs and counts. The banner prints only after the assertion has held, so it means "verified", never
+/// "reached".
+#[test]
+fn vendor_data_present_when_running_in_ci() {
+    let p: PathBuf = Path::new(VENDOR_DIR).join("color_1536.bin");
+    if std::env::var_os("CI").is_none() {
+        println!("CORPUS GUARD scanlines(aether): SKIPPED (no CI env var; local dev)");
+        return;
+    }
+    assert!(
+        p.exists(),
+        "CI: vendored test ROM color_1536.bin is missing from {VENDOR_DIR} — \
+         tools/fetch-testroms.sh must run before the test job, or this gate passes vacuously"
+    );
+    println!(
+        "CORPUS GUARD scanlines(aether): OK — the LIVE-DIFFERS ROM {} is present",
+        p.display()
+    );
+}
+
 fn client(h: &oracle_aether::server::ServerHandle) -> Client {
     let mut c = Client::connect(h);
     c.handshake(false);

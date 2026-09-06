@@ -134,6 +134,15 @@ jobs:
       # everything below was tested against.
       - name: Name the frozen aeon pin
         run: cargo test -p oracle-replay --test aeon_pin -- --nocapture
+      # Same reasoning as the aeon pin above, one level stricter. `cargo test --workspace` below RUNS the
+      # six `vendor_data_present_when_running_in_ci` guards, but it cannot SHOW them: libtest prints
+      # `test vendor_data_present_when_running_in_ci ... ok` identically whether a guard verified 708
+      # files or returned on its first line, and under capture a passing test prints nothing at all. A
+      # green run whose guards silently no-opped is the exact defect this whole change removes, so the
+      # log has to name them. The script runs the six by filter with --nocapture and requires six
+      # `CORPUS GUARD ...: OK` banners — because a libtest filter that matches nothing exits 0.
+      - name: Corpus guards (name them in the log)
+        run: ./tools/ci-corpus-guards.sh
 
       - name: Test
         run: cargo test --workspace

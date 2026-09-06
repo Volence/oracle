@@ -50,6 +50,28 @@ fn boot_vendor(name: &str) -> Option<System> {
     Some(sys)
 }
 
+/// CI guard, as a STANDALONE named test rather than only the inline assertion inside [`boot_vendor`].
+///
+/// The inline one is correct and stays, but it is unreachable by name: it fires from inside whichever
+/// test happened to call `boot_vendor`, so `--nocapture` on a filter cannot surface it and a green log
+/// cannot be made to say the corpus was there. This is the same guard, addressable — it runs under
+/// `tools/ci-corpus-guards.sh` alongside the other five and prints its banner only after the assertion
+/// has held, so a banner means "verified", never "reached".
+#[test]
+fn vendor_data_present_when_running_in_ci() {
+    let path = format!("{VENDOR_DIR}/{EVOLVING_ROM}.bin");
+    if std::env::var_os("CI").is_none() {
+        println!("CORPUS GUARD scanline_capture: SKIPPED (no CI env var; local dev)");
+        return;
+    }
+    assert!(
+        std::path::Path::new(&path).exists(),
+        "CI: vendored test ROM {path} is missing — tools/fetch-testroms.sh must run before the test job. \
+         Skipping it would make the retention oracle compare a constant picture to itself."
+    );
+    println!("CORPUS GUARD scanline_capture: OK — the evolving-picture ROM {path} is present");
+}
+
 #[test]
 fn sink_receives_all_224_active_lines_in_order() {
     let mut s = booted(0x1234_5678);

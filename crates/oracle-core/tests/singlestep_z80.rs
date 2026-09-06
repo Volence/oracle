@@ -284,9 +284,14 @@ fn run_case(t: &Value) {
 
 /// CI guard: the vendored corpus MUST be present under CI so a fetch regression fails loudly instead of the
 /// whole Z80 SST suite skipping and passing vacuously (mirrors the 68000 harness's guard).
+///
+/// The `CORPUS GUARD ...: OK` banner is printed only after every assertion has held — a name in a green log
+/// is not evidence, because libtest prints `... ok` identically for a guard that returned on line one. See
+/// `singlestep_m68000.rs`'s guard and `tools/ci-corpus-guards.sh`.
 #[test]
 fn vendor_data_present_when_running_in_ci() {
     if std::env::var_os("CI").is_none() {
+        println!("CORPUS GUARD singlestep_z80: SKIPPED (no CI env var; local dev)");
         return;
     }
     assert!(
@@ -301,6 +306,10 @@ fn vendor_data_present_when_running_in_ci() {
             "CI: vendored Z80 SST file {p} is missing — tools/fetch-z80-tests.sh did not fetch the full set"
         );
     }
+    println!(
+        "CORPUS GUARD singlestep_z80: OK — {} pinned SingleStepTests z80 files present under {VENDOR_DIR}",
+        opcode_files().len()
+    );
 }
 
 #[test]
