@@ -1563,6 +1563,11 @@ mod tests {
     /// The percentile ring holds the span it says it holds — asserted against
     /// [`FRAME_TIME_WINDOW`] and [`FRAME_PERIOD`], the two constants it is derived from, rather than
     /// against the integer that division happens to produce today.
+    ///
+    /// **Planted against 2026-09-06, both ways.** Raising the trim to `FRAME_TIME_SAMPLES * 4`, and
+    /// deriving the constant from three frame periods instead of one, each turned this red. They are
+    /// separate defects — a ring that does not trim, and a ring that trims to the wrong number — and
+    /// one mutation could only ever have found one of them.
     #[test]
     fn the_percentile_ring_holds_the_window_it_claims() {
         let held = FRAME_PERIOD * u32::try_from(FRAME_TIME_SAMPLES).expect("fits");

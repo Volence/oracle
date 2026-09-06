@@ -39,6 +39,7 @@
 //! | declare `params: &["windowMs"]` | `a_client_cannot_choose_the_measurement_window` |
 //! | serve `target_fps` as `presented` | `the_reply_is_the_measurement_the_process_published` |
 //! | **break the enumeration this file reads** | `a_headless_server_does_not_advertise_pacing`, on its CONTROL |
+//! | `let _ = self.advance(1)` inside the handler | `reading_the_pacing_moves_nothing` |
 //!
 //! The last one is the anti-vacuity row and the only one applied to *this file*: the `methods` key was
 //! misspelled so the array came back empty. The negative assertion still held — an empty list contains
