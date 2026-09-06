@@ -289,7 +289,38 @@ Two more landed with the readout fixes, on the same harness against baseline `4c
 | M10 | `available(c, channel)?;` (the drift check deleted from the READ path) | `a_drifted_selector_refuses_the_readback_as_well_as_the_write` |
 | M11 | `if false && self.value == 0 {` | `a_zero_live_cell_reads_as_that_channels_own_documented_meaning` |
 
-**Eleven mutations, eleven red.**
+And three over the bands-off refusal, against `fa3ee3a` and then `1cc3bde`:
+
+| # | mutation, quoted from disk | red row |
+|---|---|---|
+| M12 | `blocked: "bands cannot be turned off in this build. …` (the refusal reworded to read as a missing feature) | `bands_off_is_refused_until_the_empty_table_constant_exists_and_writes_nothing` |
+| M13 | `None,` (the remedy dropped) | same |
+| M14 | `Ok(_) => run(c, channel, symbol, channel.noted_addr),` | same, plus `a_scene_cannot_be_turned_off_and_the_control_says_why` |
+
+**Fourteen mutations, fourteen red — after one of them was not.**
+
+### ⚑ M14 was APPLIED AND STILL GREEN the first time, and that is the most useful row here
+
+Replacing the off target's resolved address with `channel.noted_addr` inside `turn_off` — so bands-off
+would point `BgAnim_Table_Ptr` at itself and raster-off would stage the raster program cell as its own
+program — passed 28/0.
+
+The hole was specific and worth naming. `a_selection_writes_the_installers_cells_by_symbol_and_nothing_else`
+checks written values, but only for `point_at`. The two off controls checked the target's **name** and the
+**number** of writes and nothing else. And the off path is the one place in this module where a value is
+**chosen by this crate** rather than handed to it by the person clicking a row, so it is exactly the path
+whose value needed saying out loud, and it was the one that did not.
+
+Both `Off::At` controls now assert the whole write vector, derived from the channel's write-set and the
+fake's listing rather than typed twice. M14 re-run is red.
+
+Two method notes, both earned rather than restated:
+
+* it was found only because the harness treats **applied-and-still-green as a runner defect to
+  investigate**, never as a pass;
+* and only because the parameter was varied to a **third kind** of mutation on that path, after two that
+  changed refusal wording and both went red as designed. **Two red rows in a row on a path are not
+  evidence that the path is covered.**
 
 ### 6.1 Two defects the gates found in my own work before any mutation ran
 
@@ -308,14 +339,15 @@ Two more landed with the readout fixes, on the same harness against baseline `4c
 | `cargo test -p oracle-player` | **346 passed, 0 failed** (+ 4 in `tests/p10_no_dashes_in_shipped_text.rs`) |
 | `cargo test -p oracle-frontend` | **389 passed, 0 failed, 1 ignored** over 5 legs |
 | `cargo test -p oracle-aether` | **587 passed, 0 failed, 2 ignored** over 45 legs |
+| `cargo test -p oracle-core` | **1125 passed, 0 failed** over 21 legs, exit 0 |
 | `cargo test -p oracle-replay` | 0 tests |
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy -p oracle-player --all-targets` | zero warnings |
 
 ⚑ **`cargo test --workspace` was NOT run to completion and is not claimed green.** Two attempts were
 reaped by the harness's time cap, the second at 54 of ~65 legs with 0 failures so far. A reaped run is not
-a pass, so the suites above were run per crate instead. `oracle-core` is reported separately for the same
-reason: it carries the multi-minute SST sweep.
+a pass, so the suites above were run per crate instead. `oracle-core` was run on its own for the same reason
+— it carries the multi-minute SST sweep — and is in the table above.
 
 ⚑ **And an environmental failure that looks exactly like a regression.** A worktree without
 `vendor/TestRoms/` fails 8 `save_state::tests::*` rows in `oracle-frontend` — *"vendored test ROM … is
