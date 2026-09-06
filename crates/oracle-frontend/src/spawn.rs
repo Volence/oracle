@@ -328,8 +328,15 @@ pub struct Subtypes {
     pub prefix: Option<String>,
     /// The subtypes, **ordered by value**. The value arrives beside the name, so the ordering costs
     /// nothing and it is the order the numbers are in rather than the order the letters are in: the
-    /// listing's own map is name ordered, and on the one build measured here that puts `Down` first and
-    /// the `$00` one fourth.
+    /// listing's own map is name ordered, which files a spring's directions alphabetically and puts the
+    /// `$00` one wherever its spelling happens to fall.
+    ///
+    /// ⚑ The sentence here used to name the positions two spellings took **in aeon's build on the
+    /// evening this was written**, and that build changed the same night: the side and underside springs
+    /// landed, and the set this was measured against went from four rows to eight. Nothing about the
+    /// ordering broke, because it is derived from the values that arrive; but the *measurement* in this
+    /// comment was stale within hours of being committed, and a doc comment is where a perishable claim
+    /// goes to be read by nobody. State the rule, never the peer's current row order.
     pub entries: Vec<Subtype>,
     /// ⚑ **The search was cut short**, straight off the reply's own `truncated`.
     ///
