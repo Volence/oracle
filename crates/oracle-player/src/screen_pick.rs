@@ -858,6 +858,16 @@ fn run_frames(machine: &mut Machine, bus: &mut Bus, n: u64) -> Option<String> {
 /// The picture is composed from the machine **after** the restore, which is the machine the person is
 /// looking at. Composing it from the probe would answer a different question: whether the art was resident
 /// in a machine that no longer exists.
+///
+/// # ⚑ Why the rewind is a wrapper and not four call sites
+///
+/// The property this rests on is *"the machine is where it was afterwards, on every path"*, and inside one
+/// function with five early returns it is **unobservable**: on a fixture whose spawn is refused before a
+/// frame runs the machine does not move, so every rewind can be deleted with the suite still green. That
+/// is not a hypothetical, it is what the first version of this measured. [`checkpointed`] makes it a
+/// property a test can pose directly, with a body that deliberately moves the machine, on the real bus and
+/// with no game at all. It is exactly why [`paused_for`] was extracted one function down, and it is the
+/// same argument for the same reason.
 fn measure(
     machine: &mut Machine,
     bus: &mut Bus,
@@ -866,98 +876,80 @@ fn measure(
 ) -> (crate::preview::Outcome, Option<String>) {
     use crate::preview::{Key, Outcome};
 
-    let id =
-        match bus.call(
-            machine.system_mut(),
-            "emulator/checkpoint",
-            &json!({"label": PREVIEW_LABEL}),
-        ) {
-            Answer::Ok(v) => match v["id"].as_str() {
-                Some(s) => s.to_string(),
-                None => return (
-                    Outcome::Absent(
-                        "the window asked for a checkpoint to take a picture of this object and \
-                         the answer carried no id, so nothing was tried on the machine."
-                            .to_string(),
+    let taken = checkpointed(machine, bus, |machine, bus, id| {
+        // --- the probe --------------------------------------------------------------------------
+        let placed = {
+            let sys = machine.system_mut();
+            spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
+        };
+        let advanced = match placed {
+            Ok(p) => p.frames_advanced,
+            Err(e) => {
+                return Reading::Refused(
+                    format!(
+                        "no picture of {archetype} could be taken, because putting one into the \
+                         machine to look at was refused. {}",
+                        e.terminal(archetype, Some(&pause_remedy()))
                     ),
-                    None,
-                ),
-            },
-            Answer::Err(e) => {
-                return (
-                    Outcome::Absent(format!(
-                        "no picture of {archetype} could be taken, because the window could not \
-                     checkpoint the machine first and it will not run one forward it cannot put \
-                     back. {} {}",
-                        e.code, e.message
-                    )),
                     None,
                 )
             }
         };
-
-    // --- the probe ------------------------------------------------------------------------------
-    let placed = {
-        let sys = machine.system_mut();
-        spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
-    };
-    let advanced = match placed {
-        Ok(p) => p.frames_advanced,
-        Err(e) => {
-            // The spawn may have advanced frames before refusing, so the machine goes back either way.
-            let alarm = restore_to(machine, bus, &id);
-            drop_checkpoint(machine, bus, &id);
-            return (
-                Outcome::Absent(format!(
-                    "no picture of {archetype} could be taken, because putting one into the \
-                     machine to look at was refused. {}",
-                    e.terminal(archetype, Some(&pause_remedy()))
-                )),
-                alarm,
+        if let Some(why) = run_frames(machine, bus, crate::preview::EXTRA_FRAMES) {
+            return Reading::Refused(
+                format!(
+                    "one {archetype} was put into the machine, and the frame it needed to draw \
+                     itself was refused, so there was nothing to read. {why}"
+                ),
+                None,
             );
         }
+        let probe = live_sprites(machine);
+
+        // --- back, then the control over the identical number of frames -------------------------
+        //
+        // ⚑ This rewind is the body's own and not the wrapper's: the control has to start from the same
+        // instant the probe did, so it happens in the middle rather than at the end.
+        if let Some(alarm) = restore_to(machine, bus, id) {
+            return Reading::Refused(
+                format!(
+                    "no picture of {archetype} was produced, because the machine could not be put \
+                     back and this window will not keep running one it has lost its place in."
+                ),
+                Some(alarm),
+            );
+        }
+        if let Some(why) = run_frames(machine, bus, advanced + crate::preview::EXTRA_FRAMES) {
+            return Reading::Refused(
+                format!(
+                    "the control run this picture is measured against was refused, so what the \
+                     object drew cannot be told apart from what the rest of the game drew. {why}"
+                ),
+                None,
+            );
+        }
+        Reading::Took {
+            control: live_sprites(machine),
+            probe,
+        }
+    });
+
+    let (reading, tail_alarm) = match taken {
+        Ok(both) => both,
+        Err(why) => {
+            return (
+                Outcome::Absent(format!(
+                    "no picture of {archetype} could be taken, because the window could not \
+                     checkpoint the machine first and it will not run one forward it cannot put \
+                     back. {why}"
+                )),
+                None,
+            )
+        }
     };
-    if let Some(why) = run_frames(machine, bus, crate::preview::EXTRA_FRAMES) {
-        let alarm = restore_to(machine, bus, &id);
-        drop_checkpoint(machine, bus, &id);
-        return (
-            Outcome::Absent(format!(
-                "one {archetype} was put into the machine, and the frame it needed to draw itself \
-                 was refused, so there was nothing to read. {why}"
-            )),
-            alarm,
-        );
-    }
-    let probe = live_sprites(machine);
-
-    // --- back, then the control over the identical number of frames -----------------------------
-    if let Some(alarm) = restore_to(machine, bus, &id) {
-        drop_checkpoint(machine, bus, &id);
-        return (
-            Outcome::Absent(format!(
-                "no picture of {archetype} was produced, because the machine could not be put back \
-                 and this window will not keep running one it has lost its place in."
-            )),
-            Some(alarm),
-        );
-    }
-    let control_frames = advanced + crate::preview::EXTRA_FRAMES;
-    if let Some(why) = run_frames(machine, bus, control_frames) {
-        let alarm = restore_to(machine, bus, &id);
-        drop_checkpoint(machine, bus, &id);
-        return (
-            Outcome::Absent(format!(
-                "the control run this picture is measured against was refused, so what the object \
-                 drew cannot be told apart from what the rest of the game drew. {why}"
-            )),
-            alarm,
-        );
-    }
-    let control = live_sprites(machine);
-
-    // --- back for good --------------------------------------------------------------------------
-    let alarm = restore_to(machine, bus, &id);
-    drop_checkpoint(machine, bus, &id);
+    let (reading, body_alarm) = reading.split();
+    // ⚑ **The machine is not where it was, and that outranks everything else this function has to say.**
+    let alarm = body_alarm.or(tail_alarm);
     if alarm.is_some() {
         return (
             Outcome::Absent(format!(
@@ -967,7 +959,14 @@ fn measure(
             alarm,
         );
     }
+    let (probe, control) = match reading {
+        Ok(pair) => pair,
+        Err(why) => return (Outcome::Absent(why), None),
+    };
 
+    // The machine has been put back by now, on every path, so the picture is composed from the machine the
+    // person is looking at. Composing it from the probe would answer a different question: whether the art
+    // was resident in a machine that no longer exists.
     let key = Key {
         archetype: archetype.to_string(),
         subtype: None,
@@ -980,6 +979,70 @@ fn measure(
         },
     };
     (out, None)
+}
+
+/// What [`checkpointed`]'s body came back with: the two sprite lists a picture is the difference of, or
+/// the stated reason there are not two.
+///
+/// The refusal arm carries its own not-put-back alarm, because one of the ways the body gives up **is** a
+/// refused rewind and that is a different kind of fact from "no picture".
+enum Reading {
+    Took {
+        probe: Vec<oracle_core::render::SpriteDecoded>,
+        control: Vec<oracle_core::render::SpriteDecoded>,
+    },
+    Refused(String, Option<String>),
+}
+
+type Lists = Vec<oracle_core::render::SpriteDecoded>;
+
+impl Reading {
+    /// The reading and the alarm, apart, so the caller handles the two facts in the order they matter in.
+    #[allow(clippy::type_complexity)]
+    fn split(self) -> (Result<(Lists, Lists), String>, Option<String>) {
+        match self {
+            Self::Took { probe, control } => (Ok((probe, control)), None),
+            Self::Refused(why, alarm) => (Err(why), alarm),
+        }
+    }
+}
+
+/// **Take a checkpoint, run `body`, and put the machine back on it whatever `body` did or said.**
+///
+/// The wrapper exists so *"the machine is where it was afterwards"* is a property rather than a habit. It
+/// is [`paused_for`]'s twin one layer down: that one owns the run state, this one owns the timeline, and
+/// both were extracted for the same stated reason, which is that a discipline spread over five early
+/// returns is a discipline nothing can witness.
+///
+/// `Err` is the checkpoint itself being refused, carrying the server's own words: **nothing was tried on
+/// the machine**, because this window will not run one forward it cannot put back. The `Option<String>` in
+/// the success arm is the restore being refused, which means the machine is **not** where it was and is
+/// the loudest thing this whole surface can report.
+///
+/// The checkpoint is dropped on every path. A slot left behind is a whole machine's worth of memory per
+/// selection change, and it would eventually fill the server's own cap and start refusing a client's.
+fn checkpointed<T>(
+    machine: &mut Machine,
+    bus: &mut Bus,
+    body: impl FnOnce(&mut Machine, &mut Bus, &str) -> T,
+) -> Result<(T, Option<String>), String> {
+    let id = match bus.call(
+        machine.system_mut(),
+        "emulator/checkpoint",
+        &json!({"label": PREVIEW_LABEL}),
+    ) {
+        Answer::Ok(v) => match v["id"].as_str() {
+            Some(s) => s.to_string(),
+            None => {
+                return Err("the answer carried no checkpoint id, so nothing was tried.".to_string())
+            }
+        },
+        Answer::Err(e) => return Err(format!("{} {}", e.code, e.message)),
+    };
+    let value = body(machine, bus, &id);
+    let alarm = restore_to(machine, bus, &id);
+    drop_checkpoint(machine, bus, &id);
+    Ok((value, alarm))
 }
 
 /// **Run `body` on a machine that genuinely is paused, and put the run state back the way it was found.**
@@ -1157,6 +1220,7 @@ impl spawn::Caller for PlayerCaller<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oracle_core::state_hash::fnv1a_bytes;
 
     const W: usize = 320;
     const H: usize = 224;
@@ -2218,68 +2282,98 @@ mod tests {
         );
     }
 
-    /// ★★ **The preview puts the machine back byte for byte**, which is the property the whole
-    /// measurement rests on and the one a person cannot check for themselves.
+    /// ★★ **A body that moves the machine is rewound, and the checkpoint does not outlive it.**
     ///
-    /// Taking a picture spawns an object into the machine the owner is playing, runs it forward twice and
-    /// restores it twice. If any of that leaks, the window has silently altered a game somebody was in the
-    /// middle of, and the symptom would be an object appearing out of nowhere some seconds later.
+    /// This is the property the whole preview rests on: taking a picture spawns an object into the machine
+    /// somebody is playing and runs it forward twice. If any of that leaks, the window has silently
+    /// altered a game in progress, and the symptom is an object appearing out of nowhere seconds later.
     ///
-    /// # ⚑ The positive control comes first, and it is the reason this row is not vacuous
+    /// # ⚑ Why this is posed on [`checkpointed`] rather than on [`Panel::take_preview`]
     ///
-    /// A snapshot comparison passes trivially if the measurement never ran: a refused checkpoint touches
-    /// nothing, and "nothing changed" is then a fact about a measurement that did not happen. So the test
-    /// first proves the comparison is **sensitive to a single emulated frame** on this very machine, puts
-    /// the machine back by hand, and only then takes the picture. The control validates the measurement,
-    /// not merely the search.
+    /// **Because the same assertion on `take_preview` was green with every rewind deleted, and that was
+    /// measured rather than reasoned.** This fixture has no `Camera_X`, so the spawn inside the
+    /// measurement is refused by `emulator/object_at` *before a single frame runs*, and a machine that
+    /// never moved is byte-identical whether or not anything put it back. The row proved that the
+    /// measurement leaves the machine alone; it proved nothing at all about the rewind, and it would have
+    /// gone on passing while the feature corrupted a running game.
+    ///
+    /// So the property is posed where it can fail: a body that **deliberately** advances the machine, with
+    /// its own control asserting that it did, on the real bus and with no game.
     #[test]
-    fn taking_a_picture_puts_the_machine_back_byte_for_byte() {
+    fn a_body_that_moves_the_machine_is_rewound_and_the_checkpoint_goes_with_it() {
+        let (mut machine, mut bus, _panel) = armed_rig();
+        let before = machine.system().snapshot();
+
+        let (moved, alarm) = checkpointed(&mut machine, &mut bus, |m, b, _id| {
+            let _ = b.call(m.system_mut(), crate::ui::PAUSE, &json!({}));
+            assert!(
+                matches!(
+                    b.call(m.system_mut(), "emulator/run_frames", &json!({"frames": 2})),
+                    Answer::Ok(_)
+                ),
+                "the body has to be able to run frames or it cannot move anything"
+            );
+            // ⚑ **The control, taken inside the body**: the machine really is somewhere else by now, so
+            // the assertion after the wrapper returns is about the rewind and not about a body that did
+            // nothing.
+            m.system().snapshot() != before
+        })
+        .expect("the checkpoint");
+
+        assert!(
+            moved,
+            "the body must actually move the machine, or the rewind below witnesses nothing"
+        );
+        assert_eq!(alarm, None, "the restore was not refused on this fixture");
+        // Compared as a fingerprint rather than as the bytes themselves, because a failure here prints
+        // its operands: two 1.4 MB machine images in a test log is a red row nobody can read, and the
+        // question being asked is only whether they are the same.
+        assert_eq!(
+            fnv1a_bytes(&machine.system().snapshot()),
+            fnv1a_bytes(&before),
+            "the machine must come back byte for byte: an object placed to look at is an object \
+             nobody asked for"
+        );
+
+        // The probe's checkpoint is dropped on every path. A slot left behind is a whole machine's worth
+        // of memory per selection change, and it would fill the server's own cap.
+        match bus.call(machine.system_mut(), "emulator/checkpoint_list", &json!({})) {
+            Answer::Ok(v) => assert_eq!(
+                v["checkpoints"].as_array().map(Vec::len),
+                Some(0),
+                "the rewind's checkpoint must not outlive it: {v:?}"
+            ),
+            Answer::Err(e) => panic!("listing checkpoints was refused: {} {}", e.code, e.message),
+        }
+    }
+
+    /// ★ **The whole gesture leaves the machine alone**, end to end through [`Panel::take_preview`].
+    ///
+    /// ⚑ **On its own this row is weak, and it is kept for what it does cover rather than for what it
+    /// looks like it covers.** On this fixture the spawn is refused before a frame runs, so the machine
+    /// never moves and the comparison cannot fail. What it does pin is that the gesture is wired up: the
+    /// run state comes back, the checkpoint is dropped, and the panel is left holding a stated reason. The
+    /// rewind itself is pinned by the row above, where it can fail.
+    #[test]
+    fn the_whole_gesture_leaves_the_machine_and_the_run_state_alone() {
         let (mut machine, mut bus, mut panel) = armed_rig();
         let before = machine.system().snapshot();
 
-        // --- the positive control -----------------------------------------------------------------
-        let _ = bus.call(machine.system_mut(), crate::ui::PAUSE, &json!({}));
-        assert!(
-            matches!(
-                bus.call(
-                    machine.system_mut(),
-                    "emulator/run_frames",
-                    &json!({"frames": 1})
-                ),
-                Answer::Ok(_)
-            ),
-            "the control needs a frame to actually run"
-        );
-        assert_ne!(
-            machine.system().snapshot(),
-            before,
-            "one emulated frame must move this snapshot, or the assertion below witnesses nothing"
-        );
-        machine.adopt_system(
-            oracle_core::system::System::restore(&before).expect("the control's own rewind"),
-        );
-        let _ = bus.call(machine.system_mut(), crate::ui::RESUME, &json!({}));
-        assert_eq!(
-            machine.system().snapshot(),
-            before,
-            "the control put the machine back, so the measurement starts where it says it does"
-        );
-
-        // --- the measurement ----------------------------------------------------------------------
         panel.take_preview(&mut machine, &mut bus);
+
         assert_eq!(
-            machine.system().snapshot(),
-            before,
-            "taking a picture must leave the machine byte for byte where it was: an object placed to \
-             look at is an object nobody asked for"
+            fnv1a_bytes(&machine.system().snapshot()),
+            fnv1a_bytes(&before),
+            "taking a picture must leave the machine where it was"
         );
         assert!(
             !bus.is_paused(),
             "the machine was running when the picture was taken, so it must be running after it"
         );
-
-        // The probe's checkpoint is dropped in every path, including this one. A slot left behind is a
-        // whole machine's worth of memory per selection change, and it would fill the server's cap.
+        assert!(
+            panel.preview().is_some(),
+            "a selection always leaves the panel holding an outcome, drawable or stated"
+        );
         match bus.call(machine.system_mut(), "emulator/checkpoint_list", &json!({})) {
             Answer::Ok(v) => assert_eq!(
                 v["checkpoints"].as_array().map(Vec::len),
