@@ -252,6 +252,26 @@ pub struct Panel {
     armed: Vec<String>,
     /// Spawn mode: whether a click places instead of picks, and what it places.
     mode: spawn::Mode,
+    /// **The subtypes the selected archetype offers**, read out of the listing's equate table.
+    ///
+    /// Re-read on every archetype change rather than kept for the whole arm, because it is a fact about
+    /// one archetype and holding a set past its own selection is how a picker offers `ObjDef_Ring` the
+    /// spring's strengths. Empty for an archetype the listing names no subtypes for, which is an answer
+    /// and gets a sentence rather than an empty box.
+    subtypes: spawn::Subtypes,
+    /// **The armed subtype's whole equate name**, or `None` when there is nothing armable.
+    ///
+    /// The name and not the value, for `spawn::Mode`'s reason one level up: a re-read under a new listing
+    /// must not silently arm whichever subtype inherited a number. The byte a click carries is looked up
+    /// from this name each time ([`Panel::subtype_byte`]), so it is always the value the listing
+    /// published rather than one this window remembered.
+    subtype: Option<String>,
+    /// Why the subtype list could not be read, when it could not be.
+    ///
+    /// P4, kept apart from an empty [`Panel::subtypes`] on purpose: *the listing names none* and *the
+    /// window could not ask* are two different findings, and an empty set standing in for a refusal is
+    /// the true-sounding sentence about the wrong thing that `bus_stub`'s twin refuses for.
+    subtype_refusal: Option<String>,
     /// What the bounded symbol search said the listing holds, from the arm that filled [`Panel::mode`].
     ///
     /// Kept beside the mode rather than inside it because it is a fact about the *search*, not about the
@@ -332,7 +352,10 @@ impl Panel {
         // A fresh arm re-read the listing, so a filter left over from the last one would hide rows of a
         // list the reader has not seen yet.
         self.filter.clear();
-        // ⚑ The arm selects the first archetype, so the arm is a selection change and owes a picture of it.
+        // ⚑ **Before the picture, not after.** The arm selects the first archetype, so it is a selection
+        // change: it owes both the subtypes that archetype offers and a picture of what a click now
+        // places. The subtypes come first because the picture is keyed on the armed one.
+        self.refresh_subtypes(machine, bus);
         self.take_preview(machine, bus);
     }
 
@@ -344,6 +367,11 @@ impl Panel {
         self.mode.disarm();
         self.total = 0;
         self.filter.clear();
+        // The subtypes go with the mode for the picture's reason: they are the forms of an archetype a
+        // click would place, and a click places nothing now.
+        self.subtypes = spawn::Subtypes::default();
+        self.subtype = None;
+        self.subtype_refusal = None;
         // The picture goes with the mode: it is a picture of what a click would place, and a click places
         // nothing now. [`Panel::run`] deliberately does not, and the difference is that one is an answer
         // and the other is what this window did to somebody's machine.
@@ -363,7 +391,12 @@ impl Panel {
     pub fn select_archetype(&mut self, machine: &mut Machine, bus: &mut Bus, name: &str) {
         match self.mode.select(name) {
             Some(sel) => {
+                let sel = sel.to_string();
                 self.last = Some(Readout::ok(format!("a click now places {sel}")));
+                // ⚑ The subtypes belong to the archetype, so they are re-read here and the armed one is
+                // reset: a subtype name carried across an archetype change would put one object's form
+                // on another, and the byte would still be a real byte.
+                self.refresh_subtypes(machine, bus);
                 // ⚑ **Once per selection change**, which is what makes the cost bearable: a checkpoint
                 // round trip and a few emulated frames on a gesture a person makes by hand, never on a
                 // frame the loop draws by itself.
@@ -375,6 +408,94 @@ impl Panel {
                      selected. Re-arm spawn mode to read the listing again."
                 )))
             }
+        }
+    }
+
+    /// **Re-read the selected archetype's subtypes**, and arm the lowest valued one.
+    ///
+    /// Called on an arm and on every archetype change, never per frame: it is one bus call, and the thing
+    /// it must not do is go stale. The armed subtype is reset here rather than carried, because a name
+    /// that survived an archetype change would be this window placing one object's form on another.
+    ///
+    /// ⚑ **The default is armed and named rather than left unchosen**, which is the safer of the two.
+    /// `emulator/object_spawn` composes a subtype byte whether or not one is sent, so a picker with an
+    /// unchosen state would be arming a subtype in silence while showing an empty selection. Arming the
+    /// lowest and printing which it is places exactly what a click placed before this list existed.
+    fn refresh_subtypes(&mut self, machine: &mut Machine, bus: &mut Bus) {
+        let Some(archetype) = self.mode.selected().map(str::to_string) else {
+            self.subtypes = spawn::Subtypes::default();
+            self.subtype = None;
+            self.subtype_refusal = None;
+            return;
+        };
+        let all = self.mode.names().to_vec();
+        let sys = machine.system_mut();
+        match spawn::subtypes(&mut PlayerCaller { bus, sys }, &archetype, &all) {
+            Ok(s) => {
+                self.subtype = s.default_choice().map(|e| e.name.clone());
+                self.subtypes = s;
+                self.subtype_refusal = None;
+            }
+            Err(e) => {
+                self.subtype = None;
+                self.subtypes = spawn::Subtypes::none_for(&archetype);
+                self.subtype_refusal = Some(e.terminal(&archetype, None));
+            }
+        }
+    }
+
+    /// **Arm one subtype**, by its whole equate name, from the rows the picker drew.
+    ///
+    /// The `None` arm reports rather than swallowing, for [`Panel::select_archetype`]'s reason: a control
+    /// that silently does nothing is indistinguishable from a broken one, and here it would also mean the
+    /// picker is drawing a name the set no longer holds.
+    pub fn select_subtype(&mut self, machine: &mut Machine, bus: &mut Bus, name: &str) {
+        let Some(entry) = self.subtypes.get(name) else {
+            self.last = Some(Readout::refused(format!(
+                "{name} is not one of the subtypes read for {}, so nothing was armed. Choose the \
+                 archetype again to read its subtypes afresh.",
+                self.subtypes.archetype
+            )));
+            return;
+        };
+        let Some(byte) = entry.byte() else {
+            self.last = Some(Readout::refused(format!(
+                "{name} was not armed: this listing gives it the value {}, and a placement carries \
+                 one byte of subtype. Sending it cut down to a byte would place a different form \
+                 than the row names.",
+                entry.value
+            )));
+            return;
+        };
+        let short = entry.short(self.subtypes.prefix.as_deref().unwrap_or_default());
+        self.last = Some(Readout::ok(format!(
+            "a click now places {} as {short} (${byte:02X})",
+            self.subtypes.archetype
+        )));
+        self.subtype = Some(name.to_string());
+        // ⚑ A subtype change is a selection change and owes a picture of what it now places: the whole
+        // point of choosing a strength is that it looks different, and a preview left over from the
+        // previous one would be a wrong answer with the panel's authority behind it. The key carries the
+        // subtype, so the guard in [`Panel::preview`] catches the stale one either way.
+        self.take_preview(machine, bus);
+    }
+
+    /// **The byte a click carries**, looked up from the armed name every time rather than remembered.
+    pub fn subtype_byte(&self) -> Option<u8> {
+        self.subtype
+            .as_deref()
+            .and_then(|n| self.subtypes.get(n))
+            .and_then(spawn::Subtype::byte)
+    }
+
+    /// **The subtype picker's surface**, or the stated reason it could not be read (P4).
+    pub fn subtype_listing(&self) -> Result<spawn_picker::SubtypeListing, &str> {
+        match &self.subtype_refusal {
+            Some(why) => Err(why.as_str()),
+            None => Ok(spawn_picker::subtype_listing(
+                &self.subtypes,
+                self.subtype.as_deref(),
+            )),
         }
     }
 
@@ -416,16 +537,35 @@ impl Panel {
     /// is a wrong answer with the panel's whole authority behind it. The guard is here rather than at the
     /// two draw sites so neither can be the one that forgets it.
     pub fn preview(&self) -> Option<&crate::preview::Outcome> {
-        let sel = self.mode.selected()?;
+        let key = self.preview_key()?;
         let out = self.preview.as_ref()?;
         match out {
             crate::preview::Outcome::Ready(p) | crate::preview::Outcome::Stale(p)
-                if !p.is_of(sel, None) =>
+                if !p.is_of(&key.archetype, key.subtype) =>
             {
                 None
             }
             _ => Some(out),
         }
+    }
+
+    /// ⚑ **What a click would place, as one value**: the key a picture is filed under and the key this
+    /// guard asks for, from one function because two spellings of it is a defect that shows as nothing.
+    ///
+    /// Measured, not imagined. The version this replaced built the key inside [`measure`] out of an
+    /// archetype and a subtype passed separately, and the whole suite stayed green with that
+    /// construction stamped `None`: every picture of an archetype that has subtypes would then be filed
+    /// under a key [`Panel::preview`] never asks for, so the guard rejects a picture that is perfectly
+    /// correct and the card silently stops appearing. Nothing was drawn wrongly, which is why nothing
+    /// caught it.
+    ///
+    /// With one function there is no second spelling to drift. `None` means spawn mode is off, which is
+    /// the one state that has no subject.
+    fn preview_key(&self) -> Option<crate::preview::Key> {
+        Some(crate::preview::Key {
+            archetype: self.mode.selected()?.to_string(),
+            subtype: self.subtype_byte(),
+        })
     }
 
     /// ⚑ **Retire the picture the moment the art under it is replaced.**
@@ -468,12 +608,15 @@ impl Panel {
     /// as it does for an iteration that emulated nothing. **The last thing this function does to the
     /// machine is a restore**, in every path including every refusal, which is what makes that hold.
     pub fn take_preview(&mut self, machine: &mut Machine, bus: &mut Bus) {
-        let Some(archetype) = self.mode.selected().map(str::to_string) else {
+        // ⚑ **One value, from [`Panel::preview_key`], and the probe is placed AS it.** The key the
+        // picture is filed under and the subtype the probe carries are the same field of the same
+        // struct, so a picture can only ever be filed under what was actually put into the machine.
+        let Some(key) = self.preview_key() else {
             self.preview = None;
             return;
         };
         let dot = preview_dot(machine);
-        match paused_for(machine, bus, |m, b| measure(m, b, &archetype, dot)) {
+        match paused_for(machine, bus, |m, b| measure(m, b, &key, dot)) {
             Ok(((out, not_put_back), mut run)) => {
                 // ⚑ **`Some(0)`, and it is the whole point rather than a placeholder.** Frames really did
                 // run, and the restore put every one of them back, so the emulated time this cost the
@@ -496,8 +639,9 @@ impl Panel {
             Err(why) => {
                 self.run = None;
                 self.preview = Some(crate::preview::Outcome::Absent(format!(
-                    "the window could not pause the machine to look at {archetype}, so no picture \
-                     of it was taken. {why}"
+                    "the window could not pause the machine to look at {}, so no picture \
+                     of it was taken. {why}",
+                    key.archetype
                 )));
             }
         }
@@ -730,9 +874,12 @@ impl Panel {
     /// lesson the mask statement and the lens episode both paid for.
     fn place(&mut self, machine: &mut Machine, bus: &mut Bus, archetype: &str, dot: (u16, u16)) {
         let remedy = pause_remedy();
+        // ⚑ **The byte the listing gave**, read back out of the armed name rather than derived from it.
+        // Nothing in this window computes a subtype from a spelling.
+        let subtype = self.subtype_byte();
         let (placed, mut run) = match paused_for(machine, bus, |machine, bus| {
             let sys = machine.system_mut();
-            spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
+            spawn::place(&mut PlayerCaller { bus, sys }, archetype, subtype, dot)
         }) {
             Ok(both) => both,
             // The window never got as far as touching the run state, so there is nothing to restore and
@@ -868,19 +1015,26 @@ fn run_frames(machine: &mut Machine, bus: &mut Bus, n: u64) -> Option<String> {
 /// property a test can pose directly, with a body that deliberately moves the machine, on the real bus and
 /// with no game at all. It is exactly why [`paused_for`] was extracted one function down, and it is the
 /// same argument for the same reason.
+/// ⚑ **`key` is the subject and the cache key at once**, which is why it arrives whole rather than as an
+/// archetype and a subtype this function would have to put back together. The probe is placed **as**
+/// `key`, and the picture is filed under the same value cloned. See [`Panel::preview_key`] for the defect
+/// that shape closes, which was measured rather than imagined.
 fn measure(
     machine: &mut Machine,
     bus: &mut Bus,
-    archetype: &str,
+    key: &crate::preview::Key,
     dot: (u16, u16),
 ) -> (crate::preview::Outcome, Option<String>) {
-    use crate::preview::{Key, Outcome};
+    use crate::preview::Outcome;
 
+    let archetype = key.archetype.as_str();
     let taken = checkpointed(machine, bus, |machine, bus, id| {
         // --- the probe --------------------------------------------------------------------------
         let placed = {
             let sys = machine.system_mut();
-            spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
+            // The probe is the object a click would place, subtype and all: a picture taken of some
+            // other form is a picture of the wrong thing, drawn with the panel's whole authority.
+            spawn::place(&mut PlayerCaller { bus, sys }, archetype, key.subtype, dot)
         };
         let advanced = match placed {
             Ok(p) => p.frames_advanced,
@@ -967,16 +1121,17 @@ fn measure(
     // The machine has been put back by now, on every path, so the picture is composed from the machine the
     // person is looking at. Composing it from the probe would answer a different question: whether the art
     // was resident in a machine that no longer exists.
-    let key = Key {
-        archetype: archetype.to_string(),
-        subtype: None,
-    };
+    //
+    // ⚑ Filed under **the key the probe was placed as**, cloned rather than rebuilt: a second
+    // construction here is exactly where the subtype went missing in the version this replaced.
     let out = match crate::preview::appeared(&control, &probe) {
         Err(why) => Outcome::Absent(why),
-        Ok(entries) => match crate::preview::compose(&entries, dot, machine.system().vdp(), key) {
-            Ok(p) => Outcome::Ready(Box::new(p)),
-            Err(why) => Outcome::Absent(why),
-        },
+        Ok(entries) => {
+            match crate::preview::compose(&entries, dot, machine.system().vdp(), key.clone()) {
+                Ok(p) => Outcome::Ready(Box::new(p)),
+                Err(why) => Outcome::Absent(why),
+            }
+        }
     };
     (out, None)
 }
@@ -1617,6 +1772,109 @@ mod tests {
         }
     }
 
+    /// ⚑ **The armed subtype is looked up by name every time, and a refused choice does not disarm.**
+    ///
+    /// The wiring rather than the model. Three things go wrong here and nowhere else:
+    ///
+    /// * a byte **remembered** instead of looked up would survive a listing change and place a form under
+    ///   a name that no longer carries it, which is the stale-archetype hazard one level down;
+    /// * a refusal that also cleared the armed subtype would leave the badge and the machine disagreeing
+    ///   about what a click does, silently, after a gesture the reader thought did nothing;
+    /// * and a subtype the set is not holding must be a **sentence**, for the reason the archetype
+    ///   picker's own miss arm is one: a control that quietly does nothing is indistinguishable from a
+    ///   broken one.
+    #[test]
+    fn a_subtype_is_resolved_by_name_and_a_refused_choice_leaves_the_armed_one_alone() {
+        let (mut machine, mut bus) = rig();
+        let mut panel = Panel {
+            subtypes: spawn::Subtypes {
+                archetype: "ObjDef_Spring".into(),
+                prefix: Some("ObjSub_Spring__".into()),
+                entries: vec![
+                    spawn::Subtype {
+                        name: "ObjSub_Spring__Up_Yellow".into(),
+                        value: 0x02,
+                    },
+                    // The value that cannot be sent, which is the rail no real build exercises today.
+                    spawn::Subtype {
+                        name: "ObjSub_Spring__Wide_Huge".into(),
+                        value: 0x140,
+                    },
+                ],
+                truncated: false,
+                collisions: Vec::new(),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            panel.subtype_byte(),
+            None,
+            "nothing is armed until something is chosen"
+        );
+
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Up_Yellow");
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x02),
+            "the armed byte is the listing's, resolved from the name the row carried"
+        );
+
+        // A value that cannot be sent is refused, and the armed one survives the refusal.
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Wide_Huge");
+        let r = panel.readout().expect("a refused choice owes a sentence");
+        assert!(
+            r.refused,
+            "and it is coloured on the field, never on the prose"
+        );
+        assert!(
+            r.head.contains("320"),
+            "the refusal quotes the value the listing gave: {:?}",
+            r.head
+        );
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x02),
+            "a refused choice must not disarm the one that was working"
+        );
+
+        // A name the set is not holding is the other sentence.
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Sideways");
+        let r = panel.readout().expect("a miss owes a sentence too");
+        assert!(
+            r.refused && r.head.contains("ObjSub_Spring__Sideways"),
+            "{r:?}",
+            r = r.head
+        );
+        assert_eq!(panel.subtype_byte(), Some(0x02));
+
+        // ⚑ The lookup is by NAME and is redone every time: swap the set for one where the same name
+        // carries a different value, and the armed byte moves with the listing rather than with memory.
+        panel.subtypes.entries[0].value = 0x52;
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x52),
+            "the byte is read out of the set on every call, so a rebuilt listing is followed rather \
+             than a remembered number being placed"
+        );
+
+        // And the projection agrees with what a click would carry.
+        let l = panel
+            .subtype_listing()
+            .expect("nothing refused the read, so there are rows");
+        assert!(l.armed.contains("Up_Yellow") && l.armed.contains("$52"));
+        assert!(
+            l.rows.iter().filter(|r| r.selected).count() == 1,
+            "exactly one row is armed"
+        );
+
+        // Disarming spawn mode takes the subtypes with it: a click places nothing, so there is no form
+        // for it to place. The run state deliberately does not go, and that is a different field.
+        panel.disarm_spawn();
+        assert_eq!(panel.subtype_byte(), None);
+        assert!(panel.subtypes.entries.is_empty());
+    }
+
     /// ⚑ **The readout cites nothing at the reader, carries no dash, and arrives in three parts.**
     ///
     /// P9 and P10 of the style page, plus the reason this parcel touched the readout at all.
@@ -2108,6 +2366,22 @@ mod tests {
     /// Deliberately no `Camera_X`, so the choreography refuses at the world join. That is not a weakness
     /// of these tests: the run state is restored on every path, and a refusal is the path where a window
     /// that only restored on success would still look correct.
+    /// ⚑ **The `Equate Table` is not decoration here.** Without it this fixture answers the empty set for
+    /// every archetype, so every subtype path in this file would be the absent one and the populated
+    /// paths would be unreachable while looking tested. That is the shape that has hidden a real defect
+    /// in this repo three times, so the section is present **and** built to disagree with the live
+    /// listing in the two dimensions under test:
+    ///
+    /// * **value order is not name order.** By name these run `Angled_Blue`, `Down_Red`, `Up_Red`,
+    ///   `Up_Yellow`, `Wide_Huge`; by value they run `Up_Red`, `Up_Yellow`, `Angled_Blue`, `Down_Red`,
+    ///   `Wide_Huge`. The parser's own map is name ordered, so an implementation that forgot to sort
+    ///   would look right on a corpus where the two agree.
+    /// * **one value does not fit in a byte** (`$140`). Nothing aeon publishes today exceeds `$52`, so
+    ///   the rail that refuses to cut a value down is unexercised by every real build.
+    ///
+    /// `ObjDef_Ring` and `ObjDef_Monitor` deliberately publish **none**, so the stated-absence path and
+    /// the populated path both have a subject in the same listing and a selection change between them is
+    /// a real re-read rather than a repeat.
     const ARCHETYPE_LST: &str = "\
   Symbol Table (* = unused):
   --------------------------
@@ -2118,6 +2392,17 @@ mod tests {
 
     3 symbols
     0 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU ObjSub_Spring__Angled_Blue = $00000011
+EQU ObjSub_Spring__Down_Red = $00000020
+EQU ObjSub_Spring__Up_Red = $00000000
+EQU ObjSub_Spring__Up_Yellow = $00000002
+EQU ObjSub_Spring__Wide_Huge = $00000140
+
+    5 equates
 ";
 
     /// A running machine whose listing names three archetypes, with spawn mode already armed.
@@ -2467,6 +2752,138 @@ mod tests {
             "a picture of another archetype must not reach a draw site at all"
         );
         let _ = (&mut machine, &mut bus);
+    }
+
+    /// ★ **Arming reads the subtypes out of the listing, and changing the archetype re-reads them.**
+    ///
+    /// The wiring end to end, on a rig whose listing genuinely publishes an `Equate Table`. Three things
+    /// only fail here:
+    ///
+    /// * **the arm reads them at all**, rather than the picker sitting empty until something else asks;
+    /// * **the armed default is the lowest valued one that fits**, named rather than left implicit,
+    ///   because a placement carries a subtype byte whether or not one was chosen and a picker showing no
+    ///   selection would be arming one in silence;
+    /// * ⚑ **the set belongs to the archetype.** Selecting an archetype the listing names no subtypes for
+    ///   must clear the previous one's, or the picker offers the spring's strengths for a monitor and the
+    ///   byte it sends is a real byte for the wrong object. Going back re-reads them, so this is a
+    ///   re-read and not a one-way clear.
+    #[test]
+    fn arming_reads_the_subtypes_and_changing_the_archetype_reads_them_again() {
+        let (mut machine, mut bus, mut panel) = armed_rig();
+
+        // The arm selects the first archetype by name order, which is `ObjDef_Monitor` here, and it
+        // publishes no subtypes. So the control comes first: point the panel at the one that does.
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Spring");
+        let l = panel
+            .subtype_listing()
+            .expect("the listing is loaded, so nothing refused the read");
+        assert_eq!(
+            l.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            ["Up_Red", "Up_Yellow", "Angled_Blue", "Down_Red", "Wide_Huge"],
+            "the rows are read out of the listing's equate table and ordered by value, which is not \
+             the order the parser's own map holds them in"
+        );
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x00),
+            "the arm carries the lowest valued subtype that fits a byte"
+        );
+        assert!(
+            l.armed.contains("Up_Red") && l.armed.contains("$00"),
+            "and it is named in words rather than left to a fill colour: {:?}",
+            l.armed
+        );
+        assert_eq!(l.absence, None);
+        assert_eq!(
+            l.truncation, None,
+            "five subtypes is well under the search's cap, so nothing may claim it was cut short"
+        );
+
+        // Choosing one moves the armed byte to the listing's own value.
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Angled_Blue");
+        assert_eq!(panel.subtype_byte(), Some(0x11));
+
+        // ⚑ The set belongs to the archetype. An archetype the listing names none for clears it and says
+        // so, rather than keeping a byte that means something else entirely.
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Monitor");
+        assert_eq!(
+            panel.subtype_byte(),
+            None,
+            "a subtype must not survive the archetype it belongs to"
+        );
+        let l = panel.subtype_listing().expect("still readable");
+        assert!(l.rows.is_empty());
+        let line = l.absence.expect("P6: an empty list is a stated line");
+        assert!(
+            line.contains("ObjSub_Monitor__") && line.contains("ObjDef_Monitor"),
+            "the line names the archetype and the namespace searched: {line:?}"
+        );
+
+        // …and going back re-reads them, so the clear above was a re-read and not a one-way door.
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Spring");
+        assert_eq!(panel.subtype_byte(), Some(0x00));
+        assert_eq!(panel.subtype_listing().expect("readable").rows.len(), 5);
+    }
+
+    /// ⚑ **A picture of one form is never drawn under another form's badge.**
+    ///
+    /// The archetype half of this guard already exists one test up; this is the half the filled key
+    /// bought. Two subtypes of one archetype are usually two different pictures, so a preview kept under
+    /// the archetype's name alone would come back after a subtype change **looking exactly like the
+    /// feature working**, which is the failure the whole cache key exists against.
+    #[test]
+    fn a_picture_of_one_subtype_is_not_offered_under_another() {
+        use crate::preview::{Art, Cell, Key, Outcome, Preview, Shot};
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Spring");
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Up_Yellow");
+        assert_eq!(panel.subtype_byte(), Some(0x02));
+
+        let made = |subtype: Option<u8>| {
+            Outcome::Ready(Box::new(Preview {
+                key: Key {
+                    archetype: "ObjDef_Spring".to_string(),
+                    subtype,
+                },
+                w: 8,
+                h: 8,
+                anchor: (4, 4),
+                cells: vec![Cell {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                }],
+                art: Art::Captured(Shot {
+                    w: 8,
+                    h: 8,
+                    px: vec![Some((1, 2, 3)); 64],
+                }),
+                tiles: vec![1],
+                art_print: 0,
+            }))
+        };
+
+        // The control: a picture of the armed form IS offered, so the rejections below are about the
+        // subtype and not about the guard rejecting everything.
+        panel.preview = Some(made(Some(0x02)));
+        assert!(
+            panel.preview().and_then(Outcome::drawable).is_some(),
+            "a picture of the armed subtype must reach a draw site"
+        );
+
+        // A picture of a different form of the same archetype must not.
+        panel.preview = Some(made(Some(0x00)));
+        assert!(
+            panel.preview().is_none(),
+            "a picture of the red spring must not be drawn under the yellow spring's badge"
+        );
+        // Nor one that named no subtype at all: that is a third thing, not a wildcard.
+        panel.preview = Some(made(None));
+        assert!(
+            panel.preview().is_none(),
+            "a placement that named no subtype is not a stand-in for every subtype"
+        );
     }
 
     /// ★ **The picker: the rows are the mode's, a click on one selects it, and the filter narrows what is

@@ -67,3 +67,47 @@ its search prefix by substitution from the `ObjDef_` name and never splits on an
 **Two is the true count today, not a partial list.** Left and right are not subtypes at all in this engine;
 they are the object's x-flip status bit. The other directions need an engine change, booked there as SP-5.
 **Do not present two as a truncation, and do not invent the missing directions.**
+
+### ⚑ Addendum, 2026-09-06: the paragraph above went stale within the day, and SP-5 landed
+
+*Appended by the `SPAWN-PICKER-SUBTYPE` lane. The engine lane's words above are kept as written; this is
+what measurement found afterwards, not a correction of what was true when they were written.*
+
+**There are eight spring subtypes, not two, and left and right now ARE subtypes.** Read off
+`aeon/s4.debug.lst` and `aeon/s4.lst`, both of which agree:
+
+| name | value |
+|---|---|
+| `ObjSub_Spring__Up_Red` | `$00` |
+| `ObjSub_Spring__Up_Yellow` | `$02` |
+| `ObjSub_Spring__Right_Red` | `$10` |
+| `ObjSub_Spring__Right_Yellow` | `$12` |
+| `ObjSub_Spring__Down_Red` | `$20` |
+| `ObjSub_Spring__Down_Yellow` | `$22` |
+| `ObjSub_Spring__Left_Red` | `$50` |
+| `ObjSub_Spring__Left_Yellow` | `$52` |
+
+SP-5 is in aeon's history as merge `5a97876b`, *"springs in every direction, and the engine reads a vector
+rather than a subtype"*, over `abc7fdfa` *"four spring directions from the subtype, and left/right get their
+own values rather than S3K's flip bit"*. So the x-flip sentence above is now the **old** design, described
+accurately at the time and superseded since. `demo.lst` publishes none of these, which is the second reason
+the count is never typed.
+
+**Nothing in the window changed because of this, and that is the point.** The picker reads the namespace,
+so it offered eight the moment the listing published eight. What the staleness would have damaged is
+anything that *asserted* the count: a fixture frozen at two, or a sentence promising there were no other
+directions. Neither exists.
+
+**Two lessons worth keeping, because both are about a document rather than about springs.**
+
+1. ⚑ **A handoff paragraph ages faster than the mechanism it describes.** This one was written hours before
+   it stopped being true. The durable half of it, the naming convention and the equate door, is still exact;
+   the perishable half was the inventory. Prefer *how to read it* over *what it currently says* whenever
+   both will fit.
+2. ⚑ **With only the two upward springs, "ordered by value" would have been untestable.** `$00` and `$02`
+   are in the same order alphabetically and numerically, so a picker that never sorted would have looked
+   correct. The eight do not agree: by name they run Down, Left, Right, Up, and by value they run Up,
+   Right, Down, Left. The frozen fixtures in `crates/oracle-frontend/src/bus.rs` and
+   `crates/oracle-player/src/spawn_picker.rs` are therefore built to disagree in that dimension **and** to
+   carry a value past a byte, which no real build has, so neither guard is vacuous against the corpus it
+   will actually meet.

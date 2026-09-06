@@ -97,10 +97,17 @@
 //! picture would still be a true picture of those tiles; it would be the wrong tiles. Nothing short of a
 //! mapping reader can tell the difference, and this module does not have one.
 //!
-//! [`Key::subtype`] exists and is always `None`. Subtypes do not exist in this window yet
-//! (`SPAWN-PICKER-SUBTYPE` is blocked on another lane), and the field is here so that dimension slots into
-//! the key without a rewrite. Nothing constructs it as anything but `None`, and no concept of a subtype is
-//! invented here.
+//! ⚑ **[`Key::subtype`] is filled.** It was reserved and always `None` while subtypes did not exist in
+//! this window; `SPAWN-PICKER-SUBTYPE` filled the slot rather than opening a second path beside it, so the
+//! picture is now keyed on the archetype **and** the form a click would place. That matters here for the
+//! same reason the art fingerprint does: two subtypes of one archetype are usually two different pictures,
+//! and a picture kept under the archetype's name alone would come back after a subtype change looking
+//! exactly like the feature working.
+//!
+//! `None` still means something and is not a stand-in for zero: it is a placement that names **no**
+//! subtype, which is what an archetype whose listing publishes none carries. No subtype is invented here
+//! and none is derived from a name; the value is the one the listing published, carried through
+//! `spawn::place`.
 //!
 //! # ⚑ Nothing here holds an egui type
 //!
@@ -172,12 +179,20 @@ pub enum Art {
 
 /// What a preview is cached under.
 ///
-/// `subtype` is always `None` today and is here so a subtype dimension slots in without a rewrite. See the
-/// module header.
+/// `subtype` is **the byte the placement carried**, or `None` for a placement that named none. See the
+/// module header for why the picture must be keyed on it.
+///
+/// ⚑ **A byte, not the `u32` the slot was reserved as**, and the narrowing is what closes a hole rather
+/// than tidying a type. The reservation had no width to be right about; the wire does, because
+/// `emulator/object_spawn` composes the subtype into the low byte of the placement word. Widening it here
+/// would mean the key and the request needed **two** values, and a `measure` that stamped the key with one
+/// while sending the other was measured to keep the whole suite green. At a byte the two are the same
+/// value, [`crate::screen_pick`]'s probe reads its subtype straight out of this key, and there is nothing
+/// left for a second place to disagree about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Key {
     pub archetype: String,
-    pub subtype: Option<u32>,
+    pub subtype: Option<u8>,
 }
 
 /// **One archetype's preview, and the evidence for it.**
@@ -212,7 +227,7 @@ impl Preview {
     }
 
     /// Whether this preview is of that archetype and that subtype.
-    pub fn is_of(&self, archetype: &str, subtype: Option<u32>) -> bool {
+    pub fn is_of(&self, archetype: &str, subtype: Option<u8>) -> bool {
         self.key.archetype == archetype && self.key.subtype == subtype
     }
 
@@ -903,10 +918,10 @@ mod tests {
         );
     }
 
-    /// **The subtype dimension is in the key and is always absent**, so one can be added without a rewrite
+    /// **The subtype dimension separates two pictures of one archetype**, which is what the key is for
     /// and nothing here invents the concept.
     #[test]
-    fn the_key_carries_a_subtype_slot_that_nothing_fills() {
+    fn the_key_tells_two_subtypes_of_one_archetype_apart() {
         let sys = art_machine();
         let v = sys.vdp();
         let p = compose(
@@ -925,6 +940,29 @@ mod tests {
             "a preview of no subtype is not a preview of subtype 3"
         );
         assert!(!p.is_of("ObjDef_Spring", None));
+
+        // ⚑ And the filled slot is the half that used to be unreachable. Two subtypes of ONE archetype
+        // are two pictures, and a key that could not tell them apart would serve the red spring's picture
+        // under the yellow spring's badge, which is the stale-picture failure this key exists against.
+        let q = compose(
+            &[sprite(0, 50, 50, 1, 1, 1, 0)],
+            (50, 50),
+            v,
+            Key {
+                archetype: "ObjDef_Spring".into(),
+                subtype: Some(0x02),
+            },
+        )
+        .unwrap();
+        assert!(q.is_of("ObjDef_Spring", Some(0x02)));
+        assert!(
+            !q.is_of("ObjDef_Spring", Some(0x00)),
+            "two subtypes of one archetype are two pictures and the key must say so"
+        );
+        assert!(
+            !q.is_of("ObjDef_Spring", None),
+            "a picture of a named subtype is not a picture of a placement that named none"
+        );
     }
 
     /// **A stale preview is not drawable**, which is the cache key's whole purpose expressed in the type

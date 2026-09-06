@@ -1511,7 +1511,13 @@ fn main() {
                     // server at all. Nothing here is a no-op on failure — every path prints and toasts.
                     let archetype = spawn_mode.selected().map(str::to_string);
                     if let Some(archetype) = archetype {
-                        match bus.spawn_at(&mut sys, &archetype, (x, y)) {
+                        // ⚑ **`None`, and it is a decision rather than an omission.** This window
+                        // cycles archetypes with a key and has no surface a subtype could be chosen on,
+                        // so it names none and the placement carries whatever the archetype's own
+                        // default is. The choice lives in `oracle-player`'s Spawn tab, which is the
+                        // window the swap-toolkit ruling keeps; building a second picker here would be
+                        // building it into the one being retired.
+                        match bus.spawn_at(&mut sys, &archetype, None, (x, y)) {
                             Ok(p) => {
                                 println!("{}", p.terminal(&archetype));
                                 ov.push(p.toast(&archetype), INFO);
