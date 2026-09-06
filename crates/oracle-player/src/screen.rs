@@ -313,6 +313,14 @@ mod tests {
         Some(true)
     }
 
+    /// The probe is asked *"can this glyph be drawn"*, but every `only_X_lacks_Y` probe below is
+    /// **named for what it LACKS** — and the name is the whole point of those rows. This flips the
+    /// sense once, here, so each probe body can state its rule the way its name reads
+    /// (`mono && c == 'b'`) instead of wrapping it in a `!` the reader has to undo.
+    fn drawable_unless(lacks: bool) -> Option<bool> {
+        Some(!lacks)
+    }
+
     /// **The join groups the way the bar groups, and the separator is not silently dropped.**
     ///
     /// The third assertion is the `assert_ne!`: without it this row would pass against a `snapshot` that
@@ -364,7 +372,7 @@ mod tests {
 
         // Only the MONOSPACE family lacks `b`. A probe asked with the wrong `mono` flag — or asked once
         // for the whole line — cannot produce this answer.
-        let mut only_mono_lacks_b = |c: char, mono: bool| Some(!(mono && c == 'b'));
+        let mut only_mono_lacks_b = |c: char, mono: bool| drawable_unless(mono && c == 'b');
         let v = snapshot("t", &runs, &mut only_mono_lacks_b);
         assert_eq!(
             v[1].unrenderable,
@@ -373,7 +381,7 @@ mod tests {
         );
 
         // …and the reverse, so the flag is not simply being ignored in one direction.
-        let mut only_prop_lacks_a = |c: char, mono: bool| Some(!(!mono && c == 'a'));
+        let mut only_prop_lacks_a = |c: char, mono: bool| drawable_unless(!mono && c == 'a');
         assert_eq!(
             snapshot("t", &runs, &mut only_prop_lacks_a)[1].unrenderable,
             vec!["a".to_string()]

@@ -155,24 +155,32 @@ impl BusEventSink for K4Probe {
                     (0xA0_0000..=0xA0_FFFF, _) => {
                         // FM ports answer regardless of Z80 bus ownership (design §4, row 4).
                         let fm = (0xA0_4000..=0xA0_4003).contains(&e.addr);
-                        if !fm && !(self.z80_busreq && self.z80_running) {
-                            self.z80win_closed_writes += 1;
-                        } else if !fm {
-                            // Open-window write classification by the TRUE 15-bit window offset
-                            // (hardware masks to 15 bits, MDBusArbiter.cpp:487).
-                            if e.size == Size::Word {
-                                self.z80win_open_word_writes += 1; // Q4
-                                let same = (e.value >> 8) & 0xFF == e.value & 0xFF;
-                                if self.ww_detail.len() < 16
-                                    || self.ww_detail.contains_key(&(e.addr, same))
-                                {
-                                    *self.ww_detail.entry((e.addr, same)).or_insert(0) += 1;
+                        if !fm {
+                            // The 68000's window onto Z80 space answers only while the 68000 both
+                            // HOLDS the bus and the Z80 is out of reset. Named, and tested on its
+                            // own line, because the arbitration rule is the point of this arm —
+                            // folding it back into the `!fm` test (`!fm && !(busreq && running)`)
+                            // buries an `&&` inside a `!` inside an `&&`.
+                            let window_open = self.z80_busreq && self.z80_running;
+                            if window_open {
+                                // Open-window write classification by the TRUE 15-bit window offset
+                                // (hardware masks to 15 bits, MDBusArbiter.cpp:487).
+                                if e.size == Size::Word {
+                                    self.z80win_open_word_writes += 1; // Q4
+                                    let same = (e.value >> 8) & 0xFF == e.value & 0xFF;
+                                    if self.ww_detail.len() < 16
+                                        || self.ww_detail.contains_key(&(e.addr, same))
+                                    {
+                                        *self.ww_detail.entry((e.addr, same)).or_insert(0) += 1;
+                                    }
                                 }
-                            }
-                            match e.addr & 0x7FFF {
-                                0x6000..=0x60FF => self.z80win_bank_writes += 1,
-                                0x7F00..=0x7F1F => self.z80win_vdp_mirror_writes += 1,
-                                _ => {}
+                                match e.addr & 0x7FFF {
+                                    0x6000..=0x60FF => self.z80win_bank_writes += 1,
+                                    0x7F00..=0x7F1F => self.z80win_vdp_mirror_writes += 1,
+                                    _ => {}
+                                }
+                            } else {
+                                self.z80win_closed_writes += 1;
                             }
                         }
                     }
