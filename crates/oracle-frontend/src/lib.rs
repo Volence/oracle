@@ -91,3 +91,7 @@ pub mod sram_file;
 // Click-to-PLACE: spawn mode's model and every sentence it puts on screen. The click itself belongs to
 // whichever window holds it.
 pub mod spawn;
+// Click-to-place a RING, which is not an object and cannot go through [`spawn`]: rings have no `ObjDef_`,
+// take no pool slot, and live in one flat buffer that this module writes directly. It shares `spawn`'s
+// world join, act gate and `Refusal`, and adds the two rules the symbol channel could not carry.
+pub mod rings;
