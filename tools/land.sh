@@ -24,13 +24,28 @@
 #    which is the one failure this whole script exists to prevent. Measured 2026-09-05, foreground,
 #    killed at the cap. From an agent seat, detach and poll for a marker you wrote yourself:
 #
-#      cp tools/land.sh "$SCRATCH/land-$$.sh"        # a RUN-UNIQUE path: bash reads a script
-#                                                     # incrementally by byte offset, so a
-#                                                     # concurrent writer to a shared path resumes
-#                                                     # your execution inside the new bytes
-#      setsid nohup bash -c '"$SCRATCH/land-$$.sh" > "$LOG" 2>&1; echo "LAND-EXIT=$?" >> "$LOG"' &
+#      # Write a RUN-UNIQUE WRAPPER that cd's here and calls THIS script in place:
+#      #     #!/usr/bin/env bash
+#      #     cd <worktree> && ./tools/land.sh >> "$LOG" 2>&1
+#      #     echo "LAND-EXIT=$? AT $(date -Is)" >> "$LOG"
+#      setsid nohup "$RUN/runner.sh" </dev/null >/dev/null 2>&1 &
 #      # then poll $LOG for the LAND-EXIT marker. NEVER infer the verdict from a tail:
 #      # this script prints its own verdict token, and the marker proves the run REACHED it.
+#
+#    ⚑ DO NOT COPY THIS SCRIPT ITSELF TO THE SCRATCHPAD. The run-unique-path rule exists
+#      because bash reads a script incrementally by byte offset, so a concurrent writer to a
+#      shared path resumes your execution inside the new bytes. It applies to the WRAPPER, and
+#      applying it to this file breaks the run: line 169 derives ROOT from BASH_SOURCE, so a
+#      copy living in /tmp makes ROOT the scratchpad's parent and every gate then measures the
+#      wrong tree. Measured 2026-09-05: a scratchpad copy reported the scratchpad as the repo
+#      root in its own header. This file is version-controlled and has one writer per worktree,
+#      so it is not the concurrent-writer hazard the rule is about.
+#
+#    ⚑ A FRESH WORKTREE HAS NO vendor/ AND G1 REFUSES ON SIGHT. That is the guard working, not
+#      a misconfiguration: without vendor/ the SingleStepTests sweep skips and passes vacuously.
+#      From a worktree root, share the main checkout's fetch rather than re-downloading it:
+#          ln -s /home/volence/sonic_hacks/oracle/vendor vendor
+#      `vendor` is gitignored (.gitignore:7), so the symlink never dirties the tree G2 checks.
 #
 # ============================================================================================
 # WHAT IT RUNS, AND WHAT IT REFUSES
