@@ -102,8 +102,10 @@ pub enum Tab {
     /// A tab rather than a control, on the Spawn tab's own precedent: *things you DO are controls* holds
     /// for one-shot gestures, and this is a **standing list you read while looking at the picture**, plus
     /// a readback of what the machine actually holds. The one thing that is not a list — the standing
-    /// statement that this panel is overriding the running game — is drawn here **and** left in reach of
-    /// the picture, because a statement that can be behind another tab in a dock leaf is not standing.
+    /// statement that this panel is overriding the running game — is drawn here **and** in the Screen
+    /// tab's control strip (`Panels::screen_controls`), because this tab shares a dock leaf with `Pacing`
+    /// and `Spawn` and a statement that can be behind a tab bar is not standing. Both draw the identical
+    /// `crate::effects::Panel::statement`, so they cannot describe one override two ways.
     Effects,
     /// The armed breakpoint set with hit counts, an add box and a per-row toggle. **Reads
     /// [`Bus::read_breakpoints`], not `read_instruments`** — see that method for why breakpoints are not
@@ -385,6 +387,26 @@ impl Panels<'_> {
         // left-click *does* must say so for as long as it is on, and it must name the archetype.
         if let Some(badge) = self.screen.badge() {
             ui.colored_label(ui.visuals().warn_fg_color, &badge);
+        }
+        // ⚑ **The effects switchboard's standing statement, HERE as well as on its own tab** (`LIVE-EFFECTS`).
+        //
+        // The badge above earned this position with the argument that a mode changing what a left-click
+        // does must say so beside the thing being clicked. An effects override is the same claim about a
+        // wider subject: it changes what **every frame** looks like, and the frame it produces is a
+        // perfectly ordinary-looking picture of a configuration the act does not have. A person who has
+        // forgotten reads it as the game's own, which is the layer mask's defect with a bigger blast
+        // radius.
+        //
+        // **A tab cannot carry it alone**, and that is the whole reason for the duplication: `Tab::Effects`
+        // shares a dock leaf with `Pacing` and `Spawn`, so the moment a person looks at either of those the
+        // statement is behind a tab bar. A standing statement that can be hidden is not standing. The
+        // picture, meanwhile, is the thing being lied about, so this strip is where the claim has to be.
+        //
+        // **One derivation, two readers** (`crate::effects::statement`, through `Panel::statement`): the
+        // strip and the tab draw the identical `String` and cannot describe one override two ways. Nothing
+        // is re-composed here.
+        if let Some(s) = self.effects.statement() {
+            ui.colored_label(ui.visuals().warn_fg_color, s);
         }
         // ⚑ **The four layer toggles** — one per `LayerMask::targets()` entry, generated from the core's
         // own vocabulary rather than typed here, so this window cannot offer a layer the bus lacks or
@@ -816,12 +838,32 @@ impl Panels<'_> {
             {
                 self.effects.refresh_live(self.machine, self.bus);
             }
-            if ui
-                .button(format!("turn {} off", channel.title))
-                .on_hover_text("pauses the machine, writes the off target, and resumes it")
-                .clicked()
-            {
-                self.effects.off(self.machine, self.bus);
+            // ⚑ **A channel with no off state draws the control DISABLED with the reason**, rather than
+            // an enabled button that refuses on every click. Same call the nudge control makes and for
+            // the same argument: the person who looks for an off switch and finds nothing concludes it
+            // is missing, and the one who clicks a button that always refuses concludes it is broken.
+            // A greyed control with a sentence is the only one of the three that is true.
+            //
+            // `Off::At` is still a live button rather than a disabled one, because whether its target is
+            // in this build's listing is a question only the bus can answer, and the answer is the
+            // refusal the gesture prints.
+            match channel.off {
+                crate::effects::Off::No(why) => {
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new(format!("turn {} off", channel.title)),
+                    )
+                    .on_disabled_hover_text(why);
+                }
+                crate::effects::Off::At { .. } => {
+                    if ui
+                        .button(format!("turn {} off", channel.title))
+                        .on_hover_text("pauses the machine, writes the off target, and resumes it")
+                        .clicked()
+                    {
+                        self.effects.off(self.machine, self.bus);
+                    }
+                }
             }
         });
         match self.effects.live_line() {
