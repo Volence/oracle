@@ -35,6 +35,11 @@ lanes; the bound stays at 100,000 B and is never raised)*. This file is what you
 boot**. The house bars and the ops lessons live in **`docs/OVERSEER-REFERENCE.md`**. Open it at
 the moment it applies: **before dispatching** a wave of agents, **before reviewing** returned work,
 and **before landing**. It is not part of the boot read.
+**Cut 2026-09-06 (99,798 → 87,2xx B with its repair pass), so there is real headroom; nobody hand-trims
+for the bound.** When
+it is next reached, move history out in ONE cut with `tools/prove_doc_split.py` — run it from THIS repo,
+script by absolute path, and check its provenance lines name this document's line count before reading
+the verdict. `## Where the detail lives` at the foot of this file says which of the three files takes what.
 
 ## The queue (2026-08-19 end of day; reorder only with cause, record the cause)
 
@@ -52,7 +57,8 @@ moved with them.)*
    the in-flight `run_to_scanline` parcel**; remove from here once that lands), and a proposed
    **error-surface gate**: since no fragment declares error conditions, a suite validating only
    replies is blind to every error obligation. ⚑ **The gate is still a proposal; the defect that
-   demonstrated it is not.** The unenforced `count` bounds below were fixed by the CR-STEP-SHORTFALL
+   demonstrated it is not.** The unenforced `count` bounds named in the 2026-09-04 §11.33 registration
+   (the `emulator/step` row in the follow-up register) were fixed by the CR-STEP-SHORTFALL
    parcel (`step.rs`'s two refusal rows now assert them from the wire), so the standing argument for
    the gate must be carried on its own merits again: **one method's refusals being covered by hand
    is not the gate**, and nothing systematic yet reads a `params` fragment and asks the server to
@@ -275,7 +281,7 @@ regularly running a hand-built window and being misled by it.
 
 **Registered 2026-09-05, from landing migration slices S0-S2:**
 
-- **✔ F-PARITY-BLIND-TO-SAT-STRIDE, registered and CLOSED the same day; the registration moved whole to `OVERSEER-LOG.md` 2026-09-05 for the boot-read bound, and the closure is recorded above. The live rule it produced: a guard called the strongest in the tree had a hole reachable in ONE mutation, found only because the mutation parameter was VARIED rather than repeated. Bar 19's enumeration-parameter rule arriving on a mutation instead of a survey.**
+- **✔ F-PARITY-BLIND-TO-SAT-STRIDE, registered and CLOSED the same day; the registration moved whole to `OVERSEER-LOG.md` 2026-09-05 for the boot-read bound, and the closure is the `F-PARITY-BLIND-TO-SAT-STRIDE: CLOSED 2026-09-05` row under *Registered 2026-09-05, from landing S2a*, with its narrative in the log beside this one. The live rule it produced: a guard called the strongest in the tree had a hole reachable in ONE mutation, found only because the mutation parameter was VARIED rather than repeated. Bar 19's enumeration-parameter rule arriving on a mutation instead of a survey.**
 
 
 **Registered 2026-09-05, from the frontend-migration recon:**
@@ -978,10 +984,17 @@ this one stanza.*
 
 ## Where the detail lives
 
-The dated `docs/2026-08-*.md` files are the arc records (handoff/recon/CR/ruling per arc; newest
-first is the reading order). Today's arcs end-to-end: scanline acceptance + convention
+The dated `docs/2026-0[89]-*.md` files are the arc records (handoff/recon/CR/ruling per arc; newest
+first is the reading order). The 08-* arcs end-to-end: scanline acceptance + convention
 (`…-subline-*`), CR-25/26/27 with rulings, the profiler demand/recon/deltas, the Aurora client
 demand, the streaming asks. `docs/2026-08-19-subline-shipped.md` is the model handoff shape.
 
-**`docs/OVERSEER-REFERENCE.md`** holds the bars and the ops lessons: not read at boot, opened
-before dispatching, before reviewing returned work, and before landing.
+**Three files, split by WHEN each is read, and a section is classified by its CONTENT, not its heading:**
+
+* **`docs/OVERSEER.md`** (this file) is the boot read, bounded at 100,000 B. It holds scope, the queue,
+  any resume brief, and the standing rulings that change what a session does FIRST.
+* **`docs/OVERSEER-REFERENCE.md`** holds the bars and the ops lessons: not read at boot, opened
+  before dispatching, before reviewing returned work, and before landing.
+* **`docs/OVERSEER-LOG.md`** holds closed history, append-only, newest last: not read at boot, read by
+  `tail`/`grep` when a particular night or a moved entry is in question. **A live ruling goes in
+  `OVERSEER.md`, never only in the log.**

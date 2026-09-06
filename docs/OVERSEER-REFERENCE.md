@@ -585,15 +585,18 @@ it is read before dispatching, before reviewing returned work, or before landing
   comparable to another session's, and two such totals agreeing is not corroboration. **Quote the
   profile with the number**, and read `IGNORED` as well as `PASSED` when reconciling two runs.
 
-*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 233-289.)*
+**▶ NEW BAR, 2026-08-30 — EVERY CITATION RULE THIS SUITE OWNS IS WRITTEN FOR THE RECEIVING SIDE, AND
 BOTH OF TONIGHT'S FAILURES WERE ON THE EMITTING SIDE, WHERE NO RULE REACHES.** aeon's formulation, banked
 by them at aeon `4fae2d8d`; two instances, one from each lane, hours apart.
+*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 233-289. The bar's opening line had been
+lost from `OVERSEER.md` by an earlier pass and survived only as a stranded fragment in the log; restored
+here 2026-09-06 from `OVERSEER-LOG.md`'s copy.)*
 
 
 **▶ F-CR28-CALLERS-DANGLING, registered 2026-08-30: an unmerged commit in a leftover worktree, found
-
-*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 294-323.)*
 while earning an `atBoundary: true` claim rather than asserting one.**
+*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 294-323. An earlier pass inserted this
+pointer between the two halves of that sentence; rejoined 2026-09-06.)*
 
 
 **▶ AND THE RESPONDER'S HALF, SIGIL'S, WHICH COMPLETES THE CIRCUIT ABOVE: HEDGE THE PREMISE, NOT THE

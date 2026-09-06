@@ -2288,6 +2288,10 @@ A peer's passing remark about our own code was worth more than the thing they wr
   an accident of needing a known `DISPLAY` for XTEST, not foresight, and is recorded that way.
 
 **▶ NEW BAR, 2026-08-30 — EVERY CITATION RULE THIS SUITE OWNS IS WRITTEN FOR THE RECEIVING SIDE, AND
+*(⚠ 2026-09-06: this line is a FRAGMENT, not an entry. An earlier pass moved the bar's opening line here
+and left its second half and its body behind in `OVERSEER.md`, where the sentence read as beginning
+mid-air for six days. Kept, because this file is append-only; the bar is now whole in
+`docs/OVERSEER-REFERENCE.md`, and its narrative is the `[orig lines 233-289]` block earlier in this file.)*
 
 ## [sigil cycle dumper] the three-buckets correction and its status fix
 
