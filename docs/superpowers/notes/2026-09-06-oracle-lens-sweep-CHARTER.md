@@ -94,3 +94,27 @@ class here all week.
 
 **NO FIXES DURING THE SWEEP.** Seats stay read-only precisely so the report stays honest. Findings land
 as rows; fixes are separate, owner-gated parcels.
+
+---
+
+## ⚑ LAUNCH RECORD — the panel was STAGED, not batched, and five seats are OWED
+
+The protocol says *launch all seats in one batched message so they run concurrently.* **That was
+attempted and the environment refused it**: this harness caps concurrent subagents at 20.
+
+**17 seats launched** (first two batches complete, plus A2): CPU-A, CPU-B, GATE, TEST, FUZZ, SAFE,
+TIMING, STATE, PROTO, ARCH, ERR, VDP, CACHE, P1a, P1b, P2, A2.
+
+**5 seats REFUSED by the cap and OWED — they launch as capacity frees:**
+**B1** (construct/idiom), **B2a** (duplication, code-first), **B2b** (duplication, data-first),
+**Va** (vacuity, guard-first), **Vb** (vacuity, claim-first).
+
+⚑ **These are NOT dropped, and the distinction is the whole point of writing this down.** Silently
+running 17 of 22 and publishing the packet would be precisely the *improvised smaller panel* the
+protocol forbids — and it would look identical to a complete sweep from the outside. **The packet does
+not ship until all 22 have run, or until any seat that did not run is named in it as UNEXAMINED.**
+
+Note which seats the cap took: **both vacuity seats and both duplication seats.** Vacuity is the
+highest-yield class in this repo and duplication is the one with a live open finding. Had this been
+allowed to pass unrecorded, the sweep would have skipped exactly the seats most likely to find
+something, and the packet would have read as clean.
