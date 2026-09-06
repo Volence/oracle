@@ -1,0 +1,64 @@
+# DIMENSIONS.tsv — what the frozen listings CONTAIN, in the terms consumers ask in.
+#
+# PIN.tsv records the frozen artifacts' BYTES. This file records their SHAPE: for each structural
+# dimension a consumer reads through `oracle_core::symbols`, the answer the frozen bytes actually give.
+#
+#   PIN.tsv        : "are our bytes the bytes we recorded?"   (gate: crates/oracle-replay/tests/aeon_pin.rs)
+#   DIMENSIONS.tsv : "are our SHAPES the shapes we recorded?" (gate: crates/oracle-core/tests/aeon_dimensions.rs)
+#
+# Both ask the RECOVERY question, at the pinning revision, about this repository alone. Neither asks
+# whether aeon has moved — that is the CURRENCY question and lives in the non-gating
+# `tools/aeon_pin_report.py`, which reads aeon's object store at a ref.
+#
+# WHY THIS FILE EXISTS — the failure it makes visible
+# ---------------------------------------------------
+# A frozen listing drifts away from the build it was taken from, and the drift is exactly where new
+# faults live. Three sightings, all re-measured here rather than taken on report:
+#
+#   * `ObjSub_` — the spring-subtype picker (crates/oracle-frontend/src/spawn.rs, reaching
+#     `equates_with_prefix` at crates/oracle-aether/src/engine.rs:6813) works ENTIRELY by reading the
+#     `ObjSub_Spring__` namespace. The frozen listings publish ZERO equates under `ObjSub_`; aeon's
+#     build publishes eight. Every test of that picker is therefore synthetic, and nothing said so.
+#   * `ObjDef_` — the archetype namespace (`spawn::ARCHETYPE_PREFIX`, reaching `with_prefix` at
+#     engine.rs:6702). Frozen `s4.debug.lst` declares five archetypes; aeon's declares six. The missing
+#     one is `ObjDef_Spring` — the archetype the picker above is about.
+#   * `Phase Table` — absent from every frozen listing; aeon's `s4*.lst` carry `PHASE-COUNT 6` and
+#     `demo*.lst` carry `PHASE-COUNT 2`. A fault in phase parsing was invisible to the frozen path by
+#     construction.
+#
+# A row recording `0` or `absent` is NOT a defect and NOT a reason to move the pin. It is a recorded
+# blind spot, and `relied_on_by` names who is running blind. The gate prints those rows every run.
+#
+# ⚑ A `0` here is only meaningful because the probe that produced it is proven able to return non-zero:
+#    `aeon_dimensions.rs` runs a POSITIVE CONTROL for every probe kind against a synthetic listing that
+#    does carry the dimension. Without that, a dead probe and an absent dimension are the same artifact.
+#
+# Columns, tab-separated:
+#   file          the frozen listing in this directory
+#   probe         how the dimension is measured, THROUGH THE PARSER CONSUMERS USE (never a re-grep):
+#                   symbol_prefix_count  SymbolTable::with_prefix(arg)          — distinct raw names
+#                   equate_prefix_count  SymbolTable::equates_with_prefix(arg)  — row count
+#                   equate_rows          SymbolTable::equate_rows()             — the `N equates` trailer
+#                   phase_count          SymbolTable::phase_count()             — `absent` when no section
+#   arg           the probe's argument, or `-` when it takes none
+#   frozen        the answer the frozen bytes give: an integer, or `absent`
+#   upstream      aeon path (tracked, so it is readable from the object store at a ref) that publishes
+#                 this dimension, or `-` when it has no single tracked origin
+#   relied_on_by  who reads this dimension. For an absent row, this names who runs blind.
+file	probe	arg	frozen	upstream	relied_on_by
+s4.lst	symbol_prefix_count	ObjDef_	3	games/sonic4/objects/	oracle-frontend/src/spawn.rs ARCHETYPE_PREFIX
+s4.lst	equate_prefix_count	ObjSub_	0	games/sonic4/objects/test_solid.emp	oracle-frontend/src/spawn.rs subtype picker
+s4.lst	equate_rows	-	723	-	SymbolTable::is_intact / matches_declared_equates
+s4.lst	phase_count	-	absent	-	oracle-core/tests/symbols_real_lst.rs phase parse
+s4.debug.lst	symbol_prefix_count	ObjDef_	5	games/sonic4/objects/	oracle-frontend/src/spawn.rs ARCHETYPE_PREFIX
+s4.debug.lst	equate_prefix_count	ObjSub_	0	games/sonic4/objects/test_solid.emp	oracle-frontend/src/spawn.rs subtype picker
+s4.debug.lst	equate_rows	-	724	-	SymbolTable::is_intact / matches_declared_equates
+s4.debug.lst	phase_count	-	absent	-	oracle-core/tests/symbols_real_lst.rs phase parse
+demo.lst	symbol_prefix_count	ObjDef_	1	games/demo/	oracle-frontend/src/spawn.rs ARCHETYPE_PREFIX
+demo.lst	equate_prefix_count	ObjSub_	0	games/demo/	oracle-frontend/src/spawn.rs subtype picker
+demo.lst	equate_rows	-	558	-	SymbolTable::is_intact / matches_declared_equates
+demo.lst	phase_count	-	absent	-	oracle-core/tests/symbols_real_lst.rs phase parse
+demo.debug.lst	symbol_prefix_count	ObjDef_	1	games/demo/	oracle-frontend/src/spawn.rs ARCHETYPE_PREFIX
+demo.debug.lst	equate_prefix_count	ObjSub_	0	games/demo/	oracle-frontend/src/spawn.rs subtype picker
+demo.debug.lst	equate_rows	-	558	-	SymbolTable::is_intact / matches_declared_equates
+demo.debug.lst	phase_count	-	absent	-	oracle-core/tests/symbols_real_lst.rs phase parse
