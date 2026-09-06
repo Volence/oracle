@@ -929,6 +929,10 @@ impl Panels<'_> {
         // A narrow pane cannot carry a column of facts and a plane side by side, so below this width the
         // facts go under the picture instead of squeezing it.
         let side_by_side = ui.available_width() >= 560.0;
+        // Cloned rather than borrowed because `side` is a closure and `plane_picture` below wants the
+        // panel mutably. Four `String`s on the repaints where a reading is standing, against the six
+        // `format!`s the facts above already cost every repaint: the same order of allocation this body
+        // has always done, and none of it is the raster the fingerprint exists to skip.
         let reading = self.planes.reading().cloned();
         let side = |ui: &mut egui::Ui| {
             // **The last click's answer first**, above the standing facts, in its own card. The facts are
@@ -1018,6 +1022,7 @@ impl Panels<'_> {
     /// [`Aspect::Square`] rather than the Screen tab's TV default, and that is not a taste call: this
     /// picture is a **map**, and stretching it to a 4:3 raster would put a cell's width and its height in
     /// different units on a view whose whole job is counting cells.
+    ///
     /// `inp` is the gather this frame's texture was rasterised from, so a click is answered from the same
     /// facts the picture is drawn from rather than from a second read taken at click time.
     fn plane_picture(&mut self, ui: &mut egui::Ui, inp: &crate::planes::Inputs) {
@@ -1041,12 +1046,10 @@ impl Panels<'_> {
         let hit = egui::ScrollArea::both()
             .id_salt("planes_picture")
             .show(ui, |ui| {
-                ui.add(
-                    egui::Image::new((tex.id(), size))
-                        .sense(egui::Sense::click())
-                        .texture_options(egui::TextureOptions::NEAREST),
-                )
-                .on_hover_text("click a cell to read its nametable entry")
+                // The texture already carries `TextureOptions::NEAREST` from `Panel::refresh`, and a
+                // second place saying so is a second spelling of one fact.
+                ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::click()))
+                    .on_hover_text("click a cell to read its nametable entry")
             })
             .inner;
 
