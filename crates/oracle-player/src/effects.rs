@@ -2405,15 +2405,39 @@ mod tests {
         );
 
         // The control: once the constant is in the listing, the same gesture runs the same write-set.
+        //
+        // ⚑ **And the VALUE is asserted, not only the cell count.** This row used to check the target's
+        // NAME and the number of writes and nothing else, which left `turn_off` free to put any number
+        // at all into the selector: a mutation replacing the resolved address with `channel.noted_addr`
+        // was applied and the suite stayed GREEN. The off path is the one place a value is chosen by
+        // this module rather than handed to it, so it is the one place that needed saying out loud.
+        // Derived from the write-set and the fake's own listing, never a literal typed twice.
         let mut f = Fake::full();
+        let empty_raw = 0x0002_9000u64;
         f.listing
-            .push(("BgAnim_Table_Empty", 0x02_9000, 0x0002_9000));
+            .push(("BgAnim_Table_Empty", 0x02_9000, empty_raw as u32));
         let w = turn_off(&mut f, &BANDS).expect("the constant is present now");
         assert_eq!(w.target, "BgAnim_Table_Empty");
+        let want: Vec<(String, u64, u64, u64)> = BANDS
+            .writes
+            .iter()
+            .map(|c| {
+                (
+                    c.symbol.to_string(),
+                    u64::from(c.disp),
+                    match c.put {
+                        Put::Target => empty_raw,
+                        Put::Lit(v) => u64::from(v),
+                    },
+                    u64::from(c.width),
+                )
+            })
+            .collect();
         assert_eq!(
-            f.writes().len(),
-            BANDS.writes.len(),
-            "off must run the whole installer, not only the pointer"
+            f.writes(),
+            want,
+            "off must run the whole installer with the EMPTY TABLE's own resolved address in the target \
+             cell, not merely the right number of writes"
         );
     }
 
@@ -2465,10 +2489,22 @@ mod tests {
         assert!(f.writes().is_empty());
 
         // The control: the raster channel's off IS available, so the row above is about parallax rather
-        // than about `turn_off` refusing everything.
+        // than about `turn_off` refusing everything. ⚑ Its VALUE is checked for the reason the band
+        // control's is: the off path chooses a value rather than being handed one.
         let mut f = Fake::full();
         let w = turn_off(&mut f, &RASTER).expect("Raster_Program_None is in this listing");
         assert_eq!(w.target, "Raster_Program_None");
+        let (_, none_raw) = resolve(&mut f, "Raster_Program_None").expect("in the fake listing");
+        assert_eq!(
+            f.writes(),
+            vec![(
+                RASTER.writes[0].symbol.to_string(),
+                0,
+                u64::from(none_raw),
+                u64::from(RASTER.writes[0].width),
+            )],
+            "raster off must stage the EMPTY PROGRAM's own resolved address"
+        );
     }
 
     /// ⚑ **The band channel is gated on the SYMBOL, and the refusal says it is a debug-build channel.**
