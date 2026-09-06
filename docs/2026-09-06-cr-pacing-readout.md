@@ -2,7 +2,30 @@
 
 **Filed by:** oracle, 2026-09-06, at the hub's instruction after the owner reported lag this lane
 could not put a number on.
-**Status:** proposed. Nothing is built; per the hub, no work starts before this lands.
+
+**Status: ADOPTED WITH CHANGES and SERVED**, 2026-09-06. Registered as **§11.42 (CR-S)** at empyrean
+`3f83c6c` — *not* CR-R, which is §11.41's label; the hub renamed it on adoption. Served on
+`oracle-player` only, with the fragment and the ten vectors re-vendored in the same commit.
+
+> **What the ruling CHANGED from the shape proposed below, so this file is not read as the built
+> thing.** The result's fifth field is **`targetFps`** — an integer, `0` meaning the governor is off
+> — and not the `governor` boolean this document proposed; §11.42 M1 wanted the target itself, so a
+> reader can tell a paced 60 from a free-running 60 rather than only that something was pacing.
+> `fps` became an object `{value, windowMs}` where this file said only that the window must travel
+> with the figure (M2), and the window is the SERVER's to report, so no client param selects it. The
+> conditional halves of M3 are enforced by `if`/`then` **in the fragment**, which is why vector 4 of
+> the five proposed here — *"a headless server advertising `emulator/pacing` in `initialize`"* — is
+> **not** a vector: which binary is answering is not a property of a document, and the ruling made
+> that negative a suite obligation instead (`crates/oracle-aether/tests/pacing.rs`).
+>
+> **And one claim in this document was wrong, found while building it.** *"The window measures all
+> three"* is true of the underrun count and near enough of the presented tally; it is **false of the
+> frame rate and the frame-time percentiles**, which nothing on the live path computed —
+> `crate::stats::Series` computes percentiles only for the `--bench-arm` report. Worse, the tab's
+> "pictures drawn" was `Machine::pictures()`, whose own doc records it running **above** the
+> presented count. So the derivation was built rather than exposed, and the Pacing tab now reads it
+> instead of the quantity it had. `F-VSYNC-NEVER-MEASURED` stays open, exactly as this file says it
+> must: the instrument exists, and nobody has read a figure off the owner's live window yet.
 
 ## The problem, and it arrived as a complaint rather than as a booking
 
