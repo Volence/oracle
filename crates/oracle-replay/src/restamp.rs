@@ -861,7 +861,19 @@ mod tests {
         let mut rom = vec![0u8; 0x301];
         let e = plan().apply_to_rom(&mut rom).expect_err("must refuse");
         assert!(e.contains("769"), "{e}");
-        assert!(e.contains("refusing"), "{e}");
+        // What this row means is that the refusal REFUSES and says WHY, so it asks for those two
+        // facts rather than for a particular letter's case. The previous spelling was
+        // `contains("refusing")`, which passed only while the word sat mid-sentence after a dash;
+        // P10 made it the start of a sentence and it capitalised. A case-sensitive substring test
+        // was measuring the punctuation around the word, not the claim.
+        assert!(
+            e.to_lowercase().contains("refusing"),
+            "the refusal must say that it refuses: {e}"
+        );
+        assert!(
+            e.contains("the offsets would not mean the same thing"),
+            "a refusal that does not name its reason sends the reader to the source: {e}"
+        );
     }
 
     /// A plan carries the stale value it saw, so applying it to a *different* build's image — where those
