@@ -860,3 +860,96 @@ guards the **stateless** render. *The neighbour is right; the file is not.*
 - Both register rows the seat chased hold up, and `F-SERVERNAME-PREDATES-THE-RENAME` is *"still
   trustworthy even though its own line number has drifted 74 lines"* — **because it pinned its read
   revision.** The cure for M55 is already demonstrated by a row inside the file that needs it.
+
+---
+
+# Ninth tranche — seat B2b (duplication, data-first)
+
+## HIGH — and it bears directly on the open decision card `d-40`
+
+### H27 ✔ The Effects panel's addresses match no artifact in this repo — and the drift check landed today covers none of them
+
+The seat measured eleven symbols in `effects.rs` against the frozen `fixtures/aeon/*.lst` and found every
+one disagreeing or absent: `Parallax_Current_Config` is `FFFF88E8` in the listings while the panel says
+`FFFF88EC` — **which the listings give as `Parallax_Target_Config`** — and three symbols the panel needs
+(`BgAnim_Table_Ptr`, `Debug_Lab_Index`, an editor raster) are **absent from all four listings**.
+
+⚑ **CONTROLLER'S CORRECTION TO THE SEAT'S FRAMING, and it inverts who is at fault.** The seat reports this
+as *"the panel describes a build no artifact in this repo carries"*, which is true, and leaves the
+implication that the panel is wrong. **It is the fixtures that are stale.** Measured here: the frozen
+listings were built at **06:38 local**, aeon's note the panel was written from is **`c4c5c3d8`, committed
+15:52Z the same day**. The parallax block is a uniform **+4** shift and self-consistent — genuine aeon
+movement, not a transcription slip, as the seat itself noted. **The panel is built against aeon's current
+build; the fixtures are the known-stale side, which is exactly the open question on `d-40`.**
+
+**What survives the correction, and it is the real finding, in two parts:**
+
+1. **The test fixture's doc comment is false as written.** `Fake::full()` claims its values are *"at the
+   addresses both listings measured on this box actually carry"*. A reader takes "both listings" to mean
+   `fixtures/aeon/`. **They are not those.** So 100 % of the Effects panel's coverage runs against a
+   fixture whose own doc misdescribes its provenance.
+2. ✔ **The drift check I landed this morning covers none of it.** Re-measured by the controller:
+   `DIMENSIONS.tsv` has **25 rows and ZERO** matching `Parallax|Raster|BgAnim` (control: 25 rows found, so
+   the search works). **`DIMENSIONS.tsv` is the mechanism built for exactly this class and it was not
+   extended when the Effects panel landed** — including for the three absent symbols, which are precisely
+   the `relied_on_by`-blind shape its own header describes.
+
+**Not a corruption risk today:** `Channel::drift` refuses with `selectorMoved` when the loaded listing
+disagrees, and that guard is well argued. The consequence is **total coverage blindness, not a bad poke**
+— against the frozen fixtures every channel would refuse.
+
+**▶ This is new evidence on `d-40`, where I recommended HOLDING the fixture refresh.** The recommendation
+stands (refreshing before aeon publishes a build manifest still pins bytes whose origin nothing can
+verify), **but the cheap half is now clearly worth doing on its own: extend `DIMENSIONS.tsv` with the
+eleven effects symbols.** That needs no refresh, no manifest and no owner decision — it makes the drift
+*visible*, which was the whole point of that gate.
+
+### H28 ◻ `WORK_RAM_LO` is two different numbers under one name, and only one copy carries the derivation
+
+`0x00E0_0000` in `oracle-aether` (the full mirror decode) versus `0x00FF_0000` in `oracle-replay` (the
+canonical window). Both feed the identical `(LO..=HI).contains(&addr)` idiom. ⚑ **The chartered defect
+shape, exactly**: `oracle-replay::stack_in_work_ram` returns `None` for any address in a RAM **mirror**
+below `$FF0000` — `$E0FEF8` reads the same physical byte as `$FFFEF8` — so a perfectly good stack frame is
+reported as *"no frame to read there"*. Latent (aeon's A7 sits high; the tests use no mirror). **And the
+hazard runs the other way too**: anyone "unifying" these on the narrower spelling would silently shrink
+the Aether server's entire RAM window.
+
+## MEDIUM — new (abbreviated)
+
+- **M61 ◻ `HOT_PC = $00020E` hand-copied to seven sites**, two as strings the compiler cannot relate to
+  anything — while **the same file publishes the sibling fact as a `pub const` with a full comment**, and
+  the one guarded copy sits in a file that already imports the good idiom for its other address.
+- **M62 ◻ "80 SAT slots" is named once, in the crate that does not own the VDP**; `oracle-core` has four
+  bare literals. Trap for anyone deduplicating: **three unrelated `320`s** (80×4 bytes, H40 pixels, a max
+  width).
+- **M63 ◻ The tile pixel-fetch address expression is byte-for-byte duplicated** in core and in the plane
+  viewer — **the surface a person opens to CHECK the renderer**, so a divergence would leave it confirming
+  the old model. The neighbouring fact was given a `pub` home *with this exact reasoning written down*.
+- **M64 ◻ `VRAM_MASK` retypes a public constant whose name is in the comment beside it.**
+- **M65 ◻ Both sound-chip clocks live twice with no assert, under two different names for one fact** — so
+  a grep for either name misses the other consumer. **The house standard is 400 lines away in the same
+  crate**: a `const _: () = assert!(...)` bolting two copies of the video timing together.
+- **M66 ◻ A production symbol-name contract duplicated across two crates with no gate** — and here *"just
+  import it" is not the fix*: the dependency is optional while the consuming module is unconditional. Both
+  copies also restate a peer measurement **nothing committed here can check**.
+- **M67 ◻ `224` redefined ten times; three cite a source, seven do not.**
+- **M68 ◻ The aeon-mailbox test fixture is forked between two crates and HAS ALREADY DRIFTED** — one
+  address differs under an identical name, beside a second difference that *is* documented as deliberate.
+  **A reader diffing the two blocks cannot tell which divergence was intended.**
+- **M69 ◻ A duplicated button table degrades a negative control rather than reddening it**: if the real
+  list ever gains a name, an `assert_ne!` against the private copy becomes **always-true** and stays green.
+  Vacuity manufactured purely by duplication.
+
+## Live leads: one REFUTED, one confirmed narrow
+
+**`PIN.tsv` → REFUTED.** No sha, byte count or freeze revision from the pin is hardcoded anywhere in Rust
+or `tools/` — *"the pin is read, never restated."* **The three effect selectors → REFUTED as stated**: each
+is in exactly one production place, on a field, with a citation. Not spread.
+
+## Verified clean — the model to copy
+
+`objreq.rs:14-18` is **the strongest instance of the pattern in the tree** and should be cited in any fix
+parcel: the mailbox offsets are deliberately *not written down* — *"not as a constant, not as a fallback,
+not in a comment as 'for reference'. **A number a reader can copy is a number a later edit can use.**"*
+And `decoders.rs` measures its stride from two symbols rather than hardcoding it, saying so: *"This is why
+nothing hardcodes `$50`."*
