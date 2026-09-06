@@ -108,11 +108,11 @@
     },
     {
       "id": "F-PLANE-RASTER-UNGUARDED",
-      "state": "open",
+      "state": "blocked",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "deliberately folded into the lag fix - same file, same parcel",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Nothing notices if the plane picture draws the wrong tile in every cell; I transposed its lookup and all thirty-one tests stayed green. Low stakes because a scrambled picture is obvious, but the clicked reading IS guarded, so the two halves are held to different standards."
+      "title": "Nothing notices if the plane picture draws the wrong tile in every cell -- I transposed its lookup and all thirty-one tests stayed green. DELIBERATELY HELD rather than done now: the plane raster is also the prime suspect for your lag, so this guard rides in the same parcel as that fix. Doing it separately would touch the same code twice and cost an extra rebase."
     },
     {
       "id": "F-AUDIT-PAGE-CONTRADICTS-ITSELF",
@@ -139,7 +139,7 @@
       "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
     }
   ],
-  "awaiting": "Two from you, cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears -- the fix is pre-approved on that answer. (2) The Pacing A/B (d-39), which still decides every remaining panel. Also open and not blocking: the icon (d-37) and the frozen fixtures (d-40, I recommend hold). The pacing readout is no longer yours to answer -- the hub ruled it in your place and you can overturn it.",
+  "awaiting": "Four from you, all cheap, none urgent tonight. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears; the fix is pre-approved on your answer. (2) The Pacing A/B (d-39), which still decides how every remaining panel shows a number. (3) The window icon (d-37). (4) The frozen fixtures (d-40, I recommend hold). Separately: whenever you next relaunch, that alone finishes the two things I cannot -- trying the switchboard against a running game, and taking the first live pacing reading.",
   "atBoundary": true,
-  "updatedAt": "2026-09-06T17:26:10Z"
+  "updatedAt": "2026-09-06T17:27:31Z"
 }
