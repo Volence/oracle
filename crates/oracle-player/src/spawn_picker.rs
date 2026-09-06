@@ -265,6 +265,73 @@ pub fn subtype_listing(s: &spawn::Subtypes, chosen: Option<&str>) -> SubtypeList
 }
 
 // -------------------------------------------------------------------------------------------------------
+// ⚑ The ring, which is not in either list above and cannot be
+// -------------------------------------------------------------------------------------------------------
+
+/// **The ring section of the Spawn tab, projected.**
+///
+/// # Why a ring is not a row in the archetype list
+///
+/// The picker above draws what `emulator/lookup_symbol` finds under `ObjDef_`, and this build publishes
+/// six of them: `Spring`, `PathSwap`, `Static`, `Solid`, `Enemy`, `Parent`. **There is no `ObjDef_Ring`
+/// and there is not going to be one.** A ring in this engine is not an object: it takes no pool slot, has
+/// no definition record, and never reaches the `Obj_Req_` mailbox `emulator/object_spawn` writes. It
+/// lives in one flat array that `DrawRings` walks straight into the sprite table.
+///
+/// So ring placement is a **second thing a click can be**, alongside picking and placing an object, and
+/// it gets its own control rather than a row in a list it could never legitimately appear in. Adding a
+/// made-up `ObjDef_Ring` row would be this window asserting a name the game does not have, which is the
+/// one thing the whole discovered-not-listed design exists to prevent.
+///
+/// # The three things it draws, and one of them is a condition of the feature
+///
+/// A toggle, a standing statement of what a click does, and [`oracle_frontend::rings::TEMPORARY`]. The
+/// third is not polish: a placed ring is swept out of the buffer once the camera moves away and nothing
+/// brings it back, so a person who is not told that watches their ring vanish and reasonably concludes
+/// the window is broken. It is drawn for as long as the mode is armed, on the spawn badge's own rule that
+/// a toast expires and a design does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RingListing {
+    /// Whether a left-click on the picture places a ring right now.
+    pub armed: bool,
+    /// **The standing statement of what a click does**, always present, in both arms. Never carried by a
+    /// highlight: a reader who has scrolled either list above is otherwise inferring it.
+    pub armed_line: String,
+    /// ⚑ **The vanishing rule**, drawn while the mode is armed and `None` while it is not.
+    ///
+    /// [`oracle_frontend::rings::TEMPORARY`]'s own words rather than a second wording, for the reason
+    /// [`SubtypeListing::truncation`] carries the frontend's: two accounts of one design drift until one
+    /// of them stops being true.
+    pub temporary: Option<String>,
+}
+
+/// **The ring section, projected**, from the one fact the panel holds about it.
+///
+/// `object` is what the archetype picker would place instead, so the disarmed line can say what a click
+/// *does* do rather than only what it does not. `None` when nothing is armed there either, which is the
+/// third state and reads as neither of the other two.
+pub fn ring_listing(armed: bool, object: Option<&str>) -> RingListing {
+    let armed_line = if armed {
+        "A click on the picture places a ring. The object picker above is off while this is on, \
+         because a click can only do one of the two."
+            .to_string()
+    } else {
+        match object {
+            Some(a) => format!(
+                "A click on the picture places {a}, not a ring. Turn this on to place rings instead."
+            ),
+            None => "A click on the picture arms a watch. Turn this on to place rings instead."
+                .to_string(),
+        }
+    };
+    RingListing {
+        armed,
+        armed_line,
+        temporary: armed.then(|| oracle_frontend::rings::TEMPORARY.to_string()),
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------
 // ⚑ What the window did to the run state, and the standing statement that says so
 // -------------------------------------------------------------------------------------------------------
 
@@ -611,6 +678,9 @@ mod tests {
         // checked on one path is checked on one path, and this is a second surface with its own
         // sentences rather than more rows of the first one's.
         all.extend(every_subtype_arm());
+        // ⚑ And the ring section, which is a third surface with sentences of its own rather than more
+        // rows of either list above.
+        all.extend(every_ring_arm());
         for s in all {
             assert!(
                 !s.contains("  "),
@@ -693,6 +763,22 @@ mod tests {
             ..springs()
         };
         v.extend(every_subtype_string(&subtype_listing(&unsendable, None)));
+        v
+    }
+
+    /// Every string the ring section can draw, over all three arms.
+    fn every_ring_arm() -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for (armed, object) in [
+            (true, Some("ObjDef_Spring")),
+            (false, Some("ObjDef_Spring")),
+            (false, None),
+            (true, None),
+        ] {
+            let l = ring_listing(armed, object);
+            v.push(l.armed_line);
+            v.extend(l.temporary);
+        }
         v
     }
 
@@ -826,6 +912,71 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // The ring section
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **The vanishing rule is on the glass whenever ring placement is armed, and it is the
+    /// frontend's own words.**
+    ///
+    /// A condition of the feature rather than a polish item. Without it a placed ring disappears the
+    /// first time the camera moves, with nothing on screen to explain it, and reads as a broken tool
+    /// rather than as the engine's design. The `assert_eq!` against the constant is the load-bearing
+    /// half: a paraphrase here and a paraphrase in the terminal are two accounts of one design, and
+    /// they drift until one of them stops being true.
+    #[test]
+    fn arming_ring_placement_puts_the_vanishing_rule_on_the_glass_in_the_frontends_words() {
+        let on = ring_listing(true, Some("ObjDef_Spring"));
+        assert!(on.armed);
+        let t = on
+            .temporary
+            .as_deref()
+            .expect("an armed ring mode owes the reader the rule");
+        assert_eq!(
+            t,
+            oracle_frontend::rings::TEMPORARY,
+            "this must BE the frontend's sentence, not a copy that can drift from it"
+        );
+        assert!(
+            t.contains("TEMPORARY") && t.contains("camera"),
+            "the rule must say what happens and when: {t:?}"
+        );
+
+        // Off, there is no ring to be temporary, so the claim is retracted rather than left standing.
+        let off = ring_listing(false, Some("ObjDef_Spring"));
+        assert!(!off.armed);
+        assert_eq!(
+            off.temporary, None,
+            "a rule about a ring nobody can place is a standing claim about nothing"
+        );
+    }
+
+    /// **What a click does is stated in words, in all three arms**, and the three do not read alike.
+    ///
+    /// The disarmed arms are the ones worth a row: *"a click places a spring"* and *"a click arms a
+    /// watch"* are different facts, and a toggle whose off state said only "off" would leave a reader
+    /// inferring which from a list two panels away.
+    #[test]
+    fn the_ring_toggle_says_what_a_click_does_in_every_arm() {
+        let on = ring_listing(true, Some("ObjDef_Spring")).armed_line;
+        let other = ring_listing(false, Some("ObjDef_Spring")).armed_line;
+        let watch = ring_listing(false, None).armed_line;
+
+        assert!(on.contains("places a ring"), "{on:?}");
+        assert!(
+            on.contains("only do one of the two"),
+            "the two modes are exclusive and the line must say so rather than leaving a reader to \
+             find out by clicking: {on:?}"
+        );
+        assert!(
+            other.contains("ObjDef_Spring") && other.contains("not a ring"),
+            "the off state names what a click DOES do: {other:?}"
+        );
+        assert!(watch.contains("arms a watch"), "{watch:?}");
+        assert_ne!(on, other);
+        assert_ne!(other, watch);
+    }
+
     /// **P10** (no em or en dashes) and **P9** (no specification citations) over everything this panel can
     /// draw, in every arm.
     #[test]
@@ -849,6 +1000,7 @@ mod tests {
         // checked on one path is checked on one path, and this is a second surface with its own
         // sentences rather than more rows of the first one's.
         all.extend(every_subtype_arm());
+        all.extend(every_ring_arm());
         for s in all {
             for bad in ['\u{2014}', '\u{2013}'] {
                 assert!(
