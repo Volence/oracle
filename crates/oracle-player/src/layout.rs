@@ -114,6 +114,27 @@ pub const VOCABULARIES: &[&[&str]] = &[
         "Watchpoints",
         "Profiler",
     ],
+    // version 5 - the Effects tab (`LIVE-EFFECTS`), after Spawn. Same cost and the same reason as
+    // version 4: a `DockState` carries the `Tab` names and there is no honest way to graft a tab that
+    // did not exist onto an arrangement that never had a place for it. Discard, never migrate.
+    //
+    // The row is what makes the discard deliberate. It is also the only thing about this panel that
+    // reaches a file at ALL: `crate::effects::Panel` holds the channel, the boxes and every override in
+    // effect, and none of it is serialized. `nothing_the_effects_panel_selects_can_reach_the_saved_layout`
+    // below is the gate on that, and it fails if the panel ever grows a `Serialize`.
+    &[
+        "Screen",
+        "Planes",
+        "Pacing",
+        "Registers",
+        "Memory",
+        "Objects",
+        "Spawn",
+        "Effects",
+        "Breakpoints",
+        "Watchpoints",
+        "Profiler",
+    ],
 ];
 
 /// The storage key holding the RON-encoded `DockState<Tab>`.
