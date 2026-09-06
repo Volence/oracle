@@ -67,6 +67,10 @@ mod planes;
 mod report;
 mod screen;
 mod screen_pick;
+// Which archetype a click places, chosen from a list rather than cycled to, and what the window did to
+// the machine's run state to make that click legal. Ruled in
+// `docs/2026-09-05-spawn-autopause-design.md`.
+mod spawn_picker;
 mod stats;
 // The ten numbered save-state slot files, around `oracle_frontend::save_state`'s container. **Migration
 // S3.**

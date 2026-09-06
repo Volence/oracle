@@ -343,15 +343,26 @@ impl Panels<'_> {
                 }
             }
         });
+        // ⚑ **What this window did to the machine's run state**, standing, in the strip rather than in a
+        // toast. Required by `docs/2026-09-05-spawn-autopause-design.md`'s ruling and not optional: a
+        // click now pauses the machine for a frame or two and puts it back, and a resume the person did
+        // not perform must never be a mystery. It is coloured from `RunState::alarming()` and never from
+        // the shape of the sentence, which is P5's rule generalised off refusals.
+        if let Some(run) = self.screen.run_state() {
+            let colour = if run.alarming() {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.colored_label(colour, run.sentence())
+                .on_hover_text(crate::spawn_picker::RunState::HELD_INPUT_HOVER);
+        }
         ui.horizontal(|ui| {
             // Spawn mode is a **control**, not a tab: things you *do* are controls. The armed/disarmed
             // split is one button for one question, the same rule the transport bar states.
             if self.screen.is_armed() {
                 if ui.button("spawn: off").clicked() {
                     self.screen.disarm_spawn();
-                }
-                if ui.button("next archetype").clicked() {
-                    self.screen.cycle_spawn();
                 }
             } else if ui.button("spawn mode…").clicked() {
                 self.screen.arm_spawn(self.machine, self.bus);
@@ -376,6 +387,67 @@ impl Panels<'_> {
             ui.separator();
             ui.weak(format!("{} armed by this panel", self.screen.armed_count()));
         });
+        // ⚑ **The picker.** The owner's ask, verbatim: *"for this I'm thinking a panel where you can
+        // select the item instead of having to click a button to kind of pseudo scroll through them"*.
+        // It replaces the `next archetype` button entirely rather than sitting beside it, because a
+        // cycle key and a list are two ways to hold one selection and the second one shows what the
+        // first was hiding: how many there are, and which ones.
+        //
+        // Drawn here, in the Screen strip, rather than as a dock tab of its own. `crate::palette`'s rule,
+        // already on disk: *things you look at are tabs; things you DO are controls*, and it names spawn
+        // as one of the things you do. It also has to be visible at the same time as the picture it
+        // places into, which a tab in the same dock column would not be.
+        if self.screen.is_armed() {
+            let listing = self.screen.listing();
+            let weak = ui.visuals().weak_text_color();
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("filter")
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(self.screen.filter_mut())
+                        .desired_width(140.0)
+                        .hint_text("ring"),
+                )
+                .on_hover_text(
+                    "narrows the list below. It never changes what a click places: the badge above \
+                     always names the armed archetype, filtered into view or not.",
+                );
+                ui.label(
+                    egui::RichText::new(&listing.count)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+            });
+            // A partial measurement, said out loud. A list drawn from the first 20 of 137 archetypes
+            // with nothing saying so is this window deciding, on the reader's behalf, that the other 117
+            // do not exist.
+            if let Some(t) = &listing.truncation {
+                ui.label(
+                    egui::RichText::new(t)
+                        .text_style(egui::TextStyle::Small)
+                        .color(crate::theme::WARNING),
+                );
+            }
+            match &listing.absence {
+                // P6: an absent result is a stated line, never an empty box.
+                Some(a) => {
+                    ui.label(
+                        egui::RichText::new(a)
+                            .text_style(egui::TextStyle::Small)
+                            .color(weak),
+                    );
+                }
+                None => {
+                    if let Some(name) = select_list(ui, "archetype", &listing.rows, "spawn_picker")
+                    {
+                        self.screen.select_archetype(&name);
+                    }
+                }
+            }
+        }
         // ⚑ **The save-state slots** (S3), as controls beside the keys rather than instead of them.
         //
         // `oracle-frontend` offers these on `F2`/`F4`/`F6`/`F7`/`0`-`9` and nowhere else, which is fine
@@ -2137,6 +2209,111 @@ fn cell_face(ui: &egui::Ui, c: &objects::Col) -> egui::FontId {
         .unwrap_or_else(|| egui::FontId::proportional(13.0))
 }
 
+/// **What one row of a table is filled with**, in one function, so a selected row cannot be one colour in
+/// the object pool and a different one in the spawn picker.
+///
+/// The order is the meaning: selection beats hover beats banding, because the selection is a fact about
+/// the machine and the other two are facts about the pointer and the eye.
+fn row_fill(ui: &egui::Ui, chosen: bool, hovered: bool, i: usize) -> egui::Color32 {
+    if chosen {
+        crate::theme::selection()
+    } else if hovered {
+        ui.visuals().widgets.hovered.bg_fill
+    } else if i % 2 == 1 {
+        ui.visuals().faint_bg_color
+    } else {
+        egui::Color32::TRANSPARENT
+    }
+}
+
+/// The tallest the spawn picker's list gets before it scrolls.
+///
+/// It sits in the Screen tab's control strip, above the picture, so its height is taken from the game:
+/// a list that grew with the listing would push the picture off a short window on a build with a hundred
+/// archetypes.
+const PICKER_MAX_H: f32 = 140.0;
+
+/// **A one-column selectable list**: a header, a hairline, and one banded row per entry, with the
+/// selection carried by fill. Returns the entry clicked this frame.
+///
+/// The caller owns the selection, exactly as it does for [`slot_table`]: a list that decided its own
+/// selection would need a second copy of it, and the copy that matters is `spawn::Mode`'s, because that
+/// is the one a click on the picture reads.
+///
+/// **Why this is not [`slot_table`].** That table is keyed on `objects::Row`/`Col`/`Field` and draws a
+/// served object record; the audit's build order books generalising its four helpers off `objects::Col`
+/// as the prerequisite for the Profiler, Watchpoints and Breakpoints parcels. This is a single column of
+/// symbol names with no header cells to align, so it takes the piece of that furniture that is genuinely
+/// shared today ([`row_fill`]) and leaves the rest for that parcel. **When the table furniture is
+/// generalised, this folds into it** rather than growing a second column model of its own.
+///
+/// The name is drawn in the monospace face, which is P3's carve-out for *symbol names as they appear in a
+/// listing* and not a licence for the prose around it.
+fn select_list(
+    ui: &mut egui::Ui,
+    head: &str,
+    rows: &[crate::spawn_picker::Row],
+    salt: &str,
+) -> Option<String> {
+    let mut hit = None;
+    ui.scope(|ui| {
+        // Rows sit tighter than a panel's default flow; the zebra band is what separates them.
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+        let weak = ui.visuals().weak_text_color();
+        ui.label(
+            egui::RichText::new(head)
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+        );
+        let y = ui.cursor().top();
+        ui.painter().hline(
+            ui.max_rect().x_range(),
+            y,
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+        ui.add_space(3.0);
+        // P7: one panel, one scroll position, and the salt is what keeps it from colliding with the hex
+        // dump's or the hit log's.
+        egui::ScrollArea::vertical()
+            .id_salt(salt)
+            .max_height(PICKER_MAX_H)
+            .show(ui, |ui| {
+                let strong = ui.visuals().strong_text_color();
+                for (i, r) in rows.iter().enumerate() {
+                    // Reserved before the row so the band paints behind it, which is egui's own idiom and
+                    // the one `slot_table` already uses.
+                    let bg = ui.painter().add(egui::Shape::Noop);
+                    let inner = ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&r.name).monospace().color(strong));
+                    });
+                    // Full width, not the width of the glyphs: a click target that stops where the text
+                    // stops is a click target a person misses.
+                    let band = egui::Rect::from_x_y_ranges(
+                        ui.max_rect().x_range(),
+                        inner.response.rect.y_range(),
+                    )
+                    .expand2(egui::vec2(0.0, 1.0));
+                    let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
+                    ui.painter().set(
+                        bg,
+                        egui::Shape::rect_filled(
+                            band,
+                            0.0,
+                            row_fill(ui, r.selected, resp.hovered(), i),
+                        ),
+                    );
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        hit = Some(r.name.clone());
+                    }
+                }
+            });
+    });
+    hit
+}
+
 /// A table of slots: a header row, hairline-separated, then one banded row per slot.
 ///
 /// `selected` is `None` for a table whose rows are not clickable (the player section, which is a list of
@@ -2192,15 +2369,12 @@ fn slot_table(
             let chosen = selected == Some(Some(r.slot));
             let resp = selected
                 .map(|_| ui.interact(band, ui.id().with((salt, r.slot)), egui::Sense::click()));
-            let fill = if chosen {
-                crate::theme::selection()
-            } else if resp.as_ref().is_some_and(egui::Response::hovered) {
-                ui.visuals().widgets.hovered.bg_fill
-            } else if i % 2 == 1 {
-                ui.visuals().faint_bg_color
-            } else {
-                egui::Color32::TRANSPARENT
-            };
+            let fill = row_fill(
+                ui,
+                chosen,
+                resp.as_ref().is_some_and(egui::Response::hovered),
+                i,
+            );
             ui.painter()
                 .set(bg, egui::Shape::rect_filled(band, 0.0, fill));
 

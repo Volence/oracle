@@ -82,6 +82,7 @@ use serde_json::{json, Value};
 
 use crate::bus::{Answer, Bus};
 use crate::machine::Machine;
+use crate::spawn_picker;
 
 /// How the player's transport control is named to a person, for the one refusal that has a remedy.
 ///
@@ -251,6 +252,21 @@ pub struct Panel {
     armed: Vec<String>,
     /// Spawn mode: whether a click places instead of picks, and what it places.
     mode: spawn::Mode,
+    /// What the bounded symbol search said the listing holds, from the arm that filled [`Panel::mode`].
+    ///
+    /// Kept beside the mode rather than inside it because it is a fact about the *search*, not about the
+    /// mode: `total > mode.names().len()` is the cut-short case, and a picker that did not carry it would
+    /// draw the first 20 of 137 archetypes as though they were all of them.
+    total: usize,
+    /// What is in the picker's filter box. Panel state rather than model state for the reason the aspect
+    /// selector is: it is a way of looking at the list, not a fact about the machine.
+    filter: String,
+    /// ⚑ **What this window last did to the machine's run state**, or `None` when it has not touched it.
+    ///
+    /// Standing, and deliberately **not** cleared by disarming the mode: "this window paused your machine
+    /// and the resume was refused" is exactly the fact that must not disappear because you turned
+    /// something off. Replaced by the next click that places.
+    run: Option<spawn_picker::RunState>,
 }
 
 impl Panel {
@@ -289,6 +305,9 @@ impl Panel {
         match listed {
             Ok(a) => {
                 let note = a.truncation_note();
+                // Kept for the picker, which draws `n of m` and the cut-short note standing rather than
+                // once in an arm message that scrolls away.
+                self.total = a.total;
                 match self.mode.arm(a.names) {
                     Ok(name) => {
                         let mut s = format!("spawn mode armed: a click places {name}");
@@ -302,27 +321,61 @@ impl Panel {
             }
             Err(e) => self.last = Some(Readout::refused(e.terminal("(none)", None))),
         }
+        // A fresh arm re-read the listing, so a filter left over from the last one would hide rows of a
+        // list the reader has not seen yet.
+        self.filter.clear();
     }
 
     /// Turn spawn mode off. A click picks again.
+    ///
+    /// [`Panel::run`] is deliberately **not** cleared: what this window did to the machine's run state is
+    /// not undone by turning a mode off, and it is the one statement that must outlive the gesture.
     pub fn disarm_spawn(&mut self) {
         self.mode.disarm();
+        self.total = 0;
+        self.filter.clear();
         self.last = Some(Readout::ok(
             "spawn mode off: a click arms a watch again".into(),
         ));
     }
 
-    /// Select the next archetype, wrapping. A key that silently does nothing is indistinguishable from a
-    /// broken one, so the `None` arm reports rather than swallowing.
-    pub fn cycle_spawn(&mut self) {
-        match self.mode.cycle() {
-            Some(name) => self.last = Some(Readout::ok(format!("a click now places {name}"))),
+    /// **Select the archetype a click places**, by name, from the picker's rows.
+    ///
+    /// By name rather than by row number because the rows are a *filtered* view: the row a person clicks
+    /// is the `n`th match, not the `n`th archetype. The `None` arm reports rather than swallowing, for
+    /// the reason the cycle key it replaces did: a control that silently does nothing is
+    /// indistinguishable from a broken one, and here it would also mean the picker is drawing a name the
+    /// mode no longer holds.
+    pub fn select_archetype(&mut self, name: &str) {
+        match self.mode.select(name) {
+            Some(sel) => self.last = Some(Readout::ok(format!("a click now places {sel}"))),
             None => {
-                self.last = Some(Readout::refused(
-                    "spawn mode is not armed, so there is nothing to cycle through".into(),
-                ))
+                self.last = Some(Readout::refused(format!(
+                    "{name} is not one of the archetypes spawn mode is holding, so nothing was \
+                     selected. Re-arm spawn mode to read the listing again."
+                )))
             }
         }
+    }
+
+    /// **The picker's rows, filtered**, for [`crate::ui`] to lay out and for nothing else to decide.
+    pub fn listing(&self) -> spawn_picker::Listing {
+        spawn_picker::listing(
+            self.mode.names(),
+            self.mode.selected(),
+            self.total,
+            &self.filter,
+        )
+    }
+
+    /// The filter box's own text. `&mut` because egui's `TextEdit` writes it in place.
+    pub fn filter_mut(&mut self) -> &mut String {
+        &mut self.filter
+    }
+
+    /// ⚑ **What this window last did to the machine's run state**, or `None` when it has not touched it.
+    pub fn run_state(&self) -> Option<&spawn_picker::RunState> {
+        self.run.as_ref()
     }
 
     /// Show or hide one display layer, **through the served method** `emulator/set_layer_enabled`.
@@ -507,16 +560,137 @@ impl Panel {
         });
     }
 
+    /// **The click that places, and the pause it takes to make that legal.**
+    ///
+    /// Ruled in `docs/2026-09-05-spawn-autopause-design.md` before it was built, from the owner's ask:
+    /// *"can the click of the object pause for 1 ms or whatever is needed and spawn it? like
+    /// programaticallyy instead of me needing to manually pause."* The measured answer is at most two
+    /// frames of emulated time (`OBJREQ_DEFAULT_MAX_FRAMES`), roughly three to six milliseconds of wall
+    /// time. His instinct was right and the figure is a couple of frames rather than a millisecond.
+    ///
+    /// # The three steps, and the middle one is not the interesting one
+    ///
+    /// 1. **`emulator/pause`, explicitly, through the same served method a socket client would call**, and
+    ///    the reply's `wasRunning` is the capture. It is the server's own account of the state it just
+    ///    changed, which is a stronger source than anything this window could infer afterwards.
+    /// 2. The choreography, unchanged, on a machine that genuinely is paused. It is `oracle-frontend`'s
+    ///    one implementation and nothing about it is copied here.
+    /// 3. **`emulator/resume`, but only if step 1 found the machine running.**
+    ///
+    /// # ⚑ The hazard is the resume, not the hitch
+    ///
+    /// A blind resume starts a machine somebody deliberately stopped. Two real cases: the owner pauses to
+    /// line up a placement and the window starts the game under him; or an attached client paused the
+    /// machine to read it and the window resumes under the client mid read. **The second is worse because
+    /// nothing announces it** and it breaks another actor's invariant rather than a person's expectation.
+    /// Built this way, a client-paused machine needs no pause and no resume at all, which also answers
+    /// what a mid-read client sees: nothing.
+    ///
+    /// # What the run-control rule actually binds
+    ///
+    /// `protocol.md` §6: the named methods, *called while free-running*, MUST fail with `-32005` and never
+    /// pause implicitly. **It binds what a method does when called.** A window that pauses explicitly,
+    /// calls the method on a machine that genuinely is paused, and then restores what it found satisfies
+    /// it literally: no method paused implicitly, and the machine really was paused for the spawn.
+    ///
+    /// # A side effect worth having rather than tolerating
+    ///
+    /// The pause now wraps the **whole** choreography rather than only the mailbox write, so the world
+    /// join and the act-bounds read happen on a machine that is not moving under them. Before this, the
+    /// camera and the level extent were read off a running machine and the placement happened on a paused
+    /// one, which is two frames' worth of "the coordinates were for a picture that had already changed".
+    ///
+    /// Every path through here ends in a [`Readout`] **and** in a [`spawn_picker::RunState`], because a
+    /// window that moves the run state without saying so is read as the machine's own state, which is the
+    /// lesson the mask statement and the lens episode both paid for.
     fn place(&mut self, machine: &mut Machine, bus: &mut Bus, archetype: &str, dot: (u16, u16)) {
-        let sys = machine.system_mut();
         let remedy = pause_remedy();
-        match spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot) {
-            Ok(p) => self.last = Some(Readout::ok(p.terminal(archetype))),
-            Err(e) => {
-                self.last = Some(Readout::refused(e.terminal(archetype, Some(&remedy))));
+        let (placed, mut run) = match paused_for(machine, bus, |machine, bus| {
+            let sys = machine.system_mut();
+            spawn::place(&mut PlayerCaller { bus, sys }, archetype, dot)
+        }) {
+            Ok(both) => both,
+            // The window never got as far as touching the run state, so there is nothing to restore and
+            // nothing to say about it. The server's own words are the whole of the answer.
+            Err(why) => {
+                self.run = None;
+                self.last = Some(Readout::refused(format!(
+                    "the window could not pause the machine to place {archetype}, so nothing was \
+                     placed. {why}"
+                )));
+                return;
             }
+        };
+        // The server's own count of the frames its handshake took, filled in here because
+        // [`paused_for`] does not know what its body did. `None` when the spawn was refused before any
+        // frame ran: a number this window did not read is not a zero.
+        if let spawn_picker::RunState::Restored { frames } = &mut run {
+            *frames = placed.as_ref().ok().map(|p| p.frames_advanced);
         }
+        self.run = Some(run);
+
+        let outcome = self.run.as_ref().map(spawn_picker::RunState::sentence);
+        self.last = Some(match placed {
+            Ok(p) => Readout {
+                head: p.terminal(archetype),
+                detail: None,
+                outcome,
+                refused: false,
+            },
+            Err(e) => Readout {
+                head: e.terminal(archetype, Some(&remedy)),
+                detail: None,
+                outcome,
+                refused: true,
+            },
+        });
     }
+}
+
+/// **Run `body` on a machine that genuinely is paused, and put the run state back the way it was found.**
+///
+/// Separated from [`Panel::place`] for one reason and it is not tidiness: *"the machine really was paused
+/// while the body ran"* is the property the whole design rests on, and inside a single function it is
+/// unobservable. As a function taking a closure it is a property a test can assert directly, on the real
+/// bus, without a listing, a mailbox or a game
+/// (`the_body_runs_on_a_machine_that_is_genuinely_paused_and_the_run_state_is_put_back`).
+///
+/// `Err` is the pause itself being refused, carrying the server's own `code` and `message` and nothing of
+/// ours: the body never ran and the run state was never touched, so there is nothing to restore and
+/// nothing to say about it.
+///
+/// The returned [`spawn_picker::RunState`] is complete except for `Restored { frames }`, which is left
+/// `None` because only the caller knows what its body found out.
+fn paused_for<T>(
+    machine: &mut Machine,
+    bus: &mut Bus,
+    body: impl FnOnce(&mut Machine, &mut Bus) -> T,
+) -> Result<(T, spawn_picker::RunState), String> {
+    // ⚑ **The capture is the server's own `wasRunning`**, from the same served method a socket client
+    // would call. It is the server's account of the state it just changed, which is a stronger source
+    // than anything this window could infer afterwards, and `None` (a reply with no such flag) is
+    // treated as "do not resume" rather than guessed either way.
+    let was_running = match bus.call(machine.system_mut(), crate::ui::PAUSE, &json!({})) {
+        Answer::Ok(v) => v["wasRunning"].as_bool(),
+        Answer::Err(e) => return Err(format!("{} {}", e.code, e.message)),
+    };
+
+    let value = body(machine, bus);
+
+    // ⚑ **Resume ONLY if it was running when the click arrived.** A blind resume starts a machine
+    // somebody deliberately stopped: the owner pausing to line up a placement, or an attached client
+    // pausing to read. The second is worse because nothing announces it.
+    let run = match was_running {
+        Some(true) => match bus.call(machine.system_mut(), crate::ui::RESUME, &json!({})) {
+            Answer::Ok(_) => spawn_picker::RunState::Restored { frames: None },
+            Answer::Err(e) => spawn_picker::RunState::Stranded {
+                why: format!("{} {}", e.code, e.message),
+            },
+        },
+        Some(false) => spawn_picker::RunState::AlreadyPaused,
+        None => spawn_picker::RunState::PriorStateUnknown,
+    };
+    Ok((value, run))
 }
 
 /// ⚑ **The standing alarm that the picture on the glass is not the machine's masked picture**, or `None`
@@ -1106,8 +1280,11 @@ mod tests {
         // 5. Spawn mode, armed and disarmed.
         panel.arm_spawn(&mut machine, &mut bus);
         take("spawn armed", &panel);
-        panel.cycle_spawn();
-        take("spawn cycled", &panel);
+        // The picker's refusal arm: a name the mode is not holding. On this fixture nothing armed, so
+        // this is also the "selected while disarmed" case, and it must be a sentence rather than a
+        // silent no-op for the reason the cycle key it replaces was.
+        panel.select_archetype("ObjDef_Ring");
+        take("an archetype the mode does not hold", &panel);
         panel.disarm_spawn();
         take("spawn off", &panel);
 
@@ -1519,6 +1696,234 @@ mod tests {
             panel.armed_count(),
             1,
             "the panel retires what IT armed; it must not accumulate"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The spawn picker, and the pause the click takes to make itself legal
+    // ---------------------------------------------------------------------------------------------
+
+    /// A listing whose only symbols are three `ObjDef_` archetypes, so spawn mode can arm **for real**
+    /// against the same bounded prefix search the shipped path uses.
+    ///
+    /// Deliberately no `Camera_X`, so the choreography refuses at the world join. That is not a weakness
+    /// of these tests: the run state is restored on every path, and a refusal is the path where a window
+    /// that only restored on success would still look correct.
+    const ARCHETYPE_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ ObjDef_Ring : 1000 C |
+ ObjDef_Spring : 1010 C |
+ ObjDef_Monitor : 1020 C |
+
+    3 symbols
+    0 unused symbols
+";
+
+    /// A running machine whose listing names three archetypes, with spawn mode already armed.
+    fn armed_rig() -> (Machine, Bus, Panel) {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let table = oracle_core::symbols::SymbolTable::parse(ARCHETYPE_LST)
+            .expect("the fixture listing parses");
+        let mut bus = Bus::new(
+            machine.system_mut(),
+            oracle_aether::host::MachineInfo {
+                rom_path: Some("testrom".into()),
+                symbols: Some(table),
+                symbols_path: Some("testrom.lst".into()),
+            },
+            false,
+            None,
+        );
+        let mut panel = Panel::default();
+        panel.arm_spawn(&mut machine, &mut bus);
+        assert!(
+            panel.is_armed(),
+            "the fixture must arm, or every test below is about a disarmed mode: {:?}",
+            panel.readout().map(Readout::text)
+        );
+        (machine, bus, panel)
+    }
+
+    /// ★ **The body runs on a machine that is genuinely paused, and the run state is put back.**
+    ///
+    /// The first half is the whole reason `emulator/object_spawn` can be reached from a click at all: it
+    /// refuses `-32005 machineRunning` against a free-running bus, so a window that dispatched it without
+    /// pausing would refuse every click, and one whose "pause" did not land would look identical.
+    /// Asserted **inside** the body, which is what [`paused_for`] exists as a closure-taker for.
+    ///
+    /// The second half is the ruling's: the machine was running when the click arrived, so it is running
+    /// when the click is done.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    /// 1. *The fixture was paused all along*, which would make the restore vacuous. Asserted running
+    ///    before anything happens.
+    /// 2. *The body never ran.* It returns a token that is asserted, so a `paused_for` that skipped it
+    ///    could not produce this value.
+    #[test]
+    fn the_body_runs_on_a_machine_that_is_genuinely_paused_and_the_run_state_is_put_back() {
+        let (mut machine, mut bus, _) = armed_rig();
+        assert!(
+            !bus.is_paused(),
+            "the control: this fixture must start RUNNING or a restore witnesses nothing"
+        );
+
+        let mut saw: Option<bool> = None;
+        let (token, run) = paused_for(&mut machine, &mut bus, |_, bus| {
+            saw = Some(bus.is_paused());
+            "the body ran"
+        })
+        .expect("the pause was accepted");
+
+        assert_eq!(token, "the body ran");
+        assert_eq!(
+            saw,
+            Some(true),
+            "the body ran against a free-running bus, so `emulator/object_spawn` would answer \
+             -32005 machineRunning and the click would place nothing"
+        );
+        assert_eq!(run, spawn_picker::RunState::Restored { frames: None });
+        assert!(
+            !bus.is_paused(),
+            "the window paused this machine and left it paused: the person did not stop it and \
+             nothing here would restart it"
+        );
+    }
+
+    /// ★ **A machine somebody else paused is left exactly as it was found.**
+    ///
+    /// The hazard the design page names as the worse of the two, because nothing announces it: an
+    /// attached client pauses the machine to read it, and the window resumes under the client mid read.
+    /// A client-paused machine needs no pause and no resume at all.
+    #[test]
+    fn a_machine_somebody_else_paused_is_left_paused_and_nothing_here_resumes_it() {
+        let (mut machine, mut bus, _) = armed_rig();
+        // Through the served method, which is the door a socket client uses.
+        assert!(
+            !bus.call(machine.system_mut(), crate::ui::PAUSE, &json!({}))
+                .is_err(),
+            "the fixture could not be paused"
+        );
+        assert!(bus.is_paused(), "the control: it must be paused now");
+
+        let mut saw: Option<bool> = None;
+        let (_, run) = paused_for(&mut machine, &mut bus, |_, bus| {
+            saw = Some(bus.is_paused());
+        })
+        .expect("pausing an already-paused machine is not a refusal");
+
+        assert_eq!(saw, Some(true), "the body must still see a paused machine");
+        assert_eq!(
+            run,
+            spawn_picker::RunState::AlreadyPaused,
+            "a machine that was already paused was neither paused nor resumed by this window"
+        );
+        assert!(
+            bus.is_paused(),
+            "the window RESUMED a machine somebody else stopped, which is the exact hazard the \
+             capture-and-restore exists to prevent"
+        );
+        assert!(
+            !run.alarming(),
+            "leaving a paused machine paused is the quiet case, not an alarm"
+        );
+    }
+
+    /// ★ **The whole gesture, through [`Panel::click`]**: spawn mode armed, a click on the picture, the
+    /// window's run state where it started, and a standing sentence saying what it did.
+    ///
+    /// The spawn itself is refused here (this listing has no `Camera_X`), which is deliberate: the run
+    /// state must be restored on the refusal path too, and the readout must carry both halves.
+    #[test]
+    fn a_spawn_click_restores_the_run_state_and_says_what_it_did() {
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        let mask = bus.layers();
+        assert!(!bus.is_paused(), "the control: the fixture starts running");
+        assert!(
+            panel.run_state().is_none(),
+            "nothing has touched the run state yet"
+        );
+
+        panel.click(&mut machine, &mut bus, Some(mask), (2, 2));
+
+        assert!(
+            !bus.is_paused(),
+            "a click that placed nothing still left the machine paused"
+        );
+        let run = panel
+            .run_state()
+            .expect("a placing click says what it did to the run state");
+        assert_eq!(*run, spawn_picker::RunState::Restored { frames: None });
+        let r = panel.readout().expect("a click leaves a readout");
+        assert!(
+            r.refused,
+            "this listing cannot join a dot to a world position, so the spawn is refused: {:?}",
+            r.text()
+        );
+        assert_eq!(
+            r.outcome.as_deref(),
+            Some(run.sentence().as_str()),
+            "the readout's outcome is the run-state sentence, so the tab cannot show one without the \
+             other"
+        );
+    }
+
+    /// ★ **The picker: the rows are the mode's, a click on one selects it, and the filter narrows what is
+    /// drawn without changing what a click places.**
+    #[test]
+    fn the_picker_lists_the_modes_archetypes_and_selecting_one_moves_the_badge() {
+        let (_machine, _bus, mut panel) = armed_rig();
+
+        let l = panel.listing();
+        let first = l.rows.first().expect("three archetypes armed").name.clone();
+        assert_eq!(
+            l.rows.len(),
+            3,
+            "the picker draws the mode's own whole list"
+        );
+        assert_eq!(l.rows.iter().filter(|r| r.selected).count(), 1);
+        assert!(
+            panel.badge().expect("armed").contains(&first),
+            "the arm selects the first row, and the badge is what says which"
+        );
+
+        panel.select_archetype("ObjDef_Spring");
+        assert!(
+            panel.badge().expect("armed").contains("ObjDef_Spring"),
+            "selecting a row must move the badge, which is what a click reads"
+        );
+        assert!(
+            panel
+                .listing()
+                .rows
+                .iter()
+                .any(|r| r.selected && r.name == "ObjDef_Spring"),
+            "and the list must mark it"
+        );
+
+        // The filter narrows the DRAWING and never the selection.
+        *panel.filter_mut() = "ring".to_string();
+        let l = panel.listing();
+        assert_eq!(
+            l.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["ObjDef_Ring", "ObjDef_Spring"],
+            "the filter is a case-folded substring over the whole name"
+        );
+        assert!(
+            panel.badge().expect("armed").contains("ObjDef_Spring"),
+            "a filter must not change what a click places"
+        );
+
+        // Disarming clears the list and the filter with it. The run state is NOT cleared, because what
+        // this window did to a machine is not undone by turning a mode off.
+        panel.disarm_spawn();
+        assert!(!panel.is_armed());
+        let off = panel.listing();
+        assert!(off.rows.is_empty());
+        assert!(
+            off.absence.is_some(),
+            "an empty list owes the reader a line"
         );
     }
 }

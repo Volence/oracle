@@ -484,6 +484,28 @@ impl Mode {
         self.index = (self.index + 1) % self.archetypes.len();
         self.selected()
     }
+
+    /// **Every archetype this mode is holding**, in the order the search returned them.
+    ///
+    /// Added for the window that offers a *choice* rather than a cycle key: a picker has to draw the
+    /// list, and it draws **this** list rather than keeping one of its own, so the rows a person reads
+    /// and the `n/m` in [`Mode::badge`] cannot be counting two different things.
+    pub fn names(&self) -> &[String] {
+        &self.archetypes
+    }
+
+    /// **Select `name`**, or report that this mode is not holding it.
+    ///
+    /// By name and not by index, because the caller drawing the list may be drawing a *filtered* view of
+    /// it whose row numbers are not this mode's. `None` is a real answer that a caller reports rather
+    /// than swallows, for [`Mode::cycle`]'s reason and one more of its own: an archetype that has left
+    /// the listing under a `reload_rom` or a `load_symbols` must not silently select whichever name took
+    /// its position, which is the stale-archetype hazard this whole module is written against.
+    pub fn select(&mut self, name: &str) -> Option<&str> {
+        let i = self.archetypes.iter().position(|a| a == name)?;
+        self.index = i;
+        self.selected()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -750,6 +772,46 @@ mod tests {
         assert_eq!(m.selected(), Some("ObjDef_A"));
         assert_eq!(m.cycle(), Some("ObjDef_B"));
         assert_eq!(m.cycle(), Some("ObjDef_A"), "the cycle wraps");
+    }
+
+    /// **Selecting by name moves the badge, and a name the mode is not holding selects nothing.**
+    ///
+    /// The second half is the one worth a gate. A `select` that fell back to an index, or that silently
+    /// did nothing while the badge went on naming the old archetype, would place something other than
+    /// the row that was clicked, which is the stale-archetype failure wearing a picker's clothes.
+    #[test]
+    fn selecting_by_name_moves_the_badge_and_a_name_it_does_not_hold_selects_nothing() {
+        let mut m = Mode::new();
+        assert_eq!(m.select("ObjDef_A"), None, "a disarmed mode holds no name");
+
+        m.arm(vec![
+            "ObjDef_A".into(),
+            "ObjDef_B".into(),
+            "ObjDef_C".into(),
+        ])
+        .unwrap();
+        assert_eq!(m.select("ObjDef_C"), Some("ObjDef_C"));
+        let badge = m.badge().expect("armed");
+        assert!(
+            badge.contains("ObjDef_C") && badge.contains("3/3"),
+            "the badge must follow the selection, position included: {badge:?}"
+        );
+
+        assert_eq!(
+            m.select("ObjDef_Gone"),
+            None,
+            "a name that is not in the listing must select nothing"
+        );
+        assert_eq!(
+            m.selected(),
+            Some("ObjDef_C"),
+            "a refused selection must leave the previous one exactly where it was"
+        );
+        assert_eq!(
+            m.names().len(),
+            3,
+            "the list itself is what the picker draws"
+        );
     }
 
     /// **Arming over an empty list refuses**, and the refusal names the prefix that came up empty.
