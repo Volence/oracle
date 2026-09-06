@@ -2339,6 +2339,22 @@ mod tests {
     /// Deliberately no `Camera_X`, so the choreography refuses at the world join. That is not a weakness
     /// of these tests: the run state is restored on every path, and a refusal is the path where a window
     /// that only restored on success would still look correct.
+    /// ⚑ **The `Equate Table` is not decoration here.** Without it this fixture answers the empty set for
+    /// every archetype, so every subtype path in this file would be the absent one and the populated
+    /// paths would be unreachable while looking tested. That is the shape that has hidden a real defect
+    /// in this repo three times, so the section is present **and** built to disagree with the live
+    /// listing in the two dimensions under test:
+    ///
+    /// * **value order is not name order.** By name these run `Angled_Blue`, `Down_Red`, `Up_Red`,
+    ///   `Up_Yellow`, `Wide_Huge`; by value they run `Up_Red`, `Up_Yellow`, `Angled_Blue`, `Down_Red`,
+    ///   `Wide_Huge`. The parser's own map is name ordered, so an implementation that forgot to sort
+    ///   would look right on a corpus where the two agree.
+    /// * **one value does not fit in a byte** (`$140`). Nothing aeon publishes today exceeds `$52`, so
+    ///   the rail that refuses to cut a value down is unexercised by every real build.
+    ///
+    /// `ObjDef_Ring` and `ObjDef_Monitor` deliberately publish **none**, so the stated-absence path and
+    /// the populated path both have a subject in the same listing and a selection change between them is
+    /// a real re-read rather than a repeat.
     const ARCHETYPE_LST: &str = "\
   Symbol Table (* = unused):
   --------------------------
@@ -2349,6 +2365,17 @@ mod tests {
 
     3 symbols
     0 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU ObjSub_Spring__Angled_Blue = $00000011
+EQU ObjSub_Spring__Down_Red = $00000020
+EQU ObjSub_Spring__Up_Red = $00000000
+EQU ObjSub_Spring__Up_Yellow = $00000002
+EQU ObjSub_Spring__Wide_Huge = $00000140
+
+    5 equates
 ";
 
     /// A running machine whose listing names three archetypes, with spawn mode already armed.
@@ -2698,6 +2725,138 @@ mod tests {
             "a picture of another archetype must not reach a draw site at all"
         );
         let _ = (&mut machine, &mut bus);
+    }
+
+    /// ★ **Arming reads the subtypes out of the listing, and changing the archetype re-reads them.**
+    ///
+    /// The wiring end to end, on a rig whose listing genuinely publishes an `Equate Table`. Three things
+    /// only fail here:
+    ///
+    /// * **the arm reads them at all**, rather than the picker sitting empty until something else asks;
+    /// * **the armed default is the lowest valued one that fits**, named rather than left implicit,
+    ///   because a placement carries a subtype byte whether or not one was chosen and a picker showing no
+    ///   selection would be arming one in silence;
+    /// * ⚑ **the set belongs to the archetype.** Selecting an archetype the listing names no subtypes for
+    ///   must clear the previous one's, or the picker offers the spring's strengths for a monitor and the
+    ///   byte it sends is a real byte for the wrong object. Going back re-reads them, so this is a
+    ///   re-read and not a one-way clear.
+    #[test]
+    fn arming_reads_the_subtypes_and_changing_the_archetype_reads_them_again() {
+        let (mut machine, mut bus, mut panel) = armed_rig();
+
+        // The arm selects the first archetype by name order, which is `ObjDef_Monitor` here, and it
+        // publishes no subtypes. So the control comes first: point the panel at the one that does.
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Spring");
+        let l = panel
+            .subtype_listing()
+            .expect("the listing is loaded, so nothing refused the read");
+        assert_eq!(
+            l.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            ["Up_Red", "Up_Yellow", "Angled_Blue", "Down_Red", "Wide_Huge"],
+            "the rows are read out of the listing's equate table and ordered by value, which is not \
+             the order the parser's own map holds them in"
+        );
+        assert_eq!(
+            panel.subtype_byte(),
+            Some(0x00),
+            "the arm carries the lowest valued subtype that fits a byte"
+        );
+        assert!(
+            l.armed.contains("Up_Red") && l.armed.contains("$00"),
+            "and it is named in words rather than left to a fill colour: {:?}",
+            l.armed
+        );
+        assert_eq!(l.absence, None);
+        assert_eq!(
+            l.truncation, None,
+            "five subtypes is well under the search's cap, so nothing may claim it was cut short"
+        );
+
+        // Choosing one moves the armed byte to the listing's own value.
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Angled_Blue");
+        assert_eq!(panel.subtype_byte(), Some(0x11));
+
+        // ⚑ The set belongs to the archetype. An archetype the listing names none for clears it and says
+        // so, rather than keeping a byte that means something else entirely.
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Monitor");
+        assert_eq!(
+            panel.subtype_byte(),
+            None,
+            "a subtype must not survive the archetype it belongs to"
+        );
+        let l = panel.subtype_listing().expect("still readable");
+        assert!(l.rows.is_empty());
+        let line = l.absence.expect("P6: an empty list is a stated line");
+        assert!(
+            line.contains("ObjSub_Monitor__") && line.contains("ObjDef_Monitor"),
+            "the line names the archetype and the namespace searched: {line:?}"
+        );
+
+        // …and going back re-reads them, so the clear above was a re-read and not a one-way door.
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Spring");
+        assert_eq!(panel.subtype_byte(), Some(0x00));
+        assert_eq!(panel.subtype_listing().expect("readable").rows.len(), 5);
+    }
+
+    /// ⚑ **A picture of one form is never drawn under another form's badge.**
+    ///
+    /// The archetype half of this guard already exists one test up; this is the half the filled key
+    /// bought. Two subtypes of one archetype are usually two different pictures, so a preview kept under
+    /// the archetype's name alone would come back after a subtype change **looking exactly like the
+    /// feature working**, which is the failure the whole cache key exists against.
+    #[test]
+    fn a_picture_of_one_subtype_is_not_offered_under_another() {
+        use crate::preview::{Art, Cell, Key, Outcome, Preview, Shot};
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        panel.select_archetype(&mut machine, &mut bus, "ObjDef_Spring");
+        panel.select_subtype(&mut machine, &mut bus, "ObjSub_Spring__Up_Yellow");
+        assert_eq!(panel.subtype_byte(), Some(0x02));
+
+        let made = |subtype: Option<u32>| {
+            Outcome::Ready(Box::new(Preview {
+                key: Key {
+                    archetype: "ObjDef_Spring".to_string(),
+                    subtype,
+                },
+                w: 8,
+                h: 8,
+                anchor: (4, 4),
+                cells: vec![Cell {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                }],
+                art: Art::Captured(Shot {
+                    w: 8,
+                    h: 8,
+                    px: vec![Some((1, 2, 3)); 64],
+                }),
+                tiles: vec![1],
+                art_print: 0,
+            }))
+        };
+
+        // The control: a picture of the armed form IS offered, so the rejections below are about the
+        // subtype and not about the guard rejecting everything.
+        panel.preview = Some(made(Some(0x02)));
+        assert!(
+            panel.preview().and_then(Outcome::drawable).is_some(),
+            "a picture of the armed subtype must reach a draw site"
+        );
+
+        // A picture of a different form of the same archetype must not.
+        panel.preview = Some(made(Some(0x00)));
+        assert!(
+            panel.preview().is_none(),
+            "a picture of the red spring must not be drawn under the yellow spring's badge"
+        );
+        // Nor one that named no subtype at all: that is a third thing, not a wildcard.
+        panel.preview = Some(made(None));
+        assert!(
+            panel.preview().is_none(),
+            "a placement that named no subtype is not a stand-in for every subtype"
+        );
     }
 
     /// ★ **The picker: the rows are the mode's, a click on one selects it, and the filter narrows what is
