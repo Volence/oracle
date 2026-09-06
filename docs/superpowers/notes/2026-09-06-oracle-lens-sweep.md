@@ -3,7 +3,7 @@
 Charter, corpus, roster deviation and seat rules:
 `2026-09-06-oracle-lens-sweep-CHARTER.md`. Pin `d3ca871` / review revision `e6bc191` (identical code).
 
-**STATUS: IN PROGRESS.** 22 seats launched, **5 returned** (TEST, GATE, STATE, FUZZ, ARCH). This file is
+**STATUS: IN PROGRESS.** 22 seats launched, **15 returned**. Still out: P2, A2, Va, Vb, B2a, B2b, B1. This file is
 written incrementally so no finding lives only in a session's context. **Nothing here is fixed** — the
 sweep is read-only by design; landing a packet makes findings discoverable, it does not close them.
 
@@ -383,3 +383,64 @@ leaves are collapsed. He moved it there — it is not the default.
 **And the instrument gap this exposes:** `Loop::iterate` fills `Buckets::{emulate, audio, convert, upload,
 ui, bus, cpu_total}` **every frame**, and the only reader runs on the bench deadline. **In the mode people
 use, the window knows exactly where its 16 ms went and never says.**
+
+---
+
+# Third tranche — seats PROTO, P1b
+
+## HIGH — new
+
+- **H12 ◻ The per-line scroll fetch is done per PIXEL, and the value is already in a variable one frame up
+  the stack** (P1b). `render.rs:1358-1368`: `plane_sample` calls `plane_hscroll(plane, line)` — which
+  **takes no `x`** and does two VRAM reads — once per dot per plane. **640 calls per line against a
+  necessary 3: 214× more often than the value can change**; 8.6 M/s at 60 fps.
+  ⚑ **The proof the author knew it is per-line sits three lines away**: `resolve_line_masked:1644` computes
+  `a_hscroll` **once per line** and stores it in `ctx` — and then calls the helper that re-reads it per dot.
+  **Confirmed in the shipped binary** by `objdump`: six out-of-line calls per composited dot.
+  This is the class the reverse walk exists to catch — four call sites, three correct, and the wrong one
+  looks entirely reasonable at its own site.
+- **H13 ◻ One hardware integer division per plane per dot, from a `Vec::len()` used as a modulus** (P1b).
+  `render.rs:1298-1301` `% self.vsram().len()` — a runtime load, so a real `div`. **The repo already has
+  the cheap spelling twice** (`vdp.rs:801`, `:865`, `% VSRAM_SIZE`); this one site diverges. Confirmed in
+  the binary: LLVM folded the full-scroll arm, so **only the 2-cell/parallax arm pays — the case this lane
+  is actively working on.** One token to fix.
+- **H14 ◻ `emulator/z80_read` emits an off-contract `bytes` for a request the contract permits** (PROTO).
+  `len: 0` is legal params (`minimum: 0`, the only such on the surface — every sibling declares 1), the
+  handler accepts it, and the reply is `"0x"`, which fails the result's own `^0x[0-9A-Fa-f]+$`. **The
+  fragment contradicts itself**: result `len` allows 0 while result `bytes` forbids the only spelling of a
+  zero-length payload. Validated with `jsonschema` plus a passing control. Two-sided CR, not a patch.
+
+## MEDIUM — new
+
+- **M25 ◻ `emulator/z80_write` accepts an empty payload its two siblings refuse AND test** (PROTO).
+  `write_memory` and `write_vram` both refuse with the same sentence and both have a test; `z80_write` has
+  neither, and reports a no-op as a write. Its own `$comment` claims the shape "is enforced mechanically" —
+  the *alternation* is, the *payload* is not.
+- **M26 ◻ 68 fragment-declared param constraints, exactly ONE machine-tied to the fragment** (PROTO). This
+  is the class that produced the `step` defect the charter cites: ~40 numeric ceilings are hand-transcribed
+  copies. `params_closure.rs` pins param **names** both ways; nothing does that for **values**.
+- **M27 ◻ `emulator/read`'s advertised summary understates the row by 4095 bytes** (PROTO) — "one byte
+  read" for a row that has taken `len` 1..4096 since the day it landed. **21 days.** Same defect as
+  `lookup_symbol`'s, and the summary is what `initialize`, the MCP surface and the palette all display.
+- **M28 ◻ `lookup_equate` declares `minLength: 1` and enforces it nowhere** (PROTO) — `{"prefix": ""}`, a
+  request the contract refuses, returns the first 256 equates of the whole table. The test named for this
+  case uses `"ZZZ"` — an empty *result*, not an empty *prefix*. **The name reads as coverage it does not
+  have.**
+- **M29 ◻ `checkpoint_list.limit` has a handler ceiling the contract declares nowhere** (PROTO) — and the
+  ceiling is a *capacity* (8), not a page size, so an ordinary `limit: 100` is refused.
+- **M30 ◻ VRAM/CRAM/VSRAM are `Vec<u8>`, so every already-masked renderer index still bounds-checks**
+  (P1b) — ~10 per dot. The second-order cost is larger: the panic paths are part of why the hot helpers
+  never inline.
+- **M31 ◻ With a mask set, every active line is composited TWICE per frame** (P1b), and the same loop is
+  written in three places — each individually justified, and **none of the three says the first render was
+  paid for anyway**.
+- **M32 ◻ 68000 `decode` is a 113-test linear if-chain with the hottest opcodes near the end** (P1b) —
+  MOVEQ is test #100, the shift family #101. The arms are documented as mutually disjoint, so a prefilter
+  is a pure reordering. (The Z80 core dispatches on a jump table — the 68k chain is the outlier.)
+
+## Instrument note carried from P1b
+
+Its ranking is derived from **call counts and machine code, not a measured profile**: `perf`, `valgrind`
+and `ptrace` are all unavailable in the sandbox, and it said so rather than implying a profile. Its
+baseline (459/461 fps headless, two runs agreeing to 0.5 %) is stamped UTC **with the load average
+beside it** and explicitly labelled *a floor, not an uncontended number*.
