@@ -1,11 +1,6 @@
 {
-  "focus": "CI is green for the first time since 22 July, and the review findings are now in the console.",
+  "focus": "Three of the four critical fixes are done and pushed. One left: the sound-chip crashes.",
   "inFlight": [
-    {
-      "what": "Two critical fixes part-written; both agents died on the account session limit at 19:2xZ",
-      "where": "branches fix/z80-reset-line and worktree-agent-a89c..., committed as unverified WIP",
-      "agent": false
-    },
     {
       "what": "Lag fix, approved on condition - starts the moment your tab test confirms",
       "where": "not started",
@@ -27,15 +22,18 @@
       "what": "whether to repin the frozen symbol fixtures to a current build (FIXTURE-REPIN)",
       "since": "2026-09-06",
       "id": "d-40"
-    },
-    {
-      "what": "account session limit reached at 19:2xZ; no more agents can run until it resets (~22:10Z)",
-      "since": "2026-09-06",
-      "id": "limit"
     }
   ],
   "nextBoundary": "After the four critical fixes land.",
   "queue": [
+    {
+      "id": "F-Z80-PANICS-UNCONTAINED",
+      "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "The last of the four critical fixes: about 560 real sound-chip instructions crash the emulator outright instead of refusing. Common in hand-written sound code, and a commercial game has hit this class before."
+    },
     {
       "id": "F-CI-DEAD-46-DAYS",
       "state": "blocked",
@@ -69,28 +67,12 @@
       "title": "About 560 real Z80 instructions crash the emulator outright rather than refusing, with nothing to catch it -- so one byte in a game's sound code kills the window or the server. Common in hand-written sound drivers, and a commercial game has already hit this class once."
     },
     {
-      "id": "F-Z80-RESET-IS-A-HOLD",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "The Z80 reset line only stops the clock; it resets nothing. A sound driver halted at the wrong moment stays halted forever and never restarts. Measured with controls. The rule was written into our own notes in July with 'pin it, do not let it drift' and never implemented."
-    },
-    {
       "id": "F-FIFO-DOUBLE-CHARGE",
       "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "LENS-PASS",
       "title": "Two video writes in one instruction charge the first one's delay twice -- 40 percent over-billed on the most common way games write video memory. The read path next door does it correctly. Every existing test stops one write short of triggering it."
-    },
-    {
-      "id": "F-DIMENSIONS-MISSES-EFFECTS",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "The drift check I landed this morning covers none of the eleven symbols the Effects panel depends on -- measured, zero of 25 rows. Cheap, needs no decision from you, and it is the half of the frozen-fixture question worth doing on its own."
     },
     {
       "id": "LENS-PACKET",
@@ -207,5 +189,5 @@
   ],
   "awaiting": "Cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears; the fix is pre-approved. (2) The Pacing A/B (d-39). (3) Whenever you next relaunch the window, that alone finishes two things I cannot -- trying the switchboard against a running game, and the first live frame-rate reading. (4) The icon (d-37) and the frozen fixtures (d-40; new evidence tonight -- I still say hold the refresh, but the cheap half is worth doing alone). (5) Which lens-sweep findings to fix after the four criticals I am on now.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T22:58:01Z"
+  "updatedAt": "2026-09-06T23:32:06Z"
 }
