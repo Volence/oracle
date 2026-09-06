@@ -37,6 +37,14 @@
   "nextBoundary": "After the four critical fixes land.",
   "queue": [
     {
+      "id": "RELAUNCH-CLOSES-TWO",
+      "state": "blocked",
+      "size": "S",
+      "blockedBy": "one relaunch of your window, whenever suits you",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Two finished pieces of work are waiting on one action from you. Relaunching your debug window is the last step for both: it lets the effects switchboard be tried against a running game for the first time, and it lets a program take a real frame-rate reading off your window. Neither needs anything else. No hurry -- it rides with whenever you next restart it anyway."
+    },
+    {
       "id": "F-CI-DEAD-46-DAYS",
       "state": "doing",
       "size": "M",
@@ -93,28 +101,12 @@
       "title": "The rest of the lens sweep: 8 critical, 33 high, ~77 smaller, all in docs/superpowers/notes/2026-09-06-oracle-lens-sweep.md with the derivation for each. Nothing is fixed -- the reviewers were read-only on purpose so the report stays honest. Most of these have their fix already written elsewhere in the tree; they are gaps in coverage, not in knowledge."
     },
     {
-      "id": "LIVE-EFFECTS-PANEL",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": "a relaunch, whenever suits you",
-      "project": "LIVE-EFFECTS",
-      "title": "Landed as an Effects tab: pick a scene or raster effect from a list and the game switches, instead of holding START and a button. Nudging numbers is visible but disabled until the engine team adds one small piece. Turning bands off will refuse on your current window until you relaunch, because your loaded symbols predate the thing it points at. Nothing has been tried against a running game yet -- that happens when you relaunch, and it closes the pacing readout at the same time."
-    },
-    {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
       "state": "doing",
       "size": "S",
       "blockedBy": "one ten-second tab test from you",
       "project": "ORACLE-DEBUG-UI",
       "title": "Your lag report. The plane viewer only redraws when its picture changes -- but on the waterline and floor-fan rows the picture changes every frame by design, so it redraws the whole plane every frame and the saving never applies. Up to half a million pixel lookups per frame. Not confirmed as YOUR lag yet; the tab test confirms or clears it."
-    },
-    {
-      "id": "CR-S-PACING-SERVE",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": "one relaunch of your window, whenever suits you",
-      "project": "ORACLE-DEFAULT",
-      "title": "Landed, and now properly checked. A program can ask your window its frame rate, frame time and whether audio is stuttering. It fixed a real defect on the way -- your Pacing tab was counting finished pictures rather than pictures put on screen. Not fully closed until something reads a live figure off your window, which happens on your next relaunch."
     },
     {
       "id": "STYLE-NUMBER-BAKEOFF",
@@ -213,7 +205,7 @@
       "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
-  "awaiting": "Same as before plus the sweep's ranking. Cheapest first: (1) the ten-second tab test for the lag, fix pre-approved. (2) The Pacing A/B (d-39). (3) The icon (d-37) and the frozen fixtures (d-40 -- new evidence, I still say hold the refresh but the cheap half is now clearly worth doing alone). (4) Which lens-sweep findings you want fixed first; I would start with CI, since it is the one that stops us finding the others.",
+  "awaiting": "Cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears; the fix is pre-approved. (2) The Pacing A/B (d-39). (3) Whenever you next relaunch the window, that alone finishes two things I cannot -- trying the switchboard against a running game, and the first live frame-rate reading. (4) The icon (d-37) and the frozen fixtures (d-40; new evidence tonight -- I still say hold the refresh, but the cheap half is worth doing alone). (5) Which lens-sweep findings to fix after the four criticals I am on now.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T18:40:06Z"
+  "updatedAt": "2026-09-06T19:08:58Z"
 }

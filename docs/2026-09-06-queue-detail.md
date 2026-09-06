@@ -211,3 +211,25 @@ Found tonight and it limits the tool we just built: reading the video chip gives
 *state* `open` · *size* `S` · *blockedBy* `None` · *project* `ORACLE-DEBUG-UI`
 
 Booked rather than fixed, because the fixtures themselves are sound and it is the MODEL they teach that is wrong. Several picker tests use a made-up object called a ring in their sample lists, which is good test design in itself (one of them is deliberately the object that publishes nothing, so the nothing-to-show message has something to be about). But rings turned out not to be objects at all, and anyone reading those tests would reasonably conclude they are. That is exactly the wrong belief my own instructions carried into this work.
+
+
+---
+
+## Rows retired from the board 2026-09-06 (landed; residual folded into RELAUNCH-CLOSES-TWO)
+
+Both had shipped and both were blocked on the same single action. Dropped from the board because a
+landed row has no state in the vocabulary; their text is kept here verbatim and their shared
+dependency survives as one row rather than two.
+
+### `LIVE-EFFECTS-PANEL`
+
+*state* `blocked` · *size* `M` · *blockedBy* `a relaunch, whenever suits you` · *project* `LIVE-EFFECTS`
+
+Landed as an Effects tab: pick a scene or raster effect from a list and the game switches, instead of holding START and a button. Nudging numbers is visible but disabled until the engine team adds one small piece. Turning bands off will refuse on your current window until you relaunch, because your loaded symbols predate the thing it points at. Nothing has been tried against a running game yet -- that happens when you relaunch, and it closes the pacing readout at the same time.
+
+### `CR-S-PACING-SERVE`
+
+*state* `blocked` · *size* `M` · *blockedBy* `one relaunch of your window, whenever suits you` · *project* `ORACLE-DEFAULT`
+
+Landed, and now properly checked. A program can ask your window its frame rate, frame time and whether audio is stuttering. It fixed a real defect on the way -- your Pacing tab was counting finished pictures rather than pictures put on screen. Not fully closed until something reads a live figure off your window, which happens on your next relaunch.
+
