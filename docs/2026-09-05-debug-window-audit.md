@@ -552,3 +552,68 @@ picker had been built. Nothing in this addendum re-dates any of that. Two conseq
   **Re-derive before citing any of them**, exactly as §7 says.
 * **The tab count is the only claim this addendum corrects.** Nothing else above has been re-measured at
   this revision, so absence of a correction here is not a statement that a line still holds.
+
+---
+
+## Addendum, 2026-09-06: the Planes picture takes a click, and it answers a different question from the Screen tab's
+
+*Appended under the same rule as the addendum above, and for the same reason: nothing before this heading
+is edited, so the stamp keeps meaning what it says.*
+
+**What changed.** `PLANES-PANEL-PICK` landed. The plane picture is drawn with `Sense::click()` instead of
+`Sense::hover()`, and a click puts a standing four-part readout in a `card` at the **top of the side
+column**, above the facts card §4's "Planes" entry describes. §4's description of that tab is now short by
+that card; everything it says about the six facts, the scroll notes and the `fact_grid` reference pattern
+still holds.
+
+**The one thing about it that is a correctness claim rather than a layout choice.** The queue row asked
+for *"the same answer clicking the game picture already gives"*, and that framing is wrong in a way that
+two correct numbers would not fix:
+
+* the **game picture**'s click asks *which layer won at this dot* (attribution, through scroll, priority
+  and sprite order);
+* the **plane picture**'s click asks *which cell of this map is this, and what word is in it* (a
+  nametable read, on a plane drawn whole).
+
+They legitimately disagree: the cell you click here can be off screen, covered by a sprite, or ranked
+under the other plane. So the readout carries a sentence of its own about the screen, derived from
+`planes::covered_mask` — the same mask the viewport outline is drawn from, so the words and the outline
+cannot disagree — and it says on the covered case, once, whose question the other one is. What the two
+surfaces may never disagree about is the nametable word, and that is asserted by
+`the_viewer_and_pixel_attribution_agree_about_the_word` rather than assumed.
+
+**No new number treatment.** §6's parked call 4 (bare accent text at 20px versus a small bordered tile)
+is still parked and this parcel did not pre-empt it: the readout is prose at `strong_text_color`, a
+`Small` recessed sentence, a monospace `weak_text_color` detail line, and `theme::WARNING` caveat lines.
+Every one of those weights is already in use on the Screen tab's pick readout, which is the surface this
+one is deliberately shaped after.
+
+**§4's one named Planes defect is still open.** The checker legend — *"the checkered squares are
+transparent, palette nibble zero"* — was not added by this parcel and is not affected by it. A click on a
+transparent cell now reports its tile like any other, which is correct and is not a legend.
+
+### Parked look calls, added by the plane-pick parcel (2026-09-06), same rule: none of these were seen
+
+The owner's window was live, launching a second is barred, and a headless framebuffer answers a different
+question while looking like an answer. Continuing §6's numbering.
+
+14. **Whether the click registers at all.** The picture lives inside a `ScrollArea::both`, and the sense
+    changed from `hover` to `click` under it. *Question: does a click on the plane picture produce a
+    readout, and does the wheel still scroll a plane larger than the pane?* This is the same structural
+    hole the queue already carries for the picker rows: an agent seat cannot press anything.
+15. **The pick at a non-1.0 `pixels_per_point`.** `screen_pick::dot_at` takes `ppp` explicitly and is
+    tested at 1.0, 1.5 and 2.0, and it inverts `Response::rect` rather than re-deriving the fit — but no
+    test in this crate has ever inverted a rect that a scroll offset moved. *Question: on the owner's
+    display, does the named cell match the cell under the cursor, at the top of the scroll and after
+    scrolling a 128-cell plane sideways?*
+16. **Four parts in a 260-point column.** The side column is allocated at 260 points wide when the pane is
+    at least 560. The head is a full sentence, the screen line is another, and the detail line is
+    monospace and long. *Question: does the readout read as one answer, or as a wall that pushes the six
+    facts off the bottom?*
+17. **The caveat's weight when it fires.** The armed-H-interrupt caveat is a `Small` `theme::WARNING` line
+    and the picture's own `unestablished` note is already one, so two warning-coloured paragraphs can
+    stand in the same column at once. *Question: do two of them read as one alarm and get skipped, or does
+    the reader take them as the two different statements they are?*
+18. **Whether the readout should sit under the picture instead.** It goes in the side column, which the
+    narrow layout pushes **below** the picture. *Question: at a realistic dock width, is your click's
+    answer where your eye already is?*
