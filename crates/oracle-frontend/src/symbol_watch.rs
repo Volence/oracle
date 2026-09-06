@@ -433,7 +433,7 @@ mod tests {
         let after = ram_with(0xE50D, 3);
         assert_eq!(
             w.poll(&after),
-            vec!["4/20 — Shimmer Slow".to_string()],
+            vec!["4/20: Shimmer Slow".to_string()],
             "a genuine frame-1 change was swallowed"
         );
     }
@@ -450,7 +450,7 @@ mod tests {
         assert!(w.poll(&ram_with(0xE50D, 7)).is_empty());
         assert_eq!(
             w.poll(&ram_with(0xE50D, 19)),
-            vec!["20/20 — OJZ Locked Clouds".to_string()]
+            vec!["20/20: OJZ Locked Clouds".to_string()]
         );
     }
 
@@ -505,11 +505,11 @@ mod tests {
         ram[0xE600] = 1;
         assert_eq!(
             w.poll(&ram),
-            vec!["2/2 — green".to_string()],
+            vec!["2/2: green".to_string()],
             "A must stay quiet"
         );
         ram[0xE50D] = 1;
-        assert_eq!(w.poll(&ram), vec!["2/2 — one".to_string()]);
+        assert_eq!(w.poll(&ram), vec!["2/2: one".to_string()]);
     }
 
     /// A word read at this symbol would splice in the neighbouring byte. The brief said "word"; the ROM

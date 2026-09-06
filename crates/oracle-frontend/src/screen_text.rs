@@ -259,8 +259,14 @@ mod tests {
     /// ```
     ///
     /// which is how the characters the table lacked were found: the backtick (`PRESS ` FOR COMMANDS`), the
-    /// em dash (41 literals) and the ellipsis (`config::kept_warning`) — and, once this row ran over every
-    /// literal instead of the grep's toast sites, the `~` in the usage text. Format placeholders (`{e}`,
+    /// em dash and the ellipsis (`config::kept_warning`) — and, once this row ran over every
+    /// literal instead of the grep's toast sites, the `~` in the usage text.
+    ///
+    /// ⛑ **The em dash count that stood here (41 literals) was true until P10 swept them, and is now 0.**
+    /// The glyph itself STAYS. This row measures what the font must render, not what this crate happens to
+    /// type: a dash can still reach the glass from a symbol name, a ROM string or a peer's reply, and a
+    /// missing glyph renders as a hollow box. Deleting the arm because our own literals stopped using it
+    /// would trade a style win for a rendering defect. Format placeholders (`{e}`,
     /// `{:?}`) are stripped before measuring, because what reaches the glass is the substituted value, and
     /// `\n`/`\t` escapes are skipped as line structure rather than glyphs. `unrenderable` is computed by
     /// [`Surface::drawn`] — the same predicate the wire readout uses — so a literal failing here is exactly a

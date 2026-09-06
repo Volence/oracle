@@ -488,7 +488,7 @@ fn notify_err(ov: &mut Overlay, msg: impl AsRef<str> + Into<String>) {
 /// as a complete sentence — F-TOAST-TRUNCATES. The reason is the one part that answers the question; the
 /// path the person mostly already knows, because they just picked it.
 fn cannot_read_toast(what: &str, e: &std::io::Error, path: impl std::fmt::Display) -> String {
-    format!("{what}: {}, cannot read {path}", io_reason(e))
+    format!("{what}: {}. Cannot read {path}", io_reason(e))
 }
 
 /// An `io::Error`'s text without the ` (os error N)` tail the standard library appends to OS errors.
@@ -2713,7 +2713,7 @@ mod tests {
 
     /// **The reason survives the cut** (F-TOAST-TRUNCATES). The unreadable-folder toast, composed with a real
     /// `io::Error` and a path long enough not to fit the player's smallest picture, is asserted **whole** as it
-    /// is rendered at the real toast width: `open ROM: <reason> — cannot read /…` cut with the mark, the
+    /// is rendered at the real toast width: `open ROM: <reason>. Cannot read /…` cut with the mark, the
     /// reason intact. The expected string is arithmetic on the overlay's own constants (`font_scale`,
     /// margin, `toast_text_avail`, `fit`'s cost model), not a transcription.
     #[test]
@@ -2741,7 +2741,7 @@ mod tests {
         // Reason before path: the property this parcel exists for.
         assert_eq!(
             text,
-            format!("open ROM: {reason} — cannot read {}", dir.display()),
+            format!("open ROM: {reason}. Cannot read {}", dir.display()),
             "the reason must come before the path"
         );
 
@@ -2767,7 +2767,7 @@ mod tests {
             .chain(std::iter::once(TRUNCATION_MARK))
             .collect();
         assert!(
-            expected.starts_with(&format!("open ROM: {reason} — ")),
+            expected.starts_with(&format!("open ROM: {reason}. ")),
             "COULD NOT MEASURE: the reason itself does not fit {capacity} glyphs: {expected:?}"
         );
 
@@ -3216,17 +3216,17 @@ mod tests {
         use oracle_core::synth::ConsoleModel;
         assert_eq!(
             console_stage_line(ConsoleModel::Model1Va0Va2, FilterSource::Default),
-            "audio: console output stage = model1-va0-va2 (low-pass 3386 Hz) — default; F cycles it \
+            "audio: console output stage = model1-va0-va2 (low-pass 3386 Hz), default; F cycles it \
              (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides for one run"
         );
         assert_eq!(
             console_stage_line(ConsoleModel::Model1Va3Va6, FilterSource::Conf),
-            "audio: console output stage = model1-va3-va6 (low-pass 2842 Hz) — remembered in player.conf; \
+            "audio: console output stage = model1-va3-va6 (low-pass 2842 Hz), remembered in player.conf; \
              F cycles it (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides for one run"
         );
         assert_eq!(
             console_stage_line(ConsoleModel::Unfiltered, FilterSource::Env),
-            "audio: console output stage = unfiltered (no filter — the raw chip mix) — from \
+            "audio: console output stage = unfiltered (no filter: the raw chip mix), from \
              ORACLE_CONSOLE_FILTER; F cycles it (remembered), ORACLE_CONSOLE_FILTER=off|va0|va3 overrides \
              for one run"
         );
