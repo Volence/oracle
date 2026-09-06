@@ -121,6 +121,10 @@ pub const NOTE: &str = "aeon c4c5c3d8 docs/2026-09-06-live-effects-ram-surface.m
 /// more than one cell in it.
 pub const ENGINE: &str = "aeon c4c5c3d8 engine/";
 
+/// **The commit that landed the act-independent bands-off target**, cited separately from [`NOTE`]
+/// because it postdates it and corrects it: [`NOTE`] §3 says no such symbol exists, and now one does.
+pub const EMPTY_TABLE_COMMIT: &str = "aeon 41c845fa";
+
 /// **The chord's cursor, which this panel must never write.** See the module header.
 pub const LAB_INDEX_SYMBOL: &str = "Debug_Lab_Index";
 
@@ -417,6 +421,15 @@ pub const BANDS: Channel = Channel {
     // which the prefix box reaches.
     prefix: "BgAnim_Table",
     debug_only: true,
+    // ⚑ **THE TARGET'S NAME IS VISIBLE IN RELEASE AND ITS DATA IS NOT**, which is why the destination
+    // is gated separately and checked FIRST. The declaration is
+    // `pub data BgAnim_Table_Empty: [u16; BGANIM_EMPTY_EMIT] = if DEBUG == 1 { [0] } else { [] }`
+    // (`EMPTY_TABLE_COMMIT`), so in a release build the NAME still enters the listing with an address
+    // while the array emits nothing: **there is no zero word behind it there.** `BgAnim_Table_Ptr` is
+    // genuinely absent from a release listing, so a panel that gated bands-off on the target alone
+    // would, on release, write an address with no zero behind it into a cell that is not the band
+    // pointer. Two wrongs in one gesture. `turn_off` runs `available` before it resolves this symbol,
+    // and that ordering is what makes the target's release visibility harmless rather than dangerous.
     off: Off::At {
         symbol: "BgAnim_Table_Empty",
         // ⚑ The correction this channel exists in the shape it does because of. It looks like bands-off
@@ -426,13 +439,15 @@ pub const BANDS: Channel = Channel {
         // affirmative. An act with live bands holds a real count in that same word, so the obvious
         // implementation turns bands off on the act in front of you and quietly re-installs a table on
         // the next one. Refused until the constant exists.
-        blocked: "bands cannot be turned off in this build: there is no `BgAnim_Table_Empty` in the \
-                  loaded listing, and it is the only act-independent target for an empty table. \
-                  Pointing at the act's own `BgAnim_Table` looks like it works, but only because the \
-                  shipped act happens to hold a zero count there; an act with live bands holds a real \
-                  one, so that route turns bands off on one act and quietly re-installs a table on the \
-                  next. Zero is not a route either: aeon's note says `BgAnim_Table_Ptr` = 0 is never \
-                  valid, because `BgAnim_Init` seeds it. aeon is landing the constant.",
+        blocked: "bands cannot be turned off from this listing: `BgAnim_Table_Empty` is not in it. \
+                  That symbol EXISTS in the engine now, so this is almost certainly a listing older \
+                  than the build that added it rather than a missing feature. Rebuild the ROM and load \
+                  its listing, and this works. There is no substitute and none is attempted: pointing \
+                  at the act's own `BgAnim_Table` looks like it works, but only because the shipped act \
+                  happens to hold a zero count there, and an act with live bands holds a real one, so \
+                  that route turns bands off on one act and quietly re-installs a table on the next. \
+                  Zero is not a route either, because `BgAnim_Init` seeds this pointer and a zero in it \
+                  is never valid.",
     },
     // `NOTE` section 1: "`BgAnim_Table_Ptr` = 0 is never valid; `BgAnim_Init` seeds it." So a zero is a
     // machine that has not initialised, not a table with no bands, and it is said as the fault it is.
@@ -1151,7 +1166,18 @@ pub fn turn_off(c: &mut impl Caller, channel: &Channel) -> Result<Wrote, Refusal
     // for a second address when the first was missing would be choosing a target in somebody else's RAM.
     match resolve(c, symbol) {
         Ok((_, value)) => run(c, channel, symbol, value),
-        Err(_) => Err(Refusal::window("offTargetMissing", blocked, None)),
+        Err(_) => Err(Refusal::window(
+            "offTargetMissing",
+            blocked,
+            // ⚑ The remedy names the SYMBOL and the COMMIT that carries it, because the whole point of
+            // this refusal's wording is that a person reads "my listing is old" rather than "this is
+            // broken". A remedy that said "load a listing" without saying which name is missing leaves
+            // them with nothing to check.
+            Some(format!(
+                "`{symbol}` landed at {EMPTY_TABLE_COMMIT}. Rebuild the ROM, then load the listing that \
+                 build produced"
+            )),
+        )),
     }
 }
 
@@ -2344,11 +2370,33 @@ mod tests {
         let e =
             turn_off(&mut f, &BANDS).expect_err("there is no BgAnim_Table_Empty in this listing");
         assert_eq!(e.reason.as_deref(), Some("offTargetMissing"));
+        // ⚑ **It must read as "your listing is old", not as "this is broken".** The symbol exists in
+        // the engine now, and the listings on the box this was written on predate it, so this refusal
+        // is the one a person will actually meet. It has to name the missing symbol, say the feature is
+        // there, and give the action.
         assert!(
-            e.message.contains("BgAnim_Table_Empty") && e.message.contains("coincidence")
-                || e.message.contains("happens to hold a zero count"),
-            "the refusal must name the missing constant and why the obvious route is wrong: {}",
+            e.message.contains("BgAnim_Table_Empty"),
+            "the refusal must NAME the missing symbol or the reader has nothing to check: {}",
             e.message
+        );
+        assert!(
+            e.message.contains("older than the build") || e.message.contains("EXISTS in the engine"),
+            "it must say the feature is present and the listing is behind, not that bands-off does not \
+             exist: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains("happens to hold a zero count"),
+            "and it must say why the obvious substitute is wrong, since that is what a reader reaches \
+             for next: {}",
+            e.message
+        );
+        let remedy = e
+            .remedy(None)
+            .expect("a refusal a rebuild fixes owes the reader that action");
+        assert!(
+            remedy.contains("BgAnim_Table_Empty") && remedy.contains(EMPTY_TABLE_COMMIT),
+            "the remedy must name the symbol and the commit that carries it: {remedy}"
         );
         assert!(
             f.writes().is_empty(),
@@ -2371,20 +2419,22 @@ mod tests {
 
     /// ⚑ **Bands-off needs BOTH symbols, and the DESTINATION is checked first.**
     ///
-    /// The trap is a real and measured one rather than a hypothetical. aeon built `BgAnim_Table_Empty`,
-    /// measured the ROMs, and refused to land it because it did not behave as designed: release grew two
-    /// bytes, other shapes grew sixteen, and **the symbol appeared in BOTH listings when it was meant to
-    /// be debug-only**. So the arriving constant may well resolve in a release listing where
-    /// `BgAnim_Table_Ptr` does not.
+    /// # ⚑ This is not a hypothetical. It is the shape the symbol actually shipped in
     ///
-    /// A gate keyed on the target alone would then offer a bands-off button on a release build **whose
-    /// destination address is not that pointer at all**, and the write would land in whatever else
-    /// occupies `$FFFFE91A` there. That is precisely the failure the debug-only rule exists to prevent,
-    /// arriving through the back door, so the ordering in `turn_off` is a correctness property and this
-    /// is the row that holds it.
+    /// `BgAnim_Table_Empty` landed at [`EMPTY_TABLE_COMMIT`], declared as
+    /// `pub data BgAnim_Table_Empty: [u16; BGANIM_EMPTY_EMIT] = if DEBUG == 1 { [0] } else { [] }`.
+    /// So in a **release** build the NAME enters the listing with an address while the array emits
+    /// **nothing**: there is no zero word behind it there. `BgAnim_Table_Ptr` is genuinely absent from a
+    /// release listing.
+    ///
+    /// A gate keyed on the target alone would therefore offer a bands-off button on a release build that
+    /// writes **an address with no zero behind it** into **a cell that is not the band pointer**. Two
+    /// wrongs in one gesture, and each looks fine on its own. `turn_off` resolves the destination first,
+    /// and that ordering is the correctness property this row holds.
     #[test]
     fn bands_off_needs_the_destination_pointer_too_not_only_the_empty_table() {
-        // The exact shape aeon measured: the constant present, the selector absent.
+        // The exact shape a RELEASE listing has: the constant's name present with an address, the
+        // destination pointer absent. Not contrived -- it is what the declaration above produces.
         let mut f = Fake::full().without(BANDS.selector);
         f.listing
             .push(("BgAnim_Table_Empty", 0x02_9000, 0x0002_9000));

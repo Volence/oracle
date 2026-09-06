@@ -215,13 +215,34 @@ contract"*. An act with live bands holds a real count in that same word. `BgAnim
 valid either (`BgAnim_Init` seeds it). So bands-off is **refused with the reason on screen** until
 `BgAnim_Table_Empty` resolves in the loaded listing.
 
-⚑ **The trap, and it is why the gate is two conditions.** aeon built `BgAnim_Table_Empty`, measured the
-ROMs and deliberately did not land it: release grew 2 bytes, other shapes grew 16, and **the symbol
-appeared in BOTH listings when it was meant to be debug-only**. So the constant may well resolve in a
-release listing where `BgAnim_Table_Ptr` — the destination it would be written into — does not. Gating on
-the target alone would offer a bands-off button on a release build **whose destination address is not that
-pointer at all**. `turn_off` checks the destination first; the ordering is a correctness property with a
-gate on it.
+**The constant has since LANDED**, at aeon `41c845fa`, so the panel's target now exists in the engine.
+`NOTE` §3's *"there is no `BgAnim_Table_Empty` symbol in this tree"* is superseded by it; both are cited,
+because the panel has to behave correctly on a listing built before it as well as after.
+
+⚑ **The trap, and it is why the gate is TWO conditions rather than one.** The declaration is:
+
+```
+const BGANIM_EMPTY_EMIT = if DEBUG == 1 { 1 } else { 0 }
+pub data BgAnim_Table_Empty: [u16; BGANIM_EMPTY_EMIT] = if DEBUG == 1 { [0] } else { [] }
+```
+
+So in a **release** build the symbol's NAME enters the listing with an address while the array emits
+**nothing** — there is no zero word behind it there. `BgAnim_Table_Ptr`, the destination, is genuinely
+absent from a release listing. A gate keyed on the target alone would therefore offer a bands-off button
+on a release build that writes **an address with no zero behind it** into **a cell that is not the band
+pointer**: two wrongs in one gesture, each of which looks fine on its own.
+
+`turn_off` resolves the destination **first**, which is what makes the target's release visibility
+harmless rather than dangerous. That ordering is a correctness property with a gate on it
+(`bands_off_needs_the_destination_pointer_too_not_only_the_empty_table`, M7 below).
+
+⚑ **And the refusal has to read as *your listing is old*, not as *this is broken*.** The symbol landed at
+16:48Z; the listings on this machine were built at 06:42Z (release) and 14:53Z (debug), so neither
+contains it yet and the owner's running window loaded the 14:53Z one. **Bands-off will correctly refuse on
+his machine until aeon rebuilds and he reloads symbols.** That is the gate working, so the message names
+the missing symbol, says the feature exists in the engine, says why the obvious substitute is wrong, and
+carries a remedy naming the symbol and the commit. Three assertions hold each of those, because a refusal
+a person misreads as a broken feature costs more than no refusal.
 
 ---
 
