@@ -479,6 +479,24 @@ a rendered frame has to answer, and they are the reason this is an audit and not
 9. **The Watchpoints hit log's frame cost.** `show_rows` exists because the naive `show` measured 15.22 ms.
    *Question (a profiled frame, not a look): does per-cell layout inside the closure stay under budget?*
 
+**Added by the spawn-picker parcel (2026-09-05), same rule: none of these were seen.**
+
+10. **The picker's height in the Screen strip.** The list is a `ScrollArea` capped at `PICKER_MAX_H`
+    (140 points) and it sits *above* the picture, so every point it takes is a point the game does not
+    get. *Question: at a realistic window size, does 140 leave enough picture, and does the list read as
+    part of the strip or as a second panel wedged into it?*
+11. **The filter box.** *Question: on a build with a handful of archetypes, does a filter box read as
+    clutter that should only appear past some number of rows? It earns itself on a 137-archetype listing
+    and this box's fixture has three.*
+12. **The auto-pause line's standing weight.** It is a `Small` recessed line in the ordinary case and
+    `error_fg_color` when the machine was left moved. *Question: in the ordinary case, does a line that
+    says the window paused and resumed the machine read as reassurance or as noise after the tenth
+    spawn? The alarming arms must stay; the quiet one is the judgement call.*
+13. **The selected row.** Selection is carried by `theme::selection()` fill and nothing else, which is
+    what the Objects table does for the same job. *Question: on a monospace list of near-identical
+    `ObjDef_` names, is fill alone enough to find the selected row at a glance, or does it want the
+    accent on the text too?*
+
 ---
 
 ## 7. What would make this page wrong

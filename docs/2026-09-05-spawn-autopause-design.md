@@ -1,8 +1,22 @@
 # Spawn auto pause, and the picker panel: the design, ruled before it is built
 
-**Status: ruled and queued, not built.** Sits with `SPAWN-PICKER-PANEL`, after the first style pass, as one
-parcel. Ruled by the hub under the owner's standing delegation on 2026-09-05, from this lane's measured
-answer; **overturnable by the owner**, and recorded as the hub's ruling rather than his.
+**Status: RULED, AND BUILT 2026-09-05.** Ruled by the hub under the owner's standing delegation from this
+lane's measured answer; **overturnable by the owner**, and recorded as the hub's ruling rather than his.
+It shipped as one parcel with `SPAWN-PICKER-PANEL`, after the first style pass, exactly as this page
+sequenced it.
+
+**Where it lives now:** `crates/oracle-player/src/spawn_picker.rs` is the egui-free model (the picker's
+rows and `RunState`, the standing statement this page requires); `screen_pick::paused_for` is the
+capture-and-restore, a closure-taker rather than three inlined steps **so that "the machine really was
+paused while the body ran" is a property a test can assert directly**; `screen_pick::Panel::place` is the
+click. One correction to this page's own numbers, re-derived at the build: `OBJREQ_DEFAULT_MAX_FRAMES` is
+at `crates/oracle-aether/src/engine.rs:9352`, not `:9114`. The value, the reasoning and the wall-time
+figure are unchanged.
+
+**One thing this page did not anticipate, and it is a gain rather than a cost.** The pause wraps the
+*whole* choreography rather than only the mailbox write, so the world join and the act-bounds read now
+happen on a machine that is not moving under them. Before this, the camera and the level extent were read
+off a running machine and the placement happened on a paused one.
 
 ## What the owner asked for
 
