@@ -935,6 +935,25 @@ and therefore not talkable-into-agreeing**: our vendored
 and `git rev-parse 82982b7:contract/schema/bus-protocol.schema.json` in empyrean returns **the same
 blob id**. Byte identity by construction, checked in both trees, neither read from a working file.
 
+**Board row id: `F-FROZEN-FIXTURE-DRIFTS`** — landed 2026-09-06, and it is the second application of the
+ruling directly above, reached independently before the ruling was re-read. Our frozen `fixtures/aeon/*.lst`
+had drifted from aeon's build in four dimensions consuming tests rely on (`ObjSub_` 0→8, `ObjDef_`
+archetypes 3→4 and 5→6, `Phase Table` absent→`PHASE-COUNT 6`, `Level_Width`/`Level_Height` absent→present),
+and every one of those was invisible to the suite by construction.
+
+**The shape is `SCHEMA-DRIFT-NIGHTLY`'s, applied one level up from bytes:** `fixtures/aeon/DIMENSIONS.tsv`
+pins the listings' SHAPE the way `PIN.tsv` pins their bytes; the hermetic recovery gate is
+`crates/oracle-core/tests/aeon_dimensions.rs`; the currency half is a new non-gating section in
+`tools/aeon_pin_report.py`. **No second owner card was filed**, per this section's own prohibition — the
+standing-timer question is already open as empyrean `d-9`.
+
+**The correction worth carrying**, because the brief asserted the opposite and it is a reusable move: the
+`.lst` files being untracked does **not** mean there is no committed revision to ask. The *source* the
+dimensions come from is tracked (`ObjSub_Spring__Up_Red` is a `pub equ` in
+`games/sonic4/objects/test_solid.emp`), so a currency check reads aeon's **object store at a ref** and the
+live-tree hazard is avoidable for the primary measurement rather than inherent. Detail and the falsifiers:
+`docs/2026-09-06-fixture-dimension-drift.md`.
+
 **Board row id: `ATTR-RGB-LATCH`**. Detail lives in `docs/2026-08-30-rgb-live-resolve.md`
 (aeon's colour finding: reproduced 55/55, closed as a server change; ~~what remains is a contract change
 so the reply says which moment its colour is for and names `emulator/scanlines` as the caller's path~~).
