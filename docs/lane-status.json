@@ -1,14 +1,9 @@
 {
-  "focus": "Two of four critical fixes done; CI's long test step still running.",
+  "focus": "CI is green for the first time since 22 July, and the review findings are now in the console.",
   "inFlight": [
     {
-      "what": "CI: fixes pushed, waiting on the run's long test step",
-      "where": "origin/main",
-      "agent": false
-    },
-    {
-      "what": "Two critical fixes left: the sound-chip crashes, and the reset that does not reset",
-      "where": "not started",
+      "what": "Two critical fixes part-written; both agents died on the account session limit at 19:2xZ",
+      "where": "branches fix/z80-reset-line and worktree-agent-a89c..., committed as unverified WIP",
       "agent": false
     },
     {
@@ -32,10 +27,23 @@
       "what": "whether to repin the frozen symbol fixtures to a current build (FIXTURE-REPIN)",
       "since": "2026-09-06",
       "id": "d-40"
+    },
+    {
+      "what": "account session limit reached at 19:2xZ; no more agents can run until it resets (~22:10Z)",
+      "since": "2026-09-06",
+      "id": "limit"
     }
   ],
   "nextBoundary": "After the four critical fixes land.",
   "queue": [
+    {
+      "id": "F-CI-DEAD-46-DAYS",
+      "state": "blocked",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "FIXED AND GREEN. Your automated checks ran and passed for the first time since 22 July. Three separate breakages had to go, the third only visible once the first two were cleared. The run's log now names each of the six data checks as it passes, so a future green cannot be a green of nothing."
+    },
     {
       "id": "RELAUNCH-CLOSES-TWO",
       "state": "blocked",
@@ -43,22 +51,6 @@
       "blockedBy": "one relaunch of your window, whenever suits you",
       "project": "ORACLE-DEBUG-UI",
       "title": "Two finished pieces of work are waiting on one action from you. Relaunching your debug window is the last step for both: it lets the effects switchboard be tried against a running game for the first time, and it lets a program take a real frame-rate reading off your window. Neither needs anything else. No hurry -- it rides with whenever you next restart it anyway."
-    },
-    {
-      "id": "LENS-FINDINGS-EMIT",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "the CI fix finishing first",
-      "project": "LENS-PASS",
-      "title": "Your ask for a readable view of what the reviews found. The coordinator has defined the shared format; my job is to emit one line per finding from tonight's packet so the console can render it. Small. The written packet stays the authority -- this is a view of it, not a replacement."
-    },
-    {
-      "id": "F-CI-DEAD-46-DAYS",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "Your automated checks have not actually run since 22 July. Two breakages stacked and the second hid the first, so the whole test suite has been skipped in CI for 46 days -- including five checks that exist purely to shout when test data is missing. Local landing checks were unaffected. Fixing the obvious half returns it to the OLDER failure, not to green; the order is written down."
     },
     {
       "id": "F-RESET-LOSES-SAVE",
@@ -215,5 +207,5 @@
   ],
   "awaiting": "Cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears; the fix is pre-approved. (2) The Pacing A/B (d-39). (3) Whenever you next relaunch the window, that alone finishes two things I cannot -- trying the switchboard against a running game, and the first live frame-rate reading. (4) The icon (d-37) and the frozen fixtures (d-40; new evidence tonight -- I still say hold the refresh, but the cheap half is worth doing alone). (5) Which lens-sweep findings to fix after the four criticals I am on now.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T19:18:53Z"
+  "updatedAt": "2026-09-06T22:58:01Z"
 }
