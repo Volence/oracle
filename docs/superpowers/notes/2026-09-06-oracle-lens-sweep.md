@@ -617,3 +617,75 @@ implemented set are the same set by construction"* — **right trade, leave it.*
 ⚑ **Third seat degraded by the concurrency cap:** P2's breadth explorer never launched, so its coverage of
 the ~700 remaining GUI loop sites is *"thinner than the forward-direction findings above"* — its words,
 volunteered.
+
+---
+
+# Sixth tranche — seat Va (guard-first vacuity)
+
+## HIGH — new
+
+### H23 ◻ The listing-freshness guard is blind to two of the three populations it gates (`engine.rs:7402`)
+
+`SymbolTable` holds **three disjoint populations** — `syms`, `equates`, `phase` — and the table's own doc
+says the third is *"disjoint from both others by construction."* The freshness comparison reads
+**population 1 only** (`on_disk.symbols() == held.symbols()`).
+
+⚑ **Live, not theoretical, because `emulator/lookup_equate` is a registered wire method and attaches
+*this* caveat to its own reply.** Rebuild a listing changing only `VRAM_Ring = $240` → `$241`: no code
+address moves, the server answers the **old** value, `caveat` is absent, and `emulator/status` stays
+quiet.
+
+The guard's own doc makes the wider claim in terms — *"would resolving a **name** against the file give a
+different answer"* — and equate names are resolvable by name through the same table and the same server.
+**The stated question is strictly broader than what the comparison can answer.**
+
+Coverage: `grep -ci equate tests/symbol_freshness.rs` → **0**. That suite *does* contain
+`a_listing_whose_addresses_moved_fires_even_though_the_row_count_did_not` — so the authors reasoned about
+count-versus-content **for symbols** and stopped there. The sibling `RomFreshness` one screen up argues
+the analogous point correctly (*"Matching sizes prove nothing and MUST escalate to a real byte
+comparison"*); the listing check makes the same narrowing error on a different axis.
+
+Phase is latent (no wire surface). **Equates are LIVE.**
+
+## MEDIUM — new
+
+- **M44 ◻ `debug_assert!(accepted)` where `accepted` is the constant `true`** (`engine.rs:7099-7147`).
+  Every arm either early-returns `Err` or binds `true`; the variable's single consumer is the assertion.
+  The charter's early-return-before-the-assertion shape, plus a dead variable.
+- **M45 ◻ A reset guard that re-asks the constructor whether the constructor worked**
+  (`system.rs:506-509`). The predicate reads `scheduler.now()` and `cpu.regs`; the twelve intervening
+  lines write only ROM and SRAM fields. Its comment claims it pins an *ordering* property — **it reads two
+  fields that ordering cannot perturb.**
+- **M46 ◻ The ticker's overlap guard takes its bound and its boundary from the same constant**
+  (`lens/watch.rs:101-104`) — the `audio.rs:640` shape in a second crate, so a separate row. The model
+  function truncates to `ROWS`, so the guard sits at equality or below on every path in the tree.
+- **M47 ◻ `SourceGuard`'s write-refusal has two holes** (`oracle-replay/src/artifacts.rs`): it resolves
+  `..` textually but **not symlinks**, so a `--out` reaching the protected repo through a symlink lands
+  inside the tree the guard exists to protect; and `guard_for_inputs` is called with the ROM and listing
+  only, while the module doc names the **fixture's** neighbours as the thing being protected.
+- **M48 ◻ A debug guard standing behind a stronger release guard** (`microop.rs:1361`) — it protects an
+  unreachable state and **vanishes in exactly the build where the stronger one still stands.**
+- **M49 ◻ A build-conformance test that executes zero assertions** (`server_build.rs:374-426`). The crate
+  has no `[features]` section at all, so the loop never enters and the test passes having asserted nothing
+  — while its preamble claims *"the gap is closed here rather than described in a comment."* ⚑ **And it
+  would stay silent even once features exist**: the scanner greps the literal `"cfg(feature"`, so the
+  idiomatic compound forms (`all(feature=…)`, `any(feature=…, …)`) escape it entirely.
+
+## Verified clean — six guards that look like the shape and are not
+
+Recorded so they are not re-opened: the missed-journal guard folds two **independent** sources; the CRAM
+journal assert takes the **absolute** mclk and reduces *inside* the assertion, precisely so a write
+stamped on another line cannot land at a plausible `x` — with the doc explaining why the pre-reduced form
+would have been vacuous; the window-gestures guard genuinely can fire.
+
+⚑ **A disproven hypothesis the seat recorded rather than dropping:** it expected the freshness check to
+decide from row *counts* (three adjacent fields invite exactly that reading). It does not — it compares
+full slices, and the counts are reporting only. **Finding H23 survives on a different axis than the one it
+went looking for**, which is the honest version of a hunt that half-missed.
+
+**A chained observation worth keeping:** `build.rs` folds `profile=` into `serverBuild.id` and justifies
+it by citing one specific `debug_assert!` as *"precisely two builds whose observable behaviour on this bus
+can differ"* — but no reachable path can produce that assert's trigger, because both doors that could
+create the mismatched pair refuse it first. **The fold-in is still correct** (~25 other debug asserts
+exist); the *cited* case is a trigger that cannot occur, and a test repeats the citation as its failure
+message.
