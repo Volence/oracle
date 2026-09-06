@@ -261,7 +261,11 @@ impl Z80 {
     ///
     /// **State model — Z80 UM008 §"RESET", as already pinned by this repo in
     /// `docs/2026-07-22-z80-core-design.md` (ZC9): the reset "*defines* PC=0, I=0, R=0, IFF1=IFF2=0, IM=0;
-    /// SP and the main/index registers are architecturally undefined".** So this clears exactly the defined
+    /// SP and the main/index registers are architecturally undefined".** The same model, plus the edge rule
+    /// and what is still unmodeled, is written down for the *line* in
+    /// `docs/2026-07-22-z80-busreq-recon.md` (Z4) — which is also where the latch-only model came from, and
+    /// why it survived: Z4 deferred the core reset on the ground that "the reset line only ever gates Z80
+    /// execution, which does not exist yet", and nobody returned when Z-execute landed. So this clears exactly the defined
     /// set — `PC`, `I`, `R`, both interrupt flip-flops, the interrupt mode — and un-halts, and it
     /// deliberately **preserves** the register file (`AF`/`BC`/`DE`/`HL`, their shadows, `IX`/`IY`, `SP`):
     /// the Z80's register file is static storage that `/RESET` does not drive, and clearing state the
