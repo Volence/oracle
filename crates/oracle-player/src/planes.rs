@@ -1554,6 +1554,21 @@ mod tests {
                     "dot ({x},{y}) -> plane pixel ({px},{py}): the viewer and pixel_attribution \
                      disagree about the word"
                 );
+                // ⚑ **And the SHIPPED path, not only the derivation under it.** The comparison above
+                // indexes `inp.cells` the way `identify` does; if `identify` indexed it some other way,
+                // that row would still be green while the panel named a different cell. Measured: a
+                // transpose of `identify`'s own index left the assertion above passing. So the expected
+                // fragment is composed from **the tool's answer** and looked for in the panel's sentence.
+                // Composed, never parsed: this reads the panel's output for a string built out of the
+                // other surface's reply, which is the opposite of recovering structure from prose.
+                let r = identify(&inp, x as usize, y as usize).expect("the dot is on the raster");
+                assert!(
+                    r.head
+                        .ends_with(&format!("{TILE_SPACE} tile ${:03X}.", cell.tile)),
+                    "dot ({x},{y}): the panel's own sentence does not name the word \
+                     pixel_attribution reports: {}",
+                    r.head
+                );
                 compared += 1;
             }
         }
