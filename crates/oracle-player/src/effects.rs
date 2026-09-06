@@ -212,6 +212,14 @@ pub struct Channel {
     pub debug_only: bool,
     /// How this channel is turned off.
     pub off: Off,
+    /// ⚑ **What a ZERO in [`Channel::selector`] means**, transcribed from [`NOTE`] §1 per channel.
+    ///
+    /// It is a per-channel fact and it is not the same fact: a zero raster program is *no program* and
+    /// the engine short-circuits on it, while a zero band pointer is *never valid* because `BgAnim_Init`
+    /// seeds it. Rendering both as *"the listing names nothing there"* would report a documented state as
+    /// an unreadable one on the channel where it is documented, and an unseeded machine as an ordinary
+    /// one on the channel where it is a fault.
+    pub zero: &'static str,
     /// One line naming what a selection here changes, for the panel and the standing statement.
     pub subject: &'static str,
 }
@@ -289,6 +297,11 @@ pub const PARALLAX: Channel = Channel {
     off: Off::No(
         "a scene is always in effect, so there is nothing to turn off. Pick a different one instead.",
     ),
+    // `Parallax_Update`'s `.config_resolved` arm reads a zero as inert and takes the `.no_config`
+    // early-out (parallax.emp:1665-1666). `NOTE` documents no zero for this selector, so this says what
+    // the engine does and does not call it a supported state.
+    zero: "no parallax config is active: the engine treats a zero here as inert and takes its no-config \
+           early-out. It is not a state this panel offers, so something else put it there",
     subject: "which parallax config the engine reads every frame",
 };
 
@@ -345,6 +358,10 @@ pub const RASTER: Channel = Channel {
                   in order to uninstall the HInt handler. Staging a zero would mean KEEP whatever is \
                   live, which is the opposite, so nothing is written.",
     },
+    // `NOTE` section 1, verbatim in substance: "`Raster_Program` = 0 means no program, and the engine
+    // short-circuits on it (`beq` after the read)". A documented state, so it reads as one.
+    zero: "no raster program is installed. The engine short-circuits on a zero here, so the per-line \
+           tier is off",
     subject: "which per-line raster program the raster tier builds from every frame",
 };
 
@@ -417,6 +434,10 @@ pub const BANDS: Channel = Channel {
                   next. Zero is not a route either: aeon's note says `BgAnim_Table_Ptr` = 0 is never \
                   valid, because `BgAnim_Init` seeds it. aeon is landing the constant.",
     },
+    // `NOTE` section 1: "`BgAnim_Table_Ptr` = 0 is never valid; `BgAnim_Init` seeds it." So a zero is a
+    // machine that has not initialised, not a table with no bands, and it is said as the fault it is.
+    zero: "NOT A VALID STATE. `BgAnim_Init` seeds this pointer, so a zero means the background \
+           animation has not initialised on this machine rather than that its bands are off",
     subject: "which band table the background animation walks every frame",
 };
 
@@ -1224,7 +1245,14 @@ impl Live {
     ///
     /// A non-zero displacement is called out rather than swallowed, because *"`X` + $12"* and *"`X`"* are
     /// different findings and the first usually means the cell holds something the listing does not name.
-    pub fn line(&self, selector: &str) -> String {
+    pub fn line(&self, channel: &Channel) -> String {
+        let selector = channel.selector;
+        // ⚑ A zero is a **stated per-channel finding**, never "the listing does not name it". See
+        // [`Channel::zero`]: on the raster channel it is a documented off state, and on the band channel
+        // it is a fault. Reporting both as an unnamed address would hide one and alarm about the other.
+        if self.value == 0 {
+            return format!("{selector} holds 0. {}.", channel.zero);
+        }
         match (&self.name, self.disp) {
             (Some(n), 0) => format!("{selector} holds {:#010X}, which is `{n}`.", self.value),
             (Some(n), d) => format!(
@@ -1251,7 +1279,14 @@ impl Live {
 /// naming the old program until a frame runs. That is true, and a panel that echoed the click instead
 /// would be asserting a swap that has not happened.
 pub fn live(c: &mut impl Caller, channel: &Channel) -> Result<Live, Refusal> {
-    available(c, channel)?;
+    // ⚑ **The drift check guards the READ as well as the write**, which is a coherence property rather
+    // than caution: a panel that refuses to write a cell it cannot place, and then prints a confident
+    // sentence about that same cell's contents, has answered the harder question and refused the easier
+    // one. Whichever of the listing and the note is wrong, this readout is about the wrong four bytes.
+    let sel = available(c, channel)?;
+    if let Some(r) = channel.drift(sel) {
+        return Err(r);
+    }
     let value = read_u32_at_symbol(c, channel.selector)?;
     if value == 0 {
         return Ok(Live {
@@ -1283,7 +1318,10 @@ pub fn live(c: &mut impl Caller, channel: &Channel) -> Result<Live, Refusal> {
 /// **The band table as the machine holds it right now**, read through the selector rather than through an
 /// address this crate carries.
 pub fn read_bands(c: &mut impl Caller) -> Result<Bands, Refusal> {
-    available(c, &BANDS)?;
+    let sel = available(c, &BANDS)?;
+    if let Some(r) = BANDS.drift(sel) {
+        return Err(r);
+    }
     let ptr = read_u32_at_symbol(c, BANDS.selector)?;
     if ptr == 0 {
         // `NOTE` §1: "`BgAnim_Table_Ptr` = 0 is never valid; `BgAnim_Init` seeds it." So a zero here is
@@ -1507,10 +1545,10 @@ impl Panel {
 
     /// The last live-cell readback: the line, or the refusal that replaced it.
     pub fn live_line(&self) -> Option<Result<String, String>> {
-        let sel = self.channel().selector;
+        let channel = self.channel();
         self.live
             .as_ref()
-            .map(|r| r.as_ref().map(|l| l.line(sel)).map_err(String::clone))
+            .map(|r| r.as_ref().map(|l| l.line(&channel)).map_err(String::clone))
     }
 
     /// The last band readback.
@@ -2109,6 +2147,7 @@ mod tests {
             prefix: "ParallaxConfig_",
             debug_only: false,
             off: Off::No("n/a"),
+            zero: "n/a",
             subject: "n/a",
         };
 
@@ -2728,7 +2767,7 @@ mod tests {
         let l = live(&mut f, &RASTER).expect("a listed cell");
         assert_eq!(l.value, 0x0000_881E);
         assert_eq!(l.name.as_deref(), Some("Raster_Program_None"));
-        let line = l.line(RASTER.selector);
+        let line = l.line(&RASTER);
         assert!(
             line.contains("Raster_Program") && line.contains("Raster_Program_None"),
             "{line}"
@@ -2752,10 +2791,68 @@ mod tests {
             disp: 2,
         };
         assert!(
-            past.line("x").contains("probably not"),
+            past.line(&RASTER).contains("probably not"),
             "{}",
-            past.line("x")
+            past.line(&RASTER)
         );
+    }
+
+    /// ⚑ **A zero in a live cell reads as THAT CHANNEL's documented meaning**, and they differ.
+    ///
+    /// `NOTE` section 1 documents a zero raster program as *no program* with the engine short-circuiting
+    /// on it, and a zero band pointer as *never valid* because `BgAnim_Init` seeds it. Rendering both as
+    /// "the listing names nothing there" would report a documented off state as unreadable on one
+    /// channel and an uninitialised machine as ordinary on the other.
+    #[test]
+    fn a_zero_live_cell_reads_as_that_channels_own_documented_meaning() {
+        let zero = Live {
+            value: 0,
+            name: None,
+            disp: 0,
+        };
+        let raster = zero.line(&RASTER);
+        let band = zero.line(&BANDS);
+        assert!(
+            raster.contains("short-circuits") && !raster.contains("NOT A VALID"),
+            "a zero raster program is a documented off state: {raster}"
+        );
+        assert!(
+            band.contains("NOT A VALID STATE"),
+            "a zero band pointer is a fault, not bands being off: {band}"
+        );
+        assert_ne!(
+            raster, band,
+            "the channels' zeroes are different findings and must not read alike"
+        );
+        // Loud on unmeasurable: every channel owes a sentence, so a channel added later cannot fall
+        // through to a blank.
+        for c in CHANNELS {
+            assert!(
+                zero.line(&c).len() > c.selector.len() + 16,
+                "{} has no sentence for a zero live cell",
+                c.key
+            );
+        }
+    }
+
+    /// ⚑ **A drifted selector silences the READBACK too, not only the write.**
+    ///
+    /// A panel that refuses to write a cell it cannot place, then prints a confident sentence about that
+    /// same cell's contents, has answered the harder question and refused the easier one.
+    #[test]
+    fn a_drifted_selector_refuses_the_readback_as_well_as_the_write() {
+        let mut f = Fake::full().serving(RASTER.selector, "0x0000881E");
+        for e in f.listing.iter_mut() {
+            if e.0 == RASTER.selector {
+                e.2 = 0xFFFF_9000;
+            }
+        }
+        let e = live(&mut f, &RASTER).expect_err("a moved cell has nothing honest to report");
+        assert_eq!(e.reason.as_deref(), Some("selectorMoved"));
+
+        // The control: undrifted, the same fake answers.
+        let mut f = Fake::full().serving(RASTER.selector, "0x0000881E");
+        assert!(live(&mut f, &RASTER).is_ok());
     }
 
     /// ⚑ **The standing statement exists exactly while an override does, and names channel and target.**
