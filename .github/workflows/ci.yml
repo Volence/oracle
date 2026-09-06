@@ -144,6 +144,17 @@ jobs:
       - name: Corpus guards (name them in the log)
         run: ./tools/ci-corpus-guards.sh
 
+      # ⚑ EXPECT THIS STEP TO GET MATERIALLY LONGER, and that it is the fix working rather than a
+      # regression. Measured baseline from the last green run before the outage (id 29964362524,
+      # 2026-07-22): `Fetch` 65 s, `Test` 23 m 33 s — and that ran the 68000 sweep ALONE, because the
+      # other two corpora were never fetched. This step now additionally runs the z80 SST sweep
+      # (708 files x 1000 cases), the 17-ROM conformance scorecard and the scanline goldens, none of
+      # which has ever executed on a runner. `tools/land.sh` runs the same suite locally in ~25 min,
+      # but in RELEASE (G7) whereas this is debug, so debug is the unmeasured direction.
+      #
+      # No `timeout-minutes` is set here deliberately: GitHub's 360-minute default will not be
+      # reached, and a tighter bound picked before anyone has seen the real number would be a red
+      # invented rather than measured. Set one once the first green run says what the number is.
       - name: Test
         run: cargo test --workspace
 

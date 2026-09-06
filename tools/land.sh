@@ -57,14 +57,18 @@
 #                                  SingleStepTests sweep SKIPS AND PASSES VACUOUSLY. Its failure
 #                                  mode is a silent green — exactly what a human-read checklist is
 #                                  worst at and a script is best at. We also export `CI=1`, which
-#                                  arms the six vacuity guards the suite already carries — four
-#                                  named `vendor_data_present_when_running_in_ci` tests
-#                                  (conformance_roms, scanline_goldens, singlestep_m68000,
-#                                  singlestep_z80) plus two inline "skip locally, NEVER under CI"
-#                                  refusals (oracle-aether scanlines.rs, oracle-core
-#                                  scanline_capture.rs). Those assert against the test files' OWN
-#                                  ROM and opcode manifests, which is a stronger statement than any
-#                                  path check this script could hand-write.
+#                                  arms the six vacuity guards the suite already carries — since
+#                                  2026-09-06 all SIX are named `vendor_data_present_when_running_
+#                                  in_ci` tests (conformance_roms, scanline_goldens,
+#                                  singlestep_m68000, singlestep_z80, scanline_capture, and
+#                                  oracle-aether scanlines). The last two used to be inline-only
+#                                  "skip locally, NEVER under CI" refusals; they still are, and a
+#                                  standalone named guard was added BESIDE each so all six can be
+#                                  reached by a name filter and shown in a log (`tools/ci-corpus-
+#                                  guards.sh`, and the CI step of the same name). Those assert
+#                                  against the test files' OWN ROM and opcode manifests, which is a
+#                                  stronger statement than any path check this script could
+#                                  hand-write.
 #   G2  clean tree (a)             refuse a dirty tree BEFORE anything runs, listing the paths.
 #                                  `docs/lane-status.json` is the one tolerated path — see below.
 #   G2b lane files                 `docs/lane-status.json`, `docs/lane-log.jsonl` and (since
@@ -335,8 +339,9 @@ if [ "$VENDOR_OK" = 0 ]; then
     note "    ./tools/fetch-tests.sh && ./tools/fetch-z80-tests.sh && ./tools/fetch-testroms.sh"
     finish_red
 fi
-note "CI=1 exported: the suite's six in-built vacuity guards are armed (4 named guard tests + 2"
-note "inline skip-refusals), so a present-but-INCOMPLETE vendor corpus reddens from inside too."
+note "CI=1 exported: the suite's six in-built vacuity guards are armed (six named guard tests, two"
+note "of which also keep their original inline skip-refusal), so a present-but-INCOMPLETE vendor"
+note "corpus reddens from inside too. To see them by name: ./tools/ci-corpus-guards.sh"
 
 # --------------------------------------------------------------------------------------------
 # G2  clean tree  (aurora (a))
