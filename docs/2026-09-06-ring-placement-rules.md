@@ -125,12 +125,22 @@ follow through to.*
 
 The row that commissioned this work reads as though a ring were one more thing to select in the spawn
 picker's archetype list. It is not, and it cannot be. `emulator/lookup_symbol` over `ObjDef_` finds
-**six** archetypes in `s4.debug.lst` and `s4.lst` and **one** in `demo.lst`:
+**six** archetypes in `s4.debug.lst`, **four** in `s4.lst` and **one** in `demo.lst`:
 
 | listing | archetypes |
 |---|---|
-| `s4.lst` / `s4.debug.lst` | `ObjDef_Spring`, `ObjDef_PathSwap`, `ObjDef_Static`, `ObjDef_Solid`, `ObjDef_Enemy`, `ObjDef_Parent` |
+| `s4.lst` (release) | `ObjDef_Spring`, `ObjDef_PathSwap`, `ObjDef_Static`, `ObjDef_Solid` |
+| `s4.debug.lst` | the four above, plus `ObjDef_Enemy` and `ObjDef_Parent` |
 | `demo.lst` | `ObjDef_DemoBox` |
+
+⚑ **Corrected at merge time, and the correction is the point rather than the count.** This table first
+said six for `s4.lst` *and* `s4.debug.lst` together. `ObjDef_Enemy` and `ObjDef_Parent` are **debug-only**,
+so a reader building against the release listing would look for two names that are not there — and a
+`lookup_symbol` miss reads exactly like a name that does not exist, which is this page's own trap arriving
+on this page's own table. **No count that spans two build shapes may be stated once**: the whole reason
+this file exists is that `MAX_RING_BUFFER` differs between games, and an archetype inventory differs
+between *profiles of one game* for the same kind of reason. Nothing in the code moved: it reads the
+listing in front of it.
 
 **There is no `ObjDef_Ring` in any of them.** A ring takes no SST pool slot, has no definition record,
 and never reaches the `Obj_Req_*` mailbox `emulator/object_spawn` writes: it is a six-byte record in one
