@@ -1,11 +1,6 @@
 {
-  "focus": "Switchboard landed. Waiting on your tab test for the lag, and the Pacing A/B.",
+  "focus": "All agents in and landed. Waiting on your tab test for the lag, and the Pacing A/B.",
   "inFlight": [
-    {
-      "what": "Two small fixes: a check for a contract rule we satisfy only by accident, and a tool description that understates itself",
-      "where": "agent worktree",
-      "agent": true
-    },
     {
       "what": "Lag fix, approved on condition - starts the moment your tab test confirms",
       "where": "not started",
@@ -29,7 +24,7 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "When the pacing serve lands and your tab test settles the lag.",
+  "nextBoundary": "Now. Everything landed and pushed, nothing running, nothing half-applied.",
   "queue": [
     {
       "id": "LIVE-EFFECTS-PANEL",
@@ -53,7 +48,7 @@
       "size": "M",
       "blockedBy": "one relaunch of your window, whenever suits you",
       "project": "ORACLE-DEFAULT",
-      "title": "Landed. A program can now ask your window its frame rate, frame time and whether audio is stuttering. It also fixed a real defect on the way: your Pacing tab was counting finished pictures rather than pictures put on screen, and those differ exactly when sound causes a dropped frame. Not fully closed until something reads a live figure off your window, which needs a relaunch."
+      "title": "Landed, and now properly checked. A program can ask your window its frame rate, frame time and whether audio is stuttering. It fixed a real defect on the way -- your Pacing tab was counting finished pictures rather than pictures put on screen. Not fully closed until something reads a live figure off your window, which happens on your next relaunch."
     },
     {
       "id": "STYLE-NUMBER-BAKEOFF",
@@ -142,17 +137,9 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
-    },
-    {
-      "id": "F-LOOKUP-SUMMARY-OMITS-PREFIX",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Found while assessing your switchboard: the symbol-lookup tool can search by name prefix, but its own advertised description does not say so, so anyone writing a program against us would not know the ability exists. I nearly reported the ability as missing myself."
     }
   ],
   "awaiting": "Two from you, cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears -- the fix is pre-approved on that answer. (2) The Pacing A/B (d-39), which still decides every remaining panel. Also open and not blocking: the icon (d-37) and the frozen fixtures (d-40, I recommend hold). The pacing readout is no longer yours to answer -- the hub ruled it in your place and you can overturn it.",
-  "atBoundary": false,
-  "updatedAt": "2026-09-06T17:11:33Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-06T17:26:10Z"
 }
