@@ -1,12 +1,6 @@
 {
-  "focus": "Three of the four critical fixes are done and pushed. One left: the sound-chip crashes.",
-  "inFlight": [
-    {
-      "what": "Lag fix, approved on condition - starts the moment your tab test confirms",
-      "where": "not started",
-      "agent": false
-    }
-  ],
+  "focus": "Paused for your PC restart. Everything is pushed; nothing is running or half-finished.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
@@ -24,7 +18,7 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "After the four critical fixes land.",
+  "nextBoundary": "Now. Nothing running, nothing uncommitted, main in sync with origin.",
   "queue": [
     {
       "id": "F-Z80-PANICS-UNCONTAINED",
@@ -187,7 +181,7 @@
       "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
-  "awaiting": "Cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears; the fix is pre-approved. (2) The Pacing A/B (d-39). (3) Whenever you next relaunch the window, that alone finishes two things I cannot -- trying the switchboard against a running game, and the first live frame-rate reading. (4) The icon (d-37) and the frozen fixtures (d-40; new evidence tonight -- I still say hold the refresh, but the cheap half is worth doing alone). (5) Which lens-sweep findings to fix after the four criticals I am on now.",
-  "atBoundary": false,
-  "updatedAt": "2026-09-06T23:32:06Z"
+  "awaiting": "Paused for your PC restart -- nothing needed from you to resume. Everything tonight is pushed and the tree is clean. When you are back: the last critical fix (the sound-chip crashes) is next and was never started, so nothing was lost. Your own items are unchanged: the Pacing A/B (d-39), the window icon (d-37), the frozen fixtures (d-40, hold recommended), and whenever you relaunch, that closes the switchboard's first live test and the first frame-rate reading. The lag tab test only matters if the lag is still there after the restart.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-06T23:40:43Z"
 }
