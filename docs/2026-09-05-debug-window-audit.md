@@ -18,8 +18,9 @@ glance, with the important number popping, in panels that are just facts.
 **Rules:** `docs/2026-09-05-debug-window-style.md` §3 (P1 to P10) and §3a (the bar). This page does not
 restate them; it applies them and, in two places, **corrects them**.
 
-**Sources.** Every line number below was read at `a8d87f9` (this repo, this branch). The suite-filed copy
-of the style page is `empyrean` `87a8d70:design/DEBUG_WINDOW_STYLE.md`.
+**Sources.** Every line number below was re-derived at the revision this page landed on, and each was
+checked to land on the construct it is cited for. The suite-filed copy of the style page is `empyrean`
+`87a8d70:design/DEBUG_WINDOW_STYLE.md`.
 
 ---
 
@@ -48,7 +49,7 @@ run of two spaces or a tab. `pacing.rs`'s `no_string_the_tab_draws_pads_itself_i
 as a gate, and it is proven red against exactly the string above.
 
 The check is also blind in a second direction: it is positional, so **named captures escape it**.
-`ui.rs:724`'s `format!("{label:<18}{value}")` (the status strip, seven or more rows of label and value) and
+`ui.rs:756`'s `format!("{label:<18}{value}")` (the status strip, seven or more rows of label and value) and
 `report.rs:169`'s `{count:>8}` are both padded specifiers the published regex does not match. The corrected
 source check is `\{[a-zA-Z_]*:[<>^][0-9]+`.
 
@@ -81,15 +82,21 @@ The one that is live, right now, on the owner's screen, is `memory.rs:672`:
 Answer::Ok(v) => format!("ok — {v}"),
 ```
 
-`v` is a `serde_json::Value`, rendered by `Display`. `note_label` (`ui.rs:2083`) then puts the result in
-`ui.monospace`. Every successful gesture that funnels through `Panels::issue` (`ui.rs:1212`) renders
+`v` is a `serde_json::Value`, rendered by `Display`. `note_label` (`ui.rs:2291`) then puts the result in
+`ui.monospace`. Every successful gesture that funnels through `Panels::issue` (`ui.rs:1244`) renders
 literally `ok — {"breakpoint":"b3","addr":"0x00001234",...}`. That is **Breakpoints, Watchpoints, Profiler,
 the Memory write cell and `memory_hash`** — five surfaces, one line. Three rules in one expression: **P1**
 (raw `Value` by `Display`), **P3** (a JSON blob in the register face), **P10** (the em dash in `"ok — "`).
 
+Two more sites in the same module do the same thing, found while checking this page's own citations:
+`memory.rs:504` and `memory.rs:518` each interpolate a whole `Value` into a sentence on the address box,
+and the second fires on **every prefix search**, which is not a rare path. So it is three sites, not one.
+
 **This is the highest-value single fix in the audit and it is not the exemplar**, because it is a
-one-expression change that needs the reply shapes enumerated, whereas the exemplar has to demonstrate a
-whole treatment. It is item 1 of the build order.
+three-expression change that needs the reply shapes enumerated, whereas the exemplar has to demonstrate a
+whole treatment. It is item 1 of the build order. `ui.rs`'s `render` (§3) is the model for the fix: an
+exhaustive match whose composite arms *state what arrived* rather than dumping it, plus a gate that walks
+every `Value` variant.
 
 ### 0.4 `theme.rs` has shipped
 
@@ -101,12 +108,12 @@ through the shared furniture. The page's §5 sequencing step 1 is done; this pag
 ### 0.5 The Objects header is a spacing defect, not a structural one
 
 Confirmed as the brief states it. `objects.rs` defines `Col` once (`objects.rs:110`) and `ui.rs`'s
-`slot_table` (`ui.rs:1975`) draws header and body from that one definition, measuring widths with
+`slot_table` (`ui.rs:2146`) draws header and body from that one definition, measuring widths with
 `Painter::layout_no_wrap` against the face the theme actually installed. There is nothing structural to
 fix. What remains is a look call (§4).
 
-**The Profiler is the panel where the brief's structural claim is true**: `ui.rs:1724` writes the header's
-five column widths and `ui.rs:1738` writes the body's, as two separate format strings that must agree by
+**The Profiler is the panel where the brief's structural claim is true**: `ui.rs:1757` writes the header's
+five column widths and `ui.rs:1771` writes the body's, as two separate format strings that must agree by
 hand.
 
 ### 0.6 The suite revision in the brief is an oracle SHA
@@ -124,9 +131,9 @@ invented per panel.
 
 | shape | when | how it is drawn |
 |---|---|---|
-| **Big-number readout** | The one or two numbers a person opens the tab to read. | `stat` / `stat_row` (`ui.rs:1856`). Value at the 20px `section` face in `text_hi` or a health colour, unit `Small` beside it, label `Small` and recessed **beneath** it. |
-| **Labelled fact** | Supporting numbers and short values. | `fact_grid` (`ui.rs:1832`) or `health_grid` (`ui.rs:1965`) when the rows carry health. Label `Small` in `text_lo`, value in `text_hi`. |
-| **Column table** | Rows of like-shaped data: slots, breakpoints, watch hits, routines, spaces. | `slot_table` + `Col` + `column_widths` + `table_cell` (`ui.rs:1894` to `2045`). Header row, hairline, zebra bands, numeric columns right-aligned, the unbounded name column last. |
+| **Big-number readout** | The one or two numbers a person opens the tab to read. | `stat` / `stat_row` (`ui.rs:1908`). Value at the 20px `section` face in `text_hi` or a health colour, unit `Small` beside it, label `Small` and recessed **beneath** it. |
+| **Labelled fact** | Supporting numbers and short values. | `fact_grid` (`ui.rs:1864`) or `health_grid` (`ui.rs:1961`) when the rows carry health. Label `Small` in `text_lo`, value in `text_hi`. |
+| **Column table** | Rows of like-shaped data: slots, breakpoints, watch hits, routines, spaces. | `slot_table` + `Col` + `column_widths` + `table_cell` (`ui.rs:2065` to `2224`). Header row, hairline, zebra bands, numeric columns right-aligned, the unbounded name column last. |
 
 Plus two that are not text:
 
@@ -178,7 +185,7 @@ decision to a caller-supplied closure and the four functions are generic as they
 
 ## 3. The exemplar: Pacing (done)
 
-`ui.rs:652` (was), now `pacing::Readout` plus `Panels::pacing`. This is the reference the rest are measured
+`ui.rs:662` (was), now `pacing::Readout` plus `Panels::pacing`. This is the reference the rest are measured
 against, so its structure matters as much as its look.
 
 **What it showed.** Thirteen `ui.monospace(format!(..))` lines, hand-spaced. Broke **P2** (invisibly, §0.1),
@@ -221,21 +228,21 @@ status line at the bottom with nothing saying they were the same numbers.
 
 Each row: what it shows, how it reads badly, and what it becomes. Line numbers at `a8d87f9`.
 
-### Profiler (`ui.rs:1642`, model `stopping::profiler`)
+### Profiler (`ui.rs:1674`, model `stopping::profiler`)
 
 **Shows.** A `live_head` sentence; arm/disarm with two lens checkboxes; the frames-in-sample divisor; a
 five-column table of the hottest routines (addr, cycles, self, stall, calls, name); a "further routines not
 drawn" note.
 
 **Reads badly.**
-* `ui.rs:1724` and `ui.rs:1738` are **two separate format strings** carrying the same five column widths.
+* `ui.rs:1757` and `ui.rs:1771` are **two separate format strings** carrying the same five column widths.
   Five padded specifiers in the body line, the densest in the crate. **P2**, and this is where the brief's
   "header and body disagree" claim is genuinely true.
-* `ui.rs:1708` renders a whole prose clause in monospace: `"frames in sample (the divisor
+* `ui.rs:1741` renders a whole prose clause in monospace: `"frames in sample (the divisor
   \`emulator/get_profiler_frames\` uses)   {}"`. **P3**, the worst instance in the window.
-* `ui.rs:1666` and `ui.rs:1690` cite `§11.16` and `§11.18` in runtime strings. **P9**, two of the three
+* `ui.rs:1700` and `ui.rs:1719` cite `§11.16` and `§11.18` in runtime strings. **P9**, two of the three
   genuine runtime violations in the crate.
-* Four runtime em dashes: `ui.rs:1663, 1686, 1720, 1752`. **P10.**
+* Four runtime em dashes: `ui.rs:1695, 1718, 1752, 1784`. **P10.**
 * The name column is silently empty when `symbol` is `None`, rather than stating the absence the way
   `objects::NO_NAME` does. **P6-adjacent.**
 
@@ -249,18 +256,18 @@ three weights on one line, which is what `section` exists for. The two `§` refe
 comments of the code that composes the strings; the *facts* they carry (arming resets the sample, disarming
 retains it) stay, in the reader's terms.
 
-### Watchpoints (`ui.rs:1412`, model `stopping::watches`)
+### Watchpoints (`ui.rs:1444`, model `stopping::watches`)
 
 **Shows.** `live_head`; an add row; a `seen / matched / dropped` line; instrument caveats; armed watches in
 a scroll; the retained hit log, virtualised with `show_rows` and `stick_to_bottom`.
 
 **Reads badly.**
-* `ui.rs:1606` draws each hit as `format!("#{:<7} f{:<6} {} {:?} {:?} {:#X} pc {}", ..)`. Seven columns of
+* `ui.rs:1639` draws each hit as `format!("#{:<7} f{:<6} {} {:?} {:?} {:#X} pc {}", ..)`. Seven columns of
   like-shaped data with hand-rolled widths. **P2**, and the most exact match in the crate for the owner's
   "rows of like-shaped data".
-* `ui.rs:1539` does the same for an armed watch, `{:<4}` plus two `{:?}` Debug-formatted enums.
-* `ui.rs:1502` glues three labelled counts into one monospace sentence. **P3.**
-* Four runtime em dashes: `ui.rs:1471, 1508, 1529, 1566`. **P10.**
+* `ui.rs:1572` does the same for an armed watch, `{:<4}` plus two `{:?}` Debug-formatted enums.
+* `ui.rs:1535` glues three labelled counts into one monospace sentence. **P3.**
+* Four runtime em dashes: `ui.rs:1503, 1540, 1561, 1598`. **P10.**
 
 **Becomes.** Two tables. The armed-watch table is small and takes the generalised furniture directly:
 `handle` (mono), `space` (proportional, the plain word from `WATCH_SPACES`, never `{:?}`), `range` (mono),
@@ -271,13 +278,13 @@ one `format!`: precompute the widths once outside `show_rows` so the virtualisat
 `seen / matched / dropped` becomes three big-number readouts, since they are the three numbers that make a
 negative finding readable and are the reason the tab is open.
 
-### Breakpoints (`ui.rs:1239`, model `stopping::breakpoints`)
+### Breakpoints (`ui.rs:1271`, model `stopping::breakpoints`)
 
 **Shows.** `live_head`; a halting alarm when a breakpoint is stopping the machine; an add row; a header
 line and one row per breakpoint.
 
 **Reads badly.**
-* `ui.rs:1345` is a padded fake header, and `stopping.rs:150` (`BreakRow::summary`) is the padded body.
+* `ui.rs:1377` is a padded fake header, and `stopping.rs:150` (`BreakRow::summary`) is the padded body.
   **P2**, and this is the case the style page named at the stale line 138.
 * The body blob mixes an address (legitimately mono) with the state word, the symbol name and the caller's
   free-text label (all prose). **P3.**
@@ -293,41 +300,47 @@ is caller metadata and not the headline fact). The halting alarm moves into a `c
 visual weight as the Screen tab's standing readout: it is the same kind of thing and is currently a bare
 `colored_label` in a stack of them.
 
-### Registers (`ui.rs:696`)
+### Registers (`ui.rs:728`)
 
 **Shows.** The status strip (`StatusStrip::rows`, seven or more label/value pairs including the `held` and
 `halting` alarm rows), then the 68000 register file in a two-column `Grid`, then a note about A7 and SP.
 
 **Reads badly.**
-* `ui.rs:724`: `ui.monospace(format!("{label:<18}{value}"))` over every strip row. **P2** in the named-capture
+* `ui.rs:756`: `ui.monospace(format!("{label:<18}{value}"))` over every strip row. **P2** in the named-capture
   form the published check misses (§0.1), and **P3**, since several values are whole sentences: `"none
   loaded (no --symbols, and no .lst beside the ROM)"` is not an address.
-* The `halting` and `held` rows are deliberately placed first because they matter most (`ui.rs:2438`), and
+* The `halting` and `held` rows are deliberately placed first because they matter most (`ui.rs:2622`), and
   then rendered at exactly the same weight as `frame (emulated)`. The ordering carries the whole emphasis.
 * **Its data modelling is the best in the window** and should not be touched: `symbol_count: Option<usize>`
-  with a three-way match (`ui.rs:2421`) is exactly the P6 discipline. The defect is entirely presentational.
+  with a three-way match (`ui.rs:2630`) is exactly the P6 discipline. The defect is entirely presentational.
 
 **Becomes.** `health_grid`, the type the exemplar already added, which is what the alarm rows need: label
 `Small` in `text_lo`, value in `text_hi`, and `halting` / `held` in `WARNING` / `ERROR` from a carried
 boolean. `romPath` and hex-shaped values keep the mono face; counts and sentences lose it. The register
 file below is already a real `Grid` and is correct as it stands.
 
-### Memory (`ui.rs:746`)
+### Memory (`ui.rs:778`)
 
 **Shows.** A space selector; an address box resolving hex or a symbol; a hex dump; a gated write cell; a
 collapsible table of what every space accepts; a `memory_hash` range tool.
 
 **Reads badly.**
 * `memory.rs:672`, the live P1 (§0.3).
-* `ui.rs:939`: `format!("{:<22} {}  {}", space.label(), if open {"WRITE"} else {"  —  "}, g.why())` over five
+* `ui.rs:971`: `format!("{:<22} {}  {}", space.label(), if open {"WRITE"} else {"  —  "}, g.why())` over five
   spaces. **P2**, **P3**, and an em dash used as a glyph. **P10.**
-* `ui.rs:854`'s hex dump `ScrollArea` has **no `.id_salt`**. **P7**, the only missing one in the crate.
-* `note_label` (`ui.rs:2083`) puts every non-refused note in monospace, including prose-plus-address lines
-  like `"{addr} — a hex literal, taken as typed"` (`memory.rs:792`). **P3** and **P10**.
+* `ui.rs:886`'s hex dump `ScrollArea` has **no `.id_salt`**. **P7**, the only missing one in the crate.
+* `note_label` (`ui.rs:2291`) puts every non-refused note in monospace, including prose-plus-address lines
+  and the two further raw-`Value` sites below. **P3** and **P10**.
+* **Two more raw-JSON sites, found while verifying this page's own citations:** `memory.rs:504`
+  (`format!("the reply carried no \`addr\`: {v}")`) and `memory.rs:518` (`format!("{t:?} is not an exact
+  name; the server answered a search instead: {v}")`). Both interpolate a whole `serde_json::Value` into a
+  string a person reads, and both land in `Resolved::Rejected` on the address box. **P1**, twice, and the
+  second is not even a rare path: it fires on every prefix search. So `answer_line` is three sites in one
+  module, not one.
 
 **On the hex dump, which is the one place P2's letter is wrong.** A hex dump is the one region where
 monospace and column alignment are correct by nature, and P3 explicitly carves it out. But the *mechanism*
-at `ui.rs:856` (`"{}  {:<47}  {}"`) is still worse than it needs to be, and it is **hiding a bug**: `{:<47}`
+at `ui.rs:889` (`"{}  {:<47}  {}"`) is still worse than it needs to be, and it is **hiding a bug**: `{:<47}`
 assumes sixteen bytes, so on a truncated final page (`v.truncated_to`, a real path) `row.hex()` is shorter
 and the ASCII gutter drifts left of every row above it. **Treatment:** a three-column `Grid` with
 `.striped(true)`, each cell individually monospace, the grid doing the alignment. That keeps the "hex dump
@@ -353,7 +366,7 @@ checkered region and has no way to know it means "nothing is drawn here" rather 
 This is exactly *"what are the purple boxes"*: visual weight without a legend.
 
 **Becomes.** One `Small` `text_lo` line near the picture (not only in the facts card, which can be pushed
-below the picture on a narrow panel at `ui.rs:614`): the checkered squares are transparent, palette nibble
+below the picture on a narrow panel at `ui.rs:610`): the checkered squares are transparent, palette nibble
 zero. One line, and it closes the failure the style page's §3a warns about.
 
 ### Screen: the control strip and the save slots (`ui.rs:302`, model `states.rs`)
@@ -362,7 +375,7 @@ zero. One line, and it closes the failure the style page's §3a warns about.
 three aspect buttons, a save-state row, and the standing pick readout in a `card`.
 
 **Reads badly.**
-* `ui.rs:396`: `ui.monospace(format!("slot {slot} {}", "(occupied)"))`. **P3**: the parenthetical is prose.
+* `ui.rs:397`: `ui.monospace(format!("slot {slot} {}", "(occupied)"))`. **P3**: the parenthetical is prose.
 * **Nine of the ten slots' occupancy is invisible.** The comment at `ui.rs:387` says "the occupancy dots",
   plural, but only the current slot's state is drawn anywhere in the crate. A person steps through ten
   slots blind to find a full one. This is "rows of like-shaped data" that does not exist as a list at all,
@@ -370,7 +383,7 @@ three aspect buttons, a save-state row, and the standing pick readout in a `card
 * The glass alarm (*"THE PICTURE BELOW IS NOT THE MACHINE'S PICTURE"*) sits at the same visual weight as a
   routine spawn badge, separated only by colour.
 * The pick readout is correct and the owner liked it (*"ah it's able to recognize points now"*). Do not
-  touch it. `screen_pick.rs:1046` is its own P9/P10 gate and should be the model for the others.
+  touch it. `screen_pick.rs:1063` is its own P9/P10 gate and should be the model for the others.
 
 **Becomes.** Ten small cells in one row: slot number in mono, occupancy carried by **fill** (`raised` for
 occupied, `surface` for empty) and by the number's colour (`text_hi` occupied, `text_faint` empty), the
@@ -378,7 +391,7 @@ selected slot taking `theme::selection()` which the Objects table already uses f
 select; keep the steppers beside it for keyboard parity. The parenthetical leaves the string entirely. The
 glass alarm gets separation beyond colour, which is a look call (§6).
 
-### Objects (`ui.rs:996`)
+### Objects (`ui.rs:1028`)
 
 **Shows.** The pool layout as a `fact_grid` in a `card`, a players section, the pool table, the rings
 block, and one expanded slot.
@@ -394,13 +407,13 @@ photographed and the one thing a rendered frame is required to settle.
 ### Panels menu (`nav.rs:420`)
 
 Not a data panel. Four runtime em dashes in hover text (`nav.rs:255, 256, 257, 439`). Its own test
-(`nav.rs:899`) correctly excludes tooltips from an ASCII-glyph rule, which is a different rule from P10 and
+(`nav.rs:900`) correctly excludes tooltips from an ASCII-glyph rule, which is a different rule from P10 and
 does not exempt them. Four string edits, no redesign.
 
 ### Build chip and SRAM notice (`main.rs:1036`, `main.rs:1086`)
 
 Two runtime em dashes each (`identity.rs:207, 229`, both reaching the hover; `battery.rs:309`, reaching the
-swap notice's hover when a rescue write fails). `identity.rs:384` is a working P9 gate and a model. The
+swap notice's hover when a rescue write fails). `identity.rs:385` is a working P9 gate and a model. The
 chip's revision hash is the one token worth `Monospace` inside otherwise-dim prose, per P3's "symbol names
 as they appear in a listing".
 
@@ -427,11 +440,11 @@ runtime count are different questions and only the second is work.
 | `screen_pick.rs`, `planes.rs` | 57, 3 | 0, 0 | already gated |
 
 **P9.** Three genuine runtime citations remain: `palette.rs:309` (`"(D15)"`, verified still live at this
-revision and at the same line the style page gave), `ui.rs:1666` (`§11.16`), `ui.rs:1690` (`§11.18`). Every
+revision and at the same line the style page gave), `ui.rs:1700` (`§11.16`), `ui.rs:1719` (`§11.18`). Every
 other `§` hit in the crate is in a doc comment or a test assertion, where the reader *is* holding the
 specification and the citation is correct.
 
-**One more P7:** `palette.rs:337`'s `ScrollArea` has no `id_salt`, and `ui.rs:854`'s has none. Those are the
+**One more P7:** `palette.rs:337`'s `ScrollArea` has no `id_salt`, and `ui.rs:886`'s has none. Those are the
 two in the crate.
 
 ---
@@ -447,7 +460,7 @@ a rendered frame has to answer, and they are the reason this is an audit and not
    *Question: with the theme now installed, do the Objects column names still run together, and is it the
    gap between columns or the header's size that reads wrong?*
 2. **Pacing at its dock width.** Pacing sits in the right column at `0.68` split, stacked over Registers
-   (`ui.rs:2467`), which is narrow. *Question: do three big-number stats fit on one line there, or do they
+   (`ui.rs:2675`), which is narrow. *Question: do three big-number stats fit on one line there, or do they
    wrap and need to become two rows of two?*
 3. **The meter.** *Question: does the ring bar read as informative, or as decoration on a panel that did
    not need it? It is the one visual I invented and the easiest thing here to have got wrong.*
@@ -472,9 +485,13 @@ a rendered frame has to answer, and they are the reason this is an audit and not
 
 Stated so the next reader can check rather than trust.
 
-* Every line number is at `a8d87f9` on this branch. `ui.rs` has moved a lot recently: the style page's
-  `ui.rs:1460` was `2070` by the time this audit started and `2089` after the fix landed. **Re-derive line
-  numbers with `git grep`, never trust one older than a day.**
+* **Line numbers in `ui.rs` rot within hours, and this page nearly shipped rotten.** The style page's
+  `ui.rs:1460` was already `2070` when this audit started. Then the four parallel audits behind §4 read the
+  crate at one revision, the exemplar landed and moved every line below `662` by up to 215, and the first
+  draft of this page carried the pre-exemplar numbers. It was caught by re-running the greps before the
+  landing, which is the rule immediately below this one working on the document that states it. Every
+  citation here has since been checked against the line it names. **Re-derive with `git grep` and verify
+  the line says what you think; never trust a number older than the last commit that touched the file.**
 * The counts in §5 were triaged by hand from `/usr/bin/grep -nP '[\x{2014}\x{2013}]'`. The plain `grep`
   here prunes gitignored directories and returns a confident zero, and `ls` is aliased and errors on a path
   argument. Any absence claimed from a decorated tool is worthless without a positive control.
