@@ -444,3 +444,84 @@ Its ranking is derived from **call counts and machine code, not a measured profi
 and `ptrace` are all unavailable in the sandbox, and it said so rather than implying a profile. Its
 baseline (459/461 fps headless, two runs agreeing to 0.5 %) is stamped UTC **with the load average
 beside it** and explicitly labelled *a floor, not an uncontended number*.
+
+---
+
+# Fourth tranche — seat A2 (comment truth)
+
+## HIGH — new
+
+- **H15 ◻ The SRAM field doc denies a currency it is in** (`system.rs:235`). Claims SRAM is *"NOT in
+  `export_state` (that go-live is S3)"*. **S3 shipped**: `export_state` writes SRAM at `:796-804` and the
+  same function's own comment two lines away says *"SRAM (v2 go-live)"*. `export_state_hash` is **the
+  determinism gate's currency**, so a reader deciding "can an SRAM write move the gate?" reads this field
+  doc and answers *no*. ⚑ **The neighbouring field's doc makes the same claim and is CORRECT** — the two
+  lines read identically and only one is wrong. Textbook condition-since-met.
+- **H16 ◻ Three comments say the Z80 "steps zero instructions"** (`system.rs:259`, `:1108`, `:1345`) —
+  including **the top of the production run loop**. Region 4 is live, `catch_up_z80` has a live branch, and
+  the module's own tests reach `Z80::step`. Anyone reasoning about run-loop cost or export currency from
+  `run_frames` starts from a wrong premise. *Nuance kept:* the parenthetical `(z80_running == false in
+  every fixture)` is the accurate fixture-scoped version sitting beside the absolute that overstates it —
+  the `pictures()` shape again.
+- **H17 ◻ A seven-step staircase of "never reaches decode" claims, all superseded** (`decode.rs:1222`
+  through `:1312`). Each shift arm froze its own scope note; every arm now exists and the corpus loads all
+  eight. Even the last step is one behind. Nothing is broken — **the hazard is a future edit made on a
+  false disjointness premise**, which is exactly why reassurance-of-unreachability rates HIGH.
+- **H18 ◻ `render_scanline` documented as "not wired into `System::run`"** (`render.rs:2125`) with the
+  currency parenthetical *"so the export golden is untouched"*. It is called from `system.rs:1220` on every
+  active line, and `system.rs:1766` states the corrected fact outright.
+- **H19 ◻ The panel count: a correction applied to two files out of four** (`oracle-player`). `Tab` has
+  **11** variants and `initial_dock` builds 4 leaves, so **7 bodies do not run**. `nav.rs` and `screen.rs`
+  were amended from "six" to "four"; **`ui.rs:40` and `main.rs:1120` still say six**, so the repo now
+  states both numbers authoritatively. ⚑ The amending comment itself wrote *"a wrong number in a header is
+  a wrong number, and this one had been copied twice before it was checked"* — and the fix missed two of
+  the four copies. **Good news recorded:** the guarding *test* derives from the leaf count rather than
+  restating a figure, so the mechanism built to stop this worked and only the prose drifted.
+
+## MEDIUM — new (comment-truth cluster)
+
+- **M33 ◻ Seven in-repo `file:line` citations in `oracle-frontend` all resolve to unrelated code.** Worst
+  is `main.rs:1776-1817`, which lands on plausible-looking run-loop code, so a reader may not notice the
+  misdirection. Most name a symbol alongside the number, which is what rescues them.
+- **M34 ◻ Four "NOT this commit / NOT decoded this push" notes for things decoded in the same file**
+  (`decode.rs:990`, `:457`, `:547`, `:749`). The disjointness arguments still hold; only the framing lies.
+- **M35 ◻ A correction written in the other file and never applied here** (`decode.rs:1045` vs
+  `singlestep_m68000.rs:3241`, which says *"(correcting the earlier `*Q skipped` note)"* — and the note
+  survived the correction).
+- **M36 ◻ `host.rs:1618` says three of **seven** `CensusKey` variants; there are eight.** The kind of
+  figure that gets transcribed into a protocol brief.
+- **M37 ◻ `mcp_tool_sweep.rs:567` cites two wrong addresses for the param choke** — inside a block that
+  explicitly warns *"do not restore the earlier wording from a stale doc"*. A paragraph guarding against
+  staleness, carrying stale pointers.
+- **M38 ◻ Two cross-repo citations into aeon have drifted** (`BUGS.md:494` → `:1183`;
+  `DEFERRED_WORK.md:113` → `:4471`), and one quotes in the present tense a gap **this very crate closed**.
+- **M39 ◻ `vdp.rs:184` "Read-only this push"** for latches the render pipeline now ORs every active line.
+- **M40 ◻ `ui.rs:4153`/`:4165` say "all ten"/"ten leaves"** where `Tab::ALL` is 11.
+
+## Verified clean, and worth keeping
+
+`theme.rs`'s four *"Held, not yet wired"* notes are **still true** (every call site passes
+`DEFAULT_FAMILY`) — the seat's strongest condition-since-met candidate, and it is not one. `effects.rs`'s
+`NUDGE_BLOCKED` note is **current**, checked against aeon HEAD. Five aeon citations verified line-exact.
+**Only two `TODO`/`FIXME` comments exist in the whole corpus**, and both describe a dependency's TODO.
+
+⚑ **The seat's own methodological catch, in this repo's signature shape:** its first pass flagged five aeon
+citations as missing files, because its grep had stripped the `aeon/` prefix — *a tool's failure
+indistinguishable from its result*. It caught this by re-running with the prefix intact and reported both
+the false alarm and the control.
+
+---
+
+# ⚑ A structural fact about this sweep, recorded because it bounds every "clean" above
+
+**The 20-agent concurrency cap did not only delay the five owed seats — it degraded seats that ran.**
+Seat A2 attempted two parallel helpers to close a line-by-line pass over `engine.rs` (~9,400 lines) and
+`ui.rs` (~6,000); **both launches were refused because other seats had saturated the cap.** Seat ERR
+reports the same refusal and covered `oracle-core`/`oracle-replay` by pattern sweep rather than a full
+read, naming `render.rs`, `vdp.rs`, `watchpoints.rs`, `testrom.rs` and `synth/` as **unexamined rather
+than cleared**.
+
+So the panel's coverage is **narrower than its seat count suggests**, and the narrowing is invisible from
+the seat list alone. Both seats disclosed it unprompted, which is the behaviour the charter's
+"say what you could NOT check" rule exists to get. Any later reader treating this packet as exhaustive
+should start from those two disclosures.
