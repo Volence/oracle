@@ -247,12 +247,39 @@ Rows of like-shaped data use a real column layout — `egui::Grid` (already avai
 or `egui_extras::TableBuilder` (**not currently a dependency** — `egui_extras` appears nowhere in
 `Cargo.lock` at `4135ced`; adding it is the applying parcel's call). Header row present; every column
 named. Striping via `Visuals::striped` + `faint_bg_color`.
-*Check:* **the panel contains no width-padded format specifier.** `{:<12}`, `{:>3}`, `{:>7}` and friends
-inside a `ui.monospace(format!(..))` are exactly the pseudo-table this rule outlaws. At `4135ced` there
-are **9** such padded specifiers in `crates/oracle-player/src/ui.rs`, across 24 `ui.monospace(format!(..))`
-sites — `grep -cE '\{:[<>^][0-9]+' crates/oracle-player/src/ui.rs` is the check, and it must reach 0 for
-row data. (Padding inside a single self-contained `summary()` string is the same violation, just moved:
-see `objects.rs:85`, `objects.rs:355`, `stopping.rs:138`.)
+*Check (**amended 2026-09-05**, and the amendment is the correction rather than a restatement):* **no
+string a panel draws contains a run of two spaces or a tab.** The check is on the **rendered value**, not
+on the source.
+
+⚑ **Why the original check could not enforce this rule.** It was stated as *"the panel contains no
+width-padded format specifier"*, with `grep -cE '\{:[<>^][0-9]+'` as the test. That grep returns **zero**
+on the Pacing tab, which is the worst offender the owner photographed, because the padding lived inside
+the string literal rather than in a specifier:
+
+```rust
+ui.monospace(format!("frames emulated   {}", self.machine.frames()));
+```
+
+Three hand-counted spaces, doing a column's work, invisible to the published check. It is blind in a
+second direction as well: it is positional, so **named captures escape it** (`ui.rs`'s
+`format!("{label:<18}{value}")` on the status strip, `report.rs`'s `{count:>8}`).
+
+*The gate that enforces the amended check:* `crates/oracle-player/src/pacing.rs`'s
+`no_string_the_tab_draws_pads_itself_into_a_column`, which asserts it over every string the tab's
+projection can produce, in every arm, and was proven red against exactly the line above.
+`spawn_picker.rs` carries the same gate for the spawn picker, so the pattern is the panel's to copy
+rather than the exemplar's to own.
+
+*Optional second check, on the source, with the regex corrected so named captures do not escape it:*
+`grep -nE '\{[a-zA-Z_]*:[<>^][0-9]+' crates/oracle-player/src/*.rs`. It is a hint about where to look
+and never the enforcement, because a clean source grep is exactly what the Pacing tab returned.
+
+(Padding inside a single self-contained `summary()` string is the same violation, just moved. The live
+one is `stopping.rs`'s `BreakRow::summary`, which is the Breakpoints parcel's subject. **The two
+`objects.rs` sites this paragraph used to name are gone**: that tab's `Row::summary` was replaced by the
+`Col` table, and the only padded specifier left in the file is in a `#[cfg(test)]` listing builder,
+which is not a panel. Re-derived at the revision this amendment landed on, per the page's own rule about
+line numbers.)
 
 **P3 — Monospace only for addresses, hex, and code.**
 `ui.monospace` / `TextStyle::Monospace` is reserved for machine addresses (`0x00FF8000`), hex byte runs,
