@@ -234,6 +234,9 @@ mkdir -p "$RUN_DIR" || exit 2
 FAILURES=()
 TESTED_SHA=""
 REMOTE_BEFORE=""
+# Whether G3 has actually read the remote yet. An empty `REMOTE_BEFORE` means two different things
+# and only one of them is "no such ref"; see `verify_remote_unmoved`.
+REMOTE_READ=0
 
 hr()   { echo "------------------------------------------------------------------------------"; }
 pass() { echo "  PASS  $*"; }
@@ -247,6 +250,16 @@ verify_remote_unmoved() {
     now="$(git ls-remote "$REMOTE" "refs/heads/$BRANCH" 2>/dev/null | command awk '{print $1}')"
     hr
     echo "(b) PUSHED NOTHING — verifying that against the remote rather than asserting it:"
+    # ⚑ A refusal BEFORE G3 has never read the remote, so `$REMOTE_BEFORE` is empty for want of a
+    # measurement rather than for want of a ref — and the comparison below would then read a perfectly
+    # ordinary ref as one that MOVED, which is a false alarm on the loudest line this script prints.
+    # Measured 2026-09-05 on a G2b refusal, which is the gate that made an early refusal common.
+    if [ "$REMOTE_READ" = 0 ]; then
+        note "this run refused before it read $REMOTE/$BRANCH, so there is no 'before' to compare."
+        note "$REMOTE/$BRANCH now            : ${now:-<no such ref>}"
+        note "nothing from this run reached any remote: no push was attempted."
+        return
+    fi
     note "$REMOTE/$BRANCH before the run : ${REMOTE_BEFORE:-<no such ref>}"
     note "$REMOTE/$BRANCH now            : ${now:-<no such ref>}"
     if [ "$now" = "$REMOTE_BEFORE" ]; then
@@ -389,6 +402,7 @@ fi
 # --------------------------------------------------------------------------------------------
 hr; echo "G3  fast-forward onto $REMOTE/$BRANCH"
 REMOTE_BEFORE="$(git ls-remote "$REMOTE" "refs/heads/$BRANCH" 2>/dev/null | command awk '{print $1}')"
+REMOTE_READ=1
 if [ -z "$REMOTE_BEFORE" ]; then
     pass "G3 $REMOTE/$BRANCH does not exist yet; any push creates it"
 elif [ "$REMOTE_BEFORE" = "$TESTED_SHA" ]; then
