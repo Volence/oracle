@@ -54,6 +54,7 @@ use oracle_frontend::audio;
 mod battery;
 mod bus;
 mod device;
+mod effects;
 mod identity;
 mod input;
 mod layout;
@@ -440,6 +441,12 @@ struct Loop {
     /// last rasterised and the fingerprint that texture was drawn from. Not persisted, on the Screen
     /// panel's reasoning: which plane you were last looking at is a *looking at it* choice.
     planes: planes::Panel,
+    /// **The Effects tab's state** (`crate::effects`): the channel being looked at, its two boxes, the
+    /// last search and the last gesture's answer, and **what this panel has overridden and not put
+    /// back**. ⚑ Not persisted, and that is the owner's own scope rather than this window's habit:
+    /// *"if I choose like bands and stuff it's not meant to be permanent, just testing stuff."* An
+    /// override that came back after a restart would re-assert itself on a machine nobody had told.
+    effects: effects::Panel,
     /// **The cartridge's `.srm`** (S3) — the file, the autosave debounce, and the bytes rescued when the
     /// machine is replaced under this window. Its whole reason for living beside the bus rather than
     /// inside a panel is that both doors onto a cartridge swap — a client's and this window's own — are
@@ -656,6 +663,7 @@ impl Loop {
             palette: palette::Palette::default(),
             screen: screen_pick::Panel::default(),
             planes: planes::Panel::default(),
+            effects: effects::Panel::default(),
             governor: match target_fps {
                 None => Governor::start(now, FRAME_PERIOD),
                 Some(f) if f <= 0.0 => {
@@ -1082,6 +1090,7 @@ impl Loop {
             palette,
             screen: screen_panel,
             planes: planes_panel,
+            effects: effects_panel,
             states,
             battery,
             swap,
@@ -1183,6 +1192,7 @@ impl Loop {
                     stopping,
                     screen: screen_panel,
                     planes: planes_panel,
+                    effects: effects_panel,
                     states,
                     battery,
                     governor,

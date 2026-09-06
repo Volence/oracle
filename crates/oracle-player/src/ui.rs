@@ -96,6 +96,17 @@ pub enum Tab {
     /// The *badge* stays in the Screen strip. A mode that changes what a left-click does must say so
     /// beside the thing being clicked, and that is not what moved here.
     Spawn,
+    /// **The live effects switchboard** (`LIVE-EFFECTS`): pick a scene, a raster program or a band table
+    /// by name and write the cells the engine's own installer writes, so the running game switches to it.
+    ///
+    /// A tab rather than a control, on the Spawn tab's own precedent: *things you DO are controls* holds
+    /// for one-shot gestures, and this is a **standing list you read while looking at the picture**, plus
+    /// a readback of what the machine actually holds. The one thing that is not a list — the standing
+    /// statement that this panel is overriding the running game — is drawn here **and** in the Screen
+    /// tab's control strip (`Panels::screen_controls`), because this tab shares a dock leaf with `Pacing`
+    /// and `Spawn` and a statement that can be behind a tab bar is not standing. Both draw the identical
+    /// `crate::effects::Panel::statement`, so they cannot describe one override two ways.
+    Effects,
     /// The armed breakpoint set with hit counts, an add box and a per-row toggle. **Reads
     /// [`Bus::read_breakpoints`], not `read_instruments`** — see that method for why breakpoints are not
     /// one of the two instruments.
@@ -117,7 +128,7 @@ impl Tab {
     /// `every_tab_the_player_ships_is_reachable_from_the_nav` in [`crate::nav`], which asks **serde's
     /// derive** what variants exist and compares. It has to: [`crate::nav::entries`] maps over this
     /// array, so a variant missing from it is a panel with a body and no way to open it.
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 11] = [
         Tab::Screen,
         Tab::Planes,
         Tab::Pacing,
@@ -125,6 +136,7 @@ impl Tab {
         Tab::Memory,
         Tab::Objects,
         Tab::Spawn,
+        Tab::Effects,
         Tab::Breakpoints,
         Tab::Watchpoints,
         Tab::Profiler,
@@ -146,6 +158,7 @@ impl Tab {
             Tab::Memory => "Memory",
             Tab::Objects => "Objects",
             Tab::Spawn => "Spawn",
+            Tab::Effects => "Effects",
             Tab::Breakpoints => "Breakpoints",
             Tab::Watchpoints => "Watchpoints",
             Tab::Profiler => "Profiler",
@@ -179,6 +192,10 @@ pub struct Panels<'a> {
     /// the fingerprint that texture was drawn from. `&mut` because the whole render-on-change decision
     /// lives in there, and a panel that re-derived it every repaint would be the thing it exists to avoid.
     pub planes: &'a mut crate::planes::Panel,
+    /// The Effects tab's own state: which channel, what is typed in its two boxes, the last search, the
+    /// last gesture's answer, and **what this panel has overridden and not put back**. `&mut` because
+    /// every gesture on it writes engine RAM. Nothing in it is persisted; see [`crate::effects::Panel`].
+    pub effects: &'a mut crate::effects::Panel,
     /// **The ten save-state slots** (S3). `&mut` because the Screen tab's slot controls are *controls*:
     /// things you do are not tabs, and a slot readout you could not act on would send the operator back
     /// to a function key they have to already know about.
@@ -220,6 +237,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Memory => "memory",
             Tab::Objects => "objects",
             Tab::Spawn => "spawn",
+            Tab::Effects => "effects",
             Tab::Breakpoints => "breakpoints",
             Tab::Watchpoints => "watchpoints",
             Tab::Profiler => "profiler",
@@ -246,6 +264,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Memory => self.memory(ui),
             Tab::Objects => self.objects(ui),
             Tab::Spawn => self.spawn(ui),
+            Tab::Effects => self.effects(ui),
             Tab::Breakpoints => self.breakpoints(ui),
             Tab::Watchpoints => self.watchpoints(ui),
             Tab::Profiler => self.profiler(ui),
@@ -372,6 +391,26 @@ impl Panels<'_> {
         // left-click *does* must say so for as long as it is on, and it must name the archetype.
         if let Some(badge) = self.screen.badge() {
             ui.colored_label(ui.visuals().warn_fg_color, &badge);
+        }
+        // ⚑ **The effects switchboard's standing statement, HERE as well as on its own tab** (`LIVE-EFFECTS`).
+        //
+        // The badge above earned this position with the argument that a mode changing what a left-click
+        // does must say so beside the thing being clicked. An effects override is the same claim about a
+        // wider subject: it changes what **every frame** looks like, and the frame it produces is a
+        // perfectly ordinary-looking picture of a configuration the act does not have. A person who has
+        // forgotten reads it as the game's own, which is the layer mask's defect with a bigger blast
+        // radius.
+        //
+        // **A tab cannot carry it alone**, and that is the whole reason for the duplication: `Tab::Effects`
+        // shares a dock leaf with `Pacing` and `Spawn`, so the moment a person looks at either of those the
+        // statement is behind a tab bar. A standing statement that can be hidden is not standing. The
+        // picture, meanwhile, is the thing being lied about, so this strip is where the claim has to be.
+        //
+        // **One derivation, two readers** (`crate::effects::statement`, through `Panel::statement`): the
+        // strip and the tab draw the identical `String` and cannot describe one override two ways. Nothing
+        // is re-composed here.
+        if let Some(s) = self.effects.statement() {
+            ui.colored_label(ui.visuals().warn_fg_color, s);
         }
         // ⚑ **The four layer toggles** — one per `LayerMask::targets()` entry, generated from the core's
         // own vocabulary rather than typed here, so this window cannot offer a layer the bus lacks or
@@ -713,6 +752,362 @@ impl Panels<'_> {
                 }
             }
         }
+    }
+
+    /// **The Effects tab** (`LIVE-EFFECTS`): pick a scene, a raster program or a band table by name and
+    /// write the cells the engine's own installer writes.
+    ///
+    /// # The order is the argument
+    ///
+    /// The **standing statement goes first**, above everything, on the layer mask's own rule: a surface
+    /// that changes what every subsequent frame looks like must say so where the eye lands, not where the
+    /// controls happen to end. Then the readback of what the machine actually holds, then the list, then
+    /// what the last gesture did. The write-set and the disabled nudge control sit at the bottom because
+    /// they are read once and then known.
+    ///
+    /// # ⚑ Every gesture that writes is pause, write, resume, and the machine says so
+    ///
+    /// [`crate::effects::Panel::gesture`] is the one path, and it calls
+    /// [`crate::screen_pick::paused_for`] rather than re-implementing it. Nothing on this tab writes to a
+    /// running machine: `emulator/write_memory` refuses one, and a paused write cannot land mid-frame,
+    /// which is what dissolves aeon's torn-frame caveat for this panel.
+    ///
+    /// This function lays out and decides nothing; every string it draws is
+    /// [`crate::effects`]'s. See that module's header for the RAM surface and its citations.
+    fn effects(&mut self, ui: &mut egui::Ui) {
+        let weak = ui.visuals().weak_text_color();
+        let channel = self.effects.channel();
+
+        // ⚑ THE STANDING STATEMENT. Drawn on every frame a selection made here is in effect, never as a
+        // toast: a toast expires and the override does not. Above the controls, because a person reading
+        // a picture they have forgotten they changed is the failure this line exists to prevent.
+        if let Some(s) = self.effects.statement() {
+            ui.label(
+                egui::RichText::new(s)
+                    .text_style(egui::TextStyle::Small)
+                    .strong()
+                    .color(crate::theme::WARNING),
+            );
+            ui.separator();
+        }
+
+        // Which channel. Three, so three buttons rather than a dropdown: a menu hides two of the three
+        // answers behind a click, and this is the choice the whole tab is about.
+        ui.horizontal(|ui| {
+            for c in crate::effects::CHANNELS {
+                let on = c.key == channel.key;
+                if ui
+                    .selectable_label(on, c.title)
+                    .on_hover_text(c.subject)
+                    .clicked()
+                {
+                    self.effects.look_at(c.key);
+                }
+            }
+        });
+        // ⚑ **Re-read after the row, because a click in it just changed the answer.** `channel` above was
+        // taken before the buttons were drawn, and everything below this line describes a channel: the
+        // subject sentence, the off control, the readback, the prefix box, the write-set. Keeping the
+        // stale binding would draw one frame of the OUTGOING channel's headings over the INCOMING
+        // channel's state, which is a label that does not match what it labels. One frame is enough:
+        // that is the whole failure class this panel is written against, and there is no reason to
+        // produce a small instance of it inside the panel that exists to prevent the large one.
+        let channel = self.effects.channel();
+        ui.label(
+            egui::RichText::new(channel.subject)
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+        );
+
+        // What the run state was left as. Standing, in this panel's own words, and coloured on
+        // `run_alarming` rather than on the shape of the sentence (P5).
+        if let Some(line) = self.effects.run_line() {
+            let colour = if self.effects.run_alarming() {
+                crate::theme::WARNING
+            } else {
+                weak
+            };
+            ui.label(
+                egui::RichText::new(line)
+                    .text_style(egui::TextStyle::Small)
+                    .color(colour),
+            )
+            .on_hover_text(crate::spawn_picker::RunState::HELD_INPUT_HOVER);
+        }
+        ui.separator();
+
+        // ⚑ WHAT THE MACHINE ACTUALLY HOLDS. The antidote to the exact hour aeon lost: a readback, never
+        // an echo of the last click. On the raster channel it goes on naming the old program until a
+        // frame runs, which is true and is the point.
+        ui.horizontal(|ui| {
+            if ui
+                .button("read it back")
+                .on_hover_text(
+                    "reads the cell the engine looks at and names what it points to. A pure read: the \
+                     machine is not paused for it.",
+                )
+                .clicked()
+            {
+                self.effects.refresh_live(self.machine, self.bus);
+            }
+            // ⚑ **A channel with no off state draws the control DISABLED with the reason**, rather than
+            // an enabled button that refuses on every click. Same call the nudge control makes and for
+            // the same argument: the person who looks for an off switch and finds nothing concludes it
+            // is missing, and the one who clicks a button that always refuses concludes it is broken.
+            // A greyed control with a sentence is the only one of the three that is true.
+            //
+            // `Off::At` is still a live button rather than a disabled one, because whether its target is
+            // in this build's listing is a question only the bus can answer, and the answer is the
+            // refusal the gesture prints.
+            match channel.off {
+                crate::effects::Off::No(why) => {
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new(format!("turn {} off", channel.title)),
+                    )
+                    .on_disabled_hover_text(why);
+                }
+                crate::effects::Off::At { .. } => {
+                    if ui
+                        .button(format!("turn {} off", channel.title))
+                        .on_hover_text("pauses the machine, writes the off target, and resumes it")
+                        .clicked()
+                    {
+                        self.effects.off(self.machine, self.bus);
+                    }
+                }
+            }
+        });
+        match self.effects.live_line() {
+            Some(Ok(line)) => {
+                ui.label(
+                    egui::RichText::new(line)
+                        .monospace()
+                        .text_style(egui::TextStyle::Small)
+                        .color(ui.visuals().strong_text_color()),
+                );
+            }
+            // P4: a source that could not be read renders the refusal, never a blank.
+            Some(Err(why)) => {
+                ui.label(
+                    egui::RichText::new(why)
+                        .text_style(egui::TextStyle::Small)
+                        .color(ui.visuals().error_fg_color),
+                );
+            }
+            None => {
+                ui.label(
+                    egui::RichText::new(
+                        "nothing read back yet. This panel does not read on its own, because a stale \
+                         line beside a fresh selection is the picture it exists to prevent.",
+                    )
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+                );
+            }
+        }
+        ui.separator();
+
+        // The two boxes. The PREFIX is what the bounded search is given; the FILTER only narrows what
+        // came back. They are different questions and a person who conflates them gets a short list with
+        // nothing saying so, which is why the count and the truncation line say which is which.
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("prefix")
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+            );
+            ui.add(
+                egui::TextEdit::singleline(self.effects.prefix_mut())
+                    .desired_width(160.0)
+                    .hint_text("symbol prefix"),
+            )
+            .on_hover_text(
+                "what the bus's bounded symbol search is asked for. The default is where this build \
+                 publishes them today, not a claim that they can only be there.",
+            );
+            if ui.button("search").clicked() {
+                self.effects.search(self.machine, self.bus);
+            }
+        });
+
+        match self.effects.listing() {
+            None => {
+                ui.label(
+                    egui::RichText::new(
+                        "no search has been run for this channel yet. Press search to read the names \
+                         this build publishes under the prefix above.",
+                    )
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+                );
+            }
+            Some(listing) => {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("filter")
+                            .text_style(egui::TextStyle::Small)
+                            .color(weak),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(self.effects.filter_mut())
+                            .desired_width(140.0)
+                            .hint_text("type to filter"),
+                    )
+                    .on_hover_text(
+                        "narrows the list below. It never changes what is in effect: the line at the \
+                         top always names that.",
+                    );
+                    ui.label(
+                        egui::RichText::new(&listing.count)
+                            .text_style(egui::TextStyle::Small)
+                            .color(weak),
+                    );
+                });
+                // ⚑ A partial measurement, said out loud. A list drawn from the first 256 of 400 names
+                // with nothing saying so is this window deciding, on the reader's behalf, that the rest
+                // do not exist.
+                if let Some(t) = &listing.truncation {
+                    ui.label(
+                        egui::RichText::new(t)
+                            .text_style(egui::TextStyle::Small)
+                            .color(crate::theme::WARNING),
+                    );
+                }
+                match &listing.absence {
+                    // P6: an absent result is a stated line, never an empty box.
+                    Some(a) => {
+                        ui.label(
+                            egui::RichText::new(a)
+                                .text_style(egui::TextStyle::Small)
+                                .color(weak),
+                        );
+                    }
+                    None => {
+                        if let Some(name) =
+                            effects_list(ui, channel.title, &listing.rows, "effects_picker")
+                        {
+                            self.effects.select(self.machine, self.bus, &name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // What the last gesture did, cell by cell. The cells are drawn rather than summarised because
+        // the card promised one write and the engine wanted more, and a reader watching four go past is
+        // owed the reason for each without leaving the window.
+        if let Some(last) = self.effects.last() {
+            ui.separator();
+            let colour = if last.refused {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().strong_text_color()
+            };
+            ui.label(
+                egui::RichText::new(&last.head)
+                    .text_style(egui::TextStyle::Small)
+                    .color(colour),
+            );
+            for cell in &last.cells {
+                ui.label(
+                    egui::RichText::new(cell)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+            }
+        }
+
+        // The band readback, on the one channel that has a documented record layout to read.
+        if channel.key == crate::effects::BANDS.key {
+            ui.separator();
+            if ui
+                .button("read the bands")
+                .on_hover_text("decodes the table this channel points at, one line per band")
+                .clicked()
+            {
+                self.effects.refresh_bands(self.machine, self.bus);
+            }
+            match self.effects.band_read() {
+                Some(Ok(b)) => {
+                    if let Some(c) = &b.caveat {
+                        ui.label(
+                            egui::RichText::new(c)
+                                .text_style(egui::TextStyle::Small)
+                                .color(crate::theme::WARNING),
+                        );
+                    }
+                    match &b.absence {
+                        Some(a) => {
+                            ui.label(
+                                egui::RichText::new(a)
+                                    .text_style(egui::TextStyle::Small)
+                                    .color(weak),
+                            );
+                        }
+                        None => {
+                            for (i, band) in b.bands.iter().enumerate() {
+                                ui.label(
+                                    egui::RichText::new(format!("band {i}: {}", band.line()))
+                                        .monospace()
+                                        .text_style(egui::TextStyle::Small),
+                                );
+                            }
+                        }
+                    }
+                }
+                Some(Err(why)) => {
+                    ui.label(
+                        egui::RichText::new(why)
+                            .text_style(egui::TextStyle::Small)
+                            .color(ui.visuals().error_fg_color),
+                    );
+                }
+                None => {}
+            }
+        }
+
+        ui.separator();
+        // ⚑ THE DISABLED NUDGE CONTROL. It is drawn OFF with the reason rather than omitted, because the
+        // owner asked for nudges by name and an absent control reads as "we forgot". See
+        // `crate::effects::NUDGE_BLOCKED` for the argument and for why it will be two numbers rather
+        // than four when the engine hook lands.
+        ui.add_enabled_ui(false, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("nudge");
+                ui.add(egui::DragValue::new(&mut 0i32).prefix("driver "));
+                ui.add(egui::DragValue::new(&mut 0i32).prefix("rate shift "));
+            });
+        });
+        ui.label(
+            egui::RichText::new(crate::effects::NUDGE_BLOCKED)
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+        );
+
+        // The write-set, last, under a heading a person can skip. Read once and then known, but never
+        // hidden: a panel that wrote four cells while showing one would be the thing this module's
+        // header is about.
+        ui.separator();
+        ui.collapsing(format!("what a {} selection writes", channel.title), |ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} cells, which is {}. Written together on a paused machine, so the next frame \
+                     sees all of them or none.",
+                    channel.writes.len(),
+                    channel.installer
+                ))
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+            );
+            for cell in channel.writes {
+                ui.label(
+                    egui::RichText::new(format!("{}: {}", cell.symbol, cell.why))
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+            }
+        });
     }
 
     /// **The ring section of the Spawn tab**: a toggle, what a click does, and the one rule a person
@@ -3037,6 +3432,90 @@ fn subtype_list(
     hit
 }
 
+/// **The Effects tab's row list**, [`select_list`]'s shape with one addition it needs and the spawn
+/// picker's archetype list does not: a row that is **drawn and not selectable**, with the reason on it.
+///
+/// A separate function rather than a parameter on [`select_list`] because the archetype list has no such
+/// row and never will — every `ObjDef_` it draws is placeable — and a bool nobody passes `true` for is a
+/// branch nothing exercises. The shape it does share is deliberate: fill carries the selection, the band
+/// is the full pane width so a click target does not stop where the glyphs do, and the salt keeps this
+/// scroll position out of the hex dump's.
+///
+/// ⚑ The unselectable row is [`crate::effects::listing`]'s doing, not this function's: it is a name that
+/// is one of the channel's **own cells**, and pointing a selector at itself makes the engine read the
+/// pointer's bytes as the thing it points to. Drawn rather than dropped, because a row that vanishes
+/// teaches nothing and a person who typed a prefix is owed the difference between what it matched and
+/// what they may pick.
+fn effects_list(
+    ui: &mut egui::Ui,
+    head: &str,
+    rows: &[crate::effects::Row],
+    salt: &str,
+) -> Option<String> {
+    let mut hit = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+        let weak = ui.visuals().weak_text_color();
+        ui.label(
+            egui::RichText::new(head)
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+        );
+        let y = ui.cursor().top();
+        ui.painter().hline(
+            ui.max_rect().x_range(),
+            y,
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+        ui.add_space(3.0);
+        egui::ScrollArea::vertical().id_salt(salt).show(ui, |ui| {
+            let strong = ui.visuals().strong_text_color();
+            for (i, r) in rows.iter().enumerate() {
+                let bg = ui.painter().add(egui::Shape::Noop);
+                let ink = if r.offered { strong } else { weak };
+                let inner = ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&r.name).monospace().color(ink));
+                });
+                let band = egui::Rect::from_x_y_ranges(
+                    ui.max_rect().x_range(),
+                    inner.response.rect.y_range(),
+                )
+                .expand2(egui::vec2(0.0, 1.0));
+                let sense = if r.offered {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                };
+                let resp = ui.interact(band, ui.id().with((salt, i)), sense);
+                ui.painter().set(
+                    bg,
+                    egui::Shape::rect_filled(
+                        band,
+                        0.0,
+                        row_fill(ui, r.selected, r.offered && resp.hovered(), i),
+                    ),
+                );
+                match &r.note {
+                    // The reason rides the row's own hover, so it is attached to the thing it is about
+                    // rather than filed in a legend somewhere below the list.
+                    Some(note) => {
+                        resp.on_hover_text(note);
+                    }
+                    None => {
+                        if resp
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            hit = Some(r.name.clone());
+                        }
+                    }
+                }
+            }
+        });
+    });
+    hit
+}
+
 fn select_list(
     ui: &mut egui::Ui,
     head: &str,
@@ -3642,10 +4121,14 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
     // the tab a placement is checked against — `Objects` lists the pool the spawn lands in — which rules
     // out that leaf too. `Pacing` is the right column's one tab that is never part of a spawn gesture,
     // so a spawn never costs the reader a tab they were about to look at.
+    // ⚑ **`Effects` joins that same leaf**, and for the same argument one step on. It is the other
+    // standing list you read while looking at the picture, and the one leaf it must not share is the
+    // picture's: the whole point of the panel is watching the game change while you pick, so a tab that
+    // covered the game would make the switchboard unusable in exactly the gesture it exists for.
     let [_, right] = surface.split_right(
         egui_dock::NodeIndex::root(),
         0.68,
-        vec![Tab::Pacing, Tab::Spawn],
+        vec![Tab::Pacing, Tab::Spawn, Tab::Effects],
     );
     let [inspect, _] =
         surface.split_below(right, 0.45, vec![Tab::Registers, Tab::Memory, Tab::Objects]);

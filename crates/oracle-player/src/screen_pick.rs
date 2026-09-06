@@ -91,7 +91,7 @@ use crate::spawn_picker;
 /// rather than a key, so it passes the button's own label constant. **Derived, not transcribed** — that is
 /// the rule the frontend's version states, and a literal `"pause"` here would go stale the moment the label
 /// changed.
-fn pause_remedy() -> String {
+pub(crate) fn pause_remedy() -> String {
     format!("the {} button on the top bar", crate::ui::PAUSE_LABEL)
 }
 
@@ -1338,7 +1338,7 @@ fn checkpointed<T>(
 ///
 /// The returned [`spawn_picker::RunState`] is complete except for `Restored { frames }`, which is left
 /// `None` because only the caller knows what its body found out.
-fn paused_for<T>(
+pub(crate) fn paused_for<T>(
     machine: &mut Machine,
     bus: &mut Bus,
     body: impl FnOnce(&mut Machine, &mut Bus) -> T,
@@ -1462,9 +1462,9 @@ impl Readout {
 /// The choreography itself is not here and must never be copied here: it lives in
 /// `oracle-frontend/src/spawn.rs` and both windows call it, so the act-bounds gate and the world join cannot
 /// answer one person differently in one window.
-struct PlayerCaller<'a> {
-    bus: &'a mut Bus,
-    sys: &'a mut oracle_core::system::System,
+pub(crate) struct PlayerCaller<'a> {
+    pub(crate) bus: &'a mut Bus,
+    pub(crate) sys: &'a mut oracle_core::system::System,
 }
 
 impl spawn::Caller for PlayerCaller<'_> {
