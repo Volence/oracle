@@ -770,3 +770,93 @@ its own `ALL` list. **This is exactly the pattern M51's catch-all lacks**, in th
 are still textually close, and is *"structurally blind to the most dangerous case in my brief: a copy that
 has already diverged enough to reword."* Every finding was reached by **reading**, using the scanner only
 to choose where to read.
+
+---
+
+# Eighth tranche — seat Vb (claim-first vacuity)
+
+## ⚑ DOUBLING V PAID OFF — and this finding was structurally invisible to Va
+
+Va walks guards that exist. **Vb's top finding is a guard that does not**, which Va could not have reached
+by construction. The decision to double this seat on the lane's own evidence is vindicated by exactly the
+mechanism the split was designed for.
+
+Method worth recording: Vb harvested **~90 claims mechanically, not by eye** — 494 backticked identifiers
+in comments, 3,310 `file:line` citations machine-checked for symbol/line consistency, 576 test functions
+added over 250 commits, and **every one of 25 cross-repo citations opened against the peer's file**.
+**~82 landed on a real guard.** That ratio is the useful result, not just the eight that did not.
+
+## HIGH — new
+
+### H26 ◻ The most-replicated safety claim in the tree names a mechanism that does not exist
+
+`docs/OVERSEER.md:680` carries it as a **standing instruction**: *"`render_scanline` … takes no mask and
+has no masked twin, so 'a display mask cannot perturb emulation' is **enforced by the type system**. Do
+not add a mask parameter to it."* Repeated in **eight live source doc-comments** — two of which escalate
+to *"none may ever be added"* and *"must never gain one"*.
+
+**The guard's location: absent.** `grep -rn "trybuild\|compile_fail" crates/ Cargo.toml` → **zero hits**;
+there is no compile-fail harness in the workspace, and no test asserts the signature.
+
+⚑ **The sentence conflates two propositions.** *"A caller cannot pass a mask"* is true and compiler-
+enforced. *"The parameter cannot be added"* — what the register actually instructs — **is prose only.**
+Add `mask: LayerMask`, fix the seven call sites the compiler names, and the workspace is green with
+**nothing red for the property that was lost.**
+
+**The contrast is in the same tree and is what makes this a finding rather than pedantry:**
+`engine.rs:4431` also says *"enforced by the type system"* — and then **names the mechanism**: `System::vdp`
+hands out `&Vdp` while `control_read_status` takes `&mut self`, so the mistake *"does not compile from this
+binding"*. **That is a guard. `render_scanline`'s is a description of a signature wearing a guard's
+vocabulary.**
+
+Separated cleanly by the seat: the neighbouring `a_mask_never_moves_the_sprite_pipeline` is an *excellent*
+guard — it asserts its fixture's preconditions first so it cannot compare `false` to `false` — but it
+guards the **stateless** render. *The neighbour is right; the file is not.*
+
+## MEDIUM — new
+
+- **M54 ◻ Six docs name a gate that was renamed AND whose property changed.** *"vendored **verbatim** … and
+  `the_vendored_schema_is_byte_identical_to_the_upstream_contract` enforces it"* — that test does not
+  exist; `7308e96` replaced it with a **blob-provenance pin**. ⚑ **The rename is not the defect; the
+  property change is:** the new gate enforces equality-to-a-recorded-pin, not equality-to-upstream. Those
+  agree exactly when `PROVENANCE.md` is current. A future session reads §7.5 and believes the stronger
+  claim. *(The replacement is better than what it replaced — this is docs residue of a good fix.)*
+- **M55 ◻ 8 of 25 cross-repo citations are drifted, and nothing here can ever detect it.** Worst:
+  `aeon/docs/DEFERRED_WORK.md:113` → the quoted text is now at ~4472, **~4,360 lines of drift**, cited from
+  two files. ⚑ **The vacuity is structural:** these are bare line numbers into repos whose HEADs move
+  independently, so **a drifted citation is indistinguishable from a verified one** to every reader and
+  every gate. **This repo already knows the right shape** — `effects.rs:114` pins `"aeon c4c5c3d8"` as a
+  revision-bearing constant, and `symbols.rs:33` pins a sigil revision. **Three sites do it right;
+  twenty-two do not.**
+- **M56 ◻ Half a named behavioural backstop is missing** (`schema_conformance.rs:1207`). The validator is
+  admittedly blind to conformance item 13 *by construction*, so the two named tests **are** the coverage.
+  One of the two does not exist anywhere in the tree — **the load-bearing half** — and the comment's
+  confident tone is what conceals it.
+- **M57 ◻ Seven live comments cite a guard under a name that does not exist** — all seven resolve to a real
+  test under a different name, so this is hygiene rather than vacuity. ⚑ But `effects.rs:106` is the
+  *"true of the neighbours, not of the file"* shape yet again: `layout.rs:123`, **four lines above the real
+  test**, spells the name correctly.
+
+## LOW — new
+
+- **M58 ◻ Five prose-target citations point at unrelated lines**, two of which carry weight beyond
+  cosmetics: `lens/video.rs:734` is **the receipt justifying the deletion of a test**, and
+  `watchpoints.rs:408` claims a passage is *"verbatim from"* a location whose anchor no longer lands —
+  the shape most likely to mislead a future editor.
+- **M59 ◻ A quotation attributed to the wrong peer file** (`outcome.rs:36`). The quoted phrase is real and
+  lives in a different aeon file. **Quotation marks around text that is not at the cited place is the
+  failure mode that makes a citation feel checked.**
+- **M60 ◻ A citation resolving, in this repo, to a file the charter says does not exist** —
+  `restamp.rs:11` drops the `aeon/` prefix its sibling carries, so a reader **cannot distinguish a missing
+  file from a mistyped path**. One-word fix.
+
+## Verified clean — where the absence of a finding IS the measurement
+
+- **576 test functions added over 250 commits; 11 no longer exist; all 11 traced to their removal commit.
+  Six were renamed *because the behaviour changed*. ZERO silent deletions — no guard was deleted and left
+  claimed as live in code.** That is a strong, hard-won result about this repo's discipline.
+- The retirement-receipt idiom **is working**: a retired guard reliably leaves a note saying so, at five
+  checked sites.
+- Both register rows the seat chased hold up, and `F-SERVERNAME-PREDATES-THE-RENAME` is *"still
+  trustworthy even though its own line number has drifted 74 lines"* — **because it pinned its read
+  revision.** The cure for M55 is already demonstrated by a row inside the file that needs it.
