@@ -577,11 +577,17 @@ impl Panels<'_> {
     /// facts that are not counts are sentences, per P6.
     fn spawn(&mut self, ui: &mut egui::Ui) {
         let weak = ui.visuals().weak_text_color();
+        self.rings(ui);
+        ui.separator();
         ui.horizontal(|ui| {
             // The armed/disarmed split is one button for one question, the same rule the transport bar
             // states. It lives here rather than in the strip so the tab is whole: a picker you can read
             // but not arm would send the reader back to the panel this one was lifted out of.
-            if self.screen.is_armed() {
+            //
+            // ⚑ `object_armed`, not `is_armed`: a window armed for RINGS is armed, and asking the wider
+            // question here would offer "spawn mode off" for a mode that is already off and hide the
+            // archetype list behind one that has nothing to do with it.
+            if self.screen.object_armed() {
                 if ui
                     .button("spawn: off")
                     .on_hover_text("a click on the picture goes back to arming a watch")
@@ -615,7 +621,7 @@ impl Panels<'_> {
                 }
             }
         });
-        if !self.screen.is_armed() {
+        if !self.screen.object_armed() {
             // P6 again: the reason there is no list is a sentence, never an empty tab.
             ui.label(
                 egui::RichText::new(
@@ -702,6 +708,66 @@ impl Panels<'_> {
                     self.screen.select_archetype(self.machine, self.bus, &name);
                 }
             }
+        }
+    }
+
+    /// **The ring section of the Spawn tab**: a toggle, what a click does, and the one rule a person
+    /// must not be left to discover by watching it happen.
+    ///
+    /// # ⚑ Why this is a section and not a row in the list below
+    ///
+    /// The archetype list draws what the loaded listing publishes under `ObjDef_`, and **there is no
+    /// `ObjDef_Ring` in any build of this engine**. A ring is not an object here: it takes no pool slot,
+    /// has no definition record, and never reaches the mailbox `emulator/object_spawn` writes. Putting an
+    /// invented row in that list would be this window asserting a name the game does not have.
+    ///
+    /// # The statement is a condition of the feature
+    ///
+    /// A placed ring is swept out of the buffer once the camera moves away from it and nothing brings it
+    /// back. Drawn for as long as the mode is armed, on the badge's own rule: a toast expires, and the
+    /// fact that everything you place here is temporary does not. Coloured as a warning rather than as
+    /// weak text, because it is the thing that will otherwise be read as a fault in the window.
+    ///
+    /// It sits at the **top** of the tab because it changes what a click does, and a person who armed it
+    /// and then scrolled to the archetype list would otherwise be reading a list of things a click no
+    /// longer places.
+    fn rings(&mut self, ui: &mut egui::Ui) {
+        let l = self.screen.ring_listing();
+        ui.horizontal(|ui| {
+            if l.armed {
+                if ui
+                    .button("rings: off")
+                    .on_hover_text("a click on the picture goes back to arming a watch")
+                    .clicked()
+                {
+                    self.screen.disarm_rings();
+                }
+            } else if ui
+                .button("place rings…")
+                .on_hover_text(
+                    "a click on the Screen tab's picture puts a ring there. Rings are not objects in \
+                     this engine and are not in the list below.",
+                )
+                .clicked()
+            {
+                self.screen.arm_rings();
+            }
+            ui.label(
+                egui::RichText::new(&l.armed_line)
+                    .text_style(egui::TextStyle::Small)
+                    .color(if l.armed {
+                        ui.visuals().strong_text_color()
+                    } else {
+                        ui.visuals().weak_text_color()
+                    }),
+            );
+        });
+        if let Some(t) = &l.temporary {
+            ui.label(
+                egui::RichText::new(t)
+                    .text_style(egui::TextStyle::Small)
+                    .color(crate::theme::WARNING),
+            );
         }
     }
 

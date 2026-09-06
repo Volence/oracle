@@ -295,6 +295,20 @@ pub struct Panel {
     /// Retaken once per selection change ([`Panel::take_preview`]), never per frame: it costs a checkpoint
     /// round trip and a handful of emulated frames. See [`crate::preview`] for the whole measurement.
     preview: Option<crate::preview::Outcome>,
+    /// ⚑ **Whether a click places a RING**, which is a third thing a click can be and not a fourth
+    /// archetype.
+    ///
+    /// A `bool` beside [`Panel::mode`] rather than a state inside it, and the reason is not economy.
+    /// `spawn::Mode` holds the names `emulator/lookup_symbol` found under `ObjDef_`, which is aeon's
+    /// namespace and not this window's to add to. **There is no `ObjDef_Ring` in any build of this
+    /// engine** and a ring is not an object: it takes no pool slot and never reaches the mailbox. Putting
+    /// a made-up row in that list would be this window asserting a name the game does not have, which is
+    /// what the whole discovered-not-listed design exists to prevent.
+    ///
+    /// The two are **mutually exclusive by construction**: [`Panel::arm_rings`] disarms the object mode
+    /// and [`Panel::arm_spawn`] clears this, so there is no state in which a click could mean both and no
+    /// precedence rule anybody has to remember.
+    rings: bool,
 }
 
 impl Panel {
@@ -304,11 +318,60 @@ impl Panel {
     /// decoration: a mode that changes what a left-click **does** must say so for as long as it is on, and
     /// it must name the archetype rather than merely admit to a mode.
     pub fn badge(&self) -> Option<String> {
+        if self.rings {
+            // Names the subject and the one thing about it a person must not discover by watching it
+            // happen, in the space a badge has. The whole rule is on the Spawn tab and in the line every
+            // placement prints; this is the standing reminder that a click is armed for it at all.
+            return Some("SPAWN: a ring (temporary, it goes when the camera does)".to_string());
+        }
         self.mode.badge()
     }
 
+    /// Whether a click on the picture places **anything**, ring or object. What the ghost and the Screen
+    /// tab's badge ask.
     pub fn is_armed(&self) -> bool {
+        self.rings || self.mode.is_armed()
+    }
+
+    /// Whether a click places an **object**, specifically.
+    ///
+    /// Kept apart from [`Panel::is_armed`] because the Spawn tab's archetype half is about objects and
+    /// only objects: drawing it off the wider question would put an "arm spawn mode" button on a window
+    /// that is already armed for rings, and hide the archetype list behind a mode that has nothing to do
+    /// with it.
+    pub fn object_armed(&self) -> bool {
         self.mode.is_armed()
+    }
+
+    /// **Arm ring placement.** A click on the picture puts a ring in the engine's ring buffer.
+    ///
+    /// The object mode is turned off here rather than given a precedence rule, so the two cannot both
+    /// claim the click. Nothing is read from the machine at arm time: unlike the archetype list, which is
+    /// a listing this window has to go and fetch, there is exactly one thing to place and every bound the
+    /// placement needs is read at the moment of the click, on the same freshness rule.
+    pub fn arm_rings(&mut self) {
+        self.disarm_spawn();
+        self.rings = true;
+        self.last = Some(Readout::ok(format!(
+            "ring placement armed: a click on the picture places a ring. {}",
+            oracle_frontend::rings::TEMPORARY
+        )));
+    }
+
+    /// Turn ring placement off. A click picks again.
+    ///
+    /// [`Panel::run`] is deliberately not cleared, for [`Panel::disarm_spawn`]'s reason: what this window
+    /// did to somebody's run state is not undone by turning a mode off.
+    pub fn disarm_rings(&mut self) {
+        self.rings = false;
+        self.last = Some(Readout::ok(
+            "ring placement off: a click arms a watch again".to_string(),
+        ));
+    }
+
+    /// The ring section of the Spawn tab, projected.
+    pub fn ring_listing(&self) -> spawn_picker::RingListing {
+        spawn_picker::ring_listing(self.rings, self.mode.selected())
     }
 
     pub fn readout(&self) -> Option<&Readout> {
@@ -328,6 +391,9 @@ impl Panel {
     /// failure is the server's own words — `-32012` *you forgot to load symbols* and `-32013` *this build
     /// has no such name* are a distinction a person hits here, and §8.2 keeps them apart on purpose.
     pub fn arm_spawn(&mut self, machine: &mut Machine, bus: &mut Bus) {
+        // The other half of the exclusion. See [`Panel::rings`]: two modes that could both claim one
+        // click would need a precedence rule, and a precedence rule is a thing a person has to remember.
+        self.rings = false;
         let sys = machine.system_mut();
         let listed = spawn::archetypes(&mut PlayerCaller { bus, sys });
         match listed {
@@ -696,6 +762,9 @@ impl Panel {
         glass: Option<LayerMask>,
         dot: (u16, u16),
     ) {
+        if self.rings {
+            return self.place_ring(machine, bus, dot);
+        }
         match self.mode.selected().map(str::to_string) {
             Some(archetype) => self.place(machine, bus, &archetype, dot),
             None => self.pick(machine, bus, glass, dot),
@@ -916,6 +985,61 @@ impl Panel {
             },
             Err(e) => Readout {
                 head: e.terminal(archetype, Some(&remedy)),
+                detail: None,
+                outcome,
+                refused: true,
+            },
+        });
+    }
+
+    /// **The click that places a RING**, and the pause it takes to make that legal.
+    ///
+    /// The same shape as [`Panel::place`] and deliberately not a variation on it: the pause and the
+    /// restore are [`paused_for`], unchanged, because *"the machine really was paused while the body
+    /// ran"* is the property the whole design rests on and it must not have two implementations. What
+    /// differs is only the body.
+    ///
+    /// **`emulator/write_memory` needs a paused machine of its own accord**, so the pause here is not a
+    /// courtesy to the mailbox the way it is one function up: it is the precondition of the two writes.
+    /// A ring placed on a running machine would also be racing `EntityWindow_DespawnRings`, which walks
+    /// the same buffer every frame.
+    ///
+    /// ⚑ **`RunState::Restored { frames }` stays `None` and that is a measurement, not an omission.**
+    /// Nothing here advances a frame: two pokes and a handful of reads, all on a stopped machine. An
+    /// object spawn hands its own `framesAdvanced` back because the mailbox handshake really does run
+    /// frames; a ring placement has no such number to report, and printing a zero would claim one this
+    /// window never read.
+    fn place_ring(&mut self, machine: &mut Machine, bus: &mut Bus, dot: (u16, u16)) {
+        let remedy = pause_remedy();
+        let (placed, run) = match paused_for(machine, bus, |machine, bus| {
+            let sys = machine.system_mut();
+            oracle_frontend::rings::place(&mut PlayerCaller { bus, sys }, dot)
+        }) {
+            Ok(both) => both,
+            Err(why) => {
+                self.run = None;
+                self.last = Some(Readout::refused(format!(
+                    "the window could not pause the machine to place a ring, so nothing was placed. \
+                     {why}"
+                )));
+                return;
+            }
+        };
+        self.run = Some(run);
+        self.run_deed = spawn_picker::PLACING;
+        let outcome = self.run.as_ref().map(spawn_picker::RunState::sentence);
+        self.last = Some(match placed {
+            Ok(p) => Readout {
+                head: p.terminal(),
+                detail: None,
+                outcome,
+                refused: false,
+            },
+            // The archetype name a refusal is about is `a ring`, because that is what a person asked for
+            // and there is no symbol behind it. `Refusal::terminal` puts it in the sentence, so a
+            // refusal still names its subject rather than reading as "something went wrong".
+            Err(e) => Readout {
+                head: e.terminal("a ring", Some(&remedy)),
                 detail: None,
                 outcome,
                 refused: true,
@@ -2941,6 +3065,113 @@ EQU ObjSub_Spring__Wide_Huge = $00000140
         assert!(
             off.absence.is_some(),
             "an empty list owes the reader a line"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Rings, which are not objects
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **A click means one thing, and the two placing modes cannot both claim it.**
+    ///
+    /// Exclusion by construction rather than by a precedence rule: arming either turns the other off, so
+    /// there is no state in which a click could mean both and nothing for a reader to remember. The
+    /// badge follows in both directions, because the badge is what tells a person what the next click
+    /// will do.
+    ///
+    /// ⚠ `ARCHETYPE_LST` above names a synthetic `ObjDef_Ring` and **the real builds do not**: the six
+    /// archetypes aeon publishes are Spring, PathSwap, Static, Solid, Enemy and Parent. The fixture is a
+    /// list of strings for the picker to sort, not evidence about the game.
+    #[test]
+    fn arming_rings_disarms_the_object_mode_and_arming_the_object_mode_disarms_rings() {
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        assert!(panel.object_armed() && !panel.ring_listing().armed);
+
+        panel.arm_rings();
+        assert!(panel.ring_listing().armed, "the ring mode is on");
+        assert!(
+            !panel.object_armed(),
+            "a click cannot both place a ring and place an object, so arming one must turn the \
+             other off rather than leaving a precedence rule for a reader to discover"
+        );
+        assert!(panel.is_armed(), "a click still places something");
+        let badge = panel.badge().expect("an armed mode must say so");
+        assert!(
+            badge.contains("ring") && badge.contains("temporary"),
+            "the badge must name the subject AND the one thing about it a person must not learn by \
+             watching it disappear: {badge:?}"
+        );
+
+        // And back the other way.
+        panel.arm_spawn(&mut machine, &mut bus);
+        assert!(panel.object_armed());
+        assert!(
+            !panel.ring_listing().armed,
+            "the exclusion holds in both directions"
+        );
+        assert!(
+            !panel.badge().expect("armed").contains("ring)"),
+            "the badge must follow the mode that is actually on"
+        );
+
+        // Turning the ring mode off leaves a click arming a watch, and says so.
+        panel.arm_rings();
+        panel.disarm_rings();
+        assert!(!panel.ring_listing().armed && !panel.object_armed());
+        assert!(!panel.is_armed());
+        assert!(panel
+            .readout()
+            .map(Readout::text)
+            .unwrap_or_default()
+            .contains("arms a watch"));
+    }
+
+    /// ⚑ **A ring click on a build whose listing has no ring layout refuses, and the machine is put
+    /// back.**
+    ///
+    /// The whole path, through the real bus: `arm_rings`, a click on the picture, `paused_for`, the
+    /// frontend's choreography, and the restore. The fixture's listing publishes five spring subtypes
+    /// and not one ring equate, so the bounds gate is what answers, which is exactly the case a person
+    /// hits when they load the wrong listing.
+    ///
+    /// **The alternative green paths, each ruled out by a named assertion:**
+    /// 1. *The click never reached the placement*, which would make the refusal a coincidence. The
+    ///    readout is asserted to name the missing equates.
+    /// 2. *The window left the machine paused*, which is the standing hazard `paused_for` exists for.
+    ///    The run state is asserted restored and the bus asserted running.
+    #[test]
+    fn a_ring_click_on_a_listing_with_no_ring_layout_refuses_and_puts_the_machine_back() {
+        let (mut machine, mut bus, mut panel) = armed_rig();
+        panel.arm_rings();
+        assert!(
+            !bus.is_paused(),
+            "the control: this fixture must start RUNNING or the restore witnesses nothing"
+        );
+
+        let glass = bus.layers();
+        panel.click(&mut machine, &mut bus, Some(glass), (10, 20));
+
+        let r = panel.readout().expect("every click ends in a sentence");
+        assert!(r.refused, "there is no ring layout to place against");
+        let text = r.text();
+        assert!(
+            text.contains("MAX_RING_BUFFER") && text.contains("RING_LIST_TERMINATOR"),
+            "the refusal must name what the listing does not publish, or a person has nothing to \
+             act on: {text:?}"
+        );
+        assert!(
+            text.contains("a ring"),
+            "a refusal with no subject reads as `something went wrong`: {text:?}"
+        );
+        assert_eq!(
+            panel.run_state(),
+            Some(&spawn_picker::RunState::Restored { frames: None }),
+            "nothing here advances a frame, so a frame count would be a number this window never read"
+        );
+        assert!(
+            !bus.is_paused(),
+            "the window paused this machine to try, and a refused placement is no reason to leave it \
+             stopped"
         );
     }
 }

@@ -945,6 +945,51 @@ fn read_u16(c: &mut impl Caller, addr: u32) -> Result<u16, Refusal> {
 /// must never exist: a subtype worked out from a name would be this crate inventing a number for somebody
 /// else's game. What travels is [`Subtype::byte`] of an entry [`subtypes`] read out of the listing, and
 /// nothing else can reach this argument.
+/// **The world pixel a screen dot names**, through `emulator/object_at`, or the window's own refusal.
+///
+/// ⚑ **Extracted so that everything this window can place shares ONE world join.** Ring placement
+/// ([`crate::rings`]) needs the identical answer for the identical click, and the standing lesson CR-K
+/// banked is that a second implementation lets the two *"answer one client differently about one file in
+/// one millisecond"*. There is one, and both call it.
+///
+/// **The `world` half is refused rather than guessed.** §11.26 makes `worldSource` a field precisely so
+/// its absence is not inferred from a missing `world`, and a build without the camera symbols gets a
+/// sentence instead of a coordinate: a placement at the raw dot would land somewhere plausible and wrong,
+/// which is the failure class this whole module is written against.
+#[cfg(feature = "aether")]
+pub fn world_at(c: &mut impl Caller, dot: (u16, u16)) -> Result<(u32, u32), Refusal> {
+    let (dx, dy) = dot;
+    let at = c.call("emulator/object_at", serde_json::json!({"x": dx, "y": dy}))?;
+    let source = at["worldSource"].as_str().unwrap_or("unavailable");
+    match (source, at["world"]["x"].as_u64(), at["world"]["y"].as_u64()) {
+        ("camera", Some(x), Some(y)) => Ok((x as u32, y as u32)),
+        _ => Err(Refusal::local(format!(
+            "this build cannot turn a click into a world position (object_at answered \
+             worldSource={source:?}): `Camera_X` and `Camera_Y` are not both in the loaded \
+             listing, and spawning at the raw screen dot ({dx},{dy}) would place the object \
+             somewhere plausible and wrong"
+        ))),
+    }
+}
+
+/// **The act-bounds gate**, as one call: measured, then checked, with each of the three failures its own
+/// sentence.
+///
+/// Extracted alongside [`world_at`] and for its reason. It is the same gate [`place`] has always run, and
+/// [`crate::rings`] runs it too, because a ring placed outside the act is culled by the same engine on the
+/// same camera distance with the same silence.
+#[cfg(feature = "aether")]
+pub fn in_act(c: &mut impl Caller, world: (u32, u32)) -> Result<Bounds, Refusal> {
+    let bounds = act_bounds(c)?;
+    if bounds.no_act_loaded() {
+        return Err(Bounds::no_act());
+    }
+    if !bounds.contains(world.0, world.1) {
+        return Err(bounds.outside(world.0, world.1));
+    }
+    Ok(bounds)
+}
+
 #[cfg(feature = "aether")]
 pub fn place(
     c: &mut impl Caller,
@@ -952,20 +997,7 @@ pub fn place(
     subtype: Option<u8>,
     dot: (u16, u16),
 ) -> Result<Placed, Refusal> {
-    let (dx, dy) = dot;
-    let at = c.call("emulator/object_at", serde_json::json!({"x": dx, "y": dy}))?;
-    let source = at["worldSource"].as_str().unwrap_or("unavailable");
-    let world = match (source, at["world"]["x"].as_u64(), at["world"]["y"].as_u64()) {
-        ("camera", Some(x), Some(y)) => (x as u32, y as u32),
-        _ => {
-            return Err(Refusal::local(format!(
-                "this build cannot turn a click into a world position (object_at answered \
-                 worldSource={source:?}): `Camera_X` and `Camera_Y` are not both in the loaded \
-                 listing, and spawning at the raw screen dot ({dx},{dy}) would place the object \
-                 somewhere plausible and wrong"
-            )))
-        }
-    };
+    let world = world_at(c, dot)?;
     // --- THE ACT-BOUNDS GATE (`F-SPAWN-OUTSIDE-ACT`) --------------------------------------------
     //
     // A click outside the level used to be **acked as placed and then silently culled**: aeon's
@@ -989,13 +1021,7 @@ pub fn place(
     // still refused for *that* reason first. It does run before the server's `paused` precondition, so an
     // out-of-act click on a running machine reads "outside the act" rather than "press Space" — both true,
     // and the one the person can act on without pausing first.
-    let bounds = act_bounds(c)?;
-    if bounds.no_act_loaded() {
-        return Err(Bounds::no_act());
-    }
-    if !bounds.contains(world.0, world.1) {
-        return Err(bounds.outside(world.0, world.1));
-    }
+    in_act(c, world)?;
 
     let mut req = serde_json::json!({"defSymbol": archetype, "x": world.0, "y": world.1});
     // Sent only when one was chosen, so a build with no subtypes puts no key on the wire rather than
