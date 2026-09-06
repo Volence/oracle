@@ -1,13 +1,13 @@
 {
-  "focus": "CI fix pushed and the run is live -- first real test since 22 July. Three more critical fixes behind it.",
+  "focus": "Two of four critical fixes done; CI's long test step still running.",
   "inFlight": [
     {
-      "what": "Watching the CI run on the fix (first green attempt in 46 days)",
-      "where": "origin/main f844a23",
+      "what": "CI: fixes pushed, waiting on the run's long test step",
+      "where": "origin/main",
       "agent": false
     },
     {
-      "what": "Three more critical fixes queued: the save-losing reset, the sound-chip crashes, the reset that does not reset",
+      "what": "Two critical fixes left: the sound-chip crashes, and the reset that does not reset",
       "where": "not started",
       "agent": false
     },
@@ -45,6 +45,14 @@
       "title": "Two finished pieces of work are waiting on one action from you. Relaunching your debug window is the last step for both: it lets the effects switchboard be tried against a running game for the first time, and it lets a program take a real frame-rate reading off your window. Neither needs anything else. No hurry -- it rides with whenever you next restart it anyway."
     },
     {
+      "id": "LENS-FINDINGS-EMIT",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "the CI fix finishing first",
+      "project": "LENS-PASS",
+      "title": "Your ask for a readable view of what the reviews found. The coordinator has defined the shared format; my job is to emit one line per finding from tonight's packet so the console can render it. Small. The written packet stays the authority -- this is a view of it, not a replacement."
+    },
+    {
       "id": "F-CI-DEAD-46-DAYS",
       "state": "doing",
       "size": "M",
@@ -54,11 +62,11 @@
     },
     {
       "id": "F-RESET-LOSES-SAVE",
-      "state": "open",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "one live check, whenever your window is up",
       "project": "LENS-PASS",
-      "title": "A reset can strand your in-game save, or in one case write an older save over a newer one. The old window flushes before resetting and says why; the new one does not. The test meant to catch this reads the emulator's memory and never the file, so it passes while blind. The only finding in the sweep that destroys your data."
+      "title": "FIXED and landed. A reset could strand your save, or write an older one over a newer one. Now proved by two tests that read the actual file on disk -- the old test for this checked the emulator's memory and never the file, which is why it passed for so long. Still worth one live check when your window is up: I proved the mechanism, not the keypress."
     },
     {
       "id": "F-Z80-PANICS-UNCONTAINED",
@@ -207,5 +215,5 @@
   ],
   "awaiting": "Cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears; the fix is pre-approved. (2) The Pacing A/B (d-39). (3) Whenever you next relaunch the window, that alone finishes two things I cannot -- trying the switchboard against a running game, and the first live frame-rate reading. (4) The icon (d-37) and the frozen fixtures (d-40; new evidence tonight -- I still say hold the refresh, but the cheap half is worth doing alone). (5) Which lens-sweep findings to fix after the four criticals I am on now.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T19:08:58Z"
+  "updatedAt": "2026-09-06T19:18:53Z"
 }
