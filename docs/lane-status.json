@@ -1,9 +1,9 @@
 {
-  "focus": "Pacing readout landed; it fixed a wrong number on your Pacing tab. Switchboard still building.",
+  "focus": "Switchboard landed. Waiting on your tab test for the lag, and the Pacing A/B.",
   "inFlight": [
     {
-      "what": "Your live raster/parallax switchboard panel (LIVE-EFFECTS)",
-      "where": "agent worktree; will rebase onto the pacing landing",
+      "what": "Two small fixes: a check for a contract rule we satisfy only by accident, and a tool description that understates itself",
+      "where": "agent worktree",
       "agent": true
     },
     {
@@ -33,11 +33,11 @@
   "queue": [
     {
       "id": "LIVE-EFFECTS-PANEL",
-      "state": "doing",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "a relaunch, whenever suits you",
       "project": "LIVE-EFFECTS",
-      "title": "Your switchboard, being built: pick a scene or raster program from a list and the running game switches to it, instead of holding START and a button. Turning the raster effect off works today. Turning BANDS off is deliberately refused for now -- it looked solved, but it only works by luck of what this particular act contains, so the engine team is adding a proper two-byte target and the panel says why until then. Nudging individual numbers still waits on a small piece from them."
+      "title": "Landed as an Effects tab: pick a scene or raster effect from a list and the game switches, instead of holding START and a button. Nudging numbers is visible but disabled until the engine team adds one small piece. Turning bands off will refuse on your current window until you relaunch, because your loaded symbols predate the thing it points at. Nothing has been tried against a running game yet -- that happens when you relaunch, and it closes the pacing readout at the same time."
     },
     {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
@@ -145,14 +145,14 @@
     },
     {
       "id": "F-LOOKUP-SUMMARY-OMITS-PREFIX",
-      "state": "open",
+      "state": "doing",
       "size": "S",
-      "blockedBy": "waiting for the pacing parcel to clear the file",
+      "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "Found while assessing your switchboard: the symbol-lookup tool can search by name prefix, but its own advertised description does not say so, so anyone writing a program against us would not know the ability exists. I nearly reported the ability as missing myself."
     }
   ],
   "awaiting": "Two from you, cheapest first. (1) The ten-second tab test for the lag: if the dock is on PLANES, switch tabs and say whether it clears -- the fix is pre-approved on that answer. (2) The Pacing A/B (d-39), which still decides every remaining panel. Also open and not blocking: the icon (d-37) and the frozen fixtures (d-40, I recommend hold). The pacing readout is no longer yours to answer -- the hub ruled it in your place and you can overturn it.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T16:54:31Z"
+  "updatedAt": "2026-09-06T17:11:33Z"
 }
