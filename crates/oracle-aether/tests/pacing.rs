@@ -534,6 +534,56 @@ fn a_governor_that_is_off_is_a_zero_target_and_not_an_absent_one() {
     );
 }
 
+/// **"Read-only" is the §6 row's own word, so it is asserted rather than assumed.**
+///
+/// Two observables are read before and after two `emulator/pacing` calls, because neither alone is
+/// enough: `frameToken` would miss a row that poked memory without advancing a frame, and
+/// `emulator/state_hash` **covers VDP state only** — its own reply says so in a caveat, in these words:
+/// *"they say nothing about the CPU, work RAM, the Z80, SRAM or audio"*. So this is a check over the
+/// VDP plus the frame position, stated at that scope rather than described as "the whole machine",
+/// which is what an earlier draft of this comment claimed and the reply's own caveat disproved.
+///
+/// ⚑ This row is deliberately **not** covered by `handshake.rs`'s per-row frame-advance ceiling, which
+/// sweeps the names a server actually advertised — and on that headless server this one is not among
+/// them. A deployment-dependent row leaves a deployment-dependent hole in every sweep written against
+/// the other deployment, which is the cost of §11.42 M4 and is paid here rather than left implicit.
+#[test]
+fn reading_the_pacing_moves_nothing() {
+    let p = Presenter::start("pacing-readonly", Some(a_measurement()));
+    let mut w = Wire::connect(&p);
+    w.handshake();
+    let before = w.ok("emulator/state_hash", json!({}));
+    let token_before = w.ok("emulator/status", json!({}))["frameToken"].clone();
+    w.ok("emulator/pacing", json!({}));
+    w.ok("emulator/pacing", json!({}));
+    let after = w.ok("emulator/state_hash", json!({}));
+    for k in ["vram", "cram", "vsram", "regs", "combined"] {
+        assert_eq!(
+            before[k], after[k],
+            "`emulator/pacing` moved `{k}`; the §6 row says read-only"
+        );
+    }
+    assert_eq!(
+        token_before,
+        w.ok("emulator/status", json!({}))["frameToken"],
+        "`emulator/pacing` advanced the machine; the §6 row says read-only"
+    );
+    // The control: the hashes are real readings and not a constant the server made up, so the loop
+    // above compared something. The shape is the fragment's own — `0x` plus 16 hex of FNV-1a — and the
+    // four parts must not all be the same value, which a stub returning one filler would produce.
+    for k in ["vram", "cram", "vsram", "regs"] {
+        let h = before[k].as_str().unwrap_or_default();
+        assert!(
+            h.starts_with("0x") && h.len() == 18,
+            "`{k}` is {h:?}, not the documented 16-hex fingerprint, so the loop proves nothing"
+        );
+    }
+    assert!(
+        before["vram"] != before["cram"],
+        "every fingerprint came back the same value, which is a stub rather than a reading: {before}"
+    );
+}
+
 /// **A presenting process that has not measured yet REFUSES rather than inventing a measurement.**
 ///
 /// It is the one state where the row is advertised and cannot be answered, and the honest reply is an

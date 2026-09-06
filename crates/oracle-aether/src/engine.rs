@@ -1706,6 +1706,14 @@ pub struct PacingFacts {
     /// completed" either: an iteration that runs two emulated frames presents one, so the player's
     /// `Machine::pictures` runs *above* this number and says so in its own doc. §11.42 M1 names the
     /// quantity, and the quantity is presents.
+    ///
+    /// ⚑ **What it does NOT measure, said here so that a field name cannot imply it** (§11.42 S1).
+    /// It counts pictures this process **handed to its display**, which is one step short of a frame
+    /// the GPU has scanned out: nothing in this row observes vsync, the compositor, or a backend that
+    /// dropped what it was given. The ruling states that at the contract level — the method *"does not
+    /// measure presented-under-vsync on the GPU"* — and `F-VSYNC-NEVER-MEASURED` stays open for the
+    /// other question. What this row removes is the need for a second window, and another of the
+    /// owner's foreground authorisations, in order to ask the first one.
     pub presented: u64,
     /// Presented frames per second over [`fps_window_ms`](PacingFacts::fps_window_ms). Never served as a
     /// bare number: §11.42 M2 makes the window part of the quantity, and the window is the SERVER's to

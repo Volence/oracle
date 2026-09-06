@@ -189,6 +189,17 @@ impl Presents {
     /// **One picture reached the glass.** Called from the one place that uploads a texture, so the tally
     /// is presents and not repaints: an iteration woken early re-presents the picture already bound and
     /// deliberately does not count (see `Loop::iterate`).
+    ///
+    /// ⚑ **"On the glass" is one step short of literal, and §11.42 S1 is why that is said rather than
+    /// glossed.** What this counts is a picture *handed to the display* — the texture upload — and the
+    /// backend presents it afterwards. Nothing here observes vsync or the compositor, so a picture the
+    /// backend dropped is still counted, and this is not a measurement of frames the GPU scanned out.
+    /// `F-VSYNC-NEVER-MEASURED` is the open question; this is the instrument that makes it askable
+    /// without opening a second window.
+    ///
+    /// `now` is the ITERATION's instant rather than a fresh reading taken at the upload, so a gap
+    /// between two presents is the same loop period [`crate::stats::Series`] records for the bench
+    /// report and the two cannot tell different stories about one run.
     pub fn note(&mut self, now: Instant) {
         self.total += 1;
         if let Some(prev) = self.last {
@@ -1547,6 +1558,33 @@ mod tests {
             0,
             "`--target-fps 0` is reported as 0, which is why the field is required"
         );
+    }
+
+    /// The percentile ring holds the span it says it holds — asserted against
+    /// [`FRAME_TIME_WINDOW`] and [`FRAME_PERIOD`], the two constants it is derived from, rather than
+    /// against the integer that division happens to produce today.
+    #[test]
+    fn the_percentile_ring_holds_the_window_it_claims() {
+        let held = FRAME_PERIOD * u32::try_from(FRAME_TIME_SAMPLES).expect("fits");
+        assert!(
+            held <= FRAME_TIME_WINDOW && FRAME_TIME_WINDOW - held < FRAME_PERIOD,
+            "the ring holds {held:?}, which is not {FRAME_TIME_WINDOW:?} to within one frame"
+        );
+        // And it is a bound, not a wish: the deque is trimmed to it. Feeding twice the capacity must
+        // leave exactly the capacity, or a window left open all afternoon grows without limit.
+        let t0 = Instant::now();
+        let g = Governor::start(t0, FRAME_PERIOD);
+        let mut p = Presents::start(t0);
+        let mut at = t0;
+        for _ in 0..(FRAME_TIME_SAMPLES * 2 + 10) {
+            at += FRAME_PERIOD;
+            p.note(at);
+        }
+        let FrameTimes::Sampled { samples, .. } = p.facts(at, &g, audio_facts(None)).frame_time
+        else {
+            panic!("a long run produces a distribution");
+        };
+        assert_eq!(samples as usize, FRAME_TIME_SAMPLES);
     }
 
     /// A present is counted once, and an iteration that presented nothing does not inflate the rate.
