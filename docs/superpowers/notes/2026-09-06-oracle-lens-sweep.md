@@ -689,3 +689,84 @@ can differ"* — but no reachable path can produce that assert's trigger, becaus
 create the mismatched pair refuse it first. **The fold-in is still correct** (~25 other debug asserts
 exist); the *cited* case is a trigger that cannot occur, and a test repeats the citation as its failure
 message.
+
+---
+
+# Seventh tranche — seat B2a (duplication, code-first)
+
+## ⚑ SECOND CONVERGENCE, with an extension — and a REFUTATION of a standing row
+
+**Convergence:** ARCH (crate structure) and B2a (duplication) independently found the symbol-binding
+policy duplicated. **ARCH counted four copies; B2a found FIVE** — the extra is
+`oracle-aether/src/main.rs:123`, the server binary's own startup gate. Two seats, one target, and the
+later one is strictly larger. `policy.rs:16-18` books the fix as *"the immediately-following slice, not a
+follow-up ticket"* — **the count went 3 → 5 instead**, and its cited line is stale by ~6,100 lines.
+
+**Refutation:** the booked `F-THREE-MASKED-RENDERERS` reads as a picture-drift risk. B2a **disproved the
+reachable half**: the three do differ (two missing guards), but both differences depend on
+`render_line_masked` returning a short or empty row, and `resolve_line_masked` sets width unconditionally
+to 320 or 256 — *including on the display-disabled early return* — with `&self` making it constant across
+the loop. **The clamp and the zero-guard are both dead code; no caller can see the divergence today.**
+Latent until a V30/PAL height change. **Downgrade the row accordingly** — what survives is the missing
+assertion, not a live drift.
+
+## HIGH — new
+
+### H24 ◻ The binding gate discloses damage on three surfaces and is silent on the two `oracle-aether` ones
+
+`SymbolTable::is_intact()` is false only on real damage; a listing that **binds but is not intact** still
+resolves — just **coarser**. The frontend says why in its own words: *"a PC lands on a coarser name rather
+than a wrong one… Say so out loud (the coarser name looks perfectly healthy)."*
+
+Three surfaces warn (frontend, player, replay). **Both aether surfaces say nothing** — `grep -rn is_intact
+crates/oracle-aether/src` returns two hits, both the *Indeterminate* guard, neither the match-but-damaged
+disclosure.
+
+⚑ **The divergence is already observable:** load a truncated listing in the window → warning. Load **the
+same file** over the socket → clean accept. Every downstream name — `lookup_symbol`, watch-hit PCs,
+profiler routines — then resolves to a **plausible, healthy-looking, wrong routine name**. The refusal
+sets are identical across all five copies; only disclosure diverges.
+
+### H25 ◻ The completed-frame reader exists FOUR times and **only the copy scheduled for deletion is tested**
+
+`blit_capture` (4 edge assertions) · `machine.rs:449` (none) · `engine.rs:9967` (none) · the spike (none).
+All four agree exactly today, and two of the four docs state the coupling **in prose and nothing more**,
+one of them noting *"getting them wrong is silent."*
+
+⚑ **The scheduled retirement is what RAISES this, not what excuses it: it deletes the only tested copy and
+leaves two untested ones, one of which backs `emulator/screenshot` and every hosted client.** Drift
+symptoms are a frame sheared mid-screen, or a 64-px-per-line skew on S3K's post-reset frame — neither
+throws.
+
+## MEDIUM — new
+
+- **M50 ◻ Two address boxes in the player, and a comment asserting they agree** (`memory.rs:474` vs
+  `stopping.rs:761`). The comment's premise is true and its conclusion false: the Memory panel resolves a
+  bare `1000` **locally**; the breakpoint box sends it to the server, which refuses a bare hex literal by
+  design. **So `1000` works in one box and returns `-32602` in the other.** Worse in the other direction:
+  a symbol whose name is all hex digits (`add`, `beef`, `dad`) is classified as a literal, sent as an
+  address, and refused for a reason unrelated to the user's actual mistake — **it is never looked up.**
+  Untested, and *the untested case is precisely the one the comment justifies*.
+- **M51 ◻ `oracle-aether/src/main.rs:153` uses a catch-all where its four siblings are exhaustive** — so a
+  future `RomBinding` variant lands in the **accept** arm silently. Twenty lines below, `binding_note`
+  carries the doc *"matched EXHAUSTIVELY so the compiler flags the next variant… A `_` arm is what let a
+  new `Indeterminate` shape inherit an older shape's sentence silently."* **The lesson was applied to the
+  labeller and not to the gate.**
+- **M52 ◻ `integrity_note` is byte-identical in three crates**, with a `pub` home already existing and
+  unused — and the surrounding messages have **already begun to drift cosmetically** (`WARNING {}` vs
+  `warning, {}`), which is the tell that the copies are edited independently.
+- **M53 ◻ `224` is a constant in four places** with no owner in `oracle-core` and nothing asserting
+  agreement. Latent until PAL/V30, where four constants in three crates must move together.
+
+## Verified clean — the counter-example the other findings should copy
+
+`Layer`/`LayerMask` is **the best-guarded enum in the repo**: `ALL` test-guarded, every match exhaustive
+with no `_`, and `targets()` **derives** the four wire names with a test pinning the derivation against
+the vendored contract fragment **in both directions**. A new layer cannot compile until it declares itself
+everywhere. `Tab` is double-guarded — it asks **serde's derive** what variants exist rather than trusting
+its own `ALL` list. **This is exactly the pattern M51's catch-all lacks**, in the same repo.
+
+⚑ **The seat's own honest limit, and it is the right one to state:** its clone detector finds copies that
+are still textually close, and is *"structurally blind to the most dangerous case in my brief: a copy that
+has already diverged enough to reword."* Every finding was reached by **reading**, using the scanner only
+to choose where to read.
