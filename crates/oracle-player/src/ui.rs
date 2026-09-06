@@ -83,6 +83,19 @@ pub enum Tab {
     /// The live object pool, the player slots as a section, and one addressed slot as a row expansion.
     /// Three served rows, one tab, for the same reason Memory is one tab.
     Objects,
+    /// **The spawn picker**: arm the mode, and choose the archetype a click on the picture places.
+    ///
+    /// ⚑ **This one is an exception to *things you DO are controls*, and the exception is the owner's.**
+    /// It shipped in the Screen tab's control strip on that rule and he overturned it after using it:
+    /// *"the placement works well it seems! it just takes up a lot of space haha. Maybe it should be its
+    /// own debug tool in the right panel instead of part of screens?"* The rule stands for one-shot
+    /// gestures; a picker is a **standing list you read while looking somewhere else**, and a strip is
+    /// the one place a list of that size cannot go, because every row it grows is a row of the game view.
+    /// See `crate::palette`'s header, amended in the same change.
+    ///
+    /// The *badge* stays in the Screen strip. A mode that changes what a left-click does must say so
+    /// beside the thing being clicked, and that is not what moved here.
+    Spawn,
     /// The armed breakpoint set with hit counts, an add box and a per-row toggle. **Reads
     /// [`Bus::read_breakpoints`], not `read_instruments`** — see that method for why breakpoints are not
     /// one of the two instruments.
@@ -104,13 +117,14 @@ impl Tab {
     /// `every_tab_the_player_ships_is_reachable_from_the_nav` in [`crate::nav`], which asks **serde's
     /// derive** what variants exist and compares. It has to: [`crate::nav::entries`] maps over this
     /// array, so a variant missing from it is a panel with a body and no way to open it.
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Screen,
         Tab::Planes,
         Tab::Pacing,
         Tab::Registers,
         Tab::Memory,
         Tab::Objects,
+        Tab::Spawn,
         Tab::Breakpoints,
         Tab::Watchpoints,
         Tab::Profiler,
@@ -131,6 +145,7 @@ impl Tab {
             Tab::Registers => "Registers",
             Tab::Memory => "Memory",
             Tab::Objects => "Objects",
+            Tab::Spawn => "Spawn",
             Tab::Breakpoints => "Breakpoints",
             Tab::Watchpoints => "Watchpoints",
             Tab::Profiler => "Profiler",
@@ -200,6 +215,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Registers => "registers",
             Tab::Memory => "memory",
             Tab::Objects => "objects",
+            Tab::Spawn => "spawn",
             Tab::Breakpoints => "breakpoints",
             Tab::Watchpoints => "watchpoints",
             Tab::Profiler => "profiler",
@@ -225,6 +241,7 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Registers => self.registers(ui),
             Tab::Memory => self.memory(ui),
             Tab::Objects => self.objects(ui),
+            Tab::Spawn => self.spawn(ui),
             Tab::Breakpoints => self.breakpoints(ui),
             Tab::Watchpoints => self.watchpoints(ui),
             Tab::Profiler => self.profiler(ui),
@@ -358,16 +375,6 @@ impl Panels<'_> {
                 .on_hover_text(crate::spawn_picker::RunState::HELD_INPUT_HOVER);
         }
         ui.horizontal(|ui| {
-            // Spawn mode is a **control**, not a tab: things you *do* are controls. The armed/disarmed
-            // split is one button for one question, the same rule the transport bar states.
-            if self.screen.is_armed() {
-                if ui.button("spawn: off").clicked() {
-                    self.screen.disarm_spawn();
-                }
-            } else if ui.button("spawn mode…").clicked() {
-                self.screen.arm_spawn(self.machine, self.bus);
-            }
-            ui.separator();
             // ⚑ The aspect selector. `Aspect::name()` is the frontend's own short name, so the two windows
             // cannot spell a mode differently, and the set is written out rather than derived because
             // `Aspect` is a three-variant enum with no `ALL` — an added variant is a compile error at the
@@ -387,67 +394,17 @@ impl Panels<'_> {
             ui.separator();
             ui.weak(format!("{} armed by this panel", self.screen.armed_count()));
         });
-        // ⚑ **The picker.** The owner's ask, verbatim: *"for this I'm thinking a panel where you can
-        // select the item instead of having to click a button to kind of pseudo scroll through them"*.
-        // It replaces the `next archetype` button entirely rather than sitting beside it, because a
-        // cycle key and a list are two ways to hold one selection and the second one shows what the
-        // first was hiding: how many there are, and which ones.
+        // ⚑ **The picker used to be drawn here and is now [`Tab::Spawn`]**, on the owner's own reversal
+        // of the rule that put it here: *"the placement works well it seems! it just takes up a lot of
+        // space haha. Maybe it should be its own debug tool in the right panel instead of part of
+        // screens?"* Every row the list grew was a row taken off the game view, because this strip sits
+        // above the picture and the picture gets what is left.
         //
-        // Drawn here, in the Screen strip, rather than as a dock tab of its own. `crate::palette`'s rule,
-        // already on disk: *things you look at are tabs; things you DO are controls*, and it names spawn
-        // as one of the things you do. It also has to be visible at the same time as the picture it
-        // places into, which a tab in the same dock column would not be.
-        if self.screen.is_armed() {
-            let listing = self.screen.listing();
-            let weak = ui.visuals().weak_text_color();
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("filter")
-                        .text_style(egui::TextStyle::Small)
-                        .color(weak),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(self.screen.filter_mut())
-                        .desired_width(140.0)
-                        .hint_text("ring"),
-                )
-                .on_hover_text(
-                    "narrows the list below. It never changes what a click places: the badge above \
-                     always names the armed archetype, filtered into view or not.",
-                );
-                ui.label(
-                    egui::RichText::new(&listing.count)
-                        .text_style(egui::TextStyle::Small)
-                        .color(weak),
-                );
-            });
-            // A partial measurement, said out loud. A list drawn from the first 20 of 137 archetypes
-            // with nothing saying so is this window deciding, on the reader's behalf, that the other 117
-            // do not exist.
-            if let Some(t) = &listing.truncation {
-                ui.label(
-                    egui::RichText::new(t)
-                        .text_style(egui::TextStyle::Small)
-                        .color(crate::theme::WARNING),
-                );
-            }
-            match &listing.absence {
-                // P6: an absent result is a stated line, never an empty box.
-                Some(a) => {
-                    ui.label(
-                        egui::RichText::new(a)
-                            .text_style(egui::TextStyle::Small)
-                            .color(weak),
-                    );
-                }
-                None => {
-                    if let Some(name) = select_list(ui, "archetype", &listing.rows, "spawn_picker")
-                    {
-                        self.screen.select_archetype(&name);
-                    }
-                }
-            }
-        }
+        // **What deliberately did not move: the badge and the run-state line above.** Both are standing
+        // statements about *this picture* — that a click places instead of picks, and that the window
+        // paused and resumed the machine — and a statement that can be behind another tab is not
+        // standing. The picker is a list you read; those two are facts you must not be able to miss.
+        //
         // ⚑ **The save-state slots** (S3), as controls beside the keys rather than instead of them.
         //
         // `oracle-frontend` offers these on `F2`/`F4`/`F6`/`F7`/`0`-`9` and nowhere else, which is fine
@@ -553,6 +510,143 @@ impl Panels<'_> {
                     );
                 }
             });
+        }
+    }
+
+    /// **The Spawn tab** — arm the mode, then choose the archetype a click on the picture places.
+    ///
+    /// # Why this is a tab, when the rule says a thing you DO is a control
+    ///
+    /// Because the owner used it and said so. It shipped inside [`Panels::screen_controls`] on
+    /// `crate::palette`'s rule and his verdict was *"the placement works well it seems! it just takes up
+    /// a lot of space haha. Maybe it should be its own debug tool in the right panel instead of part of
+    /// screens?"* The strip is drawn **above** the picture and [`Panels::screen`] allocates whatever is
+    /// left, so a list of archetypes and the game view were competing for the same pixels and the list
+    /// was winning. The rule is amended in `palette.rs`'s header rather than quietly broken here.
+    ///
+    /// # What did NOT move, and why the split is where it is
+    ///
+    /// The **badge** (a click places instead of picks) and the **run-state line** (this window paused
+    /// your machine and put it back) stay in the Screen strip. Both are standing statements about the
+    /// picture, and a standing statement that can be behind another tab in a dock leaf is not standing.
+    /// A picker is the opposite: a list you go and read, which is exactly what a tab is for.
+    ///
+    /// **Arming and placing are untouched.** The button calls the same
+    /// [`screen_pick::Panel::arm_spawn`]/[`screen_pick::Panel::disarm_spawn`], a row calls the same
+    /// [`screen_pick::Panel::select_archetype`], and the click that places is still
+    /// [`Panels::screen`]'s, on the picture, through the same [`screen_pick::Panel::click`]. This
+    /// function moved a layout, not a gesture.
+    ///
+    /// # The shape
+    ///
+    /// `docs/2026-09-05-debug-window-audit.md` §1 offers three. A list of symbol names is **rows of
+    /// like-shaped data**, so it is a **column table** with the selection carried by fill — [`select_list`],
+    /// unchanged, which is that furniture's single-column form. The count is a **labelled fact** on one
+    /// small line and not a big-number readout, because nobody opens a picker to read a count. The two
+    /// facts that are not counts are sentences, per P6.
+    fn spawn(&mut self, ui: &mut egui::Ui) {
+        let weak = ui.visuals().weak_text_color();
+        ui.horizontal(|ui| {
+            // The armed/disarmed split is one button for one question, the same rule the transport bar
+            // states. It lives here rather than in the strip so the tab is whole: a picker you can read
+            // but not arm would send the reader back to the panel this one was lifted out of.
+            if self.screen.is_armed() {
+                if ui
+                    .button("spawn: off")
+                    .on_hover_text("a click on the picture goes back to arming a watch")
+                    .clicked()
+                {
+                    self.screen.disarm_spawn();
+                }
+            } else if ui
+                .button("spawn mode…")
+                .on_hover_text(
+                    "reads this build's archetypes and arms the first, so a click on the Screen tab's \
+                     picture places it",
+                )
+                .clicked()
+            {
+                self.screen.arm_spawn(self.machine, self.bus);
+            }
+            // ⚑ The badge, echoed here **as the armed archetype's name** rather than as a second copy of
+            // the Screen tab's standing warning: this tab is where the selection is made, and a picker
+            // that did not show what is currently armed would be a list with no answer in it.
+            match self.screen.badge() {
+                Some(b) => {
+                    ui.colored_label(ui.visuals().warn_fg_color, b);
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new("off: a click on the picture arms a watch")
+                            .text_style(egui::TextStyle::Small)
+                            .color(weak),
+                    );
+                }
+            }
+        });
+        if !self.screen.is_armed() {
+            // P6 again: the reason there is no list is a sentence, never an empty tab.
+            ui.label(
+                egui::RichText::new(
+                    "Spawn mode is off, so this build's archetypes have not been read yet. Arm it \
+                     above and the list appears here; the click that places one is on the Screen \
+                     tab's picture, as it always was.",
+                )
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+            );
+            return;
+        }
+        ui.separator();
+        let listing = self.screen.listing();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("filter")
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+            );
+            ui.add(
+                egui::TextEdit::singleline(self.screen.filter_mut())
+                    .desired_width(140.0)
+                    // ⚑ `F-PICKER-HINT-READS-AS-QUERY`: a bare `ring` in an empty box was read by a
+                    // careful reader as a typed query. `type to filter` cannot be, because it is an
+                    // instruction rather than a value.
+                    .hint_text("type to filter"),
+            )
+            .on_hover_text(
+                "narrows the list below. It never changes what a click places: the badge above always \
+                 names the armed archetype, filtered into view or not.",
+            );
+            ui.label(
+                egui::RichText::new(&listing.count)
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+            );
+        });
+        // A partial measurement, said out loud. A list drawn from the first 20 of 137 archetypes with
+        // nothing saying so is this window deciding, on the reader's behalf, that the other 117 do not
+        // exist.
+        if let Some(t) = &listing.truncation {
+            ui.label(
+                egui::RichText::new(t)
+                    .text_style(egui::TextStyle::Small)
+                    .color(crate::theme::WARNING),
+            );
+        }
+        match &listing.absence {
+            // P6: an absent result is a stated line, never an empty box.
+            Some(a) => {
+                ui.label(
+                    egui::RichText::new(a)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+            }
+            None => {
+                if let Some(name) = select_list(ui, "archetype", &listing.rows, "spawn_picker") {
+                    self.screen.select_archetype(&name);
+                }
+            }
         }
     }
 
@@ -2226,13 +2320,6 @@ fn row_fill(ui: &egui::Ui, chosen: bool, hovered: bool, i: usize) -> egui::Color
     }
 }
 
-/// The tallest the spawn picker's list gets before it scrolls.
-///
-/// It sits in the Screen tab's control strip, above the picture, so its height is taken from the game:
-/// a list that grew with the listing would push the picture off a short window on a build with a hundred
-/// archetypes.
-const PICKER_MAX_H: f32 = 140.0;
-
 /// **A one-column selectable list**: a header, a hairline, and one banded row per entry, with the
 /// selection carried by fill. Returns the entry clicked this frame.
 ///
@@ -2274,42 +2361,44 @@ fn select_list(
         ui.add_space(3.0);
         // P7: one panel, one scroll position, and the salt is what keeps it from colliding with the hex
         // dump's or the hit log's.
-        egui::ScrollArea::vertical()
-            .id_salt(salt)
-            .max_height(PICKER_MAX_H)
-            .show(ui, |ui| {
-                let strong = ui.visuals().strong_text_color();
-                for (i, r) in rows.iter().enumerate() {
-                    // Reserved before the row so the band paints behind it, which is egui's own idiom and
-                    // the one `slot_table` already uses.
-                    let bg = ui.painter().add(egui::Shape::Noop);
-                    let inner = ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(&r.name).monospace().color(strong));
-                    });
-                    // Full width, not the width of the glyphs: a click target that stops where the text
-                    // stops is a click target a person misses.
-                    let band = egui::Rect::from_x_y_ranges(
-                        ui.max_rect().x_range(),
-                        inner.response.rect.y_range(),
-                    )
-                    .expand2(egui::vec2(0.0, 1.0));
-                    let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
-                    ui.painter().set(
-                        bg,
-                        egui::Shape::rect_filled(
-                            band,
-                            0.0,
-                            row_fill(ui, r.selected, resp.hovered(), i),
-                        ),
-                    );
-                    if resp
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        hit = Some(r.name.clone());
-                    }
+        // ⚑ **No `max_height`, since the picker became [`Tab::Spawn`].** It used to be capped at 140px
+        // because it sat in the Screen strip and every pixel it took was a pixel off the game view --
+        // which is the complaint that moved it. In a tab of its own the list is the whole content, so
+        // it takes the pane's own height: `ScrollArea` bounds itself by the `Ui`'s available space, and
+        // a fixed cap here would leave the bottom of a dedicated pane empty on purpose.
+        egui::ScrollArea::vertical().id_salt(salt).show(ui, |ui| {
+            let strong = ui.visuals().strong_text_color();
+            for (i, r) in rows.iter().enumerate() {
+                // Reserved before the row so the band paints behind it, which is egui's own idiom and
+                // the one `slot_table` already uses.
+                let bg = ui.painter().add(egui::Shape::Noop);
+                let inner = ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&r.name).monospace().color(strong));
+                });
+                // Full width, not the width of the glyphs: a click target that stops where the text
+                // stops is a click target a person misses.
+                let band = egui::Rect::from_x_y_ranges(
+                    ui.max_rect().x_range(),
+                    inner.response.rect.y_range(),
+                )
+                .expand2(egui::vec2(0.0, 1.0));
+                let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
+                ui.painter().set(
+                    bg,
+                    egui::Shape::rect_filled(
+                        band,
+                        0.0,
+                        row_fill(ui, r.selected, resp.hovered(), i),
+                    ),
+                );
+                if resp
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    hit = Some(r.name.clone());
                 }
-            });
+            }
+        });
     });
     hit
 }
@@ -2846,7 +2935,17 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
     // wants every pixel of the widest pane in the window.
     let mut dock = egui_dock::DockState::new(vec![Tab::Screen, Tab::Planes]);
     let surface = dock.main_surface_mut();
-    let [_, right] = surface.split_right(egui_dock::NodeIndex::root(), 0.68, vec![Tab::Pacing]);
+    // ⚑ **`Spawn` shares the top-right leaf with `Pacing`, and the pairing is the point.** The owner
+    // moved the picker out of the Screen strip because it was taking the game view's height, so the one
+    // place it must not go is the leaf holding the picture. It must also not be mutually exclusive with
+    // the tab a placement is checked against — `Objects` lists the pool the spawn lands in — which rules
+    // out that leaf too. `Pacing` is the right column's one tab that is never part of a spawn gesture,
+    // so a spawn never costs the reader a tab they were about to look at.
+    let [_, right] = surface.split_right(
+        egui_dock::NodeIndex::root(),
+        0.68,
+        vec![Tab::Pacing, Tab::Spawn],
+    );
     let [inspect, _] =
         surface.split_below(right, 0.45, vec![Tab::Registers, Tab::Memory, Tab::Objects]);
     // **The three stopping tabs get a pane of their own rather than a sixth, seventh and eighth title in
@@ -2867,7 +2966,7 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
 ///
 /// `egui_dock` draws only the *active* tab of a leaf, so a bench run against [`initial_dock`] executes one
 /// panel body out of the three that share a pane and reports it as the cost of adding three. That is a
-/// measurement of the arrangement rather than of the panels. This function puts all nine in their own
+/// measurement of the arrangement rather than of the panels. This function puts all ten in their own
 /// leaves, so every body runs on every frame: the worst case a user could arrange, and the only
 /// arrangement in which measuring N panels measures N panels.
 ///
@@ -2879,7 +2978,7 @@ pub fn every_tab_dock() -> egui_dock::DockState<Tab> {
     let mut dock = egui_dock::DockState::new(vec![first]);
     let surface = dock.main_surface_mut();
     let mut at = egui_dock::NodeIndex::root();
-    // Alternating right/below, so nine leaves stay roughly square rather than becoming nine slivers in
+    // Alternating right/below, so ten leaves stay roughly square rather than becoming ten slivers in
     // one direction — a leaf too thin to lay out is a leaf whose body egui may skip.
     for (i, tab) in rest.enumerate() {
         let [_, next] = if i % 2 == 0 {

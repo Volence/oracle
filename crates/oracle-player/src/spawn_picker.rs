@@ -34,12 +34,26 @@
 //!   re-spelled, because a partial measurement rendered as a whole one is the failure the frontend wrote
 //!   that note for.
 //!
-//! # Where spawn mode lives, and why this is not a tab
+//! # ⚑ Where spawn mode lives, and why this IS a tab now
 //!
-//! `crate::palette`'s rule, already on disk and not re-litigated here: *things you look at are tabs; things
-//! you DO are controls*, and it names spawn as one of the things you do. So the picker is drawn in the
-//! Screen tab's control strip, above the picture it places into, rather than in a dock tab of its own,
-//! and a person can see the list and the spot at the same time.
+//! This section used to argue the opposite, and it was overruled by the person who uses the window. It
+//! shipped in the Screen tab's control strip on `crate::palette`'s rule — *things you look at are tabs;
+//! things you DO are controls*, and that header names spawn as one of the things you do — and the ruling
+//! was flagged at landing as reversible and his. He reversed it after using it:
+//!
+//! > *"the placement works well it seems! it just takes up a lot of space haha. Maybe it should be its own
+//! > debug tool in the right panel instead of part of screens?"*
+//!
+//! The strip is drawn **above** the picture and `crate::ui::Panels::screen` allocates whatever is left, so
+//! a growing list and the game view were spending the same pixels. The rule was not wrong; its scope was.
+//! It is about **one-shot gestures** — reset, press, write, a button you hit and forget. A picker is a
+//! *standing list you read*, and a list is the one thing a strip above a picture cannot hold. `palette.rs`
+//! is amended to say so, so the next reader is not steered by a rule the window no longer follows.
+//!
+//! So the rows are drawn by `crate::ui::Panels::spawn` in `crate::ui::Tab::Spawn`, and **nothing about
+//! arming or placing moved with them**: the click that places is still on the picture, in the Screen tab,
+//! and this module's projection is unchanged by the move. What stays in the strip is the pair that must be
+//! seen without going to look for it — the badge, and [`RunState`]'s standing statement below.
 
 use oracle_frontend::spawn;
 

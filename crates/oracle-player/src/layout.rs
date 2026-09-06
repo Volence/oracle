@@ -2,8 +2,8 @@
 //! that tab together, drag anywhere, and keep their layout between runs.* Tabs and drag shipped with parcel
 //! 1; this module is the "between runs" half, and it was deliberately held back until the [`Tab`] enum
 //! stopped moving (design §6). It has `Screen | Pacing | Registers | Memory | Objects` and, since the
-//! stopping parcel, `Breakpoints | Watchpoints | Profiler`, and since the planes parcel `Planes` — all
-//! nine real.
+//! stopping parcel, `Breakpoints | Watchpoints | Profiler`, since the planes parcel `Planes`, and since
+//! the picker was lifted out of the Screen strip, `Spawn` — all ten real.
 //!
 //! # The shape, and why it is this shape
 //!
@@ -50,6 +50,8 @@ use egui_dock::DockState;
 /// 1: `Screen | Pacing | Registers | Memory | Objects`, the five-panel set parcel 2c finished.
 /// 2: the same five plus `Breakpoints | Watchpoints | Profiler`, the three stopping tabs.
 /// 3: the same eight plus `Planes`, in second position beside `Screen`.
+/// 4: the same nine plus `Spawn`, after `Objects` -- the picker lifted out of the Screen tab's control
+///    strip into a tab of its own, on the owner's own reversal of the rule that put it there.
 ///
 /// **This is not a number anybody bumps.** It is [`VOCABULARIES`]' length: the version *is* the answer to
 /// "which tab vocabulary is this", so appending a row is the bump, and there is no second place to forget.
@@ -91,6 +93,23 @@ pub const VOCABULARIES: &[&[&str]] = &[
         "Registers",
         "Memory",
         "Objects",
+        "Breakpoints",
+        "Watchpoints",
+        "Profiler",
+    ],
+    // version 4 — the Spawn tab, after Objects. ⚑ **This row costs the owner his saved layout once, and
+    // that is the bump working rather than a fault**: the picker moved out of the Screen strip and into
+    // a tab, a `DockState` carries the `Tab` names, and there is no honest way to graft a tab that did
+    // not exist onto an arrangement that never had a place for it. He gets the default back and
+    // rearranges once. See this module's header on discard-never-migrate.
+    &[
+        "Screen",
+        "Planes",
+        "Pacing",
+        "Registers",
+        "Memory",
+        "Objects",
+        "Spawn",
         "Breakpoints",
         "Watchpoints",
         "Profiler",
@@ -689,6 +708,49 @@ mod tests {
             shape(&ui::initial_dock()),
             "every_tab_dock() produced the default layout, so `--dock every-tab` changes nothing and the \
              AFTER measurement would be taken under the arrangement it was meant to replace"
+        );
+    }
+
+    /// ★ **The spawn picker does not sit in the leaf that holds the picture** — which is the owner's
+    /// complaint, stated as a layout fact rather than as a comment.
+    ///
+    /// > *"the placement works well it seems! it just takes up a lot of space haha. Maybe it should be
+    /// > its own debug tool in the right panel instead of part of screens?"*
+    ///
+    /// The picker was in the Screen tab's control strip, which is drawn **above** the picture in a tab
+    /// that then allocates whatever is left: every row the list grew came off the game view. Moving it
+    /// into a [`Tab`] only fixes that if the tab lands somewhere else, and *"somewhere else"* is exactly
+    /// what a default layout can quietly get wrong -- `egui_dock` would happily put `Spawn` in the leaf
+    /// beside `Screen`, where its pane would take width from the picture instead of height and the
+    /// complaint would come back in the other axis.
+    ///
+    /// ⚠ *If this went green for a reason other than the placement being right, what would it be?* It
+    /// would be `find_tab` returning `None` for one of them and the comparison never happening. Both
+    /// lookups `expect`, so an undocked tab panics here rather than passing.
+    #[test]
+    fn the_spawn_picker_is_not_in_the_leaf_that_holds_the_picture() {
+        let dock = ui::initial_dock();
+        let surface = dock.main_surface();
+        let (screen, _) = surface
+            .find_tab(&Tab::Screen)
+            .expect("initial_dock() docks the picture");
+        let (spawn, _) = surface
+            .find_tab(&Tab::Spawn)
+            .expect("initial_dock() docks the spawn picker");
+        assert_ne!(
+            screen.0, spawn.0,
+            "Spawn shares a leaf with Screen, so the picker is back to competing with the game view \
+             for the same pane -- which is the placement the owner asked to be rid of"
+        );
+        // And it is not in the picture's leaf by way of `Planes` either: that leaf is the picture leaf
+        // whichever of its two tabs is in front.
+        let (planes, _) = surface
+            .find_tab(&Tab::Planes)
+            .expect("initial_dock() docks Planes");
+        assert_eq!(
+            screen.0, planes.0,
+            "Screen and Planes no longer share a leaf, so this test is measuring against a layout it \
+             does not describe and its claim about `the picture leaf` has gone stale"
         );
     }
 

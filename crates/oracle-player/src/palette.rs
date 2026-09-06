@@ -5,6 +5,21 @@
 //! tabs. They are controls inside a panel or an invoked command. A tab that is empty until used is a worse
 //! button."*
 //!
+//! ⚑ **Amended 2026-09-06, by the owner, on one worked example: the rule is about one-shot gestures, and
+//! `spawn` is no longer one of its cases.** The spawn *picker* shipped in the Screen tab's control strip
+//! on the sentence above and he moved it out after using it: *"the placement works well it seems! it just
+//! takes up a lot of space haha. Maybe it should be its own debug tool in the right panel instead of part
+//! of screens?"* A strip drawn above the picture spends the game view's own pixels, so a **standing list
+//! you read** cannot live in one however much it is a thing you DO. The rule as it now stands:
+//!
+//! * a gesture you hit and forget (reset, press, write, a mode's on/off) is a control;
+//! * a **standing surface you read** is a tab, whatever it is a surface *for* — [`crate::ui::Tab::Spawn`]
+//!   is the case that establishes it;
+//! * *"a tab that is empty until used is a worse button"* survives intact and is why that tab says in
+//!   words what it is waiting for instead of drawing an empty pane.
+//!
+//! This palette is unaffected: a command line is invoked, read and dismissed, which is the first case.
+//!
 //! [`crate::ui::Tab`] is the first half. The transport bar is three of the second half, hand-placed
 //! because a human reaches for pause/resume/step constantly. This module is the rest: **every method this
 //! build serves, reachable from the window, without a tab and without a tool.** Without it the shipped
