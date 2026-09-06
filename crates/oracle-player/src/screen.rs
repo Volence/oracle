@@ -498,12 +498,21 @@ mod tests {
             );
         }
         // Every character the player's own bar can contain draws whole, in the family that draws it.
+        //
+        // ⚑ The last two were MISSING from this list until `F-AETHER-BIND-FAILURE-SILENT`, and the
+        // omission is worth naming: this row claims to cover "every character the player's own bar can
+        // contain", and `⏹`/`⚠` are `crate::stopping::Halting::headline`'s — drawn on that bar since
+        // `ARMED-STATE-VISIBLE`, never probed. `⚠` is now also the bind-failure alarm's. A hollow box on
+        // an alarm is the specific way an alarm fails quietly, so the alarm characters are the ones this
+        // list least afforded to be missing.
         for (c, mono) in [
             ('\u{25B6}', false),
             ('\u{23F8}', false),
             ('\u{23ED}', false),
             ('\u{00B7}', true),
             ('|', false),
+            ('\u{23F9}', false),
+            ('\u{26A0}', false),
         ] {
             assert_eq!(
                 g.drawable(c, mono),

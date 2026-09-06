@@ -117,8 +117,25 @@ pub enum ServeOutcome {
     NotAsked,
     /// Bound, accepting, and reachable at this path.
     Serving(PathBuf),
-    /// Asked, and it did not happen. Carries the `io::Error`'s own text, never a paraphrase.
-    Failed(String),
+    /// Asked, and it did not happen.
+    ///
+    /// ⚑ **`path` is carried separately because the error text does not reliably contain it.**
+    /// [`Server::bind`](oracle_aether::server::Server::bind) names the path in the three refusals it
+    /// composes itself (a live server on the path, a non-socket file in the way, a mode that is not
+    /// 0600), and in **none** of the five it propagates from the OS — `create_dir_all`,
+    /// `UnixListener::bind`, `set_permissions`, `metadata`, `set_nonblocking` all surface as bare
+    /// `io::Error`s whose `Display` is `Permission denied (os error 13)` and nothing else. So a reader
+    /// hitting the most ordinary failures there was told a socket could not be bound without being told
+    /// *which*, on a launch whose path may have come from `$ORACLE_SOCKET`, `$EXODUS_SOCKET`,
+    /// `$XDG_RUNTIME_DIR` or a `/tmp` fallback and is therefore not something they can recite. "Already
+    /// in use" is actionable; "already in use" without the path is a question.
+    Failed {
+        /// The **resolved** path, §7.1's answer and not the argument — see [`Bus::new`], which resolves
+        /// before serving precisely so this arm can be filled.
+        path: PathBuf,
+        /// The `io::Error`'s own text, never a paraphrase.
+        error: String,
+    },
 }
 
 impl ServeOutcome {
@@ -146,8 +163,11 @@ impl ServeOutcome {
                 oracle_aether::engine::METHODS.len(),
                 oracle_aether::rpc::PROTOCOL_VERSION
             ),
-            ServeOutcome::Failed(e) => {
-                format!("NOT serving. Cannot bind the socket ({e})")
+            ServeOutcome::Failed { path, error } => {
+                format!(
+                    "NOT serving. Cannot bind the socket on {} ({error})",
+                    path.display()
+                )
             }
         }
     }
@@ -179,6 +199,63 @@ impl AetherStatus {
             (ServeOutcome::Serving(_), false) => format!("{base}, with nothing attached yet"),
             _ => base,
         }
+    }
+
+    /// **The top bar's alarm, or `None` when there is nothing to raise** (`F-AETHER-BIND-FAILURE-SILENT`).
+    ///
+    /// # Why this exists when [`crate::ui::StatusStrip::aether_row`] already says all of it
+    ///
+    /// Because the strip lives **inside the Registers tab**, and `egui_dock` draws only each leaf's
+    /// active tab — so a reader looking at the Screen tab cannot see it. That is not a new argument: it
+    /// is `ARMED-STATE-VISIBLE`'s, written at [`crate::ui::Transport::bar`] about the halting alarm, in
+    /// the words *"it is on the TOP BAR and not in a tab, and that is the whole repair … the incident was
+    /// a human looking at a window that had halted and finding nothing that said so; an alarm behind
+    /// another tab title reproduces it exactly."* A window that was asked to serve and cannot is the same
+    /// shape of incident one instrument over: it plays perfectly, every command sent to it fails against
+    /// nothing, and the only evidence was one launch line that has scrolled away.
+    ///
+    /// # Why only [`ServeOutcome::Failed`] raises it, and the other two are silent here
+    ///
+    /// The alarm is for a **false impression**, not for a state. `Serving` and `NotAsked` are both states
+    /// the window is truthfully in and that the reader asked for: one launched with the flag and got a
+    /// bus, the other launched without it and got none, and in neither case does the window look like
+    /// something it is not. `Failed` is the only arm where what you asked for and what you have differ,
+    /// and where nothing on the glass would otherwise say so.
+    ///
+    /// The alternative — a permanent bar row for all three — is refused on this repo's own repeated
+    /// finding, stated at [`crate::ui::StatusStrip::held_row`], [`Transport::recording`] and
+    /// [`crate::stopping::Halting::headline`]: *a permanent row that reads all-clear is a row every reader
+    /// learns to skip, which is how the one day in a hundred it says something else gets skipped too.*
+    /// The always-present statement of all three states is the strip's job and the strip still does it;
+    /// the bar carries only the one that is an alarm.
+    ///
+    /// [`Transport::recording`]: crate::ui::Transport::recording
+    pub fn alarm(&self) -> Option<String> {
+        match &self.outcome {
+            ServeOutcome::Failed { path, error } => Some(format!(
+                "⚠ AETHER NOT SERVING: nothing can attach to this window ({}: {error})",
+                path.display()
+            )),
+            ServeOutcome::NotAsked | ServeOutcome::Serving(_) => None,
+        }
+    }
+
+    /// **The way out, in words**, or `None` exactly when [`alarm`](Self::alarm) is `None`.
+    ///
+    /// §9.4's rule as [`crate::stopping::Halting::advice`] applies it: *the remedy is one call, but you
+    /// have to know to make it* — so the surface is where you learn it. Unlike the halting alarm there is
+    /// no button, because there is nothing this window can do about it from here: the socket is held (or
+    /// refused) by something outside this process, and a "retry" that silently moved to a second path is
+    /// the exact behaviour [`Bus::new`] refuses in so many words.
+    pub fn advice(&self) -> Option<String> {
+        self.alarm()?;
+        Some(String::from(
+            "This window was asked to serve and could not bind, so it is playable but no client, tool \
+             or lane can attach to it: commands sent to this window reach nothing. Nothing here can \
+             fix it. Close whatever already holds the path (often another emulator window), or relaunch \
+             with --socket PATH pointing somewhere free. It is deliberately not retried on a second \
+             path, because a bus at an address nobody dials is the same silence with more steps.",
+        ))
     }
 }
 
@@ -339,10 +416,22 @@ impl Bus {
         let mut host = Host::new(config);
         host.set_machine_info(info);
         let outcome = match socket {
-            Some(path) => match host.serve(path) {
-                Ok(p) => ServeOutcome::Serving(p),
-                Err(e) => ServeOutcome::Failed(e.to_string()),
-            },
+            Some(path) => {
+                // ⚑ **Resolved HERE rather than inside `Host::serve`, and it is not a second resolver.**
+                // It is a call to §7.1's own `default_socket_path` — the very function `Host::serve`
+                // would have called on `None` — hoisted one frame up so the *failure* arm can name the
+                // path. `Host::serve` returns the resolved path on success and a bare `io::Error` on
+                // failure, so a caller that let it resolve internally could only ever report the path of
+                // a bind that worked, which is the one case a reader does not need told.
+                let resolved = path.unwrap_or_else(oracle_aether::server::default_socket_path);
+                match host.serve(Some(resolved.clone())) {
+                    Ok(p) => ServeOutcome::Serving(p),
+                    Err(e) => ServeOutcome::Failed {
+                        path: resolved,
+                        error: e.to_string(),
+                    },
+                }
+            }
             None => ServeOutcome::NotAsked,
         };
         let mut bus = Bus {
@@ -2005,12 +2094,13 @@ mod serving {
             .write_all(b"not a directory")
             .unwrap();
         let doomed = blocker.join("s");
+        let doomed_seen = doomed.clone();
 
         let mut sys = booted();
         let mut bus = Bus::new(&mut sys, MachineInfo::default(), false, Some(Some(doomed)));
         assert!(!bus.is_serving(), "the bind failed, so nothing is serving");
         assert_eq!(bus.socket_path(), None);
-        let ServeOutcome::Failed(e) = bus.serve_outcome() else {
+        let ServeOutcome::Failed { path, error } = bus.serve_outcome() else {
             panic!(
                 "a failed bind must report Failed, not {:?} — an ignored `socket` argument would look \
                  exactly like NotAsked here",
@@ -2018,13 +2108,33 @@ mod serving {
             );
         };
         assert!(
-            !e.is_empty(),
+            !error.is_empty(),
             "the io::Error's own text is carried, never a paraphrase"
+        );
+        // ⚑ `F-AETHER-BIND-FAILURE-SILENT`: the outcome names the path it could not bind.
+        //
+        // **This arrangement is exactly the case that motivated carrying it.** The failure here is
+        // `create_dir_all` on a regular file, which propagates a bare `io::Error` whose whole `Display`
+        // is `Not a directory (os error 20)` — so the second assertion is a real measurement and not a
+        // restatement of the first: before the path became a field, the reader of this failure was told
+        // a socket could not be bound and never told which.
+        assert_eq!(
+            path, &doomed_seen,
+            "the outcome must carry the resolved path"
+        );
+        assert!(
+            !error.contains(&doomed_seen.display().to_string()),
+            "the error text now names the path by itself, so `path` witnesses nothing on this \
+             arrangement — pick a failure whose io::Error is still bare, or this assertion is a tautology"
         );
         let line = bus.announcement();
         assert!(
-            line.contains("NOT serving") && line.contains(e),
+            line.contains("NOT serving") && line.contains(error),
             "the launch line must name the failure and quote the error: {line}"
+        );
+        assert!(
+            line.contains(&doomed_seen.display().to_string()),
+            "the launch line must name the path that could not be bound: {line}"
         );
         // …and it is not fatal: the in-process registry still answers, which is the whole claim behind
         // "degraded to inert".
@@ -2063,7 +2173,7 @@ mod serving {
             Some(Some(p.clone())),
         );
         assert!(!b.is_serving(), "the second window must not bind");
-        let ServeOutcome::Failed(e) = b.serve_outcome() else {
+        let ServeOutcome::Failed { error: e, .. } = b.serve_outcome() else {
             panic!("a busy path must fail, got {:?}", b.serve_outcome());
         };
         assert!(
@@ -2156,16 +2266,134 @@ mod serving {
             up.contains("/tmp/x/s") && up.contains("serving on"),
             "the serving line must name the path a client is supposed to dial: {up}"
         );
-        let down = ServeOutcome::Failed("boom".into()).sentence();
+        let down = ServeOutcome::Failed {
+            path: PathBuf::from("/tmp/x/s"),
+            error: String::from("boom"),
+        }
+        .sentence();
         assert!(
             down.contains("NOT serving") && down.contains("boom"),
             "the failure line must be distinguishable from the quiet one at a glance: {down}"
+        );
+        assert!(
+            down.contains("/tmp/x/s"),
+            "the failure line must name the path that could not be bound — `already in use` without a \
+             path is a question, not an answer: {down}"
         );
         // The three are pairwise different sentences. Collapsing any two would make the state this
         // parcel exists to reveal indistinguishable from a state it is not.
         assert_ne!(quiet, up);
         assert_ne!(quiet, down);
         assert_ne!(up, down);
+    }
+
+    /// ★ **`F-AETHER-BIND-FAILURE-SILENT`: exactly one of the three outcomes raises the bar's alarm, and
+    /// it is the one where the window is in a state it does not look like.**
+    ///
+    /// The row this closes asked for a launch that *refuses to start* on a bind failure. That is refused
+    /// at [`Bus::new`], in a decision that predates the row and is written there: *"A bind failure
+    /// degrades to inert and is never fatal: someone who launched a game to play it should not be stopped
+    /// by a socket."* This is the other repair — the window still plays, and it stops looking fine.
+    ///
+    /// **Three alternative green paths, all ruled out here:**
+    ///
+    /// 1. *`alarm` returns `Some` for everything*, which would make "the failure raises it" vacuous and
+    ///    would put a permanent all-clear row on the bar. Ruled out by asserting `None` on both other
+    ///    arms — including `Serving`, which is the arm a careless `is_serving()`-style test would miss.
+    /// 2. *`alarm` returns `Some` for nothing*, so the bar can never raise it. Ruled out by the `Failed`
+    ///    row, which also checks the path and the reason are both *in* the string: a generic "bus
+    ///    unavailable" is not actionable, and this is the assertion that says so.
+    /// 3. *`advice` is `Some` when `alarm` is `None`*, i.e. a hover with no line to hover over. Ruled out
+    ///    by asserting the two are `Some` and `None` together on all three arms.
+    #[test]
+    fn only_a_failed_bind_raises_the_bars_alarm_and_it_names_the_path_and_the_reason() {
+        let failed = AetherStatus {
+            outcome: ServeOutcome::Failed {
+                path: PathBuf::from("/run/user/1000/oracle.sock"),
+                error: String::from("Address already in use (os error 98)"),
+            },
+            attached: false,
+        };
+        let raised = failed.alarm().expect(
+            "a window asked to serve that could not bind must raise the bar's alarm — this is the whole \
+             of F-AETHER-BIND-FAILURE-SILENT",
+        );
+        assert!(
+            raised.contains("/run/user/1000/oracle.sock"),
+            "the alarm must name the path: `NOT SERVING` without one leaves the reader with a question \
+             rather than an action: {raised}"
+        );
+        assert!(
+            raised.contains("Address already in use"),
+            "the alarm must carry the reason — `already in use`, a permissions error and a missing \
+             directory need three different responses from the reader: {raised}"
+        );
+        assert!(
+            failed.advice().is_some(),
+            "a raised alarm must carry its remedy: the surface is where you learn the way out"
+        );
+
+        // 1: the two arms that must stay silent, and `Serving` is the load-bearing one.
+        for quiet in [
+            AetherStatus {
+                outcome: ServeOutcome::NotAsked,
+                attached: false,
+            },
+            AetherStatus {
+                outcome: ServeOutcome::Serving(PathBuf::from("/tmp/x/s")),
+                attached: false,
+            },
+            AetherStatus {
+                outcome: ServeOutcome::Serving(PathBuf::from("/tmp/x/s")),
+                attached: true,
+            },
+        ] {
+            assert_eq!(
+                quiet.alarm(),
+                None,
+                "{:?} raised the bar's alarm. A permanent row that reads all-clear is a row every \
+                 reader learns to skip — these states are the status strip's to state, not the bar's",
+                quiet.outcome
+            );
+            // 3: no hover text without a line to hover over.
+            assert_eq!(
+                quiet.advice(),
+                None,
+                "advice without an alarm is a remedy for a problem the window is not having"
+            );
+        }
+    }
+
+    /// **The alarm and the strip's row are about one window, and neither is a substitute for the other.**
+    ///
+    /// The bar's alarm is short and only ever raised on failure; the strip's row is long and always
+    /// present. This pins the one property that must hold across both: they agree on the *path*, so a
+    /// reader who sees the bar and then opens the Registers tab is not given two addresses for one
+    /// socket. Asserting the strings are equal would be wrong — they are deliberately different lengths
+    /// for different surfaces — so the shared fact is what is checked.
+    #[test]
+    fn the_bar_alarm_and_the_strip_row_name_the_same_socket() {
+        let status = AetherStatus {
+            outcome: ServeOutcome::Failed {
+                path: PathBuf::from("/run/user/1000/oracle.sock"),
+                error: String::from("Permission denied (os error 13)"),
+            },
+            attached: false,
+        };
+        let alarm = status.alarm().expect("failed binds raise it");
+        let row = status.sentence();
+        for needle in ["/run/user/1000/oracle.sock", "Permission denied"] {
+            assert!(
+                alarm.contains(needle) && row.contains(needle),
+                "the bar and the strip must not describe one socket differently — {needle:?} is \
+                 missing from one of them.\n  bar: {alarm}\n  strip: {row}"
+            );
+        }
+        assert_ne!(
+            alarm, row,
+            "if the two surfaces carry the identical string, one of them is spelling the other's job: \
+             the bar is an alarm and the strip is a statement"
+        );
     }
 }
 

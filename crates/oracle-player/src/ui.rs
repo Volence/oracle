@@ -3777,6 +3777,30 @@ impl Transport {
             self.issue_all(machine, bus, &gestures);
         }
 
+        // --- ⚑ F-AETHER-BIND-FAILURE-SILENT: the window was asked to serve and could not. ---
+        //
+        // **On the top bar for the halting alarm's reason, ten lines up, and it is the same defect one
+        // instrument over.** The status strip's `aether` row already states all three bus outcomes
+        // persistently and has since `PLAYER-SERVE` — but the strip is drawn inside the Registers tab,
+        // and `egui_dock` draws only each leaf's active tab, so the statement is behind a tab title. The
+        // reported incident is a relaunch whose bind failed: the window played, every command sent to it
+        // failed against nothing, and the sole evidence was one launch line that scrolled away.
+        //
+        // The launch line is **unchanged and still unconditional** (`main` prints `announcement()` with
+        // no per-case arm), and so is the strip's row. This adds the standing surface; it replaces
+        // neither. `Failed` is the only arm that raises it — see `AetherStatus::alarm` for why a
+        // permanent all-clear row is refused here and belongs to the strip.
+        let aether = bus.aether_status();
+        if let Some(head) = aether.alarm() {
+            ui.separator();
+            // Error-coloured from the *outcome*, never from the shape of the string — `Halting`'s rule:
+            // an alarm that reads its own text back to decide how loud to be is one refactor away from
+            // being quiet.
+            ui.colored_label(ui.visuals().error_fg_color, &head)
+                .on_hover_text(aether.advice().unwrap_or_default());
+            drew.push(screen::Run::after_sep(head));
+        }
+
         // **What is RECORDING**, read from the instruments the loop itself feeds — one count, not a list,
         // because the lists are the three stopping tabs. It belongs on the transport bar rather than in a
         // tab for the same reason the buttons do: a human reaching for "step" needs to know what is
@@ -3927,6 +3951,122 @@ mod transport_tests {
             None,
         );
         (machine, bus)
+    }
+
+    /// A machine and a bus that was **asked to serve and could not** — a real bind failure through the
+    /// real path, never a hand-built [`crate::bus::ServeOutcome`].
+    ///
+    /// The failure is a regular file standing where the socket's parent directory must be, so
+    /// `create_dir_all` fails: the same arrangement `bus::tests::a_bind_failure_is_loud_specific_and_not_fatal`
+    /// uses, and chosen for the same reason — its `io::Error` is a bare `Not a directory (os error 20)`
+    /// with no path in it, so nothing downstream can get the path right by accident.
+    fn failing_rig() -> (Machine, Bus, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("oracle-bar-alarm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let blocker = dir.join("not-a-directory");
+        std::fs::write(&blocker, b"x").expect("blocker");
+        let doomed = blocker.join("s");
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let bus = Bus::new(
+            machine.system_mut(),
+            oracle_aether::host::MachineInfo::default(),
+            false,
+            Some(Some(doomed.clone())),
+        );
+        (machine, bus, dir)
+    }
+
+    /// ★ **`F-AETHER-BIND-FAILURE-SILENT`: the top bar actually DRAWS the alarm, and a quiet launch draws
+    /// nothing in its place.**
+    ///
+    /// This drives [`Transport::bar`] itself under a headless `egui` ui and reads back the [`screen::Run`]s
+    /// the bar **hands over having painted them** — which is why this is a claim about the window and not
+    /// about a struct. `bar` returns what it drew rather than being read back (see [`crate::screen`]), so a
+    /// run in this vector is a widget that was added to a `Ui`; there is no second expression that could
+    /// agree with a draw that never happened.
+    ///
+    /// It is deliberately NOT a claim that the alarm is *visible or legible on the owner's screen*. Layout,
+    /// clipping and font are the toolkit's, and a headless harness answers a different question. That
+    /// confirmation is owed and is the owner's to give.
+    ///
+    /// **Three alternative green paths, ruled out in order:**
+    ///
+    /// 1. *The bar draws the alarm unconditionally*, so the failing case proves nothing about the
+    ///    condition. Ruled out by the quiet half: a `NotAsked` bus must draw no such run.
+    /// 2. *The quiet bar draws nothing at all* — a `bar` that returned an empty vector, or a harness that
+    ///    never ran the closure, would satisfy the absence in 1 perfectly. Ruled out by the positive
+    ///    control: the quiet bar must still draw its `pause` button, so the absence is measured.
+    /// 3. *The alarm is drawn but says nothing actionable.* Ruled out by asserting the drawn text carries
+    ///    the socket path, which is the field this parcel added to `ServeOutcome::Failed`.
+    #[test]
+    fn the_top_bar_draws_the_bind_failure_alarm_and_a_quiet_launch_draws_nothing_there() {
+        const ALARM: &str = "AETHER NOT SERVING";
+
+        let (mut machine, mut bus, dir) = failing_rig();
+        assert!(
+            !bus.is_serving(),
+            "the fixture must have actually failed to bind, or the alarm below is not the one being \
+             tested"
+        );
+        let path_shown = match bus.aether_status().outcome {
+            crate::bus::ServeOutcome::Failed { ref path, .. } => path.display().to_string(),
+            ref other => panic!("the fixture must produce a bind FAILURE, got {other:?}"),
+        };
+
+        let mut t = Transport::default();
+        let mut drew: Vec<screen::Run> = Vec::new();
+        egui::__run_test_ui(|ui| {
+            drew = t.bar(ui, &mut machine, &mut bus, None);
+        });
+        let painted = drew
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            painted.contains(ALARM),
+            "the top bar drew nothing about a bus it was asked to open and could not — this is the \
+             defect, reproduced: {painted}"
+        );
+        // 3: and it is actionable, not a shrug.
+        assert!(
+            painted.contains(&path_shown),
+            "the bar's alarm must name the socket it could not bind; `bus unavailable` is not something \
+             a reader can act on: {painted}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // --- 1 and 2: the control. A launch nobody asked to serve is not in a false state. ---
+        let (mut machine, mut bus) = rig();
+        assert!(
+            matches!(
+                bus.aether_status().outcome,
+                crate::bus::ServeOutcome::NotAsked
+            ),
+            "the control must be the never-asked launch, not a second failure"
+        );
+        let mut t = Transport::default();
+        let mut quiet: Vec<screen::Run> = Vec::new();
+        egui::__run_test_ui(|ui| {
+            quiet = t.bar(ui, &mut machine, &mut bus, None);
+        });
+        let quiet_text = quiet
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        // ⚑ The positive control FIRST: an absence measured against a bar that drew nothing is not a
+        // measurement. `PAUSE_LABEL` is drawn unconditionally by `bar`'s first widget.
+        assert!(
+            quiet_text.contains(PAUSE_LABEL),
+            "the control bar drew no pause button, so it drew nothing — the assertion below would hold \
+             against a harness that never ran the closure: {quiet_text}"
+        );
+        assert!(
+            !quiet_text.contains(ALARM),
+            "a window nobody asked to serve is not in a false state, and a permanent banner on the \
+             ordinary launch is how readers learn to ignore banners: {quiet_text}"
+        );
     }
 
     /// ★ **The label and the method move together**, which is the pair `emulator/screen_text` makes
