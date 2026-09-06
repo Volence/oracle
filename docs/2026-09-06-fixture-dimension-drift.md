@@ -88,6 +88,7 @@ with `git checkout HEAD -- <path>` from a tree verified clean.
 | M2 | probe always returns 0 | `"equate_prefix_count" => Some(0), // MUTANT M2` | **RED** `every_probe_kind_can_report_presence` only — *"cannot see a dimension that IS present in the control listing"*. **Manifest test stayed GREEN.** |
 | M3 | strip the stake from an absent row | `s4.debug.lst\tequate_prefix_count\tObjSub_\t0\t…\t-` | **RED** `absent_dimensions_are_recorded_with_who_relies_on_them` only. |
 | M4 | the `Option` path, not the integer path | `s4.debug.lst\tphase_count\t-\t6\t…` | **RED** `manifest_matches_the_frozen_listings` — *"manifest says 6, the frozen bytes give absent"*. |
+| M5 | a pinned listing with **no rows at all** (all six `demo.debug.lst` rows deleted) | manifest rows for that file: 0 | **RED** — *"these frozen listings have no row in DIMENSIONS.tsv and are measured for nothing: demo.debug.lst"*. Added after M1–M4, when the gate was found to iterate the manifest and never ask the directory. |
 
 Reporter controls (it has no assertions, so its failure mode is a *quiet* one): `--aeon` at a
 non-checkout, an unresolvable `--aeon-ref`, and `--sigil` at a non-checkout. The first two print
@@ -96,7 +97,19 @@ non-checkout, an unresolvable `--aeon-ref`, and `--sigil` at a non-checkout. The
 through `_finish()`.
 
 Runner: `cargo test -p oracle-core --test aeon_dimensions`, which the default `cargo test --workspace`
-selector picks up as an integration test of `oracle-core`.
+selector picks up as an integration test of `oracle-core`. The reporter's new section rides the runner
+that already called it, `tools/replay_playthroughs.sh` (which invokes `aeon_pin_report.py || true`).
+
+**The blind-spot inventory needs no extra CI step**, and that was measured rather than assumed. The
+`aeon_pin.rs` precedent needs one because libtest swallows a *passing* test's stdout; this file uses the
+house `loud()` pattern on fd 2, which the capture does not touch. Confirmed in the M1 run, which had no
+`--nocapture` and still printed the full sixteen-row inventory.
+
+**Whole-suite state at the tip of this work**: `cargo test --workspace`, debug profile, default selector
+(not `--all-targets`): **2556 passed, 0 failed, 6 ignored** across 78 suites. `cargo clippy --workspace
+--all-targets -- -D warnings` exit 0. `cargo fmt --all -- --check` exit 0. The `vendor/` symlink was
+created before any of it — without it eight `save_state` rows fail while the whole 68000 sweep skips and
+passes, so a total taken without it would not mean what it says.
 
 ## 4. What I measured, and the two numbers I corrected
 
