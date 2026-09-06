@@ -69,6 +69,65 @@
 //! shape, which cost 684 phantom `skipped_lines` on the real `s4.lst` and made [`SymbolTable::is_intact`]
 //! wrong about a healthy file.
 //!
+//! # The `Phase Table` — a THIRD population, and the one that answers "is this address 68000 or Z80?"
+//!
+//! Sigil began appending a fourth section, **after** the `Equate Table`'s `N equates` trailer, stating for
+//! each phased symbol where its code **runs** (VMA) versus where it is **stored** (LMA):
+//!
+//! ```text
+//!   Phase Table (every address above is a VMA):      <- section header (prose is NOT keyed on)
+//!   -------------------------------------------
+//!
+//! PHASE COUNT 6                                      <- the count line (see the two spellings below)
+//! PHASE SoundTablesZ80_Head VMA $00008000 LMA $000B8000
+//! ```
+//!
+//! **The listing was right and this parser was the consumer nobody told.** The section state machine had
+//! no state past `Section::EquateTable`, so every line here was measured against `EQU <name> = $<hex>`,
+//! failed it, and became damage: the live `aeon/s4.debug.lst` reported **8** skipped lines (the header,
+//! the count, and its six rows), [`SymbolTable::is_intact`] went false, and the frontend's load policy
+//! dropped to coarser resolution — where an address resolves to a *nearby wrong name* rather than failing.
+//! A plausible answer instead of an error, for every consumer reading symbols against that ROM.
+//!
+//! ## The rows are ingested, not merely skipped
+//!
+//! `SoundTablesZ80_Head` runs at `$8000` and is stored at `$B8000`. `$8000` is not a 68000 bus address at
+//! all — it is where the **Z80** sees that block through its bank window. This is exactly the distinction
+//! the engine lane lost an hour to, misreading 45 low-valued 68000 routines as Z80 phased code, and this
+//! table is its authoritative statement. So [`PhaseEntry`] carries **both** halves.
+//!
+//! ⚑ **Never re-derive the phased set by scanning `.emp` source.** The assembler lane measured its own
+//! source-scan derivation against these listings and it was wrong in *both* directions: ~30 phantoms and
+//! one genuine miss. The miss is **structural, not random** — a source scan captures top-level names and
+//! drops locals, so it misses exactly the local labels inside phased procs, **including an end-of-code
+//! marker whose entire purpose is to be a boundary**. A missing boundary does not leave a gap you can see;
+//! it leaves a range that silently runs on. The listing is the only source of this fact.
+//!
+//! ## Two live spellings of the count line, and the rule that reads both
+//!
+//! The count is `PHASE COUNT 6` in the listing on disk today and `PHASE-COUNT 6` from `da9adb24` onward.
+//! **Both parse**, and neither spelling is what identifies a row. A **row** is recognised by its literal
+//! `VMA` and `LMA` tokens ([`parse_phase_line`]); anything else in the section that begins with a `PHASE`
+//! token is tested against the two count shapes, and anything left over is damage. Keying rows on the
+//! count's spelling — `^PHASE ` and not `^PHASE-` — would key on the one thing that has already changed
+//! once; keying on `VMA`/`LMA` keys on the two facts a row exists to carry, so a *third* count spelling
+//! still cannot be mistaken for a row.
+//!
+//! ## An absent count is not a count of zero
+//!
+//! The current assembler always emits the count line, so its **absence means an older emitter**, not
+//! "nothing is phased". [`SymbolTable::phase_count`] is therefore an `Option<usize>`: `None` is *the
+//! listing stated no count*, `Some(0)` is *the listing stated that nothing is phased*, and the two can
+//! never collapse into each other. `has_phase_table` separates the third case, *no such section at all*.
+//!
+//! ## It is a third kind of fact, and it folds into neither of the other two
+//!
+//! Only `Section::EquateTable` rows reach the equate map and only `Section::SymbolTable` rows reach
+//! `syms`; the phase rows reach **neither**. A `PHASE` row is not a [`Symbol`] (it would put a Z80 VMA
+//! into 68000 nearest-preceding search) and not an equate (it is a pair of addresses, not a value), so it
+//! lives in its own section with its own accessors, by the same structural argument §11.36 made for
+//! equates: nothing downstream has to *remember* to filter it out.
+//!
 //! # The other dialect: stock AS listings (`sonic.lst`, the classic disassemblies)
 //!
 //! Sigil's emitter is one producer of this format; the **AS macro assembler itself** is the other, and the
@@ -474,6 +533,9 @@ pub struct SymbolTable {
     /// `None` when the listing carries no `Equate Table` section at all — every listing sigil emitted
     /// before 2026-08-19, and every AS listing.
     equates: Option<EquateSection>,
+    /// `None` when the listing carries no `Phase Table` section at all. The **third** population: neither
+    /// its names nor its addresses reach `syms`, `rev` or the equate map. See the module docs.
+    phase: Option<PhaseSection>,
     non_address: NonAddressRows,
 }
 
@@ -516,6 +578,55 @@ struct EquateSection {
     by_name: BTreeMap<String, u64>,
 }
 
+/// One `Phase Table` row: a phased symbol, where its code **runs**, and where it is **stored**.
+///
+/// `SoundTablesZ80_Head` runs at `$8000` and is stored at `$B8000`. The two are different questions and
+/// this is the only artifact that answers both — see the module docs for why the phased set must never be
+/// re-derived from source, and why a [`vma`](Self::vma) is not necessarily a 68000 bus address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhaseEntry {
+    /// The symbol's name, exactly as the listing spells it. May equal a `Symbol Table` name — the two are
+    /// statements about the same label — and the phase row is still not a [`Symbol`].
+    pub name: String,
+    /// **Where the code runs.** Every address elsewhere in the listing is a VMA, which is what the section
+    /// header says. ⚑ **Not necessarily a 68000 bus address**: for Z80-phased blocks this is what the
+    /// *Z80* sees through its bank window (`$8000`), so it is stored exactly as written and is neither
+    /// masked with [`BUS_ADDR_MASK`] nor classified with [`AddrSpace`]. Doing either would be this module
+    /// quietly asserting a bus it has no evidence for.
+    pub vma: u32,
+    /// **Where the code is stored** — the offset in the assembled image the loader copies it from.
+    pub lma: u32,
+}
+
+impl PhaseEntry {
+    /// Is this block actually moved, or does it run where it is stored? `false` is a real and expected
+    /// answer: a phase directive that resolves to the identity is still a phase directive.
+    pub fn is_relocated(&self) -> bool {
+        self.vma != self.lma
+    }
+}
+
+/// What we keep of the `Phase Table`: the rows, a name index, and the count the section stated.
+///
+/// A third population, disjoint from both others by construction — a row here is never pushed into `syms`
+/// (it would put a Z80 VMA into 68000 nearest-preceding search) and never into the equate map (it is a
+/// pair of addresses, not a value). See the module docs.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct PhaseSection {
+    /// The rows, in listing order.
+    rows: Vec<PhaseEntry>,
+    /// The value of the section's count line, when it stated one.
+    ///
+    /// ⚑ `None` is **the listing stated no count** — an older emitter — and is a different fact from
+    /// `Some(0)`, *the listing stated that nothing is phased*. The current assembler always emits the
+    /// line, so the two must never collapse.
+    declared: Option<usize>,
+    /// Name → index into [`rows`](Self::rows). A duplicate name cannot occur in a real listing; if one
+    /// ever does the last row wins, deterministically, and `rows` still counts both so the count check
+    /// still closes.
+    by_name: BTreeMap<String, usize>,
+}
+
 /// Everything [`SymbolTable::parse`] learns that is not a [`Symbol`]. Bundled so [`SymbolTable::build`]
 /// keeps a readable signature as the format grows sections.
 struct ParseCounts {
@@ -523,6 +634,7 @@ struct ParseCounts {
     declared_unused: Option<usize>,
     skipped_lines: usize,
     equates: Option<EquateSection>,
+    phase: Option<PhaseSection>,
     non_address: NonAddressRows,
 }
 
@@ -541,6 +653,12 @@ enum Section {
     AfterSymbolTable,
     /// Inside `Equate Table (name = value; values, not addresses):`.
     EquateTable,
+    /// Inside `Phase Table (every address above is a VMA):`.
+    ///
+    /// This state is the fix. The machine previously had no state past [`EquateTable`](Self::EquateTable)
+    /// and so never left it, measuring the whole phase section against `EQU <name> = $<hex>` and calling
+    /// all 8 of its lines malformed equates. See the module docs.
+    PhaseTable,
 }
 
 impl SymbolTable {
@@ -558,6 +676,7 @@ impl SymbolTable {
         let mut declared_unused = None;
         let mut skipped_lines = 0usize;
         let mut equates: Option<EquateSection> = None;
+        let mut phase: Option<PhaseSection> = None;
         let mut non_address = NonAddressRows::default();
 
         for line in text.lines() {
@@ -573,6 +692,16 @@ impl SymbolTable {
             if section != Section::EquateTable && head.starts_with("Equate Table") {
                 section = Section::EquateTable;
                 equates = Some(EquateSection::default());
+                continue;
+            }
+            // Matched at the top level, exactly like `Equate Table`, so the section is entered from
+            // whatever state the cursor is in. Today sigil appends it after the equates trailer; keying
+            // the transition on "we are currently in the Equate Table" would re-create the original bug
+            // one section over the first time the emitter reorders. **Only the two words are matched** —
+            // the rest of the header line is prose the assembler may reword.
+            if section != Section::PhaseTable && head.starts_with("Phase Table") {
+                section = Section::PhaseTable;
+                phase = Some(PhaseSection::default());
                 continue;
             }
             match section {
@@ -638,6 +767,28 @@ impl SymbolTable {
                         skipped_lines += 1;
                     }
                 }
+                Section::PhaseTable => {
+                    // Ingested into `p.rows` and NOWHERE else: not a `Symbol`, not an equate.
+                    let Some(p) = phase.as_mut() else { continue };
+                    if is_rule_line(t) {
+                        continue;
+                    }
+                    match parse_phase_line(t) {
+                        PhaseLine::Row { name, vma, lma } => {
+                            p.by_name.insert(name.to_string(), p.rows.len());
+                            p.rows.push(PhaseEntry {
+                                name: name.to_string(),
+                                vma,
+                                lma,
+                            });
+                        }
+                        // Last one wins if a listing ever repeats the line; the disagreement then shows
+                        // up in `matches_declared_phase`, which is where it belongs.
+                        PhaseLine::Count(n) => p.declared = Some(n),
+                        // Recognising the section is not swallowing it, exactly as for the equates.
+                        PhaseLine::Unrecognised => skipped_lines += 1,
+                    }
+                }
                 Section::Body => {
                     // Body lines are only a fallback, and a real AS listing's body is full of source text
                     // that is not a label — a non-match there is normal, so it is not counted as skipped
@@ -665,6 +816,7 @@ impl SymbolTable {
                 declared_unused,
                 skipped_lines,
                 equates,
+                phase,
                 non_address,
             },
         ))
@@ -723,6 +875,7 @@ impl SymbolTable {
             declared_unused: counts.declared_unused,
             skipped_lines: counts.skipped_lines,
             equates: counts.equates,
+            phase: counts.phase,
             non_address: counts.non_address,
         }
     }
@@ -758,8 +911,9 @@ impl SymbolTable {
         self.declared_unused
     }
 
-    /// Lines inside the `Symbol Table` or `Equate Table` sections that did not parse as a row of that
-    /// section. Non-zero means the file is truncated or the format drifted — worth surfacing, never fatal.
+    /// Lines inside the `Symbol Table`, `Equate Table` or `Phase Table` sections that did not parse as a
+    /// row of that section. Non-zero means the file is truncated or the format drifted — worth surfacing,
+    /// never fatal.
     pub fn skipped_lines(&self) -> usize {
         self.skipped_lines
     }
@@ -851,6 +1005,56 @@ impl SymbolTable {
         self.equates.as_ref().map(|e| e.declared == Some(e.rows))
     }
 
+    /// **Every `Phase Table` row**, in listing order. Empty when the listing has no such section.
+    ///
+    /// A phased symbol's [`vma`](PhaseEntry::vma) is where its code runs and its [`lma`](PhaseEntry::lma)
+    /// is where it is stored; the addresses everywhere else in the listing are VMAs. ⚑ **Do not
+    /// re-derive this set by scanning source** — see the module docs for the measurement that says why
+    /// (~30 phantoms, and a structural miss of the local labels inside phased procs, including an
+    /// end-of-code marker whose whole purpose is to be a boundary).
+    pub fn phase_entries(&self) -> &[PhaseEntry] {
+        self.phase.as_ref().map_or(&[], |p| &p.rows)
+    }
+
+    /// The phase record for one symbol, by exact name. `None` means *this listing does not phase that
+    /// name*, which covers both "no `Phase Table` at all" and "the section is there and the name is not
+    /// in it"; [`has_phase_table`](Self::has_phase_table) separates the two.
+    pub fn phase_of(&self, name: &str) -> Option<&PhaseEntry> {
+        let p = self.phase.as_ref()?;
+        p.by_name.get(name).map(|&i| &p.rows[i])
+    }
+
+    /// Does this listing carry a `Phase Table` section at all? `false` for every listing emitted before
+    /// sigil started appending one, and for every AS listing.
+    pub fn has_phase_table(&self) -> bool {
+        self.phase.is_some()
+    }
+
+    /// **The count the section itself stated**, in either live spelling (`PHASE COUNT n` /
+    /// `PHASE-COUNT n`).
+    ///
+    /// ⚑ **`None` is not `Some(0)`, and the distinction is the point.** The current assembler *always*
+    /// emits the count line, so its absence means an **older emitter** — we do not know how many symbols
+    /// are phased — whereas `Some(0)` is the listing stating that **nothing** is phased. Returning `0`
+    /// for both would let "no table" and "empty table" answer the same, which is the shape of every
+    /// absent-fact-read-as-a-zero bug: an absent fact is a stated line, never a zero.
+    pub fn phase_count(&self) -> Option<usize> {
+        self.phase.as_ref().and_then(|p| p.declared)
+    }
+
+    /// Did the stated count agree with the rows we recognised? `None` when nothing stated a count —
+    /// no section, or an emitter old enough not to write the line — so there is nothing to check.
+    ///
+    /// **Unlike the `N equates` trailer, a missing count line is not treated as damage**, and the
+    /// asymmetry is deliberate: the equates trailer *follows* its rows, so losing it is exactly what
+    /// truncation looks like, whereas the phase count *precedes* its rows, so a truncated phase table
+    /// loses rows while keeping the count — and is caught here as a positive `Some(false)`.
+    pub fn matches_declared_phase(&self) -> Option<bool> {
+        self.phase
+            .as_ref()
+            .and_then(|p| p.declared.map(|n| n == p.rows.len()))
+    }
+
     /// Did we account for exactly as many rows as the footer promised? `None` when there is no footer to
     /// check against — which is itself a damage signal, so prefer [`is_intact`](Self::is_intact) for a
     /// yes/no verdict.
@@ -864,8 +1068,9 @@ impl SymbolTable {
     }
 
     /// Does this listing look like a whole, undamaged file? True only when it has the `Symbol Table`
-    /// section, its `N symbols` footer, a count that matches what we parsed, no unrecognised rows, and —
-    /// if it carries an `Equate Table` at all — an `N equates` trailer that agrees with the rows we saw.
+    /// section, its `N symbols` footer, a count that matches what we parsed, no unrecognised rows, an
+    /// `N equates` trailer that agrees with the rows we saw if it carries an `Equate Table` at all, and a
+    /// `PHASE COUNT` that agrees with the rows we saw if it carries a `Phase Table` that states one.
     ///
     /// That last condition is what makes consuming the equate rows silently safe. The trailer is the
     /// section's own checksum; without checking it, a truncated tail or a drifted row shape would vanish
@@ -889,6 +1094,7 @@ impl SymbolTable {
             && self.matches_declared_count() == Some(true)
             && self.skipped_lines == 0
             && self.matches_declared_equates() != Some(false)
+            && self.matches_declared_phase() != Some(false)
     }
 
     /// Exact lookup by the **raw** mangled name (`$engine.boot$EntryPoint$wait_dma`).
@@ -1125,6 +1331,76 @@ fn parse_equate_row(line: &str) -> Option<(&str, u64)> {
         return None;
     }
     Some((tok[1], u64::from_str_radix(hex, 16).ok()?))
+}
+
+/// What one line inside the `Phase Table` turned out to be.
+enum PhaseLine<'a> {
+    /// `PHASE <name> VMA $<hex> LMA $<hex>`.
+    Row { name: &'a str, vma: u32, lma: u32 },
+    /// `PHASE COUNT <n>` or `PHASE-COUNT <n>` — how many rows the section says it holds.
+    Count(usize),
+    /// Neither. Format drift, and therefore damage.
+    Unrecognised,
+}
+
+/// Classify one line of the `Phase Table`.
+///
+/// ⚑ **A row is recognised by its literal `VMA` and `LMA` tokens, never by position and never by the
+/// count's spelling — and that is not a stylistic preference, it is already load-bearing.** Measured on
+/// `aeon/s4.debug.lst` (mtime 2026-09-06 01:26): `^PHASE [A-Za-z]` matches **7** lines while
+/// `^PHASE .* VMA $.* LMA $` matches **6**. The extra one is `PHASE COUNT 6`, because **`COUNT` is a
+/// name-shaped token**, so any parser reading a row as `PHASE <name> …` ingests the count line as a
+/// **phantom seventh phased symbol named `COUNT`** — with no VMA and no LMA, at whatever address a
+/// missing field decodes to. In a table whose entire purpose is to say *this address is not where you
+/// think it is*, that is the exact confidently-wrong answer this section was parsed to remove. It also
+/// does not crash and does not warn, and after `da9adb24`'s rename reaches the artifact the same broken
+/// pattern silently starts returning 6 — **looking fixed without anyone fixing it**, and waiting for the
+/// next name-shaped token to appear in that position.
+///
+/// Both count spellings are live and both are accepted: `PHASE COUNT 6` is what is on disk today,
+/// `PHASE-COUNT 6` landed in the assembler at `da9adb24` and arrives with the next rebuild. Building to
+/// only one of them fails against one of the two artifacts. Because rows are keyed on `VMA`/`LMA`, a
+/// *third* spelling would be reported as damage rather than ingested as another phantom.
+///
+/// The assembler pinned the column-0 contract with a test on its side (rows match `^PHASE ` and not
+/// `^PHASE-`, exactly one count line, and it refuses to run over an empty row set so it cannot pass
+/// vacuously), so `PHASE` at column 0 is a guarantee with an owner.
+fn parse_phase_line(line: &str) -> PhaseLine<'_> {
+    let tok: Vec<&str> = line.split_whitespace().collect();
+    // A row, by its two field tags. Six tokens exactly: PHASE, name, VMA, value, LMA, value.
+    if let [head, name, "VMA", vma, "LMA", lma] = tok[..] {
+        if head == "PHASE" && !name.is_empty() {
+            if let (Some(v), Some(l)) = (parse_dollar_hex(vma), parse_dollar_hex(lma)) {
+                return PhaseLine::Row {
+                    name,
+                    vma: v,
+                    lma: l,
+                };
+            }
+        }
+        // `PHASE x VMA … LMA …` whose values we cannot represent is a row we cannot answer for, and is
+        // reported as damage rather than ingested with a silently absent address (the narrowing rule
+        // `parse_equate_row` follows).
+        return PhaseLine::Unrecognised;
+    }
+    // Otherwise, the count — in either live spelling.
+    match tok[..] {
+        ["PHASE", "COUNT", n] | ["PHASE-COUNT", n] => match n.parse::<usize>() {
+            Ok(n) => PhaseLine::Count(n),
+            Err(_) => PhaseLine::Unrecognised,
+        },
+        _ => PhaseLine::Unrecognised,
+    }
+}
+
+/// `$0000845F` → `0x845F`. Rejects a missing `$`, an empty or non-hex body, and anything too wide for
+/// `u32` — the listing writes both phase fields as exactly 8 hex digits.
+fn parse_dollar_hex(tok: &str) -> Option<u32> {
+    let hex = tok.strip_prefix('$')?;
+    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(hex, 16).ok()
 }
 
 /// Parse `   2129 symbols` / `    0 unused symbols` / `   682 equates`. `suffix` is matched on the whole
@@ -2241,5 +2517,335 @@ EQU zone_count = $0000000C
         rom[0x1A4..0x1A8].copy_from_slice(&0x000A_A203u32.to_be_bytes());
         assert_eq!(rom_declared_end(&rom), Some(0x000A_A203));
         assert_eq!(rom_declared_end(&[0u8; 4]), None);
+    }
+
+    /// The `Phase Table`, appended **after** the `Equate Table`'s `N equates` trailer — which is the
+    /// exact geometry of the defect: the section cursor was in `Section::EquateTable` and never left.
+    ///
+    /// ⚑ **Deliberately not a copy of the live table.** The live `s4.debug.lst` states 6 rows, and all
+    /// six are relocated by exactly `$B0000` — a fixture that reproduced that shape would stay green
+    /// under a parser that read only the first row's delta and applied it to the rest, or that hardcoded
+    /// a single relocation base. This one states **3**, and its three rows carry **three different**
+    /// VMA→LMA relationships: `$B0000`, **zero** (`Player_1` runs where it is stored — not relocated at
+    /// all), and `$8000`.
+    ///
+    /// `Player_1` is also the one name `FIXTURE` already carries in **both** other populations — a
+    /// `Symbol Table` row at `$FFFF8CFA` and an `Equate Table` row valued `$1`. Naming it here makes the
+    /// three-way disjointness testable rather than assumed.
+    const PHASE_TABLE: &str = "
+  Phase Table (every address above is a VMA):
+  -------------------------------------------
+
+PHASE COUNT 3
+PHASE SoundTablesZ80_Head VMA $00008000 LMA $000B8000
+PHASE Player_1 VMA $00000400 LMA $00000400
+PHASE SfxBlobWinTab VMA $0000845F LMA $0001045F
+";
+
+    fn phase_fixture() -> String {
+        format!("{FIXTURE}{PHASE_TABLE}")
+    }
+
+    /// The `PHASE-COUNT n` spelling, which landed in the assembler at `da9adb24` and arrives with the
+    /// next rebuild. `PHASE_TABLE` keeps the **old** spelling on purpose — see
+    /// [`both_live_count_spellings_parse`].
+    fn phase_fixture_new_spelling() -> String {
+        phase_fixture().replace("PHASE COUNT 3", "PHASE-COUNT 3")
+    }
+
+    /// The section sigil began appending after the equates trailer is a **known** section, not damage.
+    ///
+    /// Negative control for deleting the recognition. Measured before the fix existed: this fixture
+    /// reported **5** skipped lines (the header, the count, and all three rows) and the live
+    /// `aeon/s4.debug.lst` reported **8** (header + count + its six rows), so `is_intact` went false and
+    /// the frontend's load policy dropped to coarser resolution — where an address answers with a
+    /// *nearby wrong name* instead of failing.
+    #[test]
+    fn phase_table_is_recognised_and_costs_no_damage() {
+        let t = SymbolTable::parse(&phase_fixture()).expect("fixture parses");
+        assert_eq!(t.skipped_lines(), 0, "the Phase Table is not damage");
+        assert!(t.is_intact(), "a listing with a phase table is still whole");
+        // Neither of the other two populations moved.
+        assert_eq!(t.len(), 10, "phase rows must not inflate the symbol count");
+        assert_eq!(t.equate_rows(), Some(4), "phase rows are not equates");
+    }
+
+    /// ⚑ **The phantom-`COUNT` gate, and the reason the count line is not discriminated by its spelling.**
+    ///
+    /// `COUNT` is a **name-shaped token**, so `PHASE COUNT 3` is matched by any pattern that reads a row
+    /// as `PHASE <name> …`. Measured on the live `aeon/s4.debug.lst`: `^PHASE [A-Za-z]` matches **7**
+    /// lines and `^PHASE .* VMA $.* LMA $` matches **6** — the extra one being the count. A positional
+    /// or name-shaped parse therefore reports **one extra phased symbol, named `COUNT`**, with no VMA and
+    /// no LMA, in a table whose entire job is to say *this address is not where you think it is*.
+    ///
+    /// This fixture states **3** rows in the **old** spelling, so a name-shaped parse yields 4 entries
+    /// with a `COUNT` among them and both assertions below go red. It pins the *rule*, not today's file:
+    /// after the rename reaches the artifact the broken pattern silently starts returning the right
+    /// count again — looking fixed without anyone fixing it — which is why the old-spelling fixture stays
+    /// here permanently even once no real listing can exercise it.
+    #[test]
+    fn the_count_line_is_never_ingested_as_a_phantom_row() {
+        let t = SymbolTable::parse(&phase_fixture()).expect("fixture parses");
+        assert_eq!(
+            t.phase_entries().len(),
+            3,
+            "four rows means the count line was eaten as one: {:?}",
+            t.phase_entries()
+                .iter()
+                .map(|e| &e.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            t.phase_of("COUNT").is_none(),
+            "a phantom phased symbol named COUNT was ingested"
+        );
+        assert_eq!(t.phase_count(), Some(3), "…and the count itself was read");
+    }
+
+    /// Both spellings are live right now — `PHASE COUNT 6` is what is on `aeon/s4.debug.lst` today,
+    /// `PHASE-COUNT 6` is what the assembler emits from `da9adb24` on. Building to only one of them
+    /// fails against one of the two artifacts, so both must parse to the same table.
+    #[test]
+    fn both_live_count_spellings_parse() {
+        let old = SymbolTable::parse(&phase_fixture()).expect("old spelling parses");
+        let new = SymbolTable::parse(&phase_fixture_new_spelling()).expect("new spelling parses");
+
+        // The replacement must actually have happened, or this test compares a string with itself.
+        assert!(phase_fixture().contains("\nPHASE COUNT 3\n"));
+        assert!(phase_fixture_new_spelling().contains("\nPHASE-COUNT 3\n"));
+
+        for t in [&old, &new] {
+            assert_eq!(t.phase_count(), Some(3));
+            assert_eq!(t.phase_entries().len(), 3);
+            assert_eq!(t.skipped_lines(), 0);
+            assert!(t.is_intact());
+        }
+        assert_eq!(old.phase_entries(), new.phase_entries());
+
+        // A *third* spelling is damage, not another phantom row — which is what keying rows on the
+        // `VMA`/`LMA` tokens rather than on the count's shape buys.
+        let third = phase_fixture().replace("PHASE COUNT 3", "PHASE_COUNT 3");
+        let t = SymbolTable::parse(&third).expect("still parses");
+        assert_eq!(
+            t.skipped_lines(),
+            1,
+            "an unknown count spelling is reported"
+        );
+        assert_eq!(t.phase_count(), None);
+        assert_eq!(t.phase_entries().len(), 3, "the rows are still all rows");
+        assert!(t.phase_of("PHASE_COUNT").is_none());
+        assert!(!t.is_intact());
+    }
+
+    /// Both halves of a row are readable, and neither is assumed from the other.
+    ///
+    /// The three rows carry three **different** VMA→LMA relationships — `$B0000`, zero, `$8000` — so a
+    /// parser that read one delta and applied it to the section, or that hardcoded a relocation base,
+    /// goes red here. `Player_1` running where it is stored is the case that matters most: a phase
+    /// directive resolving to the identity is still a phase directive, and `is_relocated()` must say so
+    /// rather than the row vanishing.
+    #[test]
+    fn a_phase_rows_vma_and_lma_are_both_readable() {
+        let t = SymbolTable::parse(&phase_fixture()).expect("fixture parses");
+
+        let z80 = t
+            .phase_of("SoundTablesZ80_Head")
+            .expect("row must be there");
+        assert_eq!(z80.vma, 0x0000_8000, "where the code RUNS");
+        assert_eq!(z80.lma, 0x000B_8000, "where the code is STORED");
+        assert!(z80.is_relocated());
+
+        let same = t.phase_of("Player_1").expect("row must be there");
+        assert_eq!(same.vma, 0x0000_0400);
+        assert_eq!(same.lma, 0x0000_0400);
+        assert!(!same.is_relocated(), "runs where it is stored");
+
+        let sfx = t.phase_of("SfxBlobWinTab").expect("row must be there");
+        assert_eq!((sfx.vma, sfx.lma), (0x0000_845F, 0x0001_045F));
+
+        // Listing order is preserved, and the name index agrees with it.
+        assert_eq!(
+            t.phase_entries()
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["SoundTablesZ80_Head", "Player_1", "SfxBlobWinTab"]
+        );
+        assert!(t.has_phase_table());
+        assert!(t.phase_of("NotPhased").is_none());
+    }
+
+    /// ⚑ **An absent count and a count of zero are different facts and must never collapse.**
+    ///
+    /// The current assembler always emits the count line, so its absence means an **older emitter** — we
+    /// do not know how many symbols are phased — while `PHASE COUNT 0` is the listing stating that
+    /// **nothing** is phased. A `usize` returning `0` for both would make "no table" and "empty table"
+    /// answer identically, which is exactly the absent-fact-read-as-a-zero shape. All three states are
+    /// asserted here, and the `assert_ne!` is the one that goes red if the `Option` is ever flattened.
+    #[test]
+    fn an_absent_phase_count_is_not_a_count_of_zero() {
+        // (a) Rows, no count line: an older emitter. Not damage — there is simply nothing to check.
+        let no_count = phase_fixture().replace("PHASE COUNT 3\n", "");
+        let a = SymbolTable::parse(&no_count).expect("parses");
+        assert!(a.has_phase_table());
+        assert_eq!(a.phase_count(), None, "the listing stated no count");
+        assert_eq!(a.phase_entries().len(), 3);
+        assert_eq!(a.matches_declared_phase(), None, "nothing to check");
+        assert_eq!(a.skipped_lines(), 0);
+        assert!(a.is_intact(), "an unstated count is not damage");
+
+        // (b) A count line stating zero, and no rows: the emitter checked, and nothing is phased.
+        let empty = format!(
+            "{FIXTURE}
+  Phase Table (every address above is a VMA):
+  -------------------------------------------
+
+PHASE COUNT 0
+"
+        );
+        let b = SymbolTable::parse(&empty).expect("parses");
+        assert!(b.has_phase_table());
+        assert_eq!(b.phase_count(), Some(0), "the listing stated zero");
+        assert!(b.phase_entries().is_empty());
+        assert_eq!(b.matches_declared_phase(), Some(true));
+        assert!(b.is_intact());
+
+        // (c) No section at all — every listing emitted before sigil appended one.
+        let c = table();
+        assert!(!c.has_phase_table());
+        assert_eq!(c.phase_count(), None);
+        assert!(c.phase_entries().is_empty());
+        assert_eq!(c.matches_declared_phase(), None);
+        assert!(c.is_intact());
+
+        // The crux. Flattening the Option to a `usize` makes this pass, and the two facts merge.
+        assert_ne!(
+            a.phase_count(),
+            b.phase_count(),
+            "`no count stated` and `a stated count of zero` must not be the same value"
+        );
+        // …and (a) vs (c) — both `None` — are separated by the section itself, not by the count.
+        assert_ne!(a.has_phase_table(), c.has_phase_table());
+    }
+
+    /// A stated count is the section's own checksum, and a truncated `Phase Table` keeps it: the count
+    /// line **precedes** its rows, so losing rows leaves the count behind to contradict them. (That is
+    /// why a *missing* count is not damage here while a missing `N equates` trailer is — the equates
+    /// trailer follows its rows, so losing it is what truncation looks like on that section.)
+    #[test]
+    fn a_phase_count_that_disagrees_with_the_rows_seen_is_damage() {
+        let truncated =
+            phase_fixture().replace("PHASE SfxBlobWinTab VMA $0000845F LMA $0001045F\n", "");
+        let t = SymbolTable::parse(&truncated).expect("still parses");
+        assert_eq!(t.phase_count(), Some(3));
+        assert_eq!(t.phase_entries().len(), 2);
+        assert_eq!(t.matches_declared_phase(), Some(false));
+        assert!(!t.is_intact(), "a miscounted Phase Table is damage");
+        // Reported, not spread: the other two populations are untouched.
+        assert_eq!(t.len(), 10);
+        assert_eq!(t.equate_rows(), Some(4));
+        assert_eq!(
+            t.skipped_lines(),
+            0,
+            "a lost row is a count fault, not a bad line"
+        );
+    }
+
+    /// Recognising the section is not swallowing it. A line inside the `Phase Table` that is neither a
+    /// row nor a count is format drift and is still reported.
+    #[test]
+    fn an_unrecognised_row_inside_the_phase_table_is_still_skipped() {
+        for drifted_row in [
+            "PHASE SfxBlobWinTab VMA $0000845F",                 // LMA lost
+            "PHASE SfxBlobWinTab RUNS $0000845F LOADS $1045F",   // field tags renamed
+            "PHASE SfxBlobWinTab VMA $0000845F LMA $ZZZZ045F",   // unparseable value
+            "PHASE SfxBlobWinTab VMA $0000845F LMA $1000000000", // too wide for u32
+        ] {
+            let drifted = phase_fixture().replace(
+                "PHASE SfxBlobWinTab VMA $0000845F LMA $0001045F",
+                drifted_row,
+            );
+            let t = SymbolTable::parse(&drifted).expect("still parses");
+            assert_eq!(
+                t.skipped_lines(),
+                1,
+                "drift not reported for `{drifted_row}`"
+            );
+            assert_eq!(t.phase_entries().len(), 2, "for `{drifted_row}`");
+            assert!(
+                t.phase_of("SfxBlobWinTab").is_none(),
+                "a row we could not parse must not leave a half-ingested entry behind: `{drifted_row}`"
+            );
+            assert!(!t.is_intact(), "for `{drifted_row}`");
+            assert_eq!(t.len(), 10, "the symbol half is unharmed");
+        }
+    }
+
+    /// ⚑ **The third population is disjoint from the other two, structurally.**
+    ///
+    /// `Player_1` is the one name this fixture carries in **all three** sections — a `Symbol Table` row
+    /// at `$FFFF8CFA`, an `Equate Table` row valued `$1`, and now a `PHASE` row at VMA `$400`. Each
+    /// door must answer with its own fact and no door may answer with another's.
+    ///
+    /// Negative control for folding phase rows into `syms` "since they have addresses": the moment one
+    /// is pushed there, `$400` starts resolving to a Z80 VMA in a 68000 nearest-preceding search, and
+    /// clause 3 goes red.
+    #[test]
+    fn phase_rows_are_a_third_population_reaching_neither_syms_nor_equates() {
+        let t = SymbolTable::parse(&phase_fixture()).expect("fixture parses");
+
+        // 1. All three doors are open, or every separation below is vacuous.
+        assert_eq!(t.by_name("Player_1").map(|s| s.addr), Some(0x00FF_8CFA));
+        assert_eq!(t.equate_value("Player_1"), Some(1));
+        assert_eq!(t.phase_of("Player_1").map(|p| p.vma), Some(0x0000_0400));
+
+        // 2. A phase-only name reaches no symbol index and no equate.
+        for name in ["SoundTablesZ80_Head", "SfxBlobWinTab"] {
+            assert!(t.by_name(name).is_none(), "{name} leaked into by_name");
+            assert!(
+                t.by_demangled(name).is_empty(),
+                "{name} leaked into by_demangled"
+            );
+            assert!(
+                t.address_of(name).is_none(),
+                "{name} leaked into address_of"
+            );
+            assert!(
+                t.equate_value(name).is_none(),
+                "{name} leaked into the equates"
+            );
+            assert!(
+                !t.with_prefix(name).iter().any(|s| s.name == name),
+                "{name} leaked into the symbol prefix search"
+            );
+            assert!(
+                t.equates_with_prefix(name).is_empty(),
+                "{name} leaked into the equate prefix search"
+            );
+        }
+
+        // 3. And no phase VMA or LMA ever answers an addr→name query. This is the clause a fold breaks:
+        //    `Player_1`'s VMA `$400` sits above `EntryPoint` at `$200`, so pushing phase rows into `syms`
+        //    would make `$400` resolve to a phase name instead of `EntryPoint+$200`.
+        for e in t.phase_entries() {
+            for a in [e.vma, e.lma] {
+                let named: Vec<&str> = t.symbols_at(a).iter().map(|s| s.name.as_str()).collect();
+                assert!(
+                    !named.contains(&e.name.as_str()),
+                    "{} answered symbols_at(${a:06X})",
+                    e.name
+                );
+                if let Some(r) = t.resolve(a) {
+                    assert_ne!(
+                        r.symbol.name, e.name,
+                        "{} answered resolve(${a:06X})",
+                        e.name
+                    );
+                }
+            }
+        }
+        // The symbol count did not move, in either direction.
+        assert_eq!(t.len(), 10);
+        assert_eq!(t.equate_count(), 4);
     }
 }
