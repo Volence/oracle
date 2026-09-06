@@ -440,6 +440,11 @@ impl Channel {
     ///
     /// Both numbers are named: a refusal that says "they disagree" without saying what they are leaves
     /// the reader nothing to check.
+    ///
+    /// ⚑ **`resolved` is the listing's 32-bit `rawAddr`**, which is the spelling
+    /// [`Channel::noted_addr`] is transcribed in (`$FFFF88EC`, not `$FF88EC`). Comparing the 24-bit door
+    /// form would make every channel read as drifted and refuse everything, which is the same class of
+    /// mistake as the dead guard in [`forbidden`] with the sign flipped.
     pub fn drift(&self, resolved: u32) -> Option<Refusal> {
         if resolved == self.noted_addr {
             return None;
@@ -467,11 +472,19 @@ impl Channel {
 /// some build. A panel that only checked the name would happily poke `$FFFFEE0D` through a symbol called
 /// something else; one that only checked the address would miss it the day the cursor moves.
 ///
+/// ⚑ **`raw_addr` is the listing's 32-bit spelling (`rawAddr`), never the 24-bit form the memory doors
+/// take**, because [`LAB_INDEX_ADDR`] is transcribed from the note in that spelling. Handing this the
+/// door form makes the address branch **dead** — `$FFEE0D` never equals `$FFFFEE0D` — so the guard would
+/// pass every real input while its own test went on passing on the constant. That is not hypothetical:
+/// it is what this function was doing until
+/// `the_address_route_fires_on_a_resolved_symbol_and_not_only_on_the_constant` was written, and the row
+/// exists so it cannot come back.
+///
 /// `None` means the write may proceed. Deliberately not a `bool`: the caller must have a sentence.
-pub fn forbidden(symbol: &str, addr: u32) -> Option<Refusal> {
+pub fn forbidden(symbol: &str, raw_addr: u32) -> Option<Refusal> {
     let how = if symbol == LAB_INDEX_SYMBOL {
         "it is named as the write target"
-    } else if addr == LAB_INDEX_ADDR {
+    } else if raw_addr == LAB_INDEX_ADDR {
         "it resolves to that address"
     } else {
         return None;
@@ -1014,7 +1027,9 @@ pub fn resolve(c: &mut impl Caller, name: &str) -> Result<(u32, u32), Refusal> {
 /// in `s4.lst` and once in `s4.debug.lst`, while `Parallax_Current_Config` occurs once in both.
 pub fn available(c: &mut impl Caller, channel: &Channel) -> Result<u32, Refusal> {
     match resolve(c, channel.selector) {
-        Ok((addr, _)) => Ok(addr),
+        // ⚑ The RAW spelling, because both things done with it next, `forbidden` and `Channel::drift`,
+        // compare against addresses transcribed from the note in that spelling.
+        Ok((_, raw)) => Ok(raw),
         Err(_) if channel.debug_only => Err(Refusal::window(
             "debugOnlyChannel",
             format!(
@@ -1135,8 +1150,8 @@ fn run(
         };
         // ⚑ The forbidden guard runs on **every cell**, not only the channel's live one. A write-set is
         // data, and data is what gets edited by somebody who has not read the header.
-        let (addr, _) = resolve(c, cell.symbol)?;
-        if let Some(r) = forbidden(cell.symbol, addr.wrapping_add(cell.disp)) {
+        let (_, raw) = resolve(c, cell.symbol)?;
+        if let Some(r) = forbidden(cell.symbol, raw.wrapping_add(cell.disp)) {
             return Err(r);
         }
         let mut req = serde_json::json!({
@@ -1687,4 +1702,1166 @@ fn refusal_line(e: &Refusal, what: &str) -> String {
         s.push_str(&format!(". {r}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    // ---------------------------------------------------------------------------------------------
+    // A caller that answers like the bus and remembers what it was asked
+    // ---------------------------------------------------------------------------------------------
+
+    /// **A stand-in for the bus**, so the choreography can be checked against values a test chooses.
+    ///
+    /// It is deliberately not a mock of the *engine*: it answers `lookup_symbol` out of a listing the
+    /// test writes and records every call. What the gates below assert is **which cells were written,
+    /// with which values, addressed how** — which is the whole of what this module decides and the whole
+    /// of what a wrong write-set gets wrong.
+    struct Fake {
+        /// `(name, addr, raw_addr)`. The two spellings differ for work-RAM symbols exactly as the bus's
+        /// do, so a test can tell an `addr` from a `rawAddr` in a written value.
+        listing: Vec<(&'static str, u32, u32)>,
+        /// Every call, in order.
+        calls: Vec<(String, Value)>,
+        /// `(symbol_or_addr, hex_bytes)` served to `read_memory`.
+        reads: Vec<(String, String)>,
+        /// A symbol whose write is refused, and the refusal.
+        refuse_write: Option<(&'static str, i64, &'static str)>,
+    }
+
+    impl Fake {
+        fn new(listing: Vec<(&'static str, u32, u32)>) -> Self {
+            Fake {
+                listing,
+                calls: Vec::new(),
+                reads: Vec::new(),
+                refuse_write: None,
+            }
+        }
+
+        /// Every symbol this module's three channels touch, at the addresses both listings measured on
+        /// this box actually carry. **The two debug-only ones are present here**; the tests that are
+        /// about their absence take them out rather than the other tests inventing them.
+        fn full() -> Self {
+            Fake::new(vec![
+                ("Parallax_Current_Config", 0xFF_88EC, 0xFFFF_88EC),
+                ("Parallax_Target_Config", 0xFF_88F0, 0xFFFF_88F0),
+                ("Parallax_Transition_Frames", 0xFF_88F4, 0xFFFF_88F4),
+                ("Parallax_Snap_Pending", 0xFF_88F5, 0xFFFF_88F5),
+                ("ParallaxConfig_Haze", 0x01_2C6C, 0x0001_2C6C),
+                ("ParallaxConfig_OJZ_Default", 0x01_267A, 0x0001_267A),
+                ("Raster_Program", 0xFF_8BD6, 0xFFFF_8BD6),
+                ("Raster_Pending", 0xFF_8BDE, 0xFFFF_8BDE),
+                ("Raster_Program_None", 0x00_881E, 0x0000_881E),
+                ("EditorRaster_OJZ_Act1_ramp_probe", 0x01_4652, 0x0001_4652),
+                ("BgAnim_Table_Ptr", 0xFF_E91A, 0xFFFF_E91A),
+                ("BgAnim_LastStep", 0xFF_8F06, 0xFFFF_8F06),
+                ("BgAnim_Table", 0x02_8BD4, 0x0002_8BD4),
+                ("Debug_Lab_Index", 0xFF_EE0D, 0xFFFF_EE0D),
+            ])
+        }
+
+        fn without(mut self, name: &str) -> Self {
+            self.listing.retain(|(n, _, _)| *n != name);
+            self
+        }
+
+        fn serving(mut self, key: &str, bytes: &str) -> Self {
+            self.reads.push((key.to_string(), bytes.to_string()));
+            self
+        }
+
+        /// The `emulator/write_memory` calls, as `(symbol, disp, value, width)`.
+        fn writes(&self) -> Vec<(String, u64, u64, u64)> {
+            self.calls
+                .iter()
+                .filter(|(m, _)| m == "emulator/write_memory")
+                .map(|(_, p)| {
+                    (
+                        p["symbol"]
+                            .as_str()
+                            .unwrap_or("<no symbol key>")
+                            .to_string(),
+                        p["disp"].as_u64().unwrap_or(0),
+                        p["value"].as_u64().unwrap_or(u64::MAX),
+                        p["width"].as_u64().unwrap_or(0),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    impl Caller for Fake {
+        fn call(&mut self, method: &str, params: Value) -> Result<Value, Refusal> {
+            self.calls.push((method.to_string(), params.clone()));
+            match method {
+                "emulator/lookup_symbol" => {
+                    if let Some(q) = params["addr"].as_str() {
+                        let want = u32::from_str_radix(q.trim_start_matches("0x"), 16).unwrap();
+                        // Nearest preceding, as the bus answers the address direction.
+                        let hit = self
+                            .listing
+                            .iter()
+                            .filter(|(_, a, _)| *a <= want)
+                            .max_by_key(|(_, a, _)| *a);
+                        return Ok(match hit {
+                            Some((n, a, _)) => json!({"name": n, "disp": want - a}),
+                            None => json!({}),
+                        });
+                    }
+                    let name = params["name"].as_str().unwrap_or_default();
+                    if let Some((n, a, r)) = self.listing.iter().find(|(n, _, _)| *n == name) {
+                        return Ok(json!({
+                            "name": n,
+                            "addr": format!("0x{a:06X}"),
+                            "rawAddr": format!("0x{r:08X}"),
+                            "exact": true,
+                        }));
+                    }
+                    let items: Vec<Value> = self
+                        .listing
+                        .iter()
+                        .filter(|(n, _, _)| n.starts_with(name))
+                        .map(|(n, a, _)| json!({"name": n, "addr": format!("0x{a:06X}")}))
+                        .collect();
+                    let total = items.len();
+                    Ok(json!({"exact": false, "otherMatches": {"items": items, "total": total}}))
+                }
+                "emulator/write_memory" => {
+                    let sym = params["symbol"].as_str().unwrap_or_default();
+                    if let Some((s, code, msg)) = self.refuse_write {
+                        if s == sym {
+                            return Err(Refusal {
+                                code: Some(code),
+                                reason: None,
+                                message: msg.to_string(),
+                                remedy: None,
+                            });
+                        }
+                    }
+                    Ok(json!({"addr": "0x00FF0000", "len": params["width"]}))
+                }
+                "emulator/read_memory" => {
+                    let key = params["symbol"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| params["addr"].as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    match self.reads.iter().find(|(k, _)| *k == key) {
+                        Some((_, b)) => Ok(json!({"bytes": b})),
+                        None => Err(Refusal::local(format!(
+                            "this fake serves no bytes at {key}"
+                        ))),
+                    }
+                }
+                other => Err(Refusal::local(format!("this fake serves no {other}"))),
+            }
+        }
+
+        fn address_of(&mut self, symbol: &str) -> Option<u32> {
+            self.listing
+                .iter()
+                .find(|(n, _, _)| *n == symbol)
+                .map(|(_, a, _)| *a)
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The write-sets, transcribed and pinned
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **THE TRANSCRIPTION CHECK.** The cells each channel writes, spelled out here against the line
+    /// of aeon's engine each came from.
+    ///
+    /// # Why this is a literal table and not derived from [`CHANNELS`]
+    ///
+    /// Every other gate below runs the real choreography and compares against `channel.writes`, which
+    /// checks the **plumbing** — order, symbol addressing, displacement, width, the value that travels —
+    /// and is blind by construction to the table itself being wrong. That blindness is the expensive one:
+    /// the card this parcel was written from would have produced a one-cell raster set that passes every
+    /// derived assertion and names the new program while the screen draws the old one.
+    ///
+    /// So this row is the second source. It is the shape [`crate::layout`]'s `VOCABULARIES` argues for
+    /// over an `assert_eq!` on a number: the citation rides the expectation, so whoever changes the table
+    /// has to change this and lands on the line of `engine/` they are contradicting while doing it.
+    ///
+    /// **Values are given as [`Put`]**, so `Put::Target` is asserted as *the target's address travels
+    /// here* rather than as a number a test chose.
+    /// One row of [`transcribed`], named rather than a five-tuple so the `why` cannot silently swap
+    /// places with the symbol when somebody adds a field.
+    struct Wanted {
+        symbol: &'static str,
+        disp: u32,
+        width: u8,
+        put: Put,
+        /// The line of aeon's engine this cell came from, and what goes wrong without it. It rides the
+        /// expectation so a change to the table lands the author on the line they are contradicting.
+        why: &'static str,
+    }
+
+    fn transcribed() -> Vec<(&'static str, Vec<Wanted>)> {
+        vec![
+            (
+                "parallax",
+                vec![
+                    Wanted {
+                        symbol: "Parallax_Current_Config",
+                        disp: 0,
+                        width: 4,
+                        put: Put::Target,
+                        why: "parallax.emp:1284, Parallax_StartTransition's instant arm",
+                    },
+                    Wanted {
+                        symbol: "Parallax_Target_Config",
+                        disp: 0,
+                        width: 4,
+                        put: Put::Lit(0),
+                        why: "parallax.emp:1285. Without it Parallax_Update promotes the staged target over \
+                         the write when its counter expires (:1655-1657)",
+                    },
+                    Wanted {
+                        symbol: "Parallax_Transition_Frames",
+                        disp: 0,
+                        width: 1,
+                        put: Put::Lit(0),
+                        why: "parallax.emp:1286. Without it Parallax_Update drives from the staged target and \
+                         ignores Current_Config (:1650)",
+                    },
+                    Wanted {
+                        symbol: "Parallax_Snap_Pending",
+                        disp: 0,
+                        width: 1,
+                        put: Put::Lit(1),
+                        why: "parallax.emp:1287",
+                    },
+                ],
+            ),
+            (
+                "raster",
+                vec![Wanted {
+                        symbol: "Raster_Pending",
+                        disp: 0,
+                        width: 4,
+                        put: Put::Target,
+                        why: "raster.emp:946, the WHOLE of Raster_Install. NOT Raster_Program, which is what \
+                     Raster_VBlank writes on the way in: the HInt walker reads Raster_Active_Buf \
+                     (:1052), so writing the program cell names a swap the screen never makes",
+                    }],
+            ),
+            (
+                "bands",
+                vec![
+                    Wanted {
+                        symbol: "BgAnim_Table_Ptr",
+                        disp: 0,
+                        width: 4,
+                        put: Put::Target,
+                        why: "bg_anim.emp:183",
+                    },
+                    Wanted {
+                        symbol: "BgAnim_LastStep",
+                        disp: 0,
+                        width: 4,
+                        put: Put::Lit(0xFFFF_FFFF),
+                        why: "bg_anim.emp:185, the init sentinel. Without it a band on the outgoing table's \
+                         step takes .skip_band forever and the new table never paints",
+                    },
+                    Wanted {
+                        symbol: "BgAnim_LastStep",
+                        disp: 4,
+                        width: 4,
+                        put: Put::Lit(0xFFFF_FFFF),
+                        why: "bg_anim.emp:186, the second half of the same eight-byte array",
+                    },
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_channels_write_set_is_the_installers_own_cells() {
+        // Loud on unmeasurable: a table that stopped covering the channels is a vacuous gate.
+        assert_eq!(
+            transcribed().len(),
+            CHANNELS.len(),
+            "the transcription table and CHANNELS have drifted apart, so this gate covers less than it \
+             claims to"
+        );
+        for (key, want) in transcribed() {
+            let c = Channel::by_key(key).unwrap_or_else(|| panic!("no channel {key:?}"));
+            let got: Vec<_> = c
+                .writes
+                .iter()
+                .map(|w| (w.symbol, w.disp, w.width, w.put))
+                .collect();
+            let expect: Vec<_> = want
+                .iter()
+                .map(|w| (w.symbol, w.disp, w.width, w.put))
+                .collect();
+            assert_eq!(
+                got,
+                expect,
+                "the {key} write-set is not the installer's. The cells it must have, and why:\n{}",
+                want.iter()
+                    .map(|w| format!("  {}+{} width {}: {}", w.symbol, w.disp, w.width, w.why))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+    }
+
+    /// ⚑ **Exactly one cell per channel carries the target**, and it is the pointer.
+    ///
+    /// Derived from the table rather than pinned: a channel with two `Put::Target` cells would write the
+    /// same address into two places, and one with none would run a whole write-set that never mentions
+    /// what the person picked.
+    #[test]
+    fn exactly_one_cell_of_each_write_set_carries_what_was_picked() {
+        for c in CHANNELS {
+            let n = c.writes.iter().filter(|w| w.put == Put::Target).count();
+            assert_eq!(
+                n, 1,
+                "{} writes {n} target cells; a write-set with none never mentions the selection and one \
+                 with two puts it in a place the installer does not",
+                c.key
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ Debug_Lab_Index, guarded on two independent routes
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **The cursor is refused by NAME and by ADDRESS, and neither check covers the other.**
+    ///
+    /// The two routes in are different mistakes: a write-set edited to name the cursor, and a cell whose
+    /// symbol happens to resolve at the cursor's address in some build. A guard that only checked names
+    /// would poke `$FFFFEE0D` through a symbol called something else.
+    ///
+    /// The control is the third assertion: a real selector at a real address passes, so the two above
+    /// are refusing this address rather than refusing everything.
+    #[test]
+    fn the_lab_index_is_refused_by_name_and_by_address_independently() {
+        let by_name = forbidden(LAB_INDEX_SYMBOL, 0x00FF_0000)
+            .expect("the cursor's NAME must be refused even at an unrelated address");
+        assert!(
+            by_name.message.contains("named as the write target"),
+            "the refusal must say which route it caught: {}",
+            by_name.message
+        );
+
+        let by_addr = forbidden("Something_Else_Entirely", LAB_INDEX_ADDR)
+            .expect("the cursor's ADDRESS must be refused even under another name");
+        assert!(
+            by_addr.message.contains("resolves to that address"),
+            "the refusal must say which route it caught: {}",
+            by_addr.message
+        );
+
+        for r in [&by_name, &by_addr] {
+            assert_eq!(r.reason.as_deref(), Some("labIndexIsNotASelector"));
+            assert!(
+                r.message.contains("changes nothing that runs"),
+                "the refusal must say WHY, not merely that it refused: {}",
+                r.message
+            );
+        }
+
+        // The control. Without it both rows above pass on a `forbidden` that refuses everything.
+        assert_eq!(
+            forbidden(PARALLAX.selector, 0xFF_88EC),
+            None,
+            "a real selector at a real address must pass, or the two rows above witness nothing"
+        );
+    }
+
+    /// ⚑ **The ADDRESS route fires on a symbol the bus resolved, not only on the constant.**
+    ///
+    /// # This row exists because the guard it checks was dead, and its own sibling could not tell
+    ///
+    /// `the_lab_index_is_refused_by_name_and_by_address_independently` hands [`forbidden`] the constant
+    /// and passes. For a while the shipped path handed it the **24-bit door address** instead, and
+    /// `$FFEE0D` never equals `$FFFFEE0D`, so the address branch could not fire on any real input while
+    /// that sibling went on being green. The two spellings are the whole bug, so this row goes through
+    /// `run` with a real listing and a real resolve, which is the only arrangement that can see it.
+    ///
+    /// The mutation lesson banked in this repo, arriving again: a guard tested on the value it was
+    /// written against is tested on the one input that cannot expose it.
+    #[test]
+    fn the_address_route_fires_on_a_resolved_symbol_and_not_only_on_the_constant() {
+        // A channel whose cell is named innocently and sits exactly where the cursor sits. Nothing in
+        // the name check can see this, which is the point of having two.
+        const TRAP: Channel = Channel {
+            key: "trap",
+            title: "trap",
+            selector: "Parallax_Current_Config",
+            noted_addr: 0xFFFF_88EC,
+            installer: "a channel table somebody edited without reading the header",
+            writes: &[Cell {
+                symbol: "Some_Other_Cell",
+                disp: 0,
+                width: 1,
+                put: Put::Lit(1),
+                why: "a cell that resolves onto the START chord's cursor",
+            }],
+            prefix: "ParallaxConfig_",
+            debug_only: false,
+            off: Off::No("n/a"),
+            subject: "n/a",
+        };
+
+        let mut f = Fake::full();
+        f.listing
+            .push(("Some_Other_Cell", 0xFF_EE0D, LAB_INDEX_ADDR));
+        let e = run(&mut f, &TRAP, "whatever", 0)
+            .expect_err("a cell resolving onto the cursor must be refused");
+        assert_eq!(e.reason.as_deref(), Some("labIndexIsNotASelector"));
+        assert!(
+            e.message.contains("resolves to that address"),
+            "it must be the ADDRESS route that caught it, not the name route: {}",
+            e.message
+        );
+        assert!(f.writes().is_empty(), "wrote {:?} anyway", f.writes());
+
+        // ⚑ And the spelling is what makes it work. Fed the 24-bit door form the branch cannot fire,
+        // which is exactly the dead guard this row was written against. Pinned so that a future change
+        // routing the door address in here fails HERE, with this sentence, rather than silently.
+        assert_eq!(
+            forbidden("Some_Other_Cell", 0xFF_EE0D),
+            None,
+            "the 24-bit door form cannot match LAB_INDEX_ADDR, which is why `run` resolves and passes \
+             the 32-bit `rawAddr`. If this ever starts refusing, the constant has changed spelling and \
+             the doc on `forbidden` is stale"
+        );
+    }
+
+    /// ⚑ **No channel's write-set can reach the cursor**, on either route, checked over the shipped table.
+    #[test]
+    fn no_shipped_write_set_names_or_resolves_to_the_cursor() {
+        let mut checked = 0;
+        for c in CHANNELS {
+            for w in c.writes {
+                let mut f = Fake::full();
+                let (_, raw) =
+                    resolve(&mut f, w.symbol).expect("the fake listing carries every cell");
+                assert_eq!(
+                    forbidden(w.symbol, raw.wrapping_add(w.disp)),
+                    None,
+                    "{}'s cell `{}` reaches the START chord's cursor",
+                    c.key,
+                    w.symbol
+                );
+                checked += 1;
+            }
+        }
+        // Loud on unmeasurable: a listing that stopped carrying these names would make every row above
+        // pass on a `resolve` that never ran.
+        assert!(
+            checked >= CHANNELS.len(),
+            "only {checked} cells were checked across {} channels, which is fewer than one each",
+            CHANNELS.len()
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The gesture, end to end against the fake
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **A selection writes the installer's cells, by SYMBOL, in order, and writes nothing else.**
+    ///
+    /// The expectations are the channel's own write-set, which is what makes this the *plumbing* gate:
+    /// it catches a cell dropped, reordered, addressed by `addr` instead of `symbol`, given the wrong
+    /// width, or handed a value the target never resolved to.
+    /// `every_channels_write_set_is_the_installers_own_cells` is what catches the table itself.
+    ///
+    /// ⚑ The value on a `Put::Target` cell is asserted to be the **`rawAddr`**, which is the spelling a
+    /// pointer field holds. The fake's two spellings differ, as the bus's do for work-RAM symbols, so a
+    /// build that sent the 24-bit form would fail here rather than pass on numbers that happen to agree.
+    #[test]
+    fn a_selection_writes_the_installers_cells_by_symbol_and_nothing_else() {
+        for (channel, target, target_raw) in [
+            (PARALLAX, "ParallaxConfig_Haze", 0x0001_2C6Cu64),
+            (RASTER, "EditorRaster_OJZ_Act1_ramp_probe", 0x0001_4652),
+            (BANDS, "BgAnim_Table", 0x0002_8BD4),
+        ] {
+            let mut f = Fake::full();
+            let w = point_at(&mut f, &channel, target)
+                .unwrap_or_else(|e| panic!("{} refused: {}", channel.key, e.message));
+
+            let want: Vec<(String, u64, u64, u64)> = channel
+                .writes
+                .iter()
+                .map(|c| {
+                    (
+                        c.symbol.to_string(),
+                        u64::from(c.disp),
+                        match c.put {
+                            Put::Target => target_raw,
+                            Put::Lit(v) => u64::from(v),
+                        },
+                        u64::from(c.width),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                f.writes(),
+                want,
+                "{} did not write its installer's cells",
+                channel.key
+            );
+            assert_eq!(w.cells.len(), channel.writes.len());
+
+            // Not one `addr` key on any write: the destination is the server's to resolve.
+            for (m, p) in &f.calls {
+                if m == "emulator/write_memory" {
+                    assert!(
+                        p.get("addr").is_none() && p.get("symbol").is_some(),
+                        "a write addressed by address rather than by name: {p}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// ⚑ **The raster channel stages `Raster_Pending` and never touches `Raster_Program`.**
+    ///
+    /// The single correction this module carries, as its own row, because it is the one a reasonable
+    /// implementation gets wrong: both cells exist, both are longwords, both are named "the raster
+    /// program" in conversation, and only one of them installs anything.
+    #[test]
+    fn selecting_a_raster_program_stages_pending_and_never_writes_the_program_cell() {
+        let mut f = Fake::full();
+        point_at(&mut f, &RASTER, "EditorRaster_OJZ_Act1_ramp_probe").expect("a listed program");
+        let written: Vec<String> = f.writes().into_iter().map(|(s, ..)| s).collect();
+        assert_eq!(
+            written,
+            vec!["Raster_Pending".to_string()],
+            "raster.emp:946: Raster_Install's whole body is `move.l a0, Raster_Pending`. Writing \
+             Raster_Program instead names a program the HInt walker never reads, because the walker \
+             reads Raster_Active_Buf (:1052) and only Raster_VBlank re-points it"
+        );
+        assert!(
+            !written.iter().any(|s| s == RASTER.selector),
+            "`{}` is what Raster_VBlank writes on the way in; this panel must not write it",
+            RASTER.selector
+        );
+    }
+
+    /// ⚑ **A cell refused mid-set says how far it got, and records nothing.**
+    ///
+    /// The half-applied installer is a real state and the honest repair is naming it. It is checked on
+    /// the parallax set because that is the one with cells after the first: a set of one cannot be half
+    /// applied, so testing it there would be a row that cannot fail.
+    #[test]
+    fn a_cell_refused_mid_set_names_how_far_it_got() {
+        let mut f = Fake::full();
+        f.refuse_write = Some((
+            "Parallax_Transition_Frames",
+            -32005,
+            "the machine is free-running",
+        ));
+        let e = point_at(&mut f, &PARALLAX, "ParallaxConfig_Haze")
+            .expect_err("a refused cell must refuse the gesture");
+        assert_eq!(e.reason.as_deref(), Some("writeSetIncomplete"));
+        assert!(
+            e.message.contains("2 of 4") && e.message.contains("HALF SET"),
+            "the refusal must say how far the set got and that the channel is half applied: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains("the machine is free-running"),
+            "the server's own words must survive verbatim: {}",
+            e.message
+        );
+        // And the cells that did land are the ones before it, in order.
+        assert_eq!(
+            f.writes()
+                .iter()
+                .map(|(s, ..)| s.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Parallax_Current_Config",
+                "Parallax_Target_Config",
+                "Parallax_Transition_Frames"
+            ],
+            "the refused cell is attempted and the ones after it are not"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The two absences that are rulings rather than gaps
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **Bands-off is refused, in words, until `BgAnim_Table_Empty` exists.**
+    ///
+    /// The obvious implementation points at the act's own `BgAnim_Table` and works, on the act in front
+    /// of you, because that act's count word happens to be 0. This asserts the refusal AND that nothing
+    /// was written, because a refusal that had already poked something is worse than no refusal.
+    #[test]
+    fn bands_off_is_refused_until_the_empty_table_constant_exists_and_writes_nothing() {
+        let mut f = Fake::full();
+        let e =
+            turn_off(&mut f, &BANDS).expect_err("there is no BgAnim_Table_Empty in this listing");
+        assert_eq!(e.reason.as_deref(), Some("offTargetMissing"));
+        assert!(
+            e.message.contains("BgAnim_Table_Empty") && e.message.contains("coincidence")
+                || e.message.contains("happens to hold a zero count"),
+            "the refusal must name the missing constant and why the obvious route is wrong: {}",
+            e.message
+        );
+        assert!(
+            f.writes().is_empty(),
+            "a refused off gesture wrote {:?}",
+            f.writes()
+        );
+
+        // The control: once the constant is in the listing, the same gesture runs the same write-set.
+        let mut f = Fake::full();
+        f.listing
+            .push(("BgAnim_Table_Empty", 0x02_9000, 0x0002_9000));
+        let w = turn_off(&mut f, &BANDS).expect("the constant is present now");
+        assert_eq!(w.target, "BgAnim_Table_Empty");
+        assert_eq!(
+            f.writes().len(),
+            BANDS.writes.len(),
+            "off must run the whole installer, not only the pointer"
+        );
+    }
+
+    /// ⚑ **Bands-off needs BOTH symbols, and the DESTINATION is checked first.**
+    ///
+    /// The trap is a real and measured one rather than a hypothetical. aeon built `BgAnim_Table_Empty`,
+    /// measured the ROMs, and refused to land it because it did not behave as designed: release grew two
+    /// bytes, other shapes grew sixteen, and **the symbol appeared in BOTH listings when it was meant to
+    /// be debug-only**. So the arriving constant may well resolve in a release listing where
+    /// `BgAnim_Table_Ptr` does not.
+    ///
+    /// A gate keyed on the target alone would then offer a bands-off button on a release build **whose
+    /// destination address is not that pointer at all**, and the write would land in whatever else
+    /// occupies `$FFFFE91A` there. That is precisely the failure the debug-only rule exists to prevent,
+    /// arriving through the back door, so the ordering in `turn_off` is a correctness property and this
+    /// is the row that holds it.
+    #[test]
+    fn bands_off_needs_the_destination_pointer_too_not_only_the_empty_table() {
+        // The exact shape aeon measured: the constant present, the selector absent.
+        let mut f = Fake::full().without(BANDS.selector);
+        f.listing
+            .push(("BgAnim_Table_Empty", 0x02_9000, 0x0002_9000));
+        let e = turn_off(&mut f, &BANDS)
+            .expect_err("no destination pointer means no bands channel at all");
+        assert_eq!(
+            e.reason.as_deref(),
+            Some("debugOnlyChannel"),
+            "the destination must be checked BEFORE the off target, or a release build gets an off              button pointing at RAM that is not the selector"
+        );
+        assert!(f.writes().is_empty(), "wrote {:?} anyway", f.writes());
+
+        // The control, which is what makes the row above about the ORDER rather than about refusing
+        // whenever anything is missing: with the destination present and the constant absent, the
+        // refusal is the OTHER one.
+        let mut f = Fake::full();
+        let e = turn_off(&mut f, &BANDS).expect_err("no constant");
+        assert_eq!(e.reason.as_deref(), Some("offTargetMissing"));
+    }
+
+    /// **A scene has no off state, and the refusal says so rather than doing nothing.**
+    #[test]
+    fn a_scene_cannot_be_turned_off_and_the_control_says_why() {
+        let mut f = Fake::full();
+        let e = turn_off(&mut f, &PARALLAX).expect_err("a scene is always in effect");
+        assert_eq!(e.reason.as_deref(), Some("noOffState"));
+        assert!(e.message.contains("always in effect"), "{}", e.message);
+        assert!(f.writes().is_empty());
+
+        // The control: the raster channel's off IS available, so the row above is about parallax rather
+        // than about `turn_off` refusing everything.
+        let mut f = Fake::full();
+        let w = turn_off(&mut f, &RASTER).expect("Raster_Program_None is in this listing");
+        assert_eq!(w.target, "Raster_Program_None");
+    }
+
+    /// ⚑ **The band channel is gated on the SYMBOL, and the refusal says it is a debug-build channel.**
+    ///
+    /// Never on an address: on a release build `$FFFFE91A` is something else entirely, and a panel keyed
+    /// on the number writes into unrelated RAM with no fault to show for it. The control is the second
+    /// half: with the same symbol missing, a channel that is *not* debug-only gets the ordinary
+    /// not-in-listing refusal, so this is reading `debug_only` rather than reporting every absence the
+    /// same way.
+    #[test]
+    fn the_band_channel_is_gated_on_its_symbol_and_says_it_is_debug_only() {
+        let mut f = Fake::full().without(BANDS.selector);
+        let e = available(&mut f, &BANDS).expect_err("no selector, no channel");
+        assert_eq!(e.reason.as_deref(), Some("debugOnlyChannel"));
+        assert!(
+            e.message.contains("DEBUG") && e.message.contains(BANDS.selector),
+            "the refusal must name the symbol and the shape: {}",
+            e.message
+        );
+
+        let mut f = Fake::full().without(PARALLAX.selector);
+        let e = available(&mut f, &PARALLAX).expect_err("no selector, no channel");
+        assert_eq!(
+            e.reason.as_deref(),
+            Some("notInListing"),
+            "a channel that is not debug-only must not claim to be"
+        );
+
+        // The control: with the symbol present, both are available.
+        for c in [PARALLAX, BANDS] {
+            let mut f = Fake::full();
+            assert!(
+                available(&mut f, &c).is_ok(),
+                "{} should be available",
+                c.key
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ Drift: the listing and the note disagreeing is a refusal, not a caveat
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **A moved selector refuses and names BOTH addresses**, and a matching one says nothing.
+    ///
+    /// The expectation is [`Channel::noted_addr`] itself rather than a number typed here, so the row
+    /// cannot drift from the table. What it pins is the *behaviour*: refuse rather than pick a side.
+    #[test]
+    fn a_selector_that_moved_refuses_and_names_both_addresses() {
+        for c in CHANNELS {
+            assert_eq!(
+                c.drift(c.noted_addr),
+                None,
+                "{}: the note's own address must not read as drift",
+                c.key
+            );
+            let moved = c.noted_addr ^ 0x10;
+            let r = c
+                .drift(moved)
+                .unwrap_or_else(|| panic!("{}: a moved selector must refuse", c.key));
+            assert_eq!(r.reason.as_deref(), Some("selectorMoved"));
+            assert!(
+                r.message.contains(&format!("{moved:#010X}"))
+                    && r.message.contains(&format!("{:#010X}", c.noted_addr)),
+                "both addresses must be in the refusal or there is nothing to check: {}",
+                r.message
+            );
+            assert!(
+                r.message.contains("Nothing was written"),
+                "the refusal must say nothing happened: {}",
+                r.message
+            );
+        }
+    }
+
+    /// **A drifted selector stops the gesture before any cell is written.**
+    #[test]
+    fn a_drifted_selector_stops_the_gesture_before_the_first_cell() {
+        let mut f = Fake::full();
+        // Move the live cell and nothing else, which is the shape of a listing built from another ROM.
+        for e in f.listing.iter_mut() {
+            if e.0 == PARALLAX.selector {
+                e.2 = 0xFFFF_9000;
+            }
+        }
+        let e = point_at(&mut f, &PARALLAX, "ParallaxConfig_Haze").expect_err("moved");
+        assert_eq!(e.reason.as_deref(), Some("selectorMoved"));
+        assert!(f.writes().is_empty(), "wrote {:?} anyway", f.writes());
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The listing: truncation, absence, and the row that must not be selectable
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **A cut-short search says so, and a whole one does not.**
+    ///
+    /// A truncated list reads exactly like a complete one, which is the whole reason this line exists.
+    /// The numbers in the sentence are asserted because "some were hidden" without saying how many is a
+    /// warning a reader cannot act on.
+    #[test]
+    fn a_cut_short_search_says_so_and_a_whole_one_says_nothing() {
+        assert_eq!(truncation(6, 6), None, "a whole list must claim nothing");
+        assert_eq!(
+            truncation(6, 0),
+            None,
+            "a total below the count is not a cut"
+        );
+        let t = truncation(256, 301).expect("256 of 301 is a cut list");
+        assert!(
+            t.contains("256") && t.contains("301"),
+            "the line must carry both numbers: {t}"
+        );
+
+        // And through the projection, over the cap the engine actually ships. Derived from the engine's
+        // own config rather than typed, so a cap change cannot leave this row pinning a stale one.
+        let cap = oracle_aether::engine::EngineConfig::default().max_symbol_matches;
+        let names: Vec<String> = (0..cap).map(|i| format!("ParallaxConfig_{i}")).collect();
+        let l = listing(&PARALLAX, &names, None, cap + 45, "");
+        let t = l.truncation.expect("a search cut at the cap must say so");
+        assert!(
+            t.contains(&cap.to_string()) && t.contains(&(cap + 45).to_string()),
+            "{t}"
+        );
+
+        // The control: the same list, whole, says nothing. Without it the row above passes on a
+        // `truncation` that fires unconditionally.
+        assert_eq!(listing(&PARALLAX, &names, None, cap, "").truncation, None);
+    }
+
+    /// ⚑ **A row naming one of the channel's own cells is DRAWN and NOT selectable**, with the reason.
+    ///
+    /// `BgAnim_Table` and `BgAnim_Table_Ptr` share a prefix, so the search that finds the act's table
+    /// also finds the selector pointing at it. Pointing a selector at itself makes the engine read the
+    /// pointer's own bytes as the thing it points to.
+    #[test]
+    fn a_row_naming_the_channels_own_cell_is_drawn_and_not_offered() {
+        let names = vec!["BgAnim_Table".to_string(), BANDS.selector.to_string()];
+        let l = listing(&BANDS, &names, None, 2, "");
+        assert_eq!(l.rows.len(), 2, "the row is drawn, not dropped");
+        let me = l
+            .rows
+            .iter()
+            .find(|r| r.name == BANDS.selector)
+            .expect("drawn");
+        assert!(!me.offered, "the channel's own cell must not be selectable");
+        assert!(
+            me.note.as_deref().unwrap_or_default().contains("own cells"),
+            "the row must carry its reason: {:?}",
+            me.note
+        );
+        // The control: the act's own table beside it IS offered, so this is refusing one row rather than
+        // refusing the list.
+        let other = l
+            .rows
+            .iter()
+            .find(|r| r.name == "BgAnim_Table")
+            .expect("drawn");
+        assert!(other.offered && other.note.is_none());
+    }
+
+    /// **An empty result is a sentence, not an empty box** (P6), and the two empties are different
+    /// findings.
+    #[test]
+    fn the_two_empty_lists_are_different_findings_and_neither_is_a_blank() {
+        let names = vec!["ParallaxConfig_Haze".to_string()];
+        let filtered = listing(&PARALLAX, &names, None, 1, "zzz");
+        let a = filtered.absence.expect("a filtered-out list owes a line");
+        assert!(
+            a.contains("zzz") && a.contains('1'),
+            "it must name what was typed and how many it was matched against: {a}"
+        );
+
+        let nothing = listing(&PARALLAX, &[], None, 0, "");
+        let b = nothing.absence.expect("an empty search owes a line too");
+        assert_ne!(a, b, "'no match' and 'nothing found' must not read alike");
+        assert!(b.contains("prefix"), "{b}");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The bands, decoded
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **The record is the note's 44 bytes, and the fields only have to FIT.**
+    ///
+    /// The size is [`NOTE`] §2's stated `ensure`, not a sum of the fields below it. Six `u16` and eight
+    /// `u32` sum to 44 and that agreement is a check rather than the derivation: a struct with tail
+    /// padding, or one field mis-transcribed, sums to 44 just as readily while the walk strides
+    /// differently.
+    #[test]
+    fn the_record_size_is_the_notes_figure_and_the_fields_only_have_to_fit() {
+        assert_eq!(
+            BAND_RECORD_BYTES, 44,
+            "NOTE section 2: `struct bganim_band`, 44 bytes, pinned by an ensure in \
+             engine/level/bg_anim.emp"
+        );
+        let fields = 6 * 2 + 8 * 4;
+        assert!(
+            fields <= BAND_RECORD_BYTES,
+            "the fields transcribed here need {fields} bytes and the record is only \
+             {BAND_RECORD_BYTES}, so one of the two is wrong"
+        );
+        assert_eq!(MAX_BANDS, 4, "NOTE section 2: BGANIM_MAX_BANDS = 4");
+    }
+
+    /// ⚑ **The note's own worked example decodes to the note's own sentence.**
+    ///
+    /// [`NOTE`] §2 gives the shipped act's band 0 as `[0, 4, 63, 7, 32, $8000]` and reads it back as
+    /// *"Camera_X driven, 1 px per 16 units, 64 px period, rotation unit 128 B, 32 tiles, first slot at
+    /// VRAM $8000"*. Every number in the expectation is **the note's**, derived by the note from the
+    /// header, so this is a transcription check and not a measurement copied out of a run.
+    ///
+    /// The two derivations are what it is really pinning: `step_mask` 63 is a **64** px period, and
+    /// `col_shift` 7 is a **128** byte unit. A readout that printed the raw numbers would be handing a
+    /// person two conversions, and the off-by-one in the first is the kind that gets done wrong.
+    #[test]
+    fn the_notes_worked_example_decodes_to_the_notes_own_sentence() {
+        let mut raw = vec![0u8; BAND_RECORD_BYTES];
+        for (i, v) in [0u16, 4, 63, 7, 32, 0x8000].iter().enumerate() {
+            raw[i * 2..i * 2 + 2].copy_from_slice(&v.to_be_bytes());
+        }
+        let b = Band::parse(&raw).expect("a whole record");
+        assert_eq!(b.driver, 0);
+        assert_eq!(b.rate_shift, 4);
+        assert_eq!(b.step_mask, 63);
+        assert_eq!(b.col_shift, 7);
+        assert_eq!(b.tile_count, 32);
+        assert_eq!(b.vram_dest, 0x8000);
+        assert_eq!(
+            b.line(),
+            "Camera_X driven, 1 px per 16 units, 64 px period, rotation unit 128 B, 32 tiles, first \
+             slot at VRAM $8000",
+            "NOTE section 2's own reading of its own worked example"
+        );
+
+        // A driver the note does not name is said to be unknown rather than folded into one of the three.
+        let mut odd = raw.clone();
+        odd[0..2].copy_from_slice(&9u16.to_be_bytes());
+        let l = Band::parse(&odd).unwrap().line();
+        assert!(l.contains("UNKNOWN") && l.contains('9'), "{l}");
+
+        // A short slice is None, never a record of zeroes.
+        assert_eq!(Band::parse(&raw[..BAND_RECORD_BYTES - 1]), None);
+    }
+
+    /// ⚑ **A count past the ceiling is reported, not trusted**, and a zero count is a stated finding.
+    #[test]
+    fn a_count_the_ceiling_forbids_is_reported_and_a_zero_count_is_a_finding() {
+        let record = vec![0u8; BAND_RECORD_BYTES];
+        let table = |count: u16, n: usize| {
+            let mut v = count.to_be_bytes().to_vec();
+            for _ in 0..n {
+                v.extend_from_slice(&record);
+            }
+            v
+        };
+
+        let too_many = bands(&table(40, MAX_BANDS));
+        assert_eq!(too_many.count, 40, "the word is carried whole");
+        assert_eq!(
+            too_many.bands.len(),
+            MAX_BANDS,
+            "no more than the ceiling is decoded"
+        );
+        let c = too_many
+            .caveat
+            .expect("a count past the ceiling owes a line");
+        assert!(
+            c.contains("40") && c.contains(&MAX_BANDS.to_string()),
+            "{c}"
+        );
+
+        // The control: a count the ceiling allows draws no caveat, so the row above is about the ceiling.
+        let ok = bands(&table(2, 2));
+        assert_eq!(ok.bands.len(), 2);
+        assert_eq!(ok.caveat, None);
+        assert_eq!(ok.absence, None);
+
+        // Zero is bands being off, and it says so rather than drawing an empty box.
+        let off = bands(&table(0, 0));
+        assert!(off.bands.is_empty());
+        let a = off.absence.expect("an empty table owes a line");
+        assert!(a.contains("off"), "{a}");
+
+        // A table that claims more than it carries says the read stopped short.
+        let short = bands(&table(3, 1));
+        assert_eq!(short.bands.len(), 1);
+        assert!(
+            short
+                .caveat
+                .expect("a short read owes a line")
+                .contains("3"),
+            "the caveat must name what the table claimed"
+        );
+    }
+
+    /// ⚑ **An unseeded selector is refused, never decoded as an empty table.**
+    ///
+    /// `NOTE` §1: `BgAnim_Table_Ptr` = 0 is never valid. Decoding address 0 would read the 68000's vector
+    /// table as bands and, worse, would usually report a zero count, which is the sentence for *bands are
+    /// off* attached to a machine that has not initialised them.
+    #[test]
+    fn an_unseeded_band_selector_is_refused_rather_than_read_as_bands_being_off() {
+        let mut f = Fake::full().serving(BANDS.selector, "0x00000000");
+        let e = read_bands(&mut f).expect_err("a zero pointer is never valid");
+        assert_eq!(e.reason.as_deref(), Some("selectorUnseeded"));
+        assert!(e.message.contains("never valid"), "{}", e.message);
+
+        // The control: a seeded pointer over a real table reads back.
+        let mut table = 0u16.to_be_bytes().to_vec();
+        table.resize(BAND_COUNT_BYTES + MAX_BANDS * BAND_RECORD_BYTES, 0);
+        let hex: String = table.iter().map(|b| format!("{b:02X}")).collect();
+        let mut f = Fake::full()
+            .serving(BANDS.selector, "0x00028BD4")
+            .serving("0x00028BD4", &format!("0x{hex}"));
+        let b = read_bands(&mut f).expect("a seeded pointer");
+        assert_eq!(b.count, 0);
+    }
+
+    /// ⚑ **A short read is refused, never zero-filled**, because a zero count word is the specific and
+    /// wrong finding *bands are off* rather than a missing one.
+    #[test]
+    fn a_short_read_is_refused_rather_than_decoded_as_bands_being_off() {
+        let mut f = Fake::full().serving(BANDS.selector, "0x0002");
+        let e = read_bands(&mut f).expect_err("two bytes is not a longword");
+        assert!(
+            e.message
+                .contains("would report bands as off rather than as unread"),
+            "the refusal must say why a short read is not a zero: {}",
+            e.message
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ What is live, and the standing statement
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **The live line is a READBACK and names what the cell points at**, never an echo of the click.
+    ///
+    /// The raster case is the one that matters and it is the second half: a selection stages
+    /// `Raster_Pending`, `Raster_Program` does not move until the next `Raster_VBlank`, and on a paused
+    /// machine this line must go on naming the OLD program. A panel that echoed the click would assert a
+    /// swap that has not happened.
+    #[test]
+    fn the_live_line_reads_the_cell_back_and_does_not_echo_the_selection() {
+        let mut f = Fake::full().serving(RASTER.selector, "0x0000881E");
+        let l = live(&mut f, &RASTER).expect("a listed cell");
+        assert_eq!(l.value, 0x0000_881E);
+        assert_eq!(l.name.as_deref(), Some("Raster_Program_None"));
+        let line = l.line(RASTER.selector);
+        assert!(
+            line.contains("Raster_Program") && line.contains("Raster_Program_None"),
+            "{line}"
+        );
+
+        // Now select something else. The live cell has not moved, because only Raster_VBlank moves it.
+        point_at(&mut f, &RASTER, "EditorRaster_OJZ_Act1_ramp_probe").expect("a listed program");
+        let after = live(&mut f, &RASTER).expect("still readable");
+        assert_eq!(
+            after.name.as_deref(),
+            Some("Raster_Program_None"),
+            "the live line must report the cell, not the click: the swap happens at the next \
+             Raster_VBlank and this machine has not run one"
+        );
+
+        // A value the listing does not name is said to be unnamed rather than dropped, and one that
+        // lands past a symbol says so rather than claiming to be it.
+        let past = Live {
+            value: 0x0000_8820,
+            name: Some("Raster_Program_None".into()),
+            disp: 2,
+        };
+        assert!(
+            past.line("x").contains("probably not"),
+            "{}",
+            past.line("x")
+        );
+    }
+
+    /// ⚑ **The standing statement exists exactly while an override does, and names channel and target.**
+    ///
+    /// The `None`-when-nothing half is as load-bearing as the other: a line standing over an untouched
+    /// machine is a permanent false claim, which is the badge defect inverted.
+    #[test]
+    fn the_statement_stands_only_while_something_is_overridden_and_names_it() {
+        assert_eq!(
+            statement(&[]),
+            None,
+            "an untouched machine must claim nothing"
+        );
+
+        let mut changes = Vec::new();
+        record(
+            &mut changes,
+            Change {
+                key: "parallax".into(),
+                title: "scene".into(),
+                target: "ParallaxConfig_Haze".into(),
+            },
+        );
+        let s = statement(&changes).expect("an override must say so");
+        assert!(
+            s.contains("scene") && s.contains("ParallaxConfig_Haze"),
+            "it must name the channel and the target, not merely admit to a mode: {s}"
+        );
+        assert!(
+            s.contains("not saved") || s.contains("Nothing here is saved"),
+            "it must say the override is not written anywhere: {s}"
+        );
+        assert!(
+            s.contains("section boundary"),
+            "it must say how the override ends, because the answer is not this panel: {s}"
+        );
+
+        // A second change on the same channel REPLACES the first: a statement that grew would go on
+        // naming a scene two selections ago, which is the staleness it exists to prevent.
+        record(
+            &mut changes,
+            Change {
+                key: "parallax".into(),
+                title: "scene".into(),
+                target: "ParallaxConfig_OJZ_Default".into(),
+            },
+        );
+        assert_eq!(changes.len(), 1);
+        let s = statement(&changes).unwrap();
+        assert!(!s.contains("Haze"), "the old target must not survive: {s}");
+
+        // A different channel stacks beside it rather than replacing it.
+        record(
+            &mut changes,
+            Change {
+                key: "raster".into(),
+                title: "raster program".into(),
+                target: "Raster_Program_None".into(),
+            },
+        );
+        assert_eq!(changes.len(), 2);
+        let s = statement(&changes).unwrap();
+        assert!(
+            s.contains("ParallaxConfig_OJZ_Default") && s.contains("Raster_Program_None"),
+            "{s}"
+        );
+    }
+
+    /// ⚑ **The nudge control's reason names the blocker and the two fields it will have.**
+    ///
+    /// The line is what stands in for a control that cannot work yet, so it has to answer the two
+    /// questions a person asks: why is this off, and what will it do. A blank "coming soon" answers
+    /// neither.
+    #[test]
+    fn the_disabled_nudge_control_says_why_and_what_it_will_be() {
+        assert!(
+            NUDGE_BLOCKED.contains("ROM"),
+            "it must say WHY: the factors live in ROM and cannot be edited in place"
+        );
+        assert!(
+            NUDGE_BLOCKED.contains("driver") && NUDGE_BLOCKED.contains("rate shift"),
+            "NOTE section 2: only driver and rate_shift are meaningful, so the line must not promise \
+             the whole record"
+        );
+        for barred in ["step mask", "col shift", "vram"] {
+            assert!(
+                !NUDGE_BLOCKED.to_lowercase().contains(barred),
+                "the line promises {barred:?}, which NOTE section 2 rules out as geometry derived from \
+                 the art"
+            );
+        }
+    }
+
+    /// **Every citation in this module points at a commit, never at a branch.**
+    ///
+    /// The rule this lane pointed back at the hub and had adopted: a tip moves and a commit does not.
+    #[test]
+    fn the_citations_name_a_commit_rather_than_a_tip() {
+        for c in [NOTE, ENGINE] {
+            assert!(
+                c.contains("c4c5c3d8"),
+                "{c:?} must cite the commit carrying the artifact"
+            );
+            for tip in ["master", "main", "HEAD", "origin/"] {
+                assert!(!c.contains(tip), "{c:?} cites a moving tip: {tip}");
+            }
+        }
+    }
 }

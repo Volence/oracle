@@ -362,6 +362,81 @@ mod tests {
         );
     }
 
+    /// ⚑ **NOTHING THE EFFECTS PANEL SELECTS CAN REACH THE SAVED LAYOUT.**
+    ///
+    /// # Why this is a gate and not a comment
+    ///
+    /// `LIVE-EFFECTS` is scoped by the owner in one sentence: *"if I choose like bands and stuff it's not
+    /// meant to be permanent, just testing stuff."* Authoring lives in aurora. A selection that came back
+    /// after a restart would silently re-assert an override on a machine nobody had told, which is the
+    /// standing statement's whole failure mode arriving through persistence, on a surface where the
+    /// wrong picture looks exactly like the right one.
+    ///
+    /// The panel is safe **by construction** — [`crate::effects::Panel`] has no serde derive and this
+    /// module writes `DockState<Tab>` alone — and construction is the thing that changes. A later hand
+    /// adding `#[derive(Serialize)]` for some other reason, or a field on the dock state, would break the
+    /// scope without breaking anything that compiles.
+    ///
+    /// # The control, and it is what makes this row mean anything
+    ///
+    /// A test asserting that a blob does NOT contain a string passes trivially against an empty blob, a
+    /// missing key, or a `get_string` that answers `None`. So the same blob is asserted to CONTAIN
+    /// `"Effects"` — the tab's own serialized variant name, which is in there because a `DockState`
+    /// carries the tab values themselves. That is a positive control on the SEARCH: the blob is real, the
+    /// substring test works, and the panel's vocabulary is genuinely absent rather than unlooked-for.
+    #[test]
+    fn nothing_the_effects_panel_selects_can_reach_the_saved_layout() {
+        let mut store = MemStorage::default();
+        // The dock this build actually ships, so the tab is in it however `initial_dock` places it.
+        save(&mut store, &ui::initial_dock());
+        let blob = store
+            .get_string(LAYOUT_KEY)
+            .expect("save must have written a layout blob");
+
+        // ⚠ THE POSITIVE CONTROL. Without it every assertion below is green against an empty string.
+        assert!(
+            blob.contains("Effects"),
+            "the saved layout does not contain the Effects tab's own name, so the absences asserted \
+             below are unmeasured: either nothing was saved or the substring search does not work \
+             here.\n--- blob ---\n{blob}"
+        );
+
+        // The panel's whole vocabulary: every channel key, every title, every default prefix, and every
+        // symbol its write-sets name. Derived from `crate::effects` rather than typed, so a channel
+        // added later is covered without anyone remembering this row.
+        let mut vocabulary: Vec<String> = Vec::new();
+        for c in crate::effects::CHANNELS {
+            vocabulary.push(c.key.to_string());
+            vocabulary.push(c.prefix.to_string());
+            vocabulary.push(c.selector.to_string());
+            for w in c.writes {
+                vocabulary.push(w.symbol.to_string());
+            }
+        }
+        assert!(
+            vocabulary.len() >= crate::effects::CHANNELS.len() * 3,
+            "the vocabulary this row searches for collapsed to {} entries, which is fewer than the \
+             channels can produce, so it is checking almost nothing",
+            vocabulary.len()
+        );
+        for word in &vocabulary {
+            assert!(
+                !blob.contains(word.as_str()),
+                "the saved layout carries {word:?}, which belongs to the Effects panel. Nothing this \
+                 panel selects may survive a restart: an override that came back on its own would \
+                 re-assert itself on a machine nobody had told."
+            );
+        }
+
+        // And the storage holds exactly the two keys this module owns. A panel that grew its own key
+        // would be persisting through a door this row's substring search cannot see.
+        assert_eq!(
+            store.get_string("oracle_player_effects"),
+            None,
+            "something is persisting the Effects panel under a key of its own"
+        );
+    }
+
     /// The round trip: a non-default layout, saved and read back, restores **the whole structure**.
     ///
     /// Two independent assertions, because either alone has a way to be green for the wrong reason:
