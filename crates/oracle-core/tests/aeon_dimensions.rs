@@ -164,6 +164,9 @@ fn measure(t: &SymbolTable, probe: &str, arg: &str) -> Option<usize> {
                 .collect::<BTreeSet<_>>()
                 .len(),
         ),
+        // 1/0 rather than a bool, so a single integer column covers every probe. This is the probe for
+        // a dimension that is one specific name rather than a namespace.
+        "symbol_present" => Some(usize::from(t.by_name(arg).is_some())),
         "equate_prefix_count" => Some(t.equates_with_prefix(arg).len()),
         "equate_rows" => t.equate_rows(),
         "phase_count" => {
@@ -203,8 +206,10 @@ const CONTROL_LST: &str = "\
  ObjDef_Ring : 1000 C |
  ObjDef_Spring : 1400 C |
  SoundTablesZ80_Head : 8000 C |
+ Level_Height : FFFFEA72 C |
+ Level_Width : FFFFEA70 C |
 
-    4 symbols
+    6 symbols
     0 unused symbols
 
   Equate Table (name = value; values, not addresses):
@@ -315,6 +320,9 @@ fn every_probe_kind_can_report_presence() {
                 // Derived from CONTROL_LST above, not copied from a nearby pin: it declares
                 // `ObjDef_Ring` and `ObjDef_Spring`.
                 ("symbol_prefix_count", "ObjDef_") => Some(2),
+                // Declared above, so a probe that had stopped resolving names would report 0 here
+                // and agree with the manifest's 0 on the fixture for the wrong reason.
+                ("symbol_present", "Level_Width" | "Level_Height") => Some(1),
                 // `ObjSub_Spring__Up_Red` and `ObjSub_Spring__Up_Yellow` — the third equate,
                 // `frame_count`, is deliberately outside the prefix so a probe that ignored its
                 // argument and returned "all equates" would fail here rather than pass.
