@@ -739,6 +739,165 @@ fn lookup_equate_serves_the_exact_hit_the_empty_prefix_and_the_two_refusals() {
     );
 }
 
+// ------------------------------------------------------- the shared prefix-search ceiling
+
+/// The ceiling both lookup doors apply, read off the config rather than retyped, so a test cannot
+/// silently disagree with the server about the number it is asserting.
+fn symbol_match_cap() -> usize {
+    oracle_aether::engine::EngineConfig::default().max_symbol_matches
+}
+
+/// The largest equate group measured in a real listing — `MDDBG_`, **45** entries, identical in
+/// `fixtures/aeon/s4.debug.lst` and in the live `aeon/s4.debug.lst`. The completeness gate below is sized
+/// to it rather than to a round number, because this is the group that has to arrive whole for the cap to
+/// be doing its job.
+const LARGEST_REAL_GROUP: usize = 45;
+
+/// The ceiling this gate exists because of: `max_symbol_matches` was **5**, shared by both doors, and it
+/// cut the owner's 6-archetype spawn list and the engine lane's 35 `SST_` equates alike. Kept as a named
+/// constant so the gate can state, in one line, that it is measuring above the value it replaced.
+const CEILING_BEFORE_THE_FIX: usize = 5;
+
+/// A listing with `n` symbols under `Grp_` and `n` equates under `EQU_`, for driving a prefix search past
+/// a ceiling from both doors at once.
+///
+/// Shaped like [`LST_UNBOUND`]: no `EndOfRom` row, so it is accepted *unverified*, and the declared
+/// counts match the rows so the table parses as intact.
+fn lst_with_group_of(n: usize) -> String {
+    let mut s = String::from("  Symbol Table (* = unused):\n  --------------------------\n\n");
+    for i in 0..n {
+        // $000400 upward, one longword apart: inside the cart window and never colliding.
+        s.push_str(&format!(" Grp_{i:04} : {:X} C |\n", 0x400 + i * 4));
+    }
+    s.push_str(&format!("\n    {n} symbols\n    0 unused symbols\n"));
+    s.push_str(
+        "\n  Equate Table (name = value; values, not addresses):\n  \
+         ---------------------------------------------------\n\n",
+    );
+    for i in 0..n {
+        s.push_str(&format!("EQU EQU_{i:04} = ${:08X}\n", i));
+    }
+    s.push_str(&format!("\n    {n} equates\n"));
+    s
+}
+
+/// **Direction one: a real prefix group arrives WHOLE.**
+///
+/// The regression this pins is the one that reached a photograph. With the old ceiling of 5, the spawn
+/// picker's `ObjDef_` search returned 5 of the listing's 6 archetypes and said so, and the engine lane's
+/// `SST_` read returned 5 of 35. Anything at or under the measured worst-case group
+/// ([`LARGEST_REAL_GROUP`]) must now come back complete, with `truncated: false` — from **both** doors,
+/// because they share one config field and a fix that moved only one of them would be half a fix.
+#[test]
+fn a_prefix_group_the_size_of_a_real_one_arrives_whole_from_both_lookup_doors() {
+    const {
+        assert!(
+            LARGEST_REAL_GROUP > CEILING_BEFORE_THE_FIX,
+            "this gate is only meaningful above the ceiling it replaced"
+        )
+    };
+    assert!(
+        symbol_match_cap() >= LARGEST_REAL_GROUP,
+        "the cap ({}) no longer covers the largest group measured in a real listing ({LARGEST_REAL_GROUP})",
+        symbol_match_cap()
+    );
+
+    let h = spawn("wholegroup");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    let lst = write_lst("wholegroup", &lst_with_group_of(LARGEST_REAL_GROUP));
+    c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+
+    // The symbol door: `otherMatches` is the §2.4 bounded envelope, so completeness is three fields.
+    let r = c.ok("emulator/lookup_symbol", json!({"name": "Grp_"}));
+    let m = &r["otherMatches"];
+    assert_eq!(m["total"], json!(LARGEST_REAL_GROUP), "otherMatches: {m}");
+    assert_eq!(
+        m["returned"],
+        json!(LARGEST_REAL_GROUP),
+        "otherMatches: {m}"
+    );
+    assert_eq!(
+        m["truncated"],
+        json!(false),
+        "a {LARGEST_REAL_GROUP}-symbol prefix group must not be cut: {m}"
+    );
+    assert_eq!(
+        m["items"].as_array().map(Vec::len),
+        Some(LARGEST_REAL_GROUP),
+        "`returned` must equal the items actually sent: {m}"
+    );
+
+    // The equate door: same ceiling, flatter shape (no `total`/`returned` — that asymmetry is real and
+    // is being raised separately), so completeness is the list length beside `truncated`.
+    let r = c.ok("emulator/lookup_equate", json!({"prefix": "EQU_"}));
+    assert_eq!(
+        r["matches"].as_array().map(Vec::len),
+        Some(LARGEST_REAL_GROUP),
+        "a {LARGEST_REAL_GROUP}-equate prefix group must arrive whole: {r}"
+    );
+    assert_eq!(r["truncated"], json!(false), "…and must say so: {r}");
+}
+
+/// **Direction two: past the ceiling, truncation is still announced.**
+///
+/// This is the arm that rots — it passes for free at any small cap, and it is the reason the ceiling can
+/// be raised safely at all. `truncated` is emitted in **both** directions deliberately (a field that
+/// appears only in the unusual case is a field nobody reads), so a search that genuinely exceeds the cap
+/// must come back `true` from both doors, with exactly `cap` items and never a clamped-but-silent list.
+#[test]
+fn a_prefix_group_past_the_cap_still_reports_truncation_from_both_lookup_doors() {
+    let cap = symbol_match_cap();
+    assert!(
+        (1..=4096).contains(&cap),
+        "max_symbol_matches ({cap}) is meant to be a policy bound on one reply, not an unbounded dump"
+    );
+    let n = cap + 50;
+
+    let h = spawn("overcap");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    let lst = write_lst("overcap", &lst_with_group_of(n));
+    c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+
+    let r = c.ok("emulator/lookup_symbol", json!({"name": "Grp_"}));
+    let m = &r["otherMatches"];
+    assert_eq!(
+        m["truncated"],
+        json!(true),
+        "{n} matches against a cap of {cap} must be flagged: {m}"
+    );
+    assert_eq!(
+        m["total"],
+        json!(n),
+        "`total` is the size BEFORE the bound: {m}"
+    );
+    assert_eq!(m["returned"], json!(cap), "otherMatches: {m}");
+    assert_eq!(
+        m["items"].as_array().map(Vec::len),
+        Some(cap),
+        "the reply must carry exactly the ceiling it applied: {m}"
+    );
+
+    let r = c.ok("emulator/lookup_equate", json!({"prefix": "EQU_"}));
+    assert_eq!(
+        r["truncated"],
+        json!(true),
+        "{n} equates against a cap of {cap} must be flagged: {r}"
+    );
+    assert_eq!(
+        r["matches"].as_array().map(Vec::len),
+        Some(cap),
+        "the equate door must cut at the same ceiling: {r}"
+    );
+}
+
 /// **The value this server serves is the value the REAL listing carries**, and the division that value
 /// exists for produces a real number.
 ///

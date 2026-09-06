@@ -135,7 +135,18 @@ pub struct EngineConfig {
     /// `limits.maxInputRows` because a client that must hit a limit to learn it loses the work it was
     /// doing when it found out.
     pub max_input_rows: usize,
-    /// Ceiling on `otherMatches` in a symbol lookup, per `protocol.md` §4 ("up to 5").
+    /// Ceiling on `otherMatches` in a symbol lookup (`protocol.md` §4) **and on `matches` in an equate
+    /// lookup** (§11.36). One bound, both doors — which is why raising it moves two methods at once.
+    ///
+    /// **The number is the server's, and that is the contract's own position rather than our reading of
+    /// it.** §4's prose says *"this spec chose 5"*, but that sentence is the justification for REQUIRING
+    /// the flag, not a `MUST` on the value: the clause it belongs to ends *"so it MUST be flagged"*, and
+    /// the schema is explicit where the prose is casual — `$defs/boundedList` governs *"POLICY-bounded
+    /// lists (a bound the server chose)"*, puts **no `maximum` on `limit`**, and defines `limit` as *"the
+    /// page ceiling the server actually applied, which is not necessarily the one the client asked
+    /// for"*. A `limit` that reports what was applied is only meaningful if the server may apply its own.
+    /// So what is normative is that whatever ceiling we choose is flagged by `truncated` (§2.4 clause
+    /// (a)) — never the digit. See the default for how the digit was measured.
     pub max_symbol_matches: usize,
     /// **The checkpoint cap** (`protocol.md` §6.1, D13 rule 3), advertised in `initialize` as
     /// `capabilities.checkpoints.cap`. At the cap `emulator/checkpoint` **refuses** with `-32005`; it
@@ -213,7 +224,26 @@ impl Default for EngineConfig {
             // the ordinary case and the two normative sums assertable with `==`.
             max_profiler_callers: 64,
             max_input_rows: 256,
-            max_symbol_matches: 5,
+            // **Measured off the listings this server actually answers about, not sized for comfort.**
+            // The bound's job is `max_profiler_callers`' job one method over: carry a real *named group*
+            // WHOLE so that `truncated: false` is the ordinary case, rather than page it.
+            //
+            // Grouping every name in a listing by its leading `X_` token, over `fixtures/aeon/s4.debug.lst`
+            // (2743 symbols / 724 equates) and the live `aeon/s4.debug.lst` (3071 / 755): the largest
+            // equate group is **45** (`MDDBG_`) in BOTH, and 256 serves **107/107** and **122/122** equate
+            // groups whole — 5.7x the observed worst case, which is the margin that stops the next listing
+            // from re-opening this. On the symbol side it serves 272/273 and 378/379; the one hold-out in
+            // each is `$games.sonic4.player_` at 301/315 — an entire module namespace, not a prefix guess,
+            // and precisely what `truncated: true` exists to say. The old 5 cut **42%** of equate groups
+            // and **25%** of symbol groups, which is how it reached a photograph of the owner's screen:
+            // the spawn picker's `ObjDef_` search holds 6, and `SST_` holds 35.
+            //
+            // **Reply cost is not the binding constraint at this size.** The worst case this admits,
+            // built from each listing's longest names, is 12.5 KB of equates / 37.4 KB of symbols — 1.2%
+            // and 3.6% of `rpc::MAX_LINE_BYTES` (1 MiB), the ceiling that actually enforces reply size,
+            // so the applied bound sits ~27x under it. And it is `max_input_rows` above, so this block
+            // carries one bound of this scale rather than two differently-arbitrary ones.
+            max_symbol_matches: 256,
             // The contract's own advertised example (`"checkpoints":{"supported":true,"cap":8}`). A
             // snapshot is the whole machine, so the cap is a memory bound as much as a policy one.
             max_checkpoints: 8,
