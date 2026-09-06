@@ -68,11 +68,66 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
-      # Fetch the pinned SingleStepTests vendor data so the SST suite actually runs (a missing dir
-      # would make every per-file test skip and the suite pass vacuously — the `vendor_data_present_
-      # when_running_in_ci` guard test turns that into a hard failure under CI).
-      - name: Fetch SingleStepTests vendor data
-        run: ./tools/fetch-tests.sh
+      # ---------------------------------------------------------------------------------------------
+      # THE VENDORED CORPORA. This step used to be `./tools/fetch-tests.sh` alone, which is the OTHER
+      # half of the 46-day outage: `tools/fetch-z80-tests.sh` and `tools/fetch-testroms.sh` were never
+      # run in CI at all, so five `vendor_data_present_when_running_in_ci` guards fired correctly on a
+      # corpus nobody had fetched. Fixing only the clippy break would have returned CI to THAT red.
+      #
+      # Three corpora, three consumers:
+      #   tools/fetch-tests.sh      -> vendor/ProcessorTests/68000/v1  singlestep_m68000.rs
+      #   tools/fetch-z80-tests.sh  -> vendor/ProcessorTests/z80/v1    singlestep_z80.rs
+      #   tools/fetch-testroms.sh   -> vendor/TestRoms                 conformance_roms.rs,
+      #                                                                scanline_goldens.rs,
+      #                                                                scanline_capture.rs,
+      #                                                                oracle-aether/tests/scanlines.rs
+      #
+      # CACHED, deliberately. Uncached this is 838 sequential HTTP requests and ~726 MB per run
+      # (193 MB of 68000 archives, 528 MB of z80 JSON, 5 MB of ROM zips), and — worse than the
+      # minutes — it puts 17 Google Drive downloads on the critical path of every single push. Drive
+      # rate-limits and serves HTML interstitials; making the check that just came back from 46 days
+      # red depend on it 17 times a run is trading one outage for a flakier one.
+      #
+      # The stale-cache hazard is answered three ways, because a cache keyed wrong is a silent-vacuity
+      # bug of exactly the kind this whole change exists to remove:
+      #
+      #  1. The key hashes BOTH the fetch scripts (which carry the pinned upstream commit SHAs and the
+      #     file lists) and all three sha256 manifests. Any change to what is pinned, or to which files
+      #     are pinned, changes the key.
+      #  2. NO `restore-keys`. A prefix fallback is precisely how you restore a corpus built from a
+      #     different pin — and the guards below check that named files EXIST, not what is in them, so
+      #     they would not catch it. Exact key or nothing.
+      #  3. `cache/restore` + `cache/save` as a PAIR rather than `actions/cache`, so the save happens
+      #     *after* the fetch and the manifest verification have both passed. `actions/cache`'s post
+      #     step saves even when the job failed, which would happily cache a half-finished fetch and
+      #     then skip fetching forever on the exact-key hit.
+      #
+      # And the restore path is verified rather than trusted: `tools/verify-vendor.sh` re-checks all
+      # three manifests unconditionally, on a hit and on a miss.
+      - name: Restore vendored corpora
+        id: vendor-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vendor
+          key: vendor-v1-${{ hashFiles('tools/fetch-tests.sh', 'tools/fetch-z80-tests.sh', 'tools/fetch-testroms.sh', 'tools/singlesteptests.sha256', 'tools/singlesteptests-z80.sha256', 'tools/testroms.sha256') }}
+      - name: Fetch vendored corpora (cache miss only)
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        run: |
+          ./tools/fetch-tests.sh
+          ./tools/fetch-z80-tests.sh
+          ./tools/fetch-testroms.sh
+      # Unconditional. On a miss this re-proves what the fetch scripts just proved; on a HIT it is the
+      # only thing standing between a corrupt or truncated cache entry and a green suite run over the
+      # wrong bytes. It also regenerates the 68000 `.json` plaintext from the `.json.gz` archives the
+      # manifest actually pins, closing the one derivation step no manifest covered.
+      - name: Verify vendored corpora against their pinned manifests
+        run: ./tools/verify-vendor.sh
+      - name: Save vendored corpora
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vendor
+          key: ${{ steps.vendor-cache.outputs.cache-primary-key }}
       # Named FIRST and with --nocapture, because libtest swallows a passing test's stdout: without
       # this step the frozen-pin banner would exist and never be seen on a green run, which is exactly
       # the failure it was written to prevent. 0.06 s, and it makes the log say which aeon chain
