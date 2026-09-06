@@ -18,6 +18,7 @@ use crate::state_hash::VRAM_SIZE;
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
 use crate::ym2612::Ym2612;
+use crate::z80::Z80;
 
 /// 68000 work-RAM window base (`$FF0000`).
 pub const RAM_BASE: u32 = 0xFF_0000;
@@ -802,7 +803,7 @@ pub struct SramMap {
 /// | `$A04000–$A05FFF` | YM2612 FM (window offset `$4000-$5FFF`, ports = low 2 bits): read = live status (bit7 BUSY clear); writes drive the timer model — answering regardless of bus ownership (K4-3 pin) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
 /// | `$A11100` | Z80 BUSREQ: bit0 read = 0 when 68000 is granted the bus (asserted), 1 when the Z80 owns it |
-/// | `$A11200` | Z80 RESET: bit0 = the reset-release latch (`z80_running`) — write 1 = release (Z80 runs), 0 = assert (held); WRITE-ONLY, reads are arbiter open bus (K4-1) |
+/// | `$A11200` | Z80 RESET: bit0 = the reset-release latch (`z80_running`) — write 1 = release (Z80 runs), 0 = assert (held). The **asserting edge (1 -> 0) drives a real [`Z80::reset`] into the core** (PC/I/R/IFF/IM cleared, HALT lifted), not just the clock gate. WRITE-ONLY, reads are arbiter open bus (K4-1) |
 /// | `$C00000`/`$C00002` | VDP data port (read = pre-cache buffer, write = VRAM/CRAM/VSRAM; recon R1) |
 /// | `$C00004`/`$C00006` | VDP control port (read = status word, write = command; recon R1/R2) |
 /// | `$C00008–$C0000F` | VDP HV counter (even byte = V, odd byte = H; recon R2) |
@@ -832,6 +833,12 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// bincode-serialized like `z80_busreq`; NOT in `export_state`. See `docs/2026-07-22-z80-core-design.md`
     /// (ZC6/ZC13).
     z80_running: &'a mut bool,
+    /// The Z80 core itself — borrowed so a `$A11200` write can drive the **real** `/RESET` into it
+    /// ([`Z80::reset`]), not merely flip `z80_running`. The gate and the core are two different things: the
+    /// latch says whether the clock runs, the reset says what state the core runs *from*. The Z80's own bank
+    /// window drops writes to the `$A11xxx` arbiter registers (`z80/bus.rs::write_window`), so this borrow
+    /// is never needed on the Z80 side and there is no self-reset path to reconcile.
+    z80: &'a mut Z80,
     /// The Z80's 9-bit `$6000` bank latch — the SAME `System::z80_bank` scalar the Z80-side bus borrows
     /// (one physical register, two paths): a 68k write into the open window at Z80 offset `$6000-$60FF`
     /// ticks it through [`crate::z80::bus::bank_latch_tick`], exactly like the Z80's own `$6000` write
@@ -907,6 +914,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         last_bus_word: &'a mut u16,
         z80_busreq: &'a mut bool,
         z80_running: &'a mut bool,
+        z80: &'a mut Z80,
         z80_bank: &'a mut u16,
         sram_enabled: &'a mut bool,
         sram_write_protect: &'a mut bool,
@@ -927,6 +935,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             last_bus_word,
             z80_busreq,
             z80_running,
+            z80,
             z80_bank,
             sram_enabled,
             sram_write_protect,
@@ -1098,7 +1107,34 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // Z80 RESET ($A11200): latch bit0 from the EVEN byte only (a word write `move.w #$100,$A11200`
             // puts the meaningful byte at $A11200, 0 at $A11201). 1 = release reset (Z80 runs), 0 = assert
             // (held). $A11201 falls through and drops. No committed fixture writes bit0 = 1 (design ZC13).
-            0xA1_1200 => *self.z80_running = (byte & 1) != 0,
+            //
+            // The line is a LEVEL, and this arm sees every store to the address — including the redundant
+            // ones real drivers make (the SMPS boot writes `#$100` to `$A11200` more than once, and the
+            // busreq/reset dance repeats). So the core's `/RESET` fires on the **asserting EDGE** —
+            // released -> asserted, bit0 1 -> 0 — and nowhere else:
+            //
+            // - Firing on *every* write would clobber a running sound driver's PC on each redundant
+            //   re-release. That is the mutation the "a redundant release write does not reset" row pins.
+            // - Firing on the *releasing* edge instead would leave the core holding stale registers for as
+            //   long as the line is held, which is not what hardware shows: `/RESET` forces the state while
+            //   it is asserted, and release only lets the (already-reset) core fetch. That is the mutation
+            //   the "asserting reset resets the core immediately" row pins.
+            //
+            // The invariant this maintains is the one power-on already establishes: **while `z80_running`
+            // is false the core is in its reset state** (power-on is `Z80::new()`, itself the reset state),
+            // so a game that only ever writes 1 without a preceding 0 still starts from PC = 0. Re-forcing
+            // while held would be unobservable anyway (the core is gated off and steps nothing), so the edge
+            // is chosen for what it makes true of the *observed* state, not for execution.
+            //
+            // Modeled as instantaneous: real silicon needs `/RESET` held for ~3 clocks to latch, and the
+            // same line also resets the YM2612 on real hardware — neither is modeled here (unchanged).
+            0xA1_1200 => {
+                let released = (byte & 1) != 0;
+                if *self.z80_running && !released {
+                    self.z80.reset();
+                }
+                *self.z80_running = released;
+            }
             // Cartridge SRAM control ($A130F1, the "TIME" line's SRAM-access byte): latch bit0 = SRAM enable
             // (1 = SRAM mapped at $200001+, 0 = ROM shown) and bit1 = write-protect (1 = read-only). $A130F1
             // is the ODD byte of its word, and the shipping driver writes it directly with a byte store
@@ -1593,6 +1629,7 @@ mod tests {
         last_bus_word: u16,
         z80_busreq: bool,
         z80_running: bool,
+        z80: crate::z80::Z80,
         z80_bank: u16,
         sram_enabled: bool,
         sram_write_protect: bool,
@@ -1619,6 +1656,7 @@ mod tests {
                 last_bus_word: 0,
                 z80_busreq: false,
                 z80_running: false,
+                z80: crate::z80::Z80::new(),
                 z80_bank: 0,
                 sram_enabled: false,
                 sram_write_protect: false,
@@ -1640,6 +1678,7 @@ mod tests {
                 &mut self.last_bus_word,
                 &mut self.z80_busreq,
                 &mut self.z80_running,
+                &mut self.z80,
                 &mut self.z80_bank,
                 &mut self.sram_enabled,
                 &mut self.sram_write_protect,
