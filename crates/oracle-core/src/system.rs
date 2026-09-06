@@ -664,6 +664,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            z80,
             z80_bank,
             sram_enabled,
             sram_write_protect,
@@ -683,6 +684,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            z80,
             z80_bank,
             sram_enabled,
             sram_write_protect,
@@ -1301,6 +1303,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            z80,
             z80_bank,
             sram_enabled,
             sram_write_protect,
@@ -1320,6 +1323,7 @@ impl System {
             last_bus_word,
             z80_busreq,
             z80_running,
+            z80,
             z80_bank,
             sram_enabled,
             sram_write_protect,
@@ -2665,6 +2669,157 @@ mod tests {
         let r = s.z80.regs();
         assert!(!r.iff1, "interrupt acceptance cleared IFF1");
         assert!(r.halted, "the handler's final HALT re-idled the Z80");
+    }
+
+    /// `C3` (lens sweep 2026-09-06): a `$A11200` write drives a real `/RESET` into the **core**, not just
+    /// the `z80_running` clock gate. Every other Z80-live test in this file sets `s.z80_running = true`
+    /// directly and the one bus-driven test
+    /// ([`arbiter_latch_accessors_report_what_the_bus_latched`]) asserts only on the two latches — so the
+    /// core was never observed across a reset and the missing reset survived. This test therefore goes
+    /// **through the bus** and asserts on `s.z80.regs()`; a row that asserted `z80_running` would reproduce
+    /// exactly the blindness that let this ship.
+    ///
+    /// It also pins the EDGE. The core is loaded with a distinct dirty state, and each write is checked:
+    /// a release (1) and a redundant re-release (1 again) must leave the core alone, and only the asserting
+    /// transition (1 -> 0) resets it. That fixture state is unreachable in a real run (the invariant is
+    /// that a held-in-reset core is already reset), which is the point: it makes the edge choice observable.
+    #[test]
+    fn z80_reset_line_through_the_bus_resets_the_core_on_the_asserting_edge() {
+        use crate::m68000::bus68k::Bus68k;
+        use crate::z80::{Z80Regs, Z80};
+
+        // A dirty core: every field the Z80 `/RESET` defines is non-reset, and every field it leaves alone
+        // carries a distinct sentinel so a reset that clears too much is caught too.
+        let dirty = Z80Regs {
+            a: 0x77,
+            f: 0x5A,
+            b: 0x11,
+            c: 0x22,
+            d: 0x33,
+            e: 0x44,
+            h: 0x55,
+            l: 0x66,
+            af_: 0x1234,
+            bc_: 0x5678,
+            de_: 0x9ABC,
+            hl_: 0xDEF0,
+            ix: 0x0BAD,
+            iy: 0xF00D,
+            sp: 0xFFF0,
+            // The defined-by-RESET set (UM008 §"RESET" / design ZC9), all non-zero:
+            pc: 0x1234,
+            i: 0x5A,
+            r: 0x3C,
+            iff1: true,
+            iff2: true,
+            im: 2,
+            halted: true,
+            wz: 0x4321,
+            q: 0xAB,
+        };
+        let mut s = System::new(0xA11200);
+        s.z80 = Z80::from_regs(&dirty);
+
+        // Assert the NEIGHBOURING line first ($A11100 bit0 = 1 = BUSREQ), so the row at the end of this test
+        // measures a value this test set rather than the power-on default: a `$A11200` arm that reached into
+        // the wrong latch would have to leave BUSREQ *asserted* to pass it.
+        s.mega_bus(&mut ()).write8(0xA1_1100, 5, 0x01);
+        assert!(s.z80_busreq(), "setup: BUSREQ asserted through the bus");
+
+        // Release ($A11200 bit0 = 1) through the bus. The clock gate opens; the CORE must not be touched —
+        // firing the reset on the releasing edge instead of the asserting one dies here.
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x01);
+        assert!(s.z80_running(), "bit0 = 1 released the Z80 from reset");
+        assert_eq!(
+            s.z80.regs(),
+            dirty,
+            "releasing reset opens the clock gate; it does not reset the core"
+        );
+
+        // A REDUNDANT release (bit0 = 1 while already released) is what real drivers emit — the SMPS boot
+        // writes $A11200 more than once. It is not an edge and must not touch a running core.
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x01);
+        assert_eq!(
+            s.z80.regs(),
+            dirty,
+            "a redundant release write is not an edge and must not reset the core"
+        );
+
+        // The asserting edge (1 -> 0): the real /RESET.
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x00);
+        assert!(!s.z80_running(), "bit0 = 0 asserted reset; the Z80 is held");
+        let r = s.z80.regs();
+        // Cleared: exactly UM008's defined set, plus the internal WZ/Q support fields.
+        assert_eq!(r.pc, 0, "/RESET clears PC");
+        assert_eq!(r.i, 0, "/RESET clears I");
+        assert_eq!(r.r, 0, "/RESET clears R");
+        assert!(!r.iff1, "/RESET clears IFF1");
+        assert!(!r.iff2, "/RESET clears IFF2");
+        assert_eq!(r.im, 0, "/RESET selects interrupt mode 0");
+        assert!(!r.halted, "/RESET un-halts the core");
+        assert_eq!(r.wz, 0, "/RESET clears the internal WZ");
+        assert_eq!(r.q, 0, "/RESET clears the internal Q");
+        // Preserved: the architecturally-undefined register file (ZC9) — static storage /RESET never drives.
+        assert_eq!((r.a, r.f), (0x77, 0x5A), "/RESET preserves AF");
+        assert_eq!((r.b, r.c), (0x11, 0x22), "/RESET preserves BC");
+        assert_eq!((r.d, r.e), (0x33, 0x44), "/RESET preserves DE");
+        assert_eq!((r.h, r.l), (0x55, 0x66), "/RESET preserves HL");
+        assert_eq!(
+            (r.af_, r.bc_, r.de_, r.hl_),
+            (0x1234, 0x5678, 0x9ABC, 0xDEF0),
+            "/RESET preserves the shadow file"
+        );
+        assert_eq!((r.ix, r.iy), (0x0BAD, 0xF00D), "/RESET preserves IX/IY");
+        assert_eq!(r.sp, 0xFFF0, "/RESET preserves SP");
+
+        // The neighbouring arbiter line is a different register at a different address and stays where this
+        // test put it — three `$A11200` writes later, BUSREQ is still asserted.
+        assert!(s.z80_busreq(), "$A11200 never touches the BUSREQ latch");
+    }
+
+    /// `C3`, the symptom that is silent and permanent: a Z80 sitting in `HALT` with `IFF1 = 0` when reset is
+    /// asserted has no other way out — [`crate::z80::Z80::accept_interrupt`] is the only other site that
+    /// clears `halted`, and a masked `/INT` never reaches it. Before the fix a game that reset its sound
+    /// driver got silence for the rest of the session. End-to-end through the real run loop and the real
+    /// bus, observed as *execution* (a sentinel the revived driver writes), not as a register or a latch.
+    #[test]
+    fn a_reset_pulse_revives_a_z80_halted_with_interrupts_disabled() {
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = booted(0x2E80);
+
+        // Driver v1 at $0000: DI ; HALT — the dead end. With IFF1 = 0 the vblank /INT is masked, so the
+        // vblank-interrupt path (`z80_takes_the_vblank_interrupt_and_runs_its_im1_handler`) cannot wake it.
+        s.z80_ram[0x0000] = 0xF3; // DI
+        s.z80_ram[0x0001] = 0x76; // HALT
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x01); // release reset through the bus
+        s.run_frames(1);
+        let r = s.z80.regs();
+        assert!(r.halted, "positive control: driver v1 reached HALT");
+        assert!(
+            !r.iff1,
+            "positive control: it halted with interrupts masked"
+        );
+
+        // Driver v2 at $0000: LD A,$77 ; LD ($1500),A ; HALT. Uploading it changes nothing on its own — a
+        // halted Z80 fetches nothing. This is the capability control: it proves the sentinel below can only
+        // be explained by the reset, not by the upload.
+        let v2 = [0x3E, 0x77, 0x32, 0x00, 0x15, 0x76];
+        s.z80_ram[..v2.len()].copy_from_slice(&v2);
+        s.z80_ram[0x1500] = 0x00;
+        s.run_frames(1);
+        assert_eq!(
+            s.z80_ram[0x1500], 0x00,
+            "control: the halted Z80 runs nothing, so the new driver has not executed"
+        );
+
+        // The reset pulse a game issues to restart its sound driver: assert, then release, through the bus.
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x00);
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x01);
+        s.run_frames(1);
+        assert_eq!(
+            s.z80_ram[0x1500], 0x77,
+            "the reset un-halted the Z80 and restarted it at PC = 0: the new driver ran"
+        );
     }
 
     #[test]

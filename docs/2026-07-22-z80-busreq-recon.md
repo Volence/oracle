@@ -116,6 +116,35 @@ one paraphrased source). **Classification**: behavioral (write semantics); the r
 purely from reset with BUSREQ deasserted — deferred (unobserved by Gunstar/TF4; pin from a hardware-test
 thread before relying on it).
 
+> **2026-09-06 — the "plain latch" deferral has EXPIRED, and the state model is now pinned.** Z4 modeled
+> `$A11200` as a latch *on the stated ground that "the reset line only ever gates Z80 execution, which does
+> not exist yet (Z7)"*. Z-execute landed; the ground is gone. The latch outlived it by about six weeks and
+> the line kept its 2026-07-22 semantics into a machine with a running Z80: a game that reset its sound
+> driver resumed it mid-stream, and a driver sitting in `HALT` with `IFF1 = 0` when reset was asserted stayed
+> halted **forever** (`Z80::accept_interrupt` is the only other site that clears `halted`, and a masked
+> `/INT` never reaches it) — silence for the rest of the session. Found by the 2026-09-06 lens sweep.
+>
+> **Pinned** (`Z80::reset`, driven from `bus.rs`'s `$A11200` arm; this is the "pick the reset-state register
+> model deliberately … and pin it; do not let it drift" of `2026-07-22-sound-stack-recon.md:224`, now made
+> concrete for the *running* core rather than only for power-on):
+>
+> - **Cleared** — the Z80 UM008 §"RESET" defined set: `PC = 0`, `I = 0`, `R = 0`, `IFF1 = IFF2 = 0`, `IM 0`,
+>   and `HALT` lifted; plus the internal `WZ`/`Q` support fields, which are machine state, not the
+>   programmer's register file.
+> - **Preserved** — everything UM008 leaves architecturally undefined: `AF`/`BC`/`DE`/`HL`, their shadows,
+>   `IX`/`IY`, `SP`. Clearing those would be as wrong as clearing too little, and the hardware-reported
+>   `AF = SP = $FFFF` variant stays a deliberate non-choice: it is outside UM008's defined list, outside
+>   ZC9's all-zero power-on pin, and adopting it would move the `export_state` region-4 golden.
+> - **Not touched** — `int_pending`. It mirrors the *level* of an external `/INT` another chip is driving;
+>   resetting the CPU does not deassert it (`System` clears it at the next frame start, `system.rs`).
+> - **Edge, not level.** The core reset fires on the **asserting** transition (bit0 `1 → 0`) only, so the
+>   redundant `$A11200` writes real drivers emit cannot clobber a running driver, and a release does not
+>   re-reset. What makes that sound is the standing invariant that a held-in-reset core is *already* in its
+>   reset state (power-on is `Z80::new()`, itself the reset state), so the two models are indistinguishable
+>   from outside — while held, the core is gated off and steps nothing.
+> - **Still not modeled** (unchanged, and now stated rather than implied): the ~3-clock minimum `/RESET` hold
+>   real silicon needs, and that on real hardware the same line also resets the YM2612.
+
 ### Z5 — What a poll loop is actually waiting for (why the stub hangs)
 
 **PINNED.** The current oracle-next stub (`bus.rs:287`) returns a **constant `0x00`** for `$A11100` reads =

@@ -252,6 +252,53 @@ impl Z80 {
         Self::default()
     }
 
+    /// Apply a hardware `/RESET` to a **running** core — what the 68000 does by driving `$A11200` bit0 to 0
+    /// (`MegaDriveBus::store_byte`). Until this existed, the `$A11200` write moved only the `z80_running`
+    /// clock gate and the core kept every register it had, so a driver that reset its sound CPU resumed
+    /// mid-stream instead of restarting; worst of all, a core sitting in `HALT` with `IFF1 = 0` when reset
+    /// was asserted stayed halted **forever**, because [`Z80::accept_interrupt`] is the only other place
+    /// that clears `halted` and a masked `/INT` never gets there. That is silent, permanent sound loss.
+    ///
+    /// **State model — Z80 UM008 §"RESET", as already pinned by this repo in
+    /// `docs/2026-07-22-z80-core-design.md` (ZC9): the reset "*defines* PC=0, I=0, R=0, IFF1=IFF2=0, IM=0;
+    /// SP and the main/index registers are architecturally undefined".** The same model, plus the edge rule
+    /// and what is still unmodeled, is written down for the *line* in
+    /// `docs/2026-07-22-z80-busreq-recon.md` (Z4) — which is also where the latch-only model came from, and
+    /// why it survived: Z4 deferred the core reset on the ground that "the reset line only ever gates Z80
+    /// execution, which does not exist yet", and nobody returned when Z-execute landed. So this clears exactly the defined
+    /// set — `PC`, `I`, `R`, both interrupt flip-flops, the interrupt mode — and un-halts, and it
+    /// deliberately **preserves** the register file (`AF`/`BC`/`DE`/`HL`, their shadows, `IX`/`IY`, `SP`):
+    /// the Z80's register file is static storage that `/RESET` does not drive, and clearing state the
+    /// hardware leaves alone would be the worse error in the generous direction. The internal `WZ`/`Q`
+    /// support fields are internal machine state, not the programmer's register file, so they clear with
+    /// the defined set.
+    ///
+    /// Two consequences worth stating because they are load-bearing:
+    ///
+    /// - **It agrees with ZC9's all-zero power-on pin rather than replacing it.** [`Z80::new`] is already
+    ///   the reset state with every undefined register pinned to zero, so `reset()` applied at power-on is
+    ///   the identity — `export_state` region 4 stays all-zero and the export golden cannot move.
+    /// - **The hardware-faithful `AF = SP = $FFFF` variant is a deliberate non-choice, not an oversight.**
+    ///   It is reported on real silicon but is outside UM008's defined list and outside ZC9's pin, and
+    ///   adopting it would move the export golden; ZC9 says that fork is decided at Z-live and "not allowed
+    ///   to drift", so it is not decided here.
+    ///
+    /// `int_pending` is **not** touched: it mirrors the *level* of the external `/INT` line (the VDP's
+    /// vblank assert, `System::run_frames`), and resetting the CPU does not deassert a line another chip is
+    /// driving. It is harmless while held — `IFF1 = 0` masks it — and `System` clears it at the next frame
+    /// start.
+    pub fn reset(&mut self) {
+        self.pc = 0;
+        self.i = 0;
+        self.r = 0;
+        self.iff1 = false;
+        self.iff2 = false;
+        self.im = 0;
+        self.halted = false;
+        self.wz = 0;
+        self.q = 0;
+    }
+
     // ---- 8-bit register accessors over the packed pairs (high byte = first-named register). ----
     fn a(&self) -> u8 {
         (self.af >> 8) as u8
@@ -2066,6 +2113,74 @@ mod tests {
         assert!(
             bytes.iter().all(|&b| b == 0),
             "the reset-state Z80 serializes as all-zero"
+        );
+    }
+
+    #[test]
+    fn reset_clears_the_defined_state_and_preserves_the_register_file() {
+        // UM008 §"RESET" / design ZC9: the reset DEFINES PC = I = R = 0, IFF1 = IFF2 = 0, IM = 0 and lifts
+        // HALT; SP and the main/index registers are architecturally undefined and are preserved here.
+        let dirty = Z80Regs {
+            a: 0x77,
+            f: 0x5A,
+            b: 0x11,
+            c: 0x22,
+            d: 0x33,
+            e: 0x44,
+            h: 0x55,
+            l: 0x66,
+            af_: 0x1234,
+            bc_: 0x5678,
+            de_: 0x9ABC,
+            hl_: 0xDEF0,
+            ix: 0x0BAD,
+            iy: 0xF00D,
+            sp: 0xFFF0,
+            pc: 0x1234,
+            i: 0x5A,
+            r: 0x3C,
+            iff1: true,
+            iff2: true,
+            im: 2,
+            halted: true,
+            wz: 0x4321,
+            q: 0xAB,
+        };
+        let mut z = Z80::from_regs(&dirty);
+        z.reset();
+        let r = z.regs();
+        assert_eq!(r.pc, 0, "PC cleared");
+        assert_eq!(r.i, 0, "I cleared");
+        assert_eq!(r.r, 0, "R cleared");
+        assert!(!r.iff1 && !r.iff2, "both interrupt flip-flops cleared");
+        assert_eq!(r.im, 0, "interrupt mode 0");
+        assert!(!r.halted, "HALT lifted");
+        assert_eq!((r.wz, r.q), (0, 0), "internal WZ/Q cleared");
+        assert_eq!(
+            Z80Regs {
+                pc: 0,
+                i: 0,
+                r: 0,
+                iff1: false,
+                iff2: false,
+                im: 0,
+                halted: false,
+                wz: 0,
+                q: 0,
+                ..dirty
+            },
+            r,
+            "nothing outside the defined set moved: the register file is preserved"
+        );
+        // Applied at the power-on anchor the reset is the identity, so ZC9's all-zero pin — and the
+        // export_state region-4 golden that rests on it — cannot move.
+        let mut fresh = Z80::new();
+        fresh.reset();
+        assert_eq!(fresh, Z80::new(), "reset at power-on is the identity");
+        assert_eq!(
+            fresh.export_region(),
+            [0u8; 30],
+            "the reset state still serializes as all-zero (ZC9)"
         );
     }
 
