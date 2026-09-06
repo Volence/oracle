@@ -525,3 +525,95 @@ So the panel's coverage is **narrower than its seat count suggests**, and the na
 the seat list alone. Both seats disclosed it unprompted, which is the behaviour the charter's
 "say what you could NOT check" rule exists to get. Any later reader treating this packet as exhaustive
 should start from those two disclosures.
+
+---
+
+# Fifth tranche — seat P2 (algorithmic altitude)
+
+## ⚑ CONVERGENCE — the panel's strongest signal, and it fired
+
+**P1b (reverse walk) and P2 (algorithmic altitude) landed independently on `plane_hscroll`.** Two seats,
+different hunts, told not to coordinate, both arriving at: *a value that is constant for the whole line,
+fetched once per pixel per plane, 320× more often than it can change, while the line-hoisted copy already
+sits in `ASlotCtx` three lines away.* Neither knew the other existed.
+
+Per the protocol, convergence outranks any single seat's confidence. **Treat H12/A2 as the highest-
+confidence performance finding in this sweep.**
+
+## CRITICAL — new
+
+### C5 ◻ Every frame of every replay playthrough renders a full 320-px attributed scanline and discards it
+
+`system.rs:1220` renders every active line unconditionally; the result is *stashed* only when the sink
+wants scanlines, and `BusEventSink::wants_scanlines` **defaults to false**. `render_scanline`'s only
+mutation is three status booleans. So on an unarmed run the entire plane/priority/attribution pipeline
+is computed and dropped **to produce three bits**.
+
+⚑ **The seat checked who actually runs unarmed rather than assuming, which is where this finding could
+have died — and found the worst possible consumer:** `oracle-replay`, *the tool whose entire pitch is
+"one playthrough instead of one per stale checkpoint"*, uses a `Fanout` of two sinks that neither
+override the flag. **It pays the full discarded raster for every frame of every playthrough.**
+
+Residue that survives even when armed: `flush_pending_row` reads `line` and `pixels` only, while
+`line_report_from` builds `sprites` (up to 80 entries) and two `PlaneScroll`s per line — and under 2-cell
+vscroll, *what Sonic titles use*, each is a heap `Vec`. **≈27,000 allocations/second for fields nothing
+reads.**
+
+**Root cause as shape:** `resolve_line` offers one granularity; three consumers want three different
+things (3 bits, RGB, one dot) and all three pay the union. `pixel_attribution_masked` is the third
+witness — it resolves 320 pixels, then **re-samples** the one dot it wanted.
+
+**Honest limit, stated by the seat and worth keeping:** it cannot rule out LLVM eliding part of the
+unarmed loop, judges it very unlikely (three heap allocations across a non-inlined `pub fn` boundary),
+and **TAGGED the decisive instrument** rather than asserting. It ran no timing at all, deliberately,
+because load was 3.4→5.7 with the owner's window live — *"I produced none rather than produce a
+misleading one."*
+
+## HIGH — new
+
+- **H20 ◻ `Drained::symbols` is published and has ZERO consumers — the player copied the frontend's
+  signal but not its repair** (`oracle-player/src/bus.rs:930`). The frontend disarms spawn mode when the
+  listing changes, with the measurement in its comment: *"Of the symbols `s4.lst` and `s4.debug.lst`
+  share, **92.6% name a different address**."* The player publishes the same flag and nothing reads it,
+  and nothing disarms on a listing change. **The click does not fail — it succeeds at a different
+  address.** Silent-corruption shape, fixed and documented in one crate, reintroduced one crate over.
+  ⚑ The irony is on the record: the frontend's own `drain.rs` calls a report field with no consumer
+  *"the precise shape of the defect this file exists because of."*
+- **H21 ◻ `spawn::Mode`'s doc states an invariant the frontend's own F5 swap violates** — *"disarmed
+  after every reset / ROM swap"*, while the only disarm site is the explicit toggle. And the engine
+  explains in words why the drain cannot cover it: *"A window that swaps its own cartridge (the
+  frontend's F5) therefore does not get told about its own listing."* **Shape remedy the seat proposes is
+  the right one:** derive armed-ness from the generation it was armed against, so no swap path can forget.
+- **H22 ◻ 68000 decode is a 104-arm cascade over a provably 2¹⁶ input space** — and the decisive fact is
+  that the whole cascade reads **only the opcode and one supervisor bit**, so it is a pure function of a
+  16-bit word, fully memoizable. ⚑ **The seat argued the counter-case against itself** (each arm carries
+  its recon citation; a generated table would lose the audit trail) **and then dissolved it**: keep the
+  cascade as the builder, memoize in front of it, and the readable derivation survives untouched.
+
+## MEDIUM — new
+
+- **M41 ◻ A `String` allocated per sort comparison** (`engine.rs:6947`), Θ(m log m) heap allocations for a
+  user-controlled prefix — ~24,000 allocations for one keystroke-driven lookup. **The only instance in the
+  repo**, and the seat proved the cost from `sort_by_key`'s signature rather than from std's call count.
+  It also cleared the symbol cap the brief asked about: the cap governs the reply, not the search.
+- **M42 ◻ A full scanline is rendered to learn a width that is `if h40 {320} else {256}`** — in both GUI
+  crates, every frame a mask is set. `Vdp::active_display()` is public and returns exactly that. **Bonus
+  vacuity:** the `if width == 0` guard beside it *"loud-on-unmeasurable's floor"* is unreachable, because
+  width ∈ {256, 320} always.
+- **M43 ◻ The VDP FIFO is three fields and one index expression written out verbatim three times**
+  (`vdp.rs:740`, `:1339`, `:1403`) — compared character by character, agreeing today. A fourth drain site
+  that gets it wrong reads the wrong entry silently.
+
+## Verified clean — the seat's own list is unusually valuable
+
+Ten targets re-derived and cleared with reasons, including several I would have bet against: symbol
+resolution is `partition_point` binary search over a pre-sorted index, not a scan; `self.symbols.clone()`
+at four sites is an `Arc` refcount bump, not an O(n) copy; per-object symbol lookup is O(slots · log
+symbols); the SAT cache's apparent two-copies-of-one-truth is **correct by design, because the staleness
+being modelled is the hardware's** (the Bloodlines stale-cache behaviour) — *recomputation would be the
+wrong answer*; and RPC dispatch's linear scan buys the property that *"the advertised list and the
+implemented set are the same set by construction"* — **right trade, leave it.**
+
+⚑ **Third seat degraded by the concurrency cap:** P2's breadth explorer never launched, so its coverage of
+the ~700 remaining GUI loop sites is *"thinner than the forward-direction findings above"* — its words,
+volunteered.
