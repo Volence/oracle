@@ -3,7 +3,7 @@
 Charter, corpus, roster deviation and seat rules:
 `2026-09-06-oracle-lens-sweep-CHARTER.md`. Pin `d3ca871` / review revision `e6bc191` (identical code).
 
-**STATUS: IN PROGRESS.** 22 seats launched, **15 returned**. Still out: P2, A2, Va, Vb, B2a, B2b, B1. This file is
+**STATUS: COMPLETE. All 22 seats launched and returned.** This file is
 written incrementally so no finding lives only in a session's context. **Nothing here is fixed** — the
 sweep is read-only by design; landing a packet makes findings discoverable, it does not close them.
 
@@ -953,3 +953,141 @@ parcel: the mailbox offsets are deliberately *not written down* — *"not as a c
 not in a comment as 'for reference'. **A number a reader can copy is a number a later edit can use.**"*
 And `decoders.rs` measures its stride from two symbols rather than hardcoding it, saying so: *"This is why
 nothing hardcodes `$50`."*
+
+---
+
+# Tenth tranche — seat B1 (construct/idiom). ALL 22 SEATS RETURNED.
+
+⚑ **B1 cross-checked its candidates against this packet before reporting and WITHDREW three** already
+booked by siblings (`debug_assert!(accepted)`, `WORK_RAM_LO`, `z80_read`'s zero-length payload). That is
+the behaviour that keeps a 22-seat panel's output readable, and it did it unprompted.
+
+## ⚑ THIRD AND FOURTH CONVERGENCE
+
+- **B1-1 ≡ B2a's M50** — the bare-hex address box, found independently by the duplication seat and the
+  idiom seat. **Three seats have now converged on two separate targets.**
+- **B1-6** reports *"two seats converged on this independently"* for `space_wire`'s `Z80` arm.
+
+## HIGH — new
+
+- **H29 ◻ `space_wire`'s `Z80` arm: a doc saying "callers must not reach here" and a sole caller that
+  does** (`memory.rs:524`). `Space::Z80` is a live selector entry, so the Memory panel's Z80 space returns
+  **not** the sentence its own doc promises but a different enum refusal. The covering test picks
+  `Space::Vram` and asserts a message the Z80 path **fails**. LIVE and user-visible. A four-variant type
+  would make the call impossible.
+- **H30 ◻ Two identical serialized enums for "which VDP memory", 1,600 lines apart in one module** —
+  same three variants, same derives, both `pub`, both on wire types, **and both spellings used inside one
+  function body** (converted variant-for-variant twice). Neither doc mentions the other.
+- **H31 ◻ The "the I/O block does not decode A0" rule is applied on the read path and contradicted on the
+  write path** (`bus.rs:1004` vs `:1114`), with a citation on the read side and none on the write. So
+  `read8($A10008)` answers while `write8($A10008)` drops. Word writes are unaffected, **which is why no
+  golden catches it.** ⚑ The seat reported the *contradiction* and explicitly **refused to adjudicate the
+  hardware question**, TAGGING it — the right call.
+- **H32 ◻ Two mutually-exclusive click modes kept as two `bool`s, and the clearing happens before the
+  fallible arm** (`screen_pick.rs:396`). Arm rings, then press "arm spawn" with no listing loaded: **ring
+  mode is destroyed by a gesture that refused, and nothing is armed.** The charter's ⚑ pattern exactly —
+  and `pacing.rs:580` models the same shape correctly as an enum in the same crate, *"made unrepresentable
+  rather than merely required."*
+- **H33 ◻ `lookup_equate`'s bounded list bypasses the blessed helper its sibling uses on the identical
+  bound** — no `total`, no `returned`, no `limit`, where `rpc::bounded_array`'s own doc makes all three the
+  rule and `$defs/boundedList` makes them required. **The fragment was transcribed to the hand-rolled
+  shape, so `schema_conformance` is structurally blind to it**, and the test passes *because* it was
+  written to that shape. ⚑ **A comment promised to raise this "separately" on 2026-09-05; the seat checked
+  all three registers this lane books into and it is in none of them. The promise was not kept.**
+
+## MEDIUM — new (abbreviated)
+
+- **M70 ◻** `StateHash::compute` takes four interchangeable `&[u8]` guarded only by a debug length check —
+  fixed-size array types would make a wrong length **and an argument-order swap** compile errors.
+- **M71 ◻** `Outbound::new` asserts `capacity > 0` where `NonZeroUsize` would carry it, and the field is a
+  `pub usize` with no validation, so a 0 panics **inside an accept thread at the first connection**. ⚑ The
+  contrast is the finding: the same crate reasons at length about exactly this class for a *different*
+  field and reaches a written answer; the one field that actually panics did not get it.
+- **M72 ◻** Two copies of the A7 byte-step rule **inside one file**, each doc explaining the *cross-file*
+  mirror and **neither explaining why this file holds two**.
+- **M73 ◻** `RpcError::invalid_state`'s *"can never be forgotten"* helper is bypassed at 2 of 18 sites.
+- **M74 ◻** The watch-space vocabulary is a `&str` array plus an unchecked `usize` cursor beside a real
+  enum in the same crate — the array is justified, **the panel-side index is not**.
+- **M75 ◻** `nametable_cell` re-inlines a helper eight lines below it **with a different wrap spelling**
+  (`a | 1` vs `(a+1) & mask`) — agreeing only for even addresses. ⚑ Self-indicting: the doc ten lines
+  further down argues against precisely this, *"and the debug view is the one nobody checks."*
+- **M76 ◻** `port: usize` carries a two-valued rule through four layers, where one method handles port 2
+  gracefully and its neighbour panics — and the house style documents panicking accessors elsewhere.
+- **M77 ◻** `trim_start_matches("0x")` strips **repeatedly**, so `0x0x41` becomes a byte the blessed
+  parser refuses, while `0X41`/`$41` are refused though it accepts them.
+
+## Verified clean — an unusually long justified list
+
+B1 checked and **cleared ~20 candidates as deliberate**, each with the reason found in place: a
+hand-formatted address whose sum can exceed `u32`; a width-parametric hex helper the fixed ones cannot
+express; `object_list`'s missing totals as an explicit contract clause; five of six `debug_assert!`s
+carrying a stated reason, one naming *"the test that would actually catch it"*; three hand-rolled hex
+decoders that cannot use the blessed parser because it returns the wrong error type. **A near-miss it
+measured rather than assumed:** the Memory box's bare-hex acceptance would shadow any symbol whose name is
+all hex digits — it parsed both table sections of the real listing, found **zero** such names, and
+recorded it as not reachable today rather than filing it.
+
+---
+
+# CLOSING — the panel's verdict
+
+**All 22 seats returned.** 8 CRITICAL, 33 HIGH, ~77 MEDIUM/LOW, and a verified-clean register that is
+worth as much as the findings.
+
+## The four things to act on first, and why these four
+
+1. **CI has not run in 46 days** (C1, controller-verified over 554 runs). Everything else in this packet
+   is a defect in the code; **this one is a defect in the ability to find defects**, and it silently
+   disabled five controls written specifically to prevent vacuous passes. Fixing the missing library
+   alone returns CI to the *older* red — the ordering trap is recorded.
+2. **A reset can strand or roll back a save** (H2) — the only finding here that destroys the owner's data,
+   and its existing guard reads the machine rather than the file, so it is green and blind.
+3. **560 Z80 encodings panic, uncontained** (C4) — real instructions, no `catch_unwind` anywhere in
+   production, and a commercial ROM has already reached the class once.
+4. **The Z80 reset line does not reset** (C3) — measured with two controls; a halted driver never
+   restarts, and the rule was written down in July with *"pin it; do not let it drift"* and never
+   implemented.
+
+## Convergence register — the panel's strongest signal, four times
+
+| target | seats | note |
+|---|---|---|
+| `plane_hscroll` fetched per pixel | **P1b** (reverse walk) + **P2** (altitude) | opposed walks, no contact |
+| symbol-binding policy duplicated | **ARCH** (4 copies) + **B2a** (**5** copies) | later seat strictly larger |
+| bare-hex address box | **B2a** + **B1** | duplication seat and idiom seat |
+| `space_wire`'s unreachable-but-reached arm | **two seats** (B1 reports it) | — |
+
+## What this sweep says about the repo, stated plainly
+
+**The discipline here is real and it is unusually well documented.** Vb traced 576 test functions added
+over 250 commits and found **zero silent deletions**. `Layer`/`LayerMask` cannot gain a variant without
+declaring itself everywhere. `MCLK_PER_FRAME` is bolted across modules by a compile-time assert. Multiple
+seats independently called some artifact here *"the strongest in the repo"*.
+
+⚑ **And the dominant failure mode follows directly from that strength: a rule is established, written down
+well, applied everywhere — and then missed in one place, usually the newest or the least-looked-at.**
+The exemplar is cited by name and the sweep is missing from the file that cites it (H5). The correction is
+applied to two files of four (H19). The lesson is applied to the labeller and not to the gate (M51). The
+promise to raise it separately is not kept (H33). **Almost nothing here is a defect of ignorance; nearly
+everything is a defect of coverage.**
+
+That has a practical consequence for triage: **most of these findings have their own fix already written
+somewhere in the tree**, usually within a few hundred lines. The remedy is rarely "design something"; it
+is "apply the thing next door".
+
+## Honest bounds on this packet — read before treating any "clean" as coverage
+
+- **The concurrency cap degraded seats that ran, not only the five it delayed.** A2, ERR and P2 each had
+  helper agents refused and covered the largest files (`engine.rs` ~9,400 lines, `ui.rs` ~6,000) by
+  pattern sweep rather than a full read. **All three said so unprompted.**
+- **No seat ran the emulator, opened a window, or ran the full suite** — charter rules 2-4, with the
+  owner's own window live on the machine throughout. Every runtime-dependent claim is TAGGED, not asserted.
+- **`vendor/`, `oracle-old/`, `tools/*.py` and `docs/` prose are UNEXAMINED RATHER THAN CLEARED.**
+- **Six Roster B seats were substituted, not run.** Had they run literally they would have produced six
+  clean-looking verdicts about nothing; two of the substitutes produced CRITICALs.
+
+## Aftermath
+
+**No fixes were made.** Per the protocol, seats stayed read-only so the report stays honest; findings
+become rows and fixes are separate, owner-gated parcels. Byte-neutral items (comment truth, dead-guard
+deletion) may land immediately; anything touching emulation is measure-first.
