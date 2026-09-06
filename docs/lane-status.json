@@ -1,9 +1,9 @@
 {
-  "focus": "Driving your look session on the debug window: Pacing A/B first, then the rest one at a time.",
+  "focus": "Chasing the lag you reported: strong candidate is the plane viewer redrawing every frame on a scrolling effect.",
   "inFlight": [
     {
-      "what": "Your look session: build 0d6180c sent to aeon, look items queued one at a time",
-      "where": "origin/main 0d6180c, release rebuilt",
+      "what": "Lag diagnosis on your live window, measured from outside without disturbing it",
+      "where": "pid 2349009, build 0d6180c",
       "agent": false
     }
   ],
@@ -24,8 +24,16 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "After your look answers are collected and reported to the hub.",
+  "nextBoundary": "After the lag cause is settled and your look answers are collected.",
   "queue": [
+    {
+      "id": "F-PLANES-RASTER-EVERY-FRAME",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": "one ten-second tab test from you",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Your lag report. The plane viewer only redraws when its picture changes -- but on the waterline and floor-fan rows the picture changes every frame by design, so it redraws the whole plane every frame and the saving never applies. Up to half a million pixel lookups per frame. Not confirmed as YOUR lag yet; the tab test confirms or clears it."
+    },
     {
       "id": "STYLE-NUMBER-BAKEOFF",
       "state": "blocked",
@@ -115,7 +123,7 @@
       "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
     }
   ],
-  "awaiting": "Nothing from you directly - the hub is relaying. Aeon has the window for its five engine looks; the moment it is free I send you the Pacing A/B paragraph (d-39), then one look item per 'done'. d-37 (icon) and d-40 (fixtures, I recommend hold) still stand and are not blocking.",
+  "awaiting": "One ten-second test from you, sent via the hub: if the dock is on the PLANES tab, switch to any other tab and say whether the lag goes. That settles it faster than anything I can measure from outside. The Pacing A/B (d-39) is still queued behind your look session.",
   "atBoundary": false,
-  "updatedAt": "2026-09-06T14:56:56Z"
+  "updatedAt": "2026-09-06T15:35:42Z"
 }
