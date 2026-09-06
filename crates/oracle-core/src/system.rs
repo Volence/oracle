@@ -2720,6 +2720,12 @@ mod tests {
         let mut s = System::new(0xA11200);
         s.z80 = Z80::from_regs(&dirty);
 
+        // Assert the NEIGHBOURING line first ($A11100 bit0 = 1 = BUSREQ), so the row at the end of this test
+        // measures a value this test set rather than the power-on default: a `$A11200` arm that reached into
+        // the wrong latch would have to leave BUSREQ *asserted* to pass it.
+        s.mega_bus(&mut ()).write8(0xA1_1100, 5, 0x01);
+        assert!(s.z80_busreq(), "setup: BUSREQ asserted through the bus");
+
         // Release ($A11200 bit0 = 1) through the bus. The clock gate opens; the CORE must not be touched —
         // firing the reset on the releasing edge instead of the asserting one dies here.
         s.mega_bus(&mut ()).write8(0xA1_1200, 5, 0x01);
@@ -2766,8 +2772,9 @@ mod tests {
         assert_eq!((r.ix, r.iy), (0x0BAD, 0xF00D), "/RESET preserves IX/IY");
         assert_eq!(r.sp, 0xFFF0, "/RESET preserves SP");
 
-        // The neighbouring arbiter line is a different register and stays where it was.
-        assert!(!s.z80_busreq(), "$A11200 never touches the BUSREQ latch");
+        // The neighbouring arbiter line is a different register at a different address and stays where this
+        // test put it — three `$A11200` writes later, BUSREQ is still asserted.
+        assert!(s.z80_busreq(), "$A11200 never touches the BUSREQ latch");
     }
 
     /// `C3`, the symptom that is silent and permanent: a Z80 sitting in `HALT` with `IFF1 = 0` when reset is
