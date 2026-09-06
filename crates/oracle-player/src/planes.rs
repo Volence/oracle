@@ -59,15 +59,55 @@
 //! The panel **shows its own redraw count** beside the picture. A claim that something rasterises rarely
 //! is worth nothing if a person cannot see it not happening.
 //!
-//! # What is deliberately NOT here
+//! # ⚑ CLICK TO IDENTIFY A CELL, AND THE QUESTION IT ANSWERS IS NOT THE SCREEN TAB'S
 //!
-//! **Click to identify a cell.** Booked separately so the picture arrives sooner. Nothing in this module
-//! consumes the pointer, and the image is drawn with `Sense::hover` only.
+//! [`identify`] is the second slice. It reads like the Screen tab's click and it is **a different
+//! question**, which is the one thing about it a person must not have to discover:
+//!
+//! * Clicking the **game picture** asks *which layer won at this dot*. That is attribution, through
+//!   scroll, priority and the sprite order, and [`crate::screen_pick`] answers it.
+//! * Clicking **this** picture asks *which cell of this plane's nametable is this, and what word is in
+//!   it*. It is a map read. This plane, this map, whether or not anything on screen is showing it.
+//!
+//! They legitimately disagree, and a panel implying they are the same answer is wrong **even when both
+//! numbers are right**: the cell you click here can be off screen entirely, or covered by a sprite, or
+//! ranked under the other plane. So [`CellReading`] carries a sentence of its own about the screen, and
+//! it is derived from [`covered_mask`] rather than asserted: the same mask the viewport outline is drawn
+//! from, so the words and the outline in front of you cannot disagree.
+//!
+//! What the two must **never** disagree about is the nametable word itself, and that is asserted rather
+//! than hoped for. `the_viewer_and_pixel_attribution_agree_about_the_word` takes screen dots plane A won,
+//! asks `Vdp::pixel_attribution` for its `cell`, and asks this module for the cell under the same dot; a
+//! difference is an indexing bug in one of two surfaces that both claim to read one map. Both bottom out
+//! in the core's `nametable_cell`, so the row is measuring the **addressing on top of it**, which is
+//! where a transpose bug lives.
+//!
+//! ## ⚑ The tile index is VRAM-absolute, and it says so in the same breath
+//!
+//! `OVERSEER.md`'s GUI-LAYERS entry, point 2: *an index whose space is unstated is a transpose bug
+//! waiting to happen*, and the hazard on the other side of that join is worse. An editor rebases a tile
+//! index into a blob-local slot with a base constant it owns; the rebase can land **outside the blob and
+//! not be rescued by capacity** (*in-capacity is not in-blob*). So this panel names
+//! [`oracle_frontend::pick::TILE_SPACE`] beside every index, uses the identical constant the Screen tab
+//! does rather than a second string that agrees today, and **never guesses a slot in anybody else's
+//! space.**
+//!
+//! ## What is deliberately NOT here
+//!
+//! **A tool for "the cell at column c, row r of plane P".** Considered and declined, as a decision rather
+//! than an omission. `emulator/pixel_attribution` already returns the decoded word for a dot on screen
+//! (the GUI-LAYERS entry files that consumer ask as *already satisfied, do not build it*), and the map is
+//! `Vdp::plane_decoded`, the renderer's own. A third spelling would be the thing this module's header
+//! exists to refuse. The residual gap is real and named: a socket client wanting an **off-screen** cell
+//! must read the base out of `emulator/read_vdp_registers`, address the entry itself and decode the word
+//! itself. That is `F-PLANE-CELL-TOOL`, and it is a whole parcel about a wire method rather than a line
+//! in this one.
 
 use egui::Color32;
 use oracle_core::render::{Cell, Plane, PlaneScroll, VScroll, WindowSpan};
 use oracle_core::state_hash::VRAM_SIZE;
 use oracle_core::vdp::Vdp;
+use oracle_frontend::pick::{tile_range, TILE_SPACE};
 
 /// The three planes in the order the selector offers them, with the word each is called on the button.
 ///
@@ -510,6 +550,231 @@ pub fn covered_edges(inp: &Inputs, pw: usize, ph: usize) -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------------------------------
+// The click
+// ---------------------------------------------------------------------------------------------------
+
+/// **What one click on the plane picture turned out to be.**
+///
+/// Four parts rather than one paragraph, on [`crate::screen_pick::Readout`]'s reasoning and for the same
+/// reason: they are four different kinds of statement and they must not arrive at one weight. Every part
+/// is composed by whoever knows it and handed over whole; nothing downstream recovers structure by looking
+/// at the text, and nothing downstream decides a colour by looking at it either.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CellReading {
+    /// **The sentence a person reads**, and the first thing drawn: which cell of which plane, and the
+    /// pattern its word names, in words and in the space that index is in.
+    ///
+    /// Prose first is the editor lane's expensive precedent, adopted across this window: they shipped a
+    /// lens that highlighted 1,244 cells, entirely correctly, and the reaction was *"what are the purple
+    /// boxes"*. Not *that's wrong* but ***what is that***.
+    pub head: String,
+    /// **What this cell has to do with the screen**, which is the part this surface is most likely to be
+    /// misread about. Derived from [`covered_mask`], the same mask the viewport outline was drawn from, so
+    /// this sentence and the picture behind it cannot disagree.
+    ///
+    /// It also says, once and on the covered case only, that *which layer you actually see there* is a
+    /// different question with a different tab. On the uncovered case that clause would be noise, because
+    /// there is no dot on the game picture to confuse this answer with.
+    pub screen: String,
+    /// The addressing behind the sentence: the nametable entry, the word in it, and where the pattern
+    /// lives. Monospace, in the spelling a reader would compare against a tool's reply.
+    pub detail: String,
+    /// **What this reading could not establish**, warning-coloured and never omitted when present.
+    ///
+    /// A list, because a click can earn more than one and dropping either because the other fired would be
+    /// a silent choice made on the reader's behalf. Empty on an ordinary frame, which is what keeps it
+    /// worth reading: a caveat on every reply is a caveat nobody reads.
+    pub unestablished: Vec<String>,
+}
+
+impl CellReading {
+    /// The whole reading as one string, **for tests only**.
+    ///
+    /// The tab draws the parts at four weights and never joins them, so this is not what any reader sees.
+    /// It is the seam an assertion works across, because a panel this crate cannot screenshot is only
+    /// checkable where it becomes text. Deliberately not offered to the renderer, on
+    /// [`crate::screen_pick::Readout`]'s reasoning: a joined string beside a laid-out one is two spellings
+    /// of one answer.
+    #[cfg(test)]
+    pub fn text(&self) -> String {
+        let mut s = format!("{}\n{}\n{}", self.head, self.screen, self.detail);
+        for c in &self.unestablished {
+            s.push('\n');
+            s.push_str(c);
+        }
+        s
+    }
+}
+
+/// The word this plane is called on its own selector button, so the answer and the control agree.
+///
+/// Read out of [`CHOICES`] rather than spelled again: a plane renamed on the button and not in the readout
+/// is a small lie that survives every test which does not compare the two.
+fn plane_label(plane: Plane) -> &'static str {
+    CHOICES
+        .iter()
+        .find(|(p, _)| *p == plane)
+        .map(|(_, l)| *l)
+        .unwrap_or("this plane")
+}
+
+/// **Which plane pixel the raster pixel (`rx`, `ry`) is showing**, or `None` when it is off the raster.
+///
+/// The whole reason this exists as a function is that the answer is not the identity in both views, and
+/// the wrong one is invisible:
+///
+/// * unscrolled, the raster **is** the plane, so the plane pixel is the raster pixel;
+/// * scrolled, the raster is the display and every pixel of it was fetched through [`sample`], so the
+///   inverse is [`sample`] itself, **called here rather than re-derived**. The Screen tab learned the same
+///   lesson one crate over: `dot_at` inverts the rectangle that was actually drawn instead of computing a
+///   second opinion about what should have been drawn, and it survived a change of fit with no edit. A
+///   second spelling of `x - hscroll` here would put the readout on a different cell from the pixel under
+///   the cursor, at exactly the scroll values a per-line effect produces and never at zero.
+pub fn plane_pixel_at(inp: &Inputs, rx: usize, ry: usize) -> Option<(usize, usize)> {
+    let (rw, rh) = inp.raster_size();
+    if rx >= rw || ry >= rh {
+        return None;
+    }
+    let (pw, ph) = inp.pixels();
+    if pw == 0 || ph == 0 {
+        return None;
+    }
+    if !inp.scrolled {
+        return Some((rx, ry));
+    }
+    // Sized from the same read that gave the display height, so this cannot be short; `get` rather than an
+    // index because a missing line is worth no answer instead of a panic.
+    let sc = inp.scroll.get(ry)?;
+    Some(sample(sc, rx, ry, pw, ph))
+}
+
+/// **Where a cell's nametable entry is in VRAM**, as a byte address.
+///
+/// This is the one address in this module that is not handed over by the renderer, and it is the second
+/// half of an expression the core owns: [`Vdp::plane_base`] gives the base (never re-decoded here), and
+/// this adds the entry offset the core's own `nametable_cell` adds, in the wrap the core takes it in. A
+/// second spelling is exactly what the module header refuses, so it is **gated rather than trusted**:
+/// `the_entry_address_names_the_word_the_cell_came_from` walks every cell of a plane of distinct words and
+/// asserts the two bytes here are the word `plane_decoded` returned. A transposed stride, a dropped `* 2`
+/// or the wrong wrap all move that row.
+fn entry_addr(inp: &Inputs, col: usize, row: usize) -> usize {
+    (inp.base + (row * inp.cols as usize + col) * 2) & (VRAM_SIZE - 1)
+}
+
+/// **Identify the cell under a raster pixel.** `None` when the pointer was off the picture.
+///
+/// Pure over [`Inputs`], which is this repaint's gather and also what the texture on screen was rasterised
+/// from, so the answer and the picture are the same frame's facts. That equality is the render-on-change
+/// gate doing a second job: [`Panel::refresh`] only leaves a texture standing while its fingerprint is
+/// this gather's.
+///
+/// What it does **not** do is resolve attribution. See this module's header: naming a winning layer here
+/// would be answering the Screen tab's question with this tab's data, which is the failure the
+/// [`CellReading::screen`] sentence exists to head off.
+pub fn identify(inp: &Inputs, rx: usize, ry: usize) -> Option<CellReading> {
+    let (px, py) = plane_pixel_at(inp, rx, ry)?;
+    let (pw, ph) = inp.pixels();
+    let (col, row) = (px / 8, py / 8);
+    let cell = inp.cells.get(row * inp.cols as usize + col)?;
+
+    let plane = plane_label(inp.plane);
+    let word = encode_cell(cell);
+    let (lo, hi) = tile_range(cell.tile);
+    let entry = entry_addr(inp, col, row);
+
+    // The head names the subject, the space and the index, in that order and in one sentence. "the map
+    // holds" is doing real work: it says this is a read of the nametable and not a claim about the glass.
+    let head = format!(
+        "{plane}, column {col} row {row}: the map holds {TILE_SPACE} tile ${:03X}.",
+        cell.tile
+    );
+
+    // Derived from the mask the outline was drawn from, never from a second coverage test.
+    let covered = covered_mask(inp, pw, ph);
+    let on_screen = covered.get(py * pw + px).copied().unwrap_or(false);
+    let screen = if on_screen {
+        "The screen was showing this cell when you clicked. Which layer you actually see at those dots \
+         is a different question, because a sprite or the other plane can cover it, and the Screen tab \
+         is the one that answers it."
+            .to_string()
+    } else {
+        "The screen was not showing this cell when you clicked, so no dot on the game picture \
+         corresponds to it."
+            .to_string()
+    };
+
+    let flips = match (cell.hflip, cell.vflip) {
+        (false, false) => "",
+        (true, false) => " hflip",
+        (false, true) => " vflip",
+        (true, true) => " hflip+vflip",
+    };
+    let detail = format!(
+        "{plane} cell ({col},{row}) @ VRAM ${entry:04X} = ${word:04X}: tile ${:03X} @ VRAM \
+         ${lo:04X}-${hi:04X}, pal {}{flips}{}, plane pixel ({px},{py})",
+        cell.tile,
+        cell.palette,
+        if cell.priority { " hi-pri" } else { "" },
+    );
+
+    Some(CellReading {
+        head,
+        screen,
+        detail,
+        unestablished: unestablished(inp, on_screen),
+    })
+}
+
+/// **What a click could not establish**, on the same armed-H-interrupt condition [`scroll_note`] measures
+/// and for the same reason: a register read is a peek, and reg `$00` bit 4 is the mechanism by which a
+/// game moves the registers part way down a frame.
+///
+/// It is deliberately **not** the note beside the picture repeated. The picture's caveat is about the
+/// scroll it drew with; a click's caveat has to be about the part of *this answer* the peek actually
+/// undermines, and that differs by view:
+///
+/// * **Scrolled**, the pointer was mapped to a cell *through* that scroll, so the peek can put the reading
+///   on the wrong cell. The identity is in doubt.
+/// * **Unscrolled**, the identity is a direct read of the map and cannot be wrong for this reason at all.
+///   What the peek undermines is the other sentence: whether the screen is showing the cell.
+/// * **The window plane** never takes the scroll, and [`scroll_note`] correctly says nothing about it. But
+///   its coverage is not scroll-free: it comes from regs `$11`/`$12`, which the core's `window_span_at`
+///   documents as *"a peek in the same sense"*. So the caveat is carried, naming those registers rather
+///   than a scroll the window does not have.
+///
+/// The uncovered case is caveated too, and that is not an oversight: the doubt runs both ways, and a peek
+/// that could hide a cell which is on screen is exactly as wrong as one that shows a cell which is not.
+fn unestablished(inp: &Inputs, on_screen: bool) -> Vec<String> {
+    let Some(line) = inp.hint_line else {
+        return Vec::new();
+    };
+    if inp.scrolled {
+        return vec![format!(
+            "A horizontal interrupt is armed at line {line}. This picture is sampled through a scroll \
+             read once from the registers, so if the game moves the scroll part way down the frame the \
+             pointer landed on a different cell from the one named above."
+        )];
+    }
+    let source = if inp.plane == Plane::Window {
+        "the window band registers ($11 and $12), read once, now"
+    } else {
+        "the same single register read the viewport outline is drawn from"
+    };
+    // The claim names itself in the direction this answer actually made it, so the reader is told which
+    // of the two sentences above is the one in doubt rather than left to work it out.
+    let claim = if on_screen {
+        "that the screen is showing it"
+    } else {
+        "that the screen is not showing it"
+    };
+    vec![format!(
+        "A horizontal interrupt is armed at line {line}. The cell named above is a direct read of the \
+         map and does not depend on that, but the other sentence, {claim}, comes from {source}, and a \
+         game that moves it part way down the frame cannot be seen from here."
+    )]
+}
+
+// ---------------------------------------------------------------------------------------------------
 // The fingerprint's mixer
 // ---------------------------------------------------------------------------------------------------
 
@@ -551,6 +816,12 @@ impl Fnv {
 /// *looking at it* choice, and the layout store is a separate question.
 pub struct Panel {
     /// Which plane is on screen. Plane A by default: it is the one a game puts its foreground on.
+    ///
+    /// **Set through [`Panel::select`], not by hand**, because it is not the only state a plane change
+    /// invalidates: a standing reading about plane A drawn beside a picture of plane B is a correct
+    /// sentence in front of the wrong picture, which is the shape of answer this window is least able to
+    /// afford. The field stays public so a reader (`is_window`, the selector's own highlight) does not go
+    /// through an accessor for a fact.
     pub plane: Plane,
     /// Whether the live scroll is applied to the raster.
     pub apply_scroll: bool,
@@ -564,6 +835,13 @@ pub struct Panel {
     /// because a claim about not doing work is worth nothing unless it can be watched.
     rasters: u64,
     repaints: u64,
+    /// **The standing answer to the last click.** Standing rather than a toast, on the Screen tab's rule:
+    /// a toast expires and the fact you asked what a cell was does not.
+    ///
+    /// Cleared by [`Panel::select`] alone. The scroll and outline toggles deliberately do **not** clear
+    /// it: they change how the picture is drawn, not what is in the cell the reading names, and a reading
+    /// that vanished when you reached for a checkbox would be a worse surface than a slightly old one.
+    reading: Option<CellReading>,
 }
 
 impl Default for Panel {
@@ -576,6 +854,7 @@ impl Default for Panel {
             drawn: None,
             rasters: 0,
             repaints: 0,
+            reading: None,
         }
     }
 }
@@ -584,6 +863,41 @@ impl Panel {
     /// How many times the picture has been rasterised, out of how many repaints asked for it.
     pub fn work(&self) -> (u64, u64) {
         (self.rasters, self.repaints)
+    }
+
+    /// **Choose a plane**, and drop any standing reading with it.
+    ///
+    /// The drop is the whole reason this is a method. [`CellReading`] names its plane in every one of its
+    /// parts, so a stale one is not *false* after a switch; it is a true sentence about plane A sitting
+    /// beside a picture of plane B, which a person reads as an answer about what they are looking at. A
+    /// switch back to the same plane keeps the reading, because nothing about it went stale.
+    pub fn select(&mut self, plane: Plane) {
+        if self.plane != plane {
+            self.plane = plane;
+            self.reading = None;
+        }
+    }
+
+    /// The standing answer to the last click, if there has been one.
+    pub fn reading(&self) -> Option<&CellReading> {
+        self.reading.as_ref()
+    }
+
+    /// **A click at raster pixel (`rx`, `ry`).**
+    ///
+    /// A click that lands off the picture leaves the previous reading where it was rather than clearing
+    /// it, which is [`crate::screen_pick`]'s behaviour for the same gesture and for the same reason: the
+    /// pointer leaving the image is not an answer, and replacing an answer with nothing is worse than
+    /// leaving the last one standing.
+    ///
+    /// `inp` is this repaint's gather, so the reading describes the picture that is on the glass rather
+    /// than a re-read of the machine taken at click time. The Screen tab has to refuse when those two
+    /// separate; here they cannot, because there is one gather per repaint and the texture is a function
+    /// of it.
+    pub fn click(&mut self, inp: &Inputs, rx: usize, ry: usize) {
+        if let Some(r) = identify(inp, rx, ry) {
+            self.reading = Some(r);
+        }
     }
 
     /// Gather, fingerprint, and rasterise **only if the fingerprint moved**. Returns the inputs it
@@ -1068,6 +1382,365 @@ mod tests {
         p.outline = false;
         p.refresh(&ctx, &v, ink());
         assert_eq!(p.work(), (3, 5));
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The click
+    // -----------------------------------------------------------------------------------------------
+
+    /// A 64-by-32-cell plane A whose every cell holds a **different word**, so an indexing mistake cannot
+    /// hide behind two cells that happen to agree.
+    ///
+    /// 64 wide on purpose, as `a_uniform_scroll_outlines_a_rectangle` argues for the outline and for the
+    /// same reason: at 32 cells the plane is exactly as wide as the H32 display, everything is covered,
+    /// and half of what these rows measure degenerates.
+    fn distinct_map() -> Vdp {
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01); // 64 by 32 cells
+        for i in 0..(64 * 32) {
+            // Word == index: tile bits are 10..0, so 2048 cells map onto 2048 distinct words with no
+            // palette, flip or priority bit set, and `encode_cell` round trips them exactly.
+            put_cell(&mut v, 0xC000 + i * 2, i as u16);
+        }
+        v
+    }
+
+    /// **The plain case.** A click on the unscrolled picture names the cell whose eight-by-eight square
+    /// the pixel is in, and the tile that cell's word holds.
+    #[test]
+    fn a_click_names_the_cell_under_it() {
+        let v = distinct_map();
+        let inp = gathered(&v, Plane::A, false);
+        // Raster pixel (100,60) is column 12, row 7 of the map; its word is 7 * 64 + 12 = 460.
+        let r = identify(&inp, 100, 60).expect("a pixel inside the raster identifies a cell");
+        assert!(r.head.contains("column 12 row 7"), "{}", r.head);
+        assert!(r.head.contains("$1CC"), "460 is $1CC: {}", r.head);
+        assert!(r.detail.contains("cell (12,7)"), "{}", r.detail);
+        assert!(r.detail.contains("plane pixel (100,60)"), "{}", r.detail);
+    }
+
+    /// ⚑ **The entry address is the core's own, and this is what says so.**
+    ///
+    /// `entry_addr` is the one address this module spells that the renderer does not hand over, and the
+    /// module's whole standing rule is that a second spelling of an address is how a debug view and the
+    /// picture it explains come to describe different bytes. So every cell of the plane is walked and the
+    /// two bytes at the computed address are compared against the word `plane_decoded` returned for that
+    /// cell. A transposed stride, a dropped `* 2` and the wrong wrap each move this row, and none of them
+    /// moves any other row in the file.
+    #[test]
+    fn the_entry_address_names_the_word_the_cell_came_from() {
+        let v = distinct_map();
+        let inp = gathered(&v, Plane::A, false);
+        assert_eq!(inp.cells.len(), 64 * 32);
+        for row in 0..inp.rows as usize {
+            for col in 0..inp.cols as usize {
+                let at = entry_addr(&inp, col, row);
+                let word = ((v.vram()[at] as u16) << 8) | v.vram()[at + 1] as u16;
+                let cell = &inp.cells[row * inp.cols as usize + col];
+                assert_eq!(
+                    word,
+                    encode_cell(cell),
+                    "cell ({col},{row}) at ${at:04X} is not the word the decode came from"
+                );
+            }
+        }
+    }
+
+    /// **A click on the scrolled view goes through the scroll the raster went through**, and the test
+    /// spells that arithmetic itself rather than calling [`sample`], so the two are independent.
+    #[test]
+    fn a_click_on_the_scrolled_view_goes_through_the_scroll_the_raster_did() {
+        let mut v = distinct_map();
+        set_reg(&mut v, 0x0B, 0x03); // horizontal: one value per line
+        for line in 0..224usize {
+            put_cell(&mut v, 0x8000 + line * 4, (line as u16) & 0x03FF);
+        }
+        let inp = gathered(&v, Plane::A, true);
+        assert!(inp.scrolled);
+        let (pw, _) = inp.pixels();
+        assert_eq!(pw, 512);
+
+        let (rx, ry) = (100usize, 60usize);
+        // The arithmetic, written out here: line 60 scrolls by 60, and the plane wraps.
+        let px = (rx + pw - 60) % pw;
+        let (col, row) = (px / 8, ry / 8);
+        let want = row * 64 + col;
+
+        let r = identify(&inp, rx, ry).expect("a pixel inside the raster identifies a cell");
+        assert!(
+            r.head.contains(&format!("column {col} row {row}")),
+            "want column {col} row {row}: {}",
+            r.head
+        );
+        assert!(
+            r.head.contains(&format!("${want:03X}")),
+            "want tile ${want:03X}: {}",
+            r.head
+        );
+        // And the unscrolled view of the same raster pixel is a *different* cell, so the row above is
+        // measuring the scroll rather than passing on an identity that happened to be right.
+        let flat = identify(&gathered(&v, Plane::A, false), rx, ry).unwrap();
+        assert_ne!(flat.head, r.head, "the scroll has to change the answer");
+    }
+
+    /// ⚑⚑ **THE PARITY ROW, and the reason this surface is safe to put beside the Screen tab.**
+    ///
+    /// The two clicks answer **different questions** — the game picture is asked *which layer won at this
+    /// dot*, and this picture is asked *what word is in this cell of this map* — and they legitimately
+    /// disagree about plenty. What they must **never** disagree about is the nametable word itself.
+    ///
+    /// So: take screen dots plane A actually won, ask `Vdp::pixel_attribution` (the derivation
+    /// `emulator/pixel_attribution` serves) for the cell it says drew each one, and ask this module for
+    /// the cell under the same dot of the scrolled view. Every decoded field must match.
+    ///
+    /// Both sides bottom out in the core's own `nametable_cell`, which is deliberate and is also exactly
+    /// why this row is worth writing: what it measures is **the addressing on top of that decode**, in two
+    /// independently written paths (`plane_sample`'s masked wrap against `plane_scroll_report` plus
+    /// `sample`'s `rem_euclid`, and a flat row-major index against a stride multiply). That is where a
+    /// transpose lives, and a transpose is invisible to every row above.
+    #[test]
+    fn the_viewer_and_pixel_attribution_agree_about_the_word() {
+        use oracle_core::render::Layer;
+
+        let mut v = distinct_map();
+        // Opaque art for the tiles the sampled dots reach, so plane A wins the dot rather than the
+        // backdrop: without this the attribution is about the backdrop and the row measures nothing.
+        for t in 1..256usize {
+            for b in 0..32 {
+                v.vram_mut()[t * 32 + b] = 0x11;
+            }
+        }
+        // Cells 1..=255 only, so every sampled cell has art. Distinct within any screen-sized window,
+        // which is what makes a transpose visible.
+        for i in 0..(64 * 32) {
+            put_cell(&mut v, 0xC000 + i * 2, 1 + (i as u16 % 255));
+        }
+        // A scroll with structure in both axes: per-line horizontal, and a whole-screen vertical.
+        set_reg(&mut v, 0x0B, 0x03);
+        for line in 0..224usize {
+            put_cell(&mut v, 0x8000 + line * 4, ((line * 3) as u16) & 0x03FF);
+        }
+        write_vsram(&mut v, 0, 40);
+
+        let inp = gathered(&v, Plane::A, true);
+        assert!(inp.scrolled);
+
+        let mut compared = 0;
+        for y in (0..224u16).step_by(17) {
+            for x in (0..256u16).step_by(13) {
+                let attr = v.pixel_attribution(x, y);
+                // Only the dots plane A won: the other winners are answering a question this panel does
+                // not ask, which is the whole point of the surface being separate.
+                if attr.winner != Layer::PlaneA {
+                    continue;
+                }
+                let cell = attr.cell.expect("a plane winner reports its cell");
+                let (px, py) = plane_pixel_at(&inp, x as usize, y as usize)
+                    .expect("a screen dot is inside the scrolled raster");
+                let mine = &inp.cells[(py / 8) * inp.cols as usize + (px / 8)];
+                assert_eq!(
+                    (
+                        mine.tile,
+                        mine.palette,
+                        mine.hflip,
+                        mine.vflip,
+                        mine.priority
+                    ),
+                    (
+                        cell.tile,
+                        cell.palette,
+                        cell.hflip,
+                        cell.vflip,
+                        cell.priority
+                    ),
+                    "dot ({x},{y}) -> plane pixel ({px},{py}): the viewer and pixel_attribution \
+                     disagree about the word"
+                );
+                // ⚑ **And the SHIPPED path, not only the derivation under it.** The comparison above
+                // indexes `inp.cells` the way `identify` does; if `identify` indexed it some other way,
+                // that row would still be green while the panel named a different cell. Measured: a
+                // transpose of `identify`'s own index left the assertion above passing. So the expected
+                // fragment is composed from **the tool's answer** and looked for in the panel's sentence.
+                // Composed, never parsed: this reads the panel's output for a string built out of the
+                // other surface's reply, which is the opposite of recovering structure from prose.
+                let r = identify(&inp, x as usize, y as usize).expect("the dot is on the raster");
+                assert!(
+                    r.head
+                        .ends_with(&format!("{TILE_SPACE} tile ${:03X}.", cell.tile)),
+                    "dot ({x},{y}): the panel's own sentence does not name the word \
+                     pixel_attribution reports: {}",
+                    r.head
+                );
+                compared += 1;
+            }
+        }
+        // ⚑ The control on the measurement itself. A `continue` that skipped every dot would leave the
+        // loop above green having asserted nothing, which is this lane's most-repeated failure: a
+        // decorated tool's failure is indistinguishable from its empty result.
+        assert!(
+            compared >= 100,
+            "the fixture must actually put plane A on the screen; compared {compared} dots"
+        );
+    }
+
+    /// **A cell the screen is not showing is said not to be shown**, and a cell it is showing gets the
+    /// sentence that keeps this answer apart from the Screen tab's.
+    ///
+    /// The coverage comes from [`covered_mask`], which is the same mask the viewport outline on the
+    /// picture is drawn from, so the words and the outline in front of a person cannot disagree.
+    #[test]
+    fn a_cell_off_the_screen_is_said_to_be_off_the_screen() {
+        let v = distinct_map(); // 512 pixels wide, on a 256-pixel display, no scroll
+        let inp = gathered(&v, Plane::A, false);
+
+        let inside = identify(&inp, 100, 8).unwrap();
+        assert!(
+            inside.screen.contains("was showing this cell"),
+            "{}",
+            inside.screen
+        );
+        assert!(
+            inside.screen.contains("Screen tab"),
+            "the covered case has to say whose question the other one is: {}",
+            inside.screen
+        );
+
+        let outside = identify(&inp, 400, 8).unwrap();
+        assert!(
+            outside.screen.contains("was not showing this cell"),
+            "{}",
+            outside.screen
+        );
+        assert!(
+            !outside.screen.contains("Screen tab"),
+            "there is no dot to confuse this with, so the clause would be noise: {}",
+            outside.screen
+        );
+    }
+
+    /// ⚑ **The tile index says which space it is in, in the same breath as the index**, and it never
+    /// names a slot in anybody else's.
+    ///
+    /// `OVERSEER.md`'s GUI-LAYERS point 2: an editor rebases this index into a blob-local slot with a base
+    /// constant it owns, the rebase can land outside the blob, and it is *not* rescued by a capacity
+    /// check. An unchecked rebase is indistinguishable from a correct answer, so this panel states the
+    /// space it does own and does not do that arithmetic. The constant is
+    /// `oracle_frontend::pick::TILE_SPACE`, shared with the Screen tab rather than a second string that
+    /// agrees today.
+    #[test]
+    fn the_reading_names_the_space_the_tile_index_is_in() {
+        let v = distinct_map();
+        let inp = gathered(&v, Plane::A, false);
+        let r = identify(&inp, 100, 60).unwrap();
+        assert!(r.head.contains(TILE_SPACE), "{}", r.head);
+        let all = r.text();
+        assert!(
+            !all.to_lowercase().contains("slot"),
+            "no surface here may name a slot in an editor's space: {all}"
+        );
+        // House style, on the rows `every_scroll_mode_says_what_it_is` already holds the notes to: no em
+        // or en dash standing in for a full stop, and no specification citations at a reader.
+        assert!(
+            !all.contains('\u{2014}') && !all.contains('\u{2013}'),
+            "{all}"
+        );
+        assert!(!all.contains('§'), "{all}");
+    }
+
+    /// ⚑ **THE TRAP, arriving on a click.** With an H interrupt armed, the caveat a click earns is about
+    /// the part of *this answer* the peek undermines, and that is a different part in each view.
+    #[test]
+    fn an_armed_h_interrupt_reaches_a_click_and_says_what_it_undermines() {
+        let mut v = distinct_map();
+        // Unarmed: silence, because a caveat on every reply is a caveat nobody reads.
+        assert!(identify(&gathered(&v, Plane::A, false), 100, 60)
+            .unwrap()
+            .unestablished
+            .is_empty());
+
+        set_reg(&mut v, 0x0A, 174);
+        set_reg(&mut v, 0x00, 0x10); // reg $00 bit 4 arms the horizontal interrupt
+
+        // Unscrolled: the identity is a direct map read and cannot be wrong for this reason. What the
+        // peek undermines is the coverage sentence.
+        let flat = identify(&gathered(&v, Plane::A, false), 100, 60).unwrap();
+        let said = flat.unestablished.first().expect("armed, so stated");
+        assert!(said.contains("174"), "it names the line: {said}");
+        assert!(said.contains("direct read of the map"), "{said}");
+        assert!(said.contains("that the screen is showing it"), "{said}");
+
+        // Scrolled: the pointer was mapped through that very scroll, so the named cell itself is in
+        // doubt, and the caveat has to say so instead of repeating the one above.
+        let scrolled = identify(&gathered(&v, Plane::A, true), 100, 60).unwrap();
+        let said = scrolled.unestablished.first().expect("armed, so stated");
+        assert!(said.contains("174"), "{said}");
+        assert!(
+            said.contains("a different cell from the one named above"),
+            "{said}"
+        );
+        assert!(
+            !said.contains("direct read of the map"),
+            "the scrolled case must not claim the identity is safe: {said}"
+        );
+
+        // The window never takes the scroll, so `scroll_note` says nothing; but its coverage is read off
+        // regs $11 and $12, which are as rewritable mid frame as the scroll registers are. The caveat
+        // names those rather than a scroll the window does not have.
+        let win = identify(&gathered(&v, Plane::Window, true), 8, 8).unwrap();
+        let said = win.unestablished.first().expect("armed, so stated");
+        assert!(said.contains("$11"), "{said}");
+        assert!(
+            scroll_note(&gathered(&v, Plane::Window, true))
+                .unestablished
+                .is_none(),
+            "and the picture's own note is unchanged"
+        );
+    }
+
+    /// **Switching plane drops the reading.** A true sentence about plane A beside a picture of plane B
+    /// is read as an answer about what you are looking at, which is the one kind of wrongness a correct
+    /// string can still be.
+    #[test]
+    fn switching_plane_drops_the_reading() {
+        let v = distinct_map();
+        let inp = gathered(&v, Plane::A, false);
+        let mut p = Panel::default();
+        p.click(&inp, 100, 60);
+        assert!(p.reading().is_some());
+        p.select(Plane::A);
+        assert!(p.reading().is_some(), "the same plane changes nothing");
+        p.select(Plane::B);
+        assert!(p.reading().is_none());
+    }
+
+    /// **A click that lands off the picture leaves the last answer standing**, which is what the Screen
+    /// tab does with the same gesture: the pointer leaving the image is not an answer, and replacing an
+    /// answer with nothing is worse than leaving an old one up.
+    #[test]
+    fn a_click_off_the_picture_leaves_the_last_answer_standing() {
+        let v = distinct_map();
+        let inp = gathered(&v, Plane::A, false);
+        assert_eq!(inp.raster_size(), (512, 256));
+        assert!(identify(&inp, 512, 0).is_none(), "one past the right edge");
+        assert!(identify(&inp, 0, 256).is_none(), "one past the bottom");
+
+        let mut p = Panel::default();
+        p.click(&inp, 100, 60);
+        let kept = p.reading().cloned().unwrap();
+        p.click(&inp, 9000, 9000);
+        assert_eq!(p.reading(), Some(&kept));
+    }
+
+    /// The readout calls the plane what its own selector button calls it, rather than spelling the name a
+    /// second time.
+    #[test]
+    fn the_reading_calls_the_plane_what_the_button_does() {
+        let v = distinct_map();
+        for (plane, label) in CHOICES {
+            let inp = gathered(&v, plane, false);
+            let r = identify(&inp, 8, 8).unwrap();
+            assert!(r.head.starts_with(label), "{label}: {}", r.head);
+        }
     }
 
     /// The plane size register moves the grid, and the map is reshaped with it rather than read at the

@@ -161,7 +161,12 @@ const SAT_ENTRY_BYTES: u32 = 8;
 /// The inclusive VRAM byte range of pattern `tile`, wrapped into VRAM exactly as the core's `tile_nibble`
 /// addressing does. A 32-byte block cannot straddle the 64 KB wrap (65536 is a multiple of 32), so this is a
 /// single contiguous range.
-fn tile_range(tile: u16) -> (u32, u32) {
+///
+/// **Public because there is a second surface that names this range**: the player's Planes tab reads a
+/// nametable cell straight out of the map and reports where its pattern lives, without resolving any
+/// attribution at all. `tile * 32` spelled once in each panel is how a viewer and a picker come to name
+/// different bytes for one tile, and the wrap is the half a second spelling forgets.
+pub fn tile_range(tile: u16) -> (u32, u32) {
     let lo = (u32::from(tile) * TILE_BYTES) & VRAM_MASK;
     (lo, lo + TILE_BYTES - 1)
 }
@@ -176,7 +181,12 @@ fn tile_range(tile: u16) -> (u32, u32) {
 /// while still passing a naive capacity check, and what comes out is a confident wrong slot, which is
 /// indistinguishable from a correct answer. *In-capacity is not in-blob.* Naming the space we do own, and
 /// only that, is what keeps the join theirs to make.
-const TILE_SPACE: &str = "VRAM-absolute";
+///
+/// **Public for the same reason [`tile_range`] is.** The player's Planes tab names a tile index too, for a
+/// cell nobody clicked on the game picture, and it is under the identical obligation. The rule is not "the
+/// attribution panel states its space", it is *every surface that says a tile number says which space the
+/// number is in*, so the words are one constant rather than two strings that agree today.
+pub const TILE_SPACE: &str = "VRAM-absolute";
 
 /// Assemble the answer: the sentence, then whatever clauses this dot earned, then the detail.
 ///
