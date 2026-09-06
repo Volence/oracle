@@ -302,6 +302,351 @@ pub fn frames_to_run_for(prod: &audio::AudioProd, frame_samples: usize, skips: u
     )
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+// ⚑ The Pacing tab's readout
+//
+// **The exemplar for `docs/2026-09-05-debug-window-audit.md`.** Everything below is the *projection*: the
+// facts this tab shows, named, grouped, and carrying their own health. There is no `egui` type in any of
+// it, which is the structural half of the lesson: a panel whose facts are a value can be tested without a
+// window, and this window cannot be opened from an agent seat.
+//
+// # What it replaces
+//
+// `Panels::pacing` was thirteen `ui.monospace(format!(..))` lines with the label column spelled as literal
+// spaces inside each string:
+//
+// ```text
+// frames emulated   12345
+// governor rebases  0   <- stalls of a whole frame or more
+// device            NONE — pacing is unmeasured, not fine
+// ```
+//
+// That is the style page's **P2** violation in its least visible form. P2's stated check is "no
+// width-padded format specifier", and `grep -cE '\{:[<>^][0-9]+'` over the Pacing tab returned **zero**:
+// the padding was in the *literal*, not in the specifier, so the tab passed the rule's own check while
+// being the worst offender the owner photographed. **The check was narrower than the rule.** It also broke
+// **P3** (every one of those lines is prose in the monospace face; not one is an address or a register) and
+// **P10** (an em dash in the device-absent line).
+//
+// # The three shapes, and which fact gets which
+//
+// 1. **A headline stat** for the number a person opens this tab to read. Big, in the section face, with
+//    its unit beside it and its label small and recessed underneath. This is what "pops" means where there
+//    is no graph to draw: size and colour, since egui has no weight axis.
+// 2. **A labelled fact** for supporting numbers, in the two-column grid the Objects tab already uses.
+// 3. **A meter** for the one fact here that genuinely has *shape*: ring occupancy is a fraction of a
+//    capacity with a threshold on it, and a fraction is a bar. It ships with a legend sentence, because
+//    the failure this repo already paid for was a correct lens nobody could read ("what are the purple
+//    boxes").
+//
+// # Health is carried, never sniffed
+//
+// [`Health`] is decided here, from the number, and the renderer only picks a colour from it. That is P5's
+// principle ("the colour comes from the reply, not from the text") generalised off refusals: a renderer
+// that decided "rebases is red when it is not `0`" would be a second copy of a judgement that belongs with
+// the fact.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// How a number is doing, decided beside the number and never inferred from its text downstream.
+///
+/// Deliberately three states and not two. **[`Health::Unmeasured`] is the whole point**: style page P6
+/// says an absent fact is a stated line and never a zero, and a counter that nothing is counting is
+/// exactly the case where a green `0` would be a lie. "No audio device is open" and "no audio has been
+/// dropped" are different findings and must not render alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Health {
+    /// The number is what a healthy run looks like.
+    Good,
+    /// The number is not fatal and is not nothing. Rebases, starvations and drops are all "zero in a
+    /// healthy run", so any of them above zero is worth the reader's eye without being an error.
+    Watch,
+    /// **Nothing measured this.** Not a zero, not a success.
+    Unmeasured,
+}
+
+/// One number the tab shows big: the value, its unit, what it is, and how it is doing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stat {
+    /// What the number is, in the reader's words. Lower case, no padding: the layout is the layout's job.
+    pub label: &'static str,
+    /// The number, already formatted. A `String` because a count and a millisecond figure are formatted
+    /// differently and the choice belongs here rather than in a format string at the draw site.
+    pub value: String,
+    /// The unit, drawn small beside the value. `None` for a bare count, where "12345 frames" would put the
+    /// label in two places.
+    pub unit: Option<&'static str>,
+    pub health: Health,
+    /// The sentence behind the number, for the hover. Every stat has one: a number whose meaning is only
+    /// obvious to the person who wrote the counter is a number the tab may as well not show.
+    pub hover: &'static str,
+}
+
+/// One supporting fact: a label and a value, for the two-column grid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fact {
+    pub label: &'static str,
+    pub value: String,
+    /// Drawn in the monospace face. **P3**: true only for a machine number a reader lines up in a column,
+    /// false for everything a person reads as words.
+    pub mono: bool,
+    pub health: Health,
+}
+
+/// The ring, as a bar: how full it is, where the mark that steers it sits, and the sentence that says what
+/// the reader is looking at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Meter {
+    /// Occupancy as a fraction of capacity, clamped to `0.0 ..= 1.0`.
+    pub fill: f32,
+    /// [`RENDER_LOW_WATER_FRAMES`] as a fraction of capacity: below this the loop runs an extra emulated
+    /// frame. Clamped the same way, and `None` when the device's frame size is unknown so nothing draws a
+    /// mark at zero and calls it a threshold.
+    pub mark: Option<f32>,
+    /// What the bar is, in one sentence. **Not optional.** A bar without one is the "purple boxes"
+    /// failure, which is a wall of monospace arriving from the other side.
+    pub legend: String,
+}
+
+/// The audio device, or the stated reason there is none.
+///
+/// An enum rather than an `Option` of a struct with zeroes in it, so the absent case cannot be rendered as
+/// a table of zeroes by anybody downstream. That is P6 made unrepresentable rather than merely required.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Audio {
+    /// No device was opened. `why` is a sentence, not a blank.
+    Absent {
+        why: &'static str,
+    },
+    Open(Box<AudioReadout>),
+}
+
+/// A live device's numbers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioReadout {
+    /// The starvation and drop counts, which are the two numbers that decide whether pacing is working.
+    pub stats: Vec<Stat>,
+    /// Rate, channels, ring occupancy: the supporting detail.
+    pub facts: Vec<Fact>,
+    pub meter: Meter,
+}
+
+/// The whole Pacing tab as facts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Readout {
+    /// The three numbers the tab exists to answer: how much was emulated, how much was drawn, and the
+    /// worst the governor ever ran late.
+    pub headline: Vec<Stat>,
+    /// The governor's supporting facts, including the target period it is actually holding.
+    pub governor: Vec<Fact>,
+    pub audio: Audio,
+    /// The loop's own status line, verbatim. **P8**: it is not rewritten here.
+    pub status: String,
+}
+
+/// What the tab says when no audio device opened.
+///
+/// It says *unmeasured*, not *fine*. The original line said the same thing and said it with an em dash;
+/// this is the same finding under the owner's 2026-09-05 ruling.
+pub const NO_DEVICE: &str = "No audio device opened, so the ring is not being drained and pacing here is \
+                             unmeasured rather than healthy. The governor's numbers above are still real.";
+
+/// A count that is zero in a healthy run: [`Health::Good`] at zero, [`Health::Watch`] above it.
+///
+/// One function so the three counters that share that shape cannot end up with three opinions.
+fn zero_is_healthy(n: u64) -> Health {
+    if n == 0 {
+        Health::Good
+    } else {
+        Health::Watch
+    }
+}
+
+impl Readout {
+    /// Project the tab.
+    ///
+    /// The arguments are the raw sources rather than the `Machine` and `Device` themselves, so this
+    /// function can be tested against numbers a test chooses. Wiring it to the real ones is
+    /// `Panels::pacing`'s one job.
+    #[allow(clippy::too_many_arguments)]
+    pub fn of(
+        frames: u64,
+        pictures: u64,
+        governor: &Governor,
+        device: Option<DeviceFacts>,
+        status: &str,
+    ) -> Self {
+        let worst = governor.worst_late();
+        let headline = vec![
+            Stat {
+                label: "frames emulated",
+                value: frames.to_string(),
+                unit: None,
+                health: Health::Good,
+                hover: "Emulated frames since the window opened. The audio ring decides this number, not \
+                        the display: at a steady 60 Hz it climbs by 60 a second whatever the panel is \
+                        doing.",
+            },
+            Stat {
+                label: "pictures drawn",
+                value: pictures.to_string(),
+                unit: None,
+                health: Health::Good,
+                hover: "Pictures uploaded to the screen. It trails frames emulated whenever an iteration \
+                        was woken early, and that is the governor working rather than a fault.",
+            },
+            Stat {
+                label: "worst late",
+                value: format!("{:.2}", worst.as_secs_f64() * 1000.0),
+                unit: Some("ms"),
+                health: if worst >= FRAME_PERIOD {
+                    Health::Watch
+                } else {
+                    Health::Good
+                },
+                hover: "The furthest past its deadline any iteration has ever started. Under one frame \
+                        period the loop absorbed it; over one, the deadline had to be moved and the \
+                        rebase count below went up.",
+            },
+        ];
+
+        let mut gov = vec![Fact {
+            label: "target period",
+            value: match governor.period() {
+                Some(p) => format!("{:.3} ms", p.as_secs_f64() * 1000.0),
+                // The control, selected by `--target-fps 0`. Said in words, because a blank here would
+                // read as "60 Hz" to anybody who did not launch this process.
+                None => "none, the governor is switched off for this run".to_owned(),
+            },
+            mono: governor.period().is_some(),
+            health: if governor.is_paced() {
+                Health::Good
+            } else {
+                Health::Unmeasured
+            },
+        }];
+        gov.push(Fact {
+            label: "rebases",
+            value: governor.rebases().to_string(),
+            mono: true,
+            health: zero_is_healthy(governor.rebases()),
+        });
+        gov.push(Fact {
+            label: "early wakes",
+            value: governor.early_wakes().to_string(),
+            mono: true,
+            // Early wakes are the governor *doing its job*: a repaint arrived before its deadline and was
+            // turned away. Unlike the other counters, a large number here is health rather than a
+            // symptom, so it is never Watch and the hover says why.
+            health: Health::Good,
+        });
+
+        Self {
+            headline,
+            governor: gov,
+            audio: match device {
+                None => Audio::Absent { why: NO_DEVICE },
+                Some(d) => Audio::Open(Box::new(d.into_readout())),
+            },
+            status: status.to_owned(),
+        }
+    }
+}
+
+/// The raw device numbers, lifted out of `crate::device::Device` so [`Readout::of`] takes values a test can
+/// choose rather than a live CPAL stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceFacts {
+    pub rate_hz: u32,
+    pub channels: usize,
+    pub occupied: usize,
+    pub capacity: usize,
+    pub starved_steady: u64,
+    pub dropped: u64,
+}
+
+impl DeviceFacts {
+    fn into_readout(self) -> AudioReadout {
+        let frame_samples = if self.rate_hz == 0 {
+            0
+        } else {
+            audio::frame_samples(self.rate_hz)
+        };
+        // Milliseconds of audio held, from the sample count and the rate. `500.0` rather than `1000.0`
+        // because the ring is interleaved stereo, so a sample slot is half a frame of one channel.
+        let latency_ms = if self.rate_hz == 0 {
+            0.0
+        } else {
+            self.occupied as f64 * 500.0 / self.rate_hz as f64
+        };
+        let fraction = |n: usize| {
+            if self.capacity == 0 {
+                0.0
+            } else {
+                (n as f32 / self.capacity as f32).clamp(0.0, 1.0)
+            }
+        };
+        let low_water = RENDER_LOW_WATER_FRAMES * frame_samples;
+        let stats = vec![
+            Stat {
+                label: "starved",
+                value: self.starved_steady.to_string(),
+                unit: None,
+                health: zero_is_healthy(self.starved_steady),
+                hover: "Callbacks that found the ring empty once the run had settled, each one an \
+                        audible click. Zero is the only healthy value.",
+            },
+            Stat {
+                label: "producer drops",
+                value: self.dropped.to_string(),
+                unit: None,
+                health: zero_is_healthy(self.dropped),
+                hover: "Samples the emulator produced that would not fit in the ring. Above zero means \
+                        the loop is running ahead of the device, which is the failure the governor was \
+                        added to stop.",
+            },
+        ];
+        let facts = vec![
+            Fact {
+                label: "device",
+                value: format!("{} Hz, {} channels", self.rate_hz, self.channels),
+                mono: false,
+                health: Health::Good,
+            },
+            Fact {
+                label: "ring",
+                value: format!("{} of {} samples", self.occupied, self.capacity),
+                mono: true,
+                health: Health::Good,
+            },
+            Fact {
+                label: "buffered audio",
+                value: format!("{latency_ms:.1} ms"),
+                mono: true,
+                health: Health::Good,
+            },
+        ];
+        AudioReadout {
+            stats,
+            meter: Meter {
+                fill: fraction(self.occupied),
+                // No mark rather than a mark at zero: a threshold drawn at the left edge would read as
+                // "the ring is always above the mark", which is the opposite of what an unknown means.
+                mark: if low_water == 0 || self.capacity == 0 {
+                    None
+                } else {
+                    Some(fraction(low_water))
+                },
+                legend: format!(
+                    "How much audio is waiting to be played, out of the {} samples the ring holds. The \
+                     tick is the low mark: below it the loop runs an extra emulated frame to catch up.",
+                    self.capacity
+                ),
+            },
+            facts,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +906,322 @@ mod tests {
                 "the real ring must be big enough for the deeper mark's bands"
             )
         };
+    }
+
+    // ---- the readout ---------------------------------------------------------------------------------
+    //
+    // These are the audit page's exemplar gates. They are assertions about the FACTS the Pacing tab shows,
+    // which is the whole reason [`Readout`] is an egui-free value: this window cannot be opened from an
+    // agent seat, so a panel whose correctness lives in its draw calls is a panel nothing can check.
+
+    /// A device at 44 100 Hz with a healthy ring, for the cases that want one.
+    fn healthy_device() -> DeviceFacts {
+        let f = audio::frame_samples(44_100);
+        DeviceFacts {
+            rate_hz: 44_100,
+            channels: 2,
+            occupied: 3 * f,
+            capacity: audio::RING_FRAMES * f,
+            starved_steady: 0,
+            dropped: 0,
+        }
+    }
+
+    fn readout(device: Option<DeviceFacts>) -> Readout {
+        let g = Governor::start(Instant::now(), FRAME_PERIOD);
+        Readout::of(
+            1234,
+            1230,
+            &g,
+            device,
+            "governor on · 1234 frames · 0 rebases",
+        )
+    }
+
+    /// Every string the tab can draw, in one place, so a rule about text can be asserted over all of it
+    /// rather than over whichever field the test author remembered.
+    fn every_string(r: &Readout) -> Vec<String> {
+        let mut out = vec![r.status.clone()];
+        let push_stats = |s: &[Stat], out: &mut Vec<String>| {
+            for s in s {
+                out.push(s.label.to_owned());
+                out.push(s.value.clone());
+                out.push(s.hover.to_owned());
+                if let Some(u) = s.unit {
+                    out.push(u.to_owned());
+                }
+            }
+        };
+        let push_facts = |f: &[Fact], out: &mut Vec<String>| {
+            for f in f {
+                out.push(f.label.to_owned());
+                out.push(f.value.clone());
+            }
+        };
+        push_stats(&r.headline, &mut out);
+        push_facts(&r.governor, &mut out);
+        match &r.audio {
+            Audio::Absent { why } => out.push((*why).to_owned()),
+            Audio::Open(a) => {
+                push_stats(&a.stats, &mut out);
+                push_facts(&a.facts, &mut out);
+                out.push(a.meter.legend.clone());
+            }
+        }
+        out
+    }
+
+    /// **P6, and the reason [`Audio`] is an enum.** With no device open the tab states that pacing is
+    /// unmeasured. It does not show a starvation count of zero, which would be a measurement nobody took.
+    #[test]
+    fn an_absent_device_is_a_stated_line_and_never_a_row_of_zeroes() {
+        let r = readout(None);
+        let Audio::Absent { why } = &r.audio else {
+            panic!("a readout built with no device claims to have one");
+        };
+        assert!(why.contains("unmeasured"), "{why}");
+        assert!(
+            !why.contains("fine") || why.contains("not fine"),
+            "the absent line must not read as health: {why}"
+        );
+        // The governor's own numbers survive the device's absence, because the governor measured them.
+        assert_eq!(r.headline.len(), 3);
+        assert_eq!(r.headline[0].value, "1234");
+    }
+
+    /// **P5's principle off refusals.** Health is decided beside the number. A renderer that decided
+    /// "rebases is a warning when it is not zero" would be a second copy of this judgement, and the two
+    /// would drift.
+    #[test]
+    fn a_counter_that_should_be_zero_carries_its_own_health() {
+        let find = |r: &Readout, label: &str| -> Health {
+            r.governor
+                .iter()
+                .find(|f| f.label == label)
+                .unwrap_or_else(|| panic!("no `{label}` fact"))
+                .health
+        };
+        let now = Instant::now();
+
+        let quiet = Governor::start(now, FRAME_PERIOD);
+        let r = Readout::of(0, 0, &quiet, None, "");
+        assert_eq!(find(&r, "rebases"), Health::Good);
+
+        // Force one real rebase rather than poking the field: a 100 ms stall, which is what
+        // `a_stall_rebases_and_does_not_sprint` above proves costs exactly one.
+        let mut stalled = Governor::start(now, FRAME_PERIOD);
+        stalled.tick(now);
+        stalled.tick(now + Duration::from_millis(100));
+        assert_eq!(stalled.rebases(), 1, "the stall did not produce a rebase");
+        let r = Readout::of(0, 0, &stalled, None, "");
+        assert_eq!(find(&r, "rebases"), Health::Watch);
+        // ...and `worst late` went with it, because a rebase is by definition a whole period over.
+        assert_eq!(r.headline[2].label, "worst late");
+        assert_eq!(r.headline[2].health, Health::Watch);
+
+        // An early wake is the governor WORKING, so it is never a warning however large it gets.
+        let mut early = Governor::start(now, FRAME_PERIOD);
+        early.tick(now);
+        for i in 1..50 {
+            early.tick(now + Duration::from_micros(i * 10));
+        }
+        assert!(early.early_wakes() > 10);
+        let r = Readout::of(0, 0, &early, None, "");
+        assert_eq!(find(&r, "early wakes"), Health::Good);
+
+        // The device's two counters carry the same rule.
+        let mut sick = healthy_device();
+        sick.starved_steady = 3;
+        sick.dropped = 5_800_000;
+        let Audio::Open(a) = readout(Some(sick)).audio else {
+            panic!("no device");
+        };
+        assert!(a.stats.iter().all(|s| s.health == Health::Watch));
+        let Audio::Open(a) = readout(Some(healthy_device())).audio else {
+            panic!("no device");
+        };
+        assert!(a.stats.iter().all(|s| s.health == Health::Good));
+    }
+
+    /// **The strengthened P2 check.**
+    ///
+    /// The style page states P2's test as "no width-padded format specifier", and
+    /// `grep -cE '\{:[<>^][0-9]+'` over the old Pacing tab returned **zero** while every one of its lines
+    /// was a hand-spaced pseudo-table: the padding lived in the string literal, not in the specifier. The
+    /// rule was right and its check was narrower than the rule. This is the wider check, and it is
+    /// asserted on the value rather than on the source, so no spelling of the padding can slip past it.
+    #[test]
+    fn no_string_the_tab_draws_pads_itself_into_a_column() {
+        for r in [readout(None), readout(Some(healthy_device()))] {
+            for s in every_string(&r) {
+                assert!(
+                    !s.contains("  "),
+                    "a run of spaces is a column being drawn inside a string, which is the pseudo-table \
+                     P2 outlaws. The grid draws the columns: {s:?}"
+                );
+                assert!(
+                    !s.contains('\t'),
+                    "a tab is the same defect with a different character: {s:?}"
+                );
+            }
+        }
+    }
+
+    /// **P10.** The owner's ruling, over every string this tab can draw, in both device arms.
+    ///
+    /// The line this replaced was `device            NONE — pacing is unmeasured, not fine`.
+    #[test]
+    fn nothing_the_tab_draws_carries_an_em_or_en_dash() {
+        for r in [readout(None), readout(Some(healthy_device()))] {
+            for s in every_string(&r) {
+                for bad in ['\u{2014}', '\u{2013}'] {
+                    assert!(
+                        !s.contains(bad),
+                        "user-facing text carries {bad:?}, which the owner's 2026-09-05 ruling bars: {s:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **The meter's mark is the policy's, derived rather than copied.**
+    ///
+    /// A bar with a threshold drawn on it is a claim about behaviour, and the way that claim goes stale is
+    /// somebody retuning [`RENDER_LOW_WATER_FRAMES`] and leaving a line painted at the old fraction. So
+    /// this does not compare the mark to a number: it asks [`frames_to_run`] what it actually does either
+    /// side of the mark, and requires the drawn line to be the place the answer changes.
+    #[test]
+    fn the_meters_mark_is_where_the_policy_actually_changes_its_mind() {
+        let d = healthy_device();
+        let f = audio::frame_samples(d.rate_hz);
+        let Audio::Open(a) = readout(Some(d)).audio else {
+            panic!("no device");
+        };
+        let mark = a.meter.mark.expect("a device with a known rate has a mark");
+
+        // The sample counts either side of the drawn line.
+        let below = (mark * d.capacity as f32) as usize - 1;
+        let above = (mark * d.capacity as f32) as usize + 1;
+        assert_eq!(
+            frames_to_run(below, d.capacity, f, 0, RENDER_LOW_WATER_FRAMES),
+            audio::MAX_FRAMES_PER_ITER,
+            "the bar's tick is drawn above the point the loop starts catching up, so a reader watching \
+             the bar cross it would see nothing happen"
+        );
+        assert_eq!(
+            frames_to_run(above, d.capacity, f, 0, RENDER_LOW_WATER_FRAMES),
+            1,
+            "the bar's tick is drawn below the point the loop stops catching up"
+        );
+        // And it is somewhere a person can see, rather than pinned to an edge.
+        assert!((0.05..0.95).contains(&mark), "mark at {mark}");
+    }
+
+    /// **An unknown is not a threshold at zero.** A ring with no capacity yet, which is what the loop
+    /// holds before the device opens, marks nothing rather than drawing a line at the left edge that would
+    /// read as "always above the mark".
+    #[test]
+    fn a_ring_with_nothing_known_about_it_marks_no_threshold() {
+        let empty = DeviceFacts {
+            rate_hz: 0,
+            channels: 0,
+            occupied: 0,
+            capacity: 0,
+            starved_steady: 0,
+            dropped: 0,
+        };
+        let Audio::Open(a) = readout(Some(empty)).audio else {
+            panic!("no device");
+        };
+        assert_eq!(a.meter.mark, None);
+        assert_eq!(a.meter.fill, 0.0);
+        assert!(
+            !a.meter.legend.is_empty(),
+            "a bar with no legend is the `what are the purple boxes` failure"
+        );
+    }
+
+    /// The fill is a fraction and stays one, however the two numbers arrive. A ring reported as fuller
+    /// than its capacity is a bug somewhere else, and a bar drawn past its own end is that bug arriving on
+    /// the owner's screen as a rendering artefact instead of a number.
+    #[test]
+    fn the_fill_is_always_a_fraction() {
+        let f = audio::frame_samples(44_100);
+        for (occ, cap) in [(0, 8 * f), (8 * f, 8 * f), (99 * f, 8 * f), (0, 0)] {
+            let d = DeviceFacts {
+                rate_hz: 44_100,
+                channels: 2,
+                occupied: occ,
+                capacity: cap,
+                starved_steady: 0,
+                dropped: 0,
+            };
+            let Audio::Open(a) = readout(Some(d)).audio else {
+                panic!("no device");
+            };
+            assert!(
+                (0.0..=1.0).contains(&a.meter.fill),
+                "occ={occ} cap={cap} gave fill {}",
+                a.meter.fill
+            );
+        }
+    }
+
+    /// **P3.** Only machine numbers take the monospace face. The tab's prose and its labels do not, and
+    /// neither does the line that says the governor is switched off, which is a sentence.
+    #[test]
+    fn only_the_machine_numbers_are_monospace() {
+        let unpaced = Governor::unpaced(Instant::now());
+        let r = Readout::of(0, 0, &unpaced, Some(healthy_device()), "");
+        let period = r
+            .governor
+            .iter()
+            .find(|f| f.label == "target period")
+            .expect("period fact");
+        assert!(
+            !period.mono,
+            "the governor-off sentence is prose and must not be drawn in the register face"
+        );
+        assert_eq!(period.health, Health::Unmeasured);
+
+        // With a governor running it is a duration, which lines up in a column and keeps the face.
+        let paced = Governor::start(Instant::now(), FRAME_PERIOD);
+        let r = Readout::of(0, 0, &paced, Some(healthy_device()), "");
+        let period = r
+            .governor
+            .iter()
+            .find(|f| f.label == "target period")
+            .expect("period fact");
+        assert!(period.mono);
+        assert_eq!(period.health, Health::Good);
+
+        // The device line is words and a number ("44100 Hz, 2 channels"); the ring is two counts a reader
+        // compares, so it keeps the face.
+        let Audio::Open(a) = r.audio else {
+            panic!("no device")
+        };
+        let mono: Vec<&str> = a.facts.iter().filter(|f| f.mono).map(|f| f.label).collect();
+        assert_eq!(mono, vec!["ring", "buffered audio"]);
+    }
+
+    /// Every stat carries the sentence behind it. A number whose meaning is obvious only to whoever wrote
+    /// the counter is a number the tab may as well not show, and this is the assertion that stops the next
+    /// stat being added without one.
+    #[test]
+    fn every_headline_number_says_what_it_means() {
+        let r = readout(Some(healthy_device()));
+        let Audio::Open(a) = &r.audio else {
+            panic!("no device")
+        };
+        for s in r.headline.iter().chain(a.stats.iter()) {
+            assert!(
+                s.hover.len() > 40,
+                "`{}` has no sentence behind it: {:?}",
+                s.label,
+                s.hover
+            );
+            assert!(!s.label.is_empty());
+            assert!(!s.value.is_empty());
+        }
     }
 }

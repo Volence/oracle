@@ -47,7 +47,7 @@ use crate::bus::Bus;
 use crate::machine::Machine;
 use crate::memory::{self, MemoryPanel};
 use crate::objects::{self, Objects, ObjectsPanel};
-use crate::pacing::Governor;
+use crate::pacing::{self, Governor};
 use crate::screen;
 use crate::screen_pick;
 use crate::stopping::{self, Live};
@@ -649,48 +649,80 @@ impl Panels<'_> {
             });
     }
 
+    /// **The audit page's exemplar.** See `docs/2026-09-05-debug-window-audit.md`.
+    ///
+    /// The facts are projected by [`pacing::Readout::of`], which holds no egui type and is therefore
+    /// testable without a window. This function is only the drawing, and the split is the point: the
+    /// window cannot be opened from an agent seat, so a panel whose correctness lives in its draw calls is
+    /// a panel nothing can check.
+    ///
+    /// What it replaced was thirteen `ui.monospace(format!(..))` lines with their label columns spelled as
+    /// literal spaces. See [`pacing::Readout`] for the three rules that broke and why P2's stated grep
+    /// could not see the worst of them.
     fn pacing(&self, ui: &mut egui::Ui) {
-        ui.monospace(format!("frames emulated   {}", self.machine.frames()));
-        ui.monospace(format!("pictures drawn    {}", self.machine.pictures()));
-        ui.separator();
-        ui.monospace(format!(
-            "governor rebases  {}   <- stalls of a whole frame or more",
-            self.governor.rebases()
-        ));
-        ui.monospace(format!("early wakes       {}", self.governor.early_wakes()));
-        ui.monospace(format!(
-            "worst late        {:.2} ms",
-            self.governor.worst_late().as_secs_f64() * 1000.0
-        ));
-        ui.separator();
-        match self.machine.device() {
-            Some(d) => {
-                use ringbuf::traits::Observer;
-                use std::sync::atomic::Ordering;
-                let c = d.counters();
-                let occ = d.prod().occupied_len();
-                ui.monospace(format!(
-                    "device            {} Hz / {} ch",
-                    d.rate(),
-                    d.channels()
-                ));
-                ui.monospace(format!(
-                    "ring              {occ} / {} samples ({:.1} ms)",
-                    d.ring_capacity(),
-                    occ as f64 * 500.0 / d.rate() as f64
-                ));
-                ui.monospace(format!(
-                    "starved (steady)  {}",
-                    c.starved_steady.load(Ordering::Relaxed)
-                ));
-                ui.monospace(format!("producer drops    {}", d.dropped()));
+        let device = self.machine.device().map(|d| {
+            use ringbuf::traits::Observer;
+            use std::sync::atomic::Ordering;
+            pacing::DeviceFacts {
+                rate_hz: d.rate(),
+                channels: d.channels(),
+                occupied: d.prod().occupied_len(),
+                capacity: d.ring_capacity(),
+                starved_steady: d.counters().starved_steady.load(Ordering::Relaxed),
+                dropped: d.dropped(),
             }
-            None => {
-                ui.monospace("device            NONE — pacing is unmeasured, not fine");
-            }
-        }
-        ui.separator();
-        ui.monospace(self.status);
+        });
+        let r = pacing::Readout::of(
+            self.machine.frames(),
+            self.machine.pictures(),
+            self.governor,
+            device,
+            self.status,
+        );
+
+        egui::ScrollArea::vertical()
+            .id_salt("pacing")
+            .show(ui, |ui| {
+                // The three numbers the tab is opened to read, side by side and large. Emphasis is size
+                // and colour, never weight: egui has no bold axis.
+                card(ui, |ui| stat_row(ui, &r.headline));
+                ui.add_space(SECTION_GAP);
+
+                section(ui, "governor", None, "the loop's own rate limiter");
+                card(ui, |ui| health_grid(ui, "pacing-governor", &r.governor));
+                ui.add_space(SECTION_GAP);
+
+                section(ui, "audio", None, "the clock everything else follows");
+                card(ui, |ui| match &r.audio {
+                    // P4/P6: the absent case is a whole-section statement, not a table of zeroes. It is
+                    // warn-coloured from the arm the projection chose, never from reading the sentence.
+                    pacing::Audio::Absent { why } => {
+                        ui.colored_label(ui.visuals().warn_fg_color, *why);
+                    }
+                    pacing::Audio::Open(a) => {
+                        stat_row(ui, &a.stats);
+                        ui.add_space(SECTION_GAP);
+                        health_grid(ui, "pacing-audio", &a.facts);
+                        ui.add_space(SECTION_GAP);
+                        meter(ui, &a.meter);
+                    }
+                });
+                ui.add_space(SECTION_GAP);
+
+                // The line the window publishes for `emulator/screen_text`, said to be that rather than
+                // shown as a fourth opinion about numbers already above it. The Registers tab sets the
+                // precedent: a panel that silently shows one number twice is a new wrong answer.
+                ui.label(
+                    egui::RichText::new(&r.status)
+                        .text_style(egui::TextStyle::Small)
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .on_hover_text(
+                    "The one-line summary this window publishes for `emulator/screen_text`, shown \
+                     verbatim. Its frame and rebase counts are the same two numbers as above, not a \
+                     second measurement of them.",
+                );
+            });
     }
 
     fn registers(&self, ui: &mut egui::Ui) {
@@ -1849,6 +1881,145 @@ fn fact_grid(ui: &mut egui::Ui, id: &str, facts: &[objects::Fact]) {
                 ui.end_row();
             }
         });
+}
+
+/// The colour a [`pacing::Health`] takes. **One function**, so the meaning of "watch" cannot be one
+/// colour on a stat and a different one on the fact beside it.
+///
+/// `Unmeasured` is `weak_text_color` rather than a semantic colour on purpose: nothing measured it, so it
+/// is neither good news nor bad news and must not be dressed as either.
+fn health_colour(ui: &egui::Ui, h: pacing::Health) -> egui::Color32 {
+    match h {
+        pacing::Health::Good => ui.visuals().strong_text_color(),
+        pacing::Health::Watch => crate::theme::WARNING,
+        pacing::Health::Unmeasured => ui.visuals().weak_text_color(),
+    }
+}
+
+/// **The big-number readout: the "pops" in "clean and readable and pops".**
+///
+/// One measured number at the `section` face (20px), its unit small beside it, and its name small and
+/// recessed beneath. That vertical order is the whole trick: a reader scanning a row of these reads the
+/// numbers first and only drops to a label for the one that surprised them, which is the opposite of a
+/// `label   value` line where the label is read first every time.
+///
+/// Emphasis is size and colour and nothing else. egui selects fonts by family and has no weight axis, so
+/// there is no bold to reach for here even if one were wanted.
+fn stat(ui: &mut egui::Ui, s: &pacing::Stat) {
+    let big = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Name(crate::theme::SECTION.into()))
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(20.0));
+    let colour = health_colour(ui, s.health);
+    let weak = ui.visuals().weak_text_color();
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            // No item spacing between the number and its unit: "1.25 ms" is one reading, and the default
+            // 4px gutter would make the unit look like a separate column.
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.label(egui::RichText::new(&s.value).font(big).color(colour));
+            if let Some(u) = s.unit {
+                ui.label(
+                    egui::RichText::new(u)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+            }
+        });
+        ui.label(
+            egui::RichText::new(s.label)
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+        );
+    })
+    .response
+    .on_hover_text(s.hover);
+}
+
+/// A row of [`stat`]s across the top of a section, evenly gutted.
+fn stat_row(ui: &mut egui::Ui, stats: &[pacing::Stat]) {
+    ui.horizontal_top(|ui| {
+        for (i, s) in stats.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(COL_GUTTER * 2.0);
+            }
+            stat(ui, s);
+        }
+    });
+}
+
+/// [`fact_grid`], with each value coloured by the health the projection decided for it.
+///
+/// ⚑ **Two grids, and why.** This is not a copy of [`fact_grid`] that drifted: the two take different row
+/// types on purpose. `fact_grid` draws [`objects::Fact`], whose values are all one weight because a
+/// decoded object field has no health to carry; this draws [`pacing::Fact`], which does. Merging them
+/// means giving `objects::Fact` a health it would always fill in as `Good`, which is a field that exists
+/// to be ignored. **The merge is worth doing the moment a second panel needs a coloured fact row**, and at
+/// that point the shared row type is this one and `objects::Fact` is the one that converts.
+fn health_grid(ui: &mut egui::Ui, id: &str, facts: &[pacing::Fact]) {
+    let weak = ui.visuals().weak_text_color();
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([COL_GUTTER, 3.0])
+        .show(ui, |ui| {
+            for f in facts {
+                ui.label(
+                    egui::RichText::new(f.label)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+                let v = egui::RichText::new(&f.value).color(health_colour(ui, f.health));
+                ui.label(if f.mono { v.monospace() } else { v });
+                ui.end_row();
+            }
+        });
+}
+
+/// A horizontal bar with a threshold tick and a legend beneath it.
+///
+/// **The one place on this tab where the data has shape.** Ring occupancy is a fraction of a capacity with
+/// a mark on it, and a fraction is a bar: this is the owner's *"strong visuals"* at the scale the fact
+/// actually has, rather than a graph invented for a table.
+///
+/// The legend is drawn unconditionally and is not optional in [`pacing::Meter`] either. The failure this
+/// repo has already paid for was a lens that was entirely correct and communicated nothing, received as
+/// *"what are the purple boxes"*. Visual weight without a legend is a wall of monospace arriving from the
+/// other side.
+fn meter(ui: &mut egui::Ui, m: &pacing::Meter) {
+    let h = 10.0;
+    // Never wider than a comfortable reading length, never narrower than a bar a fraction is legible on.
+    let w = ui.available_width().clamp(80.0, 320.0);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+    let p = ui.painter();
+    let radius = egui::CornerRadius::same(2);
+    // The trough is the recessed field fill, which is the surface a value sits *in* rather than *on*.
+    p.rect_filled(rect, radius, ui.visuals().extreme_bg_color);
+    if m.fill > 0.0 {
+        let mut filled = rect;
+        filled.set_width(rect.width() * m.fill);
+        p.rect_filled(filled, radius, crate::theme::ACCENT);
+    }
+    if let Some(mark) = m.mark {
+        let x = rect.left() + rect.width() * mark;
+        p.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            egui::Stroke::new(1.0, ui.visuals().strong_text_color()),
+        );
+    }
+    p.rect_stroke(
+        rect,
+        radius,
+        ui.visuals().widgets.noninteractive.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    response.on_hover_text(&m.legend);
+    ui.label(
+        egui::RichText::new(&m.legend)
+            .text_style(egui::TextStyle::Small)
+            .color(ui.visuals().weak_text_color()),
+    );
 }
 
 /// A section head: the title, what it covers, and the served row it is a direct read of.
@@ -4040,7 +4211,7 @@ mod bus_parity {
 #[cfg(test)]
 mod json_tests {
     use super::*;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     /// The characters JSON uses to build a composite. Derived rather than remembered: `serde_json`'s own
     /// serialisation of a nested value is asked which of them it actually emits, so this list cannot
