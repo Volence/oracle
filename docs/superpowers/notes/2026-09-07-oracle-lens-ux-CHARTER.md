@@ -155,11 +155,24 @@ state dir. ⚑ **Checked here: this repo's shared appendables are `docs/lane-log
 run dirs, which are timestamped per run and not a trend. No unwritered ledger found — but the check is
 recorded because "we have none" and "we did not look" are the same artifact.**
 
-**RULE FIVE'S PROOF OBLIGATION, AS GENERALISED BY THE HUB** (on aurora's measurement that their chains
-cannot refuse without app changes a seat must not make): *terminate the chain explicitly and prove which
-value was in effect, read back from the run's own output; **a demonstrated refusal is one such proof, not
-the only one.*** **Our launch-helper refusal proofs stay valid exactly as written above** — the widening
-adds an option where refusal is unavailable, it does not retire the stronger form where it is.
+**RULE FIVE'S PROOF OBLIGATION, AS RULED. ⚑ THIS SENTENCE GOES VERBATIM INTO EACH SEAT'S BRIEF, and the
+reason is a hazard rather than tidiness.** The protocol at aeon `8def2240` still carries the *overruled*
+wording (*"proves once that the unforced case REFUSES"*), **seats read the protocol**, and a seat holding
+a chain it does not own could go hunting for a refusal that cannot exist — or **manufacture one by editing
+the app**, which is a seat changing production code to satisfy its own gate. That is aurora's finding, and
+it is the change-the-subject-to-suit-the-instrument bar with a seat's hands on it. Until aeon's corrected
+SHA arrives the brief carries the ruled text and **the brief wins over the protocol on this one clause**,
+said explicitly so a seat meeting both knows which:
+
+> *"terminate every first-set-wins chain at a seat-private value set explicitly and prove once which value
+> was in effect, read back from what the run prints or writes; on a green run that is usually where its
+> artifacts landed, present under the seat's own location and absent from the shared default; a
+> demonstrated refusal of the unforced case is one such proof, not the only one."*
+
+**Our launch-helper refusal proofs meet this as written** — the widening adds a route where refusal is
+unavailable; it does not retire the stronger form where it is. ⚑ **And note which way the danger runs: the
+weaker-LOOKING clause is the safer one.** "Prove a refusal" reads as the more rigorous demand and is
+exactly the one that can push a seat into editing the subject; "prove which value was in effect" cannot.
 
 - **Every finding ships a screenshot, or the diagnostic text verbatim. No evidence, no finding.**
 - **A clean task still ships its step count with a screenshot per step**, so a clean verdict is
