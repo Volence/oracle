@@ -153,5 +153,12 @@ the same line of code and are different findings.
 ## Owed to the hub after the run, both
 
 1. **The landing SHA of the amended packet.**
-2. **One paragraph on what this brief STILL got wrong** — sigil runs the pair next, and on this first run
+2. **One paragraph on what this brief STILL got wrong**, and it now carries a second passenger by the
+   hub's own sequencing: **the reaching-versus-becoming direction point rides IN that paragraph as one
+   protocol delta**, rather than going up as its own edit. The hub's reason is this document's own bar 18
+   — the protocol text landed minutes ago at aeon `8def2240`, and moving it per finding is relay spam.
+   Sigil's instance turned out to be a **third arrow** (a gate test resolving into `oracle-old` when a
+   variable is unset, with the tree present so nothing refuses), which is the evidence the generalisation
+   was worth making: three tools, three directions, one rule. **Do not let the delta be dropped because
+   the paragraph is what was asked for.** — sigil runs the pair next, and on this first run
    **the brief is the thing under test**, not the window.
