@@ -48,6 +48,33 @@ const ENV_CONTRACT_REPO: &str = "AETHER_CONTRACT_REPO";
 /// onto a checkout and read.
 const CONTRACT_REL: &str = "contract/schema/bus-protocol.schema.json";
 
+/// Write a line where libtest's output capture cannot swallow it.
+///
+/// **The house fd-2 helper, arriving in the file the house cited as its model.** `c301f89` measured that
+/// `println!`/`eprintln!` route through `std::io::_print`/`_eprint`, which libtest redirects per test
+/// thread, so a skip printed with them is invisible in a plain `cargo test` and shows only under
+/// `--nocapture`; it added this helper to four files. `mcp_tool_sweep.rs` names *this* file as the
+/// exemplar it follows — and this file was the one the sweep missed. Measured here before the fix, with
+/// neither variable set, which is the branch **every** landing takes because no runner sets either:
+///
+/// ```text
+/// running 1 test
+/// test the_pin_is_confirmed_against_the_contract_repo_or_says_it_could_not ... ok
+/// test result: ok. 1 passed; 0 failed; 0 ignored
+/// ```
+///
+/// One row that confirmed nothing against the contract repo, byte-identical in the log to a row that
+/// confirmed everything. *"A green log and an absent run are the same artifact"* (`empyrean`
+/// `contract/SUITE_PATHS.md`, protocol bar 25).
+///
+/// `std::io::stderr()` is the real handle on fd 2 and the capture does not touch it. Skips and refusals
+/// only: the `RESULT ok` announces stay on `eprintln!` by `c301f89`'s own rule, because a run that did
+/// its work is legible from its assertions and a per-test banner in every default run is noise.
+fn loud(msg: String) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
 /// One `pin.<key> = <value>` marker out of [`PROVENANCE`].
 ///
 /// **Missing is loud.** A parser that returned `None` and let the caller shrug would turn "the sidecar
@@ -281,6 +308,12 @@ fn the_contracts_own_vectors_pass_and_fail_exactly_as_declared() {
     let mut refused = 0usize;
     let mut closed_ok = 0usize;
     let mut per_method: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    // The refusal floor's tally: for every (group, method) the file exercises at all, how many of its
+    // cases the schema actually REFUSED. Observed, not declared — a `fail` vector the schema accepted
+    // lands in `failures` above and never increments this, so a fragment cannot buy its way past the
+    // floor with a fail-vector that does not fail.
+    let mut refusals_per_owner: std::collections::BTreeMap<(&str, &str), usize> =
+        std::collections::BTreeMap::new();
     let mut failures: Vec<String> = Vec::new();
 
     for case in cases {
@@ -294,6 +327,10 @@ fn the_contracts_own_vectors_pass_and_fail_exactly_as_declared() {
         let why = case.get("why").and_then(Value::as_str).unwrap_or("");
         let label = format!("{method} {kind} [{group}] ({why})");
         *per_method.entry(method).or_default() += 1;
+        // Register the owner with a zero, so a method that appears only in pass-vectors is still IN the
+        // floor's domain. Counting only the owners that refused something would make the floor a
+        // tautology: it would iterate exactly the set it is checking is non-empty.
+        refusals_per_owner.entry((group, method)).or_default();
 
         // A server-EMITTED payload travels inside the reply (or event) envelope; a `params` document is
         // the bare request object.
@@ -362,6 +399,7 @@ fn the_contracts_own_vectors_pass_and_fail_exactly_as_declared() {
                     ));
                 } else {
                     refused += 1;
+                    *refusals_per_owner.entry((group, method)).or_default() += 1;
                 }
             }
             other => failures.push(format!("{label}: unknown expect {other:?}")),
@@ -390,6 +428,72 @@ fn the_contracts_own_vectors_pass_and_fail_exactly_as_declared() {
         per_method.get("emulator/lookup_equate").copied(),
         Some(10),
         "§11.36 adopted ten lookup_equate vectors; the vendored file must carry all ten"
+    );
+
+    // ---------------------------------------------------------------------------------------------
+    // THE REFUSAL FLOOR — the two assertions above have no floor, and it was measured rather than
+    // reasoned.
+    //
+    // `passed > 0 && refused > 0` is satisfied by ONE refusal in the whole corpus. Mutation, applied on
+    // disk to the vendored `vectors.json` and run against this runner as it stood before this block:
+    // **170 of the 176 `expect: "fail"` cases deleted** — every method's refusals except
+    // `emulator/lookup_equate`'s, which the row above independently counts — and the runner reported
+    //
+    //     RESULT vectors cases=125 pass=119 fail=6 methods=42
+    //     test the_contracts_own_vectors_pass_and_fail_exactly_as_declared ... ok
+    //
+    // Forty of the forty-two (group, method) owners left with **zero** refusals between them and a
+    // vacuous fragment, and a green. Nothing else catches it either: the blob pin in
+    // `the_vendored_vectors_are_the_blob_provenance_pins` moves with EVERY re-vendor by design, so it
+    // records that the bytes changed, never that they still say anything.
+    //
+    // (The lens report put the survivable drop at 175 of 176. Re-derived here: at 175 the
+    // `lookup_equate` row above trips on the way past, so the true figure is 170. The hole is real; the
+    // number was one assertion out.)
+    //
+    // WHY THIS SHAPE, and not the obvious alternative. The counts to assert do exist — `PROVENANCE.md`
+    // derives 295 / 176 / 119 for these bytes — but a floor written as `refused >= 176` is a hand-typed
+    // constant that must be edited on every legitimate re-vendor, and an assertion whose upkeep is a
+    // chore is an assertion that gets relaxed. Worse, that sidecar has already been measured drifting:
+    // its narrative paragraph still says "276 cases" where the file has 295. A floor must not read a
+    // number out of prose that has been wrong.
+    //
+    // So the floor reads the real distribution instead: **every (group, method) the vectors exercise at
+    // all must be exercised by at least one case the schema actually REFUSED.** That turns one global
+    // non-vacuity claim into forty-two independent ones, derives its own domain from the file, needs no
+    // upkeep when upstream adds or drops a method, and reddens naming the owners. Re-run under the
+    // mutation above with this block in place, it names all forty:
+    //
+    //     40 of 42 (group, method) owners in the vendored vectors have NO case the schema refused
+    //     test the_contracts_own_vectors_pass_and_fail_exactly_as_declared ... FAILED
+    //
+    // The floor is per METHOD and not per FRAGMENT deliberately: four `params` fragments today
+    // (`step_out`, `get_channel_states`, `vgm_stop`, `vgm_status` — the no-argument methods) carry no
+    // fail-vector upstream, so a fragment-granular floor would need a hand-maintained exemption list,
+    // which is the stale-prone shape this is avoiding. Measured, not assumed: at the pinned bytes all
+    // 42 (group, method) owners refuse something and 4 of 73 fragments do not.
+    let unrefuted: Vec<String> = refusals_per_owner
+        .iter()
+        .filter(|(_, n)| **n == 0)
+        .map(|((group, method), _)| format!("{method} [{group}]"))
+        .collect();
+    assert!(
+        unrefuted.is_empty(),
+        "{} of {} (group, method) owners in the vendored vectors have NO case the schema refused, so \
+         nothing in this corpus witnesses that their fragments are non-vacuous. A fragment only \
+         pass-vectors are run against is one that `true` would satisfy.\n  {}\n\
+         If upstream really did adopt a method with no fail-vector, that is a contract question to \
+         raise there, not a floor to lower here.",
+        unrefuted.len(),
+        refusals_per_owner.len(),
+        unrefuted.join("\n  ")
+    );
+    // And say the floor's own measurement out loud, so a reader of the log sees the distribution the
+    // assertion above was evaluated against rather than only its verdict.
+    eprintln!(
+        "RESULT vectors-floor owners={} min-refusals-per-owner={} total-refusals={refused}",
+        refusals_per_owner.len(),
+        refusals_per_owner.values().min().copied().unwrap_or(0),
     );
 }
 
@@ -510,8 +614,10 @@ fn the_pin_is_confirmed_against_the_contract_repo_or_says_it_could_not() {
     }
 
     // Step 3 — nothing named. A loud line in the run's own output, because "a green log and an absent
-    // run are the same artifact" (SUITE_PATHS.md, protocol bar 25).
-    eprintln!(
+    // run are the same artifact" (SUITE_PATHS.md, protocol bar 25). Through `loud` and not `eprintln!`:
+    // see that helper — until it landed here this banner was swallowed by libtest's capture on every
+    // default run, and this is the branch every landing takes.
+    loud(format!(
         "\n=========================================================================\n\
          SKIPPED: the vendored schema's pin was NOT confirmed against the contract repo.\n\
          Consulted, in order, and neither was set:\n  \
@@ -525,7 +631,7 @@ fn the_pin_is_confirmed_against_the_contract_repo_or_says_it_could_not() {
          `the_vendored_schema_is_the_blob_provenance_pins`, which never skips.\n\
          What did NOT run: confirmation that {rev} exists upstream and is merged.\n\
          =========================================================================\n"
-    );
+    ));
 }
 
 // ---------------------------------------------------------------------------------------------------
