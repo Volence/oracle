@@ -71,9 +71,10 @@ fn put_long(rom: &mut [u8], at: u32, l: u32) {
 ///
 /// Guarded for the same reason as [`short_disp`] (`F-TESTROM-DISP-GUARD`), with a far wider window: an
 /// out-of-range delta truncated by `as i16` assembles into a *different valid branch* rather than failing.
+/// A plain `assert!`, not a `debug_assert!`, for the reason spelled out on [`short_disp`].
 fn disp16(target: u32, ext_addr: u32) -> u16 {
     let delta = target as i64 - ext_addr as i64;
-    debug_assert!(
+    assert!(
         (-32768..=32767).contains(&delta),
         "testrom word branch to {target:#X} from extension word at {ext_addr:#X}: displacement {delta} \
          is outside the signed-word window (-32768..=32767). `as i16` would truncate it into a different \
@@ -90,14 +91,24 @@ fn disp16(target: u32, ext_addr: u32) -> u16 {
 /// branch**, so a builder whose loop body grows past the window yields a fixture that boots, runs, and
 /// measures the wrong thing. That failure is invisible at every layer above it: the ROM is well-formed, the
 /// emulator is correct, and only the *expectation* is wrong. Every computed short branch in this file
-/// routes through here, so the failure mode is a loud debug panic naming both endpoints instead.
+/// routes through here, so the failure mode is a loud panic naming both endpoints instead.
+///
+/// **Why `assert!` and not `debug_assert!`.** This guard exists to catch a silently-wrong encoding in a
+/// *fixture builder*, and the fixtures are built in **both** profiles — `oracle-replay`'s three real
+/// playthroughs are deliberately routed through `cargo test --release`
+/// (`crates/oracle-replay/tests/replay_real_artifacts.rs`) so they cannot be skipped. A `debug_assert!`
+/// would switch this net off in exactly the run that matters most, and the three `#[should_panic]` rows
+/// below would have to be `#[cfg(debug_assertions)]`-gated to match — which is how
+/// `cargo test -p oracle-core --lib testrom::` came to list **11** tests in debug and **8** in release,
+/// with no `ignored` line to show for the missing three. The cost is ~26 range comparisons per
+/// `build()`; the profile split it bought was not worth one of them.
 ///
 /// `0` is rejected for a neighbouring reason: `0x6000 | 0` is the **word**-displacement encoding, which
 /// consumes the following word as its displacement. Every caller here emits a one-word branch, so a zero
 /// displacement would silently execute the next instruction as branch data.
 fn short_disp(to: u32, at: u32) -> u8 {
     let delta = to as i64 - (at as i64 + 2);
-    debug_assert!(
+    assert!(
         (-128..=127).contains(&delta) && delta != 0,
         "testrom short branch at {at:#X} -> {to:#X}: displacement {delta} is outside the signed-byte \
          window (-128..=127, and 0 is the word-displacement encoding). `as i8` would truncate it into a \
@@ -792,7 +803,7 @@ fn prof_wait_v(rom: &mut Vec<u8>, value: u8, branch: u16) {
 /// `jsr (addr).w` — a two-word absolute-short call. Short-form absolute is a **control** addressing mode,
 /// so this is a `JSR` the decoder's own control-flow classifier admits.
 fn prof_jsr(rom: &mut Vec<u8>, addr: u32) {
-    debug_assert!(
+    assert!(
         addr < 0x8000,
         "jsr (addr).w sign-extends its operand: {addr:#X} would not address itself"
     );
@@ -1037,7 +1048,7 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
     prof_wait_v(&mut code, PROF_VBLANK_LINE, 0x6400); // spin while V >= $E0 -> exits on line 0
     match shape {
         ProfilerShape::CallsLeaf { k } => {
-            debug_assert!(k >= 1, "a zero-call fixture proves nothing");
+            assert!(k >= 1, "a zero-call fixture proves nothing");
             pw(&mut code, 0x3E3C); // move.w #imm,d7
             pw(&mut code, k - 1); //   dbra runs count+1 times
             let loop_top = PROF_MAIN + code.len() as u32;
@@ -1184,7 +1195,7 @@ pub fn build_stop_precision() -> Vec<u8> {
     // The table above is an expectation about the bytes written just now; assert the two agree rather
     // than trusting a comment. An edit that moves an instruction and forgets a row fails HERE, loudly,
     // instead of turning an item-24 assertion into a claim about a different program.
-    debug_assert!(
+    assert!(
         SP_BOUNDARIES.iter().all(|(pc, _, _)| {
             let at = *pc as usize;
             at + 1 < rom.len() && !(rom[at] == 0 && rom[at + 1] == 0)
@@ -1476,12 +1487,15 @@ mod tests {
     }
 
     /// **The guard fires.** A loop body grown past the signed-byte window is the failure this exists for,
-    /// and without the `debug_assert` it is silent: `as i8` turns -129 into +127, which is a perfectly
-    /// valid branch to a perfectly wrong place. Proven red-first — the assertion below fails if the guard
-    /// is removed, because the truncation would simply return a byte.
+    /// and without the guard it is silent: `as i8` turns -129 into +127, which is a perfectly valid branch
+    /// to a perfectly wrong place. Proven red-first — the assertion below fails if the guard is removed,
+    /// because the truncation would simply return a byte.
+    ///
+    /// Deliberately **not** `#[cfg(debug_assertions)]`-gated: this row runs in release too, so it is also
+    /// the pin that keeps `short_disp`'s guard a plain `assert!`. Demote the guard back to
+    /// `debug_assert!` and this test fails under `--release` with "test did not panic".
     #[test]
     #[should_panic(expected = "outside the signed-byte window")]
-    #[cfg(debug_assertions)]
     fn short_disp_rejects_a_body_grown_past_the_window() {
         // -131 (`0x100 - (0x181 + 2)`): past the window. `as i8` would yield 0x7D — a +125 FORWARD
         // branch, which is a perfectly valid instruction to a completely wrong place.
@@ -1492,7 +1506,6 @@ mod tests {
     /// one-word branch would have the following instruction eaten as branch data.
     #[test]
     #[should_panic(expected = "word-displacement encoding")]
-    #[cfg(debug_assertions)]
     fn short_disp_rejects_the_zero_that_means_word_displacement() {
         short_disp(0x102, 0x100);
     }
@@ -1512,7 +1525,6 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "outside the signed-word window")]
-    #[cfg(debug_assertions)]
     fn disp16_rejects_a_target_past_its_window() {
         disp16(0x8000, 0x0000); // +32768: `as i16` would yield -32768, a branch BACKWARDS
     }
