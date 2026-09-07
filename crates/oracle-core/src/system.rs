@@ -873,6 +873,20 @@ impl System {
         self.z80_running
     }
 
+    /// **The encoding the Z80 refused, if any** — see [`Z80Fault`](crate::z80::Z80Fault).
+    ///
+    /// `Some` means the sound CPU is **stopped**: it reached a byte this core does not implement and
+    /// deliberately did not guess. The 68000 keeps running; the music does not. Read this whenever you
+    /// report "the machine is fine" — a silent Z80 with a latched fault is the one state that looks like
+    /// a hang and is not one. Before this existed the same condition was an `unimplemented!()` panic that
+    /// killed the thread outright (the player window died mid-session; the server's engine thread died
+    /// while its socket stayed bound).
+    ///
+    /// Cleared by a hardware `/RESET` of the Z80 (`$A11200` bit0 → 0 → 1), like the fault itself.
+    pub fn z80_fault(&self) -> Option<crate::z80::Z80Fault> {
+        self.z80.fault()
+    }
+
     /// Read-only access to the YM2612 timer/status model (introspection / debuggers), chiefly for its
     /// [`addr_latch`](crate::ym2612::Ym2612::addr_latch) — the latch-then-data protocol's currently
     /// latched register number per bank.

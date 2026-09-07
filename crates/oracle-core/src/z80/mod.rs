@@ -20,7 +20,8 @@
 //! **documented `DDCB`/`FDCB` group** (the `(IX+d)`/`(IY+d)` rotates/shifts, `BIT`/`RES`/`SET`) — which
 //! completes the **documented Z80 instruction set**. Only the undocumented opcodes (the `ED` holes/mirrors,
 //! the `IXH`/`IXL` half-register forms, and the `DDCB`/`FDCB` register-copy variants) remain, as the ZEXALL
-//! follow-up.
+//! follow-up. Those 560 encodings no longer **panic**: they latch a named [`Z80Fault`] and stop the core
+//! (see that type for why a structural refusal, not a `catch_unwind`).
 
 pub mod bus;
 
@@ -88,6 +89,15 @@ pub struct Z80 {
     wz: u16,
     /// Last-flag-write tracker for the `SCF`/`CCF` undocumented flags. **RESERVED**, inert until ZEXALL.
     q: u8,
+    /// **Latched refusal**: the encoding this core could not execute (see [`Z80Fault`]). `None` is the
+    /// normal state. Once set, [`Z80::step`] executes nothing — it burns time so the caller's catch-up
+    /// loop still terminates, but the guest program does not advance. Cleared only by [`Z80::reset`]
+    /// (a hardware `/RESET` genuinely restarts the CPU, and a driver re-upload deserves a fresh start).
+    ///
+    /// Deliberately **not** in [`Z80Regs`] or [`Z80::export_region`]: it is not an architectural
+    /// register, the SST corpus has no field for it, and region 4's 30-byte export layout must not move.
+    /// It rides the internal bincode snapshot like every other non-architectural scalar.
+    fault: Option<Z80Fault>,
 }
 
 // Flag-register bit masks (F layout, bits 7..0): `S Z YF H XF P/V N C`. YF/XF (bits 5/3) are the
@@ -103,6 +113,52 @@ const FLAG_Z: u8 = 1 << 6; // zero
 const FLAG_S: u8 = 1 << 7; // sign
 /// The undocumented copies `YF`/`XF` taken from the result's bits 5/3 in an ordinary ALU op.
 const FLAG_XY: u8 = FLAG_XF | FLAG_YF;
+
+/// **A guest byte the Z80 core cannot execute** — the latched, named refusal that replaced three
+/// `unimplemented!()` sites.
+///
+/// **Why this exists and why it is not a `catch_unwind`.** Until this type, three encoding classes — the
+/// undocumented `ED` mirrors, the `IXH`/`IXL` half-register forms, and the `DDCB`/`FDCB` register-copy
+/// variants: **560 real instructions**, not illegal opcodes — reached `unimplemented!()`, and nothing in
+/// this repo caught it. One byte in a guest's Z80 program killed the thread: in the player the window dies
+/// mid-session, in the server the engine thread dies while the socket stays bound (an outage
+/// indistinguishable from a hang). The precedent is in-tree: Vectorman's `FD FF` pinned the emulator at 26
+/// frames until the prefix rule landed.
+///
+/// A `catch_unwind` at the handler boundary would catch the *symptom* while leaving the machine in an
+/// unknown half-stepped state, and would evaporate silently under `panic = "abort"`. This is the
+/// structural alternative: the core **refuses** at decode time, before any bus write, latches what it
+/// refused, rewinds `PC` to the first byte of the offending instruction, and stops.
+///
+/// **It is a refusal, never a degradation.** Treating an unserved encoding as a `NOP` is the failure mode
+/// this type exists to prevent: a Z80 sound driver that quietly runs *wrong* is far worse here than one
+/// that stops and says which byte it could not run. (Contrast the documented `ED` **holes**, which really
+/// are `NOP`s on hardware and are executed as such — that is a served behaviour, not a degradation.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub struct Z80Fault {
+    /// Address of the **first** byte of the refused instruction (its prefix), not of the byte the decoder
+    /// happened to be holding. [`Z80::step`] rewinds `PC` here, so the machine points at what it refused.
+    pub pc: u16,
+    /// The encoding, prefix bytes first: `[ED, op]`, `[DD|FD, op]`, or `[DD|FD, CB, d, op]`. Only the
+    /// first [`len`](Self::len) entries are meaningful.
+    pub bytes: [u8; 4],
+    /// How many of [`bytes`](Self::bytes) are meaningful (2 or 4).
+    pub len: u8,
+}
+
+impl core::fmt::Display for Z80Fault {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Z80 refused an unimplemented encoding")?;
+        for b in &self.bytes[..self.len as usize] {
+            write!(f, " {b:02X}")?;
+        }
+        write!(
+            f,
+            " at PC ${:04X}; the Z80 is stopped (it will not run wrong)",
+            self.pc
+        )
+    }
+}
 
 /// Which index register a `DD`/`FD` prefix selects for the opcode it prefixes (ZC3b). `(HL)` becomes
 /// `(IX+d)`/`(IY+d)` and the `H`/`L` halves become `IXH`/`IXL`.
@@ -171,7 +227,38 @@ impl Z80 {
             int_pending: false,
             wz: r.wz,
             q: r.q,
+            fault: None,
         }
+    }
+
+    /// The encoding this core refused, if any (see [`Z80Fault`]). `Some` means the Z80 is **stopped**: it
+    /// hit a byte it cannot execute, and it is deliberately not guessing. Surfaced by
+    /// [`System::z80_fault`](crate::system::System::z80_fault).
+    pub fn fault(&self) -> Option<Z80Fault> {
+        self.fault
+    }
+
+    /// Latch a refusal (see [`Z80Fault`]) for an encoding no handler serves.
+    ///
+    /// Called from the decode arms **before any bus write or register mutation**, so the only state the
+    /// aborted instruction leaves behind is the `PC` advance and the `R` refresh bumps of the fetches it
+    /// already performed. [`Z80::step`] rewinds `PC` to the instruction's first byte; the `R` bumps are
+    /// left alone on purpose — those M1 refresh cycles genuinely happened on hardware, and unwinding them
+    /// would be inventing a machine state rather than reporting one.
+    ///
+    /// Returns a T-state count so the arm's `u32` contract is unchanged and the caller's catch-up loop
+    /// still advances: the fetches really did consume M1 cycles, so 4 per fetched byte is charged.
+    /// Only the **first** refusal is kept — a later `step` never gets far enough to raise a second.
+    fn refuse(&mut self, bytes: [u8; 4], len: u8) -> u32 {
+        if self.fault.is_none() {
+            // `pc` is rewritten by `step` to the instruction's first byte; this placeholder is never read.
+            self.fault = Some(Z80Fault {
+                pc: self.pc,
+                bytes,
+                len,
+            });
+        }
+        4 * len as u32
     }
 
     /// Read the architectural register state as a flat view (the inverse of [`Z80::from_regs`]).
@@ -297,6 +384,11 @@ impl Z80 {
         self.halted = false;
         self.wz = 0;
         self.q = 0;
+        // A latched refusal (`Z80Fault`) clears here and only here. `/RESET` genuinely restarts the CPU at
+        // `PC = 0`, and the 68000 driving `$A11200` bit0 is usually about to upload a *different* Z80
+        // program; refusing to run the new one because the old one contained a byte we could not execute
+        // would turn a recoverable stop into a permanent one.
+        self.fault = None;
     }
 
     // ---- 8-bit register accessors over the packed pairs (high byte = first-named register). ----
@@ -455,8 +547,16 @@ impl Z80 {
     /// documented `DD`/`FD` (`IX`/`IY`) base ops (see [`Self::execute_indexed_base`]), and the documented
     /// `DDCB`/`FDCB` bit/shift group (see [`Self::execute_ddcb`]) — the whole documented instruction set. Only
     /// the undocumented opcodes (the `ED` holes/mirrors, the `IXH`/`IXL` half-register forms, and the
-    /// `DDCB`/`FDCB` register-copy variants) remain for the ZEXALL slice.
+    /// `DDCB`/`FDCB` register-copy variants) remain for the ZEXALL slice — refused by name via [`Z80Fault`],
+    /// never executed as something else.
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
+        // **Latched refusal (see `Z80Fault`): the Z80 is stopped.** It burns T-states so `catch_up_z80`'s
+        // absolute-deadline loop still terminates, and it executes nothing — not even an interrupt, since
+        // vectoring into a handler would resume a program the core has already said it cannot run. This is
+        // checked FIRST, ahead of interrupt acceptance and the HALT idle, so no path can step past it.
+        if self.fault.is_some() {
+            return 4;
+        }
         // Maskable interrupt acceptance (ZC14), sampled at the instruction boundary. Taken only when the /INT
         // line is asserted AND interrupts are enabled (IFF1). Acceptance also wakes a HALT. A masked request
         // (IFF1 = 0) is ignored — HALT then continues idling. The Genesis has no Z80 NMI source (Plutiedev).
@@ -469,8 +569,18 @@ impl Z80 {
             self.inc_r();
             return 4;
         }
+        // The instruction's first byte, kept so a refusal can rewind to it: a fault must name the byte the
+        // core could not run, not the byte the decoder happened to be holding several fetches later.
+        let instruction_pc = self.pc;
         let opcode = self.next_opcode(bus);
-        self.execute(opcode, bus)
+        let t = self.execute(opcode, bus);
+        // A `Some` here is always FRESH — a pre-existing fault returned on line one above — so this rewinds
+        // exactly the instruction that just refused, and can never re-rewind an older one.
+        if let Some(fault) = self.fault.as_mut() {
+            fault.pc = instruction_pc;
+            self.pc = instruction_pc;
+        }
+        t
     }
 
     /// Accept a maskable interrupt (ZC14): clear IFF1/IFF2, un-halt, push PC, and vector per interrupt mode.
@@ -509,7 +619,7 @@ impl Z80 {
     /// index-register override for the following opcode, and `DDCB`/`FDCB` fetch the displacement **before**
     /// the final opcode byte. `CB`, the documented `ED` subset (holes = NONI), and the `DD`/`FD` documented
     /// forms + ignored-prefix rule are implemented; only the `IXH`/`IXL` half-register ops, the ED mirrors,
-    /// and the `DDCB`/`FDCB` register-copy variants remain deferred.
+    /// and the `DDCB`/`FDCB` register-copy variants remain deferred (refused by name via [`Z80Fault`]).
     fn execute<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0xCB => self.execute_cb(bus),
@@ -1179,7 +1289,7 @@ impl Z80 {
     /// transfer/search (`LDI`/`LDD`/`LDIR`/`LDDR`, `CPI`/`CPD`/`CPIR`/`CPDR`), and the block I/O
     /// (`INI`/`IND`/`INIR`/`INDR`, `OUTI`/`OUTD`/`OTIR`/`OTDR`). The undocumented ED HOLES execute as NONI
     /// (8-T no-ops — see the arm below); the undocumented mirrors of `NEG`/`RETN`/`IM`/`IN (C)`/
-    /// `OUT (C),0` (`0x70`/`0x71`) remain deferred.
+    /// `OUT (C),0` (`0x70`/`0x71`) remain deferred — refused by name via [`Z80Fault`], never no-op'd.
     ///
     /// Repeating variants (`LDIR`/`LDDR`/`CPIR`/`CPDR`/`INIR`/`INDR`/`OTIR`/`OTDR`) are modeled per the
     /// SST instruction-atomic contract: one `step()` performs one iteration, and when the loop continues,
@@ -1352,10 +1462,13 @@ impl Z80 {
 
             // The remaining `$40-$7B` gaps are undocumented MIRRORS with real semantics — `NEG`
             // (`$4C/$54/...`), `RETN`/`RETI` (`$55/$5D/...`), `IM` (`$4E/$66/...`), and the flags-only
-            // `IN (C)` / `OUT (C),0` pair (`$70`/`$71`). Still deferred (they are NOT no-ops).
-            other => unimplemented!(
-                "Z80 ED opcode {other:#04X} is an undocumented NEG/RETN/IM/IN/OUT mirror, deferred"
-            ),
+            // `IN (C)` / `OUT (C),0` pair (`$70`/`$71`). Still deferred — and because they are NOT no-ops,
+            // deferred here means REFUSED BY NAME (`Z80Fault`), never silently executed as a hole.
+            // ⚑ These 20 encodings are REAL instructions this core does not yet serve, so it refuses by
+            // name rather than guessing (see [`Z80Fault`]). Executing them as no-ops would be the silent
+            // wrong answer: `NEG` writes `A` and every flag, `RETN` pops the stack, `IM` changes how the
+            // next interrupt vectors.
+            other => self.refuse([0xED, other, 0, 0], 2),
         }
     }
 
@@ -1660,7 +1773,7 @@ impl Z80 {
     /// **documented** index-overridden base opcodes land in [`Self::execute_indexed_base`] and the documented
     /// `DDCB`/`FDCB` bit/shift ops in [`Self::execute_ddcb`]; a prefix on a non-HL opcode is IGNORED (+4 T,
     /// see `execute_indexed_base`'s fall-through). The undocumented `IXH`/`IXL` half-register forms and the
-    /// `DDCB`/`FDCB` register-copy variants remain for the ZEXALL slice.
+    /// `DDCB`/`FDCB` register-copy variants remain for the ZEXALL slice, refused by name via [`Z80Fault`].
     fn execute_indexed<B: Z80Io>(&mut self, idx: IndexReg, bus: &mut B) -> u32 {
         let sub = self.next_opcode(bus);
         match sub {
@@ -1688,7 +1801,8 @@ impl Z80 {
     /// on hardware — the opcode executes exactly as unprefixed, +4 T-states for the prefix fetch ("The
     /// Undocumented Z80 Documented" §5.1; this includes the famous `DD EB` quirk: `EX DE,HL` always swaps
     /// `DE`/`HL`, never `IX`). Only the undocumented `IXH`/`IXL` half-register ops remain deferred (they
-    /// have real substituted semantics); the `DDCB`/`FDCB` group is [`Self::execute_ddcb`].
+    /// have real substituted semantics, so they are refused by name via [`Z80Fault`] rather than falling
+    /// through to the ignored-prefix arm); the `DDCB`/`FDCB` group is [`Self::execute_ddcb`].
     fn execute_indexed_base<B: Z80Io>(&mut self, idx: IndexReg, op: u8, bus: &mut B) -> u32 {
         match op {
             // ---- ADD IX,rr (0x09/19/29/39): rr = bits 5..4 (BC/DE/IX/SP — the HL slot is the index reg, so
@@ -1819,7 +1933,8 @@ impl Z80 {
             }
 
             // ---- Undocumented IXH/IXL half-register ops: the prefix substitutes IXH/IXL for H/L in the
-            // register fields. Real semantics — still deferred (NOT prefix-ignored): INC/DEC/LD-imm on
+            // register fields. Real semantics — still deferred, and REFUSED BY NAME (`Z80Fault`) rather
+            // than prefix-ignored, which would execute `LD B,IXH` as `LD B,H`: INC/DEC/LD-imm on
             // the H/L slots ($24-$26/$2C-$2E), LD r,IXH/IXL and LD IXH/IXL,r ($44-$45/$4C-$4D/$54-$55/
             // $5C-$5D/$60-$65/$67-$6D/$6F/$7C-$7D), and ALU A,IXH/IXL ($84-$85/.../$BC-$BD). ----
             0x24..=0x26
@@ -1839,10 +1954,17 @@ impl Z80 {
             | 0xA4..=0xA5
             | 0xAC..=0xAD
             | 0xB4..=0xB5
-            | 0xBC..=0xBD => unimplemented!(
-                "Z80 {idx:?}-prefixed base opcode {op:#04X} is an undocumented IXH/IXL \
-                 half-register op, deferred past the DD/FD base slice"
-            ),
+            | 0xBC..=0xBD => {
+                // ⚑ Refused by name, not treated as prefix-ignored (see [`Z80Fault`]). Falling through to
+                // the ignored-prefix arm below would execute `LD B,IXH` as `LD B,H` — a plausible answer
+                // that is simply the wrong register, and this set is common in hand-optimised Z80 sound
+                // drivers, which is exactly what this emulator runs.
+                let prefix = match idx {
+                    IndexReg::Ix => 0xDD,
+                    IndexReg::Iy => 0xFD,
+                };
+                self.refuse([prefix, op, 0, 0], 2)
+            }
 
             // ---- Every other base opcode has NO H/L/HL involvement, so the DD/FD prefix is IGNORED on
             // hardware: execute exactly as unprefixed, +4 T-states for the prefix's M1 ("The Undocumented
@@ -1907,13 +2029,17 @@ impl Z80 {
     /// **Only the documented forms** — those whose op byte's low 3 bits `== 6` (the `(HL)`-slot encoding,
     /// which here is the indexed address) — are implemented. The undocumented register-copy variants (every
     /// op byte whose low 3 bits `!= 6`, which also copy the result into a `B..A` register) are the ZEXALL
-    /// follow-up and fall through to `unimplemented!`; a documented-mode corpus never fetches them.
+    /// follow-up and are REFUSED BY NAME ([`Z80Fault`]) rather than served half-right.
     fn execute_ddcb<B: Z80Io>(&mut self, idx: IndexReg, d: i8, op: u8, bus: &mut B) -> u32 {
         if op & 7 != 6 {
-            unimplemented!(
-                "Z80 {idx:?}CB opcode {op:#04X} (d={d}) is an undocumented register-copy variant \
-                 (op low 3 bits != 6), deferred to the ZEXALL/undocumented slice"
-            );
+            // ⚑ Refused by name (see [`Z80Fault`]). The register-copy variants do the same `(IX+d)`
+            // operation *and* copy the result into a `B..A` register; serving only the memory half would
+            // leave that register silently stale.
+            let prefix = match idx {
+                IndexReg::Ix => 0xDD,
+                IndexReg::Iy => 0xFD,
+            };
+            return self.refuse([prefix, 0xCB, d as u8, op], 4);
         }
         let addr = self.idx_get(idx).wrapping_add(d as u16);
         match op {
@@ -2212,6 +2338,13 @@ mod tests {
             int_pending: true,
             wz: 0x1B1C,
             q: 0x1D,
+            // A latched refusal rides the snapshot too: a rewind must not resurrect a Z80 that was
+            // stopped, and a checkpoint taken after a fault must restore into the same stopped machine.
+            fault: Some(Z80Fault {
+                pc: 0x1E1F,
+                bytes: [0xDD, 0xCB, 0x20, 0x21],
+                len: 4,
+            }),
         };
         let bytes =
             bincode::encode_to_vec(&populated, bincode::config::standard()).expect("encodable");
