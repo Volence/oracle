@@ -1,5 +1,5 @@
 {
-  "focus": "Fixing the lens-report findings you asked for: the last critical (Z80 crashes) plus two clusters of gate and test holes.",
+  "focus": "Fixing the lens-report findings you asked for: four gate holes verified and merged, two more parcels in flight.",
   "inFlight": [
     {
       "what": "The 560 Z80 encodings that crash instead of refusing (the last critical)",
@@ -7,14 +7,14 @@
       "agent": true
     },
     {
-      "what": "Four gate holes: a silent skip banner, an unnamed build pin, a vector floor, a discarded verdict",
-      "where": "branch fix/lens-gates",
+      "what": "Three vacuous tests -- sent back: two of its new checks passed for the wrong reason and I proved it",
+      "where": "branch fix/lens-test-vacuity",
       "agent": true
     },
     {
-      "what": "Three tests that pass for the wrong reason or vanish in release builds",
-      "where": "branch fix/lens-test-vacuity",
-      "agent": true
+      "what": "Landing gate running on the merged four-gate fix",
+      "where": "main, tools/land.sh",
+      "agent": false
     }
   ],
   "blockedOnOwner": [
@@ -34,7 +34,7 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "When the three dispatched agents return and their work is verified and merged.",
+  "nextBoundary": "When the Z80 parcel and the returned test parcel are verified and landed; then the UX pilot.",
   "queue": [
     {
       "id": "F-Z80-PANICS-UNCONTAINED",
@@ -199,5 +199,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-07T22:43:11Z"
+  "updatedAt": "2026-09-07T22:55:20Z"
 }

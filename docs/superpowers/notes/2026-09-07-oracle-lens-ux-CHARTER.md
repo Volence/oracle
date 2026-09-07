@@ -63,6 +63,31 @@ Each is a thing a newcomer would actually want done on day one. None names a met
   `$ORACLE_SOCKET` cleanly (`crates/oracle-aether/src/server.rs:66-78`); the suite's **reference client**
   resolves on a directory test and can reach the shared path whatever the server was told. **The seat
   points its client explicitly and says which client it used.**
+## ⚑ THE RIG IS MECHANISED, NOT ASSERTED (aurora's two hazards, and one of them is safety-critical here)
+
+Relayed by empyrean-c0 from aurora's own UX charter (aurora `origin/review/aurora-lens-sweep` `4abfc723`,
+`docs/reviews/2026-09-07-lens-ux-charter.md`). **These are aurora's findings, from building this rig
+before us; they are not re-derived here and are attributed rather than adopted as our own measurement.**
+
+1. ⚑ **A raw launch attached to the OWNER'S COMPOSITOR instead of the Xvfb — in their own red-first
+   proof.** For us that is not an untidy run, it is the one outcome this lane's flat rule forbids: a
+   window on his screen while his player may be live. **So forcing the display is the LAUNCH HELPER'S
+   job, never a flag a seat is trusted to pass.** The helper sets and forces the private `DISPLAY` for
+   both `oracle-frontend` and `oracle-player`, and **the seat proves once, with a capture, that a launch
+   with the helper lands on the private display and that a launch without it REFUSES rather than falling
+   back.** Proven once, at the start, not asserted per launch. A rig that merely *usually* uses the right
+   display is the same artifact as one that always does, right up until it is not.
+2. **Naming a BINARY silently measured the main checkout's build** when aurora's per-seat worktree was
+   not runnable. **The built TREE is named, with no default.** If a seat drives a per-seat build out of a
+   worktree, it names that worktree; if it cannot build there, that is a BLOCKED report, never a quiet
+   fallback to whatever binary was on the path. This lane already has the matching scar from the other
+   direction — *a merged serve is not a served method, the consumer reaches a BINARY* — and a stale
+   binary answers with total confidence.
+
+⚑ **Both are the same shape and it is the shape this whole panel exists to catch: a default that fills in
+silently when the specific thing is absent.** A display that falls back to the compositor and a binary
+that falls back to the main checkout are one defect wearing two costumes.
+
 - **Every finding ships a screenshot, or the diagnostic text verbatim. No evidence, no finding.**
 - **A clean task still ships its step count with a screenshot per step**, so a clean verdict is
   examinable rather than "nothing found". This is the house failure mode aimed at the sweep itself.
