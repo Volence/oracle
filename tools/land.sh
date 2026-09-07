@@ -538,6 +538,51 @@ EXPECTED_LEGS=$((EXEC_LEGS + DOC_LEGS))
 pass "G6 expected legs = $EXPECTED_LEGS  ($EXEC_LEGS test executables cargo will run + $DOC_LEGS doc-test legs)"
 
 # --------------------------------------------------------------------------------------------
+# G6b  name the frozen aeon pin
+#
+# `crates/oracle-replay/tests/aeon_pin.rs` states the rule this gate satisfies, in terms:
+#
+#     libtest CAPTURES a passing test's stdout, so under a plain `cargo test` the banner below is
+#     printed and then swallowed [...] So the chain is named by running this file with --nocapture
+#     as its own step: the `Name the frozen aeon pin` step in .github/workflows/ci.yml, and inside
+#     tools/replay_playthroughs.sh. [...] If you add a THIRD place the suite runs, name the pin
+#     there too, or that run's green says nothing about which build it passed against.
+#
+# This script IS that third place — the landing command, the run whose green publishes a SHA — and it
+# was the one place that did not name the pin. Measured before this block:
+#     $ grep 'nocapture\|aeon_pin' tools/land.sh   ->   no matches
+# G7 below RUNS aeon_pin like any other test and cannot SHOW it: `test ... ok` reads identically
+# whether it hashed six artifacts or returned on its first line, and every landing's log therefore
+# recorded a green with no statement about which aeon build produced it.
+#
+# --release and placed AFTER G6, deliberately: G6's `--no-run` build has just produced this exact test
+# binary, so the step reuses it. Measured at 0.32 s wall on a warm tree, which is what a naming step
+# should cost.
+#
+# A red pin REFUSES rather than accumulating, because that is what the pin means. G7's green would be a
+# statement about bytes this repo can no longer name, and 25 minutes of it is 25 minutes spent earning
+# an unattributable result. Same call `tools/replay_playthroughs.sh` makes one gate earlier.
+# --------------------------------------------------------------------------------------------
+hr; echo "G6b name the frozen aeon pin (--nocapture; the suite would swallow it)"
+cargo test --release -p oracle-replay --test aeon_pin -- --nocapture 2>&1 \
+    | command tee "$RUN_DIR/aeon-pin.log" | command sed -n '/FROZEN AEON PIN/,/^$/p'
+PIN_STATUS=${PIPESTATUS[0]}          # never $? through a pipe
+if [ "$PIN_STATUS" -ne 0 ]; then
+    fail "G6b the frozen aeon pin gate is RED (exit $PIN_STATUS): every green below would be a claim about bytes this repo cannot name"
+    command tail -40 "$RUN_DIR/aeon-pin.log"
+    finish_red
+fi
+# Exiting 0 is not the same as having NAMED the pin, and naming is this step's entire job. If the
+# banner is absent the run measured nothing about the chain; refusing beats rendering an unmeasured
+# chain as a silent pass, which is the failure one directory over that this gate was copied from.
+if ! command grep -q 'FROZEN AEON PIN' "$RUN_DIR/aeon-pin.log"; then
+    fail "G6b aeon_pin exited 0 but printed no 'FROZEN AEON PIN' banner: this run names no chain, so nothing below could be attributed to a build"
+    command tail -40 "$RUN_DIR/aeon-pin.log"
+    finish_red
+fi
+pass "G6b the aeon chain is named above; every leg of G7 ran against those bytes"
+
+# --------------------------------------------------------------------------------------------
 # G7  the suite
 # --------------------------------------------------------------------------------------------
 hr; echo "G7  cargo test --workspace --release   (expect $EXPECTED_LEGS legs; ~20-30 min)"
