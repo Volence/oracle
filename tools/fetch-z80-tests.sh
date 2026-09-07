@@ -44,6 +44,14 @@ ED_OPS=(40 41 42 43 44 45 46 47 48 49 4a 4b 4d 4f \
 for op in "${ED_OPS[@]}"; do
   FILES+=("ed $op")                                                 # documented ED-prefixed ops (space in name)
 done
+# Undocumented ED MIRRORS (the 20 encodings in the $40-$7B window that are not documented ops and not NONI
+# holes): NEG mirrors ($4C/54/5C/64/6C/74/7C), RETN mirrors ($55/5D/65/6D/75/7D), IM mirrors ($4E/66/6E/76/7E),
+# and the flags-only IN (C) / OUT (C),0 pair ($70/$71). These have REAL semantics — they are not no-ops — and
+# the corpus covers every one of them at the pin (measured, 20/20 present), so they are graded, not derived.
+ED_UNDOC_OPS=(4c 4e 54 55 5c 5d 64 65 66 6c 6d 6e 70 71 74 75 76 7c 7d 7e)
+for op in "${ED_UNDOC_OPS[@]}"; do
+  FILES+=("ed $op")                                                 # undocumented ED mirrors (real semantics)
+done
 # Documented DD/FD-prefixed BASE opcodes (index-register IX/IY forms): ADD IX,rr, LD IX,nn/(nn),IX/IX,(nn),
 # INC/DEC IX, INC/DEC (IX+d), LD (IX+d),n, LD r,(IX+d)/(IX+d),r, ALU A,(IX+d), POP/PUSH IX, EX (SP),IX,
 # JP (IX), LD SP,IX (and the FD/IY counterparts). The undocumented IXH/IXL halves and the DDCB/FDCB group
@@ -57,6 +65,19 @@ for op in "${DDFD_OPS[@]}"; do
   FILES+=("dd $op")                                                 # documented DD-prefixed (IX) base ops
   FILES+=("fd $op")                                                 # documented FD-prefixed (IY) base ops
 done
+# Undocumented IXH/IXL HALF-REGISTER forms (46 op bytes under each of DD and FD): the prefix substitutes
+# IXH/IXL (IYH/IYL) for H/L in the register-selector fields — INC/DEC/LD-imm on the H/L slots ($24-$26,
+# $2C-$2E), the LD r,IXH/IXL and LD IXH/IXL,r moves, and ALU A,IXH/IXL. Common in hand-optimised Z80 sound
+# drivers, which is exactly what this emulator runs. Corpus-covered at the pin (measured, 92/92 present).
+DDFD_IXH_OPS=(24 25 26 2c 2d 2e \
+              44 45 4c 4d 54 55 5c 5d \
+              60 61 62 63 64 65 67 68 69 6a 6b 6c 6d 6f \
+              7c 7d \
+              84 85 8c 8d 94 95 9c 9d a4 a5 ac ad b4 b5 bc bd)
+for op in "${DDFD_IXH_OPS[@]}"; do
+  FILES+=("dd $op")                                                 # undocumented IXH/IXL forms (IX)
+  FILES+=("fd $op")                                                 # undocumented IYH/IYL forms (IY)
+done
 # Documented DDCB/FDCB-prefixed opcodes (IX/IY bit-shift group). Encoding: DD CB d op — the signed
 # displacement d is fetched BEFORE the final op byte, so the repo names these "dd cb __ XX.json" (the "__"
 # is a literal placeholder for the displacement slot; XX = the final op byte). Only the DOCUMENTED forms —
@@ -67,6 +88,16 @@ DDCB_OPS=(06 0e 16 1e 26 2e 36 3e 46 4e 56 5e 66 6e 76 7e \
 for op in "${DDCB_OPS[@]}"; do
   FILES+=("dd cb __ $op")                                           # documented DDCB-prefixed (IX+d) ops
   FILES+=("fd cb __ $op")                                           # documented FDCB-prefixed (IY+d) ops
+done
+# Undocumented DDCB/FDCB REGISTER-COPY variants: every op byte whose low 3 bits != 6 (224 of the 256), under
+# both prefixes. Same (IX+d)/(IY+d) operation as the documented form, but the result is ALSO copied into the
+# B..A register the low 3 bits name (BIT is the exception: the register field is inert). Corpus-covered at
+# the pin (measured, 448/448 present).
+for i in $(seq 0 255); do
+  case $((i & 7)) in 6) continue;; esac                             # low 3 bits == 6 is the documented set above
+  op="$(printf '%02x' "$i")"
+  FILES+=("dd cb __ $op")                                           # undocumented DDCB register-copy variants
+  FILES+=("fd cb __ $op")                                           # undocumented FDCB register-copy variants
 done
 
 mkdir -p "$OUT"

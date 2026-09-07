@@ -3625,6 +3625,26 @@ impl Engine {
         let caveats: Vec<String> = [
             self.rom_freshness_now().and_then(|f| f.caveat()),
             self.listing_freshness_now().and_then(|f| f.caveat()),
+            // **The Z80 stopped on a byte it could not execute.** Conditional by construction — `None`
+            // whenever the sound CPU is healthy, which is every run that has never met an unserved
+            // encoding — so it stays inside §11.27's MUST NOT on unconditional caveats. Before the
+            // `Z80Fault` refusal landed this condition was an `unimplemented!()` that killed the engine
+            // thread while the socket stayed bound, so a caller saw a *hang*; now it is a running machine
+            // that answers every call, with silent sound, and this sentence is the only thing that
+            // distinguishes it from a healthy one. It goes last: a stale image or a stale listing makes
+            // every other reading suspect, while this one is a precise fact about one chip.
+            //
+            // ⚑ It is a caveat and not a typed key because a typed key is a schema change, and the
+            // vendored `bus-protocol.schema.json` is the wire authority (D14) — a fragment key added here
+            // without being added there is exactly the drift `tests/params_closure.rs` exists to catch.
+            // The typed carrier is worth a CR (§11.27's own rule is that a caveat is not a parseable
+            // discriminant); this is the loud half that needs no contract change.
+            self.sys.z80_fault().map(|f| {
+                format!(
+                    "The Z80 sound CPU is STOPPED: {f}. Sound has ceased; the 68000 is unaffected. \
+                     This is an unimplemented encoding in the emulator, not a fault in the ROM."
+                )
+            }),
         ]
         .into_iter()
         .flatten()
