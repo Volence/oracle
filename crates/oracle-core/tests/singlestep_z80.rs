@@ -58,6 +58,8 @@ fn opcode_files() -> Vec<String> {
     let ed_undoc = ED_UNDOC_OPCODES.iter().map(|op| format!("ed {op:02x}"));
     let dd = DDFD_OPCODES.iter().map(|op| format!("dd {op:02x}"));
     let fd = DDFD_OPCODES.iter().map(|op| format!("fd {op:02x}"));
+    let dd_ixh = DDFD_IXH_OPCODES.iter().map(|op| format!("dd {op:02x}"));
+    let fd_ixh = DDFD_IXH_OPCODES.iter().map(|op| format!("fd {op:02x}"));
     let ddcb = DDCB_OPCODES.iter().map(|op| format!("dd cb __ {op:02x}"));
     let fdcb = DDCB_OPCODES.iter().map(|op| format!("fd cb __ {op:02x}"));
     base.chain(cb)
@@ -65,6 +67,8 @@ fn opcode_files() -> Vec<String> {
         .chain(ed_undoc)
         .chain(dd)
         .chain(fd)
+        .chain(dd_ixh)
+        .chain(fd_ixh)
         .chain(ddcb)
         .chain(fdcb)
         .collect()
@@ -105,6 +109,22 @@ const DDFD_OPCODES: [u8; 39] = [
     0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77, 0x7e, //
     0x86, 0x8e, 0x96, 0x9e, 0xa6, 0xae, 0xb6, 0xbe, //
     0xe1, 0xe3, 0xe5, 0xe9, 0xf9, //
+];
+
+/// The **undocumented IXH/IXL half-register** `DD`/`FD` base opcodes (keep in sync with
+/// `tools/fetch-z80-tests.sh`'s `DDFD_IXH_OPS`), fetched under both prefixes. The prefix substitutes
+/// `IXH`/`IXL` (`IYH`/`IYL`) for `H`/`L` in both register-selector slots: `INC`/`DEC`/`LD`-immediate on the
+/// `H`/`L` slots, the `LD r,IXH` / `LD IXH,r` moves (including `LD IXH,IXL`), and `ALU A,IXH/IXL`. Common
+/// in hand-optimised Z80 sound drivers, which is what this emulator runs — and each would execute
+/// *plausibly wrong* under the ignored-prefix rule, so they are GRADED against the corpus.
+const DDFD_IXH_OPCODES: [u8; 46] = [
+    0x24, 0x25, 0x26, 0x2c, 0x2d, 0x2e, //
+    0x44, 0x45, 0x4c, 0x4d, 0x54, 0x55, 0x5c, 0x5d, //
+    0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x67, //
+    0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6f, //
+    0x7c, 0x7d, //
+    0x84, 0x85, 0x8c, 0x8d, 0x94, 0x95, 0x9c, 0x9d, //
+    0xa4, 0xa5, 0xac, 0xad, 0xb4, 0xb5, 0xbc, 0xbd, //
 ];
 
 /// The documented `DDCB`/`FDCB`-prefixed op bytes (keep in sync with `tools/fetch-z80-tests.sh`'s
@@ -348,16 +368,16 @@ fn z80_matches_singlesteptests() {
         total += data.len();
     }
     // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files + 20 undocumented
-    // ED mirrors + 2×39 documented DD/FD-prefixed base files + 2×32 documented DDCB/FDCB-prefixed files
-    // = 728 opcode files × 1000 cases.
+    // ED mirrors + 2×39 documented DD/FD-prefixed base files + 2×46 undocumented IXH/IXL half-register
+    // files + 2×32 documented DDCB/FDCB-prefixed files = 820 opcode files × 1000 cases.
     // The base table is the 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is
     // "cb 00".."cb ff"; the ED subset is the 58 documented ED opcodes (see `ED_OPCODES`); the DD/FD subset is
     // the 39 documented index-register base opcodes (see `DDFD_OPCODES`); the DDCB/FDCB subset is the 32
     // documented index-register bit/shift op bytes (see `DDCB_OPCODES`) — each fetched under both the "dd"
     // (IX) and "fd" (IY) prefixes.
     assert_eq!(
-        total, 728_000,
-        "expected 728000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + undocumented ED mirrors \
-         20k + documented DD/FD base 78k + documented DDCB/FDCB 64k)"
+        total, 820_000,
+        "expected 820000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + undocumented ED mirrors \
+         20k + documented DD/FD base 78k + undocumented IXH/IXL 92k + documented DDCB/FDCB 64k)"
     );
 }

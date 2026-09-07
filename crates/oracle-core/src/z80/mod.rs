@@ -20,9 +20,9 @@
 //! **documented `DDCB`/`FDCB` group** (the `(IX+d)`/`(IY+d)` rotates/shifts, `BIT`/`RES`/`SET`) — which
 //! completes the **documented Z80 instruction set**, plus the undocumented `ED` **holes** (NONI) and the 20
 //! undocumented `ED` **mirrors** (`NEG`/`RETN`/`IM` mirrors and the flags-only `IN (C)` / `OUT (C),0` pair),
-//! each graded 1000/1000 against the SingleStepTests corpus. Remaining: the `IXH`/`IXL` half-register forms
-//! (46 under each of `DD`/`FD`) and the `DDCB`/`FDCB` register-copy variants (224 under each) — 540
-//! encodings, which do not **panic**: they latch a named [`Z80Fault`] and stop the core (see that type for
+//! each graded 1000/1000 against the SingleStepTests corpus, and the 46+46 undocumented `IXH`/`IXL`
+//! half-register forms (likewise corpus-graded). Remaining: the `DDCB`/`FDCB` register-copy variants (224
+//! under each prefix) — 448 encodings, which do not **panic**: they latch a named [`Z80Fault`] and stop the core (see that type for
 //! why a structural refusal, not a `catch_unwind`).
 
 pub mod bus;
@@ -549,8 +549,8 @@ impl Z80 {
     /// documented `DD`/`FD` (`IX`/`IY`) base ops (see [`Self::execute_indexed_base`]), and the documented
     /// `DDCB`/`FDCB` bit/shift group (see [`Self::execute_ddcb`]) — the whole documented instruction set. Only
     /// the undocumented opcodes (the `ED` holes/mirrors, the `IXH`/`IXL` half-register forms, and the
-    /// `DDCB`/`FDCB` register-copy variants) remain for the ZEXALL slice — refused by name via [`Z80Fault`],
-    /// never executed as something else. The `ED` mirrors are DONE (corpus-graded).
+    /// `DDCB`/`FDCB` register-copy variants remain for the ZEXALL slice — refused by name via [`Z80Fault`],
+    /// never executed as something else. The `ED` mirrors and the `IXH`/`IXL` forms are DONE (corpus-graded).
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         // **Latched refusal (see `Z80Fault`): the Z80 is stopped.** It burns T-states so `catch_up_z80`'s
         // absolute-deadline loop still terminates, and it executes nothing — not even an interrupt, since
@@ -621,7 +621,8 @@ impl Z80 {
     /// index-register override for the following opcode, and `DDCB`/`FDCB` fetch the displacement **before**
     /// the final opcode byte. `CB`, the documented `ED` subset (holes = NONI), and the `DD`/`FD` documented
     /// forms + ignored-prefix rule are implemented; only the `IXH`/`IXL` half-register ops, the ED mirrors,
-    /// and the `DDCB`/`FDCB` register-copy variants remain deferred (refused by name via [`Z80Fault`]).
+    /// and the `DDCB`/`FDCB` register-copy variants remain deferred (refused by name via [`Z80Fault`]); the
+    /// `ED` mirrors and the `IXH`/`IXL` half-register forms are implemented and corpus-graded.
     fn execute<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0xCB => self.execute_cb(bus),
@@ -1830,9 +1831,9 @@ impl Z80 {
     /// `(HL)` counterparts. A `DD`/`FD` prefix on an opcode with **no** `H`/`L`/`HL` involvement is IGNORED
     /// on hardware — the opcode executes exactly as unprefixed, +4 T-states for the prefix fetch ("The
     /// Undocumented Z80 Documented" §5.1; this includes the famous `DD EB` quirk: `EX DE,HL` always swaps
-    /// `DE`/`HL`, never `IX`). Only the undocumented `IXH`/`IXL` half-register ops remain deferred (they
-    /// have real substituted semantics, so they are refused by name via [`Z80Fault`] rather than falling
-    /// through to the ignored-prefix arm); the `DDCB`/`FDCB` group is [`Self::execute_ddcb`].
+    /// `DE`/`HL`, never `IX`). The undocumented `IXH`/`IXL` half-register ops are implemented here too and
+    /// corpus-graded (they have real substituted semantics, so they must NOT fall through to the
+    /// ignored-prefix arm); the `DDCB`/`FDCB` group is [`Self::execute_ddcb`].
     fn execute_indexed_base<B: Z80Io>(&mut self, idx: IndexReg, op: u8, bus: &mut B) -> u32 {
         match op {
             // ---- ADD IX,rr (0x09/19/29/39): rr = bits 5..4 (BC/DE/IX/SP — the HL slot is the index reg, so
@@ -1962,38 +1963,67 @@ impl Z80 {
                 10
             }
 
-            // ---- Undocumented IXH/IXL half-register ops: the prefix substitutes IXH/IXL for H/L in the
-            // register fields. Real semantics — still deferred, and REFUSED BY NAME (`Z80Fault`) rather
-            // than prefix-ignored, which would execute `LD B,IXH` as `LD B,H`: INC/DEC/LD-imm on
-            // the H/L slots ($24-$26/$2C-$2E), LD r,IXH/IXL and LD IXH/IXL,r ($44-$45/$4C-$4D/$54-$55/
-            // $5C-$5D/$60-$65/$67-$6D/$6F/$7C-$7D), and ALU A,IXH/IXL ($84-$85/.../$BC-$BD). ----
-            0x24..=0x26
-            | 0x2C..=0x2E
-            | 0x44..=0x45
-            | 0x4C..=0x4D
-            | 0x54..=0x55
-            | 0x5C..=0x5D
-            | 0x60..=0x65
-            | 0x67..=0x6D
-            | 0x6F
-            | 0x7C..=0x7D
-            | 0x84..=0x85
-            | 0x8C..=0x8D
-            | 0x94..=0x95
-            | 0x9C..=0x9D
-            | 0xA4..=0xA5
-            | 0xAC..=0xAD
-            | 0xB4..=0xB5
-            | 0xBC..=0xBD => {
-                // ⚑ Refused by name, not treated as prefix-ignored (see [`Z80Fault`]). Falling through to
-                // the ignored-prefix arm below would execute `LD B,IXH` as `LD B,H` — a plausible answer
-                // that is simply the wrong register, and this set is common in hand-optimised Z80 sound
-                // drivers, which is exactly what this emulator runs.
-                let prefix = match idx {
-                    IndexReg::Ix => 0xDD,
-                    IndexReg::Iy => 0xFD,
+            // ---- Undocumented IXH/IXL HALF-REGISTER ops (46 op bytes under each prefix). The `DD`/`FD`
+            // prefix substitutes `IXH`/`IXL` for `H`/`L` in **both** register-selector slots, uniformly —
+            // which is why `LD IXH,IXL` ($65) exists and why $64 is `LD IXH,IXH` rather than the
+            // documented `LD H,H`. The one slot that is never substituted is encoding `6`, which names the
+            // memory operand and becomes `(IX+d)`; that is why $66/$6E (`LD H,(IX+d)` / `LD L,(IX+d)`) sit
+            // with the documented arms above and are absent from the ranges here.
+            //
+            // ⚑ These would each execute *plausibly wrong* under the ignored-prefix rule — `LD B,IXH` as
+            // `LD B,H`, the right shape with the wrong register — and the set is common in hand-optimised
+            // Z80 sound drivers, which is exactly what this emulator runs. Corpus-graded against
+            // SingleStepTests, not derived. T-states are the unprefixed cost + 4 for the prefix's M1. ----
+
+            // INC/DEC IXH/IXL ($24/$25/$2C/$2D): flags exactly as `INC r`/`DEC r`; `C` preserved.
+            0x24 | 0x25 | 0x2C | 0x2D => {
+                let sel = (op >> 3) & 7; // 4 = IXH, 5 = IXL
+                let v = self.idx_reg8_get(idx, sel);
+                let (r, f) = if op & 1 == 0 {
+                    inc8(v, self.flags())
+                } else {
+                    dec8(v, self.flags())
                 };
-                self.refuse([prefix, op, 0, 0], 2)
+                self.idx_reg8_set(idx, sel, r);
+                self.set_flags(f);
+                8
+            }
+
+            // LD IXH/IXL,n ($26/$2E): 7 T unprefixed + 4.
+            0x26 | 0x2E => {
+                let n = self.next_byte(bus);
+                self.idx_reg8_set(idx, (op >> 3) & 7, n);
+                11
+            }
+
+            // The 8-bit LD block with an index half in one or both slots. Both slots go through the
+            // substituting accessors, so `LD B,IXH`, `LD IXH,A` and `LD IXH,IXL` are one arm, not three.
+            // No flags.
+            0x44
+            | 0x45
+            | 0x4C
+            | 0x4D
+            | 0x54
+            | 0x55
+            | 0x5C
+            | 0x5D
+            | 0x60..=0x65
+            | 0x67
+            | 0x68..=0x6D
+            | 0x6F
+            | 0x7C
+            | 0x7D => {
+                let v = self.idx_reg8_get(idx, op & 7);
+                self.idx_reg8_set(idx, (op >> 3) & 7, v);
+                8
+            }
+
+            // ALU A,IXH/IXL ($84/$85 … $BC/$BD): op = bits 5..3, flags exactly as `ALU A,r`.
+            0x84 | 0x85 | 0x8C | 0x8D | 0x94 | 0x95 | 0x9C | 0x9D | 0xA4 | 0xA5 | 0xAC | 0xAD
+            | 0xB4 | 0xB5 | 0xBC | 0xBD => {
+                let v = self.idx_reg8_get(idx, op & 7);
+                self.alu8((op >> 3) & 7, v);
+                8
             }
 
             // ---- Every other base opcode has NO H/L/HL involvement, so the DD/FD prefix is IGNORED on
@@ -2018,6 +2048,40 @@ impl Z80 {
         match idx {
             IndexReg::Ix => self.ix = v,
             IndexReg::Iy => self.iy = v,
+        }
+    }
+
+    /// Read the 8-bit operand a `DD`/`FD`-prefixed opcode names by its 3-bit selector, **with the index
+    /// halves substituted for `H`/`L`**: `0=B 1=C 2=D 3=E 4=IXH 5=IXL 7=A`. The [`Self::reg8_get`] of the
+    /// prefixed world.
+    ///
+    /// Selector `6` is the memory operand — under a prefix it is `(IX+d)`, which needs a displacement
+    /// fetch and is handled by the documented arms — so it never reaches here. It maps to `A` only because
+    /// the match must be total; every caller's opcode set excludes it by construction.
+    fn idx_reg8_get(&self, idx: IndexReg, sel: u8) -> u8 {
+        match sel & 7 {
+            0 => (self.bc >> 8) as u8,
+            1 => self.bc as u8,
+            2 => (self.de >> 8) as u8,
+            3 => self.de as u8,
+            4 => (self.idx_get(idx) >> 8) as u8,
+            5 => self.idx_get(idx) as u8,
+            _ => self.a(),
+        }
+    }
+
+    /// Write the 8-bit operand a `DD`/`FD`-prefixed opcode names by its 3-bit selector, with the index
+    /// halves substituted for `H`/`L`. The inverse of [`Self::idx_reg8_get`], with the same note on
+    /// selector `6`.
+    fn idx_reg8_set(&mut self, idx: IndexReg, sel: u8, val: u8) {
+        match sel & 7 {
+            0 => self.bc = (self.bc & 0x00FF) | ((val as u16) << 8),
+            1 => self.bc = (self.bc & 0xFF00) | val as u16,
+            2 => self.de = (self.de & 0x00FF) | ((val as u16) << 8),
+            3 => self.de = (self.de & 0xFF00) | val as u16,
+            4 => self.idx_set(idx, (self.idx_get(idx) & 0x00FF) | ((val as u16) << 8)),
+            5 => self.idx_set(idx, (self.idx_get(idx) & 0xFF00) | val as u16),
+            _ => self.set_a(val),
         }
     }
 

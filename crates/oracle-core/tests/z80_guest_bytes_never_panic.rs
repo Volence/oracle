@@ -37,13 +37,12 @@ const DISPLACEMENT: u8 = 0x05;
 /// not copied from the implementation's match arms:
 ///
 /// - ~~**20** undocumented `ED` mirrors~~ — **LANDED**, graded 20/20 against the corpus.
-/// - **46 × 2** `IXH`/`IXL` half-register forms — the `DD`/`FD` base opcodes whose register-selector fields
-///   name `H` or `L` (and so are substituted), under each of the two prefixes.
+/// - ~~**46 × 2** `IXH`/`IXL` half-register forms~~ — **LANDED**, graded 92/92 against the corpus.
 /// - **224 × 2** `DDCB`/`FDCB` register-copy variants — every op byte whose low 3 bits are not `6`
 ///   (`256 - 32`), under each of the two prefixes.
 ///
 /// **Each stage-2 class that lands drops this number**, and the drop is the class's proof of arrival.
-const EXPECTED_UNSERVED: usize = 2 * 46 + 2 * 224;
+const EXPECTED_UNSERVED: usize = 2 * 224;
 
 /// A flat 64 KiB Z80 address space plus an open-bus port model — the same isolation the SST-z80 runner
 /// uses (a bare `Z80` over a flat bus, never `System`), so this cannot touch any frozen currency.
@@ -347,13 +346,16 @@ fn prefix_chains_never_panic() {
 fn a_refusal_latches_and_the_z80_stays_stopped() {
     let mut z80 = Z80::from_regs(&seed_regs());
     let mut bus = FlatBus::new();
-    // `DD 44` (`LD B,IXH`) followed by `3C` (`INC A`) — if the stop leaked, A would move.
+    // `DD CB 05 00` (`RLC (IX+5),B`, a register-copy variant) followed by `3C` (`INC A`) — if the stop
+    // leaked, A would move.
     bus.ram[ENTRY as usize] = 0xDD;
-    bus.ram[ENTRY as usize + 1] = 0x44;
-    bus.ram[ENTRY as usize + 2] = 0x3C;
+    bus.ram[ENTRY as usize + 1] = 0xCB;
+    bus.ram[ENTRY as usize + 2] = DISPLACEMENT;
+    bus.ram[ENTRY as usize + 3] = 0x00;
+    bus.ram[ENTRY as usize + 4] = 0x3C;
 
     let t = z80.step(&mut bus);
-    let fault = z80.fault().expect("DD 44 is refused");
+    let fault = z80.fault().expect("DD CB __ 00 is refused");
     assert!(
         t > 0,
         "a refusal must still burn T-states so catch-up loops terminate"
