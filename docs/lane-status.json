@@ -1,6 +1,22 @@
 {
-  "focus": "Paused for your PC restart. Everything is pushed; nothing is running or half-finished.",
-  "inFlight": [],
+  "focus": "Fixing the lens-report findings you asked for: the last critical (Z80 crashes) plus two clusters of gate and test holes.",
+  "inFlight": [
+    {
+      "what": "The 560 Z80 encodings that crash instead of refusing (the last critical)",
+      "where": "branch fix/z80-panic-containment",
+      "agent": true
+    },
+    {
+      "what": "Four gate holes: a silent skip banner, an unnamed build pin, a vector floor, a discarded verdict",
+      "where": "branch fix/lens-gates",
+      "agent": true
+    },
+    {
+      "what": "Three tests that pass for the wrong reason or vanish in release builds",
+      "where": "branch fix/lens-test-vacuity",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
@@ -18,15 +34,23 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "Now. Nothing running, nothing uncommitted, main in sync with origin.",
+  "nextBoundary": "When the three dispatched agents return and their work is verified and merged.",
   "queue": [
     {
       "id": "F-Z80-PANICS-UNCONTAINED",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "LENS-PASS",
       "title": "The last of the four critical fixes: about 560 real sound-chip instructions crash the emulator outright instead of refusing. Common in hand-written sound code, and a commercial game has hit this class before."
+    },
+    {
+      "id": "LENS-UX-PAIR",
+      "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "You asked for a usability lens and ruled we pilot it. Two fresh reviewers on a private off-screen display: one tries jobs a newcomer would want done with only the README to go on and logs every place it gets lost, one walks every panel and message against a checklist. Runs after the fixes in flight land; nothing appears on your screen."
     },
     {
       "id": "F-CI-DEAD-46-DAYS",
@@ -53,14 +77,6 @@
       "title": "FIXED and landed. A reset could strand your save, or write an older one over a newer one. Now proved by two tests that read the actual file on disk -- the old test for this checked the emulator's memory and never the file, which is why it passed for so long. Still worth one live check when your window is up: I proved the mechanism, not the keypress."
     },
     {
-      "id": "F-Z80-PANICS-UNCONTAINED",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "About 560 real Z80 instructions crash the emulator outright rather than refusing, with nothing to catch it -- so one byte in a game's sound code kills the window or the server. Common in hand-written sound drivers, and a commercial game has already hit this class once."
-    },
-    {
       "id": "F-FIFO-DOUBLE-CHARGE",
       "state": "open",
       "size": "M",
@@ -78,7 +94,7 @@
     },
     {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
-      "state": "doing",
+      "state": "open",
       "size": "S",
       "blockedBy": "one ten-second tab test from you",
       "project": "ORACLE-DEBUG-UI",
@@ -181,7 +197,7 @@
       "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
-  "awaiting": "Paused for your PC restart -- nothing needed from you to resume. Everything tonight is pushed and the tree is clean. When you are back: the last critical fix (the sound-chip crashes) is next and was never started, so nothing was lost. Your own items are unchanged: the Pacing A/B (d-39), the window icon (d-37), the frozen fixtures (d-40, hold recommended), and whenever you relaunch, that closes the switchboard's first live test and the first frame-rate reading. The lag tab test only matters if the lag is still there after the restart.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-06T23:40:43Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-07T22:43:11Z"
 }

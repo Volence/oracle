@@ -866,6 +866,52 @@ mechanism reading is in the log. What stays live:
    **silently, in the direction that presents as a successful boot restore over a write window that never
    opened.** Booked here because a code comment is where a perishable rule goes to be read by nobody.
 
+## ⚑ OWNER RULING, 2026-09-07: THE LENS RITUAL GAINS A UX SEAT PAIR, AND **THIS LANE IS THE PILOT**
+
+⚑ **RELAYED BY empyrean-c0, NOT WITNESSED HERE, and verified firsthand rather than adopted:** empyrean
+**`6a12740`** is an ancestor of their `origin/main`, `--stat` shows a docs commit carrying a docs ruling,
+and the owner's words are in the blob. Asked whether oracle's sweep had a UI/UX lens and told the roster
+had none: *"I think it should have one right?"*, then *"I think we draft it and run on oracle, aurora,
+and sigil for now"*.
+
+**PILOT AGAINST `6a12740`, NOT `97cd725`.** The first revision is the ruling; the second carries this
+lane's four pre-run gaps folded in, and running the pilot from the earlier text re-inherits every one of
+them. Roster C = **UXa** (task walk: 3-5 newcomer jobs named in the charter, README only, every stall and
+guess logged with a screenshot) and **UXb** (heuristic audit: every panel, control and message against a
+fixed checklist). A ×2 opposed pair; convergence is the top finding class. It is a **late panel** on a
+corpus that already has a packet, so it runs at a **NEW pin** and the packet is amended naming the pair
+as late plus that pin, **never re-dated**.
+
+**Seat rules that bind our charter**, transcribed rather than summarised: private Xvfb display with X11
+forced and the screen size verified from inside; private socket; never the shared server, never his
+display, never the emulator MCP. Every finding ships a screenshot or verbatim diagnostic text, and **a
+clean task still ships a screenshot per step**, so a clean verdict is examinable rather than "nothing
+found". Look/taste items are captures for the owner, not packet findings.
+
+⚑ **A private Xvfb display satisfies this lane's flat no-window-while-his-player-may-be-live rule in
+SUBSTANCE, not merely in spirit** — nothing reaches his screen and nothing touches his socket. Recorded
+so a later session does not re-litigate it; banked at the hub the same way.
+
+**The four gaps this lane found in the first draft, folded in at `6a12740` and attributed there.** Kept
+here because the fourth is the reusable one: (1) *the charter names the surface* — oracle is **two**
+windows, `oracle-frontend` (game) and `oracle-player` (debug tabs), and a task walked in one and judged
+against the other is the conflation that already cost a parcel; (2) **failure to get a ROM in is a
+FINDING, never BLOCKED**; (3) **pacing/smoothness/responsiveness are OUT OF SCOPE for Roster C** — a
+virtual display has no vsync, so a "feels sluggish" reading there answers a different question while
+looking like an answer ([[F-VSYNC-NEVER-MEASURED]]); (4) **"private socket" binds the CLIENT, not only
+the instance.**
+⚑ **(4) is banked because CHECKING IT REVERSED IT.** The draft of that gap said a private socket is a
+trap here, reasoning from this lane's own `F-CHAIN-QUOTED` booking. Read before sending: our **server**
+takes `--socket` and `$ORACLE_SOCKET` cleanly (`crates/oracle-aether/src/server.rs:66-78`), so the
+isolation is one flag; the hazard is real but lives in the suite's **reference client**, whose resolver
+commits on a directory test and reaches the shared path whatever the server was told. **A booking about
+our own tree was about to be sent as a claim about a different component**, and only reading the source
+separated them.
+
+**OWED TO THE HUB AFTER THE RUN, both, and neither is optional:** the **landing SHA of the amended
+packet**, and **one paragraph on what the seat brief STILL got wrong** — sigil runs the pair next and the
+brief is the thing under test on this first run.
+
 ## ⚑ OWNER RULING, 2026-09-03: WHAT GETS A TAB IN THE DEBUG WINDOW (ORACLE-DEBUG-UI)
 
 **Witnessed directly in session, not relayed.** Put to him as an assessment, answered *"That's fine I agree
