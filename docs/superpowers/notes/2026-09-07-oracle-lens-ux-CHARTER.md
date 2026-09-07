@@ -126,6 +126,41 @@ form: `oracle-player` and `oracle-frontend` **bind**, and `Server::bind` connect
    is right and the hazard's DIRECTION is per-tool.** Aurora's risk was reaching the shared thing;
    ours is *becoming* it. A rig audited only for aurora's arrow would have passed ours.
 
+⚑ **AMENDED BY SIGIL'S CORRECTION, AND IT LANDED ON THIS SEAT'S OWN REASONING.** Sigil's form: *a tool can
+be exposed in BOTH directions at once, and the becoming one is the one that looks already handled.* The
+paragraph above checked one arrow and then declared the other, which is the shape it was warning about.
+**Re-measured here, and the answer is better than the first one:**
+
+* **Reaching, via our windows: DOES NOT EXIST.** Neither window has a production client. Every
+  `UnixStream::connect` in `oracle-player` and `oracle-frontend` outside `oracle-aether`'s own bind probe
+  is inside a `#[cfg(test)]` module — `drain.rs`'s `Peer` sits under `mod tests` at `:248`, and a non-test
+  build of the crate names it nowhere. Checked a second way rather than by eye: the symbol does not
+  survive a non-test build.
+* **Reaching, via the SEAT'S OWN TOOLING: REAL, and already closed** by the client-binding rule above
+  (gap 4). This is the half the first pass got right for the wrong reason: it is exposure in aurora's
+  direction, living in the rig rather than in the product.
+* **Becoming: REAL**, closed by mandating `--socket <seat-private path>`.
+
+**So we are exposed in both directions after all, and the distinction that matters is not which arrow but
+WHICH ARTIFACT CARRIES IT** — the product only becomes, the rig only reaches. An audit that asks "is this
+tool exposed?" gets one answer; asking it separately of the product and of the rig gets two.
+
+**Sigil's third arrow, and why it corroborates rather than echoes:** their becoming-exposure revealed that
+three rules they already ran *separately, each from its own incident*, are one class — *this tool's run
+becomes what a later run resolves to*. Their charter's own instance is the sharpest of the set and is a
+warning we should read for ourselves: **their nightly scripts append to a state ledger carrying revision
+and time but no WRITER**, so a seat running them corrupts the trend invisibly. Their seat now gets its own
+state dir. ⚑ **Checked here: this repo's shared appendables are `docs/lane-log.jsonl` and
+`docs/decisions.jsonl`, both already barred to seats by the standing no-agent-edits rule, and `target/land/`
+run dirs, which are timestamped per run and not a trend. No unwritered ledger found — but the check is
+recorded because "we have none" and "we did not look" are the same artifact.**
+
+**RULE FIVE'S PROOF OBLIGATION, AS GENERALISED BY THE HUB** (on aurora's measurement that their chains
+cannot refuse without app changes a seat must not make): *terminate the chain explicitly and prove which
+value was in effect, read back from the run's own output; **a demonstrated refusal is one such proof, not
+the only one.*** **Our launch-helper refusal proofs stay valid exactly as written above** — the widening
+adds an option where refusal is unavailable, it does not retire the stronger form where it is.
+
 - **Every finding ships a screenshot, or the diagnostic text verbatim. No evidence, no finding.**
 - **A clean task still ships its step count with a screenshot per step**, so a clean verdict is
   examinable rather than "nothing found". This is the house failure mode aimed at the sweep itself.
