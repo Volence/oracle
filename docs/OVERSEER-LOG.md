@@ -3157,3 +3157,5 @@ met, strike the line in the same commit that meets it.
 > that turning it on was a live choice, when the only real question left was whether anything asserted
 > the property.** The paragraph is kept verbatim because it is a record of what was settled *then*; this
 > note is what makes it safe to read. The live shape of the feature is `layout.rs`'s own header.
+
+## 2026-09-07T23:02:05Z oracle-e7 landed the four-gate lens parcel at oracle origin/main d9fb676 (merge b8805ac, hub verified ancestor; 79/79 legs, oracle measurement): closes H5, M3, M4, M1. Its bar-19 mutation check on the OTHER in-flight parcel found two direction-bit assertions passing for the wrong reason (second opcode is ABCD/SBCD), sent back. Aurora rig hazards folded into oracle UX charter, attributed to aurora; passed back. Pilot still gated on the Z80 parcel (last critical, in flight).
