@@ -36,16 +36,14 @@ const DISPLACEMENT: u8 = 0x05;
 /// **How many encodings this core does not serve.** Derived from the Z80 instruction set's own structure,
 /// not copied from the implementation's match arms:
 ///
-/// - **20** undocumented `ED` mirrors — the encodings in the `$40-$7F` window that are neither one of the
-///   58 documented `ED` ops nor one of the NONI holes: the `NEG`, `RETN`, `IM` mirrors and the flags-only
-///   `IN (C)` / `OUT (C),0` pair.
+/// - ~~**20** undocumented `ED` mirrors~~ — **LANDED**, graded 20/20 against the corpus.
 /// - **46 × 2** `IXH`/`IXL` half-register forms — the `DD`/`FD` base opcodes whose register-selector fields
 ///   name `H` or `L` (and so are substituted), under each of the two prefixes.
 /// - **224 × 2** `DDCB`/`FDCB` register-copy variants — every op byte whose low 3 bits are not `6`
 ///   (`256 - 32`), under each of the two prefixes.
 ///
 /// **Each stage-2 class that lands drops this number**, and the drop is the class's proof of arrival.
-const EXPECTED_UNSERVED: usize = 20 + 2 * 46 + 2 * 224;
+const EXPECTED_UNSERVED: usize = 2 * 46 + 2 * 224;
 
 /// A flat 64 KiB Z80 address space plus an open-bus port model — the same isolation the SST-z80 runner
 /// uses (a bare `Z80` over a flat bus, never `System`), so this cannot touch any frozen currency.
@@ -349,13 +347,13 @@ fn prefix_chains_never_panic() {
 fn a_refusal_latches_and_the_z80_stays_stopped() {
     let mut z80 = Z80::from_regs(&seed_regs());
     let mut bus = FlatBus::new();
-    // `ED 4C` (a NEG mirror) followed by `3C` (INC A) — if the stop leaked, A would move.
-    bus.ram[ENTRY as usize] = 0xED;
-    bus.ram[ENTRY as usize + 1] = 0x4C;
+    // `DD 44` (`LD B,IXH`) followed by `3C` (`INC A`) — if the stop leaked, A would move.
+    bus.ram[ENTRY as usize] = 0xDD;
+    bus.ram[ENTRY as usize + 1] = 0x44;
     bus.ram[ENTRY as usize + 2] = 0x3C;
 
     let t = z80.step(&mut bus);
-    let fault = z80.fault().expect("ED 4C is refused");
+    let fault = z80.fault().expect("DD 44 is refused");
     assert!(
         t > 0,
         "a refusal must still burn T-states so catch-up loops terminate"

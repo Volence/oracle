@@ -18,10 +18,12 @@
 //! arithmetic/loads, `NEG`, `RETN`/`RETI`, `IM`, the `I`/`R` loads, `RRD`/`RLD`, `IN r,(C)`/`OUT (C),r`, and
 //! the block transfer/search/I/O groups), the **documented `DD`/`FD` (`IX`/`IY`) base ops**, and the
 //! **documented `DDCB`/`FDCB` group** (the `(IX+d)`/`(IY+d)` rotates/shifts, `BIT`/`RES`/`SET`) — which
-//! completes the **documented Z80 instruction set**. Only the undocumented opcodes (the `ED` holes/mirrors,
-//! the `IXH`/`IXL` half-register forms, and the `DDCB`/`FDCB` register-copy variants) remain, as the ZEXALL
-//! follow-up. Those 560 encodings no longer **panic**: they latch a named [`Z80Fault`] and stop the core
-//! (see that type for why a structural refusal, not a `catch_unwind`).
+//! completes the **documented Z80 instruction set**, plus the undocumented `ED` **holes** (NONI) and the 20
+//! undocumented `ED` **mirrors** (`NEG`/`RETN`/`IM` mirrors and the flags-only `IN (C)` / `OUT (C),0` pair),
+//! each graded 1000/1000 against the SingleStepTests corpus. Remaining: the `IXH`/`IXL` half-register forms
+//! (46 under each of `DD`/`FD`) and the `DDCB`/`FDCB` register-copy variants (224 under each) — 540
+//! encodings, which do not **panic**: they latch a named [`Z80Fault`] and stop the core (see that type for
+//! why a structural refusal, not a `catch_unwind`).
 
 pub mod bus;
 
@@ -548,7 +550,7 @@ impl Z80 {
     /// `DDCB`/`FDCB` bit/shift group (see [`Self::execute_ddcb`]) — the whole documented instruction set. Only
     /// the undocumented opcodes (the `ED` holes/mirrors, the `IXH`/`IXL` half-register forms, and the
     /// `DDCB`/`FDCB` register-copy variants) remain for the ZEXALL slice — refused by name via [`Z80Fault`],
-    /// never executed as something else.
+    /// never executed as something else. The `ED` mirrors are DONE (corpus-graded).
     pub fn step<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         // **Latched refusal (see `Z80Fault`): the Z80 is stopped.** It burns T-states so `catch_up_z80`'s
         // absolute-deadline loop still terminates, and it executes nothing — not even an interrupt, since
@@ -1289,7 +1291,7 @@ impl Z80 {
     /// transfer/search (`LDI`/`LDD`/`LDIR`/`LDDR`, `CPI`/`CPD`/`CPIR`/`CPDR`), and the block I/O
     /// (`INI`/`IND`/`INIR`/`INDR`, `OUTI`/`OUTD`/`OTIR`/`OTDR`). The undocumented ED HOLES execute as NONI
     /// (8-T no-ops — see the arm below); the undocumented mirrors of `NEG`/`RETN`/`IM`/`IN (C)`/
-    /// `OUT (C),0` (`0x70`/`0x71`) remain deferred — refused by name via [`Z80Fault`], never no-op'd.
+    /// `OUT (C),0` (`0x70`/`0x71`) are IMPLEMENTED here too, graded 20/20 × 1000 against the corpus.
     ///
     /// Repeating variants (`LDIR`/`LDDR`/`CPIR`/`CPDR`/`INIR`/`INDR`/`OTIR`/`OTDR`) are modeled per the
     /// SST instruction-atomic contract: one `step()` performs one iteration, and when the loop continues,
@@ -1306,26 +1308,33 @@ impl Z80 {
             0x40 | 0x48 | 0x50 | 0x58 | 0x60 | 0x68 | 0x78 => {
                 let val = bus.input(self.bc);
                 self.reg8_set((sub >> 3) & 7, val, bus);
-                let mut f = self.flags() & FLAG_C; // C preserved
-                if val & 0x80 != 0 {
-                    f |= FLAG_S;
-                }
-                if val == 0 {
-                    f |= FLAG_Z;
-                }
-                if val.count_ones().is_multiple_of(2) {
-                    f |= FLAG_PV;
-                }
-                f |= val & FLAG_XY;
-                self.set_flags(f);
+                self.set_flags(self.in_c_flags(val));
+                12
+            }
+
+            // ---- IN (C) / `IN F,(C)` (0x70): the register slot's encoding `6` — the one that would name
+            // `(HL)` — is instead the FLAGS-ONLY form. The port is read exactly as `IN r,(C)` and sets the
+            // identical flags, but the value is discarded rather than stored anywhere. Undocumented, real,
+            // and NOT a no-op: the read is externally visible and every flag but `C` moves. ----
+            0x70 => {
+                let val = bus.input(self.bc);
+                self.set_flags(self.in_c_flags(val));
                 12
             }
 
             // ---- OUT (C),r (0x41/49/51/59/61/69/79; reg = bits 5..3, encoding 6 = the undocumented
-            // `OUT (C),0` form 0x71, deferred): port = BC, no flags. ----
+            // `OUT (C),0` form 0x71): port = BC, no flags. ----
             0x41 | 0x49 | 0x51 | 0x59 | 0x61 | 0x69 | 0x79 => {
                 let val = self.reg8_get((sub >> 3) & 7, bus);
                 bus.output(self.bc, val);
+                12
+            }
+
+            // ---- OUT (C),0 (0x71): the `6` slot again — this one writes a constant. NMOS Z80 (the
+            // Genesis part) drives **0**; the CMOS Z84C00 drives $FF. The corpus is NMOS, and so is the
+            // hardware this emulator models. ----
+            0x71 => {
+                bus.output(self.bc, 0);
                 12
             }
 
@@ -1352,33 +1361,41 @@ impl Z80 {
                 20
             }
 
-            // ---- NEG (0x44): A = 0 - A, flags as for `SUB 0,A`. ----
-            0x44 => {
+            // ---- NEG (0x44) and its seven undocumented MIRRORS (0x4C/54/5C/64/6C/74/7C): A = 0 - A, flags
+            // as for `SUB 0,A`. The ED decoder ignores bits 5..3 for this opcode, so all eight encodings
+            // are the same instruction — which is why treating the mirrors as no-ops would have been the
+            // silent wrong answer: `NEG` rewrites A and every flag. ----
+            0x44 | 0x4C | 0x54 | 0x5C | 0x64 | 0x6C | 0x74 | 0x7C => {
                 let (r, f) = sub8(0, self.a(), 0);
                 self.set_a(r);
                 self.set_flags(f);
                 8
             }
 
-            // ---- RETN (0x45) / RETI (0x4D): pop PC; both copy IFF2 -> IFF1 (the shared return-from-NMI/INT
-            // microcode does this on hardware, which the SST corpus encodes). ----
-            0x45 | 0x4D => {
+            // ---- RETN (0x45) / RETI (0x4D) and the six undocumented RETN MIRRORS (0x55/5D/65/6D/75/7D):
+            // pop PC; all copy IFF2 -> IFF1 (the shared return-from-NMI/INT microcode does this on
+            // hardware, which the SST corpus encodes). A mirror treated as a no-op would leave the return
+            // address on the stack and fall through into whatever followed the call. ----
+            0x45 | 0x4D | 0x55 | 0x5D | 0x65 | 0x6D | 0x75 | 0x7D => {
                 self.pc = self.read16(self.sp, bus);
                 self.sp = self.sp.wrapping_add(2);
                 self.iff1 = self.iff2;
                 14
             }
 
-            // ---- IM 0/1/2 (0x46/56/5E): set the interrupt mode; no flags. ----
-            0x46 => {
+            // ---- IM 0/1/2 (0x46/56/5E) and their undocumented mirrors; no flags. The mode is selected by
+            // bits 4..3 of the opcode, which is why the mirrors group as they do: 0x4E/66/6E join IM 0 (the
+            // "IM 0/1" encodings, which behave as IM 0), 0x76 joins IM 1, 0x7E joins IM 2. Silently
+            // no-oping one would leave the machine vectoring interrupts the wrong way. ----
+            0x46 | 0x4E | 0x66 | 0x6E => {
                 self.im = 0;
                 8
             }
-            0x56 => {
+            0x56 | 0x76 => {
                 self.im = 1;
                 8
             }
-            0x5E => {
+            0x5E | 0x7E => {
                 self.im = 2;
                 8
             }
@@ -1459,17 +1476,30 @@ impl Z80 {
             | 0xAC..=0xAF
             | 0xB4..=0xB7
             | 0xBC..=0xFF => 8,
-
-            // The remaining `$40-$7B` gaps are undocumented MIRRORS with real semantics — `NEG`
-            // (`$4C/$54/...`), `RETN`/`RETI` (`$55/$5D/...`), `IM` (`$4E/$66/...`), and the flags-only
-            // `IN (C)` / `OUT (C),0` pair (`$70`/`$71`). Still deferred — and because they are NOT no-ops,
-            // deferred here means REFUSED BY NAME (`Z80Fault`), never silently executed as a hole.
-            // ⚑ These 20 encodings are REAL instructions this core does not yet serve, so it refuses by
-            // name rather than guessing (see [`Z80Fault`]). Executing them as no-ops would be the silent
-            // wrong answer: `NEG` writes `A` and every flag, `RETN` pops the stack, `IM` changes how the
-            // next interrupt vectors.
-            other => self.refuse([0xED, other, 0, 0], 2),
+            // ⚑ There is deliberately **no catch-all arm left here**: with the 20 mirrors landed above, the
+            // match covers all 256 `ED` opcodes by construction, so the compiler — not a runtime guard — is
+            // what proves no `ED xx` can fall through. A future arm that narrows one of these ranges will
+            // fail to compile rather than reintroduce a hole.
         }
+    }
+
+    /// The flag set `IN r,(C)` and the flags-only `IN (C)` (`ED 70`) both produce from the byte read:
+    /// `S`/`Z` from the value, `P/V` = parity, `H = N = 0`, `C` **preserved** (unlike `IN A,(n)`, which is
+    /// flagless). `YF`/`XF` come from the value's bits 5/3 (undocumented, masked out of the documented
+    /// gate). One derivation, two callers — the flags-only form differs from `IN r,(C)` only in having
+    /// nowhere to put the byte.
+    fn in_c_flags(&self, val: u8) -> u8 {
+        let mut f = self.flags() & FLAG_C; // C preserved
+        if val & 0x80 != 0 {
+            f |= FLAG_S;
+        }
+        if val == 0 {
+            f |= FLAG_Z;
+        }
+        if val.count_ones().is_multiple_of(2) {
+            f |= FLAG_PV;
+        }
+        f | (val & FLAG_XY)
     }
 
     /// `ADC HL,rr` (0x4A/5A/6A/7A): `HL = HL + rr + C`. `S/Z` from the 16-bit result, `H` = carry out of

@@ -7,7 +7,8 @@
 //! except the four prefix bytes `cb`/`dd`/`ed`/`fd`), the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`:
 //! the rotates/shifts, `BIT`/`RES`/`SET`), PLUS the **documented ED-prefixed subset** (`"ed 40"` … : the
 //! 16-bit arithmetic/loads, `NEG`, `RETN`/`RETI`, `IM`, the `I`/`R` loads, `RRD`/`RLD`, `IN r,(C)`/
-//! `OUT (C),r`, and the block transfer/search/I/O groups — see `ED_OPCODES`).
+//! `OUT (C),r`, and the block transfer/search/I/O groups — see `ED_OPCODES`) and the **20 undocumented ED
+//! mirrors** (see `ED_UNDOC_OPCODES`).
 //!
 //! **Structurally isolated** (ZC10): it instantiates a bare [`Z80`] + a flat 64 KiB [`Z80TestBus`] and **never**
 //! [`System`](oracle_core::system::System), so it cannot touch any frozen currency — identically to how the
@@ -44,22 +45,24 @@ const UNDOC_FLAGS: u8 = 0b0010_1000;
 /// un-prefixed base table** — every opcode `0x00`-`0xFF` except the four prefix bytes `0xCB`/`0xDD`/`0xED`/
 /// `0xFD` — PLUS the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`: the rotates/shifts
 /// `RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL`, `BIT b`, `RES b`, `SET b`, across all eight targets), the
-/// **documented `ED` subset** (see `ED_OPCODES`), the **documented `DD`/`FD` base ops** (see `DDFD_OPCODES`),
-/// and the **documented `DDCB`/`FDCB` bit/shift group** (see `DDCB_OPCODES`) — the whole documented set. The
-/// undocumented `ED` holes/mirrors, `IXH`/`IXL` half-register forms, and `DDCB`/`FDCB` register-copy variants
-/// are the later ZEXALL slice.
+/// **documented `ED` subset** (see `ED_OPCODES`), the **undocumented `ED` mirrors** (see
+/// `ED_UNDOC_OPCODES`), the **documented `DD`/`FD` base ops** (see `DDFD_OPCODES`), and the **documented
+/// `DDCB`/`FDCB` bit/shift group** (see `DDCB_OPCODES`). Still unfetched: the `IXH`/`IXL` half-register
+/// forms and the `DDCB`/`FDCB` register-copy variants.
 fn opcode_files() -> Vec<String> {
     let base = (0x00u16..=0xFF)
         .filter(|op| !matches!(op, 0xCB | 0xDD | 0xED | 0xFD))
         .map(|op| format!("{op:02x}"));
     let cb = (0x00u16..=0xFF).map(|op| format!("cb {op:02x}"));
     let ed = ED_OPCODES.iter().map(|op| format!("ed {op:02x}"));
+    let ed_undoc = ED_UNDOC_OPCODES.iter().map(|op| format!("ed {op:02x}"));
     let dd = DDFD_OPCODES.iter().map(|op| format!("dd {op:02x}"));
     let fd = DDFD_OPCODES.iter().map(|op| format!("fd {op:02x}"));
     let ddcb = DDCB_OPCODES.iter().map(|op| format!("dd cb __ {op:02x}"));
     let fdcb = DDCB_OPCODES.iter().map(|op| format!("fd cb __ {op:02x}"));
     base.chain(cb)
         .chain(ed)
+        .chain(ed_undoc)
         .chain(dd)
         .chain(fd)
         .chain(ddcb)
@@ -78,6 +81,17 @@ const ED_OPCODES: [u8; 58] = [
     0x72, 0x73, 0x78, 0x79, 0x7a, 0x7b, //
     0xa0, 0xa1, 0xa2, 0xa3, 0xa8, 0xa9, 0xaa, 0xab, //
     0xb0, 0xb1, 0xb2, 0xb3, 0xb8, 0xb9, 0xba, 0xbb, //
+];
+
+/// The **undocumented ED MIRRORS** (keep in sync with `tools/fetch-z80-tests.sh`'s `ED_UNDOC_OPS`): the 20
+/// encodings in the `$40`-`$7B` window that are neither one of the 58 documented `ED` ops nor one of the
+/// NONI holes. They are real instructions, not no-ops — `NEG` mirrors (`$4C/54/5C/64/6C/74/7C`), `RETN`
+/// mirrors (`$55/5D/65/6D/75/7D`), `IM` mirrors (`$4E/66/6E/76/7E`), and the flags-only `IN (C)` /
+/// `OUT (C),0` pair (`$70`/`$71`) — so they are GRADED against the corpus, never derived from a reference
+/// document and asserted against themselves.
+const ED_UNDOC_OPCODES: [u8; 20] = [
+    0x4c, 0x4e, 0x54, 0x55, 0x5c, 0x5d, 0x64, 0x65, 0x66, 0x6c, //
+    0x6d, 0x6e, 0x70, 0x71, 0x74, 0x75, 0x76, 0x7c, 0x7d, 0x7e, //
 ];
 
 /// The documented `DD`/`FD`-prefixed **base** opcodes covered by the DD/FD base slice (keep in sync with
@@ -333,16 +347,17 @@ fn z80_matches_singlesteptests() {
         eprintln!("  {fname}.json: {} cases passed", data.len());
         total += data.len();
     }
-    // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files + 2×39 documented
-    // DD/FD-prefixed base files + 2×32 documented DDCB/FDCB-prefixed files = 708 opcode files × 1000 cases.
+    // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files + 20 undocumented
+    // ED mirrors + 2×39 documented DD/FD-prefixed base files + 2×32 documented DDCB/FDCB-prefixed files
+    // = 728 opcode files × 1000 cases.
     // The base table is the 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is
     // "cb 00".."cb ff"; the ED subset is the 58 documented ED opcodes (see `ED_OPCODES`); the DD/FD subset is
     // the 39 documented index-register base opcodes (see `DDFD_OPCODES`); the DDCB/FDCB subset is the 32
     // documented index-register bit/shift op bytes (see `DDCB_OPCODES`) — each fetched under both the "dd"
     // (IX) and "fd" (IY) prefixes.
     assert_eq!(
-        total, 708_000,
-        "expected 708000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + documented DD/FD base 78k \
-         + documented DDCB/FDCB 64k)"
+        total, 728_000,
+        "expected 728000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + undocumented ED mirrors \
+         20k + documented DD/FD base 78k + documented DDCB/FDCB 64k)"
     );
 }
