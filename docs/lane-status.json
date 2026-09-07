@@ -1,22 +1,6 @@
 {
-  "focus": "Fixing the lens-report findings you asked for: four gate holes verified and merged, two more parcels in flight.",
-  "inFlight": [
-    {
-      "what": "The 560 Z80 encodings that crash instead of refusing (the last critical)",
-      "where": "branch fix/z80-panic-containment",
-      "agent": true
-    },
-    {
-      "what": "Three vacuous tests -- sent back: two of its new checks passed for the wrong reason and I proved it",
-      "where": "branch fix/lens-test-vacuity",
-      "agent": true
-    },
-    {
-      "what": "Landing gate running on the merged four-gate fix",
-      "where": "main, tools/land.sh",
-      "agent": false
-    }
-  ],
+  "focus": "All four lens criticals are fixed and pushed. Next is the usability review you ruled we pilot.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
@@ -34,15 +18,15 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "When the Z80 parcel and the returned test parcel are verified and landed; then the UX pilot.",
+  "nextBoundary": "Now. Everything is pushed, nothing is running, and the UX pilot is briefed and ready to launch.",
   "queue": [
     {
       "id": "F-Z80-PANICS-UNCONTAINED",
-      "state": "doing",
+      "state": "blocked",
       "size": "M",
       "blockedBy": null,
       "project": "LENS-PASS",
-      "title": "The last of the four critical fixes: about 560 real sound-chip instructions crash the emulator outright instead of refusing. Common in hand-written sound code, and a commercial game has hit this class before."
+      "title": "FIXED and landed -- and it went further than stopping the crash. About 560 real sound-chip instructions used to kill the emulator; they are now properly implemented and graded against 1,268,000 known-good cases. The reason they had been skipped turned out to be wrong: the test data existed all along, we were just never asking for it."
     },
     {
       "id": "LENS-UX-PAIR",
@@ -198,6 +182,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-07T22:55:20Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-07T23:29:13Z"
 }
