@@ -10,10 +10,22 @@ Authority: owner, ruled 2026-09-07, relayed by empyrean-c0 and verified firsthan
 and his words are in the blob: *"I think it should have one right?"* and *"I think we draft it and run on
 oracle, aurora, and sigil for now"*. **This lane is the pilot; sigil then aurora run it next.**
 
-⚠ **RUN FROM `3ad431f`.** The revision has moved twice since the ruling and each move added rules this
-lane would otherwise re-inherit as defects: `97cd725` is the ruling text, `6a12740` folded in this lane's
-four pre-run gaps, `3ad431f` adds the fifth rule (no resolver falls through to a shared last resort).
-Piloting from any earlier one silently re-inherits everything added after it.
+⚠ **THE REVISION THE PACKET CITES IS aeon `8def2240`** (`docs/superpowers/LENS_PROTOCOL.md`), not the
+empyrean amendment: Roster C is now IN the protocol, and the protocol is aeon's file. The empyrean chain
+is the drafting history — `97cd725` ruling text, `6a12740` this lane's four pre-run gaps, `3ad431f` the
+fifth rule — and piloting from any of them re-inherits whatever was added after it.
+
+**Verified firsthand, and the verification is worth more than the result.** aeon `8def2240` is an ancestor
+of their `origin/master`, `--stat` shows one docs file +59, and all five seat rules plus all four of this
+lane's gaps are present (matched on wording unique to each: *"more than one surface"*, *"FINDING, never
+BLOCKED"*, *"OUT OF SCOPE for Roster C"*, *"binds the CLIENT"*, *"shared last resort"* — 1 hit each).
+⚑ **AND THE FIRST PASS OF THAT CHECK REPORTED THREE OF THE FOUR AS MISSING, WRONGLY.** The pattern was
+`grep -ciE "vsync\|pacing\|responsiv"` — BRE escaping inside an ERE, where `\|` matches a *literal pipe*
+rather than alternating. It returned 0 against a file that says "Pacing, smoothness and responsiveness"
+in terms. **The world was fine; the question was malformed**, and an empty result reads exactly like a
+clean finding. This is the protocol's own alphabet defect, committed here while checking a peer's claim,
+and caught only by reading the landed section instead of trusting the count. The first loop in that check
+carried a control and the second did not — **the loop without the control is the one that lied.**
 
 ## The two seats
 
