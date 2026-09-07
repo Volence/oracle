@@ -6,12 +6,14 @@ at its own pin, and `2026-09-06-oracle-lens-sweep.md` is amended naming this pai
 **The packet is never re-dated.**
 
 Authority: owner, ruled 2026-09-07, relayed by empyrean-c0 and verified firsthand here — empyrean
-**`6a12740`** is an ancestor of their `origin/main`, `--stat` shows a docs commit carrying a docs ruling,
+**`3ad431f`** is an ancestor of their `origin/main`, `--stat` shows a docs commit carrying a docs ruling,
 and his words are in the blob: *"I think it should have one right?"* and *"I think we draft it and run on
 oracle, aurora, and sigil for now"*. **This lane is the pilot; sigil then aurora run it next.**
 
-⚠ **RUN FROM `6a12740`, NOT `97cd725`.** The earlier revision is the ruling text; the later one carries
-this lane's four pre-run gaps folded in. Piloting from the earlier one silently re-inherits all four.
+⚠ **RUN FROM `3ad431f`.** The revision has moved twice since the ruling and each move added rules this
+lane would otherwise re-inherit as defects: `97cd725` is the ruling text, `6a12740` folded in this lane's
+four pre-run gaps, `3ad431f` adds the fifth rule (no resolver falls through to a shared last resort).
+Piloting from any earlier one silently re-inherits everything added after it.
 
 ## The two seats
 
@@ -55,7 +57,7 @@ Each is a thing a newcomer would actually want done on day one. None names a met
    a memory address.
 5. **See what the game currently has alive.** Find the live objects/sprites and identify one of them.
 
-## Seat rules (transcribed from `6a12740`, not summarised)
+## Seat rules (transcribed from `3ad431f`, not summarised)
 
 - **Own instance, private display, private socket.** Xvfb, **X11 forced**, screen size **verified from
   inside the display**. Never the shared server, never the owner's display, **never the emulator MCP**.
@@ -63,6 +65,7 @@ Each is a thing a newcomer would actually want done on day one. None names a met
   `$ORACLE_SOCKET` cleanly (`crates/oracle-aether/src/server.rs:66-78`); the suite's **reference client**
   resolves on a directory test and can reach the shared path whatever the server was told. **The seat
   points its client explicitly and says which client it used.**
+
 ## ⚑ THE RIG IS MECHANISED, NOT ASSERTED (aurora's two hazards, and one of them is safety-critical here)
 
 Relayed by empyrean-c0 from aurora's own UX charter (aurora `origin/review/aurora-lens-sweep` `4abfc723`,
@@ -87,6 +90,29 @@ before us; they are not re-derived here and are attributed rather than adopted a
 ⚑ **Both are the same shape and it is the shape this whole panel exists to catch: a default that fills in
 silently when the specific thing is absent.** A display that falls back to the compositor and a binary
 that falls back to the main checkout are one defect wearing two costumes.
+
+**That sentence is now the fifth Roster C rule** (empyrean `3ad431f`, verified here as a reachable
+ancestor and a docs commit carrying docs): *no resolver in the rig may fall through to a shared last
+resort.* Aurora turned it on their own charter and found a third instance — their app-side socket
+resolver reaching the owner's live game window when the variable was unset, reachable **because UXb is
+required to press every control and the status badge is one.**
+
+⚑ **THIRD INSTANCE, TURNED ON OURSELVES — AND OUR ARROW POINTS THE OTHER WAY. Measured, not
+assumed.** Aurora's instance is a client that **connects** and can land on the owner's live server. Ours cannot take that
+form: `oracle-player` and `oracle-frontend` **bind**, and `Server::bind` connects first and returns
+`AddrInUse` — *"another Aether server is already live on {path}"* — against anything that answers
+   (`crates/oracle-aether/src/server.rs:343-353`, read at `d9fb676`, not taken from the doc comment that
+   claims it). **So a seat cannot reach his window through this door, and the guard is real code.**
+   **The same class is still reachable in the MIRROR direction, and that is the one our rig must close:**
+   a seat launching with bare `--aether` and no `--socket` binds the **shared well-known path**
+   (`$ORACLE_SOCKET` → `$EXODUS_SOCKET` → `$XDG_RUNTIME_DIR/oracle.sock` → `/tmp/oracle.sock`). If his
+   window happens to be **down** at that moment there is nothing to refuse, the seat's throwaway instance
+   takes the shared socket, and the next lane's client resolving that same chain attaches to a scratch
+   machine while believing it reached his. **So: `--socket <seat-private path>` is MANDATORY and bare
+   `--aether` is forbidden in this rig**, and the seat proves once that it bound the private path.
+   ⚑ **The durable half for sigil, who inherits the rule and not our instances: the fifth rule's wording
+   is right and the hazard's DIRECTION is per-tool.** Aurora's risk was reaching the shared thing;
+   ours is *becoming* it. A rig audited only for aurora's arrow would have passed ours.
 
 - **Every finding ships a screenshot, or the diagnostic text verbatim. No evidence, no finding.**
 - **A clean task still ships its step count with a screenshot per step**, so a clean verdict is
