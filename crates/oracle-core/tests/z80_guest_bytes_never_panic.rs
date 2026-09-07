@@ -325,8 +325,12 @@ fn prefix_chains_never_panic() {
                 let op = op as u8;
                 let mut z80 = Z80::from_regs(&seed_regs());
                 let mut bus = FlatBus::new();
-                // The chain, then a displacement/op tail so a DDCB continuation has bytes to read.
-                for (i, byte) in [a, b, op, DISPLACEMENT, op].iter().enumerate() {
+                // The chain, then a tail so a `DDCB` continuation has bytes to read. The tail repeats
+                // `op` rather than interleaving a constant: with a constant in the 4th slot, a `DD CB`
+                // chain's FINAL opcode byte was that constant for all 256 iterations, so the loop
+                // exercised one DDCB op 256 times instead of 256 of them. (Caught by a mutation that
+                // panicked on `DDCB op 00` and left this test green.)
+                for (i, byte) in [a, b, op, op, op].iter().enumerate() {
                     bus.ram[ENTRY as usize + i] = *byte;
                 }
                 legs += 1;
