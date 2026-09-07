@@ -1129,8 +1129,39 @@ mod tests {
 
     /// The safety valve survives the deeper mark: a device that stops consuming pins the ring full, and
     /// the loop must give up skipping rather than freeze the game.
+    ///
+    /// The loop bound and the boundary case below are both [`audio::MAX_CONSECUTIVE_SKIPS`], so on their
+    /// own they are green for **every** value of it — including `0`, where the loop sweeps nothing and the
+    /// skip branch is dead code. The `const` block pins the window the constant has to be in for any of
+    /// that to mean anything; it is the same block as
+    /// `oracle_frontend::audio::tests::frames_to_run_never_stalls_the_emulator_forever`, because the two
+    /// tests are guarding one shared constant across the two policies.
     #[test]
     fn a_wedged_device_still_cannot_freeze_the_game() {
+        const {
+            // Vacuity: at 0 the `0..MAX_CONSECUTIVE_SKIPS` loop below runs zero times and the high-water
+            // skip branch is unreachable — this test would pass having asserted nothing about a valve that
+            // never engages.
+            assert!(
+                audio::MAX_CONSECUTIVE_SKIPS >= 1,
+                "a zero cap makes the high-water skip branch dead code and this test vacuous"
+            );
+            // Purpose: the valve must open before the ring it is draining runs dry. Each skipped iteration
+            // hands the device one frame of audio and produces none, so a full ring survives exactly
+            // RING_FRAMES skips; a cap at or above that lets the device underrun — inserting the silence
+            // the ring exists to prevent — BEFORE the valve ever fires.
+            assert!(
+                audio::MAX_CONSECUTIVE_SKIPS < audio::RING_FRAMES,
+                "a cap at or above the ring's depth lets the device run dry before the valve opens"
+            );
+            // Budget: that constant's own doc-comment commits to bounding a wedged device's stall to
+            // "~4 iterations (~67 ms)", one 60 Hz iteration each. Raising the cap past that budget is a
+            // choice to stall the game longer, and it should have to change the doc-comment with it.
+            assert!(
+                audio::MAX_CONSECUTIVE_SKIPS * 1_000 / 60 <= 67,
+                "the cap exceeds the ~67 ms stall budget MAX_CONSECUTIVE_SKIPS documents"
+            );
+        }
         let f = audio::frame_samples(44_100);
         let capacity = audio::RING_FRAMES * f;
         let full = capacity;

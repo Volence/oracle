@@ -636,8 +636,37 @@ mod tests {
     /// **The safety valve.** A consumer that stops consuming must not be able to stall the emulator: after
     /// [`MAX_CONSECUTIVE_SKIPS`] skips in a row the policy runs a frame regardless of how full the ring is.
     /// Without this, making the audio device the master clock would freeze the game on a wedged device.
+    ///
+    /// The loop bound and the boundary case below are both [`MAX_CONSECUTIVE_SKIPS`], so on their own they
+    /// are green for **every** value of it — including `0`, where the loop sweeps nothing and the skip
+    /// branch is dead code. The `const` block pins the window the constant has to be in for any of that to
+    /// mean anything, in the shape `pacing.rs` already uses for `RENDER_LOW_WATER_FRAMES`.
     #[test]
     fn frames_to_run_never_stalls_the_emulator_forever() {
+        const {
+            // Vacuity: at 0 the `0..MAX_CONSECUTIVE_SKIPS` loop below runs zero times and the high-water
+            // skip branch is unreachable — this test would pass having asserted nothing about a valve that
+            // never engages.
+            assert!(
+                MAX_CONSECUTIVE_SKIPS >= 1,
+                "a zero cap makes the high-water skip branch dead code and this test vacuous"
+            );
+            // Purpose: the valve must open before the ring it is draining runs dry. Each skipped iteration
+            // hands the device one frame of audio and produces none, so a full ring survives exactly
+            // RING_FRAMES skips; a cap at or above that lets the device underrun — inserting the silence
+            // the ring exists to prevent — BEFORE the valve ever fires.
+            assert!(
+                MAX_CONSECUTIVE_SKIPS < RING_FRAMES,
+                "a cap at or above the ring's depth lets the device run dry before the valve opens"
+            );
+            // Budget: this constant's own doc-comment commits to bounding a wedged device's stall to
+            // "~4 iterations (~67 ms)", one 60 Hz iteration each. Raising the cap past that budget is a
+            // choice to stall the game longer, and it should have to change the doc-comment with it.
+            assert!(
+                MAX_CONSECUTIVE_SKIPS * 1_000 / 60 <= 67,
+                "the cap exceeds the ~67 ms stall budget MAX_CONSECUTIVE_SKIPS documents"
+            );
+        }
         let f = frame_samples(44_100);
         let cap = RING_FRAMES * f;
         for skips in 0..MAX_CONSECUTIVE_SKIPS {
