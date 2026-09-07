@@ -12528,23 +12528,88 @@ mod tests {
         }
     }
 
+    /// The register shape every `*_decode_*` row below decodes under. Deliberately the same shape
+    /// [`decode_is_total_over_the_whole_opcode_space`] sweeps the entire opcode space with —
+    /// `decode_dispatch` reads only `prefetch[0]` and the supervisor bit, so nothing else here can matter.
+    fn arm_probe_regs(opcode: u16) -> Registers {
+        Registers {
+            d: [0; 8],
+            a: [0; 7],
+            usp: 0,
+            ssp: 2048,
+            pc: 3072,
+            // Supervisor, so the privilege gate cannot pre-empt the arm under test.
+            sr: 0x2700,
+            prefetch: [opcode, 0],
+        }
+    }
+
+    /// **Classification.** `opcode` selected a real instruction arm, not one of the three decode-time
+    /// exception fall-throughs (illegal / line-A / line-F).
+    ///
+    /// This is the half [`decode_is_total_over_the_whole_opcode_space`] cannot supply, and the reason the
+    /// rows below are not deletable as duplicates of it. That sweep decodes all 65 536 opcodes under these
+    /// exact registers and proves every one yields *a* recipe without panicking — so a bare
+    /// `let _ = decode(&regs);` adds nothing to it, and for years these rows added nothing. But the sweep
+    /// freezes the four class **totals**, which makes it blind to an opcode moving from one implemented
+    /// arm to another implemented arm: `n_impl` does not budge. "Classifies" names precisely that
+    /// movement, so it has to be asserted here or nowhere.
+    ///
+    /// Compares [`decode_dispatch`], not [`decode`], for the same reason the sweep does: [`decode`]
+    /// latches the opcode word into the recipe, so two different opcodes are unequal whatever arm they
+    /// took, and every comparison in this file would be vacuously true.
+    fn assert_selects_an_implemented_arm(opcode: u16, what: &str) {
+        let st = decode_dispatch(&arm_probe_regs(opcode));
+        for vector in [4u32, 10, 11] {
+            assert_ne!(
+                st,
+                decode_time_exception_recipe(vector),
+                "{opcode:#06X} should decode to a {what} arm; it decoded to the vector-{vector} \
+                 decode-time exception frame instead"
+            );
+        }
+    }
+
+    /// The negative half of the same claim: `opcode` is **not** an instruction and must reach the
+    /// illegal (vector-4) frame. Every use below is a guard the arm's own comment already promises.
+    fn assert_reaches_the_illegal_frame(opcode: u16, what: &str) {
+        assert_eq!(
+            decode_dispatch(&arm_probe_regs(opcode)),
+            decode_time_exception_recipe(4),
+            "{opcode:#06X} ({what}) is not an instruction on the 68000 and must decode to the vector-4 \
+             frame, not to an arm that would execute it"
+        );
+    }
+
+    /// **Discrimination.** Two encodings that differ only in the field named must decode to DIFFERENT
+    /// recipes. A decoder that ignored that field — which is exactly the failure `..._and_sizes` and
+    /// `..._classifies_...` promise to catch — makes them equal, and the sweep above stays green through
+    /// it because both opcodes are still "implemented".
+    ///
+    /// Note what this can and cannot see: only fields the *recipe* carries. MOVEQ's 8-bit immediate is
+    /// read from `prefetch[0]` at execution time (`Operand::BranchDisp8`), so two MOVEQs differing only in
+    /// their immediate decode to the byte-identical recipe — measured, not assumed. Its destination
+    /// register IS in the recipe (`Dest::DataReg`), and that is what the MOVEQ row discriminates on.
+    fn assert_decodes_differently(a: u16, b: u16, field: &str) {
+        assert_ne!(
+            decode_dispatch(&arm_probe_regs(a)),
+            decode_dispatch(&arm_probe_regs(b)),
+            "{a:#06X} and {b:#06X} differ in their {field} yet decoded to the same recipe"
+        );
+    }
+
     #[test]
     fn tst_decode_recognizes_opcode_and_size() {
-        // TST is 0x4A00/4A40/4A80 (SS bits 7-6 = b/w/l); SS == 3 (0x4AC0) is TAS, not TST. Decode must produce
-        // a recipe (no panic) for the data-alterable modes and reject TAS via the SS != 3 guard.
-        for (op, _sz) in [(0x4A03u16, "b"), (0x4A56, "w"), (0x4A97, "l")] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            // Just exercising the decode arm — it must not panic / hit the todo!() fallthrough.
-            let _ = decode(&regs);
+        // TST is 0x4A00/4A40/4A80 (SS bits 7-6 = b/w/l); SS == 3 (0x4AC0) is TAS, not TST.
+        for (op, sz) in [(0x4A03u16, "b"), (0x4A56, "w"), (0x4A97, "l")] {
+            assert_selects_an_implemented_arm(op, &format!("TST.{sz}"));
         }
+        // "and_size": the SS field is READ rather than ignored. One EA (D3), three sizes, three recipes.
+        assert_decodes_differently(0x4A03, 0x4A43, "TST SS field (.b vs .w on D3)");
+        assert_decodes_differently(0x4A03, 0x4A83, "TST SS field (.b vs .l on D3)");
+        assert_decodes_differently(0x4A43, 0x4A83, "TST SS field (.w vs .l on D3)");
+        // The SS != 3 guard this arm is built around: 0x4AC3 is TAS, a different instruction entirely.
+        assert_decodes_differently(0x4A03, 0x4AC3, "SS field (TST.b vs TAS at SS == 3)");
     }
 
     // --- N5: CLR <ea> — clear the data-alterable EA to 0 (Z=1/N=0/V=0/C=0, X PRESERVED = move_flags(0)). CLR
@@ -12749,20 +12814,16 @@ mod tests {
     #[test]
     fn clr_decode_recognizes_opcode_and_size() {
         // CLR is 0x4200/4240/4280 (SS bits 7-6 = b/w/l); SS == 3 (0x42C0) is illegal on the 68000, not CLR.
-        // Decode must produce a recipe (no panic) for the data-alterable modes.
         for op in [0x4282u16, 0x4216, 0x4261, 0x429B] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            // Just exercising the decode arm — it must not panic / hit the todo!() fallthrough.
-            let _ = decode(&regs);
+            assert_selects_an_implemented_arm(op, "CLR");
         }
+        // "and_size": one EA (D3), three sizes, three recipes.
+        assert_decodes_differently(0x4203, 0x4243, "CLR SS field (.b vs .w on D3)");
+        assert_decodes_differently(0x4203, 0x4283, "CLR SS field (.b vs .l on D3)");
+        assert_decodes_differently(0x4243, 0x4283, "CLR SS field (.w vs .l on D3)");
+        // The other half of "SS == 3 is illegal, not CLR": it has to REACH the illegal frame, not merely
+        // decode to something else. An arm that cleared D3 here would be a silent wrong execution.
+        assert_reaches_the_illegal_frame(0x42C3, "CLR encoding with SS == 3");
     }
 
     // --- N6: MOVEQ (`0111 ddd 0 dddddddd`, 0x7000 | dn<<9 | imm8, bit 8 = 0) — load a sign-extended 8-bit
@@ -12875,21 +12936,17 @@ mod tests {
 
     #[test]
     fn moveq_decode_recognizes_opcode() {
-        // MOVEQ is `0111 ddd 0 dddddddd` (0x7000 | dn<<9 | imm8); bit 8 must be 0. Decode must produce a recipe
-        // (no panic) for representative Dn / immediate combinations.
+        // MOVEQ is `0111 ddd 0 dddddddd` (0x7000 | dn<<9 | imm8); bit 8 must be 0.
         for op in [0x7CB5u16, 0x7004, 0x7AF3, 0x70DE, 0x701E, 0x7E00] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            // Just exercising the decode arm — it must not panic / hit the todo!() fallthrough.
-            let _ = decode(&regs);
+            assert_selects_an_implemented_arm(op, "MOVEQ");
         }
+        // The `bit 8 must be 0` guard, asserted instead of described: 0x7DB5 is 0x7CB5 with bit 8 set, and
+        // the 68000 has no instruction there.
+        assert_reaches_the_illegal_frame(0x7DB5, "the 0111 encoding with bit 8 set");
+        // The destination register is read. Note the deliberate absence of an immediate case: MOVEQ's imm8
+        // is fetched from `prefetch[0]` at execution time, so 0x7004 and 0x7005 decode to the byte-identical
+        // recipe — measured, and the reason this row's name stops at `_opcode` with no `_and_size`.
+        assert_decodes_differently(0x7004, 0x7204, "MOVEQ destination register (D0 vs D1)");
     }
 
     // --- L0: ADDA.w / ADDA.l — the no-flag address arithmetic `An = An + src` (AluOp::Adda + Dest::AddrReg).
@@ -13588,19 +13645,21 @@ mod tests {
     #[test]
     fn adda_decode_classifies_and_sizes() {
         // ADDA is opmode 3 (.w = 0xD0C0) / 7 (.l = 0xD1C0) of the 0xD nibble — its own decode arms, disjoint
-        // from the ADD arms (opmode 0/1/2/4/5/6). Decode must produce a recipe (no panic / no todo!()).
+        // from the ADD arms (opmode 0/1/2/4/5/6).
         for op in [0xDAC2u16, 0xD4CD, 0xD6D1, 0xD7D1, 0xD5FC, 0xD0C0, 0xD1C0] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            let _ = decode(&regs);
+            assert_selects_an_implemented_arm(op, "ADDA");
         }
+        // "sizes": opmode 3 and opmode 7 over one EA and one An are two recipes, not one.
+        assert_decodes_differently(0xD0C0, 0xD1C0, "ADDA opmode/size (.w vs .l, D0 -> A0)");
+        assert_decodes_differently(0xD0C0, 0xD2C0, "ADDA destination An (A0 vs A1)");
+        // "classifies": the disjointness the comment claims. Same nibble, same EA, opmode 1 instead of 3 is
+        // ADD.w D0,D0 — a different instruction with a different destination, and if ADDA's arm were lost
+        // this is the arm 0xD0C0 would silently fall into.
+        assert_decodes_differently(
+            0xD0C0,
+            0xD040,
+            "opmode 3 (ADDA.w) vs opmode 1 (ADD.w), same EA",
+        );
     }
 
     // --- L1: SUBA.w / SUBA.l — the no-flag address arithmetic `An = An - src` (AluOp::Suba + Dest::AddrReg),
@@ -14290,19 +14349,18 @@ mod tests {
     #[test]
     fn suba_decode_classifies_and_sizes() {
         // SUBA is opmode 3 (.w = 0x90C0) / 7 (.l = 0x91C0) of the 0x9 nibble — its own decode arms, disjoint
-        // from the SUB arms (opmode 0/1/2/4/5/6). Decode must produce a recipe (no panic / no todo!()).
+        // from the SUB arms (opmode 0/1/2/4/5/6).
         for op in [0x94C4u16, 0x92C8, 0x94D6, 0x9BD2, 0x99FC, 0x90C0, 0x91C0] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            let _ = decode(&regs);
+            assert_selects_an_implemented_arm(op, "SUBA");
         }
+        // "sizes", then "classifies" — the mirror of L0's ADDA row.
+        assert_decodes_differently(0x90C0, 0x91C0, "SUBA opmode/size (.w vs .l, D0 -> A0)");
+        assert_decodes_differently(0x90C0, 0x92C0, "SUBA destination An (A0 vs A1)");
+        assert_decodes_differently(
+            0x90C0,
+            0x9040,
+            "opmode 3 (SUBA.w) vs opmode 1 (SUB.w), same EA",
+        );
     }
 
     // --- L2: AND.b / AND.w / AND.l, BOTH directions — bitwise `a & b` with the MOVE flag shape (N = msb /
@@ -14595,17 +14653,24 @@ mod tests {
             0xCF54,    // AND.w D7,(A4)
             0xCB92,    // AND.l D5,(A2)
         ] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            let _ = decode(&regs);
+            assert_selects_an_implemented_arm(op, "AND");
         }
+        // "sizes": one source (D1), one destination (D4), three opmodes, three recipes.
+        assert_decodes_differently(0xC801, 0xC841, "AND opmode/size (.b vs .w, D1 -> D4)");
+        assert_decodes_differently(0xC801, 0xC881, "AND opmode/size (.b vs .l, D1 -> D4)");
+        // "classifies": the direction bit picks a different arm (`arith_ea_dn` vs `arith_dn_ea`) ...
+        assert_decodes_differently(
+            0xC801,
+            0xC901,
+            "AND direction (<ea>,Dn opmode 0 vs Dn,<ea> opmode 4)",
+        );
+        // ... and the nibble picks a different instruction. Same opmode, same EA, 0x8 instead of 0xC is OR,
+        // whose arm this file's comment calls out as the neighbouring one.
+        assert_decodes_differently(
+            0xC801,
+            0x8801,
+            "the nibble separating AND (0xC) from OR (0x8)",
+        );
     }
 
     // --- L3: OR.b / OR.w / OR.l, BOTH directions — bitwise `a | b` with the MOVE flag shape (N = msb /
@@ -14899,17 +14964,21 @@ mod tests {
             0x8F54,    // OR.w D7,(A4)
             0x8B92,    // OR.l D5,(A2)
         ] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            let _ = decode(&regs);
+            assert_selects_an_implemented_arm(op, "OR");
         }
+        // "sizes", then "classifies" — the mirror of L2's AND row, on the 0x8 nibble.
+        assert_decodes_differently(0x8801, 0x8841, "OR opmode/size (.b vs .w, D1 -> D4)");
+        assert_decodes_differently(0x8801, 0x8881, "OR opmode/size (.b vs .l, D1 -> D4)");
+        assert_decodes_differently(
+            0x8801,
+            0x8901,
+            "OR direction (<ea>,Dn opmode 0 vs Dn,<ea> opmode 4)",
+        );
+        assert_decodes_differently(
+            0x8801,
+            0xC801,
+            "the nibble separating OR (0x8) from AND (0xC)",
+        );
     }
 
     // --- L4: EOR.b / EOR.w / EOR.l, `Dn,<ea>` ONLY — bitwise `a ^ b` with the MOVE flag shape (N = msb /
@@ -15204,17 +15273,19 @@ mod tests {
             0xB59C,    // EOR.l D2,(A4)+
             0xBBA2,    // EOR.l D5,-(A2)
         ] {
-            let regs = Registers {
-                d: [0; 8],
-                a: [0; 7],
-                usp: 0,
-                ssp: 2048,
-                pc: 3072,
-                sr: 0x2700,
-                prefetch: [op, 0],
-            };
-            let _ = decode(&regs);
+            assert_selects_an_implemented_arm(op, "EOR");
         }
+        // "sizes": one source (D2), one destination (D4), three opmodes, three recipes.
+        assert_decodes_differently(0xB504, 0xB544, "EOR opmode/size (.b vs .w, D2 -> D4)");
+        assert_decodes_differently(0xB504, 0xB584, "EOR opmode/size (.b vs .l, D2 -> D4)");
+        // "classifies": EOR has no <ea>,Dn form — opmode 0 of the same nibble over the same EA is CMP,
+        // decoded by the `cmp_class` arm that runs FIRST. If that ordering ever inverted, this is where it
+        // shows.
+        assert_decodes_differently(
+            0xB504,
+            0xB404,
+            "opmode 4 (EOR.b) vs opmode 0 (CMP.b), same nibble/EA",
+        );
     }
 
     /// K3 — the divide-by-zero trap (vector 5) is a **group-2** exception: the stacked PC is the address
