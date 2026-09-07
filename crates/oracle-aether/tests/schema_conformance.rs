@@ -48,6 +48,33 @@ const ENV_CONTRACT_REPO: &str = "AETHER_CONTRACT_REPO";
 /// onto a checkout and read.
 const CONTRACT_REL: &str = "contract/schema/bus-protocol.schema.json";
 
+/// Write a line where libtest's output capture cannot swallow it.
+///
+/// **The house fd-2 helper, arriving in the file the house cited as its model.** `c301f89` measured that
+/// `println!`/`eprintln!` route through `std::io::_print`/`_eprint`, which libtest redirects per test
+/// thread, so a skip printed with them is invisible in a plain `cargo test` and shows only under
+/// `--nocapture`; it added this helper to four files. `mcp_tool_sweep.rs` names *this* file as the
+/// exemplar it follows — and this file was the one the sweep missed. Measured here before the fix, with
+/// neither variable set, which is the branch **every** landing takes because no runner sets either:
+///
+/// ```text
+/// running 1 test
+/// test the_pin_is_confirmed_against_the_contract_repo_or_says_it_could_not ... ok
+/// test result: ok. 1 passed; 0 failed; 0 ignored
+/// ```
+///
+/// One row that confirmed nothing against the contract repo, byte-identical in the log to a row that
+/// confirmed everything. *"A green log and an absent run are the same artifact"* (`empyrean`
+/// `contract/SUITE_PATHS.md`, protocol bar 25).
+///
+/// `std::io::stderr()` is the real handle on fd 2 and the capture does not touch it. Skips and refusals
+/// only: the `RESULT ok` announces stay on `eprintln!` by `c301f89`'s own rule, because a run that did
+/// its work is legible from its assertions and a per-test banner in every default run is noise.
+fn loud(msg: String) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
 /// One `pin.<key> = <value>` marker out of [`PROVENANCE`].
 ///
 /// **Missing is loud.** A parser that returned `None` and let the caller shrug would turn "the sidecar
@@ -510,8 +537,10 @@ fn the_pin_is_confirmed_against_the_contract_repo_or_says_it_could_not() {
     }
 
     // Step 3 — nothing named. A loud line in the run's own output, because "a green log and an absent
-    // run are the same artifact" (SUITE_PATHS.md, protocol bar 25).
-    eprintln!(
+    // run are the same artifact" (SUITE_PATHS.md, protocol bar 25). Through `loud` and not `eprintln!`:
+    // see that helper — until it landed here this banner was swallowed by libtest's capture on every
+    // default run, and this is the branch every landing takes.
+    loud(format!(
         "\n=========================================================================\n\
          SKIPPED: the vendored schema's pin was NOT confirmed against the contract repo.\n\
          Consulted, in order, and neither was set:\n  \
@@ -525,7 +554,7 @@ fn the_pin_is_confirmed_against_the_contract_repo_or_says_it_could_not() {
          `the_vendored_schema_is_the_blob_provenance_pins`, which never skips.\n\
          What did NOT run: confirmation that {rev} exists upstream and is merged.\n\
          =========================================================================\n"
-    );
+    ));
 }
 
 // ---------------------------------------------------------------------------------------------------
