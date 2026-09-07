@@ -13,10 +13,15 @@
 //!
 //! 1. **Zero panics.** Any panic is a byte a ROM could feed us that kills the process.
 //! 2. **A refusal is never a degradation.** An encoding the core does not serve must latch a `Z80Fault`
-//!    naming its exact bytes — never quietly execute as something else.
+//!    naming its exact bytes — never quietly execute as something else. All 560 are now *implemented* and
+//!    corpus-graded, so this branch currently has nothing to catch; it stays because it is what makes a
+//!    future deferral visible here instead of silent.
 //! 3. **A refusal does not corrupt the machine.** `PC` is rewound to the instruction's first byte, every
 //!    other architectural register is byte-identical to before the step (except `R`, whose M1 refresh bumps
 //!    really happened), and not one byte of RAM moved.
+//!
+//! The latch/diagnostic behaviour of `Z80Fault` itself lives in `z80/mod.rs`'s own test module, where a
+//! refusal can be raised directly — no guest byte can produce one any more.
 //!
 //! `catch_unwind` here is the **detector**, not the containment. The containment is structural: the decode
 //! arms refuse instead of panicking. That distinction is the whole design — a `catch_unwind` wrapper in the
@@ -33,16 +38,18 @@ const ENTRY: u16 = 0x0100;
 /// different address from `IX` and a stray write would be visible.
 const DISPLACEMENT: u8 = 0x05;
 
-/// **How many encodings this core does not serve.** Derived from the Z80 instruction set's own structure,
-/// not copied from the implementation's match arms:
+/// **How many encodings this core does not serve.** It started at 560 — the three classes three
+/// `unimplemented!()` sites covered — and each landing class dropped it, the drop being that class's proof
+/// of arrival:
 ///
 /// - ~~**20** undocumented `ED` mirrors~~ — **LANDED**, graded 20/20 against the corpus.
 /// - ~~**46 × 2** `IXH`/`IXL` half-register forms~~ — **LANDED**, graded 92/92 against the corpus.
-/// - **224 × 2** `DDCB`/`FDCB` register-copy variants — every op byte whose low 3 bits are not `6`
-///   (`256 - 32`), under each of the two prefixes.
+/// - ~~**224 × 2** `DDCB`/`FDCB` register-copy variants~~ — **LANDED**, graded 448/448 against the corpus.
 ///
-/// **Each stage-2 class that lands drops this number**, and the drop is the class's proof of arrival.
-const EXPECTED_UNSERVED: usize = 2 * 224;
+/// **It is now zero**, which is a strictly stronger statement than "nothing panics": every encoding in the
+/// base table and all five prefixed tables *executes*. Should a future slice defer an encoding again, it
+/// raises this number and lands in `Z80::refuse` — never in a panic.
+const EXPECTED_UNSERVED: usize = 0;
 
 /// A flat 64 KiB Z80 address space plus an open-bus port model — the same isolation the SST-z80 runner
 /// uses (a bare `Z80` over a flat bus, never `System`), so this cannot touch any frozen currency.
@@ -289,6 +296,11 @@ fn no_guest_byte_panics_the_z80_core() {
          {by_class:?}"
     );
     assert_eq!(
+        executed,
+        encodings.len(),
+        "with EXPECTED_UNSERVED at zero, every encoding must EXECUTE — not merely fail to panic"
+    );
+    assert_eq!(
         executed + refused.len(),
         encodings.len(),
         "every encoding must either execute or refuse — there is no third outcome"
@@ -337,74 +349,4 @@ fn prefix_chains_never_panic() {
         panicked.len()
     );
     eprintln!("Z80 CONTAINMENT: {legs} prefix chains stepped, 0 panicked");
-}
-
-/// A refusal is **latched**: once the Z80 has refused a byte it stays stopped rather than wandering into
-/// the next instruction, and it does not vector an interrupt into a program it has already said it cannot
-/// run. This is the half that makes the stop *defined* rather than merely non-fatal.
-#[test]
-fn a_refusal_latches_and_the_z80_stays_stopped() {
-    let mut z80 = Z80::from_regs(&seed_regs());
-    let mut bus = FlatBus::new();
-    // `DD CB 05 00` (`RLC (IX+5),B`, a register-copy variant) followed by `3C` (`INC A`) — if the stop
-    // leaked, A would move.
-    bus.ram[ENTRY as usize] = 0xDD;
-    bus.ram[ENTRY as usize + 1] = 0xCB;
-    bus.ram[ENTRY as usize + 2] = DISPLACEMENT;
-    bus.ram[ENTRY as usize + 3] = 0x00;
-    bus.ram[ENTRY as usize + 4] = 0x3C;
-
-    let t = z80.step(&mut bus);
-    let fault = z80.fault().expect("DD CB __ 00 is refused");
-    assert!(
-        t > 0,
-        "a refusal must still burn T-states so catch-up loops terminate"
-    );
-    assert_eq!(fault.pc, ENTRY);
-
-    let stopped = z80.regs();
-    for _ in 0..64 {
-        let t = z80.step(&mut bus);
-        assert!(t > 0, "a stopped Z80 must still advance the clock");
-    }
-    assert_eq!(
-        z80.regs(),
-        stopped,
-        "a stopped Z80 must execute nothing — not the next instruction, not anything"
-    );
-
-    // Even with /INT asserted and interrupts enabled, a stopped core does not vector.
-    z80.set_int_line(true);
-    z80.step(&mut bus);
-    assert_eq!(
-        z80.regs(),
-        stopped,
-        "a stopped Z80 must not vector an interrupt into a program it refused to run"
-    );
-
-    // A hardware /RESET is the one thing that clears it: the 68000 is about to upload a new program.
-    z80.reset();
-    assert!(z80.fault().is_none(), "/RESET clears the latched refusal");
-}
-
-/// The fault's `Display` is the human-readable diagnostic the surrounding layers surface. It must name the
-/// bytes and the address — the whole point is that a human reading a log learns *which byte*.
-#[test]
-fn the_diagnostic_names_the_bytes_and_the_address() {
-    let mut z80 = Z80::from_regs(&seed_regs());
-    let mut bus = FlatBus::new();
-    bus.ram[ENTRY as usize] = 0xDD;
-    bus.ram[ENTRY as usize + 1] = 0xCB;
-    bus.ram[ENTRY as usize + 2] = DISPLACEMENT;
-    bus.ram[ENTRY as usize + 3] = 0x00; // RLC (IX+d),B — a register-copy variant
-    z80.step(&mut bus);
-    let text = z80.fault().expect("DD CB __ 00 is refused").to_string();
-    assert!(
-        text.contains("DD CB 05 00"),
-        "diagnostic must name the bytes: {text}"
-    );
-    assert!(
-        text.contains("$0100"),
-        "diagnostic must name the address: {text}"
-    );
 }

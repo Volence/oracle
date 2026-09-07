@@ -7,8 +7,10 @@
 //! except the four prefix bytes `cb`/`dd`/`ed`/`fd`), the **full CB-prefixed group** (`"cb 00"`-`"cb ff"`:
 //! the rotates/shifts, `BIT`/`RES`/`SET`), PLUS the **documented ED-prefixed subset** (`"ed 40"` … : the
 //! 16-bit arithmetic/loads, `NEG`, `RETN`/`RETI`, `IM`, the `I`/`R` loads, `RRD`/`RLD`, `IN r,(C)`/
-//! `OUT (C),r`, and the block transfer/search/I/O groups — see `ED_OPCODES`) and the **20 undocumented ED
-//! mirrors** (see `ED_UNDOC_OPCODES`).
+//! `OUT (C),r`, and the block transfer/search/I/O groups — see `ED_OPCODES`), the **20 undocumented ED
+//! mirrors** (see `ED_UNDOC_OPCODES`), the `DD`/`FD` index-register tables including the **undocumented
+//! IXH/IXL half-register forms** (see `DDFD_IXH_OPCODES`), and the **whole** `DDCB`/`FDCB` group,
+//! documented and register-copy alike. That is every file in the corpus at the pin: 1268 of them.
 //!
 //! **Structurally isolated** (ZC10): it instantiates a bare [`Z80`] + a flat 64 KiB [`Z80TestBus`] and **never**
 //! [`System`](oracle_core::system::System), so it cannot touch any frozen currency — identically to how the
@@ -47,8 +49,9 @@ const UNDOC_FLAGS: u8 = 0b0010_1000;
 /// `RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL`, `BIT b`, `RES b`, `SET b`, across all eight targets), the
 /// **documented `ED` subset** (see `ED_OPCODES`), the **undocumented `ED` mirrors** (see
 /// `ED_UNDOC_OPCODES`), the **documented `DD`/`FD` base ops** (see `DDFD_OPCODES`), and the **documented
-/// `DDCB`/`FDCB` bit/shift group** (see `DDCB_OPCODES`). Still unfetched: the `IXH`/`IXL` half-register
-/// forms and the `DDCB`/`FDCB` register-copy variants.
+/// `DDCB`/`FDCB` bit/shift group** (see `DDCB_OPCODES`), plus the **undocumented `IXH`/`IXL`
+/// half-register forms** (see `DDFD_IXH_OPCODES`) and the **undocumented `DDCB`/`FDCB` register-copy
+/// variants** (derived inline below). Nothing in the corpus is left unfetched.
 fn opcode_files() -> Vec<String> {
     let base = (0x00u16..=0xFF)
         .filter(|op| !matches!(op, 0xCB | 0xDD | 0xED | 0xFD))
@@ -62,6 +65,14 @@ fn opcode_files() -> Vec<String> {
     let fd_ixh = DDFD_IXH_OPCODES.iter().map(|op| format!("fd {op:02x}"));
     let ddcb = DDCB_OPCODES.iter().map(|op| format!("dd cb __ {op:02x}"));
     let fdcb = DDCB_OPCODES.iter().map(|op| format!("fd cb __ {op:02x}"));
+    // The 224 undocumented register-copy variants: DERIVED from the encoding rule (low 3 bits != 6 = the
+    // op byte names a B..A register that also receives the result), not transcribed as 224 literals.
+    let ddcb_undoc = (0x00u16..=0xFF)
+        .filter(|op| op & 7 != 6)
+        .map(|op| format!("dd cb __ {op:02x}"));
+    let fdcb_undoc = (0x00u16..=0xFF)
+        .filter(|op| op & 7 != 6)
+        .map(|op| format!("fd cb __ {op:02x}"));
     base.chain(cb)
         .chain(ed)
         .chain(ed_undoc)
@@ -71,6 +82,8 @@ fn opcode_files() -> Vec<String> {
         .chain(fd_ixh)
         .chain(ddcb)
         .chain(fdcb)
+        .chain(ddcb_undoc)
+        .chain(fdcb_undoc)
         .collect()
 }
 
@@ -132,7 +145,8 @@ const DDFD_IXH_OPCODES: [u8; 46] = [
 /// literal displacement-slot placeholder in the corpus's filenames). Only the **documented** forms — op
 /// bytes whose low 3 bits `== 6` (the `(HL)`-slot encoding, here the indexed address): the rotates/shifts
 /// `RLC`/`RRC`/`RL`/`RR`/`SLA`/`SRA`/`SLL`/`SRL` `(IX+d)`, `BIT b,(IX+d)`, `RES b,(IX+d)`, `SET b,(IX+d)`.
-/// The undocumented register-copy variants (low 3 bits `!= 6`) are the ZEXALL follow-up.
+/// The undocumented register-copy variants (low 3 bits `!= 6`) are derived inline in `opcode_files`
+/// rather than listed here — 224 literals would be a transcription of the very rule they encode.
 const DDCB_OPCODES: [u8; 32] = [
     0x06, 0x0e, 0x16, 0x1e, 0x26, 0x2e, 0x36, 0x3e, //
     0x46, 0x4e, 0x56, 0x5e, 0x66, 0x6e, 0x76, 0x7e, //
@@ -369,15 +383,18 @@ fn z80_matches_singlesteptests() {
     }
     // 252 base-table files + 256 CB-prefixed files + 58 documented ED-prefixed files + 20 undocumented
     // ED mirrors + 2×39 documented DD/FD-prefixed base files + 2×46 undocumented IXH/IXL half-register
-    // files + 2×32 documented DDCB/FDCB-prefixed files = 820 opcode files × 1000 cases.
+    // files + 2×32 documented DDCB/FDCB-prefixed files + 2×224 undocumented DDCB/FDCB register-copy
+    // variants = 1268 opcode files × 1000 cases — the WHOLE corpus at the pin, documented and
+    // undocumented alike.
     // The base table is the 256 opcodes minus the four prefix bytes 0xCB/0xDD/0xED/0xFD; the CB group is
     // "cb 00".."cb ff"; the ED subset is the 58 documented ED opcodes (see `ED_OPCODES`); the DD/FD subset is
     // the 39 documented index-register base opcodes (see `DDFD_OPCODES`); the DDCB/FDCB subset is the 32
     // documented index-register bit/shift op bytes (see `DDCB_OPCODES`) — each fetched under both the "dd"
     // (IX) and "fd" (IY) prefixes.
     assert_eq!(
-        total, 820_000,
-        "expected 820000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + undocumented ED mirrors \
-         20k + documented DD/FD base 78k + undocumented IXH/IXL 92k + documented DDCB/FDCB 64k)"
+        total, 1_268_000,
+        "expected 1268000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + undocumented ED \
+         mirrors 20k + documented DD/FD base 78k + undocumented IXH/IXL 92k + documented DDCB/FDCB 64k + \
+         undocumented DDCB/FDCB register-copy 448k)"
     );
 }
