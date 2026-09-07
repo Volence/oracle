@@ -10,7 +10,7 @@ Authority: owner, ruled 2026-09-07, relayed by empyrean-c0 and verified firsthan
 and his words are in the blob: *"I think it should have one right?"* and *"I think we draft it and run on
 oracle, aurora, and sigil for now"*. **This lane is the pilot; sigil then aurora run it next.**
 
-⚠ **THE REVISION THE PACKET CITES IS aeon `8def2240`** (`docs/superpowers/LENS_PROTOCOL.md`), not the
+⚠ **THE REVISION THE PACKET CITES IS aeon `82540fab`** (`8def2240` carried an overruled rule-five clause) (`docs/superpowers/LENS_PROTOCOL.md`), not the
 empyrean amendment: Roster C is now IN the protocol, and the protocol is aeon's file. The empyrean chain
 is the drafting history — `97cd725` ruling text, `6a12740` this lane's four pre-run gaps, `3ad431f` the
 fifth rule — and piloting from any of them re-inherits whatever was added after it.
@@ -155,24 +155,28 @@ state dir. ⚑ **Checked here: this repo's shared appendables are `docs/lane-log
 run dirs, which are timestamped per run and not a trend. No unwritered ledger found — but the check is
 recorded because "we have none" and "we did not look" are the same artifact.**
 
-**RULE FIVE'S PROOF OBLIGATION, AS RULED. ⚑ THIS SENTENCE GOES VERBATIM INTO EACH SEAT'S BRIEF, and the
-reason is a hazard rather than tidiness.** The protocol at aeon `8def2240` still carries the *overruled*
-wording (*"proves once that the unforced case REFUSES"*), **seats read the protocol**, and a seat holding
-a chain it does not own could go hunting for a refusal that cannot exist — or **manufacture one by editing
-the app**, which is a seat changing production code to satisfy its own gate. That is aurora's finding, and
-it is the change-the-subject-to-suit-the-instrument bar with a seat's hands on it. Until aeon's corrected
-SHA arrives the brief carries the ruled text and **the brief wins over the protocol on this one clause**,
-said explicitly so a seat meeting both knows which:
+**RULE FIVE'S PROOF OBLIGATION — now IN the protocol, so no seat-brief workaround is needed.** aeon
+**`82540fab`** supersedes `8def2240` as the revision this pilot cites: verified here as a reachable
+ancestor of their `origin/master`, the overruled *"unforced case REFUSES"* clause **gone** (0 hits) and
+*"WHICH VALUE WAS IN EFFECT"* **present**, against a working positive control. The verbatim-sentence
+workaround this charter carried for one revision is retired; **the reason it existed is kept**, because it
+is the durable half: a seat holding a chain it does not own, told to prove a refusal, can **manufacture one
+by editing the app** — a seat changing production code to satisfy its own gate. ⚑ **The weaker-LOOKING
+clause was the safer one**, which is why the correction was worth chasing.
 
-> *"terminate every first-set-wins chain at a seat-private value set explicitly and prove once which value
-> was in effect, read back from what the run prints or writes; on a green run that is usually where its
-> artifacts landed, present under the seat's own location and absent from the shared default; a
-> demonstrated refusal of the unforced case is one such proof, not the only one."*
+⚑ **AND THE PROOF IS TWO-SIDED — aurora's reading, and the second half is the load-bearing one**
+(aurora `review/aurora-lens-sweep` `b00c22bd`; theirs, passed on, not re-derived here). *"Where its
+artifacts landed"* means **present under the seat's own location AND absent from the shared default.**
+Only the **absent** half catches a rig that wrote to **both** places — which is exactly what a silent
+fallback does. **A forced value read back from a log line is one-sided: the rig describing itself.**
 
-**Our launch-helper refusal proofs meet this as written** — the widening adds a route where refusal is
-unavailable; it does not retire the stronger form where it is. ⚑ **And note which way the danger runs: the
-weaker-LOOKING clause is the safer one.** "Prove a refusal" reads as the more rigorous demand and is
-exactly the one that can push a seat into editing the subject; "prove which value was in effect" cannot.
+| what | the proof this seat owes |
+|---|---|
+| the **display** | the seat's window on its own Xvfb **and nothing on `:0`** — two-sided |
+| the **socket** | yields an error and no artifact, so the printed form stands — one-sided, and that is legitimate here |
+
+**Each seat states WHICH of the two forms it used**, so a reader can tell a two-sided proof from a
+one-sided one at a glance rather than by re-deriving it.
 
 - **Every finding ships a screenshot, or the diagnostic text verbatim. No evidence, no finding.**
 - **A clean task still ships its step count with a screenshot per step**, so a clean verdict is
