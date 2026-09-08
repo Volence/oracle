@@ -67,6 +67,9 @@ mod palette;
 mod planes;
 mod preview;
 mod report;
+// **Opening a ROM without leaving the window** — a browsable listing, a pasted path and a dropped file,
+// all through one pause/reload/restore sequence. A CONTROL, not a `ui::Tab`.
+mod rom_open;
 mod screen;
 mod screen_pick;
 // Which archetype a click places, chosen from a list rather than cycled to, and what the window did to
@@ -430,6 +433,11 @@ struct Loop {
     /// (`crate::palette`). A CONTROL, not a [`ui::Tab`]: things you *do* are controls, and it stores
     /// nothing across launches.
     palette: palette::Palette,
+    /// **The ROM-open control** (`crate::rom_open`) — the browsable listing, the pasted path and the
+    /// dropped file, all through one pause/reload/restore sequence. A CONTROL for `palette`'s reason, and
+    /// persisted for its reason too: a folder this window happened to wander into last session is not
+    /// where the next session's cartridge lives.
+    rom_open: rom_open::RomOpen,
     /// The three stopping tabs' boxes and their last answers. **What is armed is not here** — it is the
     /// `Host`'s, read every repaint (R2).
     stopping: stopping::Panel,
@@ -661,6 +669,7 @@ impl Loop {
             paused: false,
             transport: ui::Transport::default(),
             palette: palette::Palette::default(),
+            rom_open: rom_open::RomOpen::default(),
             screen: screen_pick::Panel::default(),
             planes: planes::Panel::default(),
             effects: effects::Panel::default(),
@@ -1088,6 +1097,7 @@ impl Loop {
             stopping,
             transport,
             palette,
+            rom_open,
             screen: screen_panel,
             planes: planes_panel,
             effects: effects_panel,
@@ -1101,6 +1111,16 @@ impl Loop {
         // keystroke does not also reach a text field that happens to be focused.
         let ctx = root.ctx().clone();
         palette.handle_shortcut(&ctx);
+        // ⚑ The ROM-open chord, consumed for the palette's two reasons: the keystroke must not also reach
+        // a focused text field, and `input::poll_machine_keys` must not read a digit typed into that
+        // control's path box as a save-slot change.
+        rom_open.handle_shortcut(&ctx);
+        // ⚑ **Files dropped on this window**, read here and decided by a pure function
+        // (`rom_open::decide_drop`) — `egui-winit` maps `WindowEvent::DroppedFile` into
+        // `RawInput::dropped_files` for free, which is the half of `docs/2026-08-28-rom-open.md` §4 that
+        // was minifb-specific. Read before the bar draws so a dropped image is acted on in the frame it
+        // arrived rather than the one after.
+        rom_open.handle_drops(&ctx, machine, bus);
         egui::Panel::top("bar").show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.strong(ui::APP_NAME);
@@ -1154,6 +1174,27 @@ impl Loop {
                     palette.open = !palette.open;
                 }
                 drew.push(screen::Run::after_sep(palette::PALETTE_LABEL));
+                // ⚑ A THIRD CONTROL, beside the palette because it is the same kind of thing: a gesture
+                // you invoke, use and dismiss. Before this, changing the cartridge from inside the window
+                // meant pausing, typing `emulator/reload_rom` into the palette and typing a JSON object —
+                // so a client on the bus could change the owner's game and the owner could not. See
+                // `crate::rom_open`.
+                if ui
+                    .button(rom_open::OPEN_LABEL)
+                    .on_hover_text(format!(
+                        "{}: list a folder, paste a path, or drop a file on this window. The machine is \
+                         paused for the swap and put back the way it was found.",
+                        rom_open::SHORTCUT_LABEL
+                    ))
+                    .clicked()
+                {
+                    rom_open.open = !rom_open.open;
+                    if rom_open.open {
+                        // A fresh open lists the running cartridge's folder again — same as the chord.
+                        rom_open.attempted = false;
+                    }
+                }
+                drew.push(screen::Run::label(rom_open::OPEN_LABEL));
                 ui.separator();
                 // ⚑ **The machine changed under you.** Ahead of the status line rather than after it:
                 // the status is a running commentary a reader learns to skip, and this is a one-off fact
@@ -1215,6 +1256,10 @@ impl Loop {
         // own `Host::call` needs. Its runs join the bar's: a modal covering this window whose text a
         // client reading `emulator/screen_text` could not see would be a hole in the readback.
         drew.append(&mut palette.show(&ctx, machine, bus));
+        // Drawn beside the palette and for its reasons: after the dock so it floats over the panels, and
+        // outside the `CentralPanel` closure because that closure holds the `machine`/`bus` borrows this
+        // control's own `Host::call` needs. Its runs join the bar's for the same readback reason.
+        drew.append(&mut rom_open.show(&ctx, machine, bus));
         drew
     }
 }
@@ -2096,6 +2141,18 @@ mod loop_tests {
                     && line.contains("rebases"),
                 "{what}: the line must be the WHOLE bar — name, transport, and the loop's own status \
                  string: {line:?}"
+            );
+            // ⚑ **The two invoked controls are ON the bar, and reachable by a client reading it.**
+            // Asserted here for the reason immediately below: a unit test on `rom_open::OPEN_LABEL`
+            // proves the constant, not that `build_ui` drew a button with it or that the readback
+            // carried it — and this is the one test that drives the real `build_ui`. Spelled from the
+            // constants the bar draws with, so a rewording moves this assertion with it.
+            assert!(
+                line.contains(crate::palette::PALETTE_LABEL)
+                    && line.contains(crate::rom_open::OPEN_LABEL),
+                "{what}: the bar must offer both invoked controls, and `emulator/screen_text` must \
+                 carry them — a control a person can see and a client cannot read is a hole in the \
+                 readback: {line:?}"
             );
             // ⚑ **The build identity reaches the wire** (`F-STALE-BINARY-SILENT`). Asserted here, in the
             // one test that drives the real `build_ui` and reads the answer back through the bus, because

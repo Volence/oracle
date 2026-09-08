@@ -312,7 +312,11 @@ mod drain;
 pub(crate) use oracle_frontend::icon;
 // "Open ROM..." — the browsable listing behind the palette's ROM picker, so a different game can be loaded
 // without leaving the window. Model only; the swap itself is in the run loop, beside the F5 reload it shares.
-mod rom_browser;
+// ⚑ **Now this crate's `lib`, not a module of this binary** — `oracle-player`'s own ROM-open control lists
+// the same folder through the same model, and a second implementation would be a second answer to *which
+// cartridge is running*. Reached here exactly as `icon` above is, so every `rom_browser::` below is
+// unchanged.
+pub(crate) use oracle_frontend::rom_browser;
 
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 use oracle_core::bus::Fanout;
@@ -4129,5 +4133,110 @@ mod tests {
     #[test]
     fn start_audio_never_panics() {
         let _ = start_audio(None);
+    }
+
+    /// **The `[loaded]` marker is painted but never filtered on** (F-PICKER-FILTER-MARKER) — the seam
+    /// between [`rom_browser`] and this window's picker, exercised end to end: a real listing, rows built
+    /// the way [`show_rom_picker`] builds them, the picker's own `visible()` with a filter typed against
+    /// the marker.
+    ///
+    /// The filter is derived from the marker itself — its letters in order, minus any that also occur in
+    /// the loaded ROM's label — so it is a subsequence of `label + marker` and of nothing in `label`. With
+    /// the marker baked into the label (the defect), the loaded row survived a filter every other row
+    /// failed; now no row matches, which is what a person who typed those letters asked for.
+    ///
+    /// ⚑ **It lives here rather than in `rom_browser`'s own test module, and the move was forced by
+    /// PLAYER-ROM-OPEN**: that module is now `oracle-frontend`'s *lib*, so it can no longer see
+    /// `crate::palette` or `crate::commands` — which are this binary's. The seam is between the shared
+    /// model and *this window's* picker, so it belongs on this side of that line. Nothing about what it
+    /// asserts changed.
+    #[test]
+    fn the_loaded_marker_is_painted_but_not_filtered_on() {
+        use palette::{Picker, PickerItem};
+        use rom_browser::{picker_label, picker_marker, scan, LOADED_MARKER};
+
+        let dir = std::env::temp_dir().join(format!(
+            "oracle-rom-marker-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let loaded = dir.join("s4.bin");
+        std::fs::write(&loaded, [0u8; 4]).unwrap();
+        std::fs::write(dir.join("s4other.bin"), [0u8; 4]).unwrap();
+
+        let entries = scan(&dir).unwrap();
+        let cur = std::fs::canonicalize(&loaded).ok();
+        let items: Vec<PickerItem> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| PickerItem {
+                label: e.label.clone(),
+                marker: picker_marker(e, cur.as_deref()),
+                cmd: commands::Cmd::RomEntry(i),
+            })
+            .collect();
+        let marked: Vec<&PickerItem> = items.iter().filter(|it| it.marker.is_some()).collect();
+        assert_eq!(
+            marked.len(),
+            1,
+            "COULD NOT MEASURE: exactly one row must carry the marker, got {marked:?}"
+        );
+        let loaded_item = marked[0];
+        assert_eq!(loaded_item.label, "s4.bin");
+        // The painted row is the same spelling `picker_label` gives — one composition, two doors.
+        let loaded_entry = entries.iter().find(|e| e.label == "s4.bin").unwrap();
+        assert_eq!(
+            loaded_item.display(),
+            picker_label(loaded_entry, cur.as_deref()),
+            "PickerItem::display and picker_label disagree on the painted row"
+        );
+        assert_eq!(loaded_item.display(), "s4.bin   [loaded]");
+
+        // A filter spelled from the marker alone.
+        let query: String = LOADED_MARKER
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic() && !loaded_item.label.contains(*c))
+            .collect();
+        assert!(
+            query.len() >= 2 && commands::subseq_match(&query, &loaded_item.display()),
+            "COULD NOT MEASURE: {query:?} is not a subsequence of the painted row {:?}",
+            loaded_item.display()
+        );
+        assert!(
+            !commands::subseq_match(&query, &loaded_item.label),
+            "COULD NOT MEASURE: {query:?} matches the bare label too, so the test cannot tell"
+        );
+
+        let pk = Picker {
+            title: "OPEN ROM".into(),
+            items,
+            sel: 0,
+            query,
+        };
+        let visible: Vec<&str> = pk
+            .visible()
+            .into_iter()
+            .map(|i| pk.items[i].label.as_str())
+            .collect();
+        assert_eq!(
+            visible,
+            Vec::<&str>::new(),
+            "the loaded ROM survived a filter that only matches its marker"
+        );
+        // And a filter against the labels still finds them, marked and unmarked alike — filtering is not
+        // simply broken, and the marker does not cost the loaded row its own name.
+        let pk = Picker {
+            query: "s4".into(),
+            ..pk
+        };
+        let visible: Vec<&str> = pk
+            .visible()
+            .into_iter()
+            .map(|i| pk.items[i].label.as_str())
+            .collect();
+        assert_eq!(visible, vec!["s4.bin", "s4other.bin"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
