@@ -3887,6 +3887,47 @@ mod tests {
         );
     }
 
+    /// **C2** — condition (i) again, but with the burst that actually occurs: `now_mclk` is frozen for a
+    /// whole 68000 instruction, and a `movem.l dN-dM,(a6)` at `$C00000` drives many data-port writes at
+    /// that one instant. The accumulator must gain each forced drain ONCE. Before the fix every write
+    /// re-measured its wait from the frozen instant, so the accumulator grew by the whole elapsed span
+    /// each time and the burst was billed roughly quadratically in its length.
+    ///
+    /// Expected charge derived from source constants only:
+    /// `MCLK_PER_LINE` = 3420; `Vdp::slots_per_line` on a **blanked** line (mclk on a vblank line) in
+    /// **H32** (`vdp_setup_vram_write` never touches reg 12) = 167; `Vdp::entry_drain_cost` bills a VRAM
+    /// word 2 slots → `COST = 2 * 3420 / 167 = 40` mclk per drain, `div_ceil(40, MCLK_PER_CPU_CYCLE) = 6`
+    /// CPU cycles per extended access. Eight writes = four free + four forced drains = **24** cycles;
+    /// the pre-fix code billed 6 + 12 + 18 + 23 = 59.
+    #[test]
+    fn a_burst_of_data_writes_in_one_instruction_bills_each_drain_once() {
+        const SLOTS_PER_LINE_H32_BLANKED: u64 = 167;
+        const VRAM_SLOTS_PER_WORD: u64 = 2;
+        let cost = VRAM_SLOTS_PER_WORD * crate::vdp::MCLK_PER_LINE / SLOTS_PER_LINE_H32_BLANKED;
+        assert_eq!(cost, 40, "closed-form blanked drain cost, VRAM word, H32");
+        let per_access = cost.div_ceil(crate::system::MCLK_PER_CPU_CYCLE) as u32;
+
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE + 900; // a vblank line → blanked, flat slot rate
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        vdp_setup_vram_write(&mut bus);
+        assert_eq!(bus.stall_cycles(), 0, "control-port setup never stalls");
+
+        // One instruction's worth of writes: `now_mclk` never moves, because only `System::run_until`
+        // advances it — and it does so after the instruction retires, not between its bus accesses.
+        const WRITES: u32 = 8;
+        for _ in 0..WRITES {
+            bus.write16(0xC0_0000, 5, 0xBEEF);
+        }
+        let forced_drains = WRITES - 4; // the first four fill the empty FIFO for free
+        assert_eq!(
+            bus.stall_cycles(),
+            forced_drains * per_access,
+            "an {WRITES}-word burst forces {forced_drains} drains and must be billed for exactly those"
+        );
+    }
+
     /// Condition (ii): a data-port read waiting for the write FIFO to drain.
     #[test]
     fn stall_accumulates_a_read_waiting_for_the_write_fifo() {
