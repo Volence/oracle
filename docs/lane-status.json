@@ -1,5 +1,5 @@
 {
-  "focus": "The four fixes the review said to do first are done and pushed. Two criticals it ranked lower are still open.",
+  "focus": "Fixed the plane viewer you reported -- planes A and B draw again. Relaunch your window to see it.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -15,6 +15,14 @@
   ],
   "nextBoundary": "Now. Everything is pushed and nothing is running. Next is either the usability pilot or the two remaining criticals.",
   "queue": [
+    {
+      "id": "F-SCREEN-PICTURE-SILENT",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The Screen tab has the same silent give-up the plane viewer just had: if the pane is too narrow to draw the picture it shows nothing and says nothing. Found while fixing the plane one; left alone deliberately so the fix you asked for stayed one change."
+    },
     {
       "id": "F-Z80-PANICS-UNCONTAINED",
       "state": "blocked",
@@ -168,7 +176,7 @@
       "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
-  "awaiting": "Which next, given you are near your weekly limit: the usability pilot (two reviewers, an hour or so of agent time), the two remaining criticals (the video double-charge and the wasted replay render), or stop here. The desktop shortcut is done and ready whenever you want to try it.",
+  "awaiting": "Relaunch your debug window (the new desktop shortcut does it) to see planes A and B drawing, and that also closes the two things still waiting on a relaunch. Then: the usability pilot, or the two remaining criticals, or stop -- your call given the weekly limit.",
   "atBoundary": true,
-  "updatedAt": "2026-09-08T03:04:30Z"
+  "updatedAt": "2026-09-08T16:13:29Z"
 }
