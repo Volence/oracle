@@ -1,5 +1,5 @@
 {
-  "focus": "Fixed the plane viewer you reported -- planes A and B draw again. Relaunch your window to see it.",
+  "focus": "Stopped for your user switch. Everything is pushed; nothing is running or half-finished.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -13,7 +13,7 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "Now. Everything is pushed and nothing is running. Next is either the usability pilot or the two remaining criticals.",
+  "nextBoundary": "Now. Nothing running, nothing uncommitted, main in sync with origin.",
   "queue": [
     {
       "id": "F-SCREEN-PICTURE-SILENT",
@@ -176,7 +176,7 @@
       "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
-  "awaiting": "Relaunch your debug window (the new desktop shortcut does it) to see planes A and B drawing, and that also closes the two things still waiting on a relaunch. Then: the usability pilot, or the two remaining criticals, or stop -- your call given the weekly limit.",
+  "awaiting": "Stopped for your user switch at 99% -- nothing needed from you to resume. Nothing was in flight, so nothing was lost. When you are back: relaunch the debug window to see planes A and B drawing again (the new desktop shortcut does it, and that also closes the two things waiting on a relaunch). Then your call between the usability pilot, the two remaining criticals, or leaving it. Still open for you: the Pacing A/B (d-39) and the frozen fixtures (d-40, hold recommended).",
   "atBoundary": true,
-  "updatedAt": "2026-09-08T16:13:29Z"
+  "updatedAt": "2026-09-08T18:23:22Z"
 }
