@@ -1325,95 +1325,15 @@ impl Panels<'_> {
             },
         ];
 
-        // A narrow pane cannot carry a column of facts and a plane side by side, so below this width the
-        // facts go under the picture instead of squeezing it.
-        let side_by_side = ui.available_width() >= 560.0;
         // Cloned rather than borrowed because `side` is a closure and `plane_picture` below wants the
         // panel mutably. Four `String`s on the repaints where a reading is standing, against the six
         // `format!`s the facts above already cost every repaint: the same order of allocation this body
         // has always done, and none of it is the raster the fingerprint exists to skip.
         let reading = self.planes.reading().cloned();
         let side = |ui: &mut egui::Ui| {
-            // **The last click's answer first**, above the standing facts, in its own card. The facts are
-            // context that does not move; this is what the person just asked for, and a standing readout
-            // drawn as loose text under a column of facts reads as one more fact's label. Same card
-            // treatment as the Screen tab's pick readout, for the same reason it has one.
-            if let Some(r) = &reading {
-                card(ui, |ui| {
-                    // The four parts at four weights, handed over by `planes::CellReading` already
-                    // separated. Nothing here recovers structure by looking at the text and nothing here
-                    // decides a colour by looking at it.
-                    ui.label(egui::RichText::new(&r.head).color(ui.visuals().strong_text_color()));
-                    ui.label(
-                        egui::RichText::new(&r.screen)
-                            .text_style(egui::TextStyle::Small)
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                    // The addressing recedes and goes monospace: it is what a reader checks the sentence
-                    // against, in the spelling they would compare with a tool's reply.
-                    ui.label(
-                        egui::RichText::new(&r.detail)
-                            .monospace()
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                    // The loud lines. Coloured on the field, never on the shape of the string, and never
-                    // omitted when present.
-                    for said in &r.unestablished {
-                        ui.add_space(SECTION_GAP);
-                        ui.label(
-                            egui::RichText::new(said)
-                                .text_style(egui::TextStyle::Small)
-                                .color(crate::theme::WARNING),
-                        );
-                    }
-                });
-                ui.add_space(SECTION_GAP);
-            }
-            card(ui, |ui| {
-                fact_grid(ui, "planes_facts", &facts);
-                ui.add_space(SECTION_GAP);
-                let weak = ui.visuals().weak_text_color();
-                for line in [&note.horizontal, &note.vertical] {
-                    ui.label(
-                        egui::RichText::new(line)
-                            .text_style(egui::TextStyle::Small)
-                            .color(weak),
-                    );
-                }
-                // ⚑ The loud line. Never omitted when set, and coloured on the field rather than on the
-                // shape of the string (style page P5).
-                if let Some(said) = &note.unestablished {
-                    ui.add_space(SECTION_GAP);
-                    ui.label(
-                        egui::RichText::new(said)
-                            .text_style(egui::TextStyle::Small)
-                            .color(crate::theme::WARNING),
-                    );
-                }
-                if inp.scrolled {
-                    ui.add_space(SECTION_GAP);
-                    ui.label(
-                        egui::RichText::new(
-                            "The scroll is applied, so this is the region the screen shows of this \
-                             plane alone, with no other plane and no sprites over it.",
-                        )
-                        .text_style(egui::TextStyle::Small)
-                        .color(weak),
-                    );
-                }
-            });
+            plane_side_column(ui, reading.as_ref(), &facts, &note, inp.scrolled)
         };
-        if side_by_side {
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui(egui::vec2(260.0, ui.available_height()), side);
-                ui.add_space(SECTION_GAP);
-                self.plane_picture(ui, &inp);
-            });
-        } else {
-            self.plane_picture(ui, &inp);
-            ui.add_space(SECTION_GAP);
-            side(ui);
-        }
+        plane_split(ui, side, |ui| self.plane_picture(ui, &inp));
     }
 
     /// The plane texture, fitted to whatever room is left, pixel grid preserved.
@@ -1439,7 +1359,13 @@ impl Panels<'_> {
             ppp,
             oracle_frontend::present::Aspect::Square,
         );
+        // ⚑ **Never a silent return.** There is a texture; there is simply nowhere to put it. A panel that
+        // draws nothing and says nothing is indistinguishable from a broken one, and that is exactly how
+        // the `allocate_ui` squeeze fixed in `plane_split` shipped: planes A and B were blank, with no
+        // message anywhere saying why. It is a layout condition rather than an error, so it is said in the
+        // same quiet voice as the "nothing rasterised yet" branch above.
         if size.x <= 0.0 || size.y <= 0.0 {
+            ui.centered_and_justified(|ui| ui.label(NO_ROOM_FOR_PICTURE));
             return;
         }
         let hit = egui::ScrollArea::both()
@@ -2700,6 +2626,128 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         .inner_margin(egui::Margin::same(CARD_PAD))
         .show(ui, add)
         .inner
+}
+
+/// What the Planes tab says when it has a picture and nowhere to put it. See [`Panels::plane_picture`].
+const NO_ROOM_FOR_PICTURE: &str = "no room to draw the plane here; widen the pane";
+
+/// The width the Planes tab's side column is given when it sits beside the picture.
+const PLANE_SIDE_W: f32 = 260.0;
+
+/// Below this, a pane cannot carry a column of facts and a plane side by side, so the facts go under
+/// the picture instead of squeezing it.
+const PLANE_SIDE_BY_SIDE_MIN: f32 = 560.0;
+
+/// **The Planes tab's two-column split**, extracted from [`Panels::planes`] so a headless test can drive
+/// the real arrangement without a `Machine`.
+///
+/// ⚑ The side column is allocated **with its own top-down layout**, not with `allocate_ui`. `allocate_ui`
+/// inherits the caller's layout, and the caller here is `horizontal_top`; a child that inherits a
+/// horizontal layout lays its loose labels out left-to-right, and — because `Ui::wrap_mode` only returns
+/// `Wrap` for a vertical layout or a wrapping horizontal one — it also **does not wrap text**. The side
+/// column's `unestablished` caveat is a paragraph, so under `allocate_ui` it ran off to the right, ate the
+/// row, and left the picture no width at all. That was a shipped defect: planes A and B showed no picture,
+/// while `window` (whose note is two short lines and no caveat) looked fine.
+fn plane_split(
+    ui: &mut egui::Ui,
+    side: impl FnOnce(&mut egui::Ui),
+    picture: impl FnOnce(&mut egui::Ui),
+) {
+    if ui.available_width() < PLANE_SIDE_BY_SIDE_MIN {
+        picture(ui);
+        ui.add_space(SECTION_GAP);
+        side(ui);
+        return;
+    }
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(PLANE_SIDE_W, ui.available_height()),
+            egui::Layout::top_down(egui::Align::Min),
+            side,
+        );
+        ui.add_space(SECTION_GAP);
+        picture(ui);
+    });
+}
+
+/// The Planes tab's facts-and-reading column: the last click's answer, then the standing facts and the
+/// scroll note. Free rather than a closure inside [`Panels::planes`] so the test that measures what it
+/// leaves for the picture draws **this** column and not a stand-in for it.
+fn plane_side_column(
+    ui: &mut egui::Ui,
+    reading: Option<&crate::planes::CellReading>,
+    facts: &[objects::Fact],
+    note: &crate::planes::ScrollNote,
+    scrolled: bool,
+) {
+    // **The last click's answer first**, above the standing facts, in its own card. The facts are
+    // context that does not move; this is what the person just asked for, and a standing readout
+    // drawn as loose text under a column of facts reads as one more fact's label. Same card
+    // treatment as the Screen tab's pick readout, for the same reason it has one.
+    if let Some(r) = reading {
+        card(ui, |ui| {
+            // The four parts at four weights, handed over by `planes::CellReading` already
+            // separated. Nothing here recovers structure by looking at the text and nothing here
+            // decides a colour by looking at it.
+            ui.label(egui::RichText::new(&r.head).color(ui.visuals().strong_text_color()));
+            ui.label(
+                egui::RichText::new(&r.screen)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
+            );
+            // The addressing recedes and goes monospace: it is what a reader checks the sentence
+            // against, in the spelling they would compare with a tool's reply.
+            ui.label(
+                egui::RichText::new(&r.detail)
+                    .monospace()
+                    .color(ui.visuals().weak_text_color()),
+            );
+            // The loud lines. Coloured on the field, never on the shape of the string, and never
+            // omitted when present.
+            for said in &r.unestablished {
+                ui.add_space(SECTION_GAP);
+                ui.label(
+                    egui::RichText::new(said)
+                        .text_style(egui::TextStyle::Small)
+                        .color(crate::theme::WARNING),
+                );
+            }
+        });
+        ui.add_space(SECTION_GAP);
+    }
+    card(ui, |ui| {
+        fact_grid(ui, "planes_facts", facts);
+        ui.add_space(SECTION_GAP);
+        let weak = ui.visuals().weak_text_color();
+        for line in [&note.horizontal, &note.vertical] {
+            ui.label(
+                egui::RichText::new(line)
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+            );
+        }
+        // ⚑ The loud line. Never omitted when set, and coloured on the field rather than on the
+        // shape of the string (style page P5).
+        if let Some(said) = &note.unestablished {
+            ui.add_space(SECTION_GAP);
+            ui.label(
+                egui::RichText::new(said)
+                    .text_style(egui::TextStyle::Small)
+                    .color(crate::theme::WARNING),
+            );
+        }
+        if scrolled {
+            ui.add_space(SECTION_GAP);
+            ui.label(
+                egui::RichText::new(
+                    "The scroll is applied, so this is the region the screen shows of this \
+                     plane alone, with no other plane and no sprites over it.",
+                )
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+            );
+        }
+    });
 }
 
 /// Labelled facts in two aligned columns: the label small and recessed, the value emphasised.
@@ -6032,5 +6080,226 @@ mod stat_shape_tests {
                 "P2: a run of spaces or a tab is a column drawn inside a string: {s:?}"
             );
         }
+    }
+}
+
+/// **The Planes tab's layout, driven headless.**
+///
+/// The defect these gates exist for shipped and was visible: planes A and B drew no picture at all, while
+/// the window plane drew one. The cause was [`plane_split`] using `allocate_ui`, which inherits the
+/// caller's layout; the caller is `horizontal_top`, and egui does not wrap text in a non-wrapping
+/// horizontal layout, so the side column's `unestablished` paragraph ran off to the right and consumed the
+/// whole row. The window plane looked fine because [`crate::planes::scroll_note`] returns no caveat for it.
+///
+/// Nothing here is a stand-in: the note is the **real** `scroll_note` output for a plane with an
+/// H-interrupt armed, and the column is the **real** [`plane_side_column`]. Only [`Panels::plane_picture`]
+/// is replaced, by a closure that records the space the split handed it, because that space is precisely
+/// the input `plane_picture` was failing on.
+#[cfg(test)]
+mod planes_layout_tests {
+    use super::*;
+    use oracle_core::render::Plane;
+
+    /// A window wide enough for the side-by-side branch, and taller than the column needs.
+    const SCREEN: egui::Vec2 = egui::vec2(1200.0, 800.0);
+
+    /// A gather carrying only what [`crate::planes::scroll_note`] reads. The vectors are empty because it
+    /// reads none of them, and leaving them empty is what keeps this a test of the layout rather than a
+    /// second, hand-written copy of the gather.
+    fn inputs(plane: Plane, hint_line: Option<u8>) -> crate::planes::Inputs {
+        crate::planes::Inputs {
+            plane,
+            scrolled: false,
+            base: 0xC000,
+            cols: 64,
+            rows: 32,
+            display: (320, 224),
+            cells: Vec::new(),
+            scroll: Vec::new(),
+            spans: Vec::new(),
+            hmode: 3,
+            vcolumns: false,
+            htable: 0xFC00,
+            hint_line,
+            fingerprint: 0,
+        }
+    }
+
+    fn facts() -> Vec<objects::Fact> {
+        [
+            ("nametable at", "$C000"),
+            ("map", "64 by 32 cells"),
+            ("plane", "512 by 256 pixels"),
+            ("drawn", "512 by 256 pixels"),
+            ("scroll table at", "$FC00"),
+            ("rasterised", "3 times in 9 repaints"),
+        ]
+        .into_iter()
+        .map(|(label, value)| objects::Fact {
+            label: label.into(),
+            value: value.into(),
+            mono: false,
+        })
+        .collect()
+    }
+
+    /// What the split left for each half. `picture` is `ui.available_size()` at the moment
+    /// [`Panels::plane_picture`] would have read it; `side` is the width the column actually occupied.
+    struct Room {
+        picture: egui::Vec2,
+        side: f32,
+        /// The gap egui itself puts between two things in a row, read off the styled context rather than
+        /// remembered, so the accounting below cannot drift when the theme changes its spacing.
+        item_spacing: f32,
+    }
+
+    /// Lay the split out at `screen` and report both halves.
+    ///
+    /// Two frames, and the second is the answer: `fact_grid` is an `egui::Grid`, whose column widths come
+    /// from state stored on the previous frame, so a one-frame reading would be measuring a grid that has
+    /// not settled rather than the layout under test.
+    fn lay_out(screen: egui::Vec2, note: &crate::planes::ScrollNote) -> Room {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let facts = facts();
+        let (mut picture, mut side, mut item_spacing) = (None, None, None);
+        for _ in 0..2 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                item_spacing = Some(ui.spacing().item_spacing.x);
+                plane_split(
+                    ui,
+                    |ui| {
+                        plane_side_column(ui, None, &facts, note, false);
+                        side = Some(ui.min_rect().width());
+                    },
+                    |ui| picture = Some(ui.available_size()),
+                );
+            });
+            // The context is never painted, so a delta nobody consumes would otherwise be leaked.
+            out.textures_delta.clear();
+        }
+        Room {
+            picture: picture.expect("the split ran its picture half"),
+            side: side.expect("the split ran its side half"),
+            item_spacing: item_spacing.expect("the closure ran"),
+        }
+    }
+
+    /// The plane the owner was looking at: an H-interrupt armed, so the caveat paragraph is present.
+    fn armed_note() -> crate::planes::ScrollNote {
+        let note = crate::planes::scroll_note(&inputs(Plane::A, Some(0)));
+        // Positive control. Without this the whole gate passes vacuously the day `scroll_note` stops
+        // emitting a caveat, which is the one condition it is here to survive.
+        assert!(
+            note.unestablished.is_some(),
+            "this gate measures the layout under the long caveat, and there is no caveat to measure"
+        );
+        note
+    }
+
+    #[test]
+    fn the_caveat_paragraph_leaves_the_picture_room_to_draw() {
+        let room = lay_out(SCREEN, &armed_note());
+
+        // ⚑ **The defect, in the exact terms the panel failed in.** Not a width compared against a number
+        // read off a run: the space the split handed over is put through the same `screen_pick::fit` the
+        // picture puts it through, with the plane's own 512x256 raster, and asked whether anything comes
+        // back. Under the bug this returned `Vec2::ZERO` and `plane_picture` returned, drawing nothing.
+        let size = screen_pick::fit(
+            room.picture,
+            512,
+            256,
+            1.0,
+            oracle_frontend::present::Aspect::Square,
+        );
+        assert!(
+            size.x > 0.0 && size.y > 0.0,
+            "the picture was left {:?}, which fits to {size:?}, so `plane_picture` draws nothing. The \
+             side column took {} of the {} available.",
+            room.picture,
+            room.side,
+            SCREEN.x,
+        );
+
+        // **The cause**, stated against the budget the split declares rather than against a measurement:
+        // the column was allocated `PLANE_SIDE_W` and has to wrap inside it. A column laid out
+        // horizontally does not wrap, and this is what runs away when it does not.
+        assert!(
+            room.side <= PLANE_SIDE_W,
+            "the side column occupied {} points against a {PLANE_SIDE_W}-point budget, so its text is \
+             not wrapping",
+            room.side,
+        );
+    }
+
+    /// The window plane is the control that shipped: it drew correctly under the bug, because its note is
+    /// two short lines and no caveat. It has to keep working, and it must not be the only one that does.
+    ///
+    /// **The two are deliberately not asserted equal.** A first draft of this gate did assert that, and it
+    /// failed on the fixed code at 981.8 against 930: `allocate_ui_with_layout` allocates the space the
+    /// column *used*, so a short note legitimately gives some of its 260 back. The premise was wrong, not
+    /// the fix. What actually holds is an accounting identity, and it is the stronger statement anyway:
+    /// the row is the side column, the gaps, and the picture, and **nothing else** may take width from it.
+    /// Under the bug the column alone took the row and this failed by hundreds of points.
+    #[test]
+    fn no_note_takes_more_of_the_row_than_the_side_column_is_worth() {
+        let window = crate::planes::scroll_note(&inputs(Plane::Window, Some(0)));
+        assert!(
+            window.unestablished.is_none(),
+            "the window note is the short case; if it grew a caveat this control means something else"
+        );
+        for (what, note) in [("window", window), ("caveat", armed_note())] {
+            let room = lay_out(SCREEN, &note);
+            assert!(
+                room.side <= PLANE_SIDE_W,
+                "the {what} column occupied {} points against a {PLANE_SIDE_W}-point budget",
+                room.side,
+            );
+            // Everything in the row is accounted for: what the column took, the explicit `SECTION_GAP`,
+            // egui's own spacing on either side of it, and the rest, which is the picture's.
+            let accounted = room.side + SECTION_GAP + 2.0 * room.item_spacing + room.picture.x;
+            assert!(
+                accounted >= SCREEN.x,
+                "the {what} row accounts for only {accounted} of {}: side {}, gap {SECTION_GAP}, \
+                 spacing {}, picture {}. Width went somewhere the split does not name.",
+                SCREEN.x,
+                room.side,
+                room.item_spacing,
+                room.picture.x,
+            );
+        }
+    }
+
+    /// The narrow branch stacks instead, and the picture is above the facts rather than beside them. It
+    /// gets the full width there, so the caveat cannot squeeze it either way.
+    #[test]
+    fn the_narrow_branch_gives_the_picture_the_whole_width() {
+        let narrow = egui::vec2(PLANE_SIDE_BY_SIDE_MIN - 60.0, 800.0);
+        let room = lay_out(narrow, &armed_note());
+        assert!(
+            room.picture.x > narrow.x - 40.0,
+            "the stacked branch handed the picture {:?} of a {}-point pane",
+            room.picture,
+            narrow.x,
+        );
+    }
+
+    /// [`NO_ROOM_FOR_PICTURE`] is shipped text and lives under the same rules as the rest of the panel.
+    #[test]
+    fn the_no_room_line_keeps_the_panel_text_rules() {
+        for bad in ['\u{2014}', '\u{2013}'] {
+            assert!(
+                !NO_ROOM_FOR_PICTURE.contains(bad),
+                "P10: {bad:?} in user-facing text: {NO_ROOM_FOR_PICTURE:?}"
+            );
+        }
+        assert!(
+            !NO_ROOM_FOR_PICTURE.contains("  ") && !NO_ROOM_FOR_PICTURE.contains('\t'),
+            "P2: a run of spaces or a tab is a column drawn inside a string"
+        );
     }
 }
