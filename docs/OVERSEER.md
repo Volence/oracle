@@ -866,6 +866,28 @@ mechanism reading is in the log. What stays live:
    **silently, in the direction that presents as a successful boot restore over a write window that never
    opened.** Booked here because a code comment is where a perishable rule goes to be read by nobody.
 
+## ⚑ HUB RULING, 2026-09-07: HOW THE LENS COUNT IS REPORTED — **"PACKET MINUS FIXED", NEVER THE LEDGER'S OPEN COUNT**
+
+⚑ **The hub's, under delegation; do not upgrade it to his.** It settles a defect this seat found while
+correcting its own: **`docs/lens-findings.jsonl` is a CURATED SUBSET of the packet**, ~32 ids against 8
+critical + 33 high + ~77 medium/low. A finding with no row was never in an open tally, so a shrinking open
+count reads as a repo approaching clean when most of the packet was never enrolled.
+
+**The rule, in force:** the number the owner gets is **the packet's totals minus the ledger's fixed rows**,
+stated in those words, **never the ledger's open count alone**, and **the floor caveat travels with it**
+(*"open in the ledger is a floor on what is open, not a count of it"*).
+
+**Enrolment is HELD, and the reason is the owner's quota, not the merits** (he is at ~90% of weekly usage):
+an enrolment parcel is bookkeeping that spends his budget to make a file carry a number the packet already
+carries. **Enrol rows opportunistically — only when you next touch the ledger for a fix, as part of that
+landing.**
+
+⚑ **And the reporting lesson underneath it, which is this seat's own and cost a wrong number on his card:**
+*"four criticals"* meant the packet's *"four things to act on first"* (C1, H2, C4, C3 — one H-numbered,
+and **excluding C2 and C5**), and it reached his board reading as all five. **A phrase coined for a queue
+row acquires a different meaning when it is lifted into a status line**, and nothing in either artifact
+announces the shift. State counts by enumerating their members where the members are few.
+
 ## ⚑ OWNER RULING, 2026-09-07: THE LENS RITUAL GAINS A UX SEAT PAIR, AND **THIS LANE IS THE PILOT**
 
 ⚑ **RELAYED BY empyrean-c0, NOT WITNESSED HERE, and verified firsthand rather than adopted:** empyrean

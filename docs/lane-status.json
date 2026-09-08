@@ -181,7 +181,7 @@
       "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
-  "awaiting": null,
+  "awaiting": "Which next, given you are near your weekly limit: the usability pilot (two reviewers, an hour or so of agent time), the two remaining criticals (the video double-charge and the wasted replay render), or stop here. Everything tonight is pushed and nothing is running, so any of the three is a clean start.",
   "atBoundary": true,
-  "updatedAt": "2026-09-08T01:43:17Z"
+  "updatedAt": "2026-09-08T01:44:09Z"
 }
