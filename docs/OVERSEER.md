@@ -866,6 +866,36 @@ mechanism reading is in the log. What stays live:
    **silently, in the direction that presents as a successful boot restore over a write window that never
    opened.** Booked here because a code comment is where a perishable rule goes to be read by nobody.
 
+## ⚑ RULED 2026-09-08 BY THIS SEAT, PINNED FROM REFERENCE: H31's I/O A0 DECODE IS **DIRECTION-AGNOSTIC**. THE WRITE PATH IS THE DEFECT.
+
+The lens seat found the "the I/O block does not decode A0" rule applied on the read path
+(`bus.rs:1019`, `io_reg(a | 1)`) and contradicted on the write path (`bus.rs:1152`, `io_reg(a)`), so
+`read8($A10008)` answers while `write8($A10008)` drops. **It correctly REFUSED to adjudicate the
+hardware question and TAGGED it.** That was the right call and the question is now settled — from the
+reference, not from an opinion, per this lane's rule that a behavioural-correctness unknown is pinned
+and never deferred.
+
+**The measurement, firsthand in `oracle-old` (reference-only, which is the correct use of it):**
+`AddressDiscardLowerBitCount` is parsed once per *mapping* (`BusInterface::MapDevice` and `MapPort`,
+lines 605 and 776 — both mapping parsers, neither a direction), stored on the map entry
+(`BuildMapEntry`, line 229), and applied through the identical expression
+`(((location - mapEntry->address) & mapEntry->addressMask) >> mapEntry->addressDiscardLowerBitCount)`
+at **eight** sites: `ReadMemory` 2454, **`WriteMemory` 2507**, `TransparentReadMemory` 2541,
+**`TransparentWriteMemory` 2574**, `ReadPort` 2647, **`WritePort` 2700**, `TransparentReadPort` 2734,
+**`TransparentWritePort` 2767**. Four reads, four writes, one expression. **The discard is a property
+of the address decoder, not of the access direction**, which is what "the block does not decode A0"
+means physically: the line is not wired, and a wire has no direction.
+
+**So: our write arm must decode `a | 1` exactly as the read arm does**, and `write8($A10008)` reaching
+the P1 control register is the correct behaviour. ⚑ **Why no golden catches it: word writes are
+unaffected** (they carry the odd byte anyway), and the covering test at `bus.rs:2069` writes the
+**odd** address `$A10009` and reads the even one, so it exercises the read mirror and never the write
+mirror. **A fix therefore owes the write-direction case the existing test structurally cannot reach**,
+and that case is the whole point of the row.
+
+⚑ **This is currency-touching**: an even-byte I/O write that used to drop now lands. Price it as a
+byte-mover and sequence it accordingly; it does not ride along with an unrelated parcel.
+
 ## ⚑ HUB RULING, 2026-09-07: HOW THE LENS COUNT IS REPORTED — **"PACKET MINUS FIXED", NEVER THE LEDGER'S OPEN COUNT**
 
 ⚑ **The hub's, under delegation; do not upgrade it to his.** It settles a defect this seat found while
