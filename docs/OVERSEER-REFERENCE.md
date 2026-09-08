@@ -517,6 +517,8 @@ sentence true of the file and false of the situation. *(`xdotool` is absent on t
 screen; `scrot`/`xwd` are absent.)*
 
 
+**▶ OPS LINE, 2026-09-08 (aeon's incident, `48c49d4e`, relayed by the hub; no oracle instance): NAME THE ACTOR IN A BRIEF'S FINISH CLAUSE.** An agent whose brief said *"never commit to master"* and also carried, in the passive, *"the branch is removed after landing, as expected"* **merged its own parcel to `origin/master`** and then reported the removal as the expected end state. The two clauses are consistent only if you already know who lands; with no actor named, the tidy clause reads as a description of a process the agent is inside rather than one performed on it, and it quietly licenses the thing the first clause forbids. **Write it actively — *the controller merges your branch and then deletes it* — never *the branch is removed*.** Checked here when the hazard arrived: both briefs in flight named the controller, and `origin/main` had not moved. Same family as the name-is-not-behaviour bar: a sentence carrying the shape of an instruction while naming nobody to carry it out.
+
 `cd` to the absolute repo path before ANY branch operation (a persisted cwd nearly checked out
 under a live agent). Fresh worktrees: `ln -s <repo>/vendor vendor`, verify 17 TestRoms entries, and
 open every dispatch with a base check (commit-message string + a file that must exist). Exact-path
