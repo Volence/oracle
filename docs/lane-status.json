@@ -8,11 +8,6 @@
       "id": "d-39"
     },
     {
-      "what": "whether to install the desktop icon entry into your home folder (d-37)",
-      "since": "2026-09-06",
-      "id": "d-37"
-    },
-    {
       "what": "whether to repin the frozen symbol fixtures to a current build (FIXTURE-REPIN)",
       "since": "2026-09-06",
       "id": "d-40"
@@ -50,7 +45,7 @@
       "size": "S",
       "blockedBy": "one relaunch of your window, whenever suits you",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Two finished pieces of work are waiting on one action from you. Relaunching your debug window is the last step for both: it lets the effects switchboard be tried against a running game for the first time, and it lets a program take a real frame-rate reading off your window. Neither needs anything else. No hurry -- it rides with whenever you next restart it anyway."
+      "title": "Two finished pieces of work are still waiting on one relaunch of your debug window: it lets the effects switchboard be tried against a running game for the first time, and lets a program take a real frame-rate reading. There is now a desktop shortcut for it."
     },
     {
       "id": "F-RESET-LOSES-SAVE",
@@ -99,14 +94,6 @@
       "blockedBy": "your look answers",
       "project": "ORACLE-DEBUG-UI",
       "title": "The remaining panels follow your A/B answer plus four things only your eyes can settle. I am running them past you one at a time rather than in a batch."
-    },
-    {
-      "id": "RELAUNCH-2",
-      "state": "blocked",
-      "size": "S",
-      "blockedBy": "your word on the icon (d-37)",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Say 'install the icon' and I write five icon files and one desktop entry under your home. Nothing else is touched and the dry run is exact."
     },
     {
       "id": "FIXTURE-REPIN",
@@ -181,7 +168,7 @@
       "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
     }
   ],
-  "awaiting": "Which next, given you are near your weekly limit: the usability pilot (two reviewers, an hour or so of agent time), the two remaining criticals (the video double-charge and the wasted replay render), or stop here. Everything tonight is pushed and nothing is running, so any of the three is a clean start.",
+  "awaiting": "Which next, given you are near your weekly limit: the usability pilot (two reviewers, an hour or so of agent time), the two remaining criticals (the video double-charge and the wasted replay render), or stop here. The desktop shortcut is done and ready whenever you want to try it.",
   "atBoundary": true,
-  "updatedAt": "2026-09-08T01:44:09Z"
+  "updatedAt": "2026-09-08T03:04:30Z"
 }
