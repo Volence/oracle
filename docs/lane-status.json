@@ -1,5 +1,5 @@
 {
-  "focus": "All four lens criticals are fixed and pushed. Next is the usability review you ruled we pilot.",
+  "focus": "The four fixes the review said to do first are done and pushed. Two criticals it ranked lower are still open.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -18,7 +18,7 @@
       "id": "d-40"
     }
   ],
-  "nextBoundary": "Now. Everything is pushed, nothing is running, and the UX pilot is briefed and ready to launch.",
+  "nextBoundary": "Now. Everything is pushed and nothing is running. Next is either the usability pilot or the two remaining criticals.",
   "queue": [
     {
       "id": "F-Z80-PANICS-UNCONTAINED",
@@ -26,7 +26,7 @@
       "size": "M",
       "blockedBy": null,
       "project": "LENS-PASS",
-      "title": "FIXED and landed -- and it went further than stopping the crash. About 560 real sound-chip instructions used to kill the emulator; they are now properly implemented and graded against 1,268,000 known-good cases. The reason they had been skipped turned out to be wrong: the test data existed all along, we were just never asking for it."
+      "title": "FIXED and landed -- and it went further than stopping the crash. About 560 real sound-chip instructions used to kill the emulator; they are now properly implemented and checked against 1,268,000 known-good cases. The reason they had been skipped turned out to be wrong: the test data existed all along, we were just never asking for it."
     },
     {
       "id": "LENS-UX-PAIR",
@@ -62,7 +62,7 @@
     },
     {
       "id": "F-FIFO-DOUBLE-CHARGE",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "LENS-PASS",
@@ -183,5 +183,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-07T23:29:13Z"
+  "updatedAt": "2026-09-08T01:43:17Z"
 }
