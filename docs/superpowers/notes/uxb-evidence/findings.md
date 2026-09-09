@@ -233,3 +233,82 @@ Adjacent rows (`rom bytes    846931`) are aligned. `shots/25-registers-halted.pn
 
 ## C-UXB-4 (capture) — Objects: the first player's `role` cell is a bare `·` while the second says `Player_2`
 `shots/29-objects-expander.png`.
+
+## F-UXB-13 — oracle-player · Watchpoints table · the SAME empty-square glyph is the FIRST control in the row here and the SECOND control in Breakpoints, and here there is no tick-box at all
+**misses: is it consistent with its neighbours** — this is the compounding half of F-UXB-8
+
+Breakpoints row: `[✓ tickbox] [☐ delete] b1 …` (delete is second).
+Watchpoints row: `[☐ delete] w0  Bus 0x00FFF000..=0x00FFF000  Write  matched 0` (delete is FIRST, and
+there is no tick-box in the row at all).
+
+So the leading square in a row means *enable/disable* in one panel and *delete forever* in the panel
+on the adjacent tab. Verified by pressing it at 08:05:05Z: `ok: {"removed":1}`, watch gone.
+Evidence: `shots/40-watchpoint-scrolled.png`, `shots/41-watchpoint-square-clicked.png`, and
+`shots/34-bp-table-zoom.png` for the Breakpoints row it must be consistent with.
+
+## F-UXB-14 — oracle-player · commands palette · "the list above is all of them" points at an empty list
+**misses: does an error say what to do next**
+
+Type an unserved method and press Run:
+
+> `no method named `emulator/does_not_exist` is served by this build. 62 are, and the list above is
+> all of them. Nothing was sent.`
+
+The method box is also the list's filter, so the very text that produced the error has filtered the
+list to nothing. The header reads `0 of 62 served methods` and the area the message points at is
+empty. The window also collapses from ~430 px to ~190 px in the same gesture.
+Evidence: `shots/47-commands-bad-method.png`.
+
+## F-UXB-15 — oracle-player · commands palette · the error message moves depending on how many methods matched
+**misses: is it consistent / can it be found**
+
+With 0 matches the refusal sits directly under `params` (`shots/47`). With 3 matches the refusal for
+malformed params — `that is not JSON: key must be a string at line 1 column 2. Nothing was sent.` —
+sits *below the method list*, ~140 px lower and easy to miss (`shots/48-commands-bad-params.png`).
+Same class of message, two positions, decided by an unrelated filter.
+
+## F-UXB-16 — oracle-player · commands palette · a stale refusal survives clearing the input that caused it
+**misses: does it answer back** (third instance of the F-UXB-6 class, in a third panel)
+
+`that is not JSON …` remained on screen after the params field was emptied and a different method was
+selected (`shots/49-commands-filter-reset.png`, `shots/50-commands-chip-clicked.png`).
+
+## CLEAN — oracle-player · commands palette (5 steps)
+1. `commands` opens a dialog: `62 of 62 served methods: in-process, through the same registry a tool
+   reads (D15)`, a `method` filter, a `params` box, `Run`, and every method with a one-line
+   description and its param names (`shots/46-commands-palette.png`).
+2. Unserved method -> refused, nothing sent (`shots/47`) — see F-UXB-14 for the list defect.
+3. Malformed params -> `that is not JSON: … Nothing was sent.` (`shots/48`). "Nothing was sent" is
+   the right thing to say and it is said in both cases.
+4. Typing `reset` filters on descriptions as well as names (`emulator/set_profiler`, because its
+   description contains "resets") (`shots/49`); clicking a method's chip fills the field
+   (`shots/50`).
+5. `Run` -> `emulator/reset: ok {"deferred":false,"hitsDropped":0}`, the game restarts
+   (`shots/51-commands-reset-run.png`). This is the discoverable, well-documented surface of the two
+   windows.
+
+## ⚠ CONFOUND, declared — the game crashed, and I caused it
+At ~07:59Z I poked `DEAD` into `0xFFF000` (F-UXB-7). By `shots/38-watchpoints.png` the game window
+was showing the engine's own `ADDRESS ERROR` panic with `d0: 0000DEAD`, and it stayed there through
+shots 38-50. **That crash is mine, not a defect**, and no finding above rests on it. I say so because
+it is exactly the artefact that would otherwise read as "the panel shows nothing".
+
+It is also the lived proof of F-UXB-7: I could not put `00 B0` back — the panel had not told me what
+it was — and the only way out was `emulator/reset` from the commands palette (08:08:31Z,
+`shots/51`). **The player window has no reset control of its own**: not in the toolbar, not in any
+panel; it exists only as a method inside the palette. The game window has F1 and Tab for it.
+
+## C-UXB-5 (capture) — `0x00FFF000..=0x00FFF000` — Rust's inclusive-range syntax reaches the watchpoint row
+`shots/40-watchpoint-scrolled.png`.
+
+## C-UXB-6 (capture) — Watchpoints: `seen` keeps climbing after the only watch is removed
+`seen 34117710` on a panel that says nothing is armed. `shots/41-watchpoint-square-clicked.png`.
+
+## C-UXB-7 (capture) — Watchpoints row 2 reads `☑ write stopAfter [∞]` with no separator
+The `write` tick-box's label and the next control's label collide, and its partner `read` sits on the
+row above at the far right. `shots/38-watchpoints.png`.
+
+## C-UXB-8 (capture) — three different arm/disarm idioms in three adjacent tabs
+Breakpoints: `arm` stays `arm`, disarm via the toolbar or a per-row tick-box.
+Watchpoints: `arm` stays `arm`, no per-row tick-box at all.
+Profiler: the same button becomes `disarm` (`shots/42`, `shots/43`).
