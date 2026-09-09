@@ -40,19 +40,46 @@ root="$(cd "$here/../../.." && pwd)"
 have() { command -v "$1" >/dev/null 2>&1; }
 say() { printf '%s: %s\n' "$prog" "$*" >&2; }
 
+# ⚑ **GUI REPORTING IS OFF UNLESS THIS IS A REAL LAUNCH**, and the guard is here rather than at each call
+# site because the escape it prevents happened: the controller ran `--print-argv` with a bad ROM path to
+# check that an explicit argument outranks the default, and this script raised `zenity --error` **on the
+# owner's live desktop**, unannounced, mid-session.
+#
+# The tests were never the hazard — they stub `zenity` and `notify-send` on `PATH` for exactly this reason.
+# **A hand-run command with the real `PATH` was**, which is the durable half: the discipline lived in the
+# artifact and not in the operator, and this repo's standing "launch no window" rule was read as being
+# about BINARIES. A shell script's error handler is not a window until it calls `zenity`, and then it is.
+#
+# So: `--print-argv` and `--dry-run` are INTERROGATION modes and must never paint anything, and
+# `ORACLE_LAUNCH_NO_GUI=1` gives any automated caller the same promise without pretending to be one of
+# them. stderr is unconditional in every mode, so nothing is ever silently swallowed.
+gui_ok() {
+  # `:-` on both, because `set -u` is in force and `die` is reachable from the argument loop, i.e. from
+  # before these are assigned. An unbound-variable abort inside the error reporter would replace a clear
+  # message with a shell diagnostic, at the one moment the caller most needs the clear message.
+  [ "${ORACLE_LAUNCH_NO_GUI:-0}" = 1 ] && return 1
+  [ "${print_argv:-0}" = 1 ] && return 1
+  [ "${dry_run:-0}" = 1 ] && return 1
+  return 0
+}
+
 # A desktop notification, best effort. Never fatal: a launch must not fail because a notification daemon
 # is not running.
 notify() {
   local urgency="${2:-normal}"
+  gui_ok || return 0
   have notify-send && notify-send -a Oracle -u "$urgency" Oracle "$1" >/dev/null 2>&1 || true
 }
 
 # The loud exit. A person who clicked an icon is owed a window or a sentence, and stderr is not a sentence
-# when there is no terminal attached — which, from a launcher, there never is.
+# when there is no terminal attached — which, from a real launch, there never is. Under `gui_ok` the
+# sentence goes to stderr alone, which is where an automated caller is reading anyway.
 die() {
   say "$1"
   notify "$1" critical
-  have zenity && zenity --error --title=Oracle --width=520 --text="$1" >/dev/null 2>&1 || true
+  if gui_ok && have zenity; then
+    zenity --error --title=Oracle --width=520 --text="$1" >/dev/null 2>&1 || true
+  fi
   exit 1
 }
 
@@ -79,9 +106,9 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=1 ;;
     -h|--help) command sed -n '2,33p' "$0"; exit 0 ;;
     --) shift; extra=("$@"); break ;;
-    -*) die "$prog: unknown option '$1' (see --help)" ;;
+    -*) die "unknown option '$1' (see --help)" ;;
     *)
-      if [ -n "$rom" ]; then die "$prog: more than one ROM path given ('$rom' and '$1')"; fi
+      if [ -n "$rom" ]; then die "more than one ROM path given ('$rom' and '$1')"; fi
       rom="$1"
       ;;
   esac
@@ -94,7 +121,7 @@ case "$window" in
   "")
     # P10: no em dashes in text a person reads. That rule is about the tool's own strings, and these are
     # the tool's own strings; the surrounding comments are out of its scope and keep theirs.
-    die "$prog: no window chosen. Pass --player or --frontend. A .desktop entry whose Exec= lost its \
+    die "no window chosen. Pass --player or --frontend. A .desktop entry whose Exec= lost its \
 window flag lands here, which is why this refuses rather than guessing."
     ;;
 esac
@@ -102,7 +129,7 @@ esac
 # An `Exec=` that still holds a placeholder was never substituted. Guessing past it would launch something
 # nobody chose, so it is an error with the fix in it.
 case "$bin" in
-  *@*) die "$prog: --bin is still the template placeholder '$bin'. Re-run install-desktop.sh to write a \
+  *@*) die "--bin is still the template placeholder '$bin'. Re-run install-desktop.sh to write a \
 real path into this entry." ;;
 esac
 : "${bin:=$root/target/release/$name}"
@@ -130,12 +157,12 @@ if [ -z "$rom" ] && [ "$print_argv" = 0 ] && [ "$dry_run" = 0 ] && have zenity; 
                 --file-filter='All files | *' 2>/dev/null || true)"
 fi
 if [ -z "$rom" ]; then
-  die "$prog: no ROM to run. Pass one as an argument, set ORACLE_ROM=/path/to/rom.bin, or build \
+  die "no ROM to run. Pass one as an argument, set ORACLE_ROM=/path/to/rom.bin, or build \
 $default_rom. (Both Oracle windows refuse to start without a ROM, so this stops here rather than \
 exiting with nothing on screen.)"
 fi
 if [ ! -f "$rom" ]; then
-  die "$prog: no ROM at '$rom'."
+  die "no ROM at '$rom'."
 fi
 
 # ---------------------------------------------------------------------------------------------------
@@ -216,7 +243,7 @@ run_build() {
     # original complaint, restored by the very code meant to fix it. Refuse, and show the compiler.
     local tail_text
     tail_text="$(tail -n 20 "$log" 2>/dev/null || true)"
-    die "$prog: $name failed to build, so nothing was launched (the binary already on disk is older than \
+    die "$name failed to build, so nothing was launched (the binary already on disk is older than \
 your sources and would show you the previous UI).
 
 Log: $log
