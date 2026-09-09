@@ -387,6 +387,12 @@ change and was correctly kept out of the hardening parcel.
   **So no repo-side probe reliably answers "is this agent alive".** The authority is the harness — this
   lane's own `inFlight` and its task notifications. Use the repo probes to decide what is SAFE TO DELETE
   (they fail closed), never to conclude an agent has finished.
+  ⚑ **NOR DOES THE AGENT'S OWN REPORT.** The same agent later stated *"cleanup verified — no stray
+  processes remain in my worktree"*. Measured immediately after: **four**, two of them `sleep`s spawned
+  **at 12:27, AFTER it reported done**, so its polling loop was still cycling as it declared the tree
+  clear. It is not lying and it is not careless — **an agent cannot observe what outlives it**, which is
+  the whole reason the peer rule says verify a peer's claims firsthand rather than reconciling verdicts.
+  Do not forward an agent's cleanup claim; measure it.
   **Two consequences.** (1) Do not prune a merged parcel's worktree on the strength of the merge; run the
   check first. (2) **The count is unstable by construction** — the `sleep`s expire and are replaced, so two
   readings minutes apart give different PIDs and different totals. Enumerate and identify; a number here is
