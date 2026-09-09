@@ -3421,8 +3421,14 @@ mod tests {
         let ops = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
         // Representable in the parameter's own type, which is what makes this a state and not a
         // hypothetical: MAX_OPS is 40 and `len` is a u8.
+        //
+        // ⚑ Written as `MAX_OPS < u8::MAX` rather than the more obvious `MAX_OPS + 1 <= u8::MAX`,
+        // which says the same thing and reads closer to the intent. The obvious form is
+        // `clippy::int_plus_one`, a lint that fires on the CI toolchain (1.96, the declared floor)
+        // and NOT on a newer local one, so it passes `cargo clippy` here and reds the gate. It broke
+        // main once already. Do not "fix" this back.
         assert!(
-            MAX_OPS + 1 <= u8::MAX as usize,
+            MAX_OPS < u8::MAX as usize,
             "the over-long len must fit a u8"
         );
         let _ = MicroState::from_buf(ops, (MAX_OPS + 1) as u8);
