@@ -62,3 +62,86 @@ Evidence: `shots/02`, `shots/04`, `shots/06`.
 The toolbar's other two controls are frame/run-level. `step` reported `"stepped":1` with a pc move of
 6 bytes. Neighbour-consistency of gesture, but arguably intended; recorded for the owner rather than
 filed. Evidence: `shots/04-step-pressed.png`.
+
+## F-UXB-4 — oracle-player · Memory panel · the panel's own default address is refused by its own reader
+**misses: does an error say what to do next (the first thing a person meets is a red refusal they did not cause)**
+
+Open the Memory tab from the `panels` menu, touch nothing. The address field is **pre-filled** with
+`0xFFFF0000` and the panel is already showing, in red:
+
+> `REFUSED -32004: 0xFFFF0000: only cartridge ROM ($000000..rom_len) and work RAM ($E00000-$FFFFFF)
+> are readable in this slice`
+
+The shipped default is outside the range the panel itself declares readable. A newcomer's first sight
+of the Memory panel is an error about a value they never typed. Pressing `go` on the default just
+re-states it (`0xFFFF0000: a hex literal, taken as typed` + the same REFUSED).
+
+The placeholder shown when the field is emptied is *also* `0xFFFF0000 or a symbol name` — so the
+suggested example is the refused one too.
+
+Evidence: `shots/08-panels-memory-clicked.png` (untouched, already red),
+`shots/10-memory-go-default.png`, `shots/11-memory-empty-address.png` (placeholder).
+
+## F-UXB-5 — oracle-player · right-hand dock · long messages are cut off, in both axes, with no visible affordance
+**misses: does an error say what to do next**
+
+Every long message in the right column is clipped. Horizontally the text wraps at a width wider than
+the panel, so it runs off the right edge mid-word; vertically the Breakpoints node cuts its refusal
+mid-sentence:
+
+* Memory REFUSED, as seen: `...only cartridge ROM ($000000..rom_le` [edge]
+* Memory poke refusal, as seen: `"ZZ" is not a whole number of hex byte` [edge]
+* Breakpoints REFUSED, as seen: ends at `...so the table is` [bottom edge] — the remainder
+  (`CURRENT and this name is genuinely not in it. Check the spelling or the build, not the freshness
+  of the listing.`) is unreachable without scrolling.
+
+Both axes DO scroll (mouse wheel / horizontal wheel), but no scrollbar is drawn in the node, so
+nothing tells a person there is more text. The one visible horizontal scrollbar sits at the **top of
+a different dock node**. There is no way to widen the column with the pointer alone.
+
+The messages themselves are excellent when you can read them — which is why the clipping matters:
+the actionable half is the half that gets cut.
+
+Evidence: `shots/13-memory-go-garbage.png`, `shots/16-bp-arm-bad-symbol.png` (cut mid-sentence),
+`shots/17-bp-scrolled-down.png` (the rest, only after scrolling), `shots/22-poke-garbage.png`,
+`shots/09-memory-scroll-right.png` (full text, only after horizontal scroll).
+
+## F-UXB-6 — oracle-player · Memory + Breakpoints · a stale red error stays on screen next to the new one
+**misses: does it answer back / is it consistent**
+
+After the default REFUSED is on screen, pressing `go` with an EMPTY field adds
+`the panel cannot send that: type an address or a symbol name` **above** the old
+`REFUSED -32004: 0xFFFF0000 ...`, which is about a value no longer in the field. Two red messages,
+no ordering cue, no timestamps; the older one is about text that is not there any more.
+Evidence: `shots/12-memory-go-empty.png`, `shots/13-memory-go-garbage.png`.
+
+## F-UXB-7 — oracle-player · Memory panel · `poke` reports what it wrote but never what it overwrote, and there is no undo
+**misses: can a mistake be undone**
+
+Halted at a breakpoint, `poke` `DEAD` at `0xFFF000` succeeded:
+`ok: {"addr":"0x00FFF000","len":2}  [frame 9719 · mclk 8709… running false]` and the dump refreshed
+live from `00 B0 …` to `DE AD …`. Nothing in the panel offers an undo and the success reply does not
+carry the bytes it replaced, so a person who mistypes the address has no record of the old value.
+Evidence: `shots/23-poke-real.png`, `shots/24-memory-after-poke-top.png` (before value visible in
+`shots/19-bp-armed.png`: `0x00FFF000  00 B0 00 …`).
+
+## CLEAN — oracle-player · Breakpoints · arm on a symbol (5 steps, screenshot each)
+1. `arm` with both fields empty -> `the panel cannot send that: type an address or a symbol name`
+   (`shots/15-bp-arm-empty.png`) — same wording as the Memory panel's empty case. Consistent.
+2. `arm` on `NotARealSymbol` -> `REFUSED -32013: no symbol named NotARealSymbol. The listing was
+   re-checked just now: …/s4.debug.lst still parses to exactly the 3102 row(s) held, so the table is
+   CURRENT and this name is genuinely not in it. Check the spelling or the build, not the freshness
+   of the listing.` (`shots/16`, `shots/17`) — best message in either window; it pre-empts the wrong
+   diagnosis a person would reach for.
+3. `arm` on `GameState_OJZScroll_Update` (`shots/18`).
+4. It HIT. Toolbar banner `HALTED BY BREAKPOINT b0 at 0x000BE4D8 (GameState_OJZScroll_Update)
+   (1 halt; 1 still armed)`, a `⏏ release` button appears, `pause` becomes `resume`, panel reads
+   `RECORDING: 1 of 1 breakpoint armed, so the machine will halt at it` (`shots/19-bp-armed.png`).
+5. While halted, the Memory panel's write row changed from a refusal to `writes go to
+   emulator/write_memory` on its own (`shots/21-memory-scrolled-bottom.png`) — it answered a state
+   change it did not cause. Good.
+
+## C-UXB-2 (capture) — two vocabularies for the same fact
+Screen panel says `0 armed by this panel`; Breakpoints says `NEVER ARMED: No breakpoint has been
+armed` / `RECORDING: 1 of 1 breakpoint armed`. Three phrasings of one counter across two panels.
+Evidence: `shots/01`, `shots/19`.
