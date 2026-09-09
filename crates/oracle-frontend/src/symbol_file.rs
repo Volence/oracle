@@ -33,7 +33,7 @@
 //! into `Indeterminate` — and then 1,775 of 1,811 shared symbols name the wrong address. So the fail-open
 //! path is closed by requiring an `Indeterminate` listing to at least be *internally* whole.
 
-use oracle_core::symbols::{RomBinding, SymbolTable, TableSource};
+use oracle_core::symbols::{RomBinding, SymbolTable};
 use std::path::{Path, PathBuf};
 
 /// The `.lst` listing that sits next to the ROM: same directory + stem, `.lst` extension
@@ -85,7 +85,7 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
                 "symbols: REFUSED {}. No build fingerprint ({why:?}) AND the file is not intact \
                  ({}); it may be a truncated listing for a different ROM. Running with raw addresses.",
                 path.display(),
-                integrity_note(&table)
+                table.integrity_note().unwrap_or_default()
             );
             return None;
         }
@@ -111,35 +111,14 @@ pub fn load_symbols(rom_path: &Path, rom: &[u8]) -> Option<SymbolTable> {
     // A listing that bound to the ROM but is not whole still resolves *correctly* — its symbols are real,
     // there are just fewer of them, so a PC lands on a coarser name rather than a wrong one. Say so out
     // loud (the coarser name looks perfectly healthy) but do not refuse.
-    if !table.is_intact() {
+    if let Some(damage) = table.integrity_note() {
         eprintln!(
-            "symbols: WARNING {} does not look intact ({}); addresses will resolve to coarser names",
-            path.display(),
-            integrity_note(&table)
+            "symbols: WARNING {} does not look intact ({damage}); addresses will resolve to coarser \
+             names",
+            path.display()
         );
     }
     Some(table)
-}
-
-/// A short human account of *how* a listing failed [`SymbolTable::is_intact`], for the warning text.
-fn integrity_note(table: &SymbolTable) -> String {
-    let mut why = Vec::new();
-    if table.source() != TableSource::SymbolTable {
-        why.push("no `Symbol Table` section (fell back to the body lines)".to_string());
-    }
-    match table.matches_declared_count() {
-        None => why.push("no `N symbols` footer".to_string()),
-        Some(false) => why.push(format!(
-            "parsed {} but the footer declares {:?}",
-            table.len(),
-            table.declared_count()
-        )),
-        Some(true) => {}
-    }
-    if table.skipped_lines() > 0 {
-        why.push(format!("{} unrecognised rows", table.skipped_lines()));
-    }
-    why.join("; ")
 }
 
 #[cfg(test)]

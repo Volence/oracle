@@ -52,7 +52,7 @@
 //! forced**. `--symbols` says which file to read, never that the file may be trusted; overriding the D7
 //! binding check on request would put the one guard this module exists for behind a flag.
 
-use oracle_core::symbols::{RomBinding, SymbolTable, TableSource};
+use oracle_core::symbols::{RomBinding, SymbolTable};
 use std::path::{Path, PathBuf};
 
 /// Where the listing path came from, which is the only thing that separates the two policies above.
@@ -150,7 +150,7 @@ pub fn load(path: &Path, source: Source, rom: &[u8]) -> Loaded {
                 "symbols: REFUSED {}. No build fingerprint ({why:?}) AND the file is not intact \
                  ({}); it may be a truncated listing for a different ROM. Running with raw addresses.",
                 path.display(),
-                integrity_note(&table)
+                table.integrity_note().unwrap_or_default()
             );
             return none(None);
         }
@@ -176,11 +176,11 @@ pub fn load(path: &Path, source: Source, rom: &[u8]) -> Loaded {
     // A listing that bound to the ROM but is not whole still resolves *correctly* — its symbols are real,
     // there are just fewer of them, so a PC lands on a coarser name rather than a wrong one. Say so out
     // loud (the coarser name looks perfectly healthy) but do not refuse.
-    if !table.is_intact() {
+    if let Some(damage) = table.integrity_note() {
         eprintln!(
-            "symbols: warning, {} does not look intact ({}); addresses will resolve to coarser names",
-            path.display(),
-            integrity_note(&table)
+            "symbols: warning, {} does not look intact ({damage}); addresses will resolve to coarser \
+             names",
+            path.display()
         );
     }
     Loaded {
@@ -188,27 +188,6 @@ pub fn load(path: &Path, source: Source, rom: &[u8]) -> Loaded {
         path: Some(path.to_path_buf()),
         fatal: None,
     }
-}
-
-/// A short human account of *how* a listing failed [`SymbolTable::is_intact`], for the warning text.
-fn integrity_note(table: &SymbolTable) -> String {
-    let mut why = Vec::new();
-    if table.source() != TableSource::SymbolTable {
-        why.push("no `Symbol Table` section (fell back to the body lines)".to_string());
-    }
-    match table.matches_declared_count() {
-        None => why.push("no `N symbols` footer".to_string()),
-        Some(false) => why.push(format!(
-            "parsed {} but the footer declares {:?}",
-            table.len(),
-            table.declared_count()
-        )),
-        Some(true) => {}
-    }
-    if table.skipped_lines() > 0 {
-        why.push(format!("{} unrecognised rows", table.skipped_lines()));
-    }
-    why.join("; ")
 }
 
 #[cfg(test)]

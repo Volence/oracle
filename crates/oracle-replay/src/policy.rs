@@ -29,7 +29,7 @@
 //! Verified firsthand against the real artifacts — `s4.bin` contains neither trap string, `s4.debug.bin`
 //! contains one occurrence of each.
 
-use oracle_core::symbols::{RomBinding, SymbolTable, TableSource};
+use oracle_core::symbols::{RomBinding, SymbolTable};
 
 /// The trap message the DEBUG-only compare path raises. Its presence in the image is the positive
 /// assertion that the compare path was assembled at all.
@@ -58,15 +58,21 @@ pub fn judge_listing(table: &SymbolTable, rom: &[u8]) -> LstVerdict {
         },
         // "No fingerprint" plus "damaged file" most likely means the fingerprint symbol fell off a
         // truncated end — a mismatch wearing a disguise.
-        RomBinding::Indeterminate(why) if !table.is_intact() => LstVerdict::Refuse {
-            reason: format!(
-                "no build fingerprint ({why:?}) AND the listing is not intact ({}); it may be a \
-                 truncated listing for a different ROM",
-                integrity_note(table)
-            ),
-        },
-        RomBinding::Indeterminate(why) => LstVerdict::AcceptUnverified {
-            note: format!("carries no build fingerprint ({why:?}), loaded unverified"),
+        //
+        // The damage note is matched rather than guarded-then-unwrapped: `is_intact()` IS
+        // "`integrity_note()` is `None`", so binding the reason here makes the refusal and its stated
+        // cause one expression. The shape it replaces could produce a refusal with an empty
+        // parenthesis, which is what it did for two of the five damage shapes.
+        RomBinding::Indeterminate(why) => match table.integrity_note() {
+            Some(damage) => LstVerdict::Refuse {
+                reason: format!(
+                    "no build fingerprint ({why:?}) AND the listing is not intact ({damage}); it may \
+                     be a truncated listing for a different ROM"
+                ),
+            },
+            None => LstVerdict::AcceptUnverified {
+                note: format!("carries no build fingerprint ({why:?}), loaded unverified"),
+            },
         },
         RomBinding::Match {
             appendix_offset,
@@ -79,27 +85,6 @@ pub fn judge_listing(table: &SymbolTable, rom: &[u8]) -> LstVerdict {
             ),
         },
     }
-}
-
-/// A short human account of *how* a listing failed [`SymbolTable::is_intact`], for the message text.
-pub fn integrity_note(table: &SymbolTable) -> String {
-    let mut why = Vec::new();
-    if table.source() != TableSource::SymbolTable {
-        why.push("no `Symbol Table` section (fell back to the body lines)".to_string());
-    }
-    match table.matches_declared_count() {
-        None => why.push("no `N symbols` footer".to_string()),
-        Some(false) => why.push(format!(
-            "parsed {} but the footer declares {:?}",
-            table.len(),
-            table.declared_count()
-        )),
-        Some(true) => {}
-    }
-    if table.skipped_lines() > 0 {
-        why.push(format!("{} unrecognised rows", table.skipped_lines()));
-    }
-    why.join("; ")
 }
 
 /// Whether the DEBUG-only checkpoint compare path is present in this image.
@@ -189,6 +174,40 @@ mod tests {
             judge_listing(&t, &rom_with_appendix(0x8000)),
             LstVerdict::AcceptUnverified { .. }
         ));
+    }
+
+    /// **A refusal must state its cause, on every damage shape and not on three of five.**
+    ///
+    /// The local `integrity_note` this file used to carry covered the `Symbol Table` section, the
+    /// `N symbols` footer and the unrecognised-row count — but not the `Equate Table` trailer or the
+    /// `Phase Table` count, both of which `is_intact` checks. A listing damaged only in one of those two
+    /// was refused with `is not intact ()`: the reason the sentence exists to give, absent, in the empty
+    /// parenthesis. The reason now comes from `SymbolTable::integrity_note`, which `is_intact` is
+    /// defined over, so the two cannot cover different sets.
+    #[test]
+    fn a_refusal_on_the_equate_trailer_states_its_cause_rather_than_an_empty_parenthesis() {
+        let t = SymbolTable::parse(
+            "  Symbol Table (* = unused):\n\n Main : 300 C |\n\n   1 symbols\n\n  \
+             Equate Table (name = value; values, not addresses):\n\nEQU A = $00000001\n\n    9 equates\n",
+        )
+        .unwrap();
+        // Damaged ONLY by the equate trailer: the symbol half is whole.
+        assert_eq!(t.matches_declared_count(), Some(true));
+        assert_eq!(t.skipped_lines(), 0);
+        assert_eq!(t.matches_declared_equates(), Some(false));
+        assert!(!t.is_intact());
+
+        let LstVerdict::Refuse { reason } = judge_listing(&t, &rom_with_appendix(0x8000)) else {
+            panic!("an unverifiable, damaged listing must be refused");
+        };
+        assert!(
+            !reason.contains("intact ()"),
+            "the refusal named no cause at all: {reason}"
+        );
+        assert!(
+            reason.contains("Equate Table"),
+            "and it must name the section that is wrong: {reason}"
+        );
     }
 
     #[test]

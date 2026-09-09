@@ -122,11 +122,10 @@ impl Prepared {
             LstVerdict::Accept { note } => notes.push(format!("lst: {note}")),
             LstVerdict::AcceptUnverified { note } => notes.push(format!("lst: WARNING {note}")),
         }
-        if !table.is_intact() {
+        if let Some(damage) = table.integrity_note() {
             notes.push(format!(
-                "lst: WARNING the listing does not look intact ({}); addresses will resolve to \
-                 coarser names",
-                policy::integrity_note(&table)
+                "lst: WARNING the listing does not look intact ({damage}); addresses will resolve to \
+                 coarser names"
             ));
         }
 
