@@ -135,6 +135,30 @@ pub enum ServeOutcome {
         path: PathBuf,
         /// The `io::Error`'s own text, never a paraphrase.
         error: String,
+        /// **Whether a LIVE Aether server holds this exact path**, taken from the `io::Error`'s
+        /// [`ErrorKind`](std::io::ErrorKind) at the one site that still has the typed error, and never
+        /// from its text.
+        ///
+        /// ⚑ **This field exists so the window can tell a retryable refusal from an unretryable one, and
+        /// the distinction is the whole of why the bar offers a button in one case and prose in the
+        /// other.** [`Server::bind`](oracle_aether::server::Server::bind) connects to the path first and
+        /// raises `AddrInUse` — and *only* `AddrInUse` — when something answers on the other end; the
+        /// other seven refusals it can produce (a non-socket file in the way, a mode that is not 0600,
+        /// and five bare OS errors from `create_dir_all`, `bind`, `set_permissions`, `metadata` and
+        /// `set_nonblocking`) are all conditions a reader can go and fix and then ask again. So:
+        ///
+        /// * `true` — a second window, and the first one is legitimately serving. **Retrying cannot
+        ///   succeed while the peer lives**, so nothing here offers to try. Measured 2026-09-09: a player
+        ///   launched against `$XDG_RUNTIME_DIR/oracle.sock` while the owner's own window held it. A
+        ///   button that re-attempted would refuse identically, which is a control that teaches the
+        ///   reader the window is broken rather than that the path is taken.
+        /// * `false` — the path is free of any live server and the obstacle is something the reader can
+        ///   clear. Retrying *the same path* is then exactly right, and it is what the bar offers.
+        ///
+        /// It is a stored discriminant rather than a `match` on [`error`](Self::Failed::error) because
+        /// this repo's own rule for the halting and Aether alarms is that a surface which reads its own
+        /// text back to decide how to behave is one refactor away from being wrong.
+        held: bool,
     },
 }
 
@@ -163,7 +187,7 @@ impl ServeOutcome {
                 oracle_aether::engine::METHODS.len(),
                 oracle_aether::rpc::PROTOCOL_VERSION
             ),
-            ServeOutcome::Failed { path, error } => {
+            ServeOutcome::Failed { path, error, .. } => {
                 format!(
                     "NOT serving. Cannot bind the socket on {} ({error})",
                     path.display()
@@ -229,10 +253,28 @@ impl AetherStatus {
     /// The always-present statement of all three states is the strip's job and the strip still does it;
     /// the bar carries only the one that is an alarm.
     ///
+    /// # ⚑ 2026-09-09: the last paragraph's PREMISE was measured false, and [`offer`](Self::offer) is what
+    /// changed because of it
+    ///
+    /// *"the strip still does it"* was the whole load-bearing clause, and it assumed a reader could reach
+    /// the strip. The owner's saved layout (`~/.local/share/oracle-player/app.ron`) puts the strip's leaf
+    /// at `tabs:[Registers,Memory,Objects], active:(2), collapsed:true` — `Objects` in front of it inside a
+    /// leaf that is **collapsed to its tab bar**. So for the person this row was written for, the strip's
+    /// aether row has never executed once: `egui_dock` runs only each leaf's active tab, and a collapsed
+    /// leaf draws no body at all. He asked for *"a connect to aether network button"*, which is the
+    /// question of somebody who cannot see the answer anywhere on the glass.
+    ///
+    /// **The refusal above still stands as written and is not weakened**: a permanent bar *row* reading
+    /// all-clear is still refused, and this arm is still the only one that raises an alarm. What is added
+    /// is a *control* ([`offer`](Self::offer)), and the distinction is the standing ruling's own — things
+    /// you look at are rows and tabs, things you **do** are controls. The bar has carried `⏸ pause` and
+    /// `⏭ step` permanently since `PLAYER-TRANSPORT` without anybody calling them noise, because a control
+    /// is looked *for* when it is wanted rather than read every frame.
+    ///
     /// [`Transport::recording`]: crate::ui::Transport::recording
     pub fn alarm(&self) -> Option<String> {
         match &self.outcome {
-            ServeOutcome::Failed { path, error } => Some(format!(
+            ServeOutcome::Failed { path, error, .. } => Some(format!(
                 "⚠ AETHER NOT SERVING: nothing can attach to this window ({}: {error})",
                 path.display()
             )),
@@ -249,13 +291,165 @@ impl AetherStatus {
     /// the exact behaviour [`Bus::new`] refuses in so many words.
     pub fn advice(&self) -> Option<String> {
         self.alarm()?;
-        Some(String::from(
-            "This window was asked to serve and could not bind, so it is playable but no client, tool \
-             or lane can attach to it: commands sent to this window reach nothing. Nothing here can \
-             fix it. Close whatever already holds the path (often another emulator window), or relaunch \
-             with --socket PATH pointing somewhere free. It is deliberately not retried on a second \
-             path, because a bus at an address nobody dials is the same silence with more steps.",
-        ))
+        // ⚑ Split on the stored `held` discriminant, not on the error text, because the two failures
+        // have DIFFERENT remedies and the old single sentence asserted the wrong one for seven of the
+        // eight refusals `Server::bind` can produce. It said "close whatever already holds the path",
+        // which is right for a live peer and simply false for a permission error or a stray file.
+        let held = matches!(&self.outcome, ServeOutcome::Failed { held: true, .. });
+        let common = "This window was asked to serve and could not bind, so it is playable but no \
+                      client, tool or lane can attach to it: commands sent to this window reach \
+                      nothing.";
+        Some(if held {
+            format!(
+                "{common} Another Aether server is LIVE on that exact path: most often your first \
+                 emulator window, which is serving it correctly. Retrying here cannot succeed while \
+                 that one is alive, which is why this window offers no retry: close the other window, \
+                 or relaunch this one with --socket PATH pointing somewhere free. It is deliberately \
+                 not retried on a second path, because a bus at an address nobody dials is the same \
+                 silence with more steps."
+            )
+        } else {
+            format!(
+                "{common} Nothing is serving that path: the obstacle is the one named in the error \
+                 above (a file in the way, a permission, a directory that could not be made). Clear \
+                 it and use the retry beside this message; it will try THE SAME path and no other."
+            )
+        })
+    }
+
+    /// **What the window-level control can offer about the bus right now** — the `do` half of what
+    /// [`sentence`](Self::sentence) is the `look at` half of.
+    ///
+    /// # Why this is a derivation and not four strings at the call site
+    ///
+    /// The bar and the strip must never disagree about *which state this window is in*. They already
+    /// share [`ServeOutcome::sentence`] for the long form; this is the short form, produced from the same
+    /// two fields by the same `match`, so the two can differ in how much they say and cannot differ in
+    /// what they say. The bar's label is [`AetherOffer::label`] and its hover is built from
+    /// [`sentence`](Self::sentence) and [`advice`](Self::advice) — there is no second copy of the
+    /// sentence anywhere.
+    ///
+    /// # Why every arm draws something, including the ordinary serving one
+    ///
+    /// Because **an absence is not a statement**, which is this repo's most-repeated finding and the one
+    /// [`crate::ui::StatusStrip::aether_row`] was written to obey. A control that appeared only when
+    /// something was wrong would leave "this window is serving" and "this build has no Aether control"
+    /// rendered identically — the exact confusion the row refuses. The [`alarm`](Self::alarm) doc's
+    /// refusal of a permanent all-clear *row* still stands and is untouched: this is a control, and the
+    /// serving arm's text is not an all-clear constant but the one live fact that moves — whether
+    /// anything is attached, which the strip's own doc calls *"the one that explains a character walking
+    /// left on its own"*.
+    ///
+    /// # Why [`Held`](AetherOffer::Held) has no button, and that is the deliberate half
+    ///
+    /// Measured 2026-09-09: the realistic bind failure is a **second window** against a first that is
+    /// serving legitimately, not a stale orphan. Retrying against a live peer refuses identically and
+    /// forever. A button there would be a control that half-works, and the honest surface for a state
+    /// nothing in this process can change is prose that names the cause — which is what
+    /// [`advice`](Self::advice) now carries, split on the same discriminant.
+    pub fn offer(&self) -> AetherOffer {
+        match &self.outcome {
+            // §7.1's own resolver, the very function `--aether` with no `--socket` would have reached.
+            // Resolved here rather than at the click so the label and hover can NAME the path the button
+            // is about to bind: a control that will not say where it is going is one a reader has to
+            // press to find out.
+            ServeOutcome::NotAsked => {
+                AetherOffer::Serve(oracle_aether::server::default_socket_path())
+            }
+            ServeOutcome::Failed {
+                path, held: true, ..
+            } => AetherOffer::Held(path.clone()),
+            ServeOutcome::Failed {
+                path, held: false, ..
+            } => AetherOffer::Retry(path.clone()),
+            ServeOutcome::Serving(path) => AetherOffer::Serving {
+                path: path.clone(),
+                attached: self.attached,
+            },
+        }
+    }
+}
+
+/// **What the window-level Aether control offers**, one variant per state of the bus.
+///
+/// A type rather than an `Option<&'static str>` because the three non-serving arms differ in *whether
+/// there is anything to do*, and collapsing that into "a button, sometimes" is how [`Held`](Self::Held)
+/// would have grown a retry that cannot work. See [`AetherStatus::offer`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AetherOffer {
+    /// Nobody asked, and nothing is contending: one click binds §7.1's default, exactly as `--aether`
+    /// would have. Carries the resolved path so the control can name it before it is pressed.
+    Serve(std::path::PathBuf),
+    /// Asked, refused, and **no live server holds the path** — so the obstacle is one the reader can
+    /// clear and then retry. The path is the one that failed and never a substitute.
+    Retry(std::path::PathBuf),
+    /// Asked, refused, and a **live** Aether server holds this exact path. There is no action, on
+    /// purpose; see [`AetherStatus::offer`].
+    Held(std::path::PathBuf),
+    /// A socket exists here. Nothing to offer, so the control states the live fact instead.
+    Serving {
+        path: std::path::PathBuf,
+        attached: bool,
+    },
+}
+
+impl AetherOffer {
+    /// **The path this offer would bind**, or `None` when it offers no action.
+    ///
+    /// [`Bus::serve_now`] takes its path from here and from nowhere else, which is the mechanical form of
+    /// the constraint *never silently move to a second path*: there is no expression in this crate that
+    /// could choose a different one.
+    pub fn action_path(&self) -> Option<&std::path::Path> {
+        match self {
+            AetherOffer::Serve(p) | AetherOffer::Retry(p) => Some(p),
+            AetherOffer::Held(_) | AetherOffer::Serving { .. } => None,
+        }
+    }
+
+    /// **The short label the bar draws.** ⚑ Look-and-feel: the wording, the word "aether" itself, and
+    /// whether any of this wants a glyph are the owner's calls and are listed for him. This is a
+    /// defensible default, not a ruling.
+    ///
+    /// Deliberately short and deliberately *not* [`AetherStatus::sentence`]: the bar has room for a
+    /// control, the hover has room for the sentence, and a bar that tried to carry the whole sentence
+    /// would push the status line off the end of the window.
+    ///
+    /// ⚑ **No glyphs, on purpose, and it is not a taste decision.** The bar's existing `⏸ ▶ ⏭ ⚠` are
+    /// proven on this build; a status dot or an arrow is not, and [`crate::screen`]'s own header records
+    /// what happens when that is assumed — `Fonts::has_glyph` answered `true` for characters the build
+    /// draws as hollow boxes, and a snapshot that trusted it *"published 26 invented hollow boxes"*. The
+    /// first thing the owner sees of this parcel should not be tofu, and I have no way to check his font
+    /// stack from here. Words cost a few pixels and cannot be undrawable.
+    pub fn label(&self) -> String {
+        match self {
+            AetherOffer::Serve(_) => String::from("serve aether"),
+            AetherOffer::Retry(_) => String::from("retry aether"),
+            AetherOffer::Held(_) => String::from("aether: path held elsewhere"),
+            AetherOffer::Serving { attached: true, .. } => {
+                String::from("aether: serving, attached")
+            }
+            AetherOffer::Serving {
+                attached: false, ..
+            } => String::from("aether: serving, nobody attached"),
+        }
+    }
+}
+
+/// **Bind `path` and say what happened**, in one expression shared by the launch and by the bar's button.
+///
+/// The `held` discriminant is taken from [`std::io::ErrorKind::AddrInUse`], which
+/// [`Server::bind`](oracle_aether::server::Server::bind) raises for exactly one condition — it connects
+/// to the path first, and only something that *answers* produces that kind. Reading the kind rather than
+/// the message is the same rule the alarms follow: a surface that parses its own text is one refactor
+/// from being wrong.
+fn attempt(host: &mut Host, path: PathBuf) -> ServeOutcome {
+    match host.serve(Some(path.clone())) {
+        Ok(p) => ServeOutcome::Serving(p),
+        Err(e) => ServeOutcome::Failed {
+            held: e.kind() == std::io::ErrorKind::AddrInUse,
+            path,
+            error: e.to_string(),
+        },
     }
 }
 
@@ -469,13 +663,11 @@ impl Bus {
                 // failure, so a caller that let it resolve internally could only ever report the path of
                 // a bind that worked, which is the one case a reader does not need told.
                 let resolved = path.unwrap_or_else(oracle_aether::server::default_socket_path);
-                match host.serve(Some(resolved.clone())) {
-                    Ok(p) => ServeOutcome::Serving(p),
-                    Err(e) => ServeOutcome::Failed {
-                        path: resolved,
-                        error: e.to_string(),
-                    },
-                }
+                // ⚑ One expression, shared with [`Bus::serve_now`]. A launch-time bind and a bind the
+                // reader asks for from the bar must produce the *same* three outcomes with the same
+                // `held` discriminant, or the window would describe one refusal two ways depending on
+                // when it happened.
+                attempt(&mut host, resolved)
             }
             None => ServeOutcome::NotAsked,
         };
@@ -586,6 +778,51 @@ impl Bus {
             outcome: self.outcome.clone(),
             attached: self.has_clients(),
         }
+    }
+
+    /// **Open the bus now, from inside the running window**, and return what happened.
+    ///
+    /// The owner's ask, in his words: *"there's no 'connect to aether network' button in the new ui"*.
+    /// Before this, a window launched without `--aether` could only be given a bus by being killed and
+    /// relaunched, and the only evidence it had none was a strip row inside a collapsed tab.
+    ///
+    /// # The two constraints this method exists to satisfy mechanically rather than by care
+    ///
+    /// 1. **It never binds a path a live server holds.** It does not check that itself and must not:
+    ///    [`Server::bind`](oracle_aether::server::Server::bind) connects to the path before binding and
+    ///    refuses `AddrInUse` against anything that answers, and it unlinks only a corpse that is
+    ///    actually a socket. This method simply calls it, through the same [`attempt`] the launch uses,
+    ///    so there is one live-server check in this crate and no second weaker one here.
+    /// 2. **It never moves to a second path.** The path comes from
+    ///    [`AetherOffer::action_path`] and from nowhere else — `NotAsked` gets §7.1's default (what
+    ///    `--aether` would have bound), a retryable failure gets *the path that failed*. There is no
+    ///    fallback expression to delete, because there is no fallback.
+    ///
+    /// # Why it is a no-op in two of the four states
+    ///
+    /// [`AetherOffer::Serving`] has nothing to do, and [`AetherOffer::Held`] must not try: retrying
+    /// against a live peer refuses identically and forever, and a control that reliably fails teaches a
+    /// reader the window is broken rather than that the path is taken. Both return the outcome unchanged
+    /// rather than an error, because "the button was not there" is not a failure of anything.
+    ///
+    /// # The terminal is kept in step
+    ///
+    /// The launch line is a statement about the bus, and after this it would be a stale one. So a
+    /// successful *or* failed attempt reprints [`announcement`](Self::announcement) — the same function,
+    /// so the terminal and the window still cannot describe this window's bus differently. Nothing is
+    /// printed when nothing was attempted.
+    pub fn serve_now(&mut self) -> &ServeOutcome {
+        let Some(path) = self
+            .aether_status()
+            .offer()
+            .action_path()
+            .map(PathBuf::from)
+        else {
+            return &self.outcome;
+        };
+        self.outcome = attempt(&mut self.host, path);
+        println!("{}", self.announcement());
+        &self.outcome
     }
 
     /// Whether an external client is connected **right now**.
@@ -2227,7 +2464,7 @@ mod serving {
         let mut bus = Bus::new(&mut sys, MachineInfo::default(), false, Some(Some(doomed)));
         assert!(!bus.is_serving(), "the bind failed, so nothing is serving");
         assert_eq!(bus.socket_path(), None);
-        let ServeOutcome::Failed { path, error } = bus.serve_outcome() else {
+        let ServeOutcome::Failed { path, error, .. } = bus.serve_outcome() else {
             panic!(
                 "a failed bind must report Failed, not {:?} — an ignored `socket` argument would look \
                  exactly like NotAsked here",
@@ -2396,6 +2633,7 @@ mod serving {
         let down = ServeOutcome::Failed {
             path: PathBuf::from("/tmp/x/s"),
             error: String::from("boom"),
+            held: false,
         }
         .sentence();
         assert!(
@@ -2438,6 +2676,7 @@ mod serving {
             outcome: ServeOutcome::Failed {
                 path: PathBuf::from("/run/user/1000/oracle.sock"),
                 error: String::from("Address already in use (os error 98)"),
+                held: true,
             },
             attached: false,
         };
@@ -2504,6 +2743,7 @@ mod serving {
             outcome: ServeOutcome::Failed {
                 path: PathBuf::from("/run/user/1000/oracle.sock"),
                 error: String::from("Permission denied (os error 13)"),
+                held: false,
             },
             attached: false,
         };
@@ -2521,6 +2761,245 @@ mod serving {
             "if the two surfaces carry the identical string, one of them is spelling the other's job: \
              the bar is an alarm and the strip is a statement"
         );
+    }
+
+    /// ★ **The offer is derived from the outcome, every state has one, and it NEVER names a path other
+    /// than the one it is entitled to.**
+    ///
+    /// This is the pure half of the parcel: `AetherOffer` decides what the window-level control may do,
+    /// and the two constraints on it are structural facts a test can hold — *never bind a path a live
+    /// server holds* becomes "the `held` arm offers no action at all", and *never silently move to a
+    /// second path* becomes "the retry arm's path is the one that failed".
+    ///
+    /// **The alternative green paths, ruled out in order:**
+    ///
+    /// 1. *Every arm returns the same thing*, so "each state has an offer" is vacuous. Ruled out by the
+    ///    labels being asserted pairwise different, and by the variants being matched by name.
+    /// 2. *The retry arm re-resolves §7.1's default*, which would be the silent move to a second path.
+    ///    Ruled out by a fixture whose failed path is deliberately **not** `default_socket_path()`, with
+    ///    that inequality asserted first so the comparison after it is a measurement.
+    /// 3. *`Held` offers a retry that would refuse forever.* Ruled out by `action_path()` being `None`
+    ///    there — and, so that the `None` is not vacuous, by `Retry` on the identical path being `Some`.
+    ///    The two differ **only** in the `held` discriminant, which is the whole claim.
+    #[test]
+    fn the_aether_offer_is_derived_per_state_and_never_substitutes_a_path() {
+        let contended = PathBuf::from("/tmp/oracle-parcel-bus-visible/held.sock");
+        assert_ne!(
+            contended,
+            oracle_aether::server::default_socket_path(),
+            "the fixture path must differ from §7.1's default, or 'the retry keeps the failed path' \
+             and 'the retry re-resolves the default' are the same assertion"
+        );
+
+        let failed = |held: bool| AetherStatus {
+            outcome: ServeOutcome::Failed {
+                path: contended.clone(),
+                error: String::from("something the reader can read"),
+                held,
+            },
+            attached: false,
+        };
+
+        // 3: the same path, the same error, one discriminant apart — and opposite offers.
+        let held = failed(true).offer();
+        let retry = failed(false).offer();
+        assert_eq!(held, AetherOffer::Held(contended.clone()));
+        assert_eq!(retry, AetherOffer::Retry(contended.clone()));
+        assert_eq!(
+            held.action_path(),
+            None,
+            "a live peer holds this path: a retry here refuses identically and forever, so the control \
+             must offer nothing rather than half-work"
+        );
+        // 2: and the retryable one keeps the path that failed rather than reaching for the default.
+        assert_eq!(
+            retry.action_path(),
+            Some(contended.as_path()),
+            "the retry must try THE SAME path; moving to another is the behaviour Bus::new refuses in \
+             so many words"
+        );
+
+        let quiet = AetherStatus {
+            outcome: ServeOutcome::NotAsked,
+            attached: false,
+        }
+        .offer();
+        assert_eq!(
+            quiet.action_path(),
+            Some(oracle_aether::server::default_socket_path().as_path()),
+            "a window nobody asked to serve can be opened here, on exactly the path --aether would have \
+             bound — anything else and the button gives the reader a bus at an address nobody dials"
+        );
+
+        let up = |attached| {
+            AetherStatus {
+                outcome: ServeOutcome::Serving(contended.clone()),
+                attached,
+            }
+            .offer()
+        };
+        assert_eq!(
+            up(true).action_path(),
+            None,
+            "there is nothing to do to a bus that is already open"
+        );
+
+        // 1: the control. Five labels, all different, or "every state draws something" is satisfied by a
+        // constant and the reader learns nothing from any of them.
+        let labels = [
+            quiet.label(),
+            retry.label(),
+            held.label(),
+            up(false).label(),
+            up(true).label(),
+        ];
+        for (i, a) in labels.iter().enumerate() {
+            assert!(!a.is_empty(), "every state must SAY something: {labels:?}");
+            for b in labels.iter().skip(i + 1) {
+                assert_ne!(
+                    a, b,
+                    "two states share one label, so the control cannot tell them apart: {labels:?}"
+                );
+            }
+        }
+        // The attached/unattached pair is the one that moves while the window runs, and it is the reason
+        // the serving arm is not an all-clear constant. Asserted by name, since it is the argument.
+        assert_ne!(
+            up(true).label(),
+            up(false).label(),
+            "a serving window must say whether anything is ON the bus — the strip's own doc calls that \
+             the fact that explains a character walking left on its own"
+        );
+    }
+
+    /// ★ **A window that was not serving becomes reachable from OUTSIDE the process, without relaunching
+    /// — and never at a live peer's expense.**
+    ///
+    /// This is the deliverable, over a real socket, because nothing short of one proves the claim: a
+    /// `serve_now` that flipped a field would satisfy every in-process assertion perfectly while leaving
+    /// the window exactly as unreachable as before. So an actual `UnixStream::connect` is the measurement.
+    ///
+    /// The fixture failure is `create_dir_all` against a **regular file** standing where the socket's
+    /// parent directory belongs — a real `io::Error` off the real bind path, and one the reader can go and
+    /// clear, which is precisely the retryable shape.
+    ///
+    /// **The alternative green paths, ruled out in order:**
+    ///
+    /// 1. *It was already reachable, so the connect after proves nothing.* Ruled out by connecting
+    ///    **before** the retry and asserting the connection is REFUSED — the negative control, measured
+    ///    rather than assumed.
+    /// 2. *`serve_now` ignores the offer and binds §7.1's default.* Ruled out by the fixture path being
+    ///    under this test's own `/tmp` directory, and by the bound path being asserted equal to the one
+    ///    that failed. A default-seeking implementation would bind the owner's live socket path and this
+    ///    assertion would catch it.
+    /// 3. *`serve_now` would happily steal a path a live server holds.* Ruled out in the second half:
+    ///    a second bus, failed against a LIVE first one, is left with no action to take at all, and the
+    ///    incumbent is asserted still reachable afterwards.
+    /// 4. *The window says it is serving while the terminal still says it is not.* The announcement is
+    ///    re-read after the retry and asserted to have changed to the serving sentence.
+    #[test]
+    fn serve_now_opens_the_bus_at_runtime_and_refuses_to_take_a_live_peers_path() {
+        // --- the retryable failure, cleared and retried in place ---
+        let p = short_path("servenow");
+        let blocker = p.parent().unwrap().join("f");
+        std::fs::File::create(&blocker)
+            .unwrap()
+            .write_all(b"not a directory")
+            .unwrap();
+        let doomed = blocker.join("s");
+
+        let mut sys = booted();
+        let mut bus = Bus::new(
+            &mut sys,
+            MachineInfo::default(),
+            false,
+            Some(Some(doomed.clone())),
+        );
+        assert!(!bus.is_serving(), "the fixture must actually have failed");
+        assert!(
+            bus.announcement().contains("NOT serving"),
+            "the launch line must already be saying the failure: {}",
+            bus.announcement()
+        );
+        // The failure is NOT a live server, so the window offers the retry.
+        assert_eq!(
+            bus.aether_status().offer(),
+            AetherOffer::Retry(doomed.clone()),
+            "a `create_dir_all` failure is something the reader can clear, so it must be retryable"
+        );
+        // (1) The negative control, measured: nothing can attach right now.
+        assert!(
+            UnixStream::connect(&doomed).is_err(),
+            "the fixture is already reachable, so the connect below would witness nothing"
+        );
+
+        // The reader goes and clears the obstacle — the whole point of a retryable refusal.
+        std::fs::remove_file(&blocker).unwrap();
+        let after = bus.serve_now().clone();
+
+        // (2) the SAME path, not a default and not a substitute.
+        assert_eq!(
+            after,
+            ServeOutcome::Serving(doomed.clone()),
+            "serve_now must bind the path that failed and no other, got {after:?}"
+        );
+        assert!(bus.is_serving());
+        // The measurement: something outside this process can now attach to this window.
+        UnixStream::connect(&doomed)
+            .expect("after serve_now an external client must be able to attach to this window");
+        // (4) and the terminal's statement moved with it.
+        assert!(
+            bus.announcement().contains("serving on")
+                && !bus.announcement().contains("NOT serving"),
+            "the launch line and the window must not describe this bus differently: {}",
+            bus.announcement()
+        );
+        // Already serving is a no-op, never a second bind and never a move.
+        let again = bus.serve_now().clone();
+        assert_eq!(again, after, "serve_now on a live bus must change nothing");
+        drop(bus);
+        cleanup(&p);
+
+        // --- (3) a LIVE peer's path is offered no action at all ---
+        let q = short_path("livepeer");
+        let mut sys_a = booted();
+        let incumbent = Bus::new(
+            &mut sys_a,
+            MachineInfo::default(),
+            false,
+            Some(Some(q.clone())),
+        );
+        assert!(incumbent.is_serving(), "the incumbent must actually be up");
+
+        let mut sys_b = booted();
+        let mut second = Bus::new(
+            &mut sys_b,
+            MachineInfo::default(),
+            false,
+            Some(Some(q.clone())),
+        );
+        assert!(
+            !second.is_serving(),
+            "a live path must refuse the second bind"
+        );
+        assert_eq!(
+            second.aether_status().offer(),
+            AetherOffer::Held(q.clone()),
+            "a refusal against a LIVE server must be classified from the error KIND, not its text — and \
+             it must be the arm that offers nothing"
+        );
+        // The button does not exist, and even calling the method behind it is inert.
+        let unchanged = second.serve_now().clone();
+        assert!(
+            matches!(unchanged, ServeOutcome::Failed { held: true, .. }),
+            "serve_now must not attempt a path a live server holds, got {unchanged:?}"
+        );
+        assert!(!second.is_serving());
+        UnixStream::connect(&q)
+            .expect("the incumbent is still reachable — nothing here may disturb a live peer");
+        drop(second);
+        drop(incumbent);
+        cleanup(&q);
     }
 }
 
