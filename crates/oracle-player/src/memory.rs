@@ -121,6 +121,23 @@ impl Space {
         }
     }
 
+    /// This space as **`emulator/read`'s `space` param** names it, or `None` for the one selector entry
+    /// that method does not serve.
+    ///
+    /// `Space::Z80` is `None` and that is the served surface, not a gap in this panel: the Z80 bus is
+    /// [`Space::read_method`]'s own row (`emulator/z80_read`), and `emulator/read`'s `space` enum has
+    /// four members. Returning a [`ReadSpace`] rather than a `&str` is what makes the fifth space
+    /// unable to reach a call that cannot carry it — see [`ReadSpace`].
+    fn as_read_space(self) -> Option<ReadSpace> {
+        match self {
+            Space::Bus => Some(ReadSpace::Bus),
+            Space::Vram => Some(ReadSpace::Vram),
+            Space::Cram => Some(ReadSpace::Cram),
+            Space::Vsram => Some(ReadSpace::Vsram),
+            Space::Z80 => None,
+        }
+    }
+
     /// The space's size **read off the machine**, or `None` for the bus — which has no single end, only
     /// two windows with a hole between them, and whose edges the read itself refuses at.
     pub fn len(self, sys: &System) -> Option<usize> {
@@ -487,11 +504,19 @@ pub fn resolve_address(bus: &mut Bus, sys: &mut System, space: Space, text: &str
         };
     }
     if space != Space::Bus {
+        // H29. The one space `emulator/read` does not name gets the panel's own sentence, because no
+        // server refusal here says the right thing: sending `{"space":"z80"}` is refused *about the
+        // space* and never mentions symbols. This is the arm `space_wire`'s doc said callers must not
+        // reach, and its sole caller reached it on every Z80 gesture; now the type has no variant to
+        // reach it with. See [`no_symbol_door`].
+        let Some(read_space) = space.as_read_space() else {
+            return Resolved::Rejected(no_symbol_door(space));
+        };
         // Deliberately a real call. See the doc above.
         return match bus.call(
             sys,
             "emulator/read",
-            &json!({"space": space_wire(space), "symbol": t, "len": 1}),
+            &json!({"space": read_space.wire(), "symbol": t, "len": 1}),
         ) {
             Answer::Err(e) => Resolved::Refused(e),
             // Unreachable today (the handler refuses a non-bus symbol outright), and if it ever stops
@@ -521,17 +546,76 @@ pub fn resolve_address(bus: &mut Bus, sys: &mut System, space: Space, text: &str
     }
 }
 
-/// The wire spelling of a space for `emulator/read`'s `space` param. `Z80` has none — that space is
-/// `emulator/z80_read`'s own row — and callers must not reach here with it.
-fn space_wire(space: Space) -> &'static str {
-    match space {
-        Space::Bus => "bus",
-        Space::Vram => "vram",
-        Space::Cram => "cram",
-        Space::Vsram => "vsram",
-        // `emulator/read` has no z80 space; the box falls back to naming the row that does.
-        Space::Z80 => "z80",
+/// **The four spaces `emulator/read`'s `space` param can name** — a type, and not a fifth arm on
+/// [`Space`], because the rule this replaces was one a caller had to remember.
+///
+/// What was here before was `space_wire(Space) -> &'static str`, carrying the doc *"`Z80` has none …
+/// and callers must not reach here with it"* beside a **sole caller that reached there with it on every
+/// Z80 gesture**. `Space::Z80` is a live selector entry, so the Memory panel's Z80 space sent
+/// `{"space": "z80"}` to `emulator/read` and the human got `-32602 \`space\` must be one of "bus",
+/// "vram", "cram", "vsram"` — a refusal *about the space*, where the sentence the doc promised is about
+/// the symbol. The comment was right about the rule and the code could not keep it.
+///
+/// This makes the bad call unrepresentable instead of forbidden: [`ReadSpace::wire`] is **total**, and
+/// the one space that has no spelling has no variant, so the only way to reach the call is through
+/// [`Space::as_read_space`], which hands back `None` for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReadSpace {
+    Bus,
+    Vram,
+    Cram,
+    Vsram,
+}
+
+impl ReadSpace {
+    /// The wire spelling of `emulator/read`'s `space` param. Total by construction — there is no
+    /// variant here this method cannot name, which is the whole reason the type exists.
+    fn wire(self) -> &'static str {
+        match self {
+            ReadSpace::Bus => "bus",
+            ReadSpace::Vram => "vram",
+            ReadSpace::Cram => "cram",
+            ReadSpace::Vsram => "vsram",
+        }
     }
+}
+
+/// **Why a name has no door in a space `emulator/read` does not serve** — read off [`METHODS`] rather
+/// than typed, on [`hash_gate`]'s pattern and for [`hash_gate`]'s reason: this is a fact about the
+/// served surface, so a surface that moves must move the sentence with it.
+///
+/// This is a [`Resolved::Rejected`], which is *"the panel's own refusal, for input the server never
+/// sees"* — and it is the one place in [`resolve_address`] that composes a sentence rather than passing
+/// one through, because **no server refusal says the right thing here**. `emulator/read` has no z80
+/// space at all, so a real call refuses about the space and never mentions symbols, and
+/// `emulator/z80_read` declares no `symbol` key, so a real call there is refused by §2.5's params
+/// closure for a key the human never typed. Both are true sentences about the wrong question.
+fn no_symbol_door(space: Space) -> String {
+    let name = space.read_method();
+    let Some(spec) = METHODS.iter().find(|m| m.name == name) else {
+        return format!(
+            "this build serves no {name}, which is the row that reads the {} space, so there is \
+             nothing here to resolve a name against. Type a hex address",
+            space.label()
+        );
+    };
+    if spec.params.contains(&"symbol") {
+        // **Loud on unmeasurable.** A future revision that adds the key means a name CAN be resolved
+        // here and this panel has not been taught how; saying "there is no door" would then be a
+        // plausible answer instead of an honest one, which is the failure `hash_gate` names.
+        return format!(
+            "{name} now declares a `symbol` param (its keys are {:?}), so the {} space has a name door \
+             this panel has not been taught to walk through. Type a hex address, and report this line",
+            spec.params,
+            space.label()
+        );
+    }
+    format!(
+        "the {} space is read by {name}, which declares no `symbol` param (its keys are {:?}): only the \
+         68000 bus has symbols. Type a hex address, or switch the selector to `bus` to resolve a name",
+        space.label(),
+        spec.params
+    )
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1085,19 +1169,68 @@ mod bus_parity {
             Resolved::Hex(0x00FF_0000)
         ));
 
-        // ⚑ And a symbol in a VDP space is refused **by the server**, in the server's words — the panel
-        // sends a real `emulator/read` rather than composing a second sentence about a rule it does not
-        // own.
-        match resolve_address(&mut b, &mut sys, Space::Vram, "Boot") {
-            Resolved::Refused(e) => {
-                assert_eq!(e.code, code::INVALID_PARAMS);
-                assert!(
-                    e.message.contains("symbol") && e.message.contains("bus"),
-                    "the server's own rule, passed through: {:?}",
-                    e.message
-                );
+        // ⚑ And a symbol in a non-bus space is refused, in **every** non-bus space — walked from
+        // `Space::ALL` rather than sampled.
+        //
+        // H29: this block used to name `Space::Vram` and assert a sentence the `Z80` arm could not
+        // produce. Picking one variant of a live selector is picking the one that passes: `space_wire`
+        // carried the doc *"callers must not reach here with `Z80`"* and its sole caller reached there
+        // on every Z80 gesture, so the panel sent `{"space":"z80"}` to a method with no z80 space and
+        // the human got `-32602 \`space\` must be one of "bus","vram","cram","vsram"` — a refusal about
+        // the space where the promised sentence is about the symbol. Walking `ALL` is what makes a
+        // sixth selector entry unable to arrive untested.
+        for space in Space::ALL {
+            if space == Space::Bus {
+                continue;
             }
-            _ => panic!("a symbol in a VDP space must be refused"),
+            match resolve_address(&mut b, &mut sys, space, "Boot") {
+                // The three spaces `emulator/read` serves: the server's own words, passed through. The
+                // panel sends a real call rather than composing a second sentence about a rule it does
+                // not own.
+                Resolved::Refused(e) => {
+                    assert!(
+                        space.as_read_space().is_some(),
+                        "{space:?} is not a space `emulator/read` names, so a refusal from it is a \
+                         refusal about the SPACE and cannot be the sentence about the symbol: {:?}",
+                        e.message
+                    );
+                    assert_eq!(e.code, code::INVALID_PARAMS, "{space:?}");
+                    assert!(
+                        e.message.contains("symbol") && e.message.contains("bus"),
+                        "{space:?}: the server's own rule, passed through: {:?}",
+                        e.message
+                    );
+                }
+                // The one space that method does not serve. There is no server refusal that says the
+                // right thing here, so the panel says it — `Rejected` is that variant's whole job — and
+                // the sentence must name the row that DOES serve the space, or a human is told a name
+                // is impossible without being told where to look instead.
+                Resolved::Rejected(why) => {
+                    assert_eq!(
+                        space.as_read_space(),
+                        None,
+                        "{space:?} IS an `emulator/read` space, so this must be the server's refusal \
+                         and not the panel's: {why:?}"
+                    );
+                    assert!(
+                        why.contains(space.read_method()),
+                        "{space:?}: the refusal must name the row that reads this space \
+                         ({}): {why:?}",
+                        space.read_method()
+                    );
+                    assert!(
+                        why.contains("symbol"),
+                        "{space:?}: …and must say what is missing, not merely that something is: \
+                         {why:?}"
+                    );
+                }
+                Resolved::Hex(a) => {
+                    panic!("{space:?}: `Boot` is not a hex literal, yet it was taken as ${a:X}")
+                }
+                Resolved::Symbol { addr, .. } => panic!(
+                    "{space:?}: only the 68000 bus has symbols, yet `Boot` resolved to ${addr:X}"
+                ),
+            }
         }
     }
 
