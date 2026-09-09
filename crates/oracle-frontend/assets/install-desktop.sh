@@ -9,8 +9,15 @@
 # refusing to install either entry because one is unbuilt would be the wrong trade.
 #
 # `--dry-run` decides everything the normal run decides and writes nothing, printing the exact list of
-# files it would create. A normal run prints the same list of what it did create. The decision is taken
-# once and both modes consume it, so what the dry run promises is what the real run does.
+# files it would create, each with the `Exec=` line it would carry — produced by the same substitution a
+# real run writes, not a second description of it. A normal run prints the same list of what it did
+# create. The decision is taken once and both modes consume it, so what the dry run promises is what the
+# real run does.
+#
+# NEITHER ENTRY NAMES A BINARY DIRECTLY ANY MORE. Both run `oracle-launch.sh` from this directory, which
+# resolves a ROM (a click passes none, and both binaries refuse to start without one), rebuilds a binary
+# that is older than the tracked sources, and only then execs the real thing with the flags that binary
+# actually accepts. See `write_entry` below for why the `Exec=` line moved into the templates.
 #
 # WHY TWO ENTRIES. The window icon can be set from inside the process on X11 and NOT on Wayland: there
 # is no Wayland protocol for a per-window icon that either toolkit here speaks. On Wayland the compositor
@@ -57,7 +64,7 @@ args=()
 for a in "$@"; do
   case "$a" in
     --dry-run) dry=1 ;;
-    -h|--help) command sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help) command sed -n '2,59p' "$0"; exit 0 ;;
     -*) echo "install-desktop: unknown option '$a' (see --help)" >&2; exit 2 ;;
     *) args+=("$a") ;;
   esac
@@ -72,6 +79,12 @@ if [ ! -x "$bin" ] && [ ! -x "$player" ]; then
   echo "no executable at $bin or $player: build one (cargo build --release -p oracle-frontend -p oracle-player) or pass its path" >&2
   exit 1
 fi
+# Every entry's `Exec=` runs this, so an entry written without it would be an icon that does nothing. It
+# is checked once, here, rather than being discovered by the person who clicks.
+if [ ! -x "$here/oracle-launch.sh" ]; then
+  echo "install-desktop: $here/oracle-launch.sh is missing or not executable; every entry's Exec= runs it" >&2
+  exit 1
+fi
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 apps="$data/applications"
 
@@ -84,6 +97,33 @@ managed=" oracle-frontend.desktop oracle-player.desktop oracle.desktop "
 # themselves as tracking the binary; a second copy of the string in this script would be the thing that
 # goes stale.
 class_of() { awk '/^StartupWMClass=/ { sub(/^StartupWMClass=/, ""); print; exit }' "$1"; }
+
+# ---------------------------------------------------------------------------------------------------
+# THE `Exec=` LINE IS THE TEMPLATE'S, NOT THIS SCRIPT'S.
+#
+# ⚑ This script used to compose it: one shared `sed "s|^Exec=.*|Exec=$exe %f|"` for both entries. That is
+# a single command line for two binaries whose CLIs disagree — `oracle-frontend` takes the ROM
+# positionally, `oracle-player` requires `--rom PATH` and its fallthrough arm REJECTS positionals — so the
+# line was correct for one of them and, for the other, produced an entry that could not open a window at
+# all: `%f` given a file became `unknown flag /path/to/rom.bin`, and a bare click became
+# `--rom is required`. Both exited to a stderr that nobody clicking an icon ever sees.
+#
+# The fix is not a second copy of the CLI in here — a copy is what goes stale. Each template now carries
+# its OWN complete `Exec=` line, with two placeholders this script fills in blindly:
+#
+#   @LAUNCHER@  the committed `oracle-launch.sh` beside these templates, which resolves a ROM, rebuilds a
+#               stale binary and then execs the real thing. Entries point at it IN THE CHECKOUT rather
+#               than at a copy under ~/.local/bin, so there is no second copy to drift.
+#   @BIN@       the binary path this run was given for that entry.
+#
+# Adding a flag to an entry is therefore an edit to that entry's own file, and this script does not need
+# to be taught about it. Substitution is on the whole file, not just the `Exec=` line, so a `TryExec=` or
+# a comment may use the same placeholders.
+substitute() { command sed -e "s|@LAUNCHER@|$1|g" -e "s|@BIN@|$2|g"; }
+write_entry() { substitute "$here/oracle-launch.sh" "$2" < "$1"; }
+# What the entry's `Exec=` will say, read back from the file that decides it rather than restated here —
+# so the dry run reports the line a real run writes, and cannot describe a different one.
+exec_line_of() { write_entry "$1" "$2" | awk '/^Exec=/ { print; exit }'; }
 
 # The first entry under $apps, other than one of ours, that already claims class $1. Empty when none does.
 claimed_by() {
@@ -160,13 +200,61 @@ report_skips() {
     echo "      the frontend entry. It is no longer written or updated here. To clear the duplicate:"
     echo "      rm $legacy"
   fi
+  report_oracle_debug
+}
+
+# ---------------------------------------------------------------------------------------------------
+# THE HAND-MADE `oracle-debug` ENTRY.
+#
+# Not this script's file, so it is never written, edited or removed here: it is reported, with the reason
+# and the exact commands, and the decision stays with the person whose desktop it is.
+#
+# ⚑ WHY IT IS WORTH A PARAGRAPH RATHER THAN A LINE. Measured on this machine, 2026-09-09:
+#
+#   * It declares `StartupWMClass=oracle-frontend`, so the conflict rule above SKIPS the frontend entry
+#     entirely. On a machine with this file, the only entry this script manages is the player's.
+#   * It runs `~/.local/bin/oracle-debug`, which execs `oracle-frontend` -- the minifb window the owner
+#     has asked to stop using in favour of the toolkit player.
+#   * Its already-serving guard is `pgrep -f 'oracle-frontend'`. That is blind to `oracle-player` holding
+#     the same socket, which is exactly the case its own warning describes (Aurora talking to a window
+#     nobody is looking at), and `-f` matches whole command lines, so a shell carrying the string matches
+#     itself.
+#   * It rebuilds only when the binary is MISSING, and otherwise execs whatever is on disk, so it is a
+#     second source of the staleness `oracle-launch.sh` exists to remove.
+#
+# THE RECOMMENDATION IS TO RETIRE IT, not to repoint it. Repointing it at the player means its class must
+# become `oracle-player`, and it would then collide with `oracle-player.desktop` the way it collides with
+# the frontend's today -- the same defect, moved onto the entry the owner actually uses. What it did is
+# already what the player entry does: `oracle-launch.sh` defaults the ROM to `aeon/s4.debug.bin` (or
+# `$ORACLE_ROM`) and passes `--aether`, so "the debug ROM with Aether on" is one click on Oracle Player.
+report_oracle_debug() {
+  local entry="$apps/oracle-debug.desktop" script="$HOME/.local/bin/oracle-debug" found=0
+  [ -e "$entry" ] && found=1
+  [ -e "$script" ] && found=1
+  [ "$found" = 1 ] || return 0
+  echo "note: a hand-made oracle-debug launcher is installed, and it is not managed here."
+  [ -e "$entry" ] && echo "        $entry"
+  [ -e "$script" ] && echo "        $script"
+  echo "      It runs the minifb oracle-frontend, its already-serving guard cannot see an oracle-player"
+  echo "      holding the same socket, and it rebuilds only when the binary is missing. It also claims"
+  echo "      StartupWMClass=oracle-frontend, which is why the frontend entry above may be skipped."
+  echo "      Oracle Player now covers what it did: oracle-launch.sh defaults the ROM to"
+  echo "      aeon/s4.debug.bin (or \$ORACLE_ROM) and passes --aether. Retiring it is the suggestion,"
+  echo "      and it is yours to make. Nothing here removes it. To do it by hand:"
+  [ -e "$entry" ] && echo "        rm $entry"
+  [ -e "$script" ] && echo "        rm $script"
+  # ⚑ Explicit, and not decoration. Under `set -e` a function whose LAST command is a failing test exits
+  # the whole script: `[ -e "$script" ]` is false whenever only the entry is present, so without this the
+  # note would abort the install it is attached to.
+  return 0
 }
 
 if [ "$dry" = 1 ]; then
   echo "install-desktop --dry-run: nothing was written. It would create:"
   for f in "${icons[@]}"; do echo "  $f"; done
   for row in ${planned[@]+"${planned[@]}"}; do
-    echo "  $apps/${row%%|*}   (Exec=${row##*|})"
+    rest="${row#*|}"
+    echo "  $apps/${row%%|*}   ($(exec_line_of "${rest%%|*}" "${rest##*|}"))"
   done
   if [ ${#planned[@]} -eq 0 ]; then echo "  (no .desktop entry: see below)"; fi
   report_skips
@@ -187,7 +275,7 @@ mkdir -p "$apps"
 # match falls back to `<app-id>.desktop`: belt and braces for one `sed`.
 for row in ${planned[@]+"${planned[@]}"}; do
   target="${row%%|*}"; rest="${row#*|}"; tmpl="${rest%%|*}"; exe="${rest##*|}"
-  sed "s|^Exec=.*|Exec=$exe %f|" "$tmpl" > "$apps/$target"
+  write_entry "$tmpl" "$exe" > "$apps/$target"
 done
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$apps" || true
@@ -197,7 +285,8 @@ command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 --noincremental >/dev/null 
 echo "wrote:"
 for f in "${icons[@]}"; do echo "  $f"; done
 for row in ${planned[@]+"${planned[@]}"}; do
-  echo "  $apps/${row%%|*}   (Exec=${row##*|})"
+  rest="${row#*|}"
+  echo "  $apps/${row%%|*}   ($(exec_line_of "${rest%%|*}" "${rest##*|}"))"
 done
 if [ ${#planned[@]} -eq 0 ]; then echo "  (no .desktop entry)"; fi
 report_skips

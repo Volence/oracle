@@ -2,8 +2,18 @@
 Type=Application
 Name=Oracle Player
 Comment=Empyrean's Genesis / Mega Drive emulator and debugger — the dockable toolkit window
-# install-desktop.sh rewrites this line with the real binary path.
-Exec=oracle-player %f
+# ⚑ THE WHOLE COMMAND LINE LIVES HERE, not in install-desktop.sh, which substitutes @LAUNCHER@ and @BIN@
+# and knows nothing else about it. It used to be built by one shared `sed "s|^Exec=.*|Exec=$exe %f|"` for
+# both entries, and one template cannot be right for two CLIs: `oracle-player` REQUIRES `--rom PATH` and
+# its argument loop rejects bare positionals (`unknown flag /path/to/rom.bin`), while `oracle-frontend`
+# takes the ROM positionally. The shared line was written for the frontend, so this entry could never open
+# a window — with a file (`unknown flag`) or without one (`--rom is required`).
+#
+# `%f` is still here and is still right: it is how "Open With" hands over a ROM. It expands to NOTHING on
+# a plain icon click, which is why the launcher resolves a ROM of its own rather than letting the binary
+# exit to a stderr nobody reads. It also rebuilds a binary older than the tracked sources, so the window
+# that opens is the UI that is committed, and passes --aether so Aurora can attach.
+Exec=@LAUNCHER@ --player --bin @BIN@ %f
 Icon=oracle
 Terminal=false
 Categories=Game;Emulator;
