@@ -157,7 +157,8 @@ that read these artifacts honour `ORACLE_AEON_DIR` for the same purpose.
 cargo run -p oracle-aether -- fixtures/aeon/s4.debug.bin [--socket PATH] [--symbols PATH] [--no-pace]
 
 # The GAME window. The ROM is positional; there is no --help here yet, and `-h` is taken as a filename.
-cargo run --release -p oracle-frontend -- fixtures/aeon/s4.debug.bin [--scale N] [--aether]
+cargo run --release -p oracle-frontend -- fixtures/aeon/s4.debug.bin [--scale N] [--aspect tv|square|integer] \
+    [--aether | --socket PATH]
 
 # The DEBUG window — note `--rom`, which is a FLAG here and not positional. `--help` works.
 cargo run --release -p oracle-player -- --rom fixtures/aeon/s4.debug.bin [--symbols PATH] [--aether]
