@@ -290,7 +290,14 @@ impl Panels<'_> {
     /// this draws. This function decides where the picture goes and what the pointer did, and nothing else.
     fn screen(&mut self, ui: &mut egui::Ui) {
         let Some(tex) = self.tex else {
-            ui.centered_and_justified(|ui| ui.label("no frame yet"));
+            ui.label("no frame yet");
+            // ⚑ **The one branch where the readout is laid out rather than overlaid**, and it is stated
+            // rather than silent. The overlay below exists so that a click's answer cannot move the
+            // picture; with no picture there is nothing to move, and a readout painted over an empty
+            // pane would be floating on nothing. So the card comes back here, and only here.
+            if let Some(r) = self.screen.readout() {
+                readout_card(ui, r);
+            }
             return;
         };
         // ⚑ **Retire a picture whose art has been replaced, immediately before the ghost can draw it.**
@@ -363,6 +370,27 @@ impl Panels<'_> {
             ) {
                 ghost(ui, p, image_rect, pos, size.x / src.x);
             }
+        }
+
+        // ⚑ **The last click's answer, OVER the picture and not above it.**
+        //
+        // The owner's second finding, 2026-09-09: *"whenever I place something this text box comes up and
+        // shifts the window for the game which doesn't feel great or look good."* It was a card in
+        // [`Panels::screen_controls`], which is drawn **above** the picture in the same vertical stack, so
+        // [`Panels::screen`] got `available_size()` minus the card and the picture jumped down by the
+        // height of a sentence the moment a click produced one — and jumped back the next time the
+        // sentence was shorter.
+        //
+        // Deleting it was never an option: it is the standing answer to the click, and the whole reason
+        // this panel is honest about a refusal. So it moves onto the glass, where it costs no layout at
+        // all: [`overlay_block`] paints through `Painter` against a rect that was already allocated, so
+        // there is no arrangement in which it can move anything.
+        //
+        // **Bottom left**, opposite the armed notice at the top: the two are simultaneously present on
+        // every placement, and a corner each is what keeps them from stacking into the single tall block
+        // that is what he was complaining about in the first place.
+        if let Some(r) = self.screen.readout() {
+            readout_overlay(ui, image_rect, r);
         }
 
         if let (true, Some(pos)) = (hit.clicked(), hit.interact_pointer_pos()) {
@@ -558,50 +586,6 @@ impl Panels<'_> {
                 ui.visuals().weak_text_color()
             };
             ui.colored_label(colour, &n.text);
-        }
-        if let Some(r) = self.screen.readout() {
-            // ⚑ **The last click's answer, laid out in three weights instead of one wrapped block.**
-            //
-            // The three parts are `screen_pick::Readout`'s own fields, handed over by whoever composed
-            // them: `pick::Pick` already carries the sentence and the addressing separately, and the
-            // outcome is this panel's own count. Nothing here recovers structure by looking at the text,
-            // which is the same rule that keeps the colour on `refused` rather than on a `"REFUSED"`
-            // prefix.
-            //
-            // The card is what makes it findable at all. A standing readout drawn as loose text under a
-            // column of controls reads as one more control's label, which is how a correct answer ends up
-            // unread.
-            //
-            // Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
-            let refused = r.refused;
-            card(ui, |ui| {
-                let head = if refused {
-                    ui.visuals().error_fg_color
-                } else {
-                    ui.visuals().strong_text_color()
-                };
-                ui.label(egui::RichText::new(&r.head).color(head));
-                if let Some(d) = &r.detail {
-                    // The addressing recedes and goes monospace: it is what a reader checks the sentence
-                    // against, in the spelling they would compare with a tool's reply.
-                    ui.label(
-                        egui::RichText::new(d)
-                            .monospace()
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                }
-                if let Some(o) = &r.outcome {
-                    ui.label(
-                        egui::RichText::new(o)
-                            .text_style(egui::TextStyle::Small)
-                            .color(if refused {
-                                ui.visuals().error_fg_color
-                            } else {
-                                crate::theme::SUCCESS
-                            }),
-                    );
-                }
-            });
         }
     }
 
@@ -3227,6 +3211,90 @@ fn armed_frame(ui: &egui::Ui, picture: egui::Rect, notice: &str) {
         &[(notice.to_owned(), face, ui.visuals().warn_fg_color)],
         true,
     );
+}
+
+/// **The click's standing answer, drawn over the picture at its bottom left.**
+///
+/// The three parts are [`screen_pick::Readout`]'s own fields, handed over by whoever composed them:
+/// `pick::Pick` already carries the sentence and the addressing separately, and the outcome is the
+/// panel's own count. Nothing here recovers structure by looking at the text, which is the same rule that
+/// keeps the colour on `refused` rather than on a `"REFUSED"` prefix.
+///
+/// Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
+fn readout_overlay(ui: &egui::Ui, picture: egui::Rect, r: &screen_pick::Readout) {
+    let style = |s: egui::TextStyle, fallback: f32| {
+        ui.style()
+            .text_styles
+            .get(&s)
+            .cloned()
+            .unwrap_or_else(|| egui::FontId::proportional(fallback))
+    };
+    let body = style(egui::TextStyle::Body, 13.0);
+    let mono = style(egui::TextStyle::Monospace, 12.0);
+    let small = style(egui::TextStyle::Small, 10.0);
+    // Against a picture rather than against the panel, so the head is the theme's own emphasis colour
+    // and not `strong_text_color`, which is tuned for a panel ground and can vanish on light game art.
+    let head_colour = if r.refused {
+        ui.visuals().error_fg_color
+    } else {
+        egui::Color32::WHITE
+    };
+    let mut lines = vec![(r.head.clone(), body, head_colour)];
+    if let Some(d) = &r.detail {
+        // The addressing recedes and goes monospace: it is what a reader checks the sentence against, in
+        // the spelling they would compare with a tool's reply.
+        lines.push((d.clone(), mono, egui::Color32::from_white_alpha(190)));
+    }
+    if let Some(o) = &r.outcome {
+        lines.push((
+            o.clone(),
+            small,
+            if r.refused {
+                ui.visuals().error_fg_color
+            } else {
+                crate::theme::SUCCESS
+            },
+        ));
+    }
+    overlay_block(ui, picture, &lines, false);
+}
+
+/// The same readout **as a laid-out card**, for the one state that has no picture to draw it over.
+///
+/// A second rendering of one fact, which this file otherwise refuses — and it is here because the
+/// alternative is worse: a panel that showed nothing when there is no frame yet would swallow exactly the
+/// refusals a person hits before the first frame. It reads the identical fields in the identical order.
+fn readout_card(ui: &mut egui::Ui, r: &screen_pick::Readout) {
+    let refused = r.refused;
+    let head = r.head.clone();
+    let detail = r.detail.clone();
+    let outcome = r.outcome.clone();
+    card(ui, |ui| {
+        let head_colour = if refused {
+            ui.visuals().error_fg_color
+        } else {
+            ui.visuals().strong_text_color()
+        };
+        ui.label(egui::RichText::new(head).color(head_colour));
+        if let Some(d) = detail {
+            ui.label(
+                egui::RichText::new(d)
+                    .monospace()
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+        if let Some(o) = outcome {
+            ui.label(
+                egui::RichText::new(o)
+                    .text_style(egui::TextStyle::Small)
+                    .color(if refused {
+                        ui.visuals().error_fg_color
+                    } else {
+                        crate::theme::SUCCESS
+                    }),
+            );
+        }
+    });
 }
 
 /// **Draw the preview under the pointer, as a ghost.**
@@ -6423,6 +6491,84 @@ mod planes_layout_tests {
         assert!(
             !NO_ROOM_FOR_PICTURE.contains("  ") && !NO_ROOM_FOR_PICTURE.contains('\t'),
             "P2: a run of spaces or a tab is a column drawn inside a string"
+        );
+    }
+}
+
+/// **Nothing drawn over the picture may cost the picture a pixel of layout.**
+///
+/// The owner's second finding, 2026-09-09: *"whenever I place something this text box comes up and shifts
+/// the window for the game."* The readout was a card **above** the picture in the same vertical stack, so
+/// the picture moved down by the height of whatever sentence the last click produced.
+///
+/// This is the property that fix rests on, and it is checkable without a window because `egui` will build
+/// a `Ui` on a headless `Context` — the same harness `crate::input`'s key tests already use. The two
+/// overlays are run against a real `Ui` and the `Ui`'s own layout state is compared before and after: a
+/// helper that reached for `ui.label` instead of `Painter` would move the cursor, and that is exactly the
+/// regression.
+#[cfg(test)]
+mod overlay_layout_tests {
+    use super::*;
+
+    fn readout() -> screen_pick::Readout {
+        screen_pick::Readout {
+            head: "a long enough sentence that laying it out would visibly move whatever came after it"
+                .into(),
+            detail: Some("vram 0x0000C123..0x0000C124".into()),
+            outcome: Some("2 watches armed by this click".into()),
+            refused: false,
+        }
+    }
+
+    #[test]
+    fn an_overlay_on_the_picture_takes_no_layout_space() {
+        let ctx = egui::Context::default();
+        let mut before = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        let mut after = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        let r = readout();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            // A picture rect the caller allocated for the image, exactly as `Panels::screen` does.
+            let picture = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(320.0, 224.0));
+            before = (ui.min_rect(), ui.cursor());
+            readout_overlay(ui, picture, &r);
+            armed_frame(
+                ui,
+                picture,
+                "SPAWN: ObjDef_Spring. Press Esc to leave the mode.",
+            );
+            after = (ui.min_rect(), ui.cursor());
+        });
+        // `FullOutput` panics on drop with unapplied texture deltas; no backend applies them here.
+        out.textures_delta.clear();
+        assert_eq!(
+            before.0, after.0,
+            "the overlays grew the Ui's minimum rect, so whatever is laid out next moves"
+        );
+        assert_eq!(
+            before.1, after.1,
+            "the overlays advanced the layout cursor, which is how the picture got shifted"
+        );
+    }
+
+    /// The control for the assertion above: the **card** form, which is what the overlay replaced, does
+    /// move the cursor. Without this leg a broken headless `Ui` would make the test above pass by
+    /// measuring nothing at all.
+    #[test]
+    fn the_card_form_the_overlay_replaced_does_move_the_layout() {
+        let ctx = egui::Context::default();
+        let mut before = egui::Rect::NOTHING;
+        let mut after = egui::Rect::NOTHING;
+        let r = readout();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            before = ui.cursor();
+            readout_card(ui, &r);
+            after = ui.cursor();
+        });
+        out.textures_delta.clear();
+        assert_ne!(
+            before, after,
+            "the control witnesses nothing: this Ui does not move its cursor for a laid-out card \
+             either, so the overlay test above is measuring an inert harness"
         );
     }
 }
