@@ -113,3 +113,60 @@ Objects tab: engine `aeon-sst`, table `0x00FF8FFE`, 66 slots, `$50` bytes each.
 Identified: **slot 36, `Spring_Main`, addr `0x00FF9B3E`, code `0x2A3A`, at (520,536)**; also
 slot 0 `Player_Main` `0x00FF8FFE` code `0x0208` at (256,256).
 Evidence `shots/job5-a-objects-tab.png`, `shots/job5-b-objects-live.png`.
+
+---
+
+## The game window's half of jobs 3, 4, 5
+
+Full inventory of `oracle-frontend`'s command palette (the only in-window discovery route it
+advertises), walked end to end: `shots/job-fe-a-palette.png`, `job-fe-f-palette-lenses.png`,
+`job-fe-g-palette-bottom.png`.
+
+GAME (6) · SAVE STATES (5) · WATCH (2) · LENSES (7: watch ticker, CPU chip, CPU registers,
+sprite outlines, CRAM strip, hover callout, profiler panel) · DISPLAY LAYERS (4) ·
+SPAWN OBJECTS (2) · SETTINGS (5).
+
+* **Job 3 (breakpoint): not available in the game window at all.** Pause and step-one-frame only.
+* **Job 4 (register): available** — LENSES ▸ TOGGLE CPU REGISTERS. **Memory: not available.**
+* **Job 5 (live objects): not available.** SPAWN OBJECTS places objects, it does not list them.
+
+`shots/job-fe-h-cpu-registers-lens.png` — the lens shows D0-D7, A0-A7, `SR $2300 S`, and a
+symbol line reading `ORLDLINES.NO_SWEEP+$4`: **the symbol name is clipped on the LEFT**, so the
+one field that tells you where the CPU is cannot be read. There is **no numeric PC** in this
+lens; `oracle-player` prints `PC 00002334` plainly.
+
+## Two windows, two machines, and nothing says so
+
+08:03:50 UTC, one display, one ROM, both windows up:
+
+* `oracle-player` top bar: `HALTED BY BREAKPOINT b0 at 0x00002334 (VBlank_Handler) (1 halt; 1 still armed)`
+  (`shots/twomachines-player-still-halted.png`)
+* `oracle-frontend` title in the same seconds: `Oracle: draws 45579` → `Oracle: draws 45779`
+
+They are separate emulator instances. Neither window's chrome says which machine it is, and both
+show the same ROM path, the same game and the same title art. Job 3 — "stop the game" — succeeds
+in one window and has no effect whatsoever on the game the person is watching in the other.
+
+## Look / taste captures for the owner (NOT findings)
+
+* `oracle-player` Registers: the register file needs a scroll in a 1280x800 window — D0-D7 and
+  A0-A7/PC/SR are never on screen together in the default arrangement.
+* `oracle-player` several panels clip **horizontally**: `emulator/player_stat…`,
+  `not present (the sl…`, `only cartridge ROM ($000000..rom_le…`, and the `lookup_symbol` JSON
+  reply wraps mid-token.
+* `oracle-frontend` palette rows clip horizontally and the hotkey column collides with the label:
+  `SPAWN MODE: CLICK TO PLACE AN OBJEC` + `P`, `AUDIO FILTER: VA0-VA2 / VA3-VA6 / R` + `F`.
+* `oracle-player` Memory: the write hint says *"call `emulator/pause` first"* — an RPC method name
+  offered to a GUI user who has a **pause** button in the same window's top bar.
+
+## What I could not drive, and what would
+
+* **Audio** — both binaries fail `snd_pcm_open` (`Host is down`) under the private
+  `XDG_RUNTIME_DIR`. No volume/mute/sound finding is available. Would need the owner's session.
+* **Gamepad** — `gamepad: no controllers detected`. Presenting a virtual pad needs `/dev/uinput`,
+  which is forbidden here. BLOCKED by rule, not attempted.
+* **Pacing / smoothness** — out of scope by charter, and the player itself says
+  `Pacing is UNMEASURED`.
+* **The `--dock every-tab` arrangement and the owner's own stored layout** — my instance writes to
+  a private `app.ron` and starts from the default arrangement.
+* **The emulator MCP** — never called.
