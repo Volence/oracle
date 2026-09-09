@@ -407,11 +407,15 @@ mod tests {
     }
 
     /// Design §7 Test 3 — producer smoke path: render frames into a persistent `AudioSink`, drain, convert,
-    /// push into the ring, pop, and assert `2 · (rate/60)` f32 flow per rendered frame in FIFO order.
+    /// push into the ring, pop, and assert one frame's worth of f32 flows per rendered frame in FIFO order.
+    ///
+    /// The per-frame size is asked of the core **per frame** (lens finding H8): it was `2 · (rate/60)`,
+    /// which is 1600 at 48 kHz where an NTSC frame is really 801.03 samples. Ring capacity still uses the
+    /// nominal size, because a capacity is not a frame.
     #[test]
     fn producer_smoke_path_flows_samples() {
         let rate = 48_000u32;
-        let per_frame = 2 * (rate as usize / 60); // 1600 f32 / frame
+        let per_frame = frame_samples(rate);
         let mut sink = AudioSink::new(rate);
         // A ring large enough to hold several frames without overrun for this test.
         let (mut prod, mut cons) = AudioRing::new(8 * per_frame).split();
@@ -427,12 +431,16 @@ mod tests {
         for f in 1..=3u64 {
             sink.on_step_boundary(0, f); // renders exactly one frame
             let pcm = sink.drain();
-            assert_eq!(pcm.len(), per_frame, "one frame renders 2·(rate/60) i16");
+            assert_eq!(
+                pcm.len(),
+                2 * oracle_core::synth::samples_in_frame(rate, f - 1) as usize,
+                "one frame renders 2 · that frame's own sample count"
+            );
             let dropped = push_frame(&mut prod, &pcm, gain_for(VOLUME_STEPS, false));
             assert_eq!(dropped, 0, "ring is sized to not overrun in this test");
-            let mut out = vec![0.0f32; per_frame];
+            let mut out = vec![0.0f32; pcm.len()];
             let n = cons.pop_slice(&mut out);
-            assert_eq!(n, per_frame, "every pushed sample pops back out");
+            assert_eq!(n, pcm.len(), "every pushed sample pops back out");
             if out.iter().any(|&s| s != 0.0) {
                 popped_any_nonzero = true;
             }
@@ -745,9 +753,22 @@ mod tests {
     /// ticking at the window's *measured* 59.63 fps (minifb's rate limiter can never exceed its target and
     /// always lands under it) and a device consuming at exactly 44,100 Hz in fixed blocks.
     ///
-    /// Open-loop — one emulated frame per iteration, whatever the ring says — that is a permanent 0.62 %
+    /// Open-loop — one emulated frame per iteration, whatever the ring says — that is a permanent
     /// production deficit, and the assertion below is that it audibly breaks: the ring pins at empty and the
     /// callback silence-fills a large fraction of its buffers. With the feedback loop, zero.
+    ///
+    /// ⚑ **The deficit's SIZE moved under lens finding H8, and this row is written so that it can.** The
+    /// producer's frame was `sample_rate / 60` = 735 samples, giving `735 x 59.6272 = 43,826`/s against
+    /// 44,100 — a 0.6213 % deficit. An NTSC frame is really 735.9476 samples, so the true deficit is
+    /// **0.4932 %**, and the open-loop underrun rate at 256-frame blocks fell from 5.2 % to 4.0 %. The old
+    /// `>= 5` floor was tuned to the defective arithmetic and sat within 4 % of its own vacuity — one
+    /// correct change to the frame length tipped it over.
+    ///
+    /// So the load-bearing assertion is now the **threshold-free** one: a deficit, however small, drains any
+    /// reservoir, so the open-loop ring reaches **empty**. That is true for any deficit and false the
+    /// instant the producer keeps up, which is exactly the property this row exists to hold. The percentage
+    /// floor is kept as a coarse "and it is audibly bad", re-measured, and deliberately not re-tuned to the
+    /// edge.
     #[test]
     fn occupancy_feedback_eliminates_the_underruns_an_open_loop_producer_guarantees() {
         const RATE: f64 = 44_100.0;
@@ -790,9 +811,21 @@ mod tests {
         }
 
         for block in [256usize, 512, 1024, 2048] {
-            let (under, cbs, _, _) = sim(block, false, 30.0);
+            let (under, cbs, _, ran) = sim(block, false, 30.0);
+            // **The mechanism, with no tuned number in it**: over the run the open-loop producer hands
+            // the device strictly less audio than the device asks for. That is what "deficit" means, it
+            // holds for a deficit of any size, and it is false the instant the producer keeps up — which
+            // is why it, and not the percentage below, is the assertion this row rests on. It is also the
+            // claim `RING_FRAMES`' doc rests on: no ring capacity can cover a shortfall that never stops.
+            let produced = ran * frame_samples(RATE as u32);
+            let demanded = cbs * block * 2;
             assert!(
-                under * 100 / cbs >= 5,
+                produced < demanded,
+                "open loop at {block}-frame blocks produced {produced} f32 against {demanded} demanded \
+                 — with no shortfall there is no crackle to fix and every assertion below is vacuous"
+            );
+            assert!(
+                under * 100 / cbs >= 3,
                 "open loop at {block}-frame blocks must underrun badly (this is the reported crackle): \
                  {under}/{cbs}"
             );
