@@ -3268,3 +3268,64 @@ and that case is the whole point of the row.
 
 ⚑ **This is currency-touching**: an even-byte I/O write that used to drop now lands. Price it as a
 byte-mover and sequence it accordingly; it does not ride along with an unrelated parcel.
+
+## 2026-09-09T14:51:37Z — GUI-LAYERS moved whole from `OVERSEER.md` (discharged, not deferred)
+
+Cut proved by `tools/prove_doc_split.py`: exit 0, PROVED by all three proofs, 3 derived cut points,
+0 failing the predicate. Queued 2026-08-26 on three claims, ALL measured false on 2026-09-09 before
+the cut: `oracle-frontend` does have layer toggles; `pick::resolve` takes a `LayerMask` with no
+unmasked twin; and the conditional invariant is asserted, not merely noted. Aurora's five consumer
+rules were adopted and are satisfied in shipped code. The one hazard that binds FUTURE work (the
+blob-local rebase landing outside the blob) was kept in the head rather than moved.
+
+## ▶ QUEUED, GUI-LAYERS: the player window's layer toggles + click-an-object
+
+**Recommended to the owner 2026-08-26, not yet picked.** The bus can now hide layers; `oracle-frontend`
+cannot. It draws its own window and `pick.rs` resolves attribution **unmasked**, so a bus-set mask
+changes the bus's answers and not the picture, and `pick.rs`'s *"this panel and
+`emulator/pixel_attribution` must never disagree"* invariant is now **conditional on no mask being
+set.** This is also the natural home for the owner's unqueued *click an object and be told what it is*.
+
+**⚑ CONSUMER DESIGN INPUT, solicited from aurora BEFORE shaping the parcel and adopted: their
+
+*(The incident that earned this: `OVERSEER-LOG.md`, orig lines 729-738.)*
+priority order, kept.** *(Asked for deliberately: they are the editor and the only lane that would
+consume this. Cheaper before the design than after.)*
+1. **The answer must name its own subject, in a sentence.** Their expensive lesson the same day: they
+   shipped a band lens that highlighted 1,244 cells, entirely correct, and the owner's reaction was
+   *"what are the purple boxes"*, not *that's wrong* but ***what is that***. A feature that works
+   perfectly and communicates nothing. So the top line is prose a person reads; the verdict enum stays
+   underneath for tools. `[planeB:won, backdrop:lostToPriority]` is the right data and the wrong answer.
+2. **Return identity a client can JOIN ON. ⚑ ALREADY SATISFIED: do not build it.** They asked for the
+   nametable word at the dot; `pixel_attribution.cell` already returns it decoded (`tile`, `tileAddr`,
+   `palette`, `hflip`, `vflip`, `priority`), iff the winner is planeA/planeB/window. **Verified live at
+   `d285ecb`**, not read off the schema: `(160,100) → tile 1066, tileAddr 0x8540, palette 2, vflip`.
+   **`tile` is VRAM-ABSOLUTE** (`tileAddr == tile*32`, checked: 1066×32 = 0x8540), so aurora rebases by
+   `BG_TILE_BASE_SLOT` for blob-local: their model's space, and the direction their injector already
+   goes. Their warning is the durable part: **an index whose space is unstated is a transpose bug
+   waiting to happen**; the fragment states the space in the field's own description, which is where it
+   belongs. Filed as *satisfied*, not *genuinely-new*: the triage exists to catch exactly this.
+   **⚠ AND THE HAZARD ON THE OTHER SIDE OF THAT JOIN, found by aurora against this seat's own sample
+   dots: if OUR panel ever names a blob slot, it inherits this check.** The rebase can land **outside
+   the blob**, and `BG_TILE_BASE_SLOT = 1024` (verified firsthand as a literal at aurora
+   `origin/master`), so **any `tile < 1024` rebases NEGATIVE.** Worked on the two dots this lane
+   sampled: `1066 → 42`, inside their 320-tile blob; **`1456 → 432`, outside it**, and *not rescued by
+   capacity*, since 432 < 448. **Their durable formulation: in-capacity is not in-blob.** *(Base slot is
+   ours firsthand; the 448 capacity and the 320-tile blob are their measurements, not re-derived here.)*
+   Plane B can legitimately be showing engine art, another act's art, or a slot past the blob's end:
+   the corpus-ROM sample is not a defect, it is proof the class is reachable. **So a click-to-identify
+   surface must answer *"that is not part of your background"* for those, not index, and above all not
+   guess: an unchecked rebase either throws or confidently names a slot the author does not own, which
+   is indistinguishable from a correct answer.** That is point 3's loud-on-unmeasurable rule arriving on
+   the join instead of on the mask, which is what makes it a class rather than two tips.
+3. **Assert the conditional invariant rather than noting it.** A rule with an unasserted precondition is
+   this workspace's recurring defect; their form is **loud-on-unmeasurable beats a plausible answer**:
+   their layout harness answers *"COULD NOT MEASURE A FIT"* under a planted defect rather than "fits".
+   So while a mask is set the panel SAYS so in the answer rather than quietly describing a picture that
+   is not on screen, and the human-facing line carries it, not only the wire caveat.
+4. They will honour the framebuffer-digest ruling and not fingerprint a masked view.
+5. **A lens must state that it is on, persistently, and this is a CORRECTNESS requirement rather than
+   polish**: their point, and it had not been on this seat's list. A mask that changes the picture with
+   no standing on-screen statement is the unlabelled-highlight defect one level up: *the author will
+   forget, and then read a masked picture as the real one.* Their canvas palette treats colour as a
+   language deliberately; a toggle that fights that is worse than none.
