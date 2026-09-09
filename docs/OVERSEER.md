@@ -71,7 +71,14 @@ moved with them.)*
    `schema_conformance.rs:6,222` and the `resolve_target` `oneOf` divergence (**both folded into
    the in-flight `run_to_scanline` parcel**; remove from here once that lands), and a proposed
    **error-surface gate**: since no fragment declares error conditions, a suite validating only
-   replies is blind to every error obligation. ⚑ **The gate is still a proposal; the defect that
+   replies is blind to every error obligation. ⚠ **NO LONGER A PROPOSAL — `crates/oracle-aether/tests/request_bounds.rs`
+   LANDED 2026-09-09 (`84e14f6`, `5f6a670`, `c4eeae5`) and covers all 97 numeric bound obligations, fragment-derived at
+   runtime. The non-numeric half landed on `parcel/error-surface-gate` the same night. This paragraph went on calling it
+   a proposal for the whole day, and a dispatch was written from it — the EIGHTH row this week whose justification aged
+   while the row sat still.** ⚑ **And it is the sharpest of the eight because the rule that would have caught it was
+   already written and already being enforced — ON AGENTS. Every fix brief that night carried *"check whether the WORK
+   landed, not whether the ROW is open"*, and this seat did not run it on its own row selection. A rule encoded as an
+   instruction to others is not a rule you are following.** ~~The gate is still a proposal; the defect that
    demonstrated it is not.** The unenforced `count` bounds named in the 2026-09-04 §11.33 registration
    (the `emulator/step` row in the follow-up register) were fixed by the CR-STEP-SHORTFALL
    parcel (`step.rs`'s two refusal rows now assert them from the wire), so the standing argument for
