@@ -27,3 +27,31 @@ exclude = ["crates/oracle-panels-spike"]
 edition = "2021"
 license = "MIT"
 repository = "oracle-next"
+# THE RUST FLOOR — the single declaration of the toolchain this workspace is built against.
+#
+# Until 2026-09-09 this number lived nowhere in the project and was restated as a literal in four CI
+# steps and one README sentence; nothing could detect the five drifting apart, and the local box has
+# been on 1.98.0 since 2026-08-18. It is declared HERE because this is cargo's own MSRV key: cargo
+# enforces it at build time with a named error, on any machine, with no rustup involved. A
+# `rust-toolchain.toml` was rejected on measurement rather than taste — that file is read by rustup,
+# there is no rustup on the development box (the toolchain is the Arch system package), so it would
+# have been a mechanism that does nothing and looks like a fix.
+#
+# The five restatements now DERIVE from this line: `tools/rust-floor.sh` prints it, every CI job runs
+# that script into a step output, and `crates/oracle-core/tests/toolchain_floor.rs` fails if any
+# workflow reintroduces a literal that disagrees with it, or if a member stops inheriting it.
+#
+# WHY 1.96.0 AND NOT THE LOCAL 1.98.0 — measured, not assumed:
+#   * max declared `rust-version` across the 539 of 544 locked packages present in the registry cache
+#     is 1.95 (the egui/eframe 0.36 family); the 5 unmeasured are this workspace's own members.
+#   * no `#![feature(...)]` gate anywhere in `crates/`; edition 2021 needs >= 1.56.
+#   * every API named in the 1.97.0 and 1.98.0 release notes was grepped for across `crates/`: zero
+#     hits. (`from_str_radix` appears widely but only on plain integers, stable since 1.0 — the 1.98
+#     stabilization was `NonZero<{integer}>::from_str_radix`, which has no hits.)
+#   * the two newest-looking APIs actually in use are `slice::as_chunks` (stable 1.88) and
+#     `usize::div_ceil`, which `docs/superpowers/plans/2026-08-17-player-s3-lenses.md` records as
+#     deliberately available at 1.96.
+# NOT closed: there is no 1.96 toolchain and no rust-src on this box, so none of the above is a
+# compile of the tree under 1.96, and CI cannot stand in for one while it is red. Raising this to
+# 1.98.0 would describe what the code is developed against instead; that is the owner's call.
+rust-version = "1.96.0"
