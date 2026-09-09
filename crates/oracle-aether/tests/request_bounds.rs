@@ -255,7 +255,12 @@ fn baseline(method: &str, field: &str) -> Option<Value> {
         "emulator/write_memory" if field == "disp" => {
             json!({"symbol": PROBE_SYMBOL, "disp": 0, "value": 0, "width": 1})
         }
-        "emulator/write_memory" => json!({"addr": "0x00FF0500", "value": 0, "width": 1}),
+        // **`width: 4`, and the max control is why.** `value`'s ceiling is 4294967295, which the fragment
+        // declares legal and which the server refuses against a byte width — *"`value` 4294967295 does
+        // not fit width 1"*, measured, not assumed. The bound and the width are one joint constraint, so
+        // the baseline has to carry the width its own ceiling implies or the control reads the server as
+        // over-strict when it is exactly right.
+        "emulator/write_memory" => json!({"addr": "0x00FF0500", "value": 0, "width": 4}),
         "emulator/z80_read" => json!({"addr": "0x0000", "len": 1}),
         "emulator/z80_write" => json!({"addr": "0x0000", "value": 0}),
         _ => return None,
@@ -321,6 +326,36 @@ const UNCOVERED: &[(&str, &str)] = &[
 /// `common::schema::KNOWN_CONTRACT_DIVERGENCES` already establishes for this repo — never silenced — and
 /// [`the_registered_unserveable_bound_is_still_live`] fails the day it stops being true, so it cannot rot
 /// after a re-vendor.
+/// **Maxima the in-bounds control does not send, and why each.**
+///
+/// Every one of these is a value the fragment declares LEGAL, so each entry is a ceiling this file does
+/// not exercise — the differential's boundary at the top end, written down rather than left implicit.
+///
+/// **The list started at five and measurement cut it to two.** `scanlines.count`, `step.count` and
+/// `write_memory.value` were all skipped on a plausible-sounding reason first, and all three were wrong:
+/// 224 lines from `startLine: 0` serves fine; a million-instruction step costs 0.34 s because
+/// `spawn_for_sweep`'s one-frame budget clamps it anyway; and `value`'s ceiling is refused only because
+/// the baseline carried `width: 1`, which is a baseline bug and now says `width: 4`. A skip written from
+/// reasoning rather than from a measurement is a hole with a confident label on it.
+const MAX_CONTROL_SKIPS: &[(&str, &str, &str)] = &[
+    (
+        "emulator/wait_for_break",
+        "timeoutMs",
+        "300000 is five minutes inside one blocking call. REASONED, NOT MEASURED — deliberately, since \
+         measuring it costs the five minutes: `common::sweep_params` records this row stalling the \
+         whole method sweep on its 30-second DEFAULT and tripping the socket read deadline, and 300000 \
+         is ten times that (F-WAITBREAK-CEILING-UNEXERCISED)",
+    ),
+    (
+        "emulator/press",
+        "frames",
+        "the fragment's ceiling is 1000 frames but `spawn_for_sweep` gives the engine a ONE-frame \
+         budget, so this server legitimately refuses anything above 1 here. The ceiling is a harness \
+         artifact, not a server one — and the cost of exercising it honestly is a thousand frames of \
+         emulation per run (F-PRESS-CEILING-UNEXERCISED)",
+    ),
+];
+
 const KNOWN_UNSERVEABLE: &[(&str, &str, i64, &str)] = &[(
     "emulator/z80_read",
     "len",
@@ -573,14 +608,24 @@ fn every_declared_bound_is_refused_by_name_one_step_outside() {
     assert!(passed > 0, "no probe was measured at all: {report}");
 }
 
-/// **The anti-vacuity control.** The same baseline with a LEGAL value in the same field must NOT be
-/// refused by name.
+/// **The anti-vacuity control, on BOTH ends the fragment declares.** The same baseline with a LEGAL
+/// value in the field must NOT be refused by name.
 ///
 /// Without it, a handler that rejected `count` unconditionally — or a baseline that had gone stale in
 /// some *other* field and was being refused for that instead — would pass the differential above while
-/// proving nothing. The legal value used is the fragment's own `minimum` wherever there is one, because
-/// the maximum end of several of these bounds (`step` at a million instructions, `memory_hash` at four
-/// megabytes, `wait_for_break` at five minutes) is a legal request this suite should not be making.
+/// proving nothing. That is not hypothetical: it is how the `write_memory` `disp` baseline was caught,
+/// and nothing else in this file could have caught it.
+///
+/// **Why both ends, and how that got found.** The control originally probed the `minimum` only. Turning
+/// the by-name assertion red on purpose (by stripping the field name out of `hex::parse_count`) printed
+/// the effective range beside every refusal, and `emulator/press` read `1..=1` — because
+/// `spawn_for_sweep` gives the engine a one-frame budget and `press` caps `frames` against it, not
+/// against the fragment's 1000. A min-only control cannot see that: an over-strict ceiling refuses the
+/// out-of-bounds probe for the right code and the right name, and the gate reads green while the
+/// fragment's actual ceiling is never exercised. A server that refuses legal requests is a defect in the
+/// same family as one that accepts illegal ones, and only the max end can see it.
+///
+/// The maxima this control does not send are declared in [`MAX_CONTROL_SKIPS`], each with its reason.
 #[test]
 fn the_in_bounds_control_is_never_refused_by_name() {
     let sites = declared_bounds();
@@ -589,19 +634,38 @@ fn the_in_bounds_control_is_never_refused_by_name() {
     let uncovered: BTreeSet<&str> = UNCOVERED.iter().map(|(m, _)| *m).collect();
     let mut failures = Vec::new();
     let mut checked = 0usize;
+    let mut legal_values: Vec<(&BoundSite, i64)> = Vec::new();
 
     for site in &sites {
         if uncovered.contains(site.method.as_str()) {
             continue;
         }
-        let Some(base) = baseline(&site.method, &site.field) else {
+        if baseline(&site.method, &site.field).is_none() {
             continue;
-        };
-        let legal = match (site.min, site.max) {
-            (Some(min), _) => min,
-            (None, Some(max)) => max,
-            (None, None) => continue,
-        };
+        }
+        if let Some(min) = site.min {
+            legal_values.push((site, min));
+        }
+        if let Some(max) = site.max {
+            if Some(max) == site.min {
+                continue; // a one-value range; the min probe already sent it
+            }
+            match MAX_CONTROL_SKIPS
+                .iter()
+                .find(|(m, f, _)| *m == site.method && *f == site.field)
+            {
+                Some((_, _, why)) => println!(
+                    "  max control SKIPPED at {} {} = {max} — {why}",
+                    site.method,
+                    site.display_path()
+                ),
+                None => legal_values.push((site, max)),
+            }
+        }
+    }
+
+    for (site, legal) in legal_values {
+        let base = baseline(&site.method, &site.field).expect("filtered above");
         if let Some((_, _, _, why)) = KNOWN_UNSERVEABLE
             .iter()
             .find(|(m, f, v, _)| *m == site.method && *f == site.field && *v == legal)
