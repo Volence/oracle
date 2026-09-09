@@ -1819,12 +1819,29 @@ impl Panels<'_> {
         card(ui, |ui| {
             fact_grid(ui, "objects-layout", &pool.layout_facts());
         });
-        ui.small(
-            "Every address here is read out of the loaded listing: the base from Object_RAM/Player_1, \
-             the stride from Player_2 minus Player_1, the count from Object_RAM_End, and the ring \
-             buffer below from Ring_Count minus Ring_Buffer. Nothing is hardcoded, because an \
-             object-table address is a fact about one build.",
-        );
+        // ⚑ **Folded, not deleted, and this is the only prose on the tab that is.** The owner's fourth
+        // finding is about reading the tables — *"look how difficult objects is to read"*, *"especially
+        // if it's not fully open"* — and on a short pane four lines of derivation sat between the card
+        // and the first table he came here for.
+        //
+        // It is a derivation a reader needs **once**, when they first doubt the addresses, and never
+        // again in a session; that is exactly the shape a collapsing header is for, and it is why every
+        // other line on this tab stays where it is. A refusal, a warning or a count is a fact about THIS
+        // frame and none of them may be behind a click.
+        egui::CollapsingHeader::new(
+            egui::RichText::new("where these addresses come from")
+                .text_style(egui::TextStyle::Small)
+                .color(ui.visuals().weak_text_color()),
+        )
+        .id_salt("objects-layout-why")
+        .show(ui, |ui| {
+            ui.small(
+                "Every address here is read out of the loaded listing: the base from \
+                 Object_RAM/Player_1, the stride from Player_2 minus Player_1, the count from \
+                 Object_RAM_End, and the ring buffer below from Ring_Count minus Ring_Buffer. \
+                 Nothing is hardcoded, because an object-table address is a fact about one build.",
+            );
+        });
 
         // --- the player section: the same decoder, the same layout, its own refusal ---
         ui.add_space(SECTION_GAP);
@@ -3482,21 +3499,34 @@ fn text_w(ui: &egui::Ui, face: &egui::FontId, text: &str) -> f32 {
         .x
 }
 
+/// The face a **header** cell is measured and drawn in.
+///
+/// ⚑ One function because the two used to disagree, and that is half of the owner's fourth finding.
+/// [`column_widths`] measured every header in [`egui::TextStyle::Small`] and [`table_cell`] then drew it
+/// in the *cell's* face, which is the body or the monospace face and is larger. A header wider than
+/// anything in its column was therefore laid out in a box measured for a smaller font and ran into its
+/// neighbour. There is now one face, and [`header_cell`] is what draws it.
+fn head_face(ui: &egui::Ui) -> egui::FontId {
+    ui.style()
+        .text_styles
+        .get(&egui::TextStyle::Small)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(10.0))
+}
+
 /// Column widths for `cols` over `cells`: the widest cell in each column, header included.
 ///
 /// The **last** column is left out of that and takes whatever room remains, because it is the name column
 /// and a symbol name has no bound: sized to its widest entry it would push the numeric columns off the
 /// panel, which is the one failure a fixed-column table exists to prevent.
+///
+/// ⚑ **The gutter is NOT folded in here any more.** See [`fit_columns`], which is where the arithmetic
+/// and the reason both live.
 fn column_widths(ui: &egui::Ui, cols: &[objects::Col], cells: &[Vec<String>]) -> Vec<f32> {
     if cols.is_empty() {
         return Vec::new();
     }
-    let head = ui
-        .style()
-        .text_styles
-        .get(&egui::TextStyle::Small)
-        .cloned()
-        .unwrap_or_else(|| egui::FontId::proportional(10.0));
+    let head = head_face(ui);
     let faces: Vec<egui::FontId> = cols.iter().map(|c| cell_face(ui, c)).collect();
     let mut w: Vec<f32> = cols.iter().map(|c| text_w(ui, &head, c.head)).collect();
     for row in cells {
@@ -3504,15 +3534,39 @@ fn column_widths(ui: &egui::Ui, cols: &[objects::Col], cells: &[Vec<String>]) ->
             w[i] = w[i].max(text_w(ui, &faces[i], cell));
         }
     }
-    for x in w.iter_mut() {
-        *x += COL_GUTTER;
-    }
-    let used: f32 = w[..cols.len() - 1].iter().sum();
-    if let Some(last) = w.last_mut() {
-        // Whatever is left, but never so little that the column is unreadable: a narrow panel gets a
-        // truncated name with the whole of it on the hover, not a name reduced to one letter.
-        *last = (ui.available_width() - used).max(last.min(NAME_COL_FLOOR));
-    }
+    fit_columns(&w, ui.available_width(), COL_GUTTER, NAME_COL_FLOOR)
+}
+
+/// **Natural widths in, drawn widths out** — the whole column arithmetic, with no `Ui` in it so the rule
+/// is checkable rather than merely visible.
+///
+/// `natural` is what each column's widest entry actually measures, header included and **with no gutter
+/// folded in**. That distinction is the owner's fourth finding, 2026-09-09: *"look how difficult objects
+/// is to read"*, with headers reading as `slotaddrcode  x  yname`.
+///
+/// The gutter used to be added to every column's own width, and a width is not a gap: `slot` is
+/// right-aligned (it is numeric) so its glyphs hug the RIGHT edge of its box, and `addr` is left-aligned
+/// so its glyphs hug the LEFT edge of the next one. Two adjacent boxes, two sets of glyphs at the seam,
+/// and the fourteen points of "gutter" sitting harmlessly at the far end of each column where nothing
+/// needed separating. `slot` and `addr` were drawn touching.
+///
+/// So the gutter leaves the widths and becomes `item_spacing.x` in the row layouts, where it is a real
+/// gap between every pair of columns whatever either one's alignment is. This function's job is then the
+/// one thing that changes: the last column's remainder has to pay for the gutters as well as for the
+/// other columns.
+///
+/// The last column takes what is left because it is the name column and a symbol name has no bound;
+/// `floor` is the width below which a name stops being a name, and a column narrower than its own
+/// content is left at its content width rather than stretched to the floor.
+fn fit_columns(natural: &[f32], avail: f32, gutter: f32, floor: f32) -> Vec<f32> {
+    let mut w = natural.to_vec();
+    let Some((last, others)) = w.split_last_mut() else {
+        return w;
+    };
+    let used: f32 = others.iter().sum::<f32>() + gutter * others.len() as f32;
+    // Whatever is left, but never so little that the column is unreadable: a narrow panel gets a
+    // truncated name with the whole of it on the hover, not a name reduced to one letter.
+    *last = (avail - used).max(last.min(floor));
     w
 }
 
@@ -3544,6 +3598,29 @@ fn table_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, text: &str, colour: e
             // A truncated cell is unreadable, not merely tidy, so the whole of it is one hover away.
             r.on_hover_text(text);
         }
+    });
+}
+
+/// One **header** cell, `w` points wide, aligned as its column's cells are so the header sits over the
+/// digits it names.
+///
+/// Separate from [`table_cell`] because a header is not a cell: it is drawn in [`head_face`], which is
+/// the face [`column_widths`] measured it in, and it carries none of that function's hovers — a header
+/// is never `objects::NO_NAME` and never truncated, because its own width is one of the terms its
+/// column's width is the maximum of.
+fn header_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, colour: egui::Color32) {
+    let layout = if c.numeric {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+    let h = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
+        ui.label(
+            egui::RichText::new(c.head)
+                .text_style(egui::TextStyle::Small)
+                .color(colour),
+        );
     });
 }
 
@@ -3927,14 +4004,21 @@ fn slot_table(
     let mut hit = None;
 
     ui.scope(|ui| {
-        // Table rows sit tighter than a panel's default flow; `item_spacing` here is the row gap, and the
-        // zebra band below is what separates them rather than whitespace.
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+        // Table rows sit tighter than a panel's default flow; the y half is the row gap, and the zebra
+        // band below is what separates rows rather than whitespace.
+        //
+        // ⚑ **The x half is the COLUMN gutter, and it used to be zero.** See [`fit_columns`] for the
+        // whole finding: the gutter was folded into each column's own width, which puts the space at the
+        // far end of a column instead of at the seam between two, so a right-aligned column's digits and
+        // the next left-aligned column's glyphs were drawn touching. Here it is a real gap between every
+        // pair of columns, whatever either one's alignment is.
+        ui.spacing_mut().item_spacing = egui::vec2(COL_GUTTER, 1.0);
 
         let weak = ui.visuals().weak_text_color();
         ui.horizontal(|ui| {
             for (c, w) in cols.iter().zip(&widths) {
-                table_cell(ui, c, *w, c.head, weak);
+                // [`header_cell`], not [`table_cell`]: a header is drawn in the face it was measured in.
+                header_cell(ui, c, *w, weak);
             }
         });
         let y = ui.cursor().top();
@@ -6711,7 +6795,7 @@ mod subtype_list_tests {
 
     /// Every `Shape::Text` the frame painted, flattened out of the nesting `egui` produces, as
     /// (rect, text).
-    fn text_runs(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, String)> {
+    pub(super) fn text_runs(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, String)> {
         fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, String)>) {
             match s {
                 egui::Shape::Text(t) => out.push((
@@ -6855,5 +6939,116 @@ mod subtype_list_tests {
              stops where the glyphs do",
             band.right()
         );
+    }
+}
+
+/// **The Objects table's columns, in arithmetic and in paint.**
+///
+/// The owner's fourth finding, 2026-09-09: *"look how difficult objects is to read"*, *"especially if
+/// it's not fully open"*, with the headers running together as `slotaddrcode  x  yname`.
+#[cfg(test)]
+mod slot_table_tests {
+    use super::*;
+
+    /// Natural widths with an obvious total, so every number below is derived rather than observed.
+    const NATURAL: [f32; 4] = [30.0, 50.0, 20.0, 40.0];
+    const GUTTER: f32 = 14.0;
+    const FLOOR: f32 = 120.0;
+
+    /// **A column's width is its content's width, and the gutter is what goes BETWEEN two of them.**
+    ///
+    /// This is the fault, stated: a gutter folded into a column's own width sits at that column's far
+    /// end, which for a right-aligned column is nowhere near the seam. Two adjacent boxes could then be
+    /// laid out with their glyphs touching while every width in the table claimed to carry fourteen
+    /// points of separation.
+    #[test]
+    fn a_columns_width_carries_no_gutter_of_its_own() {
+        let w = fit_columns(&NATURAL, 400.0, GUTTER, FLOOR);
+        assert_eq!(
+            &w[..3],
+            &NATURAL[..3],
+            "a fixed column was handed anything other than what it measures, so the gap between two \
+             columns is once again hidden inside one of them"
+        );
+    }
+
+    /// The last column takes what is left **after the gutters as well as the other columns**, so a table
+    /// laid out with a real gap between every pair still ends inside the pane.
+    #[test]
+    fn the_name_column_pays_for_the_gutters_it_sits_between() {
+        let avail = 400.0;
+        let w = fit_columns(&NATURAL, avail, GUTTER, FLOOR);
+        let total: f32 = w.iter().sum::<f32>() + GUTTER * (w.len() - 1) as f32;
+        assert!(
+            (total - avail).abs() < 0.01,
+            "the columns and the three gutters between them come to {total}, not the {avail} the \
+             pane has: the last column is not paying for the gaps and the table runs off the edge"
+        );
+    }
+
+    /// A pane too narrow for the table leaves the name readable rather than shrinking it to a letter,
+    /// and a name column narrower than the floor to begin with is left at its own width.
+    #[test]
+    fn a_cramped_pane_keeps_the_name_column_readable() {
+        let w = fit_columns(&NATURAL, 60.0, GUTTER, FLOOR);
+        assert!(
+            w[3] >= NATURAL[3].min(FLOOR),
+            "the name column was squeezed to {}, below what a name needs",
+            w[3]
+        );
+        // A column whose own content is narrower than the floor is not stretched to it: the floor is a
+        // minimum for a name, not a reservation for one that is not there.
+        let short = fit_columns(&[30.0, 8.0], 10.0, GUTTER, FLOOR);
+        assert!(
+            (short[1] - 8.0).abs() < 0.01,
+            "a short last column was stretched to the floor: {short:?}"
+        );
+    }
+
+    /// **The drawn headers do not touch**, measured off what the table actually paints.
+    ///
+    /// `slot` is numeric and therefore right-aligned; `addr` is not and is left-aligned. Their two boxes
+    /// are adjacent, so before the gutter moved out of the widths those two headers were drawn with
+    /// nothing between them at all: `slotaddr`. Every adjacent pair is checked, because which pair
+    /// collides depends on which way each column happens to align.
+    #[test]
+    fn every_pair_of_headers_is_drawn_with_daylight_between_them() {
+        let ctx = egui::Context::default();
+        let rows: Vec<objects::Row> = Vec::new();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                slot_table(ui, &objects::POOL_COLS, &rows, None, "header-gap-test");
+            },
+        );
+        out.textures_delta.clear();
+        let runs = super::subtype_list_tests::text_runs(&out.shapes);
+        let heads: Vec<(egui::Rect, String)> = objects::POOL_COLS
+            .iter()
+            .map(|c| {
+                runs.iter()
+                    .find(|(_, t)| t == c.head)
+                    .unwrap_or_else(|| {
+                        panic!("the header {:?} was never painted: {runs:?}", c.head)
+                    })
+                    .clone()
+            })
+            .collect();
+        for pair in heads.windows(2) {
+            let gap = pair[1].0.left() - pair[0].0.right();
+            assert!(
+                gap >= COL_GUTTER * 0.5,
+                "the headers {:?} and {:?} are {gap} points apart, which is how they read as one \
+                 run-together word",
+                pair[0].1,
+                pair[1].1
+            );
+        }
     }
 }
