@@ -132,6 +132,13 @@ finished item **leaves** the queue: `done` is not a state, it is an absence.
   (`cargo test --workspace 2>&1 | grep -E "^test result" | awk '{p+=$4; f+=$6; i+=$8; n+=1} END
   {print "LEGS="n" PASSED="p" FAILED="f" IGNORED="i}'`). Agent reports have matched every time.
   Verify anyway; the one time they don't is the point.
+  ⚑ **And when you grep the same output for failing NAMES, anchor it `^test [^ ]+ \.\.\. FAILED`, never
+  `^test .* FAILED`** *(aeon, 2026-09-09; reproduced here)*: cargo's own summary line
+  `test result: FAILED. 11 passed; 1 failed` begins with `test ` and ends in `FAILED`, so the loose form
+  matches it too and **one real failure reports as two** — at exactly the moment you are least inclined to
+  re-read the output. Measured: loose matches 2 lines against a 1-failure log, strict matches 1. Not in any
+  committed script here; it was in this seat's hand-typed verification commands all night, and never fired
+  only because every run was green.
 - **Serialized cargo**: NEVER two cargo runs anywhere in this repo at once, including
   isolated-worktree runs while any agent runs cargo (measured: legs truncate with a spurious
   failure, three data points). Queue acceptance gates; verify BEFORE resuming an implementer.
