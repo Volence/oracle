@@ -41,9 +41,21 @@ pub struct Counters {
     pub starved_steady: AtomicU64,
     /// Total ring samples missing across all starved callbacks.
     pub starved_samples: AtomicU64,
-    /// Ring occupancy, in samples, at the leanest steady-state callback. `u64::MAX` = none yet.
+    /// Ring occupancy, in samples, at the leanest steady-state callback.
+    /// [`MIN_OCCUPANCY_UNMEASURED`] = none yet.
     pub min_occupancy: AtomicU64,
 }
+
+/// The [`Counters::min_occupancy`] value meaning **no steady-state callback has run yet**, so the ring's
+/// low-water mark is unknown.
+///
+/// Named rather than spelled `u64::MAX` at each end, because the writer and the reader live in different
+/// modules and the reader's job is to tell this apart from a real reading. It was spelled out twice and
+/// the reader's copy rendered it as `0 samples (0.0 ms)` — an absence printed as the single most alarming
+/// value the statistic can take, in the crate whose neighbouring rows all shout `NOT MEASURED`.
+///
+/// `u64::MAX` and not `0` for the reason `fetch_min` needs: the identity of a running minimum.
+pub const MIN_OCCUPANCY_UNMEASURED: u64 = u64::MAX;
 
 pub struct Device {
     sink: oracle_core::synth::AudioSink,
@@ -116,7 +128,9 @@ impl Device {
         audio::preroll_silence(&mut prod, frame_samples);
 
         let counters = Arc::new(Counters::default());
-        counters.min_occupancy.store(u64::MAX, Ordering::Relaxed);
+        counters
+            .min_occupancy
+            .store(MIN_OCCUPANCY_UNMEASURED, Ordering::Relaxed);
         let cb = Arc::clone(&counters);
         // The callback's "discard what you are holding" flag, held at BOTH ends: the callback checks it
         // (`audio::fill_output`) and `Device::resync` raises it. The producer half cannot drain the ring

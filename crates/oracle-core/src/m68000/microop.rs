@@ -1482,6 +1482,13 @@ impl MicroState {
             return 0;
         }
         self.in_group0_frame = true;
+        // The instruction did NOT execute — it was aborted mid-flight. Three doc sites beside this one
+        // already said so ([`MicroState::suppresses_trace`]'s field doc, this method's own summary, and
+        // [`Cpu68000::step_reporting`]'s "an execution-time address- or bus-error abort") and the flag was
+        // never set, so BOTH readings that consult it were wrong: a trace pended after a fault (§6.3.8
+        // forbids it) and `StepOutcome::executed` came back `true` on an aborted `JSR`, arming a call the
+        // CPU never made for anything building a call graph.
+        self.mark_suppresses_trace();
         let ssw = (self.opcode & 0xFFE0) | low5;
         self.scratch[AERR_STACKED_PC_SLOT as usize] = regs.pc;
         self.scratch[AERR_FAULT_ADDR_SLOT as usize] = faulting_addr;
@@ -3281,8 +3288,13 @@ impl Cpu68000 {
         // Latch T at the START of the instruction (before it can change SR) — §6.3.8.
         let trace_armed = self.regs.sr & SR_TRACE != 0;
         let mut recipe = crate::m68000::decode::decode(&self.regs);
-        let suppresses_trace = recipe.suppresses_trace();
         let cycles = recipe.run_to_completion(&mut self.regs, bus);
+        // Read AFTER the run, and that ordering is load-bearing: `suppresses_trace` is set at DECODE time
+        // for the group-1 entries (illegal / privilege / line-A/F) but at EXECUTION time by
+        // [`MicroState::install_address_error`], which cannot run until the recipe does. Reading it before
+        // the run answered only for the decode-time half — which is why the guard that looked like it
+        // covered the abort validated the search and not the question.
+        let suppresses_trace = recipe.suppresses_trace();
         if recipe.double_faulted() {
             // The instruction's own exception frame double-faulted (e.g. an address error stacked at an odd
             // SP) → the CPU halts (M68000UM §5.4.4). No stop/trace bookkeeping for a halted processor.
@@ -5772,6 +5784,53 @@ mod tests {
         bus.log.clear();
         cpu.step(&mut bus);
         assert_ne!(cpu.regs.pc, 0x2000, "no trace after a privilege violation");
+        assert!(
+            !bus.log.iter().any(|t| t.addr == 0x24),
+            "vector 9 not fetched"
+        );
+    }
+
+    /// The **execution-time** half of the same rule, which the decode-time test above cannot reach.
+    ///
+    /// [`MicroState::install_address_error`]'s own doc, [`MicroState::suppresses_trace`]'s field doc and
+    /// [`Cpu68000::step_reporting`]'s doc all three name "an execution-time address- or bus-error abort"
+    /// as a not-executed turn — and the install never set the flag, so both readings that consult it were
+    /// wrong at once. `executed: true` on an aborted `JSR` arms a call the CPU never made and
+    /// `step_over` then waits for a return that cannot come; and a trace pended after a fault is a
+    /// vector-9 entry §6.3.8 forbids.
+    ///
+    /// `MOVE.W (A0),D0` with an odd `A0` is the smallest instruction that faults *inside* `exec_one`
+    /// rather than at decode — which is the whole distinction this test exists to cover.
+    #[test]
+    fn an_address_error_abort_is_not_executed_and_suppresses_the_pending_trace() {
+        // T=1, S=1: a trace is armed at the start of the faulting instruction.
+        let (mut cpu, mut bus) = trace_env(0xA700, &[0x3010, 0x4E71]); // MOVE.W (A0),D0
+        poke_w(&mut bus, 0x0E, 0x5000); // vector 3 @ 0x0C → 0x0000_5000 (address error)
+        for a in [0x5000u32, 0x5002] {
+            poke_w(&mut bus, a, 0x4E71);
+        }
+        cpu.regs.a[0] = 0x0001_0001; // odd → the word read faults
+
+        let outcome = cpu.step_reporting(&mut bus);
+
+        assert_eq!(
+            cpu.regs.pc, 0x5000,
+            "the odd read aborted the instruction into the vector-3 handler"
+        );
+        assert!(
+            !outcome.executed,
+            "an aborted instruction did NOT execute — a consumer classifying this opcode as a Call \
+             would push a frame nothing returns from"
+        );
+        assert!(
+            !outcome.idle,
+            "an abort is instruction-shaped work, not a Stopped/Halted idle slice"
+        );
+
+        // ...and no trace follows it (§6.3.8). The handler's first NOP must run normally.
+        bus.log.clear();
+        cpu.step(&mut bus);
+        assert_ne!(cpu.regs.pc, 0x2000, "no trace after an address-error abort");
         assert!(
             !bus.log.iter().any(|t| t.addr == 0x24),
             "vector 9 not fetched"
