@@ -731,8 +731,9 @@ mod tests {
     // **`slots_past_parsed_max_are_not_outlined` was removed here, deliberately, and this note is
     // its receipt.** It asserted that `boxes` stopped at the 64/80 parse cap, which it enforced
     // with a `.take(parsed_max)` over the whole SAT. `boxes` no longer sees the table: it is handed
-    // the link walk, and the walk stops at the cap itself (`render.rs:1091` iterates `0..cap` from
-    // `sprite_limits`, reporting `SpriteWalkEnd::MaxCount`). Re-asserting the cap against a
+    // the link walk, and the walk stops at the cap itself — `Vdp::sprite_line` (oracle-core `render.rs`)
+    // iterates `0..cap` from `render::sprite_limits` and reports `SpriteWalkEnd::MaxCount`. Re-asserting
+    // the cap against a
     // hand-written `Vec<SpriteEval>` would test the fixture's length, not the production rule —
     // the test would pass with the cap deleted from the core.
     //
