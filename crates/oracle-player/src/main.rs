@@ -1157,8 +1157,8 @@ impl Loop {
                 drew.push(screen::Run::label(&chip));
                 ui.separator();
                 // ⚑ **The panel nav, and it lives HERE rather than in the dock on purpose.** `egui_dock`
-                // draws only each leaf's active tab, so six of the eight panels are behind another title
-                // at any moment; a nav that was itself a `Tab` could be behind one too, which is the
+                // draws only each leaf's active tab — one body per leaf, four leaves — so seven of the
+                // eleven panels are behind another title at any moment; a nav that was itself a `Tab` could be behind one too, which is the
                 // failure it exists to repair. Outside the dock it cannot be hidden, and the stored
                 // layout neither carries it nor changes shape because of it. See `crate::nav`.
                 let mut nav_runs = nav::bar(ui, dock);

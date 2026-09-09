@@ -1214,15 +1214,25 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     if opcode & 0xF100 == 0x7000 {
         return moveq_recipe(opcode);
     }
+    // ⚑ **THE `0xE` STAIRCASE — read this before adding an arm here.** Every one of the eight arms below
+    // used to carry its own frozen scope note of the form *"only ASL/…/ROXL files are loaded this commit,
+    // so no other `0xE` op reaches decode"*, each written when that arm landed and each true for exactly
+    // one commit. All eight ops now exist and the corpus loads all eight, so all seven leading notes were
+    // false; only the last one (ROXR) had been corrected. Nothing was broken — **the hazard was a future
+    // edit made on a false disjointness premise**, which is why the reassurance was more dangerous than
+    // the code. Removed by the lens sweep, finding H17. If you add an arm, do not write what is loaded
+    // "this commit"; the guards below are exact and need no such premise.
+    //
     // ASL `<ea>` (`0xExxx`, AS/left — the foundational shift) — `1110 ccc d ss ir tt rrr` register / `1110
     // 0TTd 11 mmm rrr` memory. The whole `0xExxx` nibble is a dedicated, otherwise-unused opcode space (no
-    // other arm matches it). This commit decodes ONLY ASL (type AS, direction LEFT); ASR/LSL/LSR/ROL/ROR/
-    // ROXL/ROXR land in S1-S7. The op identity is `(type, dir)`: REGISTER (bits 7-6 != 11) → bit 8 == 1
-    // (left) AND bits 4-3 == 00 (AS); MEMORY (bits 7-6 == 11) → bit 8 == 1 AND bits 10-9 == 00 (AS). Only
-    // ASL files are loaded this commit, so a non-ASL `0xE` opcode never reaches decode; the guard keeps the
-    // arm precise regardless. The shared `shift_recipe` builds the register `[Prefetch, Alu, Internal{idle}]`
-    // (the idle's `2*cnt` is the DECODE-TIME count — imm `ccc!=0?ccc:8` / live `D[ccc]&63`) or the word
-    // memory shift-by-1 RMW (CLR.w/NEG.w's `ea_dst` path; an odd EA address-errors on the READ via E3/E4).
+    // other arm matches it). All eight shift/rotate ops (AS/LS/RO/ROX × LEFT/RIGHT) are decoded here.
+    // The op identity is `(type, dir)`: REGISTER (bits 7-6 != 11) → bit 8 == 1 (left) AND bits 4-3 == 00
+    // (AS); MEMORY (bits 7-6 == 11) → bit 8 == 1 AND bits 10-9 == 00 (AS). The guard keeps the arm precise
+    // because every other `0xE` op is matched by one of the seven arms below — the classification must be
+    // exact rather than a default. The shared `shift_recipe` builds the register
+    // `[Prefetch, Alu, Internal{idle}]` (the idle's `2*cnt` is the DECODE-TIME count — imm `ccc!=0?ccc:8` /
+    // live `D[ccc]&63`) or the word memory shift-by-1 RMW (CLR.w/NEG.w's `ea_dst` path; an odd EA
+    // address-errors on the READ via E3/E4).
     if opcode >> 12 == 0xE {
         // Memory-form shifts are `1110 0tt d 11 mmm rrr` — bit 11 MUST be 0. Bits 11-9 >= 4 with the
         // size field 11 (`0xE8C0-0xEFFF`) is the 68020 bit-field space (BFTST/BFCHG/…), ILLEGAL on the
@@ -1242,8 +1252,7 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         }
         // ASR (S1) — AS/RIGHT: direction bit 8 == 0, type AS (register bits 4-3 == 0 / memory bits 10-9 == 0).
         // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
-        // the `(type, dir)` classification differ from ASL. Only ASR files are loaded this commit (alongside
-        // ASL's), so no other `0xE` op reaches decode; the guard keeps the arm precise regardless.
+        // the `(type, dir)` classification differ from ASL. The guard keeps the arm precise.
         let is_asr = if (opcode >> 6) & 3 == 3 {
             (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 0 // memory: dir RIGHT, type AS (bits 10-9)
         } else {
@@ -1255,8 +1264,7 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         // LSL (S2) — LS/LEFT: direction bit 8 == 1, type LS (register bits 4-3 == 1 / memory bits 10-9 == 1).
         // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
         // the `(type, dir)` classification differ from ASL/ASR. LSL == ASL's value and carry with V forced to 0
-        // (logical, not arithmetic). Only ASL/ASR/LSL files are loaded this commit, so no other `0xE` op
-        // reaches decode; the guard keeps the arm precise regardless.
+        // (logical, not arithmetic). The guard keeps the arm precise.
         let is_lsl = if (opcode >> 6) & 3 == 3 {
             (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 1 // memory: dir LEFT, type LS (bits 10-9)
         } else {
@@ -1268,8 +1276,7 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         // LSR (S3) — LS/RIGHT: direction bit 8 == 0, type LS (register bits 4-3 == 1 / memory bits 10-9 == 1).
         // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
         // the `(type, dir)` classification differ from ASL/ASR/LSL. LSR is the ZERO-FILL right shift (contrast
-        // ASR's sign-extend). Only ASL/ASR/LSL/LSR files are loaded this commit, so no other `0xE` op reaches
-        // decode; the guard keeps the arm precise regardless.
+        // ASR's sign-extend). The guard keeps the arm precise.
         let is_lsr = if (opcode >> 6) & 3 == 3 {
             (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 1 // memory: dir RIGHT, type LS (bits 10-9)
         } else {
@@ -1281,8 +1288,7 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         // ROL (S4) — RO/LEFT: direction bit 8 == 1, type RO (register bits 4-3 == 3 / memory bits 10-9 == 3).
         // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
         // the `(type, dir)` classification differ from ASL/ASR/LSL/LSR. ROL is a plain bit-rotate that does NOT
-        // pass through X (contrast ROXL, which threads X — S6). Only ASL/ASR/LSL/LSR/ROL files are loaded this
-        // commit, so no other `0xE` op reaches decode; the guard keeps the arm precise regardless.
+        // pass through X (contrast ROXL, which threads X — S6). The guard keeps the arm precise.
         let is_rol = if (opcode >> 6) & 3 == 3 {
             (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 3 // memory: dir LEFT, type RO (bits 10-9)
         } else {
@@ -1294,9 +1300,8 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         // ROR (S5) — RO/RIGHT: direction bit 8 == 0, type RO (register bits 4-3 == 3 / memory bits 10-9 == 3).
         // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
         // the `(type, dir)` classification differ from ASL/ASR/LSL/LSR/ROL. ROR is ROL's right-direction twin —
-        // a plain bit-rotate that does NOT pass through X (contrast ROXR, which threads X — S7). Only
-        // ASL/ASR/LSL/LSR/ROL/ROR files are loaded this commit, so no other `0xE` op reaches decode; the guard
-        // keeps the arm precise regardless.
+        // a plain bit-rotate that does NOT pass through X (contrast ROXR, which threads X — S7). The
+        // guard keeps the arm precise.
         let is_ror = if (opcode >> 6) & 3 == 3 {
             (opcode >> 8) & 1 == 0 && (opcode >> 9) & 3 == 3 // memory: dir RIGHT, type RO (bits 10-9)
         } else {
@@ -1309,9 +1314,8 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         // The shared `shift_recipe`/`Operand::ShiftCount`/`dn_*` machinery is reused VERBATIM; only the AluOp +
         // the `(type, dir)` classification differ from ASL/ASR/LSL/LSR/ROL/ROR. ROXL is the FIRST X-threading
         // rotate — it threads X through an (n+1)-bit rotate (contrast ROL/ROR, which leave X untouched — and the
-        // value shifts AS/LS, which set X = C from the value). Only ASL/ASR/LSL/LSR/ROL/ROR/ROXL files are loaded
-        // this commit, so no other `0xE` op reaches decode; the guard keeps the arm precise regardless (ROXR is
-        // type ROX with direction RIGHT — bit 8 == 0 — and is S7, not loaded).
+        // value shifts AS/LS, which set X = C from the value). The guard keeps the arm precise; ROXR is
+        // type ROX with direction RIGHT (bit 8 == 0) and is the arm below.
         let is_roxl = if (opcode >> 6) & 3 == 3 {
             (opcode >> 8) & 1 == 1 && (opcode >> 9) & 3 == 2 // memory: dir LEFT, type ROX (bits 10-9)
         } else {

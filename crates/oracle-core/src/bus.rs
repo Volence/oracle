@@ -828,8 +828,11 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// The Z80 RESET-release latch (`$A11200` bit0): `true` = reset released (Z80 runs), `false` = reset
     /// asserted (Z80 held). **Power-on = `false`** — real hardware holds the Z80 in reset until the 68000
     /// releases it (Plutiedev "Using the Z80"). Stored positively (`z80_running`) to avoid the reset-polarity
-    /// foot-gun. This slice (Z-skeleton) promotes it from the old constant-0/drop stub to a real latch, but
-    /// nothing releases it in any committed fixture, so the Z80 executes zero instructions. Bus-internal +
+    /// foot-gun. Promoted from the old constant-0/drop stub to a real latch at Z-skeleton. No committed
+    /// **ROM fixture** releases it, so on the corpus the Z80 executes zero instructions and every frozen
+    /// currency stays byte-identical — a statement about the fixtures, not about the machine: the run loop
+    /// steps a released Z80 for real (`system.rs`'s `z80_executes_in_the_run_loop_when_released`, and the
+    /// `$A11200` tests below). Scope word sharpened by the lens sweep, finding H16. Bus-internal +
     /// bincode-serialized like `z80_busreq`; NOT in `export_state`. See `docs/2026-07-22-z80-core-design.md`
     /// (ZC6/ZC13).
     z80_running: &'a mut bool,

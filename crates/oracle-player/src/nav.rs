@@ -4,18 +4,26 @@
 //! # The defect this repairs, which was a design defect and not a code one
 //!
 //! `egui_dock` draws only **each leaf's active tab**. [`ui::initial_dock`] puts Registers/Memory/Objects
-//! in one pane and Breakpoints/Watchpoints/Profiler in another, so on any frame **four of the eight panel
-//! bodies do not run** and their titles sit behind other titles in a tab bar. That fact was already
+//! in one pane and Breakpoints/Watchpoints/Profiler in another, so on any frame **seven of the eleven
+//! panel bodies do not run** and their titles sit behind other titles in a tab bar. That fact was already
 //! written down twice in this crate — [`crate::screen`]'s header leans on it to argue what
 //! `emulator/screen_text` may report, and `--dock every-tab` exists because a panel-cost measurement
 //! taken under the default layout measures the arrangement instead of the panels.
 //!
-//! ⚑ **Four, not six.** `screen.rs` said six and the brief for this row repeated it; the count is
-//! measured in `the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured` below and it
-//! is four. `egui_dock` draws one body per *leaf* and the default has four leaves. The six counts every
-//! tab that shares a pane, but two of those six are their own leaf's active tab and do run. Nothing in
-//! either argument turns on which number it is — but a wrong number in a header is a wrong number, and
-//! this one had been copied twice before it was checked.
+//! ⚑ **The number in this header has now been wrong twice, and the second time is the more instructive.**
+//! It first said *six of eight*; `PANELS-NAV` measured it and corrected four of the copies to *four of
+//! eight*, writing at the time that *"a wrong number in a header is a wrong number, and this one had been
+//! copied twice before it was checked"* — and then missed two of the four copies, which the lens sweep
+//! found (finding H19). By the time the sweep read it, **both** numbers were stale anyway: `Tab` has
+//! grown to **eleven** variants (Planes, Spawn and Effects landed after that correction), so the standing
+//! figures are *four run, seven hidden, four leaves*.
+//!
+//! The lesson the second drift teaches that the first did not: correcting a copied figure is not the
+//! repair, because the figure goes stale again the next time the enum grows. What is load-bearing is that
+//! `egui_dock` draws one body per **leaf** — so *bodies in front = leaf count*, and everything else is
+//! hidden. `the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured` below derives
+//! exactly that and has stayed correct across both drifts without being touched; only prose moved.
+//! `panel_counts_in_prose_match_the_enum` pins these sentences to `Tab::ALL` so a third drift goes red.
 //!
 //! What nobody wrote down is the consequence for a human: **the window shipped with no menu, no tab list
 //! and no other affordance for bringing a hidden panel forward.** Nothing was broken — the panels were
@@ -27,7 +35,7 @@
 //! unreachable. Why they could not be opened on his screen — a bar too narrow for three titles and
 //! scrolling, panes too small to notice, or nothing that reads as a way in — is a question about pixels,
 //! and no window is opened from a test. It is not answered here. The repair does not depend on the
-//! answer: a menu that names all eight in one list works whatever the pixel-level cause was, and unlike a
+//! answer: a menu that names all eleven in one list works whatever the pixel-level cause was, and unlike a
 //! tab bar it does not need a pane wide enough to read.
 //!
 //! # The shape, and why it is this shape
@@ -43,9 +51,9 @@
 //!   controls; the `Tab` enum is for things you look at.* The **saved layout is untouched by the nav's
 //!   existence** — the nav has no state of its own to save, and `entries` derives what it shows from the
 //!   `DockState` every repaint rather than caching it.
-//! * **A menu rather than eight buttons.** Eight always-visible titles beside the app name, the
+//! * **A menu rather than eleven buttons.** Eleven always-visible titles beside the app name, the
 //!   pause/step buttons and the status line would be the widest thing in the window at the moment the
-//!   window is at its narrowest. One labelled button that opens a list of eight is the traditional shape
+//!   window is at its narrowest. One labelled button that opens a list of them is the traditional shape
 //!   and the one the owner named, and its label is on the glass at all times, which is the property the
 //!   defect was about.
 //!
@@ -62,7 +70,7 @@
 //! (`DockArea::show_close_buttons` defaults to `true`) and closes on a middle-click. That is worth saying
 //! plainly rather than claiming a capability was absent — but it is a control in the crowded tab bar,
 //! which is the exact place the owner could not find things, and it only ever offers the *active* tab of
-//! each leaf. What did not exist is **one list that names all eight and lets each be turned on and off**,
+//! each leaf. What did not exist is **one list that names all eleven and lets each be turned on and off**,
 //! which is what "select which to open" asks for.
 //!
 //! So a row's click now depends on where the panel stands, and the three cases are three different
@@ -315,7 +323,7 @@ impl Entry {
 
 /// **Every entry the nav offers, derived from [`Tab::ALL`] and the dock — never a list kept here.**
 ///
-/// ⚑ *Why this function is a `map` over the enum and not eight rows.* A hand-written nav would be a
+/// ⚑ *Why this function is a `map` over the enum and not a hand-written list of rows.* A hand-written nav would be a
 /// third copy of "which panels does this player have", beside the [`Tab`] enum and
 /// [`crate::layout::VOCABULARIES`], and the failure mode of a third copy is silence: the next panel
 /// somebody adds gets a `Tab` variant, a body, a place in the default dock — and no way to open it,
@@ -468,7 +476,7 @@ fn home_leaf(dock: &DockState<Tab>, tab: Tab) -> Option<egui_dock::NodePath> {
 /// the same reason: there is then no second expression describing the bar that could drift from it.
 ///
 /// Only the **button** is a run. The menu's rows are painted in a popup layer that exists for the frames
-/// the menu is open, and reporting them as part of the top bar would tell a client the window says eight
+/// the menu is open, and reporting them as part of the top bar would tell a client the window says eleven
 /// things it says only while a mouse is held over a button. That is the same call [`crate::screen`]'s
 /// header makes about panel bodies: report what is unconditionally on the glass.
 pub fn bar(ui: &mut egui::Ui, dock: &mut DockState<Tab>) -> Vec<screen::Run> {
@@ -799,20 +807,98 @@ mod tests {
         }
     }
 
-    /// ★ **How many panels the default layout hides — MEASURED, and it is not the number this repo has
-    /// been saying.**
+    /// ★ **The prose counts agree with the enum** — the gate lens finding H19 asked for.
     ///
-    /// `crates/oracle-player/src/screen.rs:12` states that `initial_dock`'s arrangement means *"six of
-    /// the eight panel bodies do not run on a given frame"*, and the `PANELS-NAV` brief repeats it. **It
-    /// is four.** `egui_dock` draws one body per *leaf*, and the default layout has four leaves —
-    /// `[Screen]`, `[Pacing]`, `[Registers, Memory, Objects]`, `[Breakpoints, Watchpoints, Profiler]` —
-    /// so four bodies run and four do not. The six counts every tab in a shared pane, but two of those
-    /// six (`Registers` and `Breakpoints`) are their own leaf's active tab and do run. Corrected in
-    /// `screen.rs`, in this module's header, and in design §5.9.
+    /// Four files state the panel count in words. Twice now a correction has been applied to some of them
+    /// and not the others, leaving the repo asserting two different numbers authoritatively; the second
+    /// time, the correcting comment itself contained the warning against exactly that. Chasing the figure
+    /// is not a repair, so this pins the figures **to `Tab::ALL` and the leaf count** rather than to each
+    /// other: grow the enum and this goes red, naming the files to edit.
     ///
-    /// This test therefore does not restate a number at all: it derives `Showing` from **the leaf count**,
-    /// which is `egui_dock`'s actual rule, so a rearranged default moves the expectation with it and no
-    /// figure in prose can go stale again without going red.
+    /// It reads the sources rather than the rendered docs because that is the only artifact that exists at
+    /// test time, on `screen_text.rs`'s precedent in this crate. **Number words, not digits** — that is
+    /// how this repo writes them, and a digit-only check would have passed throughout both drifts.
+    #[test]
+    fn panel_counts_in_prose_match_the_enum() {
+        const WORDS: [&str; 13] = [
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            "eleven", "twelve",
+        ];
+        let leaves = ui::initial_dock()
+            .main_surface()
+            .iter()
+            .filter(|n| matches!(n, Node::Leaf(_)))
+            .count();
+        let total = Tab::ALL.len();
+        let hidden = total - leaves;
+        // The control: the vocabulary really does cover the numbers in play, so a lookup cannot silently
+        // yield a word that appears in no file and make every `contains` below vacuously satisfied.
+        assert!(
+            total < WORDS.len() && hidden < WORDS.len() && leaves < WORDS.len(),
+            "the number-word table stops at {}; the counts are {total}/{hidden}/{leaves}",
+            WORDS.len() - 1
+        );
+        let (total_w, hidden_w) = (WORDS[total], WORDS[hidden]);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // Comment markers and line wrapping are noise here — the same sentence is spelled `//!`, `///` and
+        // `//` across these four files and rewraps whenever a word changes length. Compare the words.
+        let flatten = |s: &str| {
+            s.replace("//!", " ")
+                .replace("///", " ")
+                .replace("//", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        // Every file that states the count in words, and the claim each must make.
+        let sites: [(&str, String); 4] = [
+            (
+                "nav.rs",
+                format!("{hidden_w} of the {total_w} panel bodies do not run"),
+            ),
+            (
+                "screen.rs",
+                format!("{hidden_w} of the {total_w}** panel bodies do not run"),
+            ),
+            (
+                "ui.rs",
+                format!("**{hidden_w} of {total_w}** behind another title"),
+            ),
+            (
+                "main.rs",
+                format!("{hidden_w} of the {total_w} panels are behind another title"),
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (file, phrase) in &sites {
+            let src = std::fs::read_to_string(root.join(file))
+                .unwrap_or_else(|e| panic!("{file} is readable from nav's test: {e}"));
+            if !flatten(&src).contains(phrase.as_str()) {
+                wrong.push(format!("{file} (expected to state {phrase:?})"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "`Tab` has {total} variants in {leaves} leaves, so {hidden} panel bodies do not run — but \
+             these files state something else: {wrong:?}. Update the prose in ALL of them; the last two \
+             times, a correction reached some files and not the rest and the repo asserted both numbers."
+        );
+    }
+
+    /// ★ **How many panels the default layout hides — MEASURED, never restated.**
+    ///
+    /// `egui_dock` draws one body per *leaf*, so the number of panels in front IS the leaf count and
+    /// everything else is hidden. That rule is what this test asserts; it names no figure, which is why it
+    /// has stayed correct while the prose around it went stale **twice** (six-of-eight → four-of-eight →
+    /// today's four run / seven hidden of eleven, as `Planes`, `Spawn` and `Effects` landed). Lens finding
+    /// H19 is the second drift.
+    ///
+    /// ⚑ **The doc comment on this very test was itself part of the second drift**, which is the sharpest
+    /// version of the lesson available: it used to enumerate the leaves as `[Screen]`, `[Pacing]`,
+    /// `[Registers, Memory, Objects]`, `[Breakpoints, Watchpoints, Profiler]` and conclude "four bodies
+    /// run and four do not". The body below never said any of that and never went wrong. **A derivation in
+    /// the assertions and a restatement in the prose above them are not the same artifact**, and only one
+    /// of them is maintained by the compiler.
     ///
     /// ⚠ The `hidden > 0` clause is the anti-vacuity one for the whole file: if `initial_dock` gave every
     /// tab its own leaf, nothing would ever be `Hidden`, the nav would have no defect to repair, and
@@ -1097,7 +1183,7 @@ mod tests {
     /// module cares about.
     ///
     /// `entries()` sees only showing/hidden/closed, so two very different arrangements holding the same
-    /// eight tabs compare equal through it. That is exactly the hole a `Reset` that merely *reopened*
+    /// eleven tabs compare equal through it. That is exactly the hole a `Reset` that merely *reopened*
     /// everything would slip through, so the reset test measures panes instead.
     fn panes(dock: &DockState<Tab>) -> Vec<Vec<Tab>> {
         let mut out = Vec::new();
@@ -1286,7 +1372,7 @@ mod tests {
             panes(&dock)
         );
 
-        // The menu still offers all eight, all closed, and one of them still comes back.
+        // The menu still offers all eleven, all closed, and one of them still comes back.
         let rows = entries(&dock);
         assert_eq!(rows.len(), Tab::ALL.len());
         assert!(rows.iter().all(|e| e.state == State::Closed));
@@ -1298,7 +1384,7 @@ mod tests {
     ///
     /// ⚠ *The impostor this is built to catch.* A `Reset` implemented as "reopen everything that is
     /// closed" would satisfy every claim [`entries`] can make, because `entries` sees only
-    /// showing/hidden/closed and would report all eight present either way. So the measurement is
+    /// showing/hidden/closed and would report all eleven present either way. So the measurement is
     /// [`panes`] — every leaf's actual tab list — taken against a layout that has been **both** whittled
     /// down *and* rearranged, and asserted different from the default before the reset runs.
     #[test]
