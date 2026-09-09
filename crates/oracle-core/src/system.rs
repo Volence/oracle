@@ -504,6 +504,10 @@ impl System {
     /// honest answer — no instruction drove them — not a lost PC.
     pub fn reset_with_sink<S: BusEventSink>(&mut self, sink: &mut S) {
         let rom = std::mem::take(&mut self.rom);
+        // Measured off the cartridge BEFORE the re-construction below blanks it, so the guard at the end
+        // of this function has something to compare against that the re-construction cannot supply. See
+        // that guard for why a length taken afterwards would have been worthless.
+        let (rom_len, sram_len) = (rom.len(), self.sram.len());
         // Battery-backed SRAM survives a soft reset (its contents + the detected map are preserved, exactly
         // like the cartridge ROM); the `$A130F1` enable latch does NOT — real hardware powers up with SRAM
         // access off and the driver re-enables it. `sram_dirty` also clears (it is only a persistence throttle).
@@ -525,11 +529,34 @@ impl System {
         // `sram_used` is a "this cart has ever saved" latch, so it survives a soft reset alongside the SRAM
         // contents (the enable latch, by contrast, powers off — restored above only for the map, not enable).
         self.sram_used = used;
-        // The machine is now exactly at its power-on anchor, with the sink already attached — this is the
-        // arm point C1 requires, and it is not expressible as "reset, then arm".
+        // The machine is now exactly at its power-on anchor **with the cartridge back in it**, and the sink
+        // is already attached — the arm point C1 requires, not expressible as "reset, then arm".
+        //
+        // **M45: the anchor clause alone was vacuous.** `is_pristine_power_on()` reads `scheduler.now()`
+        // and `cpu.regs`, and the only thing between it and the `*self = Self::new(..)` above is the
+        // cartridge restore — which writes neither. It re-asked the constructor whether the constructor
+        // had worked, and it can only ever have answered yes.
+        //
+        // The clause that can actually fail is the second one, and it is the mistake this guard's comment
+        // claims to be about: the re-construction blanks every field, and the lines above put the
+        // cartridge back. Move `*self = Self::new(..)` below any of them and the machine is *still*
+        // pristine while the reset recipe is about to fetch its vectors out of an empty ROM. Measured
+        // against that exact reordering, this site said nothing and eight downstream tests reported it as
+        // "index out of bounds", "d0 carries the frame counter" and "PC is in no SP_BOUNDARIES row".
+        //
+        // The lengths come from before the re-construction on purpose: a length read afterwards would be
+        // this same shape one level along — the restore checked against the value the restore produced.
         debug_assert!(
+            self.is_pristine_power_on()
+                && self.rom.len() == rom_len
+                && self.sram.len() == sram_len,
+            "reset must arm at the pristine power-on anchor with the cartridge still in the machine: \
+             pristine={}, rom {} of {} bytes, sram {} of {} bytes",
             self.is_pristine_power_on(),
-            "reset must arm at the pristine power-on anchor"
+            self.rom.len(),
+            rom_len,
+            self.sram.len(),
+            sram_len
         );
         self.cpu.assert_reset();
         self.step_cpu(sink); // services reset_pending: runs the power-on reset recipe over the bus
@@ -2447,6 +2474,54 @@ mod tests {
             s.rom(),
             &rom[..],
             "a reset does not erase the cartridge ROM"
+        );
+        // The clause that stops this agreeing with itself: two empty vectors compare equal, so without
+        // this the assertion above is satisfied by a reset that erased everything AND a `build()` that
+        // returned nothing.
+        assert!(!rom.is_empty(), "the fixture cartridge must have bytes");
+    }
+
+    /// **M45.** `reset_with_sink` restores the battery SRAM alongside the ROM, and its repaired guard now
+    /// says so — but nothing *tested* the property, so a `debug_assert!` would have been the only thing
+    /// standing on it, and it is absent from the build `tools/land.sh` G7 runs. The SRAM is restored by a
+    /// different statement from the ROM's, so `reset_preserves_the_loaded_rom` above does not cover it:
+    /// measured, with `self.sram = sram;` emptied and the guard compiled out (`cargo test --release`),
+    /// that test stays green and this one is the only thing that fails.
+    #[test]
+    fn reset_preserves_the_battery_sram_and_its_map() {
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x55);
+        s.load_rom(crate::testrom::build());
+        // Enable SRAM the way the driver does, then write a byte through the bus, so the contents under
+        // test were put there by a guest write rather than by the test reaching into the field.
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 0x01);
+        let addr = s.sram_base | 1;
+        s.mega_bus(&mut ()).write8(addr, 5, 0xA5);
+        let (len, base, end, odd, used) = (
+            s.sram.len(),
+            s.sram_base,
+            s.sram_end,
+            s.sram_odd,
+            s.sram_used,
+        );
+        assert!(
+            len > 0 && used,
+            "the guest write must have landed: len {len}, used {used}"
+        );
+
+        s.reset();
+
+        assert_eq!(s.sram.len(), len, "a reset does not erase the battery SRAM");
+        assert_eq!(
+            (s.sram_base, s.sram_end, s.sram_odd, s.sram_used),
+            (base, end, odd, used),
+            "a reset preserves the detected SRAM map and the ever-saved latch"
+        );
+        // The enable latch is the one thing that does NOT survive: real hardware powers up with SRAM
+        // access off. Asserted here so "everything survives" cannot pass for the property.
+        assert!(
+            !s.sram_enabled,
+            "the $A130F1 enable latch powers off across a reset"
         );
     }
 

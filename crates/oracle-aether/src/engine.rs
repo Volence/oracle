@@ -7241,14 +7241,15 @@ impl Engine {
         // `s4.lst` and `s4.debug.lst` share, 92.6% name a different address — a mismatched listing is
         // not degraded information, it is confidently wrong information.
         let binding = table.validate_against_rom(self.sys.rom());
-        let (accepted, caveat) = match binding {
-            RomBinding::Match { .. } => (
-                true,
-                Some(
-                    "the deb2 appendix probe is a filter, not a proof: Match means \"not obviously \
-                     wrong\", never \"proven right\" (two demo shapes can declare the same EndOfRom)."
-                        .to_string(),
-                ),
+        // **M44: no `accepted` flag.** This match used to bind `(accepted, caveat)`, and every arm that
+        // did not early-return bound `accepted` to the literal `true` — so the `debug_assert!(accepted)`
+        // that followed was `debug_assert!(true)` and the flag's only consumer was the assertion that
+        // could not fail. Acceptance is spelled by *reaching the end of the match*; the flag restated it.
+        let caveat = match binding {
+            RomBinding::Match { .. } => Some(
+                "the deb2 appendix probe is a filter, not a proof: Match means \"not obviously \
+                 wrong\", never \"proven right\" (two demo shapes can declare the same EndOfRom)."
+                    .to_string(),
             ),
             RomBinding::Mismatch(fault) => {
                 return Err(RpcError::invalid_params(format!(
@@ -7270,26 +7271,38 @@ impl Engine {
             // The two Indeterminate shapes are NOT the same finding and must not share a sentence. One
             // listing gave us no offset to probe; the other gave us one and it says "there is no
             // appendix here" — which is a fact about the image, not a gap in the listing.
-            RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { rom_len }) => (
-                true,
+            RomBinding::Indeterminate(Indeterminate::EndOfRomIsImageEnd { rom_len }) => {
                 Some(format!(
                     "this listing declares EndOfRom at exactly the image's end (${rom_len:X} bytes), \
                      which is the no-appendix shape a stock AS disassembly has. `RomEndLoc: dc.l \
                      EndOfRom-1` puts the symbol one past the last byte, so there is nothing to probe \
                      rather than a probe that failed. Accepted unverified because it is internally \
                      intact.",
-                )),
-            ),
-            RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol) => (
-                true,
-                Some(
-                    "this listing declares no EndOfRom, so it could not be checked against the loaded \
-                     ROM at all. Accepted unverified because it is internally intact."
-                        .to_string(),
-                ),
+                ))
+            }
+            RomBinding::Indeterminate(Indeterminate::NoEndOfRomSymbol) => Some(
+                "this listing declares no EndOfRom, so it could not be checked against the loaded \
+                 ROM at all. Accepted unverified because it is internally intact."
+                    .to_string(),
             ),
         };
-        debug_assert!(accepted);
+        // What the dead flag *should* have been standing on, and the one claim here that a single arm
+        // cannot make true on its own: the two arms above accept **unverified**, and both of their
+        // caveats end "Accepted unverified because it is internally intact." That is only true because
+        // the `Indeterminate(_) if !table.is_intact()` arm refused the damaged case FIRST — recon §9g's
+        // fail-open-closed ordering. Delete or reorder that guard arm and this fires; nothing inside
+        // either accepting arm mentions intactness, so no arm can satisfy this by construction.
+        //
+        // `Match` is excluded deliberately: it is accepted on the probe, not on intactness, and a
+        // damaged-but-binding listing is `H24`'s disclosure problem rather than a refusal.
+        debug_assert!(
+            matches!(binding, RomBinding::Match { .. }) || table.is_intact(),
+            "{path} was accepted without a ROM binding while not internally intact, so the \
+             fail-open-closed refusal above no longer covers this path: {}",
+            table
+                .integrity_note()
+                .unwrap_or_else(|| "(no integrity note)".into())
+        );
 
         let count = table.len();
         let modules = table.modules().len();

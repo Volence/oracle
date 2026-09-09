@@ -1358,7 +1358,14 @@ impl MicroState {
     /// decode-materialization path: [`RecipeBuf::finish`](super::ea::RecipeBuf::finish) hands over the array
     /// it already built, so a decoded recipe constructs its `[MicroOp; MAX_OPS]` array exactly once.
     pub fn from_buf(ops: [MicroOp; MAX_OPS], len: u8) -> Self {
-        debug_assert!(len as usize <= MAX_OPS, "recipe exceeds MAX_OPS");
+        // **M48: a hard `assert!`, not a `debug_assert!`.** The two guards this one stands behind —
+        // `from_ops` above and `RecipeBuf::push` (`ea.rs:152`), the only in-tree path into here — are
+        // both release `assert!`s, so as a `debug_assert!` this was the weakest of the three AND the
+        // only one that vanished in release: exactly the build where an over-long `len` could reach
+        // the `ops[..len]` slicing with nothing left checking it. `from_buf` is `pub`, so "no in-tree
+        // caller can trip it" describes today's callers, not the API. One `u8`-against-a-constant
+        // compare per decoded instruction, on a branch that is never taken.
+        assert!(len as usize <= MAX_OPS, "recipe exceeds MAX_OPS");
         Self {
             ops,
             len,
@@ -3392,6 +3399,33 @@ mod tests {
             sr: SR_SUPERVISOR,
             prefetch: [0; 2],
         }
+    }
+
+    /// **M48.** `from_buf`'s `MAX_OPS` bound used to be a `debug_assert!`, standing behind two
+    /// *release* `assert!`s that already made its trigger unreachable in-tree:
+    /// [`MicroState::from_ops`]'s `assert!(ops.len() <= MAX_OPS)` and
+    /// [`RecipeBuf::push`](super::ea::RecipeBuf)'s `assert!(self.len < MAX_OPS)`, the latter on the
+    /// only in-tree path into `from_buf`. So the weaker of the three guards was the one that
+    /// evaporated in release — the exact build where the other two still stand, and the only build
+    /// where an over-long `len` could reach the `ops[..len]` slicing unchecked. `from_buf` is `pub`,
+    /// so "no in-tree caller can trip it" is a statement about today's callers, not about the API.
+    ///
+    /// The bound is `len as usize <= MAX_OPS` with `MAX_OPS` 40 and `len` a `u8`, so an over-long
+    /// value is representable and this is a reachable state for any out-of-tree caller.
+    ///
+    /// This test passes trivially under `cargo test` (debug, where `debug_assert!` is live); the
+    /// build it actually gates is `cargo test --workspace --release` — `tools/land.sh` G7.
+    #[test]
+    #[should_panic(expected = "recipe exceeds MAX_OPS")]
+    fn from_buf_refuses_an_over_long_recipe_in_every_profile() {
+        let ops = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
+        // Representable in the parameter's own type, which is what makes this a state and not a
+        // hypothetical: MAX_OPS is 40 and `len` is a u8.
+        assert!(
+            MAX_OPS + 1 <= u8::MAX as usize,
+            "the over-long len must fit a u8"
+        );
+        let _ = MicroState::from_buf(ops, (MAX_OPS + 1) as u8);
     }
 
     #[test]

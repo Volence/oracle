@@ -10,8 +10,12 @@
 //!
 //! # Two independent guards, because they catch different mistakes
 //!
-//! 1. **[`SourceGuard`]** — a write that resolves inside the git repository the ROM or listing came from
-//!    requires `--allow-source-write`. The *repository* is the boundary, not "the directory holding the
+//! 1. **[`SourceGuard`]** — a write that resolves inside the git repository any INPUT came from — the
+//!    ROM, the listing, or the fixture being repaired — requires `--allow-source-write`. The fixture is
+//!    named explicitly because it is the file the repair rewrites and the one whose neighbours this
+//!    module's opening paragraph is about; it can also sit in a different checkout from the ROM, and for
+//!    a while it was not in the list at all (M47). "Resolves inside" means after symlinks, not after
+//!    text. The *repository* is the boundary, not "the directory holding the
 //!    ROM": a file does not define a tree root, and the parent-directory rule both under-protects (a ROM
 //!    at the repo root protects only that one level) and over-protects surprisingly (copy the ROM into
 //!    your working directory and the tool refuses to write its own report beside it).
@@ -63,8 +67,9 @@ impl SourceGuard {
         match self.check(&resolved, target.exists()) {
             Ok(()) => Ok(()),
             Err(WriteRefusal::InsideSourceRepo { repo }) => Err(format!(
-                "REFUSING to write {}: it resolves inside {}, the repository the ROM and listing came \
-                 from. Those are the owner's artifacts, and a re-stamp is a change to review before it \
+                "REFUSING to write {}: it resolves inside {}, a repository this run's inputs came from \
+                 (note that it resolves there after symlinks, which the path itself may not show). \
+                 Those are the owner's artifacts, and a re-stamp is a change to review before it \
                  lands. Write the repair somewhere else and apply it deliberately, or pass \
                  --allow-source-write if writing in place is genuinely what you want.",
                 target.display(),
@@ -79,12 +84,29 @@ impl SourceGuard {
     }
 }
 
-/// Make a path absolute and lexically normal **without** requiring it to exist (`canonicalize` refuses a
-/// file that is not there yet, which is every file this tool is about to create).
+/// Resolve a candidate write path for the containment check: **lexically first, then through the
+/// symlinks that actually exist.**
 ///
-/// `..` is resolved lexically, which is what a containment check needs: `aeon/../scratch/x` must not be
-/// judged as "inside aeon".
+/// **M47.** This used to be the lexical half alone, which meant the guard could be walked straight past:
+/// a `--out` reaching the protected repository through a symlink — `ln -s ~/aeon /tmp/tree`, then
+/// `--out /tmp/tree/games/.../ojz.bin` — resolved to a path starting `/tmp`, matched no protected root,
+/// and landed inside the very tree the guard exists to protect. A containment check that is decided on
+/// the spelling of a path rather than on where the path leads is not a containment check.
+///
+/// Both halves are needed and neither is sufficient:
+///
+/// * **lexical `..`** because `canonicalize` refuses a file that is not there yet, which is every file
+///   this tool is about to create, and because `aeon/../scratch/x` must not be judged inside `aeon`;
+/// * **`canonicalize` on the longest existing ancestor**, with the not-yet-existing tail re-attached,
+///   because that is the only thing that follows a link.
 pub fn resolve_for_guard(p: &Path) -> PathBuf {
+    follow_existing_symlinks(&resolve_lexically(p))
+}
+
+/// The lexical half of [`resolve_for_guard`]: absolute, `.` dropped, `..` popped, nothing touched on
+/// disk. Public so a test can show the two halves disagree — a symlink test that could have passed on
+/// the lexical answer alone would be witnessing nothing.
+pub fn resolve_lexically(p: &Path) -> PathBuf {
     use std::path::Component;
     let abs = if p.is_absolute() {
         p.to_path_buf()
@@ -106,6 +128,32 @@ pub fn resolve_for_guard(p: &Path) -> PathBuf {
     out
 }
 
+/// Canonicalize the longest prefix of `lexical` that exists on disk and re-attach the rest verbatim.
+///
+/// The tail is the part being created, so it has no links to follow; the prefix is where a link can
+/// hide. Falls back to the lexical path unchanged when nothing resolves — which is a *weaker* answer,
+/// never a wrong one, because the lexical path is what the check used to run on.
+fn follow_existing_symlinks(lexical: &Path) -> PathBuf {
+    let mut prefix = lexical.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = prefix.canonicalize() {
+            let mut out = real;
+            for name in tail.iter().rev() {
+                out.push(name);
+            }
+            return out;
+        }
+        let Some(name) = prefix.file_name().map(|n| n.to_os_string()) else {
+            return lexical.to_path_buf();
+        };
+        tail.push(name);
+        if !prefix.pop() {
+            return lexical.to_path_buf();
+        }
+    }
+}
+
 /// The git repository a path belongs to: the nearest ancestor holding a `.git` entry (a directory for an
 /// ordinary clone, a file for a worktree). `None` when there is none.
 pub fn enclosing_repo(p: &Path) -> Option<PathBuf> {
@@ -121,6 +169,26 @@ pub fn enclosing_repo(p: &Path) -> Option<PathBuf> {
             return None;
         }
     }
+}
+
+/// The guard for one `--restamp` invocation, assembled from **every** file the run was handed.
+///
+/// **M47.** The call site used to pass the ROM and the listing and stop there, while this module's own
+/// doc names *the fixture's neighbours* — `sonic3k.state0`, `sonic3k.srm` — as the thing being
+/// protected. `--fixture-bin` is the file the repair rewrites, so its repository is the one most
+/// certain to be the owner's; leaving it out meant a fixture from a different checkout than the ROM
+/// left that checkout entirely unprotected. Assembling the list here rather than at the call site is
+/// what lets a test see which inputs a run protects.
+pub fn guard_for_run(
+    rom: &Path,
+    lst: &Path,
+    fixture: Option<&Path>,
+    allow_source_write: bool,
+    force: bool,
+) -> SourceGuard {
+    let mut inputs: Vec<&Path> = vec![rom, lst];
+    inputs.extend(fixture);
+    guard_for_inputs(&inputs, allow_source_write, force)
 }
 
 /// Build the guard for a run: whatever repositories the inputs live in are protected.
@@ -268,5 +336,120 @@ mod tests {
         let repo = enclosing_repo(here).expect("this crate is inside a git repository");
         assert!(repo.join(".git").exists());
         assert!(resolve_for_guard(here).starts_with(&repo));
+    }
+
+    /// A scratch directory of our own, canonicalized so the assertions below are about the symlink
+    /// under test and not about whatever `/tmp` happens to be on the host.
+    fn scratch(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "replay-guard-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("create the scratch directory");
+        d.canonicalize()
+            .expect("canonicalize the scratch directory")
+    }
+
+    /// **M47, hole one.** The containment check must be decided by where a path LEADS, not by how it is
+    /// spelled. `..` was resolved and symlinks were not, so `--out` through a link into the protected
+    /// repository resolved to a path outside every protected root and landed inside the tree the guard
+    /// exists to protect.
+    ///
+    /// The lexical assertion is the clause that keeps this honest: if the link's own path already
+    /// started with the repository, the refusal below would prove nothing about following it.
+    #[test]
+    fn a_write_reaching_the_source_repo_through_a_symlink_is_refused() {
+        let base = scratch("symlink");
+        let repo = base.join("aeon");
+        std::fs::create_dir_all(repo.join("games")).expect("create the fake repo");
+        std::fs::write(repo.join(".git"), "gitdir: elsewhere\n")
+            .expect("a worktree-style .git file");
+        std::fs::write(repo.join("s4.bin"), b"rom").expect("write the input ROM");
+
+        let link = base.join("innocent-looking");
+        std::os::unix::fs::symlink(&repo, &link).expect("create the symlink");
+        let via_link = link.join("games/ojz.bin");
+
+        // The clause that stops this test agreeing with itself: on the spelling alone, this write is
+        // nowhere near the repository.
+        assert!(
+            !resolve_lexically(&via_link).starts_with(&repo),
+            "the lexical path must NOT look like it is inside {} — otherwise this test would pass \
+             without following the link at all: {}",
+            repo.display(),
+            resolve_lexically(&via_link).display()
+        );
+        assert!(
+            resolve_for_guard(&via_link).starts_with(&repo),
+            "…but resolving it must land inside the repo: {}",
+            resolve_for_guard(&via_link).display()
+        );
+
+        let g = guard_for_inputs(&[&repo.join("s4.bin")], false, false);
+        assert_eq!(
+            g.protected,
+            vec![repo.clone()],
+            "the input's repo is protected"
+        );
+        assert!(
+            g.check_path(&via_link).is_err(),
+            "a write reaching {} through a symlink must be refused",
+            repo.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **M47, hole two.** `--fixture-bin` is the file the repair rewrites, and it can sit in a different
+    /// checkout from the ROM. The call site passed the ROM and the listing only, so that checkout was
+    /// not protected at all — while this module's doc names the fixture's neighbours as the thing being
+    /// protected.
+    ///
+    /// Two separate repositories, so "protected" cannot be inherited from the ROM's.
+    #[test]
+    fn the_fixture_repository_is_protected_alongside_the_roms() {
+        let base = scratch("fixture");
+        let rom_repo = base.join("aeon");
+        let fixture_repo = base.join("sonic3k-fixtures");
+        for r in [&rom_repo, &fixture_repo] {
+            std::fs::create_dir_all(r).expect("create a fake repo");
+            std::fs::write(r.join(".git"), "gitdir: elsewhere\n").expect(".git file");
+        }
+        let rom = rom_repo.join("s4.bin");
+        let lst = rom_repo.join("s4.lst");
+        let fixture = fixture_repo.join("ojz.bin");
+        for f in [&rom, &lst, &fixture] {
+            std::fs::write(f, b"x").expect("write an input");
+        }
+        assert_ne!(
+            rom_repo, fixture_repo,
+            "the two inputs must be in different repositories, or this measures one repo twice"
+        );
+
+        let g = guard_for_run(&rom, &lst, Some(&fixture), false, false);
+        assert!(
+            g.protected.contains(&fixture_repo),
+            "the fixture's repository must be protected; protected = {:?}",
+            g.protected
+        );
+        assert!(
+            g.check_path(&fixture_repo.join("sonic3k.srm")).is_err(),
+            "…so a write next to the fixture is refused"
+        );
+
+        // The control: without a fixture the fixture's repo is NOT protected, so the assertion above
+        // is about the new argument and not about the discovery walk finding everything anyway.
+        let g = guard_for_run(&rom, &lst, None, false, false);
+        assert!(
+            !g.protected.contains(&fixture_repo),
+            "with no fixture, its repo must not be protected; protected = {:?}",
+            g.protected
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

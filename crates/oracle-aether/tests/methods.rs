@@ -1131,6 +1131,67 @@ fn the_two_unverified_bindings_are_caveated_as_the_different_findings_they_are()
     );
 }
 
+/// **M44 — the refusal the dead `debug_assert!(accepted)` was standing next to, and which nothing
+/// tested.** `load_symbols` used to bind an `accepted` flag that every surviving match arm set to the
+/// literal `true`, then assert it. The claim actually worth pinning is recon §9g's fail-open-closed
+/// ordering: a listing that could not be bound to the ROM **and** is not internally intact is REFUSED,
+/// because truncation removes rows from the end of a file — where `EndOfRom` sits — so a listing that
+/// would have been caught as a `Mismatch` decays into a merely `Indeterminate` one as it loses bytes.
+///
+/// Both accepting arms' caveats end *"Accepted unverified because it is internally intact"*, and that
+/// sentence is only true because this refusal runs first. Before this test, `grep -rn
+/// "indeterminate-and-damaged"` matched `engine.rs` and nothing else in the tree.
+///
+/// The two listings differ by **one line**: the same rows, with and without the `5 symbols` footer.
+/// That is what makes this measure the intactness clause rather than the binding clause — the control
+/// below takes the identical text through the same door and is accepted.
+#[test]
+fn a_listing_that_cannot_bind_and_is_damaged_is_refused_rather_than_accepted_unverified() {
+    let h = spawn("indeterminate-damaged");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+
+    // Truncation, the real shape: the footer is the last thing in the file, so it is the first thing a
+    // cut loses. `matches_declared_count()` then answers `None` rather than `Some(false)`, which is
+    // exactly why `is_intact` cannot be built on the count check alone.
+    let damaged = LST_UNBOUND
+        .replace("    5 symbols\n", "")
+        .replace("    0 unused symbols\n", "");
+    assert_ne!(
+        damaged, LST_UNBOUND,
+        "the truncation must have actually removed something, or this test measures the control twice"
+    );
+
+    let lst = write_lst("damaged-unbound", &damaged);
+    let e = c.err(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    assert_eq!(
+        e["data"]["binding"],
+        json!("indeterminate-and-damaged"),
+        "the refusal must name its own shape — not `mismatch`, which is a different finding: {e}"
+    );
+    let msg = e["message"].as_str().expect("a message").to_string();
+    assert!(
+        msg.contains("is not internally intact"),
+        "the message must say WHICH of the two clauses refused it: {msg}"
+    );
+
+    // The control, and the reason the assertion above is about intactness: the same listing WITH its
+    // footer binds no better — still `Indeterminate` — and is accepted.
+    let lst = write_lst("damaged-unbound-control", LST_UNBOUND);
+    let r = c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    assert_eq!(
+        r["binding"],
+        json!("indeterminate"),
+        "the control must reach the SAME binding verdict, so only intactness differs: {r}"
+    );
+}
+
 /// **Why `symbolCount` can be smaller than the listing's own `N symbols` footer**, answered where a
 /// consumer meets the discrepancy. A stock AS listing emits its build metadata as pseudo-symbols with a
 /// string or float value; the footer counts them, they carry no address, and so they cannot answer a
