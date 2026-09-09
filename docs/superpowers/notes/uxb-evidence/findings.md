@@ -386,3 +386,125 @@ Two controls answer a hover: the disabled `turn scene off` (`shots/53`) and the 
 reset or a restore, from here or from a program driving it. Anything you read now comes from the new
 one. Click to dismiss."* (`shots/58-hover-machine-replaced.png`). The breakpoint delete button and the
 `governor`/`rebases` strip were hovered for 2 s each and gave nothing.
+
+# The game window (`oracle-frontend`)
+
+## F-UXB-21 — oracle-frontend · the whole window · nothing on screen says a single control exists
+**misses: can it be found**
+
+The window is the picture and nothing else: no menu, no bar, no hint text, no right-click menu
+(`shots/70-frontend-default.png`). It has ~30 commands and ~20 key bindings. Every one of them,
+including the key that opens the list, is announced only on **stdout at launch** — a terminal a
+person who double-clicks the binary does not have. A newcomer given this window can start the game
+and nothing else; there is no gesture that reveals the backtick.
+
+Once found, ` opens a real palette (`shots/71-frontend-palette.png`) — so the commands are
+discoverable *from inside the palette*, and the palette is discoverable from nowhere.
+Booked adjacent: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`; met here as *the window told me nothing at all*.
+
+## F-UXB-22 — oracle-frontend · command palette · the list scrolls and looks complete when it is not
+**misses: can it be found**
+
+On open, the list ends flush at the panel's bottom border on `TOGGLE SPRITE OUTLINES`
+(`shots/71`, `shots/75-frontend-palette-cleared.png`). There is **no scrollbar, no fade, no "more"
+marker**. Holding Down reveals three more LENSES rows (`shots/77`), then whole groups the first view
+gave no sign of: **DISPLAY LAYERS** (4), **SPAWN OBJECTS (DEBUG, NOT SAVED)** (2) and **SETTINGS**
+(status line F3, volume, mute, audio filter) (`shots/78-frontend-palette-end.png`). Roughly 17 of ~30
+commands are visible, and the cut lands exactly on a group boundary, which is what makes it read as
+the end.
+
+## F-UXB-23 — oracle-frontend · command palette · a search that matches nothing says nothing, and Enter does nothing
+**misses: does an error say what to do next** · direct contradiction of the other window
+
+Typing `zzzz` empties the list and leaves a blank dimmed rectangle with `> zzzz_` above it. No
+message (`shots/72-frontend-palette-nomatch.png`). Pressing Return then does **nothing at all** — the
+pixels are identical (`shots/73-frontend-palette-enter-nomatch.png`). A person is left holding a
+palette that will not answer and will not explain.
+
+**The same product, in the other window, gets this exactly right.** `oracle-player`'s commands
+palette answers the identical mistake with *"no method named `emulator/does_not_exist` is served by
+this build. 62 are, and the list above is all of them. Nothing was sent."* (`shots/47`). Two command
+palettes, one build, one mistake, opposite behaviour — **and the window that is a newcomer's first
+contact is the silent one.**
+
+## F-UXB-24 — oracle-frontend · command palette · three entries are truncated mid-word with no way to read them
+**misses: can it be found** (same defect class as F-UXB-5, in the other window)
+
+As displayed: `TOGGLE CPU REGISTERS (FULL D0-D7/A0-` · `SPAWN MODE: CLICK TO PLACE AN OBJEC` ·
+`AUDIO FILTER: VA0-VA2 / VA3-VA6 / R`. The panel does not wrap, does not widen, and does not scroll
+horizontally. `shots/71`, `shots/78`.
+
+## F-UXB-25 — oracle-frontend · volume / mute · the window reports a volume and confirms a mute for an audio device it knows it does not have
+**misses: does an error say what to do next (the operation that cannot work reports success)**
+
+At launch this build printed, to stdout only:
+`audio: no default output config (A backend-specific error has occurred: ALSA function 'snd_pcm_open'
+failed with error 'Host is down (112)'), running video-only`.
+
+The window nevertheless shows `VOL 10/10` in the F3 status line, and pressing `M` (08:17:55Z) flips
+the status line to `MUTE` and toasts `VOLUME: 10/10  [MUTED]` (`shots/83-frontend-mute.png`). Nothing
+anywhere in the window says audio is unavailable. A person who hears nothing presses mute, is told it
+is muted, presses it again, is told 10/10, and is no closer to the truth — which the program had
+already established at startup and threw away.
+
+⚠ **Declared tension with my brief**: the handover says "No volume, mute, or sound findings" because
+the rig has no audio. I am filing it anyway and flagging it, because it needs no judgement about
+sound — it is a state-reporting mismatch, evidenced by the window's own text against the process's
+own stdout. It is also reachable off this rig (no card, PipeWire down, headless). **Downgrade or drop
+it if the controller reads the bar more widely than I have.**
+
+## F-UXB-26 — oracle-player · closing a tab is recoverable, but not to where it was
+**misses: can a mistake be undone**
+
+Closing `Screen` and `Planes` with their `X` collapses the entire left column and the game picture
+disappears with no warning (`shots/87-tabs-closed.png`). Recovery is well signposted — the `panels`
+menu marks them `Screen (closed)` / `Planes (closed)` (`shots/88-panels-after-close.png`) — but
+choosing `Screen` reopens it **in a different dock node**, wedged beside Registers/Memory/Objects,
+where the picture is a thumbnail (`shots/89-screen-restored.png`). The only way back to the previous
+arrangement is `reset to the default layout`, which discards every other layout change with it
+(it does work: `shots/90-layout-reset.png`, and per-panel state such as the `integer` aspect
+survives).
+
+## CLEAN — oracle-frontend · click-to-watch, W, C, F1, F3 (5 steps)
+1. `F3` -> status line `[0]123456789 VOL 10/10 AETHER ON 4:3 320x224 DRAWS 91586`
+   (`shots/79-frontend-f3-status.png`).
+2. Click on the picture -> a blue `+` marker on the sprite and `WATCH SPRITE 0 TILE $3F9 + SAT $B800`
+   (`shots/80-frontend-click-watch.png`). Good: it names what it watched, not just that it watched.
+3. `W` -> `DUMPED 6512 WATCH HITS TO STDOUT` on screen, and 6512 lines really did land in the log
+   (`shots/81`, `.uxrig/frontend.log` grew 12 -> 6526 lines). Honest about the destination.
+4. `C` -> `WATCH CLEARED: NO LONGER RECORDING WRITES` (`shots/82`).
+5. `F1` -> `RESET: SOFT RESET; SRAM CONTENTS PRESERVED, AS …` (`shots/84-frontend-f1.png`).
+
+## CLEAN — oracle-player · open ROM (3 steps)
+Built-in browser: `…/.uxrig/rom - 2 of 2 rows shown. Enter opens the highlighted row; Ctrl+O loads a
+pasted path; drop a file on this window.`, a path filter, `up`, `refresh`, and `s4.debug.bin
+[loaded]` marked as the current one (`shots/85-player-open-rom.png`). Typing `/nonexistent/nope.bin`
+and pressing Return gives `Enter: nothing, because no row matches what is typed` with the header at
+`0 of 2 rows shown` (`shots/86-open-rom-bad-path.png`) — it refuses, says why, and names the other
+route in the same breath. Best refusal in either window.
+
+## C-UXB-9 (capture) — the F1 toast is elided on screen and complete in the terminal
+Window: `RESET: SOFT RESET; SRAM CONTENTS PRESERVED, AS …`. Log: `reset: soft reset; SRAM contents
+preserved, as on real hardware`. `shots/84`.
+
+## C-UXB-10 (capture) — `SOFT RESET` is bound to both `TAB` and `F1`; the palette lists only `TAB`
+`shots/78` vs the F1 press at 08:18:25Z (`shots/84`).
+
+## C-UXB-11 (capture) — `STEP ONE FRAME` shows no key in the palette while both its neighbours do
+`PAUSE / RESUME  SPACE`, `STEP ONE FRAME` (blank), `SOFT RESET (SRAM KEPT)  TAB`. The launch line
+says the key is `.`. `shots/71`.
+
+## C-UXB-12 (capture) — the palette says `DUMP WATCH HITS TO TERMINAL`; the toast says `TO STDOUT`
+`shots/71` vs `shots/81`.
+
+## C-UXB-13 (capture) — the F3 status line's save-slot widget is bare digits, `[0]123456789`, with no label
+`shots/79`.
+
+## C-UXB-14 (capture, cross-window) — the two windows are two separate machines and neither says so
+`oracle-player` had emulated 45553 frames while `oracle-frontend` reported `DRAWS 96177` at the same
+moment, on the same ROM path, each `aether serving on` its own socket. Neither window names the other
+or says its machine is its own. I cannot tell from the windows alone whether that is the intended
+topology (establishing it would mean reading source, which this seat may not do), so this is a
+capture for the owner, not a finding. `shots/79`, `shots/85`.
+Vocabulary also diverges for the same quantity: player says `frames emulated` / `frames presented` /
+`N frames`; frontend says `DRAWS N`.
