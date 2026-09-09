@@ -54,10 +54,16 @@ impl Rig {
         // test is entitled to.
         let stubs = root.join("bin");
         fs::create_dir_all(&stubs).expect("stub dir");
+        // `zenity` and `notify-send` are stubbed for the same reason and one more: the launcher these
+        // entries now run puts a dialog on screen when it refuses, and a test suite is not entitled to
+        // open a window on the machine running it. The stubs are silent and successful, so the
+        // file-chooser branch returns an empty selection and the refusal below it is what gets measured.
         for tool in [
             "update-desktop-database",
             "gtk-update-icon-cache",
             "kbuildsycoca6",
+            "zenity",
+            "notify-send",
         ] {
             let p = stubs.join(tool);
             fs::write(&p, "#!/bin/sh\nexit 0\n").expect("stub");
@@ -70,18 +76,30 @@ impl Rig {
         self.root.join("share/applications")
     }
 
-    /// Run the script with both binary paths pointed at something that really is executable, so the
-    /// `[ -x ]` guards pass and both entries are candidates.
-    fn run(&self) -> (bool, String) {
-        let path = format!(
+    /// The stubbed `PATH` these runs use, so nothing here reaches the session's real `zenity`,
+    /// `notify-send` or desktop-cache tools.
+    fn path(&self) -> String {
+        format!(
             "{}:{}",
             self.root.join("bin").display(),
             std::env::var("PATH").unwrap_or_default()
-        );
+        )
+    }
+
+    /// Run the script with both binary paths pointed at something that really is executable, so the
+    /// `[ -x ]` guards pass and both entries are candidates.
+    fn run(&self) -> (bool, String) {
+        self.run_with("/bin/sh", "/bin/sh")
+    }
+
+    /// The same run, with the two binary paths chosen by the caller. Used by the parser-derived tests
+    /// below, which need entries naming a binary they can actually run.
+    fn run_with(&self, frontend: &str, player: &str) -> (bool, String) {
+        let path = self.path();
         let out = Command::new("bash")
             .arg(script())
-            .arg("/bin/sh")
-            .arg("/bin/sh")
+            .arg(frontend)
+            .arg(player)
             .env("HOME", &self.root)
             .env("XDG_DATA_HOME", self.root.join("share"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
@@ -157,11 +175,187 @@ fn with_nothing_claiming_the_class_both_entries_install() {
         "the legacy name was created fresh on a machine that had no old install to migrate, which is \
          the script colliding with itself. Output:\n{text}"
     );
-    // Each installed entry points at the binary it was given, rather than at the template's placeholder.
-    let front = fs::read_to_string(rig.apps().join("oracle-frontend.desktop")).expect("read back");
+    // Each installed entry names the binary it was given, and no placeholder survives the substitution.
+    for entry in ["oracle-frontend.desktop", "oracle-player.desktop"] {
+        let body = fs::read_to_string(rig.apps().join(entry)).expect("read back");
+        let exec = exec_line(&body);
+        assert!(
+            exec.contains("/bin/sh"),
+            "{entry}: the Exec line does not name the binary passed in:\n{exec}"
+        );
+        assert!(
+            !exec.contains('@'),
+            "{entry}: a template placeholder survived substitution, so the entry would launch nothing:\n\
+             {exec}"
+        );
+        assert!(
+            exec.contains("oracle-launch.sh"),
+            "{entry}: the Exec line does not run the launcher, so a click with no file selected reaches \
+             a binary that refuses to start without a ROM:\n{exec}"
+        );
+    }
+}
+
+/// The one `Exec=` line of a `.desktop` body.
+fn exec_line(body: &str) -> String {
+    body.lines()
+        .find(|l| l.starts_with("Exec="))
+        .unwrap_or_else(|| panic!("no Exec= line in:\n{body}"))
+        .to_string()
+}
+
+/// The `Exec=` line as an argv, with the `%f` field code replaced by `rom` (which is what a desktop does
+/// for "Open With") or dropped entirely when `rom` is `None` (which is what a plain icon click does).
+fn exec_argv(exec: &str, rom: Option<&str>) -> Vec<String> {
+    exec.trim_start_matches("Exec=")
+        .split_whitespace()
+        .filter_map(|tok| match (tok, rom) {
+            ("%f", Some(r)) => Some(r.to_string()),
+            ("%f", None) => None,
+            _ => Some(tok.to_string()),
+        })
+        .collect()
+}
+
+/// ⚑ **The generated frontend `Exec=` is one this binary's OWN parser accepts, and the check asks the
+/// parser rather than matching a string.**
+///
+/// The installed entry is read back, `%f` is expanded the way a desktop expands it, and the launcher is
+/// asked (with `--print-argv`, which resolves everything and launches nothing) for the argv it would
+/// hand the binary. That argv then goes to the real `oracle-frontend`, whose verdict is the assertion.
+/// A string comparison here would only prove the script wrote what this file expected; it could not
+/// notice the CLI changing underneath it, which is the failure mode that produced the defect.
+///
+/// **No window opens.** The ROM file is deleted between resolving the argv and running the binary, so
+/// the process dies at `fs::read` with `cannot read ROM`, which is well before any window or socket. That
+/// message is also the positive control: it is only reachable once parsing has SUCCEEDED, so its absence
+/// would mean the run never got that far and the two negative assertions proved nothing.
+#[test]
+fn the_generated_frontend_exec_is_an_argv_the_frontends_own_parser_accepts() {
+    let rig = Rig::new("frontend-exec");
+    let bin = env!("CARGO_BIN_EXE_oracle-frontend");
+    let (ok, text) = rig.run_with(bin, "/bin/sh");
+    assert!(ok, "the script did not exit 0. Output:\n{text}");
+
+    let body = fs::read_to_string(rig.apps().join("oracle-frontend.desktop")).expect("read back");
+    let rom = rig.root.join("fixture.bin");
+    fs::write(&rom, b"not a real ROM").expect("fixture ROM");
+
+    let mut argv = exec_argv(&exec_line(&body), Some(&rom.display().to_string()));
+    argv.push("--print-argv".to_string());
+    let printed = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env("PATH", rig.path())
+        .output()
+        .expect("the launcher is runnable");
+    let printed_text = String::from_utf8_lossy(&printed.stdout).into_owned();
     assert!(
-        front.contains("Exec=/bin/sh %f"),
-        "the Exec line was not rewritten to the binary passed in:\n{front}"
+        printed.status.success(),
+        "the launcher refused to resolve a launch at all:\n{printed_text}{}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    let launch: Vec<String> = printed_text.lines().map(str::to_string).collect();
+    assert_eq!(
+        launch.first().map(String::as_str),
+        Some(bin),
+        "the launcher would run something other than the binary the entry names:\n{printed_text}"
+    );
+    assert!(
+        launch.iter().any(|a| a == "--aether"),
+        "--aether was dropped, so Aurora could not attach to the window this entry opens:\n{printed_text}"
+    );
+
+    // Delete the ROM: the argv is already fixed, and the binary now stops at the read.
+    fs::remove_file(&rom).expect("remove the fixture ROM");
+    let out = Command::new(&launch[0])
+        .args(&launch[1..])
+        .output()
+        .expect("the frontend binary is runnable");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !said.contains("unknown flag"),
+        "the frontend's parser REJECTED a flag in the argv this entry produces:\n{said}"
+    );
+    assert!(
+        !said.contains("missing <rom.bin>"),
+        "the frontend reached its parser with no ROM, which is the icon-click defect:\n{said}"
+    );
+    assert!(
+        said.contains("cannot read ROM"),
+        "the run did not reach the ROM read, so parsing cannot be said to have succeeded and the two \
+         assertions above witness nothing:\n{said}"
+    );
+}
+
+/// A plain icon click passes no file. The launcher must still produce a ROM, because both binaries
+/// refuse to start without one and a launcher that exits to an unread stderr is the original defect.
+#[test]
+fn a_click_with_no_file_selected_still_reaches_the_binary_with_a_rom() {
+    let rig = Rig::new("bare-click");
+    let bin = env!("CARGO_BIN_EXE_oracle-frontend");
+    let (ok, text) = rig.run_with(bin, "/bin/sh");
+    assert!(ok, "the script did not exit 0. Output:\n{text}");
+
+    let body = fs::read_to_string(rig.apps().join("oracle-frontend.desktop")).expect("read back");
+    let rom = rig.root.join("default.bin");
+    fs::write(&rom, b"not a real ROM").expect("fixture ROM");
+
+    // `%f` DROPPED, which is what a menu click expands it to.
+    let mut argv = exec_argv(&exec_line(&body), None);
+    argv.push("--print-argv".to_string());
+    let out = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env("PATH", rig.path())
+        .env("ORACLE_ROM", &rom)
+        .output()
+        .expect("the launcher is runnable");
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "a click with no file selected produced no launch:\n{printed}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        printed.lines().any(|l| l == rom.display().to_string()),
+        "the launch carries no ROM, so the binary would refuse to start:\n{printed}"
+    );
+}
+
+/// ⚑ **A launch that cannot happen SAYS SO.** The defect being fixed was silent: a click produced no
+/// window, no dialog and nothing a person could read. Every refusal in the launcher must exit non-zero
+/// with the reason in it.
+#[test]
+fn a_launch_with_no_usable_rom_refuses_out_loud() {
+    let rig = Rig::new("no-rom");
+    let bin = env!("CARGO_BIN_EXE_oracle-frontend");
+    let (ok, text) = rig.run_with(bin, "/bin/sh");
+    assert!(ok, "the script did not exit 0. Output:\n{text}");
+
+    let body = fs::read_to_string(rig.apps().join("oracle-frontend.desktop")).expect("read back");
+    let mut argv = exec_argv(&exec_line(&body), None);
+    argv.push("--print-argv".to_string());
+    let out = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env("PATH", rig.path())
+        .env("ORACLE_ROM", "/nonexistent/rom.bin")
+        .output()
+        .expect("the launcher is runnable");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "a launch with an unusable ROM reported success:\n{said}"
+    );
+    assert!(
+        said.contains("/nonexistent/rom.bin"),
+        "the refusal does not name the ROM it could not use, so a reader cannot act on it:\n{said}"
     );
 }
 

@@ -84,7 +84,9 @@ case "$window" in
   player) pkg=oracle-player; name=oracle-player ;;
   frontend) pkg=oracle-frontend; name=oracle-frontend ;;
   "")
-    die "$prog: no window chosen — pass --player or --frontend. A .desktop entry whose Exec= lost its \
+    # P10: no em dashes in text a person reads. That rule is about the tool's own strings, and these are
+    # the tool's own strings; the surrounding comments are out of its scope and keep theirs.
+    die "$prog: no window chosen. Pass --player or --frontend. A .desktop entry whose Exec= lost its \
 window flag lands here, which is why this refuses rather than guessing."
     ;;
 esac
@@ -172,7 +174,7 @@ run_build() {
   local log status=0 build_pid zen_pid=""
   log="$(mktemp -t oracle-launch-build-XXXXXX.log)"
   say "rebuilding $name; log: $log"
-  notify "Rebuilding $name — the window opens when the build finishes." low
+  notify "Rebuilding $name. The window opens when the build finishes." low
 
   (cd "$root" && cargo build --release -p "$pkg" --bin "$name") >"$log" 2>&1 &
   build_pid=$!
@@ -180,9 +182,9 @@ run_build() {
   # A pulsating window for the whole build. A notification can be missed or switched off, and twenty
   # silent seconds after a click is indistinguishable from a launcher that did nothing.
   if have zenity; then
-    (while kill -0 "$build_pid" 2>/dev/null; do printf '#Rebuilding %s…\n' "$name"; sleep 1; done) \
+    (while kill -0 "$build_pid" 2>/dev/null; do printf '#Rebuilding %s...\n' "$name"; sleep 1; done) \
       | zenity --progress --pulsate --auto-close --no-cancel --width=420 \
-               --title=Oracle --text="Rebuilding $name…" >/dev/null 2>&1 &
+               --title=Oracle --text="Rebuilding $name..." >/dev/null 2>&1 &
     zen_pid=$!
   fi
 
