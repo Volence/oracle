@@ -176,7 +176,9 @@ settled the stale-binary incident was the executable's **mtime**, which already 
 somebody *editing* the window, not the owner *running* it, and he is not editing it. Revival: someone is
 regularly running a hand-built window and being misled by it.
 
-**Registered 2026-09-05, from landing S3:**
+**Registered 2026-09-05, from landing S3:** *(the one-door palette defect that opened this group is
+closed; its narrative is in `OVERSEER-LOG.md` and the brief lesson it produced in
+`docs/OVERSEER-REFERENCE.md`.)*
 
 - **▶ CR OWED UPSTREAM: F-STATELOAD-SILENT-REPLACE.** A **window** save-state load replaces the machine
   **without moving `rom_generation`**, so a connected client is never told the machine underneath it
@@ -402,7 +404,8 @@ rule; ~~direct owner confirmation requested in-session.~~
 it.** The owner answered decision `d-1` directly in this session on 2026-08-24, choosing **"Confirm it
 as standing permission"** from the two options put to him. **This lane may now push its own repo's
 master without asking each time**, under the four conditions below, which ride with the grant and are
-unchanged by the confirmation.
+unchanged by the confirmation. *Why this relay was usable before the confirmation arrived — a granting
+act described rather than a status field quoted — is in `docs/OVERSEER-REFERENCE.md`.*
 
 **The conditions ride with the grant and are part of it**, transcribed rather than paraphrased:
 - **verify `origin` actually moved: the push is not the act, the remote moving is.** This is the
@@ -571,7 +574,8 @@ owner confirmation requested in-session; replace this flag with the confirmation
 owner armed an overnight delegation in his own words (*"if anything needs decision that they can't
 make you make it for them"*, transcribed by the hub into empyrean `OVERSEER.md` addition (f) at
 05:39Z, banked `091ac59`) and went to bed; the hub ruled in his place and **he reviews it on return.**
-Record it as the hub's ruling. Do not upgrade it to his.
+Record it as the hub's ruling. Do not upgrade it to his. *The question it answered, and what it was
+blocking, are in `OVERSEER-LOG.md` under* **d-16, the question the SUBSTITUTE ruling answered**.
 
 **THE STANDING RULE THIS CREATES, and it outlives tonight.** Adjudications run on the ordinary model
 while the seat is parked, and **every ruling produced that way NAMES ITS OWN REVIEWER, at the top, in
@@ -626,7 +630,8 @@ implementation and the correction did not say so**: a defect created *while appl
 correctly, in the act of fixing a different staleness.* **We have the same exposure and more of it:**
 this repo's recon, demand and CR docs describe "the server" throughout, and D-10/D-13/D-17 are already
 booked as having **two implementers**. A sweep is owed: every claim about server behaviour either
-names its implementation or is a latent two-implementer conflation.
+names its implementation or is a latent two-implementer conflation. *The durable formulation this
+produced — freshness is not transitive across a document — is in `docs/OVERSEER-REFERENCE.md`.*
 
 ## ⚑ THE SOCKET CHAIN, AND F-CHAIN-QUOTED
 
@@ -674,6 +679,10 @@ type system. Do not add a mask parameter to it.** Design calls and the resume pa
 
 ## ▶ GUI-LAYERS: **DISCHARGED 2026-09-09.** Every premise it was queued on is now false
 
+*The discharge measurement — all three queued claims put to the tree and found false — is in
+`OVERSEER-LOG.md` under* **GUI-LAYERS: the discharge measurement, all three premises false**. *The
+queued section and aurora's five consumer rules moved there the same day.*
+
 ⚑ **ONE HAZARD IS KEPT, because it binds anything BUILT LATER rather than describing what shipped: if a
 surface ever names a blob-local tile slot, the rebase can land OUTSIDE the blob.** `tile` is VRAM-absolute;
 aurora's `BG_TILE_BASE_SLOT` is 1024, so **any `tile < 1024` rebases NEGATIVE**, and capacity does not
@@ -716,6 +725,11 @@ gate already grew exactly that env-var path as step 2 (`schema_conformance.rs`),
 caller of a road already built, not a build.
 
 **Also carried in that same message and both banked; moved whole to `OVERSEER-LOG.md` 2026-09-06:** our landing recorded upstream with correct attribution (their number cited as *ours*, not re-derived), and **F-RESUME-STOP-RACE relayed to aurora** as the suite's outbound client, which is the right destination — no reply was requested and none is owed. With them, the content-addressed check that verified our vendored `bus-protocol.schema.json` against empyrean's blob id **in both trees, neither read from a working file**, which is why a relayed claim about our own tree was safe to accept.
+
+**Board row id: `F-FROZEN-FIXTURE-DRIFTS`** — landed 2026-09-06. Its detail (the four drifted dimensions,
+the `DIMENSIONS.tsv`/`aeon_dimensions.rs` shape, and why no second owner card was filed) is in
+`OVERSEER-LOG.md` under the row's own name; the reusable correction it produced is in
+`docs/OVERSEER-REFERENCE.md`.
 
 **▶ BOOKED, NOT BUILT, 2026-09-09: `F-CITATION-LINT` — make a drifted cross-repo citation UNEXPRESSIBLE
 rather than detectable.** The claim-vacuity agent's proposal, recorded verbatim in shape because it should not

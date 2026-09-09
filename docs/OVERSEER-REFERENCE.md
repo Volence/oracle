@@ -793,7 +793,9 @@ that meets it.** *(The paragraph and both of its corrections: `OVERSEER-LOG.md`,
 ⛑ **THE SIXTH INSTANCE IN TWO DAYS OF A ROW'S JUSTIFICATION AGEING WHILE THE ROW SAT STILL, and the first
 one caught BEFORE the agent rather than after.** The standing rule that caught it is the 09-09 frontier's:
 **before dispatching any row, check whether the WORK landed, not whether the ROW is open.** Both artifacts
-asserting this debt — this paragraph and the `CR-Q-MACHINEREPLACED` board row — were self-consistent, correctly
+asserting this debt — the `▶ WHAT WE OWED` paragraph (now in `OVERSEER-LOG.md`, under *CR-Q / §11.40
+`machineReplaced`: the adjudication provenance, and the three-item debt discharged*) and the
+`CR-Q-MACHINEREPLACED` board row — were self-consistent, correctly
 cited, and wrong, which is why neither could correct the other.
 
 ⛑ **AND THE HUB READ IT THE SAME WAY FROM THE OTHER SIDE, which makes this a shared-frame instance rather
@@ -815,6 +817,9 @@ strings. **So the check came back clear, but it was right to hand it over rather
 is bar 24's second-instrument rule working in the direction of a peer rather than a document.
 
 ### A brief warned about the mirror image and the thing it warned about could not happen (S3, 2026-09-05)
+
+*The defect this is about — every palette gesture that replaced the machine running NO repair — is in
+`OVERSEER-LOG.md` under* **The S3 one-door defect**.
 
   ⚑ **MY BRIEF WARNED ABOUT THE MIRROR IMAGE AND THE THING IT WARNED ABOUT COULD NOT HAPPEN.** I wrote that
   *"two copies of this repair is the defect this slice is most likely to ship"*. There was nowhere for a
@@ -844,7 +849,8 @@ never-record-an-unwitnessed-approval bar exists to draw.
 
 ### Freshness is not transitive across a document, and proximity reads as verification (2026-08-22)
 
-*Durable formulation from the same thread, worth more than its instance:* **freshness is not
+*Durable formulation from the two-implementer-conflation thread under* **⚑ THE CUTOVER** *in
+`OVERSEER.md`, worth more than its instance:* **freshness is not
 transitive across a document, and proximity reads as verification**: a stale figure beside a
 freshly-updated one is read as cross-checked, which is how my own 37 survived hours next to a correct
 18.

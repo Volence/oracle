@@ -3396,7 +3396,8 @@ for. The section and their full input moved whole to `OVERSEER-LOG.md` 2026-09-0
 ### `F-FROZEN-FIXTURE-DRIFTS`, landed 2026-09-06: the four drifted dimensions and the shape built (orig lines 807-817)
 
 **Board row id: `F-FROZEN-FIXTURE-DRIFTS`** — landed 2026-09-06, and it is the second application of the
-ruling directly above, reached independently before the ruling was re-read. Our frozen `fixtures/aeon/*.lst`
+hermetic-gate ruling (**HUB RULING, 2026-09-02**, in `OVERSEER.md`), reached independently before the
+ruling was re-read. Our frozen `fixtures/aeon/*.lst`
 had drifted from aeon's build in four dimensions consuming tests rely on (`ObjSub_` 0→8, `ObjDef_`
 archetypes 3→4 and 5→6, `Phase Table` absent→`PHASE-COUNT 6`, `Level_Width`/`Level_Height` absent→present),
 and every one of those was invisible to the suite by construction.
