@@ -28,8 +28,8 @@ first.
 
 ## ⚠ The ROM will vanish underneath you — snapshot it first
 
-`s4.debug.bin` is a **build artifact of a tree other lanes actively rebuild**, and aeon's
-`build.sh` *deletes* it before rewriting it. This is not hypothetical: both windows launched
+`s4.debug.bin` is a **build artifact of a tree other lanes actively rebuild**, and it goes away
+while they do. This is not hypothetical: both windows launched
 cleanly at 07:18Z and 07:22Z on 2026-09-09, and the identical commands at 07:29Z gave
 `cannot read ROM ... No such file or directory` because another lane's `build.sh` was mid-run.
 
@@ -49,7 +49,10 @@ the window die a second after launch — but you will have lost the run. Check w
 
 **Snapshot early, and do not assume the file is there when you start.** The outage is not a
 momentary flicker: on 2026-09-09 `s4.debug.bin` was absent continuously from 07:29Z past 07:36Z
-(7+ minutes) across a run of `./build.sh`, `./build.sh demo`, `./build.sh`. Only the *built*
+(7+ minutes), and a second seat measured **8m34s** later the same morning. ⚑ **That figure is NOT one
+build's write window** — aeon established it was three builds' collateral, because every shape was
+deleted up front and then built one at a time, leaving each artifact missing through every *other*
+shape's build. Do not quote it as a property of a single build. Only the *built*
 outputs (`s4.bin`, `s4.debug.bin`, `demo.bin`) come and go; older artifacts in the tree
 (`s4.stress.bin`, `s4.soundtest.bin`, `s4.stressart.bin`) are stable.
 
@@ -59,10 +62,42 @@ review.** The owner's standing instruction is that player testing runs on `s4.de
 for shaking the rig out (this rig's own rehearsal used `s4.stress.bin`), and they are **not** a
 basis for any UX finding you report. Poll with:
 
+⚠ **THE POLL THIS SECTION USED TO GIVE WAS WRONG IN TWO WAYS AND IS REPLACED.** It was
+`until [ -s <rom> ]; do sleep 10; done`. **(a)** `-s` fires on the first non-empty byte of a file
+being rewritten **in place**, so it would hand you a **truncated** image — and a truncated ROM makes
+the emulator misbehave in ways an audit faithfully records as UI defects. **(b)** It blocks, so a
+seat following it literally idles the entire outage instead of doing the large part of its walk that
+needs no ROM at all.
+
+**Existence is not completeness. Check the image, do not check the file:** a Mega Drive header
+carries its own end address at `0x1A4`, so `end + 1 == filesize` is an **equality**, not a
+heuristic. Verified exact on all five ROMs in that tree, including `demo.bin`, which is a *different
+game on the same engine* — so it is a property of the **format**, not of an aeon build convention.
+
 ```sh
-until [ -s /home/volence/sonic_hacks/aeon/s4.debug.bin ]; do sleep 10; done; \
-  tools/uxrig/launch.sh snapshot-rom /home/volence/sonic_hacks/aeon/s4.debug.bin
+rom_complete() {  # 0 = complete, 1 = absent/partial/not a Mega Drive image
+  python3 - "$1" <<'EOF'
+import struct, os, sys
+p = sys.argv[1]
+try:
+    d = open(p,'rb').read(0x1A8)
+except OSError:
+    sys.exit(1)
+if len(d) < 0x1A8 or d[0x100:0x104] != b'SEGA':
+    sys.exit(1)
+sys.exit(0 if struct.unpack('>I', d[0x1A4:0x1A8])[0] + 1 == os.path.getsize(p) else 1)
+EOF
+}
+
+AEON_ROM=/home/volence/sonic_hacks/aeon/s4.debug.bin
+rom_complete "$AEON_ROM" && ROM=$(tools/uxrig/launch.sh snapshot-rom "$AEON_ROM")
+# then ALWAYS re-check the copy you will actually test, not the source you copied from:
+rom_complete "$ROM" || echo "SNAPSHOT IS NOT A COMPLETE ROM — discard it and re-snapshot"
 ```
+
+**Do not sit in a blocking loop.** If it is absent, get on with the parts of your walk that need no
+ROM (refusal messages, empty and malformed input, discoverability, and what each window does with
+**no ROM loaded at all** — worth auditing deliberately), and re-check between jobs.
 
 If it stays absent long enough to block your seat, that is a BLOCKED report to the controller — the
 aeon tree belongs to another lane and is not yours to build.
