@@ -2,8 +2,15 @@
 Type=Application
 Name=Oracle
 Comment=Empyrean's Genesis / Mega Drive emulator and debugger
-# install-desktop.sh rewrites this line with the real binary path.
-Exec=oracle-frontend %f
+# ⚑ THE WHOLE COMMAND LINE LIVES HERE — see the same note in oracle-player.desktop for why the installer
+# no longer composes it. `oracle-frontend` takes its ROM POSITIONALLY (`--rom` is not one of its flags),
+# which is the opposite of the player, and `--frontend` is what tells the launcher which of the two
+# spellings to use.
+#
+# This entry had the second half of the same defect: `%f` is the right SHAPE for this binary, but a plain
+# icon click passes no file, and the frontend then exits with `missing <rom.bin>` and no window. The
+# launcher resolves a ROM before either binary is reached, so a click on either icon opens something.
+Exec=@LAUNCHER@ --frontend --bin @BIN@ %f
 Icon=oracle
 Terminal=false
 Categories=Game;Emulator;
