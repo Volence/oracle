@@ -23,6 +23,24 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ A THRESHOLD CALIBRATED FROM THE SYSTEM'S OWN BEHAVIOUR MEASURES THE DEFECT, NOT THE PROPERTY**
+*(2026-09-09, found by an agent against a guard it was not sent to look at)*. A control required
+**>= 5 %** open-loop underruns. That 5 % was arithmetic done on the **broken** samples-per-frame value
+(0.6213 % deficit -> 5.2 %). The true rate yields **4.0 %**. **So the guard sat within 4 % of its own
+vacuity, and one CORRECT change tipped it over** — it would have gone red for the right fix and been read
+as the fix's fault.
+**The failure mode is the nastiest available**: the number was derived, not copied, and derived correctly
+from the tree as it then stood. Bar 1 is satisfied and the guard is still wrong, because *the tree as it
+then stood contained the bug.* **A derivation is only as sound as the thing it derives FROM**, and a
+constant lifted from live behaviour silently pins that behaviour as correct.
+**The repair is the transferable part, and it is NOT re-tuning to the new edge** — that reinstates the
+defect one value along. Make the load-bearing assertion **threshold-free**: here, *a deficit, however
+small, drains any buffer eventually*, which is what a deficit IS. The percentage stays as a coarse
+re-measured floor, explicitly not the assertion.
+**Booked follow-up, and it is the real question the instance raises: how many other hand-tuned floors in
+this workspace are calibrated to numbers that have since moved?** A floor that has never gone red since
+the day it was written is the one to check first, because that is also what a vacuous one looks like.
+
 **▶ PARKED, NOT IN FORCE (the moratorium is the owner's CUT THE CEREMONY ruling, in `docs/OVERSEER.md`,
 which never uses the word; parked at the hub in `OVERSEER-PENDING-BARS.md`): A PARITY
 PAIR IS STRUCTURALLY BLIND TO A DEFECT IN THE DERIVATION IT SHARES. ASSERT THE SHARED DERIVATION DID
