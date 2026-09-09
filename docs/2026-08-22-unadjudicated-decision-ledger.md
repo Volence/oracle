@@ -700,3 +700,32 @@ been red for an extended period**, so the row's central evidence for 1.96 compil
 held. The row is append-only and stays; this entry is the correction. **The reusable half: d-46
 reasoned from CI's colour without checking that CI was running**, which is this workspace's
 green-log-and-absent-run bar arriving on a decision card rather than on a test.
+
+## L-14 — M46 repaired by DELETING its assertion, and M48's release-only runner left as-is · `SELF-RULED`
+
+**Verdict (a): RATIFIED — the M46 guard is deleted, not re-tuned.** Its bound and its boundary both
+came off `ROWS`, so the model function truncated to `ROWS` and the assertion sat at equality or below
+on every path in the tree: it could not fail. `draw` now clamps to `ROWS` and `panel_height` is the
+single geometry, so *the strip fits the height it reserved* is a **property of the code rather than a
+claim checked at runtime**. **Reviewer: none — substituted-reviewer rule, seat on HOLD.**
+
+**Why deletion rather than a repaired threshold.** This is the house bar's own remedy arriving on a
+guard instead of a constant: **re-tuning a threshold that was derived from the system's own behaviour
+reinstates the defect one value along.** There was no correct value to move to — the two operands are
+the same constant. The choice was a structural invariant or a decorative assertion, and a guard that
+cannot fail is worse than no guard, because it reads as protection in every review that passes it.
+**What would have to be true for this to be wrong:** that some path can reach `draw` with more rows
+than the clamp allows and *needs* to be told rather than clamped. **The audit should re-run:** whether
+any caller wants the overflow surfaced rather than absorbed.
+
+**Verdict (b): DO NOT add a release leg to CI for M48 today. BOOKED behind the CI repair.**
+The finding is real: the promoted `assert!` is gated only by `tools/land.sh` G7, because CI's
+`cargo test --workspace` is a debug build where the test passed trivially even against the old
+`debug_assert!`. **The reason for not acting is that CI has been red long enough not to be functioning
+as a gate at all** (packet `C1`), so adding a leg to it buys nothing measurable and would be apparatus
+added to a mechanism that does not run — the moratorium's exact target.
+⚑ **Note the shape, because it is why this is booked rather than dropped: an untested-in-CI guard and
+a CI that does not run produce the same observable, which is a green board.** The row is revived by
+the CI repair, not by anything about M48.
+**What would have to be true for this to be wrong:** that `tools/land.sh` G7 stops being run by every
+landing, at which point nothing gates it at all.
