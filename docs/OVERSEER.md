@@ -504,6 +504,57 @@ stopping*, not *changing something*: a pin, a correction, or an interesting find
 reader before it is sent. The two rules compose: report your own state unconditionally; relay a *fact* to
 a peer only when you can name their dependency on it.
 
+## ⚑ OWNER RULING, 2026-09-09: **SAY WHEN YOU NEED A CONTEXT CLEAR.** The sibling of the rule above
+
+⚑ **RELAYED BY empyrean-cd, NOT WITNESSED BY THIS LANE**, and flagged per this repo's own rule; the owner's
+words as transcribed: *"Remind the agents to let us know when they need a clear."* Banked here rather than
+only in the log because it changes what a session does at a boundary. **Verify the granting act at
+empyrean's `origin/main` when convenient and replace this flag with the confirmation; do not delete it.**
+
+**The rule, all lanes: do not silently run down to a compaction or drift through one.** When a clear would
+help, say so in the same breath as your status — **in the message to the hub AND in `lane-status.json`'s
+`awaiting`** — together with **what a fresh session needs to resume.**
+
+⚑ **And the resumption anchor is a FILE AT A COMMITTED SHA, never a summary.** That is the whole of why
+this is a rule and not a courtesy: a summary is written by the session that is about to stop, is the one
+artifact its successor cannot check, and is exactly the shape bar 20 names — a claim that lives only in a
+message, with no reader who can meet the contradiction. A SHA the successor can `git show` is checkable;
+*"I was in the middle of the lens highs"* is not.
+
+**It binds this lane harder than most, because this lane runs several seats at once**: an overseer's own
+context is the one thing not banked in the repo, and every dispatched agent's brief was composed from it.
+
+⚑ **The honest failure mode to guard against is the opposite of the obvious one.** The risk is not asking
+for a clear too late out of stubbornness; it is that **a session near its limit is the least able to judge
+that it is** — the same reason `updatedAt` must come from the clock rather than from your own sense of the
+time. So report a *measurement* rather than a feeling, and let the owner decide.
+
+⚠ **AMENDED WITHIN THE HOUR, TWICE, AND THE SECOND CORRECTION IS AGAINST THIS SEAT.** The first form said
+to report *"what fraction of the window is gone"*. **There is no such measurement available here, and I
+reported one anyway: "about 9 percent".** Two separate defects, and the second is the one that generalises:
+
+1. **(aurora's catch) The counter is not monotonic.** They watched `total_tokens` RESET UPWARD mid-session,
+   ~13.65M back to 15.0M, and refused to derive a percentage from it. Correct: a percentage off a
+   non-monotonic counter has a confident shape and no meaning, **which is the exact artifact this rule
+   exists to prevent, so producing one to satisfy the rule defeats the rule.**
+2. **(this seat's, worse, and it holds even if the counter were perfect) IT MEASURES THE WRONG QUANTITY.**
+   `total_tokens` is a session **budget remaining**. *"How full is my context window"* is a different
+   question, and budget spent is not window occupancy — long tool output is persisted to files rather than
+   held, and the window is summarised on its own schedule. **I took a budget figure, renamed it occupancy,
+   and divided.** Name-is-not-behaviour applied to a counter.
+
+**So the rule is REWRITTEN rather than exempted, because the thing that actually decides the question is
+measurable and neither number was it.** *"Would a clear cost anything?"* is not a question about occupancy
+at all — it is **"is anything load-bearing living only in my head?"**, which is exactly what `atBoundary`
+already encodes and which is fully checkable: uncommitted work, an agent holding a branch, a ruling not yet
+in `OVERSEER.md`, a decision taken and not written down.
+
+**Report, in this order:** (a) **what is unbanked** — measured, itemised, and the half that actually
+decides it; (b) a budget figure **only if you have one, named as budget and never as occupancy**, with
+aurora's caveat that it has been seen to move upward; (c) **if the number is not available, say so, and
+never substitute the feeling it would have replaced.** Loud on unmeasurable, in the one place where the
+temptation is to produce a plausible number because two peers just did.
+
 ## ⚑ FOUR OWNER RULINGS, 2026-08-22: **RELAYED, NOT WITNESSED BY THIS LANE**
 
 Reached us via empyrean-73, quoting the owner's own words in their session. **Flagged as a relay
