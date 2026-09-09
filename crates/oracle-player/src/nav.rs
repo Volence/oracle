@@ -148,6 +148,60 @@ pub const CLOSED_SUFFIX: &str = " (closed)";
 /// that discards something the human arranged.
 pub const RESET_LABEL: &str = "reset to the default layout";
 
+/// The heading over the arranging lines.
+///
+/// It exists to **split the menu into its two subjects**. Everything above it answers *which panels are
+/// open*; everything below it answers *where they sit* — the two gestures, then the way back. Without it
+/// the drag lines read as two more rows in the checklist, which is the one thing they must not look like:
+/// they are not clickable and nothing about them changes when they are read.
+pub const ARRANGE_HEAD: &str = "arranging";
+
+/// ⚑ **The dock already drags. Nothing on the glass says so, and that is the whole defect.**
+///
+/// The owner's 2026-09-09 pass asks for a feature this window has had since it was built:
+///
+/// > *"I think being able to drag these would be nicer"*
+///
+/// `egui_dock-0.21.1` defaults `draggable_tabs` to `true` (`dock_area/mod.rs:60`) and `allowed_splits` to
+/// `AllowedSplits::All` (the `#[default]` on the variant), and [`crate::main`] overrides neither, so every
+/// tab in this window drags to any side of any pane today. His own stored layout is the proof: it holds a
+/// leaf `[Pacing, Spawn, Effects, Planes]` that [`ui::initial_dock`] never builds and [`reveal`] cannot
+/// assemble, so he has **already done this by accident** and did not learn from it that he could.
+///
+/// **So the fix is not a feature, it is a sentence**, and the sentence goes here rather than anywhere
+/// louder. It is not a modal, because a modal for a thing that already works is an apology. It does not
+/// appear on launch, because a hint that interrupts is a hint that gets dismissed unread and then never
+/// returns. It sits in the menu a person opens *when they want to change what is on screen*, which is the
+/// one moment the answer is wanted, and it is there **every** time that menu opens rather than once.
+///
+/// Every clause is derived from the crate rather than guessed. The drop targets really are icons and not
+/// edges: `OverlayStyle::from_egui` fills the rest of the struct from `Default`, whose `overlay_type` is
+/// `OverlayType::Widgets` — *"icons indicating the possible drop positions which the user may hover over"*.
+/// The floating-window outcome is real too and is named rather than left as a surprise:
+/// `TabViewer::allowed_in_windows` defaults to `true` and this crate does not override it, so a drop that
+/// lands on no icon becomes `TabDestination::Window`. A person who does that by accident and cannot name
+/// what happened is the same defect one step on, so the line that could have been left out is the line
+/// that most needed writing.
+pub const ARRANGE_DRAG: &str = "Drag a tab by its name onto another pane. Icons appear showing where it \
+                                can land: the middle joins that pane's strip, the four sides split the \
+                                pane. Dropped clear of them it floats in a window of its own.";
+
+/// **The strip control that has no name anywhere**, said once here.
+///
+/// The arrow at the left of every tab strip folds the strip down to its own title bar, and clicking it
+/// again unfolds it (`show/leaf.rs:879`, `set_collapsed(!collapsed)`). It is the one existing answer to the
+/// owner's *"If multiple are open it's really hard as well"* — fold the strips you are not reading and the
+/// one you are gets their height — and `egui_dock` gives it **no tooltip at all**, only a pointing-hand
+/// cursor, so its effect can be learned today only by clicking it and seeing what happens.
+///
+/// ⚑ Note what this line does **not** say: it does not tell him to use the panel menu to get a folded
+/// strip back, because [`reveal`] cannot do that. `Tree::set_collapsed` is `pub(crate)` in this version —
+/// the still-open `F-NAV-COLLAPSED-LEAF` this module's header records — so the arrow is its own and only
+/// undo, and saying "click it again" is both the true instruction and the only one that works.
+pub const ARRANGE_COLLAPSE: &str =
+    "The arrow at a strip's left edge folds that strip down to its title \
+                                    bar. The same arrow unfolds it.";
+
 /// Where a [`Tab`] stands relative to what the window is showing.
 ///
 /// Three states rather than a bool, because *behind another tab* and *not in the layout at all* are
@@ -419,7 +473,27 @@ fn home_leaf(dock: &DockState<Tab>, tab: Tab) -> Option<egui_dock::NodePath> {
 /// header makes about panel bodies: report what is unconditionally on the glass.
 pub fn bar(ui: &mut egui::Ui, dock: &mut DockState<Tab>) -> Vec<screen::Run> {
     let mut picked: Option<Action> = None;
-    ui.menu_button(PANELS_LABEL, |ui| {
+    ui.menu_button(PANELS_LABEL, |ui| picked = menu(ui, dock));
+    if let Some(action) = picked {
+        apply(dock, action);
+    }
+    vec![screen::Run::label(PANELS_LABEL)]
+}
+
+/// **The menu's body** — every row it draws, and whichever [`Action`] the human picked this frame.
+///
+/// ⚑ **Split out of [`bar`] so that what the menu DRAWS can be asserted**, which it could not be while it
+/// lived inside the `menu_button` closure: that closure runs only on the frames the popup is open, and a
+/// headless test has no way to open one. Called directly, the body paints into an ordinary `Ui` and
+/// `the_menu_says_the_tabs_can_be_dragged` reads the text runs back off the frame — so deleting a line
+/// from the arranging block is red, where before it would have been invisible to every test in this file.
+///
+/// It takes `&DockState` rather than `&mut`: nothing here moves a panel. It *reports* the pick and [`bar`]
+/// applies it, which is the same separation [`Entry::action`] already draws between naming a gesture and
+/// performing one.
+fn menu(ui: &mut egui::Ui, dock: &DockState<Tab>) -> Option<Action> {
+    let mut picked: Option<Action> = None;
+    {
         for entry in entries(dock) {
             // The highlight marks the panel in front, and clicking a highlighted row un-highlights it by
             // closing the panel — which is what a checklist row does and what the owner's report says he
@@ -433,6 +507,28 @@ pub fn bar(ui: &mut egui::Ui, dock: &mut DockState<Tab>) -> Vec<screen::Run> {
             }
         }
         ui.separator();
+        // ⚑ **The arranging block, and its position is the argument.** It sits below the checklist because
+        // the rows above are about *which* panels are open and these lines are about *where* they sit; it
+        // sits above [`RESET_LABEL`] because that row is the undo for exactly the gestures they describe,
+        // and a person who has just read "you can drag these" is owed the way back in the same glance.
+        //
+        // Drawn weak and small, and **not** as `selectable_label` or `button`: a row that highlights or
+        // depresses is a row that promises to do something, and these do nothing. `ui.label` inside a menu
+        // takes no click and closes nothing, which is what a person reading them needs — the menu stays
+        // open while they read, and reading is the whole gesture.
+        ui.label(
+            egui::RichText::new(ARRANGE_HEAD)
+                .text_style(egui::TextStyle::Small)
+                .color(ui.visuals().weak_text_color()),
+        );
+        for line in [ARRANGE_DRAG, ARRANGE_COLLAPSE] {
+            ui.label(
+                egui::RichText::new(line)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+        ui.separator();
         if ui
             .button(RESET_LABEL)
             .on_hover_text(
@@ -444,11 +540,8 @@ pub fn bar(ui: &mut egui::Ui, dock: &mut DockState<Tab>) -> Vec<screen::Run> {
             picked = Some(Action::Reset);
             ui.close();
         }
-    });
-    if let Some(action) = picked {
-        apply(dock, action);
     }
-    vec![screen::Run::label(PANELS_LABEL)]
+    picked
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -879,6 +972,77 @@ mod tests {
         );
     }
 
+    /// **Every `Shape::Text` a frame painted**, flattened out of `egui`'s nesting.
+    ///
+    /// A local copy of the walker `ui`'s own tests use, because that one is `pub(super)` inside a private
+    /// `mod tests` and does not cross module lines. Twelve lines of shape-walking is the right thing to
+    /// duplicate; a *string* would not be, which is why every string this file asserts on is a constant
+    /// read from the source rather than retyped here.
+    fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => out.push(t.galley.text().into()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            walk(&c.shape, &mut out);
+        }
+        out
+    }
+
+    /// ★ **The menu says the tabs can be dragged**, which is the whole of the owner's §1.7.
+    ///
+    /// > *"I think being able to drag these would be nicer"*
+    ///
+    /// The feature was already there and nothing said so, so the deliverable is a sentence and the thing
+    /// that can rot is the sentence. This reads the text back off a real frame rather than asserting that
+    /// a constant is non-empty: a constant can be perfect while the `ui.label` that draws it is deleted,
+    /// and that failure — the promise removed from the glass, the string still in the file — is the one
+    /// this test exists for. It is also why [`menu`] was split out of [`bar`] at all.
+    ///
+    /// The reset row is asserted **beside** them, because the arranging block's placement is a claim in
+    /// its own right: these gestures and the way back from them are read in one glance or the block is
+    /// telling him how to make a mess with no note of how to clear it.
+    #[test]
+    fn the_menu_says_the_tabs_can_be_dragged_and_offers_the_way_back_beside_it() {
+        let dock = ui::initial_dock();
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            assert_eq!(menu(ui, &dock), None, "drawing the menu picked an action");
+        });
+        out.textures_delta.clear();
+        let painted = painted_text(&out.shapes);
+        for wanted in [ARRANGE_HEAD, ARRANGE_DRAG, ARRANGE_COLLAPSE, RESET_LABEL] {
+            assert!(
+                painted.iter().any(|t| t == wanted),
+                "the panel menu never painted {wanted:?}. Everything it did paint: {painted:?}"
+            );
+        }
+        // The block is about arranging, so it must name BOTH gestures the dock has and neither of them
+        // vaguely: a line that said only "you can move these" would pass a contains-check on the heading
+        // and teach nothing. These are the two verbs, and they are asserted inside the drawn strings
+        // rather than against a second copy of the prose.
+        assert!(
+            ARRANGE_DRAG.contains("Drag") && ARRANGE_DRAG.contains("split"),
+            "the drag line no longer names the gesture or where a tab can land: {ARRANGE_DRAG:?}"
+        );
+        assert!(
+            ARRANGE_COLLAPSE.contains("unfolds"),
+            "the collapse line no longer says the arrow is its own undo, which is the only undo there \
+             is while `F-NAV-COLLAPSED-LEAF` stands: {ARRANGE_COLLAPSE:?}"
+        );
+    }
+
     /// ⚑ **The nav's own text is plain ASCII**, which is the rule [`PANELS_LABEL`]'s doc states and the
     /// most of it that can be checked in a unit test.
     ///
@@ -902,7 +1066,15 @@ mod tests {
         // deliberately out, and always have been: `Entry::hint` carries an em dash, hover text is not on
         // the glass unconditionally, and it is not part of `screen_text`'s readback. Widening the rule to
         // cover it would be a new rule, not this one.
-        let mut text = format!("{PANELS_LABEL}{CLOSED_SUFFIX}{RESET_LABEL}");
+        //
+        // ⚑ The three arranging strings are **in** scope, and adding them is not a widening: they are
+        // drawn by `ui.label` in the menu body exactly as the rows are, so they are the same kind of text
+        // under the same rule. The temptation they carry is the reason the line is worth writing down —
+        // prose about dragging wants an arrow glyph, and an arrow is precisely the ornament this rule
+        // refuses because nothing here can measure whether the bundled fonts draw it.
+        let mut text = format!(
+            "{PANELS_LABEL}{CLOSED_SUFFIX}{RESET_LABEL}{ARRANGE_HEAD}{ARRANGE_DRAG}{ARRANGE_COLLAPSE}"
+        );
         for &tab in Tab::ALL.iter() {
             text.push_str(tab.title());
         }
