@@ -232,26 +232,144 @@ impl Layout {
         Ok(l)
     }
 
-    /// **The published numbers have to describe a record this window can actually compose.**
+    /// **Every offset this module reads**, with the width it reads there and the record it has to fit
+    /// inside — as one table, so that checking them and using them cannot come apart.
     ///
-    /// Derived, every clause of it: two-byte fields must fit inside the published entry size at their
-    /// published offsets, and so must the two one-byte fields. Nothing here compares against a literal
-    /// six. A build that reorders the record keeps working; a build whose numbers contradict each other
-    /// is refused with the numbers quoted, rather than having a byte written past the end of a record and
-    /// into the next ring.
+    /// ⚑ **All nine. It used to be four** (H10). [`Layout::check`] bounded the four *record* offsets
+    /// against `RING_BUFFER_ENTRY_SIZE` and said nothing at all about the five **scan-state** offsets,
+    /// which [`sections`] indexes into an `EntityScanState_len` stride exactly as freely: a listing
+    /// publishing `EntityScanState_ess_origin_y` past the end of its own record passed a guard whose
+    /// stated contract is that it cannot.
+    ///
+    /// The widths are the widths the readers actually read, and they are the readers' own: 4 for
+    /// `ess_rom_ring_ptr` because [`sections`] composes a `u32` from four bytes, 2 for each
+    /// big-endian word, 1 for each byte. Nothing here is a literal record size.
+    fn offsets(&self) -> [(&'static str, u64, u64, &'static str, u64); 9] {
+        // (equate name, its value, the width read there, the stride's equate name, the stride)
+        const ENTRY: &str = "RING_BUFFER_ENTRY_SIZE";
+        const SCAN: &str = "EntityScanState_len";
+        [
+            ("RING_ENTRY_X_OFFSET", self.x_off, 2, ENTRY, self.entry_size),
+            ("RING_ENTRY_Y_OFFSET", self.y_off, 2, ENTRY, self.entry_size),
+            (
+                "RING_ENTRY_SECTION_ID_OFFSET",
+                self.section_id_off,
+                1,
+                ENTRY,
+                self.entry_size,
+            ),
+            (
+                "RING_ENTRY_LIST_INDEX_OFFSET",
+                self.list_index_off,
+                1,
+                ENTRY,
+                self.entry_size,
+            ),
+            (
+                "EntityScanState_ess_rom_ring_ptr",
+                self.scan_rom_ring_ptr_off,
+                4,
+                SCAN,
+                self.scan_len,
+            ),
+            (
+                "EntityScanState_ess_section_id",
+                self.scan_section_id_off,
+                1,
+                SCAN,
+                self.scan_len,
+            ),
+            (
+                "EntityScanState_ess_entry_idx",
+                self.scan_entry_idx_off,
+                1,
+                SCAN,
+                self.scan_len,
+            ),
+            (
+                "EntityScanState_ess_origin_x",
+                self.scan_origin_x_off,
+                2,
+                SCAN,
+                self.scan_len,
+            ),
+            (
+                "EntityScanState_ess_origin_y",
+                self.scan_origin_y_off,
+                2,
+                SCAN,
+                self.scan_len,
+            ),
+        ]
+    }
+
+    /// **The published numbers have to describe records this window can actually compose and walk.**
+    ///
+    /// Derived, every clause of it: each field must fit inside its own record's published stride at its
+    /// published offset. Nothing here compares against a literal six. A build that reorders either record
+    /// keeps working; a build whose numbers contradict each other is refused with the numbers quoted,
+    /// rather than reaching a reader that indexes on them.
+    ///
+    /// # ⚑ Two defects, and the second one is why the arithmetic looks like this (H10)
+    ///
+    /// Every number here arrives from a `.lst` equate, and `symbols::parse_equate_row` deliberately
+    /// **does not range-check** it (§11.36: an equate is a plain integer and is not an address), so any
+    /// `u64` a listing can spell reaches this function. The check was written `off + width > stride` in
+    /// `u64`. This workspace sets no `[profile.release]` `overflow-checks`, so the cargo default applies
+    /// — **on in dev, off in release** — and the shipped window is a release build. An offset within 2 of
+    /// `u64::MAX` therefore wrapped the sum down to a small number and **passed**, which is worse than
+    /// having no guard: it is a confident pass. `checked_add` is what makes the sentence this function
+    /// states true in the profile the window is actually built in.
+    ///
+    /// ⚑ **What the pass leads to is a panic, not an out-of-range write** — a correction to how this was
+    /// first booked. Every reader downstream indexes a slice, and Rust bounds-checks slice indexing in
+    /// every profile, so a bad offset takes the window down with an index panic rather than putting a
+    /// byte into the next ring. That is still a defect and still this guard's job: the whole design of
+    /// this module is to refuse with the numbers quoted, and a crash quotes nothing.
+    ///
+    /// The three **products** the module derives from these same unchecked equates are checked here too,
+    /// for one reason and it is not tidiness: a `checked_mul` that wraps produces a *short* read, and a
+    /// short read reaches the same index expressions as a bad offset does.
     fn check(&self) -> Result<(), Refusal> {
         let mut bad: Vec<String> = Vec::new();
-        for (name, off, width) in [
-            ("RING_ENTRY_X_OFFSET", self.x_off, 2),
-            ("RING_ENTRY_Y_OFFSET", self.y_off, 2),
-            ("RING_ENTRY_SECTION_ID_OFFSET", self.section_id_off, 1),
-            ("RING_ENTRY_LIST_INDEX_OFFSET", self.list_index_off, 1),
-        ] {
-            if off + width > self.entry_size {
-                bad.push(format!(
+        for (name, off, width, stride_name, stride) in self.offsets() {
+            // `checked_add` and not `+`: see this function's doc. `None` here is an offset so large that
+            // naming the end of the field overflows `u64`, which is reported as what it is rather than
+            // being allowed to wrap into a number that compares small.
+            match off.checked_add(width) {
+                Some(end) if end <= stride => {}
+                Some(_) => bad.push(format!(
                     "{name} is {off} and the field is {width} byte(s), which runs past the end of a \
-                     {}-byte record",
-                    self.entry_size
+                     {stride}-byte record ({stride_name})"
+                )),
+                None => bad.push(format!(
+                    "{name} is {off}, which is so large that the end of a {width}-byte field at it \
+                     cannot be counted at all"
+                )),
+            }
+        }
+        for (what, a, b) in [
+            (
+                "EntityScanState_len x MAX_TRACKED_SECTIONS, the scan-state array this window reads \
+                 in one go",
+                self.scan_len,
+                self.max_tracked_sections,
+            ),
+            (
+                "MAX_LIST_ENTRIES x RING_LIST_ENTRY_SIZE, the section ring list this window walks",
+                self.max_list_entries.saturating_add(1),
+                self.list_entry_size,
+            ),
+            (
+                "MAX_RING_BUFFER x RING_BUFFER_ENTRY_SIZE, the live ring buffer this window reads",
+                self.max_ring_buffer,
+                self.entry_size,
+            ),
+        ] {
+            if a.checked_mul(b).is_none() {
+                bad.push(format!(
+                    "{a} x {b} does not fit in a 64-bit count ({what}), so the span this window would \
+                     ask for is not a span"
                 ));
             }
         }
@@ -1085,6 +1203,176 @@ mod tests {
         v.insert("MAX_LIST_ENTRIES".to_string(), 0x400);
         let e = Layout::from_values(&v).unwrap_err();
         assert!(e.message.contains("one byte"), "{:?}", e.message);
+    }
+
+    /// ⚑ **All nine offsets are bounded, not the four record ones** (H10).
+    ///
+    /// The before-case: [`Layout::check`] bounded `RING_ENTRY_{X,Y,SECTION_ID,LIST_INDEX}_OFFSET`
+    /// against `RING_BUFFER_ENTRY_SIZE` and said **nothing** about the five `EntityScanState_ess_*`
+    /// offsets, which [`sections`] indexes into an `EntityScanState_len` stride exactly as freely. Five
+    /// of the nine numbers this module trusts reached a slice index with no guard between them and it.
+    ///
+    /// Every one is driven separately and pushed **just** past its own record's end — the smallest value
+    /// that is wrong — because a guard exercised on one field is a guard checked on one field, and a
+    /// wildly-out-of-range value would also be caught by a much weaker check than the one being claimed.
+    #[test]
+    fn every_offset_this_module_reads_is_bounded_against_its_own_record() {
+        // (equate, the stride it must fit inside, the width read at it) — derived from the readers:
+        // `Layout::record` writes 2/2/1/1, `sections` reads 4/1/1/2/2.
+        let cases: [(&str, &str, u64); 9] = [
+            ("RING_ENTRY_X_OFFSET", "RING_BUFFER_ENTRY_SIZE", 2),
+            ("RING_ENTRY_Y_OFFSET", "RING_BUFFER_ENTRY_SIZE", 2),
+            ("RING_ENTRY_SECTION_ID_OFFSET", "RING_BUFFER_ENTRY_SIZE", 1),
+            ("RING_ENTRY_LIST_INDEX_OFFSET", "RING_BUFFER_ENTRY_SIZE", 1),
+            ("EntityScanState_ess_rom_ring_ptr", "EntityScanState_len", 4),
+            ("EntityScanState_ess_section_id", "EntityScanState_len", 1),
+            ("EntityScanState_ess_entry_idx", "EntityScanState_len", 1),
+            ("EntityScanState_ess_origin_x", "EntityScanState_len", 2),
+            ("EntityScanState_ess_origin_y", "EntityScanState_len", 2),
+        ];
+        assert_eq!(
+            cases.len(),
+            s4().offsets().len(),
+            "this test drives every row the guard checks, or it is a sample and not a gate"
+        );
+        for (name, stride_name, width) in cases {
+            let base = s4_values();
+            let stride = base[stride_name];
+
+            // The largest offset that IS legal, so the row below is a boundary and not a blanket
+            // refusal: the field ends exactly on the record's last byte.
+            let mut ok = base.clone();
+            ok.insert(name.to_string(), stride - width);
+            assert!(
+                Layout::from_values(&ok).is_ok(),
+                "{name} at {} leaves a {width}-byte field ending exactly on the end of a \
+                 {stride}-byte record, which fits — the control for the row below",
+                stride - width
+            );
+
+            // …and one past it does not.
+            let mut bad = base;
+            bad.insert(name.to_string(), stride - width + 1);
+            let Err(e) = Layout::from_values(&bad) else {
+                panic!(
+                    "{name} at {} runs one byte past a {stride}-byte record and MUST be refused",
+                    stride - width + 1
+                )
+            };
+            assert_eq!(e.reason.as_deref(), Some("ringRecordLayoutUnknown"));
+            assert!(
+                e.message.contains(name),
+                "the refusal names the equate at fault: {:?}",
+                e.message
+            );
+        }
+    }
+
+    /// ⚑ **An offset near the top of the range is refused, not wrapped past the guard** (H10, second
+    /// defect).
+    ///
+    /// The bounds arithmetic was `off + width > stride` in `u64`. This workspace sets no
+    /// `[profile.release]` `overflow-checks`, so cargo's default applies — on in dev, **off in release**
+    /// — and the shipped window is a release build. An offset within `width` of `u64::MAX` therefore
+    /// wrapped the sum down to a small number and **passed the guard**, which is worse than having no
+    /// guard because it is a confident pass.
+    ///
+    /// Reachable from a listing: `symbols::parse_equate_row` accepts any hex value that fits `u64` and
+    /// **deliberately does not range-check** it (§11.36 — an equate is an integer and is not an address).
+    ///
+    /// ⚑ **A correction to how this was first booked.** A passed guard here leads to an index **panic**,
+    /// not a byte written past the end of a record: every downstream reader indexes a slice and Rust
+    /// bounds-checks slice indexing in every profile. Still this guard's defect — the module's whole
+    /// design is to refuse with the numbers quoted, and a crash quotes nothing — but the damage is the
+    /// window going down, not the next ring being corrupted.
+    ///
+    /// ⚑ **Run this under `--release` for it to mean what it says.** In dev the pre-fix `+` panics on
+    /// the overflow instead of wrapping, so the test is red either way but for the wrong reason; only a
+    /// release build exhibits the silent pass.
+    #[test]
+    fn an_offset_that_would_wrap_the_bounds_arithmetic_is_refused_rather_than_passing_it() {
+        // Every width the guard uses (1, 2, 4), at the exact offset that wraps it and one below, so the
+        // parameter is varied rather than one value repeated.
+        for (name, width) in [
+            ("RING_ENTRY_SECTION_ID_OFFSET", 1u64),
+            ("RING_ENTRY_X_OFFSET", 2),
+            ("EntityScanState_ess_rom_ring_ptr", 4),
+        ] {
+            // `u64::MAX` overflows the sum; `u64::MAX - width` lands it exactly on `u64::MAX` and
+            // does NOT, so the two exercise the guard's two arms rather than one of them twice.
+            let mut said = Vec::new();
+            for off in [u64::MAX, u64::MAX - width] {
+                let mut v = s4_values();
+                v.insert(name.to_string(), off);
+                let Err(e) = Layout::from_values(&v) else {
+                    panic!(
+                        "{name} = {off:#x} puts a {width}-byte field far past a 6-byte record; the \
+                         guard must refuse it rather than let the sum wrap under it"
+                    )
+                };
+                assert_eq!(e.reason.as_deref(), Some("ringRecordLayoutUnknown"));
+                assert!(
+                    e.message.contains(name),
+                    "the refusal names the equate at fault: {:?}",
+                    e.message
+                );
+                said.push(e.message);
+            }
+            assert!(
+                said[0].contains("cannot be counted") && said[1].contains("runs past the end"),
+                "the un-countable offset and the merely-too-large one are different findings and \
+                 must not share a sentence: {said:?}"
+            );
+        }
+    }
+
+    /// ⚑ **The completeness of [`Layout::check`] is derived from [`Layout`]'s own declaration**, so a
+    /// tenth offset cannot be added and left unchecked the way five already were.
+    ///
+    /// This is the gate the H10 fix owes. The findings above are red only for offsets somebody thought
+    /// to list; this one is red for an offset nobody did. It reads this module's own source — every
+    /// `*_off` field the struct declares must appear in [`Layout::offsets`]'s table — and it is loud
+    /// rather than vacuous if it cannot find either.
+    #[test]
+    fn the_bounds_check_covers_every_offset_field_the_layout_declares() {
+        const SRC: &str = include_str!("rings.rs");
+
+        let struct_body = SRC
+            .split_once("pub struct Layout {")
+            .expect("this module declares `pub struct Layout`")
+            .1
+            .split_once("\n}")
+            .expect("…and it is closed")
+            .0;
+        let declared: Vec<&str> = struct_body
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub "))
+            .filter_map(|l| l.split_once(':'))
+            .map(|(n, _)| n)
+            .filter(|n| n.ends_with("_off"))
+            .collect();
+        assert!(
+            declared.len() >= 9,
+            "the parse found only {declared:?}; this gate is measuring its own regex and not the \
+             struct, which is the one way it could pass while saying nothing"
+        );
+
+        let table = SRC
+            .split_once("fn offsets(&self)")
+            .expect("this module declares `fn offsets`")
+            .1
+            .split_once("\n    }")
+            .expect("…and it is closed")
+            .0;
+        for name in &declared {
+            assert!(
+                table.contains(&format!("self.{name}")),
+                "`Layout::{name}` is an offset this module reads and `Layout::offsets` does not bound \
+                 it. Five offsets were in exactly that position before H10, and each one reached a \
+                 slice index with nothing between it and the listing. Add it to the table with the \
+                 width its reader actually reads and the stride it must fit inside"
+            );
+        }
     }
 
     /// **The record is composed at the listing's offsets**, so a build that moved a field moves the byte.
