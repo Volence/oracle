@@ -443,31 +443,51 @@ impl Panel {
     /// at any point and a stale archetype name spawns the wrong thing rather than failing to spawn. Every
     /// failure is the server's own words — `-32012` *you forgot to load symbols* and `-32013` *this build
     /// has no such name* are a distinction a person hits here, and §8.2 keeps them apart on purpose.
+    /// ⚑ **The fallible half runs FIRST, and nothing is retracted until it has succeeded** (H32).
+    ///
+    /// This used to open with `self.rings = false`, above the listing read that can refuse. So: arm ring
+    /// placement, then press this with no listing loaded, and the `-32012` refusal **destroyed ring mode
+    /// on its way out** — the window came back with nothing armed, a refusal naming symbols, and no
+    /// mention of the mode it had just taken away. A gesture that refuses must leave the window exactly
+    /// as it found it, and "exactly" includes the mode it is not about.
+    ///
+    /// The exclusion itself is unchanged and is still the point: see [`Panel::rings`]. What changed is
+    /// that it is now part of the **commit** rather than part of the attempt, so there is no window in
+    /// which one mode is off and the other is not yet on.
     pub fn arm_spawn(&mut self, machine: &mut Machine, bus: &mut Bus) {
+        let sys = machine.system_mut();
+        // Read the listing before touching a single field. Both refusals below leave `self.rings`,
+        // `self.mode`, `self.total` and `self.filter` alone; only `self.last` moves, because the one
+        // thing a refused gesture owes is its reason.
+        let listed = spawn::archetypes(&mut PlayerCaller { bus, sys });
+        let (note, total, names) = match listed {
+            // `truncation_note` borrows `a`, so it is taken before `a.names` is moved out.
+            Ok(a) => (a.truncation_note(), a.total, a.names),
+            Err(e) => {
+                self.last = Some(Readout::refused(e.terminal("(none)", None)));
+                return;
+            }
+        };
+        let name = match self.mode.arm(names) {
+            Ok(name) => name.to_string(),
+            Err(e) => {
+                self.last = Some(Readout::refused(e.terminal("(none)", None)));
+                return;
+            }
+        };
+        // --- Past here the arm has succeeded, so this is the commit and it may retract. ---
+        //
         // The other half of the exclusion. See [`Panel::rings`]: two modes that could both claim one
         // click would need a precedence rule, and a precedence rule is a thing a person has to remember.
         self.rings = false;
-        let sys = machine.system_mut();
-        let listed = spawn::archetypes(&mut PlayerCaller { bus, sys });
-        match listed {
-            Ok(a) => {
-                let note = a.truncation_note();
-                // Kept for the picker, which draws `n of m` and the cut-short note standing rather than
-                // once in an arm message that scrolls away.
-                self.total = a.total;
-                match self.mode.arm(a.names) {
-                    Ok(name) => {
-                        let mut s = format!("spawn mode armed: a click places {name}");
-                        if let Some(n) = note {
-                            s.push_str(&format!(" ({n})"));
-                        }
-                        self.last = Some(Readout::ok(s));
-                    }
-                    Err(e) => self.last = Some(Readout::refused(e.terminal("(none)", None))),
-                }
-            }
-            Err(e) => self.last = Some(Readout::refused(e.terminal("(none)", None))),
+        // Kept for the picker, which draws `n of m` and the cut-short note standing rather than once in
+        // an arm message that scrolls away.
+        self.total = total;
+        let mut s = format!("spawn mode armed: a click places {name}");
+        if let Some(n) = note {
+            s.push_str(&format!(" ({n})"));
         }
+        self.last = Some(Readout::ok(s));
         // A fresh arm re-read the listing, so a filter left over from the last one would hide rows of a
         // list the reader has not seen yet.
         self.filter.clear();
@@ -3177,6 +3197,88 @@ EQU ObjSub_Spring__Wide_Huge = $00000140
             .map(Readout::text)
             .unwrap_or_default()
             .contains("arms a watch"));
+    }
+
+    /// A listing that **parses**, names symbols, and names no `ObjDef_` archetype.
+    ///
+    /// The second of the two refusals [`Panel::arm_spawn`] can take, and it is a different one: the bus
+    /// answers, the search succeeds, and it comes back empty. A fixture with no listing at all cannot
+    /// reach it.
+    const NO_ARCHETYPE_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ Main : 1000 C |
+ EndOfRom : 2000 C |
+
+    2 symbols
+    0 unused symbols
+";
+
+    /// ⚑ **A spawn arm that REFUSES must leave ring mode exactly as it found it** (H32).
+    ///
+    /// The before-case, and it is a defect a person hits by accident: arm ring placement, then press
+    /// "arm spawn" on a build with no listing loaded. [`Panel::arm_spawn`] opened with `self.rings =
+    /// false` **above** the fallible listing read, so the `-32012` refusal took ring mode down on its way
+    /// out — the window came back with nothing armed, a refusal about symbols, and no mention at all of
+    /// the mode it had just destroyed. The two-`bool` shape is what made it expressible; the *ordering*
+    /// is what made it happen.
+    ///
+    /// ⚑ **Both refusal arms are driven, with a different fixture each**, because a guard exercised on
+    /// one path is a guard checked on one path — and the two arms are genuinely different failures (the
+    /// bus refusing to search at all, versus a search that succeeded and found nothing). Mutating the
+    /// `self.rings = false` line back above the read turns **both** of these red.
+    #[test]
+    fn a_refused_spawn_arm_does_not_take_ring_mode_down_with_it() {
+        for (case, lst) in [
+            ("no listing loaded", None),
+            ("a listing naming no archetype", Some(NO_ARCHETYPE_LST)),
+        ] {
+            let mut machine = Machine::new(oracle_core::testrom::build(), None);
+            let info = oracle_aether::host::MachineInfo {
+                rom_path: Some("testrom".into()),
+                symbols: lst.map(|s| {
+                    oracle_core::symbols::SymbolTable::parse(s).expect("the fixture listing parses")
+                }),
+                symbols_path: lst.map(|_| "testrom.lst".into()),
+            };
+            let mut bus = Bus::new(machine.system_mut(), info, false, None);
+            let mut panel = Panel::default();
+
+            panel.arm_rings();
+            assert!(panel.ring_listing().armed, "{case}: the fixture arms rings");
+
+            panel.arm_spawn(&mut machine, &mut bus);
+
+            // The control: this fixture really does refuse, so the rows below are about a refusal and
+            // not about a spawn arm that quietly succeeded.
+            assert!(
+                !panel.object_armed(),
+                "{case}: this fixture must NOT arm the object mode, or this test measures nothing"
+            );
+            let said = panel
+                .readout()
+                .map(Readout::text)
+                .unwrap_or_else(|| panic!("{case}: a refused gesture owes a reason"));
+
+            // …and the finding itself.
+            assert!(
+                panel.ring_listing().armed,
+                "{case}: the spawn arm refused, so it must leave ring placement exactly as it found \
+                 it. It said {said:?} and silently disarmed the mode it was not about"
+            );
+            assert!(
+                panel.is_armed(),
+                "{case}: a click still places a ring, so the window must still say something is armed"
+            );
+            let badge = panel
+                .badge()
+                .unwrap_or_else(|| panic!("{case}: an armed mode must say so"));
+            assert!(
+                badge.contains("ring"),
+                "{case}: the badge follows the mode that is actually on: {badge:?}"
+            );
+        }
     }
 
     /// ⚑ **A ring click on a build whose listing has no ring layout refuses, and the machine is put
