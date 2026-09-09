@@ -12,6 +12,17 @@ sweep is read-only by design; landing a packet makes findings discoverable, it d
 
 ---
 
+⚑ **AMENDED 2026-09-09: a LATE PANEL ran on this corpus — Roster C, the UX seat pair (UXa task walk,
+UXb heuristic audit), ruled by the owner 2026-09-07.** It ran at its **own new pin `cb21f43`**, not
+this packet's `d3ca871`, and its findings are in
+**`2026-09-09-oracle-lens-ux-packet.md`** — not merged into the counts below.
+**This packet is NOT re-dated and its own pin is unchanged**; the late panel is recorded here so a
+reader of this file learns the corpus was examined again, by seats that judge what a person meets
+rather than what the code is. Oracle was the suite's pilot for that roster; sigil and aurora run it
+next.
+
+---
+
 ## CRITICAL / HIGH — reachable today
 
 ### H1 ✔ Three guard tests and the guards they test both vanish under `--release` (seat TEST)
