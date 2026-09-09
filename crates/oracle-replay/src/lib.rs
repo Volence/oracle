@@ -45,9 +45,18 @@ pub mod runner;
 /// Work RAM is a 64 KiB chip mirrored across `$E00000-$FFFFFF`; the mirror index is `addr & (RAM_SIZE - 1)`.
 pub use oracle_core::system::RAM_SIZE;
 
-/// Low end of the canonical work-RAM window the listing's `FFFFxxxx` symbols mask into.
-pub const WORK_RAM_LO: u32 = 0x00FF_0000;
-/// High end of that window.
+/// Low end of work RAM's **decode window on the bus** — not of the canonical `FFFFxxxx` mirror.
+///
+/// ⚑ These two are different numbers and the difference is load-bearing. `oracle_core`'s bus answers work
+/// RAM across the whole of `0xE0_0000..=0xFF_FFFF`, folding the index with `addr & (RAM_SIZE - 1)`
+/// (`crates/oracle-core/src/bus.rs:1048` and `:1170`): one 64 KiB chip, 128 mirrors. `$E0FEF8` reads the
+/// same physical byte as `$FFFEF8`. This constant was `$FF0000` — the top mirror, which is merely the one
+/// the listing's `FFFFxxxx` symbols happen to spell — so [`stack_in_work_ram`] answered `None` for an A7
+/// anywhere in a lower mirror and reported a perfectly readable frame as "no frame to read there".
+/// Widened to the decode; `oracle_aether`'s copy of this pair already carried the correct value.
+/// Pinned by `the_work_ram_window_covers_every_mirror_the_bus_decodes` (lens finding H28).
+pub const WORK_RAM_LO: u32 = 0x00E0_0000;
+/// High end of that window — the top of the 24-bit bus, and unchanged by the widening above.
 pub const WORK_RAM_HI: u32 = 0x00FF_FFFF;
 
 /// The bus address a 32-bit 68000 address register actually drives: the chip has 24 address lines, so the
@@ -105,6 +114,41 @@ mod tests {
         assert_eq!(stack_in_work_ram(0x0000_2000), None);
         assert_eq!(stack_in_work_ram(0xFF00_2000), None);
         assert_eq!(bus_addr(0xFFFF_8036), 0x00FF_8036);
+    }
+
+    /// ★ **The window is the chip's whole decode, not the top mirror of it** (lens finding H28).
+    ///
+    /// `oracle_core`'s bus decodes work RAM as `0xE0_0000..=0xFF_FFFF` and folds the index with
+    /// `addr & (RAM_SIZE - 1)` (`crates/oracle-core/src/bus.rs:1048`, `:1170`) — one 64 KiB chip answering
+    /// 128 mirrors. `$E0FEF8` and `$FFFEF8` are therefore **the same physical byte**, and this crate's own
+    /// `ram_u8`/`ram_u32` already read either one correctly. Only `stack_in_work_ram`'s range check
+    /// disagreed: it was written against `$FF0000` — the *canonical* mirror rather than the decode — so an
+    /// A7 anywhere in a lower mirror came back `None` and a perfectly readable stack frame was reported as
+    /// `StackNotInWorkRam`. Same defect shape as the masking bug the test above pins, one mirror further out.
+    ///
+    /// This test derives nothing from prose: it asserts the two spellings of one byte agree, so a future
+    /// "unification" of the two `WORK_RAM_LO` constants onto the narrow spelling goes red here rather than
+    /// silently shrinking the window.
+    #[test]
+    fn the_work_ram_window_covers_every_mirror_the_bus_decodes() {
+        // The bottom of the decode, the canonical window, and a mirror in between all resolve.
+        assert_eq!(stack_in_work_ram(0x00E0_0000), Some(0x00E0_0000));
+        assert_eq!(stack_in_work_ram(0x00E0_FEF8), Some(0x00E0_FEF8));
+        assert_eq!(stack_in_work_ram(0x00F2_FEF8), Some(0x00F2_FEF8));
+        assert_eq!(stack_in_work_ram(0xFFE0_FEF8), Some(0x00E0_FEF8));
+        // …and a mirrored A7 indexes the same chip byte as its canonical spelling.
+        let mut ram = vec![0u8; RAM_SIZE];
+        ram[0xFEF8..0xFEFC].copy_from_slice(&[0x00, 0xA2, 0x1D, 0x96]);
+        let canonical = stack_in_work_ram(0x00FF_FEF8).expect("canonical window");
+        let mirror =
+            stack_in_work_ram(0x00E0_FEF8).expect("the bus decodes this mirror as work RAM");
+        assert_eq!(
+            ram_u32(&ram, canonical),
+            ram_u32(&ram, mirror),
+            "$E0FEF8 and $FFFEF8 are one physical byte; a frame is readable through either"
+        );
+        // The address one byte below the decode is still not work RAM.
+        assert_eq!(stack_in_work_ram(0x00DF_FFFF), None);
     }
 
     #[test]
