@@ -30,9 +30,9 @@
 //! 3. `RATIO` — the live picture is **drastically richer** than the post-hoc one, at least
 //!    [`LIVE_OVER_POSTHOC_RATIO`]x as many distinct colours.
 //!
-//! 1-3 are collected rather than asserted in a line, because they are not independent in failure: the
-//! mutation that points the capture at the post-hoc path breaks all three at once, and with sequential
-//! `assert!`s the first one fires and hides the other two. A failure here names every property that broke.
+//! 1-3 are collected rather than asserted in a line, because they are not independent in failure — measured,
+//! not assumed: *both* red-first mutations below break all three at once, and with sequential `assert!`s the
+//! first one fires and hides the other two. A failure here names every property that broke.
 //!
 //! ## Measured, both sides of the C2 fix
 //!
@@ -50,18 +50,23 @@
 //! ## Red-first
 //!
 //! Proven able to fail, with two mutations that vary a different parameter — *when* the picture is captured
-//! versus *which path* it comes from. See the parcel report for the transcripts.
+//! versus *which path* it comes from. Each was applied on disk against this file as committed and reverted
+//! with `git checkout --` afterwards; both runs exited 101.
 //!
 //! - **Mutation A, the captured moment** (`FRAMES` 120 -> 1: capture frame 0, before the ROM has begun its
 //!   CRAM rewrites). A genuine collapse, not an edit to a threshold — the picture really does hold almost
-//!   nothing. Observed **1** distinct colour; `FLOOR` fires.
+//!   nothing. Observed **1** distinct colour, both hashes `0x815bb645bc46a325`, and the frame is still H32
+//!   (`width=256`) because the ROM has not switched to H40 yet.
 //! - **Mutation B, the source path** (feed the post-hoc re-render in where the live capture's pixels go).
 //!   This is the exact blindness the per-scanline capture was built to close. Observed the two pictures
-//!   byte-identical at `0x96b9c93c4f3dd325` with **4** colours; `SAME-PICTURE` and `RATIO` fire.
+//!   byte-identical at `0x96b9c93c4f3dd325` with **4** colours.
 //!
-//! Neither mutation isolates a single property, and that is a fact about the machine rather than a gap in
-//! the mutations: a picture drawn from the post-hoc path is *necessarily* both flat and equal to post-hoc.
-//! Collecting the violations is what makes each one visibly fire instead of being shadowed.
+//! **Both mutations fired all three properties, 3 of 3.** That was not the expectation going in — the first
+//! draft of this file predicted A would trip only `FLOOR` — and it is a fact about the machine rather than a
+//! gap in the mutations: any picture flat enough to miss the floor is also, here, equal to the post-hoc
+//! re-render. It is also precisely why the properties are collected. Under the first draft's sequential
+//! `assert!`s the floor fired first and `SAME-PICTURE`/`RATIO` were never witnessed failing at all, which
+//! would have shipped two assertions nobody had ever seen go red.
 //!
 //! ## Not a hash, not a replacement for one
 //!
