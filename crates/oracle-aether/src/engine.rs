@@ -3657,7 +3657,7 @@ impl Engine {
             self.symbols.as_ref().and_then(|t| t.integrity_note()).map(|why| {
                 format!(
                     "The loaded symbol listing is NOT INTACT ({why}), so symbolAtPc and every other \
-                     name resolves to the nearest SURVIVING label — a coarser answer that looks like a \
+                     name resolves to the nearest SURVIVING label: a coarser answer that looks like a \
                      correct one."
                 )
             }),
@@ -7222,7 +7222,7 @@ impl Engine {
             (c, Some(why)) => {
                 let note = format!(
                     "This listing is NOT INTACT ({why}). It binds, and every symbol in it is real, but \
-                     rows are missing — so an address resolves to the nearest SURVIVING label, which \
+                     rows are missing, so an address resolves to the nearest SURVIVING label, which \
                      looks exactly like a correct answer and is a coarser one. Every downstream name \
                      (lookup_symbol, watch-hit PCs, profiler routines) inherits that."
                 );

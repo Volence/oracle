@@ -292,7 +292,7 @@ fn steady_verdict_line(steady: u64, callbacks: u64) -> String {
     if steady_callbacks == 0 {
         return format!(
             "NOT MEASURED: {callbacks} callback(s) ran and the first {WARMUP_CALLBACKS} are warm-up, so \
-             the steady-state window never opened. This run has NO pacing verdict — not a favourable one"
+             the steady-state window never opened. This run has NO pacing verdict, not a favourable one"
         );
     }
     format!(
@@ -314,7 +314,7 @@ fn leanest_ring_line(minocc: u64, rate: u32) -> String {
     if minocc == MIN_OCCUPANCY_UNMEASURED {
         return format!(
             "NOT MEASURED: no steady-state callback ran (the first {WARMUP_CALLBACKS} are warm-up), so \
-             the ring's low-water mark is UNKNOWN — not zero"
+             the ring's low-water mark is UNKNOWN, not zero"
         );
     }
     format!(
