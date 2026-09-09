@@ -3159,3 +3159,112 @@ met, strike the line in the same commit that meets it.
 > note is what makes it safe to read. The live shape of the feature is `layout.rs`'s own header.
 
 ## 2026-09-07T23:02:05Z oracle-e7 landed the four-gate lens parcel at oracle origin/main d9fb676 (merge b8805ac, hub verified ancestor; 79/79 legs, oracle measurement): closes H5, M3, M4, M1. Its bar-19 mutation check on the OTHER in-flight parcel found two direction-bit assertions passing for the wrong reason (second opcode is ABCD/SBCD), sent back. Aurora rig hazards folded into oracle UX charter, attributed to aurora; passed back. Pilot still gated on the Z80 parcel (last critical, in flight).
+
+
+## 2026-09-09T13:44:05Z — moved whole from `OVERSEER.md` (boot-read bound; three closed blocks)
+
+Cut proved lossless by `tools/prove_doc_split.py` (exit 0, PROVED by all three proofs) against the
+committed blob. Three blocks whose live rules stayed in the head as short stanzas: the
+`F-SPAWN-PICKER-PANEL-SURFACE` booking (closed; its owner question retired unasked by d-25), the
+2026-09-08 plane-raster measurement (the row stands; it is not the current explanation), and the H31
+I/O A0 decode ruling (FIXED at `28cf665`, so its currency-sequencing note is discharged).
+
+- **F-SPAWN-PICKER-PANEL-SURFACE: the owner's words name a surface that has no pointer at all, and the
+  parcel landed on the OTHER one. Booked so the gap is a decision, not an omission.** His tab ruling says
+  spawn's surface is *"clicking a spot in the Screen panel"*. **There are two windows**: `oracle-frontend`
+  (minifb, the game window, where `pick.rs`'s click-to-watch and `present::window_to_native` already live)
+  and `oracle-player` (egui, the debug tabs: Registers/Memory/Objects/Screen/nav). *"Screen panel"* is
+  `oracle-player`'s tab. ~~**Measured: `crates/oracle-player/src/screen.rs` (541 lines) has ZERO pointer
+  interaction**: its one `click` hit is the word inside a doc comment; the crate's only `clicked()` calls
+  are buttons in `ui.rs`/`nav.rs`.~~ ⚠ **THE MEASUREMENT READ THE WRONG FILE, corrected 2026-09-05 by the
+  migration recon, verified firsthand here before adoption. `screen.rs` is the `emulator/screen_text` GLYPH
+  MODEL** (its own header says so: *"the player half of `emulator/screen_text`"*), **not the Screen tab.**
+  The tab is `ui.rs::screen()` (`ui.rs:199-212`), which draws an aspect-fit nearest-sampled
+  `egui::Image` and nothing else. **The CONCLUSION stands and is now supported by the right artifact:** that
+  tab takes no clicks today. Kept struck rather than deleted, because a measurement that reached a true
+  conclusion from the wrong file is the exact shape this file's bars exist to catch, and it survived here
+  for two days reading as evidence.
+  **SPAWN-PICKER (merge `531894e`) landed on `oracle-frontend`**, which is where the gesture exists and
+  where every artifact this seat's own brief cited actually lives: **the brief conflated the two windows,
+  and the agent caught it rather than half-building across the seam.** That refusal was correct: the panels
+  surface needs an egui-rect→native-dot mapping invented from scratch plus its own standing indicator.
+  **Not a defect in what shipped; a second surface.** Per this lane's three-surface rule the gap must be a
+  decision, so it is one. ~~⚑ **Needs ONE WORD FROM THE OWNER, filed in `awaiting`: which window did he mean?**
+  If the game window, this is closed today. If the panels window, it is a fresh parcel.~~
+  ⚠ **THE PRICE WAS WRONG TOO, AND IT INVERTS THE RANKING, corrected 2026-09-05, verified firsthand.** This
+  entry says the panels surface *"needs an egui-rect→native-dot mapping invented from scratch"*. **It does
+  not: `present::window_to_native` (`crates/oracle-frontend/src/present.rs:203`) already takes an ARBITRARY
+  `rect` and is the exact inverse of the blit**, which is precisely what an egui rect hands you. So the
+  mapping is a call, not an invention, and picking is among the CHEAPEST items on the migration list rather
+  than the dearest.
+  ⚑ **AND THE OWNER'S QUESTION DISSOLVES RATHER THAN NEEDING AN ANSWER.** Under the d-25 swap-toolkit ruling
+  the two windows become one, so *"which window did he mean?"* stops having two referents. **Do not send him
+  this question**; it was real when filed and the ruling retired it. The lesson is this file's own, arriving
+  on its own entry: **a question can be answered by a ruling made elsewhere, and nothing retracts the ask.**
+## ⚑ MEASURED 2026-09-08: THE PLANE RASTER IS **NOT** DRAWING IN HIS LIVE WINDOW, SO IT CANNOT BE THE LAG. AND THE TAB STATE IS READABLE WITHOUT HIM.
+
+**`F-PLANES-RASTER-EVERY-FRAME` has been sitting on the owner for a ten-second tab test. It did not
+need one.** `eframe`'s storage writes the dock layout to
+`~/.local/share/oracle-player/app.ron` periodically from the running window, so **which tab each pane
+is executing is readable off disk at any moment, without touching his session, without a window, and
+without the `screen_text` surface `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` books.**
+
+**Read 2026-09-08T23:30:24Z, against a file his live window (started 15:01, pid 1207956) had written
+11 seconds earlier.** Four leaves, and a leaf executes only its active tab's body — not inferred:
+`layout.rs:776` says it outright (*"a leaf's active tab, so three tabs sharing a pane execute one body
+per frame"*), which is a second enumeration parameter agreeing with the parse rather than an echo of it.
+
+| pane | tabs | executing |
+|---|---|---|
+| 1 | Screen, Planes | **Screen** |
+| 2 | Registers, Memory, Objects | **Objects** |
+| 3 | Pacing, Effects | **Effects** |
+| 4 | Breakpoints, Profiler | **Breakpoints** |
+
+**`Planes` is the hidden tab behind `Screen` and is executing nothing.** The window was nonetheless
+burning **98.7% of one core** on a machine measured clear at the same minute (the sixteen orphaned
+spinners from the previous session had just been killed; load 23.9 → 8.8). **So the plane raster is not
+what is costing him the core, and a parcel aimed at it would have been aimed at a non-cause.**
+
+**What this does and does not settle.** It does **not** refute the row: the every-frame re-raster is a
+real defect, derived from source, and it would bite the moment he brings that tab forward. It settles
+that it is **not the current explanation**, and it retires the ask on him. ⚑ **The open question is now
+a different one and it needs a baseline before it is called a defect at all: a Mega Drive emulated at
+full speed with four live panels may legitimately cost about a core.** Nothing here establishes that
+98.7% is pathological, and saying "a whole core" to the owner without that baseline would be this
+file's own name-is-not-behaviour bar, one level up: a real number standing in for a verdict it does not
+carry.
+
+⚑ **The durable half, worth more than the instance: an ask parked on the owner should be re-priced
+before it is re-sent.** This one had been on his card for two days and was answerable in two commands
+the whole time, by an artifact the window writes for its own reasons. Before putting a *look at this*
+question to him, ask what the program already writes down.
+## ⚑ RULED 2026-09-08 BY THIS SEAT, PINNED FROM REFERENCE: H31's I/O A0 DECODE IS **DIRECTION-AGNOSTIC**. THE WRITE PATH IS THE DEFECT.
+
+The lens seat found the "the I/O block does not decode A0" rule applied on the read path
+(`bus.rs:1019`, `io_reg(a | 1)`) and contradicted on the write path (`bus.rs:1152`, `io_reg(a)`), so
+`read8($A10008)` answers while `write8($A10008)` drops. **It correctly REFUSED to adjudicate the
+hardware question and TAGGED it.** That was the right call and the question is now settled — from the
+reference, not from an opinion, per this lane's rule that a behavioural-correctness unknown is pinned
+and never deferred.
+
+**The measurement, firsthand in `oracle-old` (reference-only, which is the correct use of it):**
+`AddressDiscardLowerBitCount` is parsed once per *mapping* (`BusInterface::MapDevice` and `MapPort`,
+lines 605 and 776 — both mapping parsers, neither a direction), stored on the map entry
+(`BuildMapEntry`, line 229), and applied through the identical expression
+`(((location - mapEntry->address) & mapEntry->addressMask) >> mapEntry->addressDiscardLowerBitCount)`
+at **eight** sites: `ReadMemory` 2454, **`WriteMemory` 2507**, `TransparentReadMemory` 2541,
+**`TransparentWriteMemory` 2574**, `ReadPort` 2647, **`WritePort` 2700**, `TransparentReadPort` 2734,
+**`TransparentWritePort` 2767**. Four reads, four writes, one expression. **The discard is a property
+of the address decoder, not of the access direction**, which is what "the block does not decode A0"
+means physically: the line is not wired, and a wire has no direction.
+
+**So: our write arm must decode `a | 1` exactly as the read arm does**, and `write8($A10008)` reaching
+the P1 control register is the correct behaviour. ⚑ **Why no golden catches it: word writes are
+unaffected** (they carry the odd byte anyway), and the covering test at `bus.rs:2069` writes the
+**odd** address `$A10009` and reads the even one, so it exercises the read mirror and never the write
+mirror. **A fix therefore owes the write-direction case the existing test structurally cannot reach**,
+and that case is the whole point of the row.
+
+⚑ **This is currency-touching**: an even-byte I/O write that used to drop now lands. Price it as a
+byte-mover and sequence it accordingly; it does not ride along with an unrelated parcel.
