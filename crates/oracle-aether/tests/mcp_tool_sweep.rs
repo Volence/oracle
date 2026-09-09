@@ -564,7 +564,9 @@ fn every_mcp_tool_property_is_declared_by_its_contract_fragment() {
     // *dual-accept first, retire the alias last*. Measuring both servers inverted it, because they have
     // opposite failure modes for a stale spelling. Ours **refuses** an unknown param with `-32602`
     // naming the key and listing the accepted set, at the single dispatch choke *before the handler runs*
-    // (`engine.rs:4290`, called from `:999`). The legacy server **ignores** it: `ControlSocket.cpp:127`
+    // (`engine::unknown_params`, called from `Engine::dispatch` — cited by symbol because the two line
+    // numbers this comment used to carry, `engine.rs:4290` and `:999`, had both drifted onto unrelated
+    // code). The legacy server **ignores** it: `ControlSocket.cpp:127`
     // `getInt(k, d = 0)` and `:149` `getU32` are defaulting accessors with no closure anywhere. So
     // retiring the alias *on the legacy server* silently hands `30000` to every caller still sending
     // `timeout_ms` — an aeon gate that believes it waits 120s waits 30, and still pastes a verdict into

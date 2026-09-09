@@ -1911,8 +1911,8 @@ impl Vdp {
     ///
     /// The split inside the returned report is the point: `pixels` is the *masked* composite, while
     /// `sprites`, `sprite_walk_end`, `sprite_overflow` and `sprite_collision` are the unmasked pipeline's,
-    /// because a display mask must not move the bits the game reads. `mask_never_moves_the_sprite_pipeline`
-    /// pins exactly that.
+    /// because a display mask must not move the bits the game reads.
+    /// `a_mask_never_moves_the_sprite_pipeline` pins exactly that.
     pub fn render_line_report_masked(&self, line: u16, mask: LayerMask) -> LineReport {
         let resolved = self.resolve_line_masked(line, mask);
         self.line_report_from(line, resolved)

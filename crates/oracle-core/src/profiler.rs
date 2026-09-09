@@ -533,7 +533,7 @@ pub struct Profiler {
     /// the cap, so the next push is refused too, and the only way to get below the cap is a pop — which
     /// clears the latch. So the honest reading is that this arm exists for correctness rather than for
     /// coverage: it is the shape the wire enumerates, it is cleared in the one direction that could make it
-    /// wrong, and `depth_cap_is_never_attributed_to_a_caller_we_did_track` pins the negative half. If a
+    /// wrong, and `the_depth_cap_is_never_attributed_to_a_caller_we_did_track` pins the negative half. If a
     /// later change ever makes a push refusable *below* the cap, the attribution is already right.
     depth_capped: bool,
 }

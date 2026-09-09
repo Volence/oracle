@@ -1324,7 +1324,8 @@ mod tests {
         // ⚑ And the *frame-time* section survives it too, which is the same rule one instrument over:
         // frame times are wall clock between presents and owe nothing to an audio device, so an absent
         // device must not blank them. A real distribution is here because `readout` fed the meter 1230
-        // presents; the unsampled-is-not-zero half is `nothing_sampled_is_a_stated_line_not_a_zero`.
+        // presents; the unsampled-is-not-zero half is
+        // `nothing_sampled_is_a_stated_line_on_the_tab_and_an_absent_pair_on_the_wire`.
         assert!(
             r.frame_time.iter().any(|f| f.label == "p99"),
             "an absent audio device blanked the frame-time percentiles: {:?}",

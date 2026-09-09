@@ -848,7 +848,8 @@ fn banner_layout(area: Rect, px: usize) -> Option<(Rect, usize, usize)> {
 /// **Where the `PAUSED` banner lands**, in the same window coordinates a lens draws in, or `None`
 /// when the picture is too small for it to appear at all.
 ///
-/// Exported because the overlay is drawn *after* the lenses (main.rs:1776-1817) and its panels are
+/// Exported because the overlay is drawn *after* the lenses (`main.rs`'s present block calls
+/// `lens::draw`, then `palette.draw`, then `ov.draw`) and its panels are
 /// only `PANEL_ALPHA` opaque: a white lens glyph underneath one drops to about 65/255 and reads as
 /// **absent**, while its neighbours stay bright. That is not occlusion, it is interference — the
 /// same argument that put the sprite outlines beneath the lens panels, one layer up — and a

@@ -510,8 +510,8 @@ pub const METHODS: &[MethodSpec] = &[
     // method: the row has been catalogued since the catalog was written and sat in the schema's BLOCKED
     // set under audit D-20 because its result carried two literal ellipses. §11.41 (CR-R) removed both by
     // STRIKING — `decoded{}` is gone and `status` reduced to its `raw` word — so nothing here is invented.
-    // `params: &[]` is the row's own dash, and the generic closure at `unexpected_params` is what turns a
-    // guessed `{"reg": 4}` into `-32602` rather than a full file the caller believes was filtered.
+    // `params: &[]` is the row's own dash, and `unknown_params` (called from [`Engine::dispatch`]) is what
+    // turns a guessed `{"reg": 4}` into `-32602` rather than a full file the caller believes was filtered.
     MethodSpec {
         name: "emulator/read_vdp_registers",
         handler: Engine::read_vdp_registers,

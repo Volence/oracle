@@ -1490,9 +1490,9 @@ fn run_bench_cpu(machine: Machine, args: &Args, loaded: symbols::Loaded) {
         // is no backend here, so the deltas are discarded — but they have to be discarded *deliberately*,
         // through `clear()`, which is the API's own escape hatch. Note the panic is debug-only, so a
         // release-mode bench never sees it: `drop(out.textures_delta)` is silent in `--release` and
-        // aborts under `cargo test`. (The throwaway spike still has that bug at
-        // `crates/oracle-panels-spike/src/main.rs:628`; it has no test target, so nothing ever ran it in
-        // debug.)
+        // aborts under `cargo test`. (The throwaway spike still has that bug — its bare
+        // `drop(out.textures_delta)` in `crates/oracle-panels-spike/src/main.rs`; it has no test target,
+        // so nothing ever ran it in debug.)
         out.textures_delta.clear();
         let wait = tick.wait;
 

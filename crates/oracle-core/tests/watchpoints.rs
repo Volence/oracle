@@ -405,8 +405,15 @@ fn the_trace_report_carries_the_machines_own_timing_basis() {
 use std::path::Path;
 
 /// `K4Probe`'s read-arm classifier. The four counter fields and the whole `classify` body are copied
-/// verbatim from `examples/k4_openbus_probe.rs:201-214`, outer `Read | Tas` gate included, so the
-/// comparison below is against the real hand-rolled counters and not a paraphrase.
+/// verbatim from `examples/k4_openbus_probe.rs` — the fields off `struct K4Probe`, and the arms out of
+/// `<K4Probe as BusEventSink>::on_event`'s `BusOp::Read | BusOp::Tas` branch (the `0xA1_0000..=0xA1_001F`
+/// and `0xC0_0004..=0xC0_0007` match arms), that outer gate included — so the comparison below is against
+/// the real hand-rolled counters and not a paraphrase.
+///
+/// **Cited by symbol on purpose.** This doc said *"verbatim from `k4_openbus_probe.rs:201-214`"*; by
+/// 2026-09-09 that range held the `$A11100` / Z80-window arms and none of the four counters, so a
+/// "verbatim" claim pointed at unrelated code — the shape most likely to mislead an editor, because
+/// quotation marks around text that is not at the cited place is what makes a citation feel checked.
 ///
 /// `io_reads_total` is **not** one of the probe's counters — it is a control **added by this test** (the
 /// probe's I/O arm has only `io_even_byte_reads` and `io_word_reads`). It exists so the tests can show the

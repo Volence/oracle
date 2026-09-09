@@ -163,10 +163,15 @@ struct EngineLayout {
     y_pixel_offset: u32,
 }
 
-/// The only engine this build decodes. `ram.emp:612-618` declares the RAM order once
-/// (`Object_RAM, Player_1, Player_2, Dynamic_Slots, System_Slots, Effect_Slots, Object_RAM_End`) and
-/// `core.emp:35` pins the adjacency with a link-time `ensure`, so every quantity below is a symbol
-/// difference rather than a number.
+/// The only engine this build decodes. `aeon/engine/ram.emp` declares the RAM order once, in the block
+/// running `mark Object_RAM` .. `mark Object_RAM_End` (`Player_1`, `Player_2`, `Dynamic_Slots`,
+/// `System_Slots`, `Effect_Slots`), and `aeon/engine/objects/core.emp` pins the adjacency with a
+/// link-time `ensure(extern("Effect_Slots") == extern("System_Slots") + sizeof(Sst)*NUM_SYSTEM, …)`, so
+/// every quantity below is a symbol difference rather than a number.
+///
+/// **Cited by symbol.** These were `ram.emp:612-618` and `core.emp:35`; by 2026-09-09 the block was at
+/// 837-843 and the `ensure` at 43. Aeon's HEAD moves independently of ours, so a bare line number into it
+/// is a citation whose drift is invisible to every reader and every gate here — the symbols are not.
 const AEON_SST: EngineLayout = EngineLayout {
     engine: "aeon-sst",
     table_slot_bytes: 0x50,

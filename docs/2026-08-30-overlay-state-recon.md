@@ -303,10 +303,20 @@ will propose keeping it.
 
 ### 7.5 The gate you cannot route around
 
-`crates/oracle-aether/tests/contract/bus-protocol.schema.json` is **vendored verbatim** from
-`empyrean/contract/schema/bus-protocol.schema.json`, and
-`schema_conformance.rs::the_vendored_schema_is_byte_identical_to_the_upstream_contract` enforces it. You
-**cannot hand-edit the vendored copy.**
+`crates/oracle-aether/tests/contract/bus-protocol.schema.json` is **vendored** from
+`empyrean/contract/schema/bus-protocol.schema.json`. You **cannot hand-edit the vendored copy** —
+`schema_conformance.rs::the_vendored_schema_is_the_blob_provenance_pins` is the gate.
+
+> **CORRECTED 2026-09-09.** This paragraph named
+> `the_vendored_schema_is_byte_identical_to_the_upstream_contract` and said the copy is vendored
+> *verbatim*, i.e. that the gate enforces equality-to-**upstream**. `7308e96`
+> (`F-SCHEMA-READS-LIVE-EMPYREAN`, 2026-09-02) replaced that test — the old one byte-compared a **peer's
+> live working tree**, so it went red on an unsaved hub edit and green against a change no other lane
+> could see. ⚑ **The property changed with the name, and that is the part worth carrying:** the live gate
+> asserts equality to the blob `tests/contract/PROVENANCE.md` **pins**, not equality to upstream. The two
+> agree exactly while that sidecar is current, and it is maintained by hand. "Cannot hand-edit the
+> vendored copy" survives intact; "is byte-identical to upstream today" is no longer something the suite
+> establishes on its own.
 
 Adding a method to `METHODS` without an upstream fragment turns two tests red, by design:
 

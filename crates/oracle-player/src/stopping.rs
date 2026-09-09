@@ -439,9 +439,10 @@ pub fn profiler_live(p: &Profiler, armed: bool) -> Live {
 /// were* — a question about a **table's freshness**, and the right question for the three tabs. This one
 /// is about the **machine**: can it be stopped, was it, and how do I start it again. They agree on
 /// exactly one bit ([`Live::Yes`] for breakpoints is `any_enabled()`, which is what
-/// [`armed`](Self::armed) counts, and `breakpoints_live_agrees_with_halting` pins that), and they differ
-/// on everything a reader of a frozen window actually needs. Collapsing the two would have put "how do I
-/// get out" inside a type whose other two variants are both *"the table is stale"*.
+/// [`armed`](Self::armed) counts, and
+/// `breakpoints_live_agrees_with_halting_on_armed_and_answers_a_different_question_otherwise` pins that),
+/// and they differ on everything a reader of a frozen window actually needs. Collapsing the two would have
+/// put "how do I get out" inside a type whose other two variants are both *"the table is stale"*.
 pub struct Halting {
     /// Breakpoints **enabled** — `Breakpoints::any_enabled`'s predicate, counted. This is the exact
     /// condition `Engine::run_sinks` attaches the halting sink on, so a non-zero here means the sink is

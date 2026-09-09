@@ -7,7 +7,8 @@
 //!
 //! Lenses are **read-only over core state** and draw into the *window* buffer, never the retained
 //! native framebuffer: a paused frontend re-presents that buffer every iteration, so ink there
-//! accumulates (the lesson `draw_crosshair` records at main.rs:1700-1710).
+//! accumulates (the lesson `main.rs`'s `draw_crosshair` call site records: the crosshair is an XOR, so
+//! it is drawn into a scratch copy and never into the retained buffer).
 //!
 //! This module holds the spine — ids, the toggle bitset, the config-file spelling, and the one
 //! [`models`]/[`draw`] pair the run loop calls. Each lens is its own submodule, declared as it
@@ -1027,9 +1028,10 @@ mod tests {
     /// walk can produce: reading the SAT table instead yields 3.
     ///
     /// **The obvious fixture — 80 chained visible slots — is vacuous, measured.** In H32 the SAT
-    /// cache write-through only mirrors 64 entries (`vdp.rs:707`), so slots 64-79 stay parked and
-    /// get clipped anyway. The whole-table mutation survived that version of this test while
-    /// producing exactly the 64 it asserted, for entirely the wrong reason.
+    /// cache write-through only mirrors 64 entries (`Vdp::write_vram_byte`: `let entries = if
+    /// self.h40() { 80 } else { 64 }`, and its own doc says entries 64-79 never refresh in H32), so
+    /// slots 64-79 stay parked and get clipped anyway. The whole-table mutation survived that version
+    /// of this test while producing exactly the 64 it asserted, for entirely the wrong reason.
     #[test]
     fn the_walk_stops_at_the_parse_cap() {
         // (x_field, y_field, size|link, attr). Size byte $00 = 1x1 cell; the low byte is the link.
@@ -1553,7 +1555,8 @@ mod tests {
     //
     // **Nothing on this branch drew a lens and the overlay into the same buffer.** Every test above
     // renders lenses alone; `overlay.rs`'s tests render the overlay alone. The run loop draws both,
-    // lenses first (main.rs:1776-1817), and the overlay's panels are only `PANEL_ALPHA` opaque — so
+    // lenses first (`main.rs`: `lens::draw`, then `palette.draw`, then `ov.draw`), and the overlay's
+    // panels are only `PANEL_ALPHA` opaque — so
     // a lens glyph underneath one is dimmed to about a quarter and reads as *missing* next to its
     // undimmed neighbours. Two real instances shipped through a fully green suite because no test
     // could see across the seam. This is that test.

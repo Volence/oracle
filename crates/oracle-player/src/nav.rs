@@ -493,8 +493,9 @@ pub fn bar(ui: &mut egui::Ui, dock: &mut DockState<Tab>) -> Vec<screen::Run> {
 /// ⚑ **Split out of [`bar`] so that what the menu DRAWS can be asserted**, which it could not be while it
 /// lived inside the `menu_button` closure: that closure runs only on the frames the popup is open, and a
 /// headless test has no way to open one. Called directly, the body paints into an ordinary `Ui` and
-/// `the_menu_says_the_tabs_can_be_dragged` reads the text runs back off the frame — so deleting a line
-/// from the arranging block is red, where before it would have been invisible to every test in this file.
+/// `the_menu_says_the_tabs_can_be_dragged_and_offers_the_way_back_beside_it` reads the text runs back off
+/// the frame — so deleting a line from the arranging block is red, where before it would have been
+/// invisible to every test in this file.
 ///
 /// It takes `&DockState` rather than `&mut`: nothing here moves a panel. It *reports* the pick and [`bar`]
 /// applies it, which is the same separation [`Entry::action`] already draws between naming a gesture and

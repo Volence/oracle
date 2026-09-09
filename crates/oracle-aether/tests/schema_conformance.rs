@@ -1309,11 +1309,22 @@ fn the_schema_cannot_express_section_8_item_13_and_this_test_proves_it() {
     // schema. So of the two mechanical conformance items in this arc the validator catches one (item 16,
     // the checkpoint id, controlled above) and is blind to the other by construction.
     //
-    // The rule itself is asserted behaviourally in `tests/events.rs`
-    // (`a_completed_run_frames_reports_runframes_not_step`, `a_press_reports_runframes_…`). If this test
-    // ever starts FAILING, the schema grew a way to express item 13 and those tests have a mechanical
-    // backstop they did not have before — which is good news, and means this test should be deleted and
-    // the doc updated.
+    // The rule itself is asserted behaviourally in `tests/events.rs`, by exactly two tests — both named
+    // in full here, because a truncated or approximate name is indistinguishable from a deleted guard:
+    //
+    //   * `events_reach_a_subscriber_and_carry_the_stamp` — the `run_frames` half. Its `assert_ne!`
+    //     against `"step"` carries the same sentence this comment does: *"a frame advance is never `step`
+    //     (§3) — and the schema will not tell you"*.
+    //   * `a_press_reports_runframes_because_step_is_the_one_value_section_3_rules_out` — the `press` half.
+    //
+    // ⚑ This comment used to name the first one `a_completed_run_frames_reports_runframes_not_step`,
+    // which has never existed in this tree (`git log -S` finds it only in this comment, back to `d6a711c`
+    // where the comment was written). Half a named backstop was therefore missing from the moment it was
+    // claimed, and the confident tone was what concealed it.
+    //
+    // If this test ever starts FAILING, the schema grew a way to express item 13 and those two tests have
+    // a mechanical backstop they did not have before — which is good news, and means this test should be
+    // deleted and the doc updated.
     let mislabelled = json!({"jsonrpc":"2.0","method":"emulator/stopped","params":{
         "reason":"step","pc":"0x00012A4C","stopPrecision":"exact","frames":8,"deadlineReached":true,
         "frame":8,"mclk":7168320,"running":false}});

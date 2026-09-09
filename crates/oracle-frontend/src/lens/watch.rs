@@ -3,7 +3,8 @@
 //!
 //! Reads the hit ring through the **non-destructive** `hits()`. Never `take_hits()`: the ring is
 //! shared with socket clients, and a lens that consumed it would delete a client's evidence just
-//! by being switched on (the rule main.rs:1152-1155 states for the `W` key).
+//! by being switched on (the rule `main.rs` states on the `W` key — `commands::Cmd::DumpHits`:
+//! *"never `take_hits()`, which would let this key press delete a socket client's evidence"*).
 
 use crate::overlay::{self, ACCENT, INFO};
 use crate::present::Rect;
@@ -253,8 +254,9 @@ mod tests {
     ///
     /// The panel is `fill_rect(..., 0x0000_0000, PANEL_ALPHA)` — black alpha-blended. Over a black
     /// buffer that is a *no-op*, so a `!= 0` test cannot see the largest thing `draw` paints: a
-    /// panel spanning the whole window used to pass containment untouched. `palette.rs:691` looks
-    /// like the same test but presses a key first so its **opaque** highlight bar draws; this
+    /// panel spanning the whole window used to pass containment untouched.
+    /// `palette::draw_paints_inside_area_only` looks like the same test but presses a key first
+    /// (`PaletteKey::Down`) so `draw_selected_bar`'s **opaque** highlight bar draws; this
     /// module has no opaque element, so the shape alone yields no coverage. Filling with a
     /// distinctive colour and asserting changed-vs-untouched is what makes the panel visible, and
     /// it is the pattern every lens draw test must copy.
