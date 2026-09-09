@@ -380,6 +380,29 @@ change and was correctly kept out of the hardening parcel.
 
 ## Ops (each line is a paid-for lesson)
 
+**⚑ A RECEIVER WHO SILENTLY REPAIRS A BROKEN INSTRUCTION DESTROYS THE ONLY SIGNAL THAT WOULD HAVE
+CORRECTED THE SENDER** *(2026-09-09, this seat's own defect, found when the hub self-reported the
+instruction)*. The hub handed this seat `git -S '<text>' log -- <path>` as the way to read a standing
+ruling firsthand. **It is malformed** — `-S` is a `log` option, not a `git` option, and it dies with
+`unknown option: -S`. **This seat ran the CORRECT form** (`git log --oneline -S …`) without noticing,
+got the right answer, and **said nothing**, so the hub went on to write the broken form repeatedly in
+messages. It surfaced only because the hub audited its own prose.
+**The generalisation, and it is the one worth keeping: a competent receiver is an ERROR-ABSORBING
+SURFACE.** Silent repair looks like fluency and is indistinguishable, from the sender's side, from
+the instruction having been correct. Same mechanism as `2>/dev/null` deleting the artifact that would
+have corrected a reading, and as the protocol's `ls`/`eza` pair — the lane that saw the error re-ran
+and was saved; the lane that suppressed it formed the false belief. **When you fix someone's command
+to make it work, say that you did.** It costs one clause and it is the only channel by which the
+sender can learn.
+
+**⚑ AND THE MASK THAT HID IT: A FAILING COMMAND INSIDE A PIPE REPORTS THE PIPE'S STATUS, NOT ITS OWN.**
+`git <bad> 2>&1 | head -3; echo "exit=$?"` prints **`exit=0`** while the command failed, because `$?` is
+`head`'s. Bit this seat TWICE in one session — the other was `cargo check … | tail` reporting an EMPTY
+status that would have read as a pass. **Capture the exit code outside any pipe** (redirect to a file,
+then `echo $?`), or the status you quote belongs to the last thing in the chain rather than the thing
+you are testing.
+
+
 **⚑ RESOLVE A PEER'S DEFAULT BRANCH; NEVER ASSUME IT — AND THE ASSUMPTION FAILS SILENT** *(2026-09-09,
 found by a dispatched agent against this seat's own brief; extended by the hub, who measured wider than
 this seat did and was right to)*. Measured across all six repos: **aeon, sigil and AURORA are `master`;
