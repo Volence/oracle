@@ -3329,3 +3329,84 @@ consume this. Cheaper before the design than after.)*
    no standing on-screen statement is the unlabelled-highlight defect one level up: *the author will
    forget, and then read a masked picture as the real one.* Their canvas palette treats colour as a
    language deliberately; a toggle that fights that is worse than none.
+
+## 2026-09-09 — moved whole from `OVERSEER.md` (boot-read cut: closed history around live rules)
+
+### Queue item 8: the four foreground runtime follow-ups, the closed narrative (orig line 70)
+
+   **FOREGROUND runtime follow-ups: ALL FOUR CLOSED 2026-09-04, and none of them cost a probe.** Three were stale and one was never ours — CR-B had been reading **`oracle-old`**, and the Z80 pair we actually serve (`0f35ae1`, 08-29) refuses LOUDLY and WHOLE, measured firsthand against the binary a consumer spawns with a control proving the probe could see a write. `write_vram` closed 09-04; `step`'s frame-budget shortfall closed by the CR-STEP-SHORTFALL parcel the same day, and it was never a which-server question — it named a contract SHAPE gap binding any conformant server, which is why it survived the conflation the other three did not. The entries, and the 2026-08-22 runtime attempt correctly ABANDONED rather than deferred for convenience (my MCP client's `Errno 2` said nothing about the world, and the live emulator was another lane's harness), moved whole to `OVERSEER-LOG.md` 2026-09-06 for the boot-read bound. Detail in the 2026-09-04 register entry.
+
+### CR-Q / §11.40 `machineReplaced`: the adjudication provenance, and the three-item debt discharged (orig lines 145-161)
+
+**▶ CR-Q ADOPTED WITH CHANGES: §11.40, and it is OWED, not done.**
+
+Adjudicated 2026-09-05 at empyrean **`31e0b7c`**, **verified firsthand, not taken from the relay**: an
+ancestor of their `origin/main`, and a **contract** commit carrying `protocol.md` +54,
+`bus-protocol.schema.json` +27 and `vectors.json` +43, so its SHA class matches what it anchors. §11.40,
+the §3 row and the schema member are all present at `origin/main`. **Reviewer named: aeon.**
+
+**▶ WHAT WE OWED: ALL THREE DISCHARGED, and the row asserting the debt outlived the work by four days.**
+~~serve `emulator/machineReplaced` (`reason` enum `{stateLoad}` + **`hitsDropped`, required and present at
+0**), **re-vendor the fragment by blob id**, and close against item 28's extended rows. Sequenced behind the
+icon parcel, the build-identity line and the first style pass.~~ **Measured firsthand 2026-09-09 before an
+agent was spent on it:** the serve landed at **`d631b5a`** (2026-09-05), both windows emitting and a headless
+server correctly NOT advertising (`handshake.rs:173` asserts the absence); the vendored blob is
+**`da37da70`**, byte-identical to `empyrean origin/main:contract/schema/bus-protocol.schema.json`, both read
+at committed revisions and neither from a working tree; item 28's extended rows are carried by name in
+`crates/oracle-aether/tests/machine_replaced.rs`, the refused-load negative included. `H4` (`a5e18cb`) is
+built on top of it, which is the strongest single sign the serve was real: a later parcel depended on it.
+
+### The S3 one-door defect: every palette gesture that replaced the machine ran no repair (orig lines 215-225)
+
+- **⚑ A SHIPPED DEFECT IN THE WINDOW THE OWNER WAS USING: every palette gesture that replaced the machine
+  ran NO repair at all.** `Host::pump` snapshots the three generation counters **inside itself** (deliberate:
+  it is what stops `set_machine_info` surfacing as a client's doing). The unintended half: **a change made
+  through `Host::call` between two drains is invisible to both**, landing after drain N reads back and
+  before drain N+1 snapshots. `oracle-frontend` never met it because it calls `System::load_rom` directly
+  and repairs inline; `oracle-player` dispatches **everything** through `Host::call`. So at `17ee2c6`,
+  `emulator/reset`, `reload_rom`, `restore` and `run_frames` from the window's own palette each left the
+  audio sink's frame clock above the restored one (**silence**), the capture on a dead timeline, and the
+  symbol cache and ROM row stale. **Verified at the shipped revision before accepting the fix**
+  (`host.rs:653-661` snapshot, `731-733` compare; `Bus::call` discarded everything but the result).
+  **Every one of those repairs already existed and already ran: for a client, one door over.**
+
+### d-16, the question the SUBSTITUTE ruling answered (orig lines 642-644)
+
+**The question (d-16):** the premium independent-reviewer seat was parked days ago when it blocked
+nothing. It had come to block three items: OVERLAY-STATE and CR-A, five of the sixteen unserved
+methods among them. **Ruled: SUBSTITUTE.**
+
+### The socket chain: the d-4 restatement of the operational consequence (orig lines 715-718)
+
+**OPERATIONAL CONSEQUENCE for the d-4 parcel: start the server on `/run/user/1000/oracle.sock`.** That
+is what every lane resolves to. Unlinking the stale `/tmp/oracle.sock` (aurora's suggestion) is **not
+required** for any consumer using the reference client, since it is unreachable; it may still matter
+for a client with its own resolution, which is aurora's to determine and not mine to touch.
+
+### GUI-LAYERS: the discharge measurement, all three premises false (orig lines 756-762)
+
+Queued 2026-08-26 on three claims, all measured false today before the section was cut:
+`oracle-frontend` **does** have layer toggles (`commands.rs` builds them from `LayerMask::targets`);
+`pick::resolve` **takes a `LayerMask` and has no unmasked twin to fall into**; and the invariant the
+section wanted asserted *is* asserted — `pick.rs`'s own header says the parity guard now runs over masked
+states, *"so that is an assertion rather than a precondition"*. Aurora's five consumer rules were adopted
+and are satisfied in the shipped code, `mask_clause` being the standing on-screen statement rule 5 asked
+for. The section and their full input moved whole to `OVERSEER-LOG.md` 2026-09-09.
+
+### `F-FROZEN-FIXTURE-DRIFTS`, landed 2026-09-06: the four drifted dimensions and the shape built (orig lines 807-817)
+
+**Board row id: `F-FROZEN-FIXTURE-DRIFTS`** — landed 2026-09-06, and it is the second application of the
+ruling directly above, reached independently before the ruling was re-read. Our frozen `fixtures/aeon/*.lst`
+had drifted from aeon's build in four dimensions consuming tests rely on (`ObjSub_` 0→8, `ObjDef_`
+archetypes 3→4 and 5→6, `Phase Table` absent→`PHASE-COUNT 6`, `Level_Width`/`Level_Height` absent→present),
+and every one of those was invisible to the suite by construction.
+
+**The shape is `SCHEMA-DRIFT-NIGHTLY`'s, applied one level up from bytes:** `fixtures/aeon/DIMENSIONS.tsv`
+pins the listings' SHAPE the way `PIN.tsv` pins their bytes; the hermetic recovery gate is
+`crates/oracle-core/tests/aeon_dimensions.rs`; the currency half is a new non-gating section in
+`tools/aeon_pin_report.py`. **No second owner card was filed**, per this section's own prohibition — the
+standing-timer question is already open as empyrean `d-9`.
+
+### The parcel-2 layout-persistence line, stale and struck (orig line 1041)
+
+⚠ **STALE, AND IT COST A PARCEL: the parcel-2 line item here said layout persistence was one `serde` flag, deliberately OFF *"until the placeholders are gone"*.** It is **ON and shipped** — `crates/oracle-player/src/layout.rs`, eframe `Storage`/RON, `LAYOUT_VERSION = 2` in its own storage key, `eframe = { features = ["persistence"] }` in the manifest. The condition the line named was met, the flag was flipped, and the line was never struck, so a brief was written from it to decide a question that did not exist. The paragraph and both of its corrections moved whole to `OVERSEER-LOG.md` 2026-09-06 for the boot-read bound; **the durable rule is in `docs/OVERSEER-REFERENCE.md`: when a conditional line's condition is met, strike the line in the same commit that meets it.**

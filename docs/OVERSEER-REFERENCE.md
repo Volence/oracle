@@ -785,3 +785,75 @@ from `OVERSEER.md`'s line-item told this lane that the player's layout persisten
 it on was a live choice; it had shipped, and the only real question left was whether anything asserted the
 property. **Operational form: when a conditional line's condition is met, strike the line in the same commit
 that meets it.** *(The paragraph and both of its corrections: `OVERSEER-LOG.md`, 2026-09-06.)*
+
+## Moved from OVERSEER.md 2026-09-09 (boot-read cut) — ops lessons read at a moment, not at boot
+
+### A row's justification ages while the row sits still; and presence of structure read as absent emission (from CR-Q, 2026-09-09)
+
+⛑ **THE SIXTH INSTANCE IN TWO DAYS OF A ROW'S JUSTIFICATION AGEING WHILE THE ROW SAT STILL, and the first
+one caught BEFORE the agent rather than after.** The standing rule that caught it is the 09-09 frontier's:
+**before dispatching any row, check whether the WORK landed, not whether the ROW is open.** Both artifacts
+asserting this debt — this paragraph and the `CR-Q-MACHINEREPLACED` board row — were self-consistent, correctly
+cited, and wrong, which is why neither could correct the other.
+
+⛑ **AND THE HUB READ IT THE SAME WAY FROM THE OTHER SIDE, which makes this a shared-frame instance rather
+than a lane defect.** Backing the parcel as contract owner, it reported *"your crates reference it in 8 files
+… so the contract is written, the structure is there, and the signal is not delivered"* — it had grepped the
+references and read **presence of structure as evidence of absent emission**. That is bar 16 running in the
+NEGATIVE direction: name-is-not-behaviour normally over-reads a name as work, and here it under-read eight
+real emission sites as scaffolding. The discriminator was one grep separating **test** references from
+**production call sites** (`states.rs:237`, `main.rs:1926`), which is the command that converts a reference
+count into behaviour.
+
+### Handing a check you cannot run to the peer who can: bar 24's second instrument, aimed at a peer (CR-Q §5, 2026-09-05)
+
+**And a correction to OUR §5 worth keeping: events ARE schematized in this repo**, so the schema cost is
+one fragment, which the hub added. We priced it as more.
+**The pre-adoption check we flagged and could not run, the hub ran:** `clients/python` validates no closed
+set (boolean negotiation), the MCP shim negotiates `want_events=False`, and the handshake fragment is free
+strings. **So the check came back clear, but it was right to hand it over rather than assert it**, which
+is bar 24's second-instrument rule working in the direction of a peer rather than a document.
+
+### A brief warned about the mirror image and the thing it warned about could not happen (S3, 2026-09-05)
+
+  ⚑ **MY BRIEF WARNED ABOUT THE MIRROR IMAGE AND THE THING IT WARNED ABOUT COULD NOT HAPPEN.** I wrote that
+  *"two copies of this repair is the defect this slice is most likely to ship"*. There was nowhere for a
+  second copy to live: the palette is **derived from `METHODS`**, so `reload_rom` was always reachable
+  through the one registry and an F5 binding is a keyboard alias for a call that already existed. **The
+  real defect was a door that ran NO repair, not two doors running it differently.** Fixed by recording in
+  `Bus::call` itself rather than a per-call-site list: a per-site list is a list of methods that replace
+  the machine, and the palette is registry-derived precisely so no such list exists to go stale.
+  **Proved by this seat restoring the defect**: deleting `self.own.absorb(&report)` turns all four
+  `bus::one_door::*` rows red.
+
+### Third consecutive agent to correct its brief: lead a dispatch by asking for disagreement first (S2a, 2026-09-05)
+
+  ⚑ **THIRD CONSECUTIVE AGENT ON THIS ARC TO CORRECT ITS BRIEF ON A MATERIAL POINT**: the recon on the
+  module list, S0-S2 on the fit inverse, this one on the refusal. **That is the delegation corollary paying
+  out: a brief's frame is the thing an agent is best placed to break, and all three were caught because the
+  brief asked for disagreement first rather than last.** Keep leading dispatches with that request.
+
+### A granting act DESCRIBED, not a status field quoted (push authorization, 2026-08-24)
+
+**The granting act is named, which is why this relay is usable at all.** The hub consolidated a
+question two lanes had stopped on separately (sigil asked outright; aeon was sitting on three
+finished docs commits for the same reason, neither able to see the other asking), put three options
+to him (own-repo standing / standing-for-docs-ask-for-code / per-push), and he chose the widest.
+That is a granting act described, not a status field quoted, which is the distinction the
+never-record-an-unwitnessed-approval bar exists to draw.
+
+### Freshness is not transitive across a document, and proximity reads as verification (2026-08-22)
+
+*Durable formulation from the same thread, worth more than its instance:* **freshness is not
+transitive across a document, and proximity reads as verification**: a stale figure beside a
+freshly-updated one is read as cross-checked, which is how my own 37 survived hours next to a correct
+18.
+
+### Untracked does not mean there is no committed revision to ask (F-FROZEN-FIXTURE-DRIFTS, 2026-09-06)
+
+**The correction worth carrying**, because the brief asserted the opposite and it is a reusable move: the
+`.lst` files being untracked does **not** mean there is no committed revision to ask. The *source* the
+dimensions come from is tracked (`ObjSub_Spring__Up_Red` is a `pub equ` in
+`games/sonic4/objects/test_solid.emp`), so a currency check reads aeon's **object store at a ref** and the
+live-tree hazard is avoidable for the primary measurement rather than inherent. Detail and the falsifiers:
+`docs/2026-09-06-fixture-dimension-drift.md`.
