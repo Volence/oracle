@@ -193,12 +193,10 @@ pub fn drain(sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Drained {
         // set the mode is noise. The message only appears where something was actually retracted.
         if r.spawn.is_armed() {
             r.spawn.disarm();
-            crate::notify(
-                r.ov,
-                ACCENT,
-                "spawn mode disarmed: the symbol listing changed, so its archetypes may now name \
-                 different addresses",
-            );
+            // The sentence is `spawn::DISARMED_BY_LISTING_CHANGE` and not a literal here: the player
+            // makes the same repair on the same trigger (H20), and two windows spelling one sentence is
+            // how they come to say different things about one fact.
+            crate::notify(r.ov, ACCENT, crate::spawn::DISARMED_BY_LISTING_CHANGE);
         }
     }
     // Conflict 1's inbound half: `emulator/pause` / `emulator/resume` are the client's way of stopping and

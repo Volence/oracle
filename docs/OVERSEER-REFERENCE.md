@@ -362,6 +362,36 @@ change and was correctly kept out of the hardening parcel.
 
 ## Ops (each line is a paid-for lesson)
 
+**2026-09-09, and the first is THIS SEAT'S defect in its own dispatch briefs.**
+
+* ⚑ **TELL EVERY AGENT WHERE TO PUT SCRATCH FILES, BY A RUN-UNIQUE PATH.** Two agents in this lane's
+  2026-09-09 wave shared the session scratchpad and one **overwrote the other's `ledger.py` mid-run**.
+  Harmless that time (the victim's rows were already committed) and it need not have been: a scratch
+  collision corrupts silently and looks like your own bug. **The dispatch skill already warns that two
+  agents told to build and never told where to put scratch files are each other's concurrent writer BY
+  CONSTRUCTION — three briefs went out without the clause anyway.** Knowing a rule is not applying it;
+  put the path in the brief.
+* ⚑ **DO NOT COMMIT WHILE A SUITE IS READING THE TREE — and the reason is not the obvious one.**
+  `oracle-aether`'s `the_compiled_in_build_id_still_names_this_tree` correctly caught a mid-run commit
+  (build id vs HEAD). **The hazard is what that does to the RUN: without `--no-fail-fast` the failure
+  aborted at 36 of 85 targets, and an aborted run's tail is indistinguishable from a completed one.**
+  Same family as the capped-run false green below, reached by a different door. Always
+  `--no-fail-fast`, always check the target count, never read the tail.
+* **A capped foreground run is a silent false green.** `cargo test --workspace` here exceeds ten minutes;
+  a run killed at a harness cap aggregates a clean log and exits like a pass. Detach it, write your own
+  end marker, poll your own log for that marker, and prove completeness with the TARGET COUNT (85 on
+  2026-09-09) rather than the exit code.
+* **A WRONG INSTRUMENT DOES NOT FAIL, IT ANSWERS.** Four instances in one day across three lanes and the
+  hub: a grep on a wrong path returning `0` (reads exactly like "no such mechanism"); `/proc/<pid>/fd`
+  returning 0 for both candidates because a listening unix socket's fd is `socket:[inode]` and never a
+  path, where `ss -xlp` answered in one line; a peer reporting a number "unavailable" before looking for
+  the instrument; and a 100,000 BYTE bound measured with a CHARACTER count, committing 107 B over while
+  its own instrument printed "under". **A zero, an absence or a clean pass from an instrument you have
+  not positively controlled is not evidence yet.**
+* **`(deleted)` on `/proc/<pid>/exe` says the file was REPLACED since exec, not that the process is old.**
+  The image is still readable and `strings` it settles what the process actually contains. This seat read
+  the marker as a verdict and told the owner his window lacked fixes it was running.
+
 **▶ `lane-status.json`: THE BOOT CURL VALIDATES THE FILE YOU WROTE AT BOOT AND NOTHING AFTER IT** (2026-08-30,
 this seat, measured). I wrote `"state": "done"` on a landed row after a merge. **`done` is not in the
 vocabulary** (`doing | next | open | blocked`; a landed row LEAVES the queue and its landing goes to

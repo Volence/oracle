@@ -62,6 +62,23 @@
 /// hard-coded `ObjDef_Ring` would be this crate asserting a fact about somebody else's game.
 pub const ARCHETYPE_PREFIX: &str = "ObjDef_";
 
+/// **What a window says when a listing change disarms spawn mode** — one sentence, and now two windows
+/// say it (H20).
+///
+/// The repair it announces is a correctness one and not a courtesy. A [`Mode`]'s archetype list is a set
+/// of *names* read out of whichever listing was loaded when it armed, and `emulator/object_spawn
+/// {defSymbol}` re-resolves each one at call time. A replaced listing therefore does **not** make a click
+/// fail — it makes the click succeed **at a different address**. Of the symbols `s4.lst` and
+/// `s4.debug.lst` share, 92.6 % name a different address (`Engine::load_symbols`'s own measurement), so
+/// that is the common case rather than a corner.
+///
+/// It lives here rather than at either call site because the alternative is what H20 actually found: the
+/// player had copied the frontend's *signal* for this repair and not the repair, and a second window
+/// spelling the sentence for itself would be the same mistake one layer down. Both windows now disarm
+/// through their own `disarm` and quote this.
+pub const DISARMED_BY_LISTING_CHANGE: &str =
+    "spawn mode disarmed: the symbol listing changed, so its archetypes may now name different addresses";
+
 /// The two derived RAM words that carry **the act's true pixel extent**, and the only two this crate will
 /// accept as the answer to "is this click inside the level".
 ///

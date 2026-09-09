@@ -985,7 +985,55 @@ pub struct Drained {
     /// `PLAYER-SYMBOLS-STALE` split them, because they stopped having one trigger. The path moves only
     /// when the cartridge does ([`PumpReport::rom_changed`]); the listing also moves on its own
     /// ([`PumpReport::symbols_changed`]), which is what `emulator/load_symbols` does.
+    ///
+    /// ⚑ **This is a repair RECEIPT and not a listing-change signal, and H20 is why that distinction is
+    /// written down here.**
+    ///
+    /// It is `true` on `symbols_changed || rom_changed` — see [`drain`] — because the cache is re-derived
+    /// on both. So it is `true` after an `emulator/reset`, which **keeps** the listing (the image is
+    /// unchanged, so the binding that survived boot survives it). Anything reacting to *the listing
+    /// having been replaced* must therefore read [`listing_replaced`](Drained::listing_replaced) and not
+    /// this: keyed here, the Screen tab's spawn retraction fired on every reset — and on the first
+    /// iteration of a loop that had only just been handed its listing.
+    ///
+    /// That is not hypothetical. It is what the first attempt at H20's fix did, and what
+    /// `a_quiet_iteration_leaves_the_object_mode_armed` caught.
+    ///
+    /// Its readers are this module's own tests, which use it to prove the repair happened rather than
+    /// inferring it from the cache. Left standing deliberately: a receipt whose only readers are tests is
+    /// still a receipt, and the alternative — asserting on the cache — is what the four-flags-not-one
+    /// note above this struct argues against.
     pub symbols: bool,
+
+    /// **A CLIENT replaced the symbol listing** — `emulator/load_symbols` over the socket, or a client's
+    /// `reload_rom`/`restore` that moved it. The *trigger*, where [`symbols`](Drained::symbols) beside it
+    /// is the *receipt*.
+    ///
+    /// ⚑ Its consumer is the loop's `screen_pick::Panel::listing_replaced` call (H20). A spawn
+    /// [`Mode`]'s archetype list is a set of *names* out of whichever listing was loaded when it armed,
+    /// and `emulator/object_spawn {defSymbol}` re-resolves each at call time — so a replaced listing does
+    /// not make the click fail, it makes it **succeed at a different address**.
+    ///
+    /// # ⚑ Why this is `report`'s half ONLY, and not the `|| own` union every other repair here uses
+    ///
+    /// Because **this window's own preview raises `own.symbols_changed`**, so the union is unusable as a
+    /// listing-change signal here. `screen_pick`'s archetype preview takes a checkpoint and restores it
+    /// on every arm and every archetype change, and `Engine::checkpoint_restore` bumps
+    /// `symbols_generation` *unconditionally* — deliberately, so a host never has to guess whether a slot
+    /// predates a `load_symbols`. Keyed on the union, arming spawn mode raised the signal that retracted
+    /// it, on the next drain, every time.
+    ///
+    /// So the retraction covers the case H20 is about — a listing swapped **under** this window by
+    /// somebody else — and does not cover a listing this window replaced itself.
+    ///
+    /// ⚑ **That residual gap is real and is NOT closed here.** It is H21's subject, and H21's remedy is
+    /// the right one and is not an edge at all: derive armed-ness from the *identity* of the listing it
+    /// was armed against, so that a restore putting back an identical listing compares equal and no swap
+    /// path can forget. That is a change to `spawn::Mode`, a type this crate shares with
+    /// `oracle-frontend`, and it is not this parcel's to re-cut. TAGGED.
+    ///
+    /// [`Mode`]: oracle_frontend::spawn::Mode
+    pub listing_replaced_by_a_client: bool,
     /// The window's cached ROM path was re-read from the engine because the cartridge was replaced. Its
     /// own flag rather than a second reading of [`symbols`](Drained::symbols), for [`Drained`]'s stated
     /// reason: a single flag would let a test that meant to prove one repair pass on the other.
@@ -1135,6 +1183,8 @@ pub fn drain(
     let screen_changed = report.screen_changed || own.screen_changed;
     let rom_changed = report.rom_changed || own.rom_changed;
     let symbols_changed = report.symbols_changed || own.symbols_changed;
+    // ⚑ **`report`'s half only, and the asymmetry is the whole finding** (H20) — see the field's doc.
+    out.listing_replaced_by_a_client = report.symbols_changed;
 
     if timeline_moved || rom_changed {
         machine.resync_after_replacement();

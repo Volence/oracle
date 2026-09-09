@@ -443,31 +443,51 @@ impl Panel {
     /// at any point and a stale archetype name spawns the wrong thing rather than failing to spawn. Every
     /// failure is the server's own words — `-32012` *you forgot to load symbols* and `-32013` *this build
     /// has no such name* are a distinction a person hits here, and §8.2 keeps them apart on purpose.
+    /// ⚑ **The fallible half runs FIRST, and nothing is retracted until it has succeeded** (H32).
+    ///
+    /// This used to open with `self.rings = false`, above the listing read that can refuse. So: arm ring
+    /// placement, then press this with no listing loaded, and the `-32012` refusal **destroyed ring mode
+    /// on its way out** — the window came back with nothing armed, a refusal naming symbols, and no
+    /// mention of the mode it had just taken away. A gesture that refuses must leave the window exactly
+    /// as it found it, and "exactly" includes the mode it is not about.
+    ///
+    /// The exclusion itself is unchanged and is still the point: see [`Panel::rings`]. What changed is
+    /// that it is now part of the **commit** rather than part of the attempt, so there is no window in
+    /// which one mode is off and the other is not yet on.
     pub fn arm_spawn(&mut self, machine: &mut Machine, bus: &mut Bus) {
+        let sys = machine.system_mut();
+        // Read the listing before touching a single field. Both refusals below leave `self.rings`,
+        // `self.mode`, `self.total` and `self.filter` alone; only `self.last` moves, because the one
+        // thing a refused gesture owes is its reason.
+        let listed = spawn::archetypes(&mut PlayerCaller { bus, sys });
+        let (note, total, names) = match listed {
+            // `truncation_note` borrows `a`, so it is taken before `a.names` is moved out.
+            Ok(a) => (a.truncation_note(), a.total, a.names),
+            Err(e) => {
+                self.last = Some(Readout::refused(e.terminal("(none)", None)));
+                return;
+            }
+        };
+        let name = match self.mode.arm(names) {
+            Ok(name) => name.to_string(),
+            Err(e) => {
+                self.last = Some(Readout::refused(e.terminal("(none)", None)));
+                return;
+            }
+        };
+        // --- Past here the arm has succeeded, so this is the commit and it may retract. ---
+        //
         // The other half of the exclusion. See [`Panel::rings`]: two modes that could both claim one
         // click would need a precedence rule, and a precedence rule is a thing a person has to remember.
         self.rings = false;
-        let sys = machine.system_mut();
-        let listed = spawn::archetypes(&mut PlayerCaller { bus, sys });
-        match listed {
-            Ok(a) => {
-                let note = a.truncation_note();
-                // Kept for the picker, which draws `n of m` and the cut-short note standing rather than
-                // once in an arm message that scrolls away.
-                self.total = a.total;
-                match self.mode.arm(a.names) {
-                    Ok(name) => {
-                        let mut s = format!("spawn mode armed: a click places {name}");
-                        if let Some(n) = note {
-                            s.push_str(&format!(" ({n})"));
-                        }
-                        self.last = Some(Readout::ok(s));
-                    }
-                    Err(e) => self.last = Some(Readout::refused(e.terminal("(none)", None))),
-                }
-            }
-            Err(e) => self.last = Some(Readout::refused(e.terminal("(none)", None))),
+        // Kept for the picker, which draws `n of m` and the cut-short note standing rather than once in
+        // an arm message that scrolls away.
+        self.total = total;
+        let mut s = format!("spawn mode armed: a click places {name}");
+        if let Some(n) = note {
+            s.push_str(&format!(" ({n})"));
         }
+        self.last = Some(Readout::ok(s));
         // A fresh arm re-read the listing, so a filter left over from the last one would hide rows of a
         // list the reader has not seen yet.
         self.filter.clear();
@@ -476,6 +496,33 @@ impl Panel {
         // places. The subtypes come first because the picture is keyed on the armed one.
         self.refresh_subtypes(machine, bus);
         self.take_preview(machine, bus);
+    }
+
+    /// ⚑ **The symbol listing was replaced, so the object mode is retracted** (H20). `true` if there was
+    /// something to retract.
+    ///
+    /// The repair `bus::drain`'s `symbols` flag exists for, and until now did not have: the player
+    /// published that flag and **nothing read it**, so a `emulator/load_symbols` over the bus left this
+    /// window holding archetype names read out of the listing the engine no longer has. The click does
+    /// not fail — `emulator/object_spawn {defSymbol}` re-resolves the name at call time — it **succeeds
+    /// at a different address**. See [`spawn::DISARMED_BY_LISTING_CHANGE`] for the measurement.
+    ///
+    /// **The ring mode is deliberately left armed**, and that is not an oversight. Ring placement reads
+    /// every bound it needs from the listing *at the moment of the click* ([`Panel::arm_rings`] takes
+    /// nothing at arm time), so it has no stale names to carry across a listing change. Disarming it here
+    /// would be this window retracting a mode that a listing change cannot have invalidated.
+    ///
+    /// Silent when nothing was armed: a window that announced a mode change to somebody who had not set
+    /// the mode is noise.
+    pub fn listing_replaced(&mut self) -> bool {
+        if !self.object_armed() {
+            return false;
+        }
+        self.disarm_spawn();
+        // …and then say WHY, over `disarm_spawn`'s own "a click arms a watch again". A person who did not
+        // press anything is owed the cause, not just the new state.
+        self.last = Some(Readout::ok(spawn::DISARMED_BY_LISTING_CHANGE.to_string()));
+        true
     }
 
     /// Turn spawn mode off. A click picks again.
@@ -3177,6 +3224,131 @@ EQU ObjSub_Spring__Wide_Huge = $00000140
             .map(Readout::text)
             .unwrap_or_default()
             .contains("arms a watch"));
+    }
+
+    /// ⚑ **A listing change retracts the object mode, says why, and leaves ring mode alone** (H20).
+    ///
+    /// The *what* half of the repair `Drained::symbols` exists for. The *whether the loop performs it*
+    /// half cannot be seen from here and is
+    /// `the_shipped_loop_retracts_spawn_mode_when_a_client_replaces_the_listing` in `main.rs` — the
+    /// defect was a wiring absence, and a panel-level row like this one would have stayed green through
+    /// the whole of it.
+    ///
+    /// The ring arm is not an afterthought row: leaving it armed is a **decision**, and an undocumented
+    /// decision is one somebody later "fixes". Ring placement reads every bound it needs at the moment of
+    /// the click, so a listing change cannot have staled it, and retracting it would be this window
+    /// taking away a mode that is still correct.
+    #[test]
+    fn a_listing_change_retracts_the_object_mode_and_leaves_ring_mode_alone() {
+        let (_machine, _bus, mut panel) = armed_rig();
+        assert!(panel.object_armed(), "the fixture arms the object mode");
+
+        assert!(panel.listing_replaced(), "there was something to retract");
+        assert!(!panel.object_armed(), "…and it is retracted");
+        assert_eq!(
+            panel.readout().map(Readout::text).as_deref(),
+            Some(spawn::DISARMED_BY_LISTING_CHANGE),
+            "a person who pressed nothing is owed the cause, not just `spawn mode off`"
+        );
+
+        // Idempotent, and silent when there is nothing to retract: a window that announced a mode
+        // change to somebody who had not set the mode is noise.
+        assert!(!panel.listing_replaced());
+
+        // ⚑ And the ring mode, which a listing change cannot stale, survives one.
+        let mut panel = Panel::default();
+        panel.arm_rings();
+        assert!(
+            !panel.listing_replaced(),
+            "a ring arm is not an object arm, so there is nothing here to retract"
+        );
+        assert!(
+            panel.ring_listing().armed && panel.is_armed(),
+            "ring placement reads its bounds at the moment of the click, so a replaced listing cannot \
+             have made it stale and this window must not take it away"
+        );
+    }
+
+    /// A listing that **parses**, names symbols, and names no `ObjDef_` archetype.
+    ///
+    /// The second of the two refusals [`Panel::arm_spawn`] can take, and it is a different one: the bus
+    /// answers, the search succeeds, and it comes back empty. A fixture with no listing at all cannot
+    /// reach it.
+    const NO_ARCHETYPE_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ Main : 1000 C |
+ EndOfRom : 2000 C |
+
+    2 symbols
+    0 unused symbols
+";
+
+    /// ⚑ **A spawn arm that REFUSES must leave ring mode exactly as it found it** (H32).
+    ///
+    /// The before-case, and it is a defect a person hits by accident: arm ring placement, then press
+    /// "arm spawn" on a build with no listing loaded. [`Panel::arm_spawn`] opened with `self.rings =
+    /// false` **above** the fallible listing read, so the `-32012` refusal took ring mode down on its way
+    /// out — the window came back with nothing armed, a refusal about symbols, and no mention at all of
+    /// the mode it had just destroyed. The two-`bool` shape is what made it expressible; the *ordering*
+    /// is what made it happen.
+    ///
+    /// ⚑ **Both refusal arms are driven, with a different fixture each**, because a guard exercised on
+    /// one path is a guard checked on one path — and the two arms are genuinely different failures (the
+    /// bus refusing to search at all, versus a search that succeeded and found nothing). Mutating the
+    /// `self.rings = false` line back above the read turns **both** of these red.
+    #[test]
+    fn a_refused_spawn_arm_does_not_take_ring_mode_down_with_it() {
+        for (case, lst) in [
+            ("no listing loaded", None),
+            ("a listing naming no archetype", Some(NO_ARCHETYPE_LST)),
+        ] {
+            let mut machine = Machine::new(oracle_core::testrom::build(), None);
+            let info = oracle_aether::host::MachineInfo {
+                rom_path: Some("testrom".into()),
+                symbols: lst.map(|s| {
+                    oracle_core::symbols::SymbolTable::parse(s).expect("the fixture listing parses")
+                }),
+                symbols_path: lst.map(|_| "testrom.lst".into()),
+            };
+            let mut bus = Bus::new(machine.system_mut(), info, false, None);
+            let mut panel = Panel::default();
+
+            panel.arm_rings();
+            assert!(panel.ring_listing().armed, "{case}: the fixture arms rings");
+
+            panel.arm_spawn(&mut machine, &mut bus);
+
+            // The control: this fixture really does refuse, so the rows below are about a refusal and
+            // not about a spawn arm that quietly succeeded.
+            assert!(
+                !panel.object_armed(),
+                "{case}: this fixture must NOT arm the object mode, or this test measures nothing"
+            );
+            let said = panel
+                .readout()
+                .map(Readout::text)
+                .unwrap_or_else(|| panic!("{case}: a refused gesture owes a reason"));
+
+            // …and the finding itself.
+            assert!(
+                panel.ring_listing().armed,
+                "{case}: the spawn arm refused, so it must leave ring placement exactly as it found \
+                 it. It said {said:?} and silently disarmed the mode it was not about"
+            );
+            assert!(
+                panel.is_armed(),
+                "{case}: a click still places a ring, so the window must still say something is armed"
+            );
+            let badge = panel
+                .badge()
+                .unwrap_or_else(|| panic!("{case}: an armed mode must say so"));
+            assert!(
+                badge.contains("ring"),
+                "{case}: the badge follows the mode that is actually on: {badge:?}"
+            );
+        }
     }
 
     /// ⚑ **A ring click on a build whose listing has no ring layout refuses, and the machine is put

@@ -766,7 +766,7 @@ impl<'a, S: BusEventSink> Bus for SystemBus<'a, S> {
 
 use crate::m68000::bus68k::{Bus68k, ADDR_MASK};
 use crate::system::MCLK_PER_CPU_CYCLE;
-use crate::vdp::{DmaMode, DmaRecord, DmaRequest, Target};
+use crate::vdp::{DmaMode, DmaRecord, DmaRequest, VdpTarget};
 
 /// 8 KiB of Z80 RAM, visible to the 68000 at `$A00000` (mirrored across the 64 KiB `$A00000–$A0FFFF` window).
 pub const Z80_RAM_SIZE: usize = 0x2000;
@@ -1325,7 +1325,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             self.vdp.dma_write_word(((hi as u16) << 8) | lo as u16, now);
             src = src.wrapping_add(2);
         }
-        let slots_per_word = if target == Target::Vram { 2 } else { 1 };
+        let slots_per_word = if target == VdpTarget::Vram { 2 } else { 1 };
         let cost = self.vdp.dma_cost(count as u64 * slots_per_word, now);
         let record = DmaRecord {
             mode: DmaMode::Mem,
@@ -3177,7 +3177,7 @@ mod tests {
         assert_eq!(dma.mode, DmaMode::Mem);
         assert_eq!(dma.dest, 0xC000, "destination address");
         assert_eq!(dma.len, 4, "length");
-        assert_eq!(dma.target, Target::Vram);
+        assert_eq!(dma.target, VdpTarget::Vram);
         assert_eq!(dma.source, 0x000400, "68k source byte address");
     }
 
