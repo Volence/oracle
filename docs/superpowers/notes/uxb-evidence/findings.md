@@ -508,3 +508,33 @@ topology (establishing it would mean reading source, which this seat may not do)
 capture for the owner, not a finding. `shots/79`, `shots/85`.
 Vocabulary also diverges for the same quantity: player says `frames emulated` / `frames presented` /
 `N frames`; frontend says `DRAWS N`.
+
+---
+
+# What I could NOT drive, and which instrument would
+
+* **Any chorded key.** `drive.py key` sends one keysym; it has no modifier support. So `Ctrl+O`
+  — the alternate route the open-ROM dialog explicitly advertises — is **UNDRIVABLE**. Named
+  control: `oracle-player` open ROM, "Ctrl+O loads a pasted path". Instrument: an XTEST modifier
+  press/release pair in `drive.py`.
+* **Drag of any kind.** `drive.py click` is press+release at one point. So: dock splitters (the only
+  way to widen the right column and read the clipped messages of F-UXB-5), drag-to-dock, tab
+  reordering, text selection, and the file dialog's resize grip are all **UNDRIVABLE**. Instrument:
+  a `drag` subcommand (button-press, motion, button-release).
+* **Drop a file on the window** — the open-ROM dialog's third advertised route. Needs XDND.
+* **Gamepad.** `gamepad: no controllers detected, keyboard only`. Presenting one needs
+  `/dev/uinput`, which is forbidden here. BLOCKED by rule, not by capability.
+* **Audio output.** No device at all in this rig (see F-UXB-25 for what I could still establish
+  without one).
+* **Pacing/vsync/smoothness.** Out of scope by charter; llvmpipe, no vsync.
+* **The `Pacing` tab's A/B bakeoff prompt** (*"Say which reads better and the other one goes away"*)
+  is addressed to the owner and awaits his answer; it is a booked row
+  (`STYLE-NUMBER-BAKEOFF`), not mine to settle.
+
+# Housekeeping proof
+* `s4.debug.state0` written by my `save` landed at `.uxrig/rom/s4.debug.state0` (1020400 bytes,
+  08:11Z), **inside my own tree**. Aeon's `s4.debug.state0` md5 `9fb368a1afcbc624494115fe658634e1`
+  and mtime `2026-08-28 14:37:40` are byte-identical before and after (checked 08:11Z and 08:20Z).
+  Nothing was written to the aeon tree.
+* Processes: only pids 1025404 (frontend), 1043405 (player), 4179530 (Xvfb) — all recorded at spawn.
+  The owner's pid 1570308 was never touched. No `pkill`/`killall` was ever run.
