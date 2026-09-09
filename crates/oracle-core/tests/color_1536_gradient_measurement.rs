@@ -83,7 +83,9 @@ fn measure_color_1536_gradient() {
         per_line.push(distinct(&px[y * width..(y + 1) * width]));
     }
     println!("PERLINE_ALL={per_line:?}");
-    for y in [0usize, 32, 47, 48, 64, 96, 112, 128, 160, 192, 210, 221, 223] {
+    for y in [
+        0usize, 32, 47, 48, 64, 96, 112, 128, 160, 192, 210, 221, 223,
+    ] {
         println!("PERLINE y={y:3} distinct={}", per_line[y]);
     }
     let nonflat = per_line.iter().filter(|&&c| c > 1).count();
@@ -94,7 +96,8 @@ fn measure_color_1536_gradient() {
     );
 
     // Write the picture so a human can glance at it, and so two revisions can be diffed pixelwise.
-    let out_dir = std::env::var("C1536_OUT").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let out_dir =
+        std::env::var("C1536_OUT").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
     let tag = std::env::var("C1536_TAG").unwrap_or_else(|_| "unknown".to_string());
     let ppm = format!("{out_dir}/color_1536_{tag}.ppm");
     let mut f = std::fs::File::create(&ppm).expect("cannot create PPM");
