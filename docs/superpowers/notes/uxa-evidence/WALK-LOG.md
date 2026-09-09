@@ -170,3 +170,57 @@ in one window and has no effect whatsoever on the game the person is watching in
 * **The `--dock every-tab` arrangement and the owner's own stored layout** — my instance writes to
   a private `app.ron` and starts from the default arrangement.
 * **The emulator MCP** — never called.
+
+---
+
+## Time burned, ranked
+
+| burned | on what | window |
+|---|---|---|
+| **8m34s** | `s4.debug.bin` absent (07:39:39→07:48:13, three of another lane's `build.sh` live). **Rig condition, not a product finding.** Net idle ≈ 0 only because I armed a background poller and spent the outage on the build, the isolation proof and the help-text probes. | — |
+| **3m34s** | reaching ONE palette entry (LENSES ▸ TOGGLE CPU REGISTERS), 07:59:48→08:03:22, almost all of it re-issuing arrow keys the window dropped | `oracle-frontend` |
+| **2m34s** | recovering a valid symbol name after the breakpoint refusal, 07:51:13→07:53:47 — required opening `commands` and hand-writing `emulator/lookup_symbol {"name":"V"}` | `oracle-player` |
+| ~30s | discovering the refusal text was scrollable rather than complete | `oracle-player` |
+| ~26s | one wasted arm attempt: the panel had scrolled, so `at` and `arm` were 46px from where they had been, and the click landed on the error text with no feedback | `oracle-player` |
+
+## What the brief and the charter got wrong
+
+1. **"Snapshot the ROM first" is not actionable advice, because the ROM can be gone before your
+   first command.** It was: absent at 07:39:39, 15 seconds into the session. The handover frames
+   the outage as something early snapshotting avoids. It is not. What worked was arming a poller
+   in the background and spending the outage on the ROM-independent work. The handover's own
+   snippet — `until [ -s ... ]; do sleep 10; done; snapshot` — is **blocking**, so a seat following
+   it literally sits idle for 8+ minutes.
+2. **That same snippet would have snapshotted a truncated ROM.** `-s` fires on the first non-empty
+   byte of a file being written in place. I added a size-stability gate on my own initiative and
+   the integrity check reached me only as an out-of-band coordinator message mid-run — from
+   neither authority document. **The header-end equality check belongs in the handover**, next to
+   the snapshot command, not in a message a seat may not get.
+3. **The charter's "may read `README.md` and nothing else" does not say where help text sits.**
+   `--help` output is a product surface, not source. I treated it as in bounds and it produced
+   three findings in 20 seconds. A literal-minded seat either skips the cheapest surface in the
+   whole product or logs reading it as a violation. **Name it explicitly.**
+4. **"Failure to get a ROM in is FINDING NUMBER ONE" conflated two different things on this run.**
+   The ROM did go in; what failed was the README's ability to tell anyone where a ROM comes from.
+   The brief's framing invites a seat to write the aeon outage — a rig condition — up as the
+   product finding. I kept them apart deliberately and recommend the brief do so in wording.
+5. **The charter's window table reads as a panel inventory and is not one.** It lists "Registers,
+   Memory, Objects, Screen, Pacing, nav"; `oracle-player` also has Planes, Spawn, Effects,
+   Breakpoints, Watchpoints, Profiler and a `commands` JSON-RPC console. The console is where I
+   recovered from the breakpoint refusal — a seat that took the table as complete would not have
+   opened it. This is the charter's own "a list that reads as complete" shape.
+6. **"A clean job ships its step count" undercounts what matters.** For job 3 the step count is
+   uninformative without saying which steps were spent recovering from the tool. I have reported
+   time-to-recovery alongside. Suggest: *steps, and of those, steps spent recovering from the tool.*
+
+## The protocol delta owed to the hub (rides in the paragraph above, per the charter)
+
+The fifth rule governs **resolvers falling through to a shared last resort**. FINDING 11 is the
+same family with **nothing falling through at all**: both windows bound their own private socket,
+both resolved exactly as instructed, both were correct — and a person still cannot tell which of
+two live machines they are looking at, because **neither window displays its identity**. The
+delta: *a resolver that never falls through can still leave the user attached to the wrong one of
+two correct answers.* The charter audits the chain; this asks the artifact to **say which answer
+it got**. Aurora's arrow was reaching, ours was becoming, sigil's was a third; this is a fourth
+axis and it is not about direction at all — it is about **whether the result is displayed**. It
+surfaced here as a UX defect and not as a safety one purely because both machines were mine.
