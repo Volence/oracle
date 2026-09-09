@@ -7388,8 +7388,12 @@ impl Engine {
     ///
     /// ## What the verdict does NOT claim
     ///
-    /// Equality here is over the parsed symbol ROWS, and it answers exactly one question: *would
-    /// resolving a name against the file give a different answer than resolving it against what I hold?*
+    /// Equality here is over every population a name resolves through — labels, equates and phase rows,
+    /// via [`SymbolTable::resolves_identically`] — and it answers exactly one question: *would resolving
+    /// a name against the file give a different answer than resolving it against what I hold?*
+    /// **The row counts below are reporting, not the comparison**: `held_rows` / `disk_rows` count
+    /// `symbols()` alone, so a rebuild that moved only an equate value fires with the two numbers equal,
+    /// exactly as a rebuild that moved only an address already did.
     /// It says nothing about whether the listing describes the loaded ROM — [`Engine::load_symbols`]'s
     /// own caveat is the standard held to here, and `validate_against_rom` is a filter, not a proof. A
     /// quiet verdict means "the file has not moved past the table", never "the table is right".
@@ -7419,7 +7423,16 @@ impl Engine {
                 })
             }
         };
-        if on_disk.symbols() == held.symbols() {
+        // **All three populations, through the table's own comparison** (H23). This used to read
+        // `on_disk.symbols() == held.symbols()`, which answers for `syms` alone — while the question
+        // stated four paragraphs up is *"would resolving a **name** against the file give a different
+        // answer"*, and `emulator/lookup_equate` asks exactly that of a second population, attaching
+        // this same verdict to its own reply. A rebuild moving only `VRAM_Ring = $240` to `$241` left
+        // `syms` byte-identical, so the server answered the OLD value with no caveat at all and
+        // `emulator/status` stayed quiet. [`SymbolTable::resolves_identically`] is where the population
+        // count lives, so a fourth one is a change in the struct that gained it rather than a change
+        // nobody propagates to a comparison written in another crate.
+        if on_disk.resolves_identically(held) {
             return Some(ListingFreshness::Current {
                 path: path.to_string(),
                 rows: held_rows,
