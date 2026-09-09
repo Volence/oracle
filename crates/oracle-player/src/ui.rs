@@ -1586,7 +1586,14 @@ impl Panels<'_> {
             let entry = ui.add(
                 egui::TextEdit::singleline(&mut self.mem.addr_text)
                     .desired_width(220.0)
-                    .hint_text("0xFFFF0000 or a symbol name"),
+                    // The hint is the panel's own default, not a second string beside it: this hint
+                    // used to advertise `0xFFFF0000`, which was the value the box was pre-filled with
+                    // AND the value the read path refused. One derivation now, so a hint cannot go on
+                    // recommending an address the panel no longer opens on.
+                    .hint_text(format!(
+                        "{} or a symbol name",
+                        memory::default_base_text()
+                    )),
             );
             let go = ui.button("go").clicked()
                 || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
@@ -1595,11 +1602,32 @@ impl Panels<'_> {
                 let text = self.mem.addr_text.clone();
                 let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
                 self.mem.addr_note = Some(match memory::resolve_address(bus, sys, space, &text) {
-                    memory::Resolved::Hex(a) => {
-                        self.mem.base = a;
+                    memory::Resolved::Hex {
+                        addr,
+                        listing: None,
+                    } => {
+                        self.mem.base = addr;
                         memory::Line::plain(format!(
                             "{}: a hex literal, taken as typed",
-                            oracle_aether::hex::addr(a)
+                            oracle_aether::hex::addr(addr)
+                        ))
+                    }
+                    // ⚑ **Masked, and SAID.** The typed value carried bits above the 24 the 68000
+                    // drives, so it was a listing spelling of a real bus address. The panel goes there
+                    // and names both numbers rather than refusing the one a person read off the
+                    // listing — and rather than moving silently, which is the thing the schema's
+                    // `rawAddr` note is actually protecting against. This is the sentence
+                    // `lookup_symbol` never wrote for the identical masking it has always done.
+                    memory::Resolved::Hex {
+                        addr,
+                        listing: Some(raw),
+                    } => {
+                        self.mem.base = addr;
+                        memory::Line::plain(format!(
+                            "{}: the 68000 drives 24 address lines, so the listing spelling {} names \
+                             this same location and this is where the page below is read from",
+                            oracle_aether::hex::addr(addr),
+                            oracle_aether::hex::addr(raw)
                         ))
                     }
                     memory::Resolved::Symbol { addr, reply } => {
