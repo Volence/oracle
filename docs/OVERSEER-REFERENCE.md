@@ -364,6 +364,23 @@ change and was correctly kept out of the hardening parcel.
 
 **2026-09-09, and the first is THIS SEAT'S defect in its own dispatch briefs.**
 
+* ⚑ **A COMPLETED AGENT'S WORKTREE IS NOT IDLE.** Measured 2026-09-09 while considering a routine tidy of
+  six merged parcels: the worktree of an agent that had reported done, been merged and been reported to the
+  owner still had **live `zsh` processes with their cwd inside it**, the oldest started hours earlier, plus
+  transient `sleep`s from its own polling loops. No build was running. **aurora's tree showed the identical
+  shape**, so this is the harness, not one agent. **"The agent finished" is a statement about the agent, not
+  about its directory** — and the CWD half of the shared-machine check is what catches it, because a cmdline
+  sweep sees `sleep 30` and learns nothing.
+  **Two consequences.** (1) Do not prune a merged parcel's worktree on the strength of the merge; run the
+  check first. (2) **The count is unstable by construction** — the `sleep`s expire and are replaced, so two
+  readings minutes apart give different PIDs and different totals. Enumerate and identify; a number here is
+  not a fact, which is the amended rule's own point arriving on a new surface.
+* ⚑ **`git merge-base --is-ancestor <branch> main` is TWO-VALUED and a fresh parcel branch reads as MERGED.**
+  A branch just created at `main` with no commits yet is an ancestor of `main`, so a tidy driven by that
+  predicate would delete the branch an agent is *currently working on*. Seen live: `parcel/bus-visible`
+  listed as merged while its agent was running. Disambiguate with `git log <base>..<branch>` (unique
+  commits) before believing it, per the protocol's own "empty range is two-valued" precedent.
+
 * ⚑ **TELL EVERY AGENT WHERE TO PUT SCRATCH FILES, BY A RUN-UNIQUE PATH.** Two agents in this lane's
   2026-09-09 wave shared the session scratchpad and one **overwrote the other's `ledger.py` mid-run**.
   Harmless that time (the victim's rows were already committed) and it need not have been: a scratch
