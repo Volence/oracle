@@ -18,14 +18,21 @@
 //!
 //! ## What it asserts
 //!
-//! 1. The capture handed back exactly one complete frame of active lines (a torn capture must fail loudly,
+//! A shape check up front, then three content properties evaluated together and reported in one assert:
+//!
+//! 0. The capture handed back exactly one complete frame of active lines (a torn capture must fail loudly,
 //!    not be counted).
-//! 2. **Floor:** the live picture holds at least [`GRADIENT_COLOUR_FLOOR`] distinct colours — see that
+//! 1. `FLOOR` — the live picture holds at least [`GRADIENT_COLOUR_FLOOR`] distinct colours; see that
 //!    constant for the derivation from measured numbers.
-//! 3. The live picture and the post-hoc re-render are **not the same picture**. If they ever become equal,
-//!    someone has pointed the capture at the post-hoc path and the whole per-scanline apparatus is a no-op.
-//! 4. The live picture is **drastically richer** than the post-hoc one — at least
+//! 2. `SAME-PICTURE` — the live picture and the post-hoc re-render are **not** the same picture. If they
+//!    ever become equal, someone has pointed the capture at the post-hoc path and the per-scanline
+//!    apparatus is a no-op.
+//! 3. `RATIO` — the live picture is **drastically richer** than the post-hoc one, at least
 //!    [`LIVE_OVER_POSTHOC_RATIO`]x as many distinct colours.
+//!
+//! 1-3 are collected rather than asserted in a line, because they are not independent in failure: the
+//! mutation that points the capture at the post-hoc path breaks all three at once, and with sequential
+//! `assert!`s the first one fires and hides the other two. A failure here names every property that broke.
 //!
 //! ## Measured, both sides of the C2 fix
 //!
@@ -42,14 +49,19 @@
 //!
 //! ## Red-first
 //!
-//! Both content assertions were proven able to fail, with different mutations:
+//! Proven able to fail, with two mutations that vary a different parameter — *when* the picture is captured
+//! versus *which path* it comes from. See the parcel report for the transcripts.
 //!
-//! - **Floor** — capture frame 0 instead of frame 119 (`FRAMES` 120 -> 1). A genuine collapse: the ROM has
-//!   not begun the CRAM rewrites, so the picture really does hold almost no colours. Observed 2 distinct
-//!   colours; the floor fires.
-//! - **Live-vs-post-hoc** — feed the post-hoc re-render in where the live capture's pixels go, the exact
-//!   blindness this corpus's per-scanline capture was built to close. Observed the two pictures equal;
-//!   assertions 3 and 4 both fire.
+//! - **Mutation A, the captured moment** (`FRAMES` 120 -> 1: capture frame 0, before the ROM has begun its
+//!   CRAM rewrites). A genuine collapse, not an edit to a threshold — the picture really does hold almost
+//!   nothing. Observed **1** distinct colour; `FLOOR` fires.
+//! - **Mutation B, the source path** (feed the post-hoc re-render in where the live capture's pixels go).
+//!   This is the exact blindness the per-scanline capture was built to close. Observed the two pictures
+//!   byte-identical at `0x96b9c93c4f3dd325` with **4** colours; `SAME-PICTURE` and `RATIO` fire.
+//!
+//! Neither mutation isolates a single property, and that is a fact about the machine rather than a gap in
+//! the mutations: a picture drawn from the post-hoc path is *necessarily* both flat and equal to post-hoc.
+//! Collecting the violations is what makes each one visibly fire instead of being shadowed.
 //!
 //! ## Not a hash, not a replacement for one
 //!
@@ -181,30 +193,50 @@ fn color_1536_keeps_its_gradient() {
     println!("PPM_PATH={ppm}");
 
     // ---- the guard ----
+    //
+    // Every property is EVALUATED, then one assert reports all violations at once (the
+    // `conformance_roms.rs` idiom). Sequential asserts would let the first failure shadow the rest: a
+    // mutation that points the capture at the post-hoc path collapses the colour count *and* makes the two
+    // pictures equal, and with `assert!` in a line the floor fires and the reader never learns that the
+    // live-vs-post-hoc checks would have caught it too. Here a failure names every property that broke,
+    // which is also what a future maintainer needs in order to tell a shifted gradient from a lost one.
+    let mut violations: Vec<String> = Vec::new();
 
-    // The gradient itself. A hash cannot see this: it moves for a two-pixel boundary shift and for a total
-    // collapse alike, and a re-pin makes either one the new truth.
-    assert!(
-        live_colours >= GRADIENT_COLOUR_FLOOR,
-        "color_1536's live capture holds only {live_colours} distinct colours, below the floor of \
-         {GRADIENT_COLOUR_FLOOR}. This ROM exists to draw a ~1400-colour gradient by rewriting CRAM \
-         mid-scanline; a count this low means the gradient has collapsed toward the flat post-hoc picture \
-         ({posthoc_colours} colours here). If a pinned frame_hash moved at the same time, DO NOT re-pin it \
-         — the picture is wrong, not merely different."
-    );
+    // (a) The gradient itself. A hash cannot see this: it moves the same way for a two-pixel boundary shift
+    // and for a total collapse, and a re-pin makes either one the new truth.
+    if live_colours < GRADIENT_COLOUR_FLOOR {
+        violations.push(format!(
+            "FLOOR: the live capture holds only {live_colours} distinct colours, below the floor of \
+             {GRADIENT_COLOUR_FLOOR}. This ROM exists to draw a ~1400-colour gradient by rewriting CRAM \
+             mid-scanline; a count this low means the gradient has collapsed toward the flat post-hoc \
+             picture ({posthoc_colours} colours here)."
+        ));
+    }
 
-    // The reason this ROM is captured per scanline at all. If the two paths ever agree, the capture is no
-    // longer capturing anything and every per-scanline golden downstream is vacuous.
-    assert_ne!(
-        live_hash, posthoc_hash,
-        "the live per-scanline capture and the post-hoc re-render produced the SAME picture \
-         (0x{live_hash:016x}). color_1536's whole point is that they differ — the post-hoc path sees only \
-         the end-of-frame palette. Equality means the capture is reading the post-hoc path."
-    );
+    // (b) and (c) The reason this ROM is captured per scanline at all. If the two paths ever agree, the
+    // capture is no longer capturing anything and the per-scanline coverage downstream is vacuous.
+    if live_hash == posthoc_hash {
+        violations.push(format!(
+            "SAME-PICTURE: the live per-scanline capture and the post-hoc re-render produced the SAME \
+             picture (0x{live_hash:016x}). color_1536's whole point is that they differ — the post-hoc \
+             path sees only the end-of-frame palette. Equality means the capture is reading the post-hoc \
+             path."
+        ));
+    }
+    if live_colours < posthoc_colours.saturating_mul(LIVE_OVER_POSTHOC_RATIO) {
+        violations.push(format!(
+            "RATIO: the live capture ({live_colours} colours) is not drastically richer than the post-hoc \
+             re-render ({posthoc_colours} colours) — expected at least {LIVE_OVER_POSTHOC_RATIO}x. \
+             Measured on the C2 branches the ratio was ~351x (1407 vs 4)."
+        ));
+    }
+
     assert!(
-        live_colours >= posthoc_colours.saturating_mul(LIVE_OVER_POSTHOC_RATIO),
-        "the live capture ({live_colours} colours) is not drastically richer than the post-hoc re-render \
-         ({posthoc_colours} colours) — expected at least {LIVE_OVER_POSTHOC_RATIO}x. Measured on the C2 \
-         branches the ratio was ~351x (1407 vs 4)."
+        violations.is_empty(),
+        "color_1536 no longer holds the gradient it exists to demonstrate \
+         ({} of 3 properties failed):\n  - {}\n\nIf a pinned frame_hash moved at the same time, DO NOT \
+         re-pin it — the picture is wrong, not merely different. PPM of what was actually drawn: {ppm}",
+        violations.len(),
+        violations.join("\n  - ")
     );
 }
