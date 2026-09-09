@@ -17,7 +17,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::device::{Device, WARMUP_CALLBACKS};
+use crate::device::{Device, MIN_OCCUPANCY_UNMEASURED, WARMUP_CALLBACKS};
 use crate::machine::Machine;
 use crate::pacing::Governor;
 use crate::stats::Series;
@@ -244,33 +244,146 @@ fn print_audio(d: &Device) {
         crate::pacing::RENDER_LOW_WATER_FRAMES
     );
     println!("callbacks            {cb}");
-    println!(
-        "STARVED callbacks    {starved} total ({:.4}%)",
-        if cb > 0 {
-            starved as f64 * 100.0 / cb as f64
-        } else {
-            0.0
-        }
-    );
-    println!(
-        "  of which STEADY    {steady}   <-- the pacing verdict (warm-up = first {WARMUP_CALLBACKS} callbacks, excluded)"
-    );
+    println!("STARVED callbacks    {}", starved_total_line(starved, cb));
+    println!("  of which STEADY    {}", steady_verdict_line(steady, cb));
     println!(
         "starved samples      {lost} ({:.1} ms of inserted silence)",
         lost as f64 * 500.0 / d.rate().max(1) as f64
     );
     println!(
-        "leanest ring         {} samples ({:.1} ms)",
-        if minocc == u64::MAX { 0 } else { minocc },
-        if minocc == u64::MAX {
-            0.0
-        } else {
-            minocc as f64 * 500.0 / d.rate().max(1) as f64
-        }
+        "leanest ring         {}",
+        leanest_ring_line(minocc, d.rate())
     );
     println!(
         "producer DROPS       {} samples (ring full)   <-- the OTHER failure direction",
         d.dropped()
     );
     println!("ring at exit         {} samples", d.prod().occupied_len());
+}
+
+/// The **total-starvation** row.
+///
+/// `callbacks == 0` is not a clean run — it is no run at all: the device opened and the host never called
+/// back, so there is no denominator. The row used to substitute `0.0` for the missing quotient, printing
+/// `0 total (0.0000%)`: the most *favourable* value the row can take, for a pass that measured nothing.
+/// [`leanest_ring_line`] had the same fault pointing the other way, and both are the doctrine this crate
+/// states two files apart — never render "could not measure" as a number.
+fn starved_total_line(starved: u64, callbacks: u64) -> String {
+    if callbacks == 0 {
+        return "NOT MEASURED: the device opened and never called back, so nothing paced this run and \
+                there is no starvation rate to quote"
+            .to_string();
+    }
+    format!(
+        "{starved} total ({:.4}%)",
+        starved as f64 * 100.0 / callbacks as f64
+    )
+}
+
+/// The **pacing verdict** row: steady-state starvations, excluding [`WARMUP_CALLBACKS`] of warm-up.
+///
+/// The window opens on the callback whose 0-based index first reaches [`WARMUP_CALLBACKS`] (see the
+/// `index >= WARMUP_CALLBACKS` arms in [`crate::device`]), so it takes **more than** `WARMUP_CALLBACKS`
+/// callbacks to produce any verdict at all. Below that the counter reads `0` for want of a window, which
+/// is indistinguishable from `0` for want of a starvation — and this row is labelled *the pacing verdict*,
+/// so the two must not share a spelling.
+fn steady_verdict_line(steady: u64, callbacks: u64) -> String {
+    let steady_callbacks = callbacks.saturating_sub(WARMUP_CALLBACKS);
+    if steady_callbacks == 0 {
+        return format!(
+            "NOT MEASURED: {callbacks} callback(s) ran and the first {WARMUP_CALLBACKS} are warm-up, so \
+             the steady-state window never opened. This run has NO pacing verdict — not a favourable one"
+        );
+    }
+    format!(
+        "{steady}   <-- the pacing verdict, over {steady_callbacks} steady callback(s) \
+         (warm-up = first {WARMUP_CALLBACKS}, excluded)"
+    )
+}
+
+/// The **leanest steady-state ring occupancy** row.
+///
+/// [`MIN_OCCUPANCY_UNMEASURED`] means no steady-state callback has run, and this row used to render it as
+/// `0 samples (0.0 ms)` — "the ring hit rock bottom", the most alarming reading the statistic can produce,
+/// for a run that never took the reading. Any pass shorter than the warm-up window ended here, with every
+/// neighbouring figure guarding loudly.
+///
+/// A **genuine** `0` still prints as `0 samples`: the ring really can empty, and that reading is the one
+/// this row exists for.
+fn leanest_ring_line(minocc: u64, rate: u32) -> String {
+    if minocc == MIN_OCCUPANCY_UNMEASURED {
+        return format!(
+            "NOT MEASURED: no steady-state callback ran (the first {WARMUP_CALLBACKS} are warm-up), so \
+             the ring's low-water mark is UNKNOWN — not zero"
+        );
+    }
+    format!(
+        "{minocc} samples ({:.1} ms)",
+        minocc as f64 * 500.0 / rate.max(1) as f64
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// H11. The three audio rows whose "never measured" state had a numeric spelling, each checked
+    /// against **both** a real reading and the sentinel — the sentinel arm alone would pass on a row that
+    /// had stopped reporting anything at all.
+    #[test]
+    fn the_unmeasured_audio_rows_say_so_instead_of_quoting_a_number() {
+        // (a) leanest ring: the sentinel is an ABSENCE, and it used to print as `0 samples (0.0 ms)`.
+        let unmeasured = leanest_ring_line(MIN_OCCUPANCY_UNMEASURED, 48_000);
+        assert!(
+            unmeasured.contains("NOT MEASURED"),
+            "the sentinel must announce itself, got {unmeasured:?}"
+        );
+        assert!(
+            !unmeasured.contains("0 samples"),
+            "and must not be spelled as the worst real reading, got {unmeasured:?}"
+        );
+
+        // The control: a ring that genuinely emptied still reads as empty, so the fix is the sentinel
+        // branch and not the row.
+        assert_eq!(leanest_ring_line(0, 48_000), "0 samples (0.0 ms)");
+        assert_eq!(leanest_ring_line(4_800, 48_000), "4800 samples (50.0 ms)");
+
+        // (b) the pacing verdict. The boundary is DERIVED from `device`'s own `index >= WARMUP_CALLBACKS`
+        // on a 0-based index: `WARMUP_CALLBACKS` callbacks leave the window shut, one more opens it.
+        let shut = steady_verdict_line(0, WARMUP_CALLBACKS);
+        assert!(
+            shut.contains("NOT MEASURED") && shut.contains("NO pacing verdict"),
+            "a run that never left warm-up has no verdict, got {shut:?}"
+        );
+        assert!(
+            steady_verdict_line(0, 0).contains("NOT MEASURED"),
+            "and neither does a run with no callbacks at all"
+        );
+        let open = steady_verdict_line(0, WARMUP_CALLBACKS + 1);
+        assert!(
+            !open.contains("NOT MEASURED") && open.contains("the pacing verdict"),
+            "one steady callback IS a verdict, got {open:?}"
+        );
+        assert!(
+            open.contains("over 1 steady callback"),
+            "and it says how thin it is, got {open:?}"
+        );
+
+        // (c) the starvation rate, whose missing denominator used to print as the most FAVOURABLE value.
+        let none = starved_total_line(0, 0);
+        assert!(
+            none.contains("NOT MEASURED"),
+            "no callbacks is no rate, got {none:?}"
+        );
+        assert!(
+            !none.contains('%'),
+            "and must not quote a percentage of nothing, got {none:?}"
+        );
+        assert_eq!(starved_total_line(3, 1_000), "3 total (0.3000%)");
+        assert_eq!(
+            starved_total_line(0, 1_000),
+            "0 total (0.0000%)",
+            "a measured zero is still a zero"
+        );
+    }
 }
