@@ -190,12 +190,22 @@ fn script_is_loud_when_the_floor_is_missing() {
         "[workspace]\nresolver = \"2\"\nmembers = []\n\n[workspace.package]\nedition = \"2021\"\n",
     )
     .expect("write sandbox manifest");
-    // `fs::copy` carries the mode bits on unix, so the copy stays executable.
-    fs::copy(
+    // SYMLINKED, not copied — for two reasons, and the second one bit.
+    //
+    // 1. A symlink means the REAL committed script is what runs. A copy would let the script and the
+    //    thing under test drift by exactly the mechanism this whole file exists to prevent.
+    // 2. `fs::copy` + immediately exec'ing the copy is the classic ETXTBSY race: in a multithreaded
+    //    process another test thread can fork while the copy's write descriptor is still open, and the
+    //    exec then fails with "Text file busy". That is not hypothetical here — the first draft of this
+    //    test copied, and failed with `ExecutableFileBusy` on a run where the assertion it exists to
+    //    make was never reached. A guard that flakes is a guard that gets ignored.
+    //
+    // The script resolves its root from `dirname "$0"`, so it reads the SANDBOX manifest either way.
+    std::os::unix::fs::symlink(
         repo_root().join("tools/rust-floor.sh"),
         tools.join("rust-floor.sh"),
     )
-    .expect("copy script into sandbox");
+    .expect("symlink script into sandbox");
 
     let out = Command::new(tools.join("rust-floor.sh"))
         .output()
