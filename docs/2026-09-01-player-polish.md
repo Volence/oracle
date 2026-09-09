@@ -218,6 +218,9 @@ half is the owner's, as it was for SY-5.
    confirmed as a control. The re-vendor has to land **together with serving the new required field**, or
    every `emulator/stopped` fixture under `crates/oracle-aether/tests/` goes red with it. Owner's lane.
    The item B description staleness below folds into that same re-vendor.
+   *(Record kept as written. The gate named here no longer exists: `7308e96`, 2026-09-02, replaced it with
+   `the_vendored_schema_is_the_blob_provenance_pins`, which asserts the vendored BLOB matches
+   `PROVENANCE.md`'s pin rather than comparing against a peer's tree.)*
 2. **Contract description staleness (item B)** — `bus-protocol.schema.json` still says `rendered` is "a
    prefix of `text` today", which the truncation mark makes a prefix *plus one character*.
    Description-only; the file was not touched.

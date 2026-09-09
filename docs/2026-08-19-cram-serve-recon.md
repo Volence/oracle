@@ -714,7 +714,11 @@ as damage; correct the now-false prose at `symbols.rs:49`; leave the equates
 **Slice 2 — CR-27 (docs only, in `empyrean`).** 27a, 27b, 27c per §2. Nothing in
 `oracle-next` moves until it is adjudicated. The vendored schema re-vendor is part of
 slice 3, not this one, because `the_vendored_schema_is_byte_identical_to_the_upstream_contract`
-(`schema_conformance.rs:60`) would otherwise go red between the two.
+would otherwise go red between the two.
+*(Record kept as written. That gate was replaced on 2026-09-02 by `7308e96`; today's is
+`the_vendored_schema_is_the_blob_provenance_pins`, which asserts the vendored BLOB matches
+`PROVENANCE.md`'s pin rather than comparing against a peer's tree. Its `schema_conformance.rs:60`
+coordinate was dropped rather than refreshed — it named a test, and the name is the durable handle.)*
 
 **Slice 3 — serve `read_cram`.** *Tests first,* in a new
 `crates/oracle-aether/tests/cram.rs`: the reply shape against the new fragment; `line`

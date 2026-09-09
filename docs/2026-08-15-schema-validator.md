@@ -247,6 +247,11 @@ proves it **rejects**, and each control names the field it caught:
    against last week's contract while the suite stays green. `AETHER_CONTRACT_OPTIONAL=1` downgrades it
    to a warning, and `AETHER_CONTRACT_SCHEMA` points it at a non-standard checkout. The cost is that a
    clone without the sibling repo needs one env var.
+   *(Record kept as written. `7308e96`, 2026-09-02, retired this whole shape: there is no
+   `AETHER_CONTRACT_OPTIONAL` and no directory walk. Step 0 hashes the vendored bytes against
+   `PROVENANCE.md`'s blob pin and needs no peer, so it never skips; the optional half is
+   `$AETHER_CONTRACT_REPO`, a git checkout read through `cat-file`/`merge-base` and never through its
+   working tree.)*
 2. **`send_raw` registers `id -> method` for hand-written requests.** This widens per-method result
    checking beyond `call()`-driven traffic to the many tests that write the request line by hand. Stated
    plainly: it has **not yet caught anything** — CR-14 came through `call()` (via `ok`), and CR-15's three

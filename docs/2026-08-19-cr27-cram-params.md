@@ -1074,6 +1074,11 @@ fork the vendored artifact from its source and turn
 `the_vendored_schema_is_byte_identical_to_the_upstream_contract` red between the two — §11.15's delta and
 CR-26 both recorded the same reasoning, and the recon's slice plan puts the re-vendor in slice 3.
 
+*(Record kept as written. That gate was replaced on 2026-09-02 by `7308e96`; today's is
+`the_vendored_schema_is_the_blob_provenance_pins`, which asserts the vendored BLOB matches
+`PROVENANCE.md`'s pin rather than comparing against a peer's tree. The reasoning above stands under it:
+editing the vendored copy without repinning the sidecar is still red.)*
+
 **Executed:** `json.load` over both schema revisions, `Draft202012Validator.check_schema` on the amended
 document, a standalone compile of all 68 fragments, 48 message validations against the new and amended
 fragments, and a 10-message control against the pre-amendment schema. **Not executed:** anything at all in

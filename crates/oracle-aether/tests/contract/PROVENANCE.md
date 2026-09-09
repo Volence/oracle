@@ -1474,18 +1474,26 @@ Either way: update the table above with the new commit and hash, then run `cargo
 the new schema rejects messages the server sends, **that is the point** — contract §8 item 15: where a
 server's shape and the schema disagree, the server changes. Never the wire silently.
 
-## Locating the upstream copy
+## Locating the upstream copy — RETIRED 2026-09-02 by `7308e96`, and this heading is its receipt
 
-The freshness test looks for the sibling checkout, in order:
+This section used to describe a walk: `$AETHER_CONTRACT_SCHEMA`, else ancestor directories of
+`CARGO_MANIFEST_DIR` probed for `empyrean/contract/schema/bus-protocol.schema.json`, with an
+`AETHER_CONTRACT_OPTIONAL=1` escape hatch and a test called
+`the_vendored_schema_is_byte_identical_to_the_upstream_contract`. **None of that exists.** `7308e96`
+(`F-SCHEMA-READS-LIVE-EMPYREAN`) deleted the walk, the escape hatch and that test together, because the
+walk read a **peer's live working tree**: it went red when the hub saved mid-edit and — the half that
+matters — would have gone green against a change no other lane could see.
 
-1. `$AETHER_CONTRACT_SCHEMA` — an explicit path to the upstream schema file.
-2. Ancestor directories of `CARGO_MANIFEST_DIR`, each probed for
-   `empyrean/contract/schema/bus-protocol.schema.json` (this finds it from a normal checkout *and* from a
-   `.claude/worktrees/…` worktree, whose depth differs).
+⚑ **The rename is the smaller half. The gate's PROPERTY changed.** The old test asserted
+equality-to-upstream. The live gate, `the_vendored_schema_is_the_blob_provenance_pins`, asserts
+equality-to-the-blob-**this file** pins. Those agree exactly when the `pin.*` markers above are current,
+and the sidecar is maintained by a human — so *"the vendored copy cannot be hand-edited"* survives
+unchanged, while *"the vendored copy is byte-identical to upstream"* is now a claim about this file's
+upkeep, not one the suite enforces on its own.
 
-If none hit, the test **fails loudly** rather than passing — see the comment on
-`the_vendored_schema_is_byte_identical_to_the_upstream_contract` for why, and for the
-`AETHER_CONTRACT_OPTIONAL=1` escape hatch.
+**The current resolver is described once, correctly, under "How the freshness gate resolves" above** —
+steps 0 / 1 / 2, `$AETHER_CONTRACT_SCHEMA` and `$AETHER_CONTRACT_REPO`. Read it there; nothing restates it
+here.
 
 ### CR-16, adopted hours after `f309cc8` and retired the same day
 
