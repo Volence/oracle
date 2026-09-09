@@ -5343,9 +5343,9 @@
           },
           "len": {
             "type": "integer",
-            "minimum": 0,
+            "minimum": 1,
             "maximum": 8192,
-            "description": "Bytes to read. Default 1; ceiling 0x2000 (8192). Above the ceiling, or addr+len past 0x4000, the request is REFUSED whole with -32004 (the range code every other address-ranged row uses; §11.28 aligned it from §11.22's -32602), never clamped — §11.22's z80_write rule applied to its read sibling (protocol.md §6, §11.24, audit D-09 closed)."
+            "description": "Bytes to read. Default 1; ceiling 0x2000 (8192). Above the ceiling, or addr+len past 0x4000, the request is REFUSED whole with -32004 (the range code every other address-ranged row uses; §11.28 aligned it from §11.22's -32602), never clamped — §11.22's z80_write rule applied to its read sibling (protocol.md §6, §11.24, audit D-09 closed). FLOOR RAISED 0->1 2026-09-09 (§11.45, oracle's F-Z80READ-LEN0-UNSERVEABLE): at minimum 0 this was the only length-ish field on the surface flooring at 0 while its own result `bytes` is $defs/hex, whose pattern requires at least one digit — so len:0 was a request the contract PERMITTED and for which no conformant reply existed. Default is still 1, so a caller wanting no bytes has no reason to ask."
           }
         }
       },
@@ -5367,9 +5367,9 @@
           },
           "len": {
             "type": "integer",
-            "minimum": 0,
+            "minimum": 1,
             "maximum": 8192,
-            "description": "Bytes actually returned."
+            "description": "Bytes actually returned. Floored at 1 with the request field (§11.45)."
           },
           "bytes": {
             "$ref": "#/$defs/hex",

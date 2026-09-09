@@ -302,30 +302,6 @@ const UNCOVERED: &[(&str, &str)] = &[
     ),
 ];
 
-/// **Bounds whose LEGAL end this file cannot send, because no conformant reply exists for it.**
-///
-/// One entry today, and finding it is the first thing this differential did that the reply-only suite
-/// structurally could not. `emulator/z80_read`'s fragment declares `len` with `minimum: 0` — alone among
-/// every `len` on the surface, which all floor at 1 — so `len: 0` is a request the contract **permits**.
-/// The server serves it, and answers `bytes: "0x"`. Its own `result.bytes` is `$ref: #/$defs/hex`, whose
-/// pattern is `^0x[0-9A-Fa-f]+$` and therefore requires at least one hex digit. So:
-///
-/// > `emulator/z80_read {"addr": "0x0000", "len": 0}` is a request the schema allows and for which **no
-/// > reply the schema accepts exists**. The server is not free to refuse it (the fragment says 0 is in
-/// > bounds) and is not able to answer it conformantly.
-///
-/// Nothing in the tree had ever sent it. Every `z80_read` test uses a positive length, so the reply
-/// validator — which is a funnel on `Client::recv` and would have caught this instantly — was never
-/// handed the shape. That is the shape of the whole H3 gap: **the suite was green because of what it
-/// never asked, not because of what the server answered.**
-///
-/// This is a **contract** question, not a server one, and this parcel is deliberately hermetic (no live
-/// peer read, no cross-repo edit). Both plausible fixes are the contract owner's: widen the `hex` pattern
-/// to `^0x([0-9A-Fa-f]{2})*$` so the empty blob is spellable, or raise `z80_read.len`'s floor to 1 and
-/// make 0 a refusal like its siblings. So the entry is REGISTERED here, in the idiom
-/// `common::schema::KNOWN_CONTRACT_DIVERGENCES` already establishes for this repo — never silenced — and
-/// [`the_registered_unserveable_bound_is_still_live`] fails the day it stops being true, so it cannot rot
-/// after a re-vendor.
 /// **Maxima the in-bounds control does not send, and why each.**
 ///
 /// Every one of these is a value the fragment declares LEGAL, so each entry is a ceiling this file does
@@ -356,13 +332,39 @@ const MAX_CONTROL_SKIPS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-const KNOWN_UNSERVEABLE: &[(&str, &str, i64, &str)] = &[(
-    "emulator/z80_read",
-    "len",
-    0,
-    "F-Z80READ-LEN0-UNSERVEABLE: the fragment permits `len: 0`; the server answers `bytes: \"0x\"`; \
-     `$defs/hex` requires >=1 hex digit. No conformant reply exists. Contract ruling needed.",
-)];
+/// **Bounds whose LEGAL end this file cannot send, because no conformant reply exists for it.**
+///
+/// **Empty since 2026-09-09, and that is the correct state** — the one entry it ever held was retired by
+/// the mechanism it was built for, not by a tidy-up. The record is kept below in the idiom
+/// `common::schema::KNOWN_CONTRACT_DIVERGENCES` uses for the same event, because what retirement looks
+/// like is the part of an allowance registry worth reading.
+///
+/// > **F-Z80READ-LEN0-UNSERVEABLE was here until 2026-09-09.** Its entry said `emulator/z80_read`'s
+/// > fragment declared `len` with `minimum: 0` — alone among every `len` on the surface, which all floor
+/// > at 1 — so `len: 0` was a request the contract **permitted**. The server served it and answered
+/// > `bytes: "0x"`, while its own `result.bytes` is `$ref: #/$defs/hex`, pattern `^0x[0-9A-Fa-f]+$`,
+/// > which requires at least one hex digit. The request was one the server was not free to refuse and
+/// > not able to answer conformantly.
+/// >
+/// > Nothing in the tree had ever sent it: every `z80_read` test used a positive length, so the reply
+/// > validator — a funnel on `Client::recv` that would have caught it instantly — was never handed the
+/// > shape. That is the shape of the whole H3 gap. **The suite was green because of what it never asked,
+/// > not because of what the server answered.**
+/// >
+/// > It was registered as a **contract** question rather than a server one, and the contract took the
+/// > second of the two fixes offered: §11.45 (empyrean `5f66cc2`) raised `len`'s floor to 1 in both
+/// > `params` and `result`, leaving `$defs/hex` unchanged, so 0 is now a refusal like its siblings'.
+/// > This repo re-vendored the fragment at `59d29ac` and moved the handler's floor with it, and
+/// > [`the_registered_unserveable_bound_is_still_live`] went red **on its own, before the entry was
+/// > touched** — quoting the server's new `-32602 \`len\` = 0 is outside 1..=8192`. That is the only
+/// > reason this entry is deleted rather than quietly wrong.
+///
+/// An empty list makes [`the_registered_unserveable_bound_is_still_live`] iterate over nothing and pass
+/// without measuring anything. That is deliberate and is not the vacuity this repo guards against: the
+/// row's subject is *the entries*, so no entries is no claim, and the loud state is a **non**-empty list
+/// whose entry has stopped diverging. Nothing here is suppressed by the list being empty — the in-bounds
+/// control below now sends `z80_read len = 0`'s replacement minimum like every other legal minimum.
+const KNOWN_UNSERVEABLE: &[(&str, &str, i64, &str)] = &[];
 
 // ---------------------------------------------------------------------------------------------------
 // The probe
