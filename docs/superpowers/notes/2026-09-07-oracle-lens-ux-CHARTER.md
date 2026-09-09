@@ -278,6 +278,20 @@ NOT a fallback**: different build, different content, and the owner's standing i
 `s4.debug.bin`. They may be used to shake out the rig and are **not a basis for any reported
 finding.** A prolonged outage is a **BLOCKED** report — the aeon tree is not the seat's to build.
 
+⚑ **AND EXISTENCE IS NOT COMPLETENESS.** The rig's preflight tests that the ROM exists and is
+non-empty; **a build writing in place can leave a file that is present but TRUNCATED**, which is
+worse than an absent one because it reads as a real file and yields findings indistinguishable from
+real ones. *(Aeon's formulation, theirs: **absence is loud; the substitute is silent.**)* For an audit
+seat this is not housekeeping — a bad image makes the emulator misbehave and the checklist records
+that faithfully as a UI defect.
+**The check is an equality and derives itself from the artifact** — a Mega Drive header carries its
+own end address at `0x1A4`, and `end + 1 == filesize` exactly (verified against `s4.stress.bin`:
+`0x687bd + 1 == 427966`), with `SEGA` at `0x100` as the format guard. **A future rig implements this
+in the preflight rather than testing existence.** Booked as `F-UXRIG-ROM-COMPLETENESS`.
+*(Upstream is fixed for new builds — aeon `619d3e5e` builds each shape to a temp name and renames
+into place, so a reader sees the old complete ROM or the new one and never a gap. That does not help
+an image already snapshotted, and the guard is what makes the rig independent of a peer's ritual.)*
+
 ### 2. An input path that is not bound to a display is a second door, and the fifth rule cannot see it
 
 **`XTEST` over the seat's own connection to its private display is the ONLY input mechanism permitted
