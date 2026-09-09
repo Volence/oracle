@@ -87,7 +87,32 @@ pub fn model(wp: &Watchpoints, symbols: Option<&SymbolTable>, rows: usize) -> Ti
 /// many hits it currently holds. A neighbour that jumped five rows whenever a watch fired, or whenever the
 /// ticker was toggled, would be worse than one sitting five rows higher than it strictly needs to.
 pub fn strip_height(px: usize) -> usize {
-    (ROWS + 1) * font::LINE_H * px + 2 * (2 * px)
+    panel_height(ROWS + 1, px)
+}
+
+/// The panel's height for `text_rows` drawn text lines (the header counts as one) — **the one
+/// derivation**, read by [`draw`] for the rows it actually paints and by [`strip_height`] for a full
+/// strip. Two copies of a geometry are correct only on the day they are written.
+fn panel_height(text_rows: usize, px: usize) -> usize {
+    text_rows * font::LINE_H * px + 2 * (2 * px)
+}
+
+/// The lines [`draw`] will actually paint: the newest [`ROWS`] of them, whatever the ticker holds.
+///
+/// **M46.** This clamp is what makes "the strip fits the height it reserved" a property of the code
+/// rather than an assertion. The guard that used to stand in `draw` compared `panel_h` against
+/// `strip_height(px)` — and both took their row count from `ROWS`, one via `model(.., ROWS)` and one
+/// directly — so it sat at equality or below on every path in the tree and could not have fired. A
+/// bound and a boundary read off the same constant witness the constant, not the property.
+fn shown(t: &Ticker) -> &[String] {
+    &t.lines[t.lines.len().saturating_sub(ROWS)..]
+}
+
+/// The height [`draw`] will actually paint for `t` at `px`. Public so a test can measure the strip
+/// without a canvas, and so the "fits inside what it reserved" property is checkable rather than
+/// merely asserted next to the two values that produced it.
+pub fn drawn_height(t: &Ticker, px: usize) -> usize {
+    panel_height(shown(t).len() + 1, px)
 }
 
 /// Bottom strip of `area`. Toasts stack from the same edge and are drawn later, so a burst of
@@ -96,12 +121,7 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, t: &Ticker) {
     let pad = 2 * px;
     let margin = (2 * px).max(4);
     let line_h = font::LINE_H * px;
-    let rows = t.lines.len() + 1; // + the header
-    let panel_h = rows * line_h + 2 * pad;
-    debug_assert!(
-        panel_h <= strip_height(px),
-        "the strip stands taller than the height it reserves, so a lens stacking above it overlaps"
-    );
+    let panel_h = drawn_height(t, px);
     // Too small to say anything honestly — and the `top` below is `usize` arithmetic, so this is
     // also what stops a short area underflowing rather than drawing off the top of the world.
     if area.w < 16 * px || area.h < panel_h + margin {
@@ -122,7 +142,7 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, t: &Ticker) {
         if t.dropped > 0 { ACCENT } else { INFO },
         overlay::fit(&head, avail, px),
     );
-    for (i, l) in t.lines.iter().enumerate() {
+    for (i, l) in shown(t).iter().enumerate() {
         c.text(
             left + pad as i32,
             top + pad as i32 + ((i + 1) * line_h) as i32,
@@ -529,5 +549,75 @@ mod tests {
             white.iter().min(),
             white.iter().max()
         );
+    }
+
+    /// **M46.** The overlap guard in `draw` took its bound (`strip_height`) and its boundary
+    /// (`t.lines.len()`) from the same constant [`ROWS`], so it sat at equality or below on every path
+    /// in the tree and could not have fired. The repair is not a re-tuned bound: `draw` now paints at
+    /// most `ROWS` hits whatever the ticker holds, which makes the property TRUE rather than asserted.
+    ///
+    /// This test hands the layout a ticker that genuinely exceeds the strip — `Ticker`'s fields are
+    /// `pub`, so a hand-built one is a real caller shape and not a hypothetical — and requires the
+    /// painted height to still fit what `strip_height` reserved for the lens stacking above it.
+    #[test]
+    fn a_ticker_holding_more_hits_than_the_strip_shows_still_fits_the_reserved_height() {
+        let over = Ticker {
+            lines: (0..ROWS + 3).map(|i| format!("line {i}")).collect(),
+            armed: 1,
+            dropped: 0,
+        };
+        // The clause that stops this test agreeing with itself: if the fixture did not actually
+        // exceed `ROWS`, the assertion below would hold for reasons unrelated to the guard.
+        assert!(
+            over.lines.len() > ROWS,
+            "the fixture must exceed the strip for this to measure anything: {} lines vs ROWS {ROWS}",
+            over.lines.len()
+        );
+        for px in [1, 2, 3] {
+            assert!(
+                drawn_height(&over, px) <= strip_height(px),
+                "at px={px} a {}-line ticker paints {} px into a strip reserving {} px, so the lens \
+                 stacked above it is overlapped",
+                over.lines.len(),
+                drawn_height(&over, px),
+                strip_height(px)
+            );
+        }
+    }
+
+    /// The anti-vacuity clause for the test above: `<=` against a *constant* height would pass for a
+    /// degenerate geometry too. The reserved height must actually scale with the rows painted, so a
+    /// `panel_height` that stopped counting rows fails here rather than quietly making the strip
+    /// property trivial.
+    #[test]
+    fn the_strips_geometry_actually_counts_its_rows() {
+        for px in [1, 2, 3] {
+            for rows in 1..=(ROWS + 2) {
+                assert!(
+                    panel_height(rows + 1, px) > panel_height(rows, px),
+                    "px={px}: {} rows must stand taller than {rows}",
+                    rows + 1
+                );
+            }
+        }
+    }
+
+    /// `strip_height` is what `profile.rs` stacks above, so it must be the full strip's OWN geometry
+    /// and not a second copy of it. The shared derivation makes this true by construction — which is
+    /// the point, and is why the row-counting test above is the clause that keeps the pair honest.
+    #[test]
+    fn the_reserved_height_is_exactly_a_full_strips_painted_height() {
+        let full = Ticker {
+            lines: (0..ROWS).map(|i| format!("line {i}")).collect(),
+            armed: 0,
+            dropped: 0,
+        };
+        for px in [1, 2, 3] {
+            assert_eq!(
+                drawn_height(&full, px),
+                strip_height(px),
+                "px={px}: a full strip must paint exactly the height it reserves"
+            );
+        }
     }
 }
