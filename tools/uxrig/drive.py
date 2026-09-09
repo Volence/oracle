@@ -382,7 +382,28 @@ def cmd_procproof(args):
         if t.startswith("socket:["):
             our_inodes.add(t[8:-1])
 
-    r = subprocess.run(["ss", "-x", "-a", "-p"], capture_output=True, text=True)
+    # The peer table is the whole instrument: a CONNECTING client's unix socket carries no
+    # address (the kernel copies the listener's address onto the ACCEPTED socket), so our own
+    # fd resolves to `local=*` and only the peer names the path. If this table is missing or
+    # empty we know NOTHING, and the two halves of the verdict below then fail in OPPOSITE
+    # directions: the Wayland line reads a clean "NO" while the presence lines read "NO <-
+    # required". That fails CLOSED, which is right -- but it reports a blind INSTRUMENT as a
+    # failed SUBJECT, and a reader chases the window instead of `ss`. Green invites no work;
+    # a false subject-failure invites the WRONG work. So refuse to answer instead.
+    try:
+        r = subprocess.run(["ss", "-x", "-a", "-p"], capture_output=True, text=True)
+    except OSError as e:
+        print(f"--- BLIND: cannot run `ss` ({e}); the peer table is unavailable ---")
+        print("  VERDICT: UNAVAILABLE. This is a statement about the INSTRUMENT, not about "
+              "the process: isolation is neither proven nor disproven. Install iproute2.")
+        return 2
+    if r.returncode != 0:
+        print(f"--- BLIND: `ss -x -a -p` exited {r.returncode} ---")
+        if r.stderr.strip():
+            print(f"  stderr: {r.stderr.strip().splitlines()[0]}")
+        print("  VERDICT: UNAVAILABLE. This is a statement about the INSTRUMENT, not about "
+              "the process: isolation is neither proven nor disproven.")
+        return 2
     by_inode = {}   # local inode -> (path, peer_inode, users)
     for line in r.stdout.splitlines():
         f = line.split()
@@ -395,6 +416,16 @@ def cmd_procproof(args):
             continue
         users = line.split("users:", 1)[1] if "users:" in line else ""
         by_inode[inode] = (path, peer_inode, users)
+
+    # `ss` exited 0 and told us nothing. Same blindness as a non-zero exit, one step later:
+    # a filtered container, or an output format this parser does not recognise. A live Linux
+    # box always has unix sockets, and THIS process holds some, so an empty table is never a
+    # true observation of the world.
+    if not by_inode:
+        print("--- BLIND: `ss -x -a -p` exited 0 but yielded no parseable unix rows ---")
+        print("  VERDICT: UNAVAILABLE. This is a statement about the INSTRUMENT, not about "
+              "the process: isolation is neither proven nor disproven.")
+        return 2
 
     print(f"--- /proc/{pid}/fd unix sockets, resolved through their PEER ---")
     x_peers, way_peers = [], []
