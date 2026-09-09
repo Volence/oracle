@@ -1,0 +1,4 @@
+path .uxrig/rom/s4.debug.bin
+header end 0xcec52 implies 846931 bytes; actual 846931 -> COMPLETE
+sha256 bb492d964eb30440c27feb0ae7a67a5be875e2a6547325822c03bbee63d13b34
+domestic name SONIC THE HEDGEHOG 4

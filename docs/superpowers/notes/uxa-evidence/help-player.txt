@@ -1,0 +1,94 @@
+### Wed Sep  9 07:45:25 AM UTC 2026 — oracle-player [--help]
+usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]
+               [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]
+               [--target-fps N] [--dock default|every-tab] [--bench-arm]
+               [--aether | --socket PATH]
+
+--aether serves the Aether control bus from this process, so an external tool can attach to
+THIS window (also: ORACLE_AETHER=1). --socket PATH does the same on a path you name, and
+implies --aether. Without either, nothing binds and nothing can attach; the launch says so.
+The default path is the contract's own ($ORACLE_SOCKET, $EXODUS_SOCKET,
+$XDG_RUNTIME_DIR/oracle.sock, /tmp/oracle.sock) because that is the one every client
+resolver looks on. If another emulator is already live there the bind is REFUSED and said
+out loud, never silently moved to a second path.
+
+--symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,
+which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;
+a discovered one that is missing is not. Neither overrides the ROM-binding check.
+
+Both bench modes REQUIRE --expect-screen and force audio gain 0.0.
+--target-fps 0 switches the GOVERNOR OFF. That is the control for the pacing design, not a
+playable mode; the report labels any run made with it.
+
+--dock every-tab puts every tab in a leaf of its own, so every panel body runs on every
+frame. It is the arrangement the PANEL-COST measurement needs (egui_dock draws only a
+leaf's active tab, so tabs sharing a pane cost one body, not three) and it neither reads
+nor writes a stored layout.
+
+--bench-arm arms sixteen (disabled) breakpoints, a work-RAM write watch and the profiler,
+through the served surface, so the three stopping panels have ROWS to draw. Without it a
+panel-cost run measures three empty headlines. Bench modes only.
+EXIT=64
+### Wed Sep  9 07:45:25 AM UTC 2026 — oracle-player [-h]
+usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]
+               [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]
+               [--target-fps N] [--dock default|every-tab] [--bench-arm]
+               [--aether | --socket PATH]
+
+--aether serves the Aether control bus from this process, so an external tool can attach to
+THIS window (also: ORACLE_AETHER=1). --socket PATH does the same on a path you name, and
+implies --aether. Without either, nothing binds and nothing can attach; the launch says so.
+The default path is the contract's own ($ORACLE_SOCKET, $EXODUS_SOCKET,
+$XDG_RUNTIME_DIR/oracle.sock, /tmp/oracle.sock) because that is the one every client
+resolver looks on. If another emulator is already live there the bind is REFUSED and said
+out loud, never silently moved to a second path.
+
+--symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,
+which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;
+a discovered one that is missing is not. Neither overrides the ROM-binding check.
+
+Both bench modes REQUIRE --expect-screen and force audio gain 0.0.
+--target-fps 0 switches the GOVERNOR OFF. That is the control for the pacing design, not a
+playable mode; the report labels any run made with it.
+
+--dock every-tab puts every tab in a leaf of its own, so every panel body runs on every
+frame. It is the arrangement the PANEL-COST measurement needs (egui_dock draws only a
+leaf's active tab, so tabs sharing a pane cost one body, not three) and it neither reads
+nor writes a stored layout.
+
+--bench-arm arms sixteen (disabled) breakpoints, a work-RAM write watch and the profiler,
+through the served surface, so the three stopping panels have ROWS to draw. Without it a
+panel-cost run measures three empty headlines. Bench modes only.
+EXIT=64
+### Wed Sep  9 07:45:25 AM UTC 2026 — oracle-player []
+--rom is required
+usage: oracle-player --rom PATH [--symbols PATH] [--mode window|bench-cpu|bench-window]
+               [--secs N] [--audio on|off] [--expect-screen WxH] [--size WxH]
+               [--target-fps N] [--dock default|every-tab] [--bench-arm]
+               [--aether | --socket PATH]
+
+--aether serves the Aether control bus from this process, so an external tool can attach to
+THIS window (also: ORACLE_AETHER=1). --socket PATH does the same on a path you name, and
+implies --aether. Without either, nothing binds and nothing can attach; the launch says so.
+The default path is the contract's own ($ORACLE_SOCKET, $EXODUS_SOCKET,
+$XDG_RUNTIME_DIR/oracle.sock, /tmp/oracle.sock) because that is the one every client
+resolver looks on. If another emulator is already live there the bind is REFUSED and said
+out loud, never silently moved to a second path.
+
+--symbols names a .lst listing. Without it the player looks for <rom>.lst beside the ROM,
+which is where `sigil build --emit-lst` writes it. A NAMED listing that is missing is fatal;
+a discovered one that is missing is not. Neither overrides the ROM-binding check.
+
+Both bench modes REQUIRE --expect-screen and force audio gain 0.0.
+--target-fps 0 switches the GOVERNOR OFF. That is the control for the pacing design, not a
+playable mode; the report labels any run made with it.
+
+--dock every-tab puts every tab in a leaf of its own, so every panel body runs on every
+frame. It is the arrangement the PANEL-COST measurement needs (egui_dock draws only a
+leaf's active tab, so tabs sharing a pane cost one body, not three) and it neither reads
+nor writes a stored layout.
+
+--bench-arm arms sixteen (disabled) breakpoints, a work-RAM write watch and the profiler,
+through the served surface, so the three stopping panels have ROWS to draw. Without it a
+panel-cost run measures three empty headlines. Bench modes only.
+EXIT=64

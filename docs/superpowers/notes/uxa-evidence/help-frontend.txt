@@ -1,0 +1,23 @@
+### Wed Sep  9 07:45:17 AM UTC 2026 — oracle-frontend --help
+error: unknown flag `--help`
+usage: oracle-frontend <rom.bin> [--scale N] [--aspect tv|square|integer] [--aether] [--socket PATH] [--x11]
+  --scale   N = 1..=8 (default 3): multiples of the 224-line frame height
+  --aspect  tv = the console's own 4:3 (default), square = square pixels, integer = square pixels at a whole scale
+  --aether  serve the Aether control bus from this process (also: ORACLE_AETHER=1). Off by default: no socket is created.
+  --socket  serve on PATH instead of the contract's default; implies --aether
+  --x11     open the window under X11 (XWayland on Wayland): the backend where the window can carry its own icon and WM class
+  An unset --scale/--aspect falls back to ~/.config/oracle/player.conf (or $XDG_CONFIG_HOME/oracle/player.conf), then to the defaults above.
+EXIT=2
+### Wed Sep  9 07:45:17 AM UTC 2026 — oracle-frontend -h
+cannot read ROM -h: No such file or directory (os error 2)
+EXIT=1
+### Wed Sep  9 07:45:17 AM UTC 2026 — oracle-frontend (no args)
+error: missing <rom.bin>
+usage: oracle-frontend <rom.bin> [--scale N] [--aspect tv|square|integer] [--aether] [--socket PATH] [--x11]
+  --scale   N = 1..=8 (default 3): multiples of the 224-line frame height
+  --aspect  tv = the console's own 4:3 (default), square = square pixels, integer = square pixels at a whole scale
+  --aether  serve the Aether control bus from this process (also: ORACLE_AETHER=1). Off by default: no socket is created.
+  --socket  serve on PATH instead of the contract's default; implies --aether
+  --x11     open the window under X11 (XWayland on Wayland): the backend where the window can carry its own icon and WM class
+  An unset --scale/--aspect falls back to ~/.config/oracle/player.conf (or $XDG_CONFIG_HOME/oracle/player.conf), then to the defaults above.
+EXIT=2

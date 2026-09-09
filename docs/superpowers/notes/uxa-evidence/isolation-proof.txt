@@ -1,0 +1,57 @@
+### Wed Sep  9 07:49:01 AM UTC 2026 — isolation proof, seat UXa
+
+--- procproof (player pid, xvfb pid) ---
+--- /proc/1039145/environ (environment AS RUNNING, not as launched) ---
+  WAYLAND_DISPLAY    ABSENT  <- required
+  XDG_SESSION_TYPE   ABSENT  <- required
+  DISPLAY            :90
+  WINIT_UNIX_BACKEND x11
+  XDG_RUNTIME_DIR    /home/volence/sonic_hacks/oracle-uxa/.uxrig/run
+  XDG_DATA_HOME      /home/volence/sonic_hacks/oracle-uxa/.uxrig/xdg/data
+  ORACLE_SOCKET      /home/volence/sonic_hacks/oracle-uxa/.uxrig/sock/oracle.sock
+  EXODUS_SOCKET      /home/volence/sonic_hacks/oracle-uxa/.uxrig/sock/oracle.sock
+--- /proc/1039145/fd unix sockets, resolved through their PEER ---
+  inode    203653999 client       local=*
+       peer inode    203712304 path=@/tmp/.X11-unix/X90 held by(("Xvfb",pid=3863285,fd=13))
+  inode    203686796 client       local=*
+       peer inode    203712157 path=@/tmp/.X11-unix/X90 held by(("Xvfb",pid=3863285,fd=11))
+  inode    203711107 LISTEN(ours) local=/home/volence/sonic_hacks/oracle-uxa/.uxrig/sock/player.sock
+       peer inode            0 path=(none) held by
+  inode    203712166 client       local=*
+       peer inode    203714899 path=@/tmp/.X11-unix/X90 held by(("Xvfb",pid=3863285,fd=12))
+  inode    203712817 client       local=*
+       peer inode    203714905 path=/run/dbus/system_bus_socket held by
+  inode    203713863 client       local=*
+       peer inode    203711229 path=/run/user/1000/bus held by(("dbus-broker",pid=876,fd=89))
+--- verdict ---
+  connected to an X server on its own DISPLAY (:90, socket *.X11-unix/X90): YES
+  and that X server is THE Xvfb THIS RIG SPAWNED (pid 3863285): YES
+  holds ANY socket to a Wayland compositor: NO
+  (the compositor socket that must not appear above: /run/user/1000/wayland-0; it exists on this box: True, so its absence here is a real absence and not a missing target)
+  STRUCTURAL ISOLATION: PROVEN
+
+--- positive control: the wm-class filter FINDS the frontend on :90 ---
+display :90: 4 windows in tree, 1 shown (filter: class~'oracle-frontend')
+      0x200021  pid=    None     896x672+192+144   viewable  class=oracle-frontend/oracle-frontend  name='Oracle: draws 1623'
+
+--- absent half A: frontend environ, as RUNNING ---
+frontend real pid=1029218
+DISPLAY=:90
+XDG_RUNTIME_DIR=/home/volence/sonic_hacks/oracle-uxa/.uxrig/run
+(WAYLAND_DISPLAY / XDG_SESSION_TYPE absent above = the absent half)
+
+--- absent half B: open sockets of both processes ---
+pid 1029218:
+    /home/volence/sonic_hacks/oracle-uxa/.uxrig/sock/frontend.sock
+    203697100
+pid 1039145:
+    203653999
+    203686796
+    /home/volence/sonic_hacks/oracle-uxa/.uxrig/sock/player.sock
+    203712166
+    203712817
+    203713863
+
+--- wayland sockets that exist on this box ---
+/run/user/1000/wayland-0
+/run/user/1000/wayland-0.lock
