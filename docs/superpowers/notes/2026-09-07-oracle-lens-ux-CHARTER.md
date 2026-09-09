@@ -244,6 +244,40 @@ same gesture.
 process; this lane enumerated the SOURCE of the connect path in the actual dependency graph.
 Different parameters, opposite answers, one correct conclusion each.)*
 
+### ⚑ THIRD AMENDMENT, FROM BUILDING IT: **AN ABSENCE FILTER MUST BE PROVEN ABLE TO FIND THE THING**
+
+The rig agent found that the absence check **this charter specified was vacuous for one of our two
+windows**, and would have returned a clean "absent" no matter what.
+
+**`minifb` sets no `_NET_WM_PID`.** So *"enumerate `:0` and show no window carries a PID you
+spawned"* returns zero matches for `oracle-frontend` **on the display where the window demonstrably
+is** — measured, not reasoned:
+
+```
+$ drive.py windows --display :90 --pid 1714665
+display :90: 2 windows in tree, 0 shown   (NO window on :90 matches pid=1714665)
+$ drive.py windows --display :90 --wm-class oracle-frontend
+      0x200021  pid=None  896x672+192+144  viewable  class=oracle-frontend  name='Oracle: draws 12739'
+```
+
+**The two windows need OPPOSITE filters**, and each is the confounded one for the other: `--wm-class`
+discriminates for `oracle-frontend`; `oracle-player` (winit) does set `_NET_WM_PID`, and its
+`WM_CLASS` **collides with the owner's window**, so class is the wrong filter there.
+
+⚑ **The rule, and it generalises past windows:** *an absence check is only evidence once the same
+filter has been shown to FIND the thing somewhere.* Run the filter against the display where the
+subject **is** and see a hit, then run it where it must not be. **Without that positive control an
+absence proof measures the filter, not the world** — which is this document's own opening defect
+(a malformed grep returning 0 against a file that said the words in terms) arriving on the safety
+proof rather than on a citation check.
+
+**Also from the rig, and the seats are bound by it:** `s4.debug.bin` is **another lane's build
+artifact** and aeon's `build.sh` deletes it before rewriting — measured absent **continuously for
+7+ minutes** across three of their builds. **A stale alternate ROM (`s4.stress.bin` and friends) is
+NOT a fallback**: different build, different content, and the owner's standing instruction names
+`s4.debug.bin`. They may be used to shake out the rig and are **not a basis for any reported
+finding.** A prolonged outage is a **BLOCKED** report — the aeon tree is not the seat's to build.
+
 ### 2. An input path that is not bound to a display is a second door, and the fifth rule cannot see it
 
 **`XTEST` over the seat's own connection to its private display is the ONLY input mechanism permitted
