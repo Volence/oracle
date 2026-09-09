@@ -367,10 +367,26 @@ change and was correctly kept out of the hardening parcel.
 * ⚑ **A COMPLETED AGENT'S WORKTREE IS NOT IDLE.** Measured 2026-09-09 while considering a routine tidy of
   six merged parcels: the worktree of an agent that had reported done, been merged and been reported to the
   owner still had **live `zsh` processes with their cwd inside it**, the oldest started hours earlier, plus
-  transient `sleep`s from its own polling loops. No build was running. **aurora's tree showed the identical
-  shape**, so this is the harness, not one agent. **"The agent finished" is a statement about the agent, not
-  about its directory** — and the CWD half of the shared-machine check is what catches it, because a cmdline
-  sweep sees `sleep 30` and learns nothing.
+  transient `sleep`s from its own polling loops. No build was running. **"The agent finished" is a statement
+  about the agent, not about its directory** — and the CWD half of the shared-machine check is what catches
+  it, because a cmdline sweep sees `sleep 30` and learns nothing.
+  ⚠ **CORRECTED WITHIN THE HOUR, AND THE CORRECTION IS THE POINT. I wrote that aurora's tree showed "the
+  identical shape, so this is the harness, not one agent". The shape was identical and the FACT WAS
+  OPPOSITE**: aurora's processes belonged to an agent still working mid-parcel, not to a finished one. So
+  this is **n=1, not two independent cases**, and "it is the harness" is unsupported. **The process shape is
+  NOT diagnostic**; I extracted a pattern from one case and carried its conclusion onto the next without
+  testing it, which is the twin of the extracted-number bar below.
+  ⚑ **The discriminator aurora supplied — process shape tells you something is RUNNING, commit recency tells
+  you whether it is WORKING — is necessary and NOT sufficient, measured against this tree the same hour.** A
+  worktree INHERITS ITS BASE'S HISTORY, so `git log -1` in it answers about the BASE until the agent commits
+  anything. My live agent's worktree reported *"12 minutes ago"* — the age of a commit **I** had just made on
+  `main` — with **zero** unique commits and no agent output at all. Had I committed a minute earlier it would
+  have read *"1 minute ago"* and looked maximally busy. And it does not separate the two cases either way:
+  `rev-list --count <base>..HEAD` is **0** BOTH for a fresh worktree and for a merged one, which is the
+  empty-range trap a third time tonight.
+  **So no repo-side probe reliably answers "is this agent alive".** The authority is the harness — this
+  lane's own `inFlight` and its task notifications. Use the repo probes to decide what is SAFE TO DELETE
+  (they fail closed), never to conclude an agent has finished.
   **Two consequences.** (1) Do not prune a merged parcel's worktree on the strength of the merge; run the
   check first. (2) **The count is unstable by construction** — the `sleep`s expire and are replaced, so two
   readings minutes apart give different PIDs and different totals. Enumerate and identify; a number here is
