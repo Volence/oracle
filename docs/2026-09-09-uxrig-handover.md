@@ -47,6 +47,26 @@ If you skip the snapshot, `launch.sh` still refuses with an explanatory message 
 the window die a second after launch — but you will have lost the run. Check with
 `pgrep -af build.sh` if you see the refusal.
 
+**Snapshot early, and do not assume the file is there when you start.** The outage is not a
+momentary flicker: on 2026-09-09 `s4.debug.bin` was absent continuously from 07:29Z past 07:36Z
+(7+ minutes) across a run of `./build.sh`, `./build.sh demo`, `./build.sh`. Only the *built*
+outputs (`s4.bin`, `s4.debug.bin`, `demo.bin`) come and go; older artifacts in the tree
+(`s4.stress.bin`, `s4.soundtest.bin`, `s4.stressart.bin`) are stable.
+
+⚠ **If `s4.debug.bin` is missing, WAIT for it — do not substitute another ROM for your actual
+review.** The owner's standing instruction is that player testing runs on `s4.debug.bin`, not
+`s4.bin`, and the stale alternates are a different game build with different content. They are fine
+for shaking the rig out (this rig's own rehearsal used `s4.stress.bin`), and they are **not** a
+basis for any UX finding you report. Poll with:
+
+```sh
+until [ -s /home/volence/sonic_hacks/aeon/s4.debug.bin ]; do sleep 10; done; \
+  tools/uxrig/launch.sh snapshot-rom /home/volence/sonic_hacks/aeon/s4.debug.bin
+```
+
+If it stays absent long enough to block your seat, that is a BLOCKED report to the controller — the
+aeon tree belongs to another lane and is not yours to build.
+
 ---
 
 ## Start the display (once per session)
