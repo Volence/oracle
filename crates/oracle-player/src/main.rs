@@ -2720,6 +2720,132 @@ mod loop_tests {
             "the player never resumed, so the zero above was a stuck loop rather than a pause"
         );
     }
+
+    /// Run the **real** [`Loop::build_ui`] once and hand back the top-bar runs it drew.
+    ///
+    /// ⚑ `build_ui` and not [`Transport::bar`](ui::Transport::bar), and the difference is the entire point
+    /// of the test below. See its doc.
+    fn painted(lp: &mut Loop) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut drew: Vec<screen::Run> = Vec::new();
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(1600.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |root| drew = lp.build_ui(root),
+        );
+        let mut d = out.textures_delta;
+        d.clear();
+        drew.into_iter().map(|r| r.text).collect()
+    }
+
+    /// ★ **The bus's state is on the glass without choosing a tab, and the surface that says so is
+    /// reached by the code that actually composes this window.**
+    ///
+    /// # ⚑ Why this drives `build_ui` and not the widget
+    ///
+    /// Because the defect this parcel repairs is a *call-site* defect, not a wording defect.
+    /// `StatusStrip::aether_row` is correct, is covered, and its test
+    /// (`the_aether_row_is_always_drawn_and_agrees_with_the_launch_line`) is TRUE and passing — it builds
+    /// a `StatusStrip`, calls `.rows()`, and proves the row is always in the returned list. What it
+    /// cannot prove is that anything ever calls it where a human is looking: the strip's one production
+    /// call site is inside `Panels::registers`, `egui_dock` runs only each leaf's active tab, and the
+    /// owner's saved layout parks that leaf on `Objects`, collapsed. **A test over a function proves the
+    /// function, never that it runs where the claim says it runs.**
+    ///
+    /// So this test constructs nothing of its own. It calls `Loop::build_ui` — the method `Loop::iterate`
+    /// calls, the one that opens the top panel, composes the bar and then shows the `DockArea` — and reads
+    /// the runs it **hands back having painted them**. A control that existed but was never reached from
+    /// here would fail; so would one placed inside a tab, since `build_ui` documents that the dock
+    /// contributes nothing to this readback. (That `iterate` in turn calls `build_ui` and publishes these
+    /// same runs is what `a_client_reads_this_windows_top_bar_and_it_follows_the_run_state` drives over a
+    /// real socket, one test down.)
+    ///
+    /// # The alternative green paths, ruled out in order
+    ///
+    /// 1. *The harness never ran the closure*, so an absent string proves nothing and a present one is
+    ///    impossible. Ruled out first by the positive control: the app name is drawn unconditionally by
+    ///    the bar's first widget, so it must be there.
+    /// 2. *The bar draws a constant Aether string regardless of the bus.* Ruled out by driving two loops
+    ///    whose only difference is the socket — one bound, one not — and asserting the drawn text is
+    ///    **different**. A hardcoded label passes neither half.
+    /// 3. *It draws only in the interesting case*, which is the absence-is-not-a-statement mistake the
+    ///    strip's own doc refuses. Ruled out by asserting the unserved loop draws it too — that is the
+    ///    owner's launch, and the one where nothing else on the window says anything.
+    /// 4. *It says something, but nothing a reader could act on.* Ruled out by asserting the serving
+    ///    window's run names its socket **path**, which is what a person is supposed to dial.
+    #[test]
+    fn the_window_says_what_the_bus_is_doing_without_opening_a_tab() {
+        // (3) The owner's launch: no socket asked for, nothing bound.
+        let mut quiet = a_loop();
+        assert!(
+            !quiet.bus.is_serving(),
+            "the fixture must be the unserved launch, or the two halves below are one state"
+        );
+        let quiet_runs = painted(&mut quiet);
+        let quiet_line = quiet_runs.join(" | ");
+        // (1) THE POSITIVE CONTROL, first: this bar drew something at all.
+        assert!(
+            quiet_line.contains(ui::APP_NAME),
+            "build_ui drew no app name, so it drew nothing — every assertion below would hold against a \
+             harness that never ran the closure: {quiet_line}"
+        );
+        let quiet_offer = quiet.bus.aether_status().offer().label();
+        assert!(
+            quiet_runs.iter().any(|r| r == &quiet_offer),
+            "a window nobody can attach to says so NOWHERE outside a collapsed tab — this is the \
+             defect, reproduced. Expected {quiet_offer:?} among: {quiet_line}"
+        );
+
+        // (2) and (4): the same bar, one socket apart.
+        let socket =
+            std::env::temp_dir().join(format!("pbv-{}-{}.sock", std::process::id(), line!()));
+        let mut up = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: None,
+                path: None,
+                fatal: None,
+            },
+            Some(Some(socket.clone())),
+        );
+        assert!(
+            up.bus.is_serving(),
+            "the fixture did not bind {}, so the contrast below is between two identical states",
+            socket.display()
+        );
+        let up_runs = painted(&mut up);
+        let up_line = up_runs.join(" | ");
+        let up_offer = up.bus.aether_status().offer().label();
+        assert!(
+            up_runs.iter().any(|r| r == &up_offer),
+            "a SERVING window must say so on the bar too — that is the state the owner is in right now, \
+             and the question he asked. Expected {up_offer:?} among: {up_line}"
+        );
+        // (2): the drawn text tracks the bus rather than being a constant in the bar.
+        assert_ne!(
+            quiet_offer, up_offer,
+            "the bar drew the same Aether text for a bound and an unbound bus, so it is a decoration \
+             and not a readout"
+        );
+        // (4): and the serving window names the path, hover or no hover.
+        assert!(
+            up.bus
+                .aether_status()
+                .sentence()
+                .contains(&socket.display().to_string()),
+            "the sentence behind the control must name the socket a client is supposed to dial"
+        );
+        drop(up);
+        let _ = std::fs::remove_file(&socket);
+    }
 }
 
 // -------------------------------------------------------------------------------------------------------

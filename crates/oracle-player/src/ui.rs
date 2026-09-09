@@ -4916,6 +4916,70 @@ impl Transport {
             drew.push(screen::Run::after_sep(head));
         }
 
+        // --- ⚑ The Aether CONTROL, and it is drawn in every one of the four states. ---
+        //
+        // **This is the parcel the owner asked for in so many words** — *"there's no 'connect to aether
+        // network' button in the new ui"* — and the reason the question could be asked at all is
+        // measured: his saved layout parks the status strip's leaf on `Objects`, collapsed, so the
+        // `aether` row that has stated all three outcomes since `PLAYER-SERVE` has never once executed
+        // for him. `StatusStrip::aether_row`'s own doc argues at length that the row must never hide,
+        // *"an absence is not a statement"* — and then placed itself inside a tab, which defeats it. The
+        // row is unchanged and still right; this is the surface that cannot be tabbed away, beside the
+        // halting alarm that made the identical repair for the identical reason.
+        //
+        // **A control, not a row** (the standing ruling: things you look at are tabs and rows, things you
+        // *do* are controls). That is what answers `AetherStatus::alarm`'s refusal of a permanent
+        // all-clear line one door up: the bar has carried `⏸ pause` permanently without anybody calling
+        // it noise, because a control is looked *for* when it is wanted rather than read every frame.
+        //
+        // ⚑ **The serving arm draws a weak label and NOT a button, and the held arm draws no button
+        // either.** Every arm draws something, because a control that appeared only when something was
+        // wrong renders "this window is serving" and "this build has no Aether control" identically —
+        // the absence-is-not-a-statement mistake, one instrument over. What each arm may *do* is
+        // `AetherOffer`'s decision and not this call site's; see `AetherStatus::offer` for why a live
+        // peer holding the path gets prose instead of a retry that would refuse forever.
+        let offer = aether.offer();
+        let label = offer.label();
+        let hover = format!(
+            "{}\n\n{}",
+            aether.sentence(),
+            match &offer {
+                crate::bus::AetherOffer::Serve(p) => format!(
+                    "Open the bus now, on {}. That is the path --aether itself would have bound; this \
+                     window will not fall back to another one. Tools, lanes and other windows can then \
+                     attach to THIS window.",
+                    p.display()
+                ),
+                crate::bus::AetherOffer::Retry(p) => format!(
+                    "Try {} again, the same path and no other. Nothing is serving it; clear what the \
+                     error above names and press this.",
+                    p.display()
+                ),
+                crate::bus::AetherOffer::Held(_) | crate::bus::AetherOffer::Serving { .. } =>
+                    aether.advice().unwrap_or_else(|| String::from(
+                        "Anything outside this process can attach here. Nothing to do.",
+                    )),
+            }
+        );
+        let mut open_bus = false;
+        ui.separator();
+        if offer.action_path().is_some() {
+            open_bus = ui.button(&label).on_hover_text(&hover).clicked();
+        } else {
+            // Weak, like `recording` below: a standing fact, read once and then ignored, not an alarm.
+            ui.weak(&label).on_hover_text(&hover);
+        }
+        // Pushed unconditionally, INCLUDING the frame the button is pressed on, on the swap notice's
+        // precedent: `crate::screen`'s guarantee is that a run is what the bar DREW, and the pre-click
+        // label is what was on the glass when this frame was painted.
+        drew.push(screen::Run::after_sep(&label));
+        if open_bus {
+            // No `issue`: this is not a served method and must not become one. `Host::call` is
+            // in-process and reachable with the socket shut (D15), so a `emulator/serve` would be a
+            // method whose only caller is a client that by definition cannot reach it yet.
+            bus.serve_now();
+        }
+
         // **What is RECORDING**, read from the instruments the loop itself feeds — one count, not a list,
         // because the lists are the three stopping tabs. It belongs on the transport bar rather than in a
         // tab for the same reason the buttons do: a human reaching for "step" needs to know what is
