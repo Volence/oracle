@@ -35,11 +35,15 @@ lanes; the bound stays at 100,000 B and is never raised)*. This file is what you
 boot**. The house bars and the ops lessons live in **`docs/OVERSEER-REFERENCE.md`**. Open it at
 the moment it applies: **before dispatching** a wave of agents, **before reviewing** returned work,
 and **before landing**. It is not part of the boot read.
-**Cut 2026-09-06 (99,798 → 87,2xx B with its repair pass), so there is real headroom; nobody hand-trims
-for the bound.** When
-it is next reached, move history out in ONE cut with `tools/prove_doc_split.py` — run it from THIS repo,
-script by absolute path, and check its provenance lines name this document's line count before reading
-the verdict. `## Where the detail lives` at the foot of this file says which of the three files takes what.
+**Nobody hand-trims for the bound. Do not take a headroom figure from this paragraph — MEASURE it**
+(`wc -c docs/OVERSEER.md` against 100,000). A previous revision of this line asserted "so there is real
+headroom" and was still asserting it at 99,578 B with 422 B left: a measurement written in the present
+tense, in the one section whose job is to warn about exactly that. Cuts so far: 2026-09-06 (99,798 →
+87,2xx B with its repair pass) and 2026-09-09 (99,578 → 93,149 B, three closed blocks).
+When the bound is next reached, move history out in ONE cut with `tools/prove_doc_split.py` — run it from
+THIS repo, script by absolute path, and check its provenance lines name this document's line count before
+reading the verdict. Read BOTH PROOF 3 numbers: `--headings` gates the verdict on one of them, so confirm
+the heading-blind seams land on headings rather than accepting the gated number alone. `## Where the detail lives` at the foot of this file says which of the three files takes what.
 
 ## The queue (2026-08-19 end of day; reorder only with cause, record the cause)
 
