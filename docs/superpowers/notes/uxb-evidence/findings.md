@@ -312,3 +312,77 @@ row above at the far right. `shots/38-watchpoints.png`.
 Breakpoints: `arm` stays `arm`, disarm via the toolbar or a per-row tick-box.
 Watchpoints: `arm` stays `arm`, no per-row tick-box at all.
 Profiler: the same button becomes `disarm` (`shots/42`, `shots/43`).
+
+## F-UXB-17 — oracle-player · Screen · `load` on a slot the panel has just labelled `(empty)` answers with a raw OS errno
+**misses: does an error say what to do next**
+
+The state row reads `state: ◀ slot 0 (empty) ▶ save load`. The panel therefore already knows the slot
+is empty — it says so, in words, 40 px from the button. Press `load` (08:11:26Z):
+
+> `state: load of slot 0 failed: No such file or directory (os error 2)`
+
+A person is handed a C errno for a condition the interface had already described in English, and the
+button was enabled to let them find out. **The same product does this correctly one tab away**: the
+Effects panel *disables* `turn scene off` and explains on hover — *"…scene is always in effect, so
+there is nothing to turn off. Pick a different one instead."* Two panels, one build, opposite
+handling of "this control cannot work right now".
+Evidence: `shots/60-state-load-empty.png`, `shots/53-effects-disabled-hover.png`.
+
+## F-UXB-18 — oracle-player · Screen · every message is inserted ABOVE the controls, so the controls move as you use the panel
+**misses: is it consistent with its neighbours** — and it is a mis-click hazard, since clicking is all there is
+
+The Screen panel's status lines (`SPAWN: …`, `HIDDEN: planeB …`, `This window paused the machine …`)
+accumulate at the TOP of the panel. Every one pushes the aspect row, the state row and the picture
+downward. Measured: the aspect row sits at window y=155 in `shots/59-screen-tab.png` and at y=174 in
+`shots/66-aspect-integer.png` after a single layer toggle — a 19 px shift, more than a row's height.
+I clicked `integer` at its old position immediately after toggling a layer and hit nothing
+(`shots/66`, aspect still `4:3`); the identical click at y=174 worked (`shots/67-aspect-integer2.png`).
+Panels whose controls stay put (Breakpoints, Watchpoints, Memory) put their messages BELOW.
+
+## F-UXB-19 — oracle-player · Screen · `save` over an occupied slot overwrites silently
+**misses: can a mistake be undone**
+
+Slot shows `slot 0 (occupied)`; pressing `save` again overwrites it with no confirmation, and the
+reply is the same sentence as a first save (`state: saved 1020402 bytes to slot 0 (…)`), so nothing
+distinguishes "wrote a new state" from "destroyed the one you were keeping". No undo.
+Evidence: `shots/61-state-save.png` then `shots/62-state-save-overwrite.png`.
+
+## F-UXB-20 — oracle-player · Screen · the status line under the state row describes an action two actions ago
+**misses: does it answer back** (fourth panel with this class; see F-UXB-6, F-UXB-12, F-UXB-16)
+
+After `save` to slot 0, pressing `◀` moved the selector to `slot 9 (empty)` while the line beneath
+still read `state: saved 1020402 bytes to slot 0 (…)`. A person who presses an arrow and reads the
+line directly under it is told about slot 0. Evidence: `shots/63-state-prev-from-0.png`.
+Same panel, longer-lived: the note *"This window paused the machine to take a picture of the object
+and resumed it"* was still on screen ~10 minutes and one full `emulator/reset` after the event it
+describes (`shots/59` … `shots/67`).
+
+## CLEAN — oracle-player · Screen layer + aspect + state (6 steps)
+1. `load` on empty slot 0 -> errno (F-UXB-17). 2. `save` -> `state: saved 1020400 bytes to slot 0
+(/home/volence/sonic_hacks/oracle-uxb/.uxrig/rom/s4.debug.state0)`, label flips to `(occupied)`
+(`shots/61`). 3. `save` again -> silent overwrite (F-UXB-19). 4. `◀` wraps 0 -> 9 (`shots/63`).
+5. `▶` back, `load` -> `state: loaded slot 0 from …` and the game restores (`shots/64`).
+6. Layer toggle: unticking `planeB` gives a red-keyed picture, a yellow banner *"HIDDEN: planeB. This
+picture is re-rendered from current VDP state, so mid-frame palette effects are not in it"*, and a
+badge *"planeB is now HIDDEN"* over the picture — three simultaneous, agreeing signals
+(`shots/65-layer-planeB-off.png`). Aspect `4:3`/`square`/`integer` select and highlight (`shots/67`).
+
+## CLEAN — oracle-player · Planes (3 steps)
+`plane A` / `plane B` / `window` each re-render with their own nametable address, map size, plane
+size, `rasterised N times in M repaints`, and a per-plane note (`window`: *"the window plane does not
+scroll / its map sits at screen coordinates"*; `plane A`: a five-line warning that a horizontal
+interrupt is armed and the mode is read once). `shots/55-planes.png`, `shots/56-planes-B.png`,
+`shots/57-planes-window.png`. Nothing found.
+
+## CLEAN — oracle-player · Effects (2 steps)
+`scene` / `raster program` / `band table`; `read it back` -> `Parallax_Current_Config holds
+0x0001464E, which is 'EditorSceneBinding_OJZ_Act1_Sec0'.` The panel says *why* it does not poll:
+*"This panel does not read on its own, because a stale line beside a fresh selection is the picture it
+exists to prevent."* `shots/52-effects.png`, `shots/54-effects-readback.png`.
+
+## ⚑ TOOLTIPS EXIST IN THIS WINDOW — which is what makes F-UXB-2 and F-UXB-8 findings rather than a house style
+Two controls answer a hover: the disabled `turn scene off` (`shots/53`) and the toolbar's
+`machine replaced at frame N` badge — *"Something replaced the machine in this window: a reload, a
+reset or a restore, from here or from a program driving it. Anything you read now comes from the new
+one. Click to dismiss."* (`shots/58-hover-machine-replaced.png`). The breakpoint delete button and the
+`governor`/`rebases` strip were hovered for 2 s each and gave nothing.
