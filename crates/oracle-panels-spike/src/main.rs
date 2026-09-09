@@ -471,37 +471,23 @@ impl Engine {
     }
 }
 
-/// The completed frame as egui pixels, or `None` if the run did not finish one. Mirrors
-/// `crates/oracle-frontend/src/main.rs::blit_capture`, but lands in `Color32` instead of `u32` ARGB —
-/// which is exactly the conversion a toolkit rebuild would have to pay.
+/// The completed frame as egui pixels, or `None` if the run did not finish one.
+///
+/// The selection is `ScanlineCapture::completed_frame` (H25) — this was the fourth copy of it, and being
+/// a throwaway is a reason to keep it honest rather than an exemption: the whole point of the spike is
+/// that its per-frame cost is the player's, and a copy that drifted would be pricing something else.
+/// What stays here is the `Color32` conversion instead of `u32` ARGB, which is exactly the conversion a
+/// toolkit rebuild would have to pay.
 fn capture_to_image(cap: &ScanlineCapture) -> Option<egui::ColorImage> {
-    let px = cap.pixels();
-    let log = cap.lines();
-    if px.is_empty() || log.len() < HEIGHT {
-        return None;
-    }
-    let widths = &log[log.len() - HEIGHT..];
-    if widths.iter().map(|&(_, w)| w).sum::<usize>() != px.len() {
-        return None;
-    }
-    let width = widths[HEIGHT - 1].1;
-    if width == 0 {
-        return None;
-    }
-    let mut pixels = Vec::with_capacity(width * HEIGHT);
-    let mut at = 0;
-    for &(_, line_width) in widths {
-        let line = &px[at..at + line_width];
-        at += line_width;
-        for x in 0..width {
-            let (r, g, b) = line.get(x).copied().unwrap_or((0, 0, 0));
-            pixels.push(egui::Color32::from_rgb(r, g, b));
-        }
-    }
+    let frame = cap.completed_frame(HEIGHT)?;
+    let width = frame.width();
     Some(egui::ColorImage {
         size: [width, HEIGHT],
         source_size: egui::vec2(width as f32, HEIGHT as f32),
-        pixels,
+        pixels: frame
+            .pixels()
+            .map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
+            .collect(),
     })
 }
 

@@ -129,6 +129,116 @@ impl ScanlineCapture {
     pub fn last_frame_index(&self) -> Option<u64> {
         self.last_frame_index
     }
+
+    /// **The completed-frame reader** — the most recently finished `height`-line frame, or `None` when
+    /// this capture is not holding one right now (nothing completed yet, or a run that ended mid-frame).
+    ///
+    /// # Why this lives here rather than in each window
+    ///
+    /// It existed **four times** — `oracle-frontend`'s `blit_capture`, `oracle-player`'s
+    /// `capture_to_image`, `oracle-aether`'s `store_from_capture`, and the panels spike — with identical
+    /// selection logic and four different pixel types on the far end. Only one of the four was tested,
+    /// and that one was the copy scheduled for deletion; two of the untested three back
+    /// `emulator/screenshot` and the player's own window. Two of their docs stated the coupling in prose
+    /// and one of those noted that **getting it wrong is silent**: the visible symptom is a frame sheared
+    /// mid-screen or skewed by 64 px per line, and neither throws.
+    ///
+    /// So the *selection* is here, once, under a test, and each consumer keeps only its own packing loop
+    /// (`u32` ARGB, `egui::Color32`, `(u8,u8,u8)`), which is the part that genuinely differs. `height`
+    /// stays a parameter rather than a constant: this type deliberately knows nothing about how tall a
+    /// frame is — see [`BusEventSink::on_frame_boundary`] and the module doc.
+    ///
+    /// # The two non-obvious rules, and they are load-bearing
+    ///
+    /// * **The completed frame is the last `height` deliveries, and the sum check is what proves it.** A
+    ///   run that ended mid-frame leaves a *previous* frame in [`pixels`](Self::pixels) whose lines are
+    ///   no longer the tail of the delivery log; without the check a torn run hands back a frame stitched
+    ///   from two different geometries.
+    /// * **A frame is not guaranteed rectangular.** A game can switch H32↔H40 part-way down, and S3K does
+    ///   exactly that on the first frame after a soft reset (two 256-px lines, then 222 at 320). The
+    ///   width is the width the frame **ended** on — what the VDP is actually scanning out by V-Blank —
+    ///   and shorter lines are padded with black to reach it by
+    ///   [`CompletedFrame::pixels`]. Rejecting such frames instead would blank the window for as long as
+    ///   a game kept switching.
+    ///
+    /// Nothing is copied here: the return borrows the capture, so a caller who only wants the width pays
+    /// for no pixels at all.
+    pub fn completed_frame(&self, height: usize) -> Option<CompletedFrame<'_>> {
+        let px = self.pixels();
+        let log = self.lines();
+        // `height == 0` is not reachable from any caller today (all four pass a 224 constant), and it is
+        // refused rather than trusted because this is a public parameter: with an empty `widths` the
+        // `widths[height - 1]` below would panic inside a read that has a `None` for every other way of
+        // not having a frame.
+        if height == 0 || px.is_empty() || log.len() < height {
+            return None;
+        }
+        let widths = &log[log.len() - height..];
+        if widths.iter().map(|&(_, w)| w).sum::<usize>() != px.len() {
+            return None;
+        }
+        let width = widths[height - 1].1;
+        if width == 0 {
+            return None;
+        }
+        Some(CompletedFrame {
+            width,
+            height,
+            px,
+            widths,
+        })
+    }
+}
+
+/// One completed frame, borrowed out of a [`ScanlineCapture`] by
+/// [`completed_frame`](ScanlineCapture::completed_frame).
+///
+/// Deliberately not a pixel buffer: the four consumers want four different pixel types, and the thing
+/// they must agree on is *which* pixels and *what shape*, not what a pixel is spelled as.
+#[derive(Clone, Copy, Debug)]
+pub struct CompletedFrame<'a> {
+    width: usize,
+    height: usize,
+    px: &'a [(u8, u8, u8)],
+    widths: &'a [(u16, usize)],
+}
+
+impl<'a> CompletedFrame<'a> {
+    /// The display width: the width the frame **ended** on, never a re-query of the VDP — a post-hoc
+    /// query answers for whatever mode the chip is in *now*, which after an H32↔H40 switch is the next
+    /// frame's. Always non-zero.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// The height this frame was read at — the `height` that was asked for, restated so a caller sizing
+    /// an image does not have to carry the constant twice.
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// The frame's lines exactly as they were delivered, **ragged**: a line may be shorter or longer
+    /// than [`width`](Self::width). For drawing, prefer [`pixels`](Self::pixels), which applies the
+    /// padding rule; this is for a caller that needs to see the geometry itself.
+    pub fn rows(&self) -> impl Iterator<Item = &'a [(u8, u8, u8)]> + '_ {
+        let px = self.px;
+        let mut at = 0usize;
+        self.widths.iter().map(move |&(_, w)| {
+            let line = &px[at..at + w];
+            at += w;
+            line
+        })
+    }
+
+    /// **Every pixel of the `width` × `height` rectangle, line-major**, with the padding rule applied:
+    /// a line shorter than [`width`](Self::width) is filled out with black, and a longer one is cut.
+    /// Exactly `width * height` items, always.
+    pub fn pixels(&self) -> impl Iterator<Item = (u8, u8, u8)> + '_ {
+        let width = self.width;
+        self.rows().flat_map(move |line| {
+            (0..width).map(move |x| line.get(x).copied().unwrap_or((0, 0, 0)))
+        })
+    }
 }
 
 impl BusEventSink for ScanlineCapture {
@@ -324,5 +434,159 @@ mod tests {
             });
             assert!(s.lines().is_empty(), "bus events are not lines");
         }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // `completed_frame` — the reader that used to exist four times (H25)
+    //
+    // The four copies agreed exactly and **nothing asserted that they must**; the only tested one was
+    // `oracle-frontend`'s `blit_capture`, which is the copy scheduled for deletion. These rows are that
+    // copy's four edge assertions, moved to the one implementation they now all run, plus the two rules
+    // its prose stated and no test held: the ragged-frame padding, and the width the frame ended on.
+    // -----------------------------------------------------------------------------------------------
+
+    /// Feed `lines` deliveries of the given per-line widths, then a boundary.
+    fn feed_ragged(sink: &mut ScanlineCapture, frame: u8, widths: &[usize]) {
+        for (line, &w) in widths.iter().enumerate() {
+            let px: Vec<(u8, u8, u8)> = (0..w).map(|x| (frame, line as u8, x as u8)).collect();
+            sink.on_scanline(line as u16, &px);
+        }
+    }
+
+    /// **The four `None`s**, each reached by a different route and each asserted separately, because
+    /// "returns `None`" is satisfied by an implementation that never returns anything else.
+    #[test]
+    fn completed_frame_is_none_until_a_whole_frame_is_actually_held() {
+        const H: usize = 4;
+
+        // 1. Nothing delivered at all.
+        let empty = ScanlineCapture::new(Retain::LastFrame);
+        assert!(empty.completed_frame(H).is_none(), "no deliveries");
+
+        // 2. Fewer than `height` deliveries in the log.
+        let mut partial = ScanlineCapture::new(Retain::LastFrame);
+        feed_ragged(&mut partial, 0, &[2, 2, 2]);
+        partial.on_frame_boundary(0);
+        assert!(
+            partial.completed_frame(H).is_none(),
+            "3 lines cannot be a 4-line frame"
+        );
+
+        // 3. ⚑ THE SUM CHECK. A run that ends mid-frame leaves the PREVIOUS frame in `pixels()` while
+        //    the tail of the log describes the torn one. Without the check the reader stitches a frame
+        //    out of two different geometries and nothing throws.
+        //
+        //    ⚑ The torn lines are deliberately WIDER. This check compares a total, so it can only see a
+        //    tear that changed the geometry — a torn run at the same width leaves the tail summing to
+        //    exactly what is held, and the reader hands back the previous completed frame. That is not a
+        //    hole: re-presenting the last good picture is what every caller does with a `None` anyway.
+        //    The tear that matters is the one that would be *stitched*, and that is this one.
+        let mut stale = ScanlineCapture::new(Retain::LastFrame);
+        feed_ragged(&mut stale, 0, &[2; H]);
+        stale.on_frame_boundary(0);
+        assert!(
+            stale.completed_frame(H).is_some(),
+            "the control: frame 0 completed and is readable"
+        );
+        feed_ragged(&mut stale, 1, &[5, 5]); // torn: two lines of a wider frame, no boundary
+        assert!(
+            stale.completed_frame(H).is_none(),
+            "the log's tail is two wide torn lines plus two of frame 0, and the held pixels are frame \
+             0's eight; stitching those is a picture sheared mid-screen"
+        );
+
+        // 4. A zero-width final line: a frame with no display width is not a picture.
+        let mut zero = ScanlineCapture::new(Retain::LastFrame);
+        feed_ragged(&mut zero, 0, &[2, 2, 2, 0]);
+        zero.on_frame_boundary(0);
+        assert!(
+            zero.completed_frame(H).is_none(),
+            "the frame ended on a zero-width line"
+        );
+
+        // 5. And the public parameter's own edge: `height == 0` refuses rather than indexing `[-1]`.
+        let mut fine = ScanlineCapture::new(Retain::LastFrame);
+        feed_ragged(&mut fine, 0, &[2; H]);
+        fine.on_frame_boundary(0);
+        assert!(fine.completed_frame(H).is_some(), "the control");
+        assert!(
+            fine.completed_frame(0).is_none(),
+            "a zero-line frame is refused, not panicked over"
+        );
+    }
+
+    /// **The ragged-frame rule, which every copy stated in prose and none of them asserted.**
+    ///
+    /// A game can switch H32↔H40 part-way down and S3K does on the first frame after a soft reset. The
+    /// width is the one the frame **ended** on, short lines are padded with black, and a long line is
+    /// cut. Getting this wrong is the silent 64-px-per-line skew, so the pixels are checked by position
+    /// and not merely counted.
+    #[test]
+    fn a_ragged_frame_takes_the_width_it_ended_on_and_pads_the_short_lines() {
+        const H: usize = 3;
+        let mut s = ScanlineCapture::new(Retain::LastFrame);
+        // Two narrow lines, then a wide one — S3K's shape, shrunk.
+        feed_ragged(&mut s, 7, &[2, 5, 4]);
+        s.on_frame_boundary(0);
+
+        let f = s.completed_frame(H).expect("a whole frame was delivered");
+        assert_eq!(
+            f.width(),
+            4,
+            "the width the frame ENDED on, not the first or the widest"
+        );
+        assert_eq!(f.height(), H);
+
+        // `rows` is the delivered geometry, ragged and unpadded.
+        assert_eq!(
+            f.rows().map(<[_]>::len).collect::<Vec<_>>(),
+            vec![2, 5, 4],
+            "rows() must not pad — that is pixels()' job"
+        );
+
+        // `pixels` is the rectangle. Exactly width*height, black where a line ran short, cut where it
+        // ran long.
+        let got: Vec<(u8, u8, u8)> = f.pixels().collect();
+        assert_eq!(got.len(), 4 * H, "exactly width * height pixels");
+        assert_eq!(
+            got,
+            vec![
+                // line 0 delivered 2 of 4: two real, two black.
+                (7, 0, 0),
+                (7, 0, 1),
+                (0, 0, 0),
+                (0, 0, 0),
+                // line 1 delivered 5 of 4: the fifth is dropped, never wrapped onto the next line.
+                (7, 1, 0),
+                (7, 1, 1),
+                (7, 1, 2),
+                (7, 1, 3),
+                // line 2 is exact.
+                (7, 2, 0),
+                (7, 2, 1),
+                (7, 2, 2),
+                (7, 2, 3),
+            ],
+            "a wrong pad or a wrong cut is a sheared picture and nothing throws"
+        );
+    }
+
+    /// The frame handed back is the one the **last** boundary completed, not an earlier one — the other
+    /// half of what the sum check buys, and the assertion a reader that took the FIRST `height` lines
+    /// would fail while passing every row above.
+    #[test]
+    fn completed_frame_reads_the_most_recent_frame_not_the_first() {
+        const H: usize = 2;
+        let mut s = ScanlineCapture::new(Retain::LastFrame);
+        for frame in 0..3u8 {
+            feed_ragged(&mut s, frame, &[3; H]);
+            s.on_frame_boundary(u64::from(frame));
+        }
+        let f = s.completed_frame(H).expect("three frames completed");
+        let got: Vec<(u8, u8, u8)> = f.pixels().collect();
+        assert!(
+            got.iter().all(|&(frame, _, _)| frame == 2),
+            "every pixel must come from frame 2: {got:?}"
+        );
     }
 }

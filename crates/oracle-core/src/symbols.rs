@@ -1097,6 +1097,33 @@ impl SymbolTable {
             && self.matches_declared_phase() != Some(false)
     }
 
+    /// **Would resolving a NAME against this table give a different answer than against `other`?**
+    /// `true` when it would not — for every name, through every door.
+    ///
+    /// This exists because a consumer that answers that question by comparing
+    /// [`symbols()`](Self::symbols) answers it for **one of three populations**. This type holds three,
+    /// and they are disjoint by construction: `syms` (labels, reached by
+    /// [`by_name`](Self::by_name)/[`address_of`](Self::address_of)/[`resolve`](Self::resolve)), the
+    /// `Equate Table` (reached by [`equate_value`](Self::equate_value) /
+    /// [`equates_with_prefix`](Self::equates_with_prefix)), and the `Phase Table` (reached by
+    /// [`phase_of`](Self::phase_of)). A rebuild that moves only an equate value moves what
+    /// `equate_value` answers while leaving `syms` byte-identical, so a symbols-only comparison calls
+    /// the two tables the same and the consumer serves the old value silently.
+    ///
+    /// **The knowledge lives here rather than at the call site on purpose**: a fourth population added
+    /// to this struct is a fourth field this method must consider, in the file that gained it, instead
+    /// of a change nobody propagates to a comparison written in another crate.
+    ///
+    /// What is deliberately NOT compared: the derived indexes (`rev`, `by_name`, `by_demangled`,
+    /// `by_module`), which are functions of `syms` and cannot differ while it does not; and the
+    /// provenance/damage metadata ([`source`](Self::source), the declared counts,
+    /// [`skipped_lines`](Self::skipped_lines), the non-address rows), which describe how the file was
+    /// read rather than what a name resolves to. Two tables that resolve every name identically but
+    /// were parsed from different dialects are the same answer to this question.
+    pub fn resolves_identically(&self, other: &SymbolTable) -> bool {
+        self.syms == other.syms && self.equates == other.equates && self.phase == other.phase
+    }
+
     /// Exact lookup by the **raw** mangled name (`$engine.boot$EntryPoint$wait_dma`).
     pub fn by_name(&self, name: &str) -> Option<&Symbol> {
         self.by_name.get(name).map(|&i| &self.syms[i])
@@ -2847,5 +2874,87 @@ PHASE COUNT 0
         // The symbol count did not move, in either direction.
         assert_eq!(t.len(), 10);
         assert_eq!(t.equate_count(), 4);
+    }
+
+    /// **`resolves_identically` answers for ALL THREE populations, one at a time** (H23).
+    ///
+    /// The defect this closes lived in `oracle-aether`'s listing-freshness verdict, which asked the
+    /// broad question — *would resolving a name against the file give a different answer?* — by
+    /// comparing `symbols()`, which is one population of three. So the loop below perturbs **exactly
+    /// one population per leg**, and every leg is checked twice: the tables must differ here, and the
+    /// perturbation must be visible through that population's own door, or a leg that changed nothing
+    /// would pass by reporting a difference it did not make.
+    ///
+    /// The `Player_1` name is deliberate: `phase_fixture` carries it in all three sections, so no leg
+    /// can be satisfied by a name that only one population has ever heard of.
+    #[test]
+    fn resolves_identically_sees_a_change_in_any_one_of_the_three_populations() {
+        let base = phase_fixture();
+        let t = SymbolTable::parse(&base).expect("fixture parses");
+
+        // The reflexive leg, and the over-firing control: a method that answered `false` unconditionally
+        // would satisfy every leg below and carry no information.
+        assert!(
+            t.resolves_identically(&SymbolTable::parse(&base).expect("re-parses")),
+            "two parses of one text must resolve identically"
+        );
+
+        // 1. Population one — a label's address moves. `Player_1` is a `Symbol Table` row.
+        let syms_moved = base.replace(" Player_1 : FFFF8CFA C |", " Player_1 : FFFF9000 C |");
+        assert_ne!(syms_moved, base, "leg 1 changed nothing on disk");
+        let m = SymbolTable::parse(&syms_moved).expect("parses");
+        assert_eq!(
+            m.address_of("Player_1"),
+            Some(0x00FF_9000),
+            "leg 1's perturbation must be visible through the symbol door, or it proves nothing"
+        );
+        assert!(
+            !t.resolves_identically(&m),
+            "a moved label address must not read as an identical table"
+        );
+
+        // 2. Population two — an equate's VALUE moves, and NOTHING else. This is the live case: no code
+        //    address moves, `symbols()` is byte-identical, and `emulator/lookup_equate` resolves names
+        //    through exactly this map.
+        let equ_moved = base.replace("EQU Player_1 = $00000001", "EQU Player_1 = $00000002");
+        assert_ne!(equ_moved, base, "leg 2 changed nothing on disk");
+        let m = SymbolTable::parse(&equ_moved).expect("parses");
+        assert_eq!(
+            m.symbols(),
+            t.symbols(),
+            "leg 2's PREMISE: population one must be byte-identical, or this leg witnesses leg 1"
+        );
+        assert_eq!(
+            m.equate_value("Player_1"),
+            Some(2),
+            "leg 2's perturbation must be visible through the equate door"
+        );
+        assert!(
+            !t.resolves_identically(&m),
+            "an equate whose value moved must not read as an identical table — the whole of H23"
+        );
+
+        // 3. Population three — a phased symbol's LMA moves. Latent (no wire surface today), and pinned
+        //    here so it cannot become the next silent one.
+        let phase_moved = base.replace(
+            "PHASE Player_1 VMA $00000400 LMA $00000400",
+            "PHASE Player_1 VMA $00000400 LMA $000B0400",
+        );
+        assert_ne!(phase_moved, base, "leg 3 changed nothing on disk");
+        let m = SymbolTable::parse(&phase_moved).expect("parses");
+        assert_eq!(
+            m.symbols(),
+            t.symbols(),
+            "leg 3's PREMISE: population one must be byte-identical"
+        );
+        assert_eq!(
+            m.phase_of("Player_1").map(|p| p.lma),
+            Some(0x000B_0400),
+            "leg 3's perturbation must be visible through the phase door"
+        );
+        assert!(
+            !t.resolves_identically(&m),
+            "a phase row that moved must not read as an identical table"
+        );
     }
 }

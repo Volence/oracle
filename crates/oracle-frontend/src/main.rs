@@ -670,40 +670,28 @@ const MAX_CAPTURE_LINES: usize = 8 * HEIGHT;
 /// [`Vdp::render_scanline`](oracle_core::vdp::Vdp), delivered line by line *during* the run against the CRAM
 /// live at that line, through the sink seam the core already had.
 ///
-/// **Width, and ragged frames.** Width is taken from the capture's own per-line log, never from re-querying
-/// the VDP — a post-hoc query answers for whatever mode the chip is in *now*, which after an H32↔H40 switch is
-/// the next frame's. A frame is *not* guaranteed rectangular: a game can switch mode part-way down, and S3K
-/// does exactly that on the first frame after a soft reset (two 256-px lines, then 222 at 320). So the display
-/// width is the width the frame **ended** on — what the VDP is actually scanning out by V-Blank — and shorter
-/// lines are padded with black to reach it. Rejecting those frames instead would blank the window for as long
-/// as a game kept switching.
+/// **Width, ragged frames, and which lines are the frame** are not decided here and are no longer restated
+/// here: they are [`ScanlineCapture::completed_frame`](oracle_core::scanline_capture::ScanlineCapture::completed_frame),
+/// which is the one place they are written and the one place they are pinned. That doc carries the
+/// H32↔H40 argument, the sum check, and the padding rule, with tests on each; a copy of the prose beside
+/// a copy of the code is exactly what H25 found four of.
 fn blit_capture(cap: &ScanlineCapture, buf: &mut Vec<u32>) -> Option<usize> {
-    let px = cap.pixels();
-    let log = cap.lines();
-    if px.is_empty() || log.len() < HEIGHT {
-        return None;
-    }
-    // The completed frame is the last HEIGHT deliveries; the sum check is what proves that (a run that ended
-    // mid-frame leaves a *previous* frame in `pixels()` whose lines are no longer the tail of the log).
-    let widths = &log[log.len() - HEIGHT..];
-    if widths.iter().map(|&(_, w)| w).sum::<usize>() != px.len() {
-        return None;
-    }
-    let width = widths[HEIGHT - 1].1;
-    if width == 0 {
-        return None;
-    }
+    // ⚑ **The selection is not written here** (H25). Which lines are the completed frame, what its width
+    // is, and how a short line is padded were written out four times across this repo — here, in
+    // `oracle-player`'s `capture_to_image`, in `oracle-aether`'s `store_from_capture`, and in the panels
+    // spike — with nothing asserting they agreed and only this copy tested. They are now
+    // `ScanlineCapture::completed_frame`, which is where the two subtleties this function's doc explains
+    // live and are pinned. What is left below is the only part that was ever genuinely this window's:
+    // packing `(u8,u8,u8)` into `u32` ARGB.
+    let frame = cap.completed_frame(HEIGHT)?;
+    let width = frame.width();
     buf.clear();
     buf.reserve(width * HEIGHT);
-    let mut at = 0;
-    for &(_, line_width) in widths {
-        let line = &px[at..at + line_width];
-        at += line_width;
-        for x in 0..width {
-            let (r, g, b) = line.get(x).copied().unwrap_or((0, 0, 0));
-            buf.push((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b));
-        }
-    }
+    buf.extend(
+        frame
+            .pixels()
+            .map(|(r, g, b)| (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)),
+    );
     Some(width)
 }
 

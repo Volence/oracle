@@ -80,6 +80,52 @@ const LST_MOVED: &str = "\
     0 unused symbols
 ";
 
+/// [`LST_OLD`] with an `Equate Table` beside it — the table's **second** population, and the one
+/// `emulator/lookup_equate` (§11.36 / CR-M) serves by name through this same server.
+const LST_EQUATES_OLD: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+
+    2 symbols
+    0 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU VRAM_Ring = $00000240
+
+    1 equates
+";
+
+/// [`LST_EQUATES_OLD`] after a rebuild that moved **one equate value and nothing else**: the `Symbol
+/// Table` section is byte-identical, so no code address moved and population one cannot tell the two
+/// files apart. The packet's own reproduction recipe, `VRAM_Ring = $240` → `$241`.
+const LST_EQUATES_MOVED: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+
+    2 symbols
+    0 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU VRAM_Ring = $00000241
+
+    1 equates
+";
+
+/// The value `LST_EQUATES_OLD` gives `VRAM_Ring`, and the one `LST_EQUATES_MOVED` gives it instead.
+/// Plain integers, because §11.36 rules an equate value is a number and never a hex string.
+const VRAM_RING_OLD: u64 = 0x240;
+const VRAM_RING_MOVED: u64 = 0x241;
+
 /// The address `LST_OLD` and `LST_REBUILT` both give `Player_1`, spelled the way the wire spells it.
 const PLAYER_1_OLD: &str = "0x00FF8CFA";
 /// The address `LST_MOVED` gives it instead.
@@ -518,6 +564,112 @@ fn a_listing_whose_addresses_moved_fires_even_though_the_row_count_did_not() {
 
     let _ = std::fs::remove_file(&lst);
     let _ = std::fs::remove_file(&rom);
+}
+
+/// **H23 — the freshness verdict must answer for EVERY population a name resolves through, not just
+/// the first.**
+///
+/// [`SymbolTable`](oracle_core::symbols::SymbolTable) holds three disjoint populations — symbols,
+/// equates, phase — and `Engine::listing_freshness` compared **one**. `emulator/lookup_equate` is a
+/// registered wire method resolving names through the second one and attaching *this* verdict to its
+/// own reply, so a rebuild that moved only an equate value made the server answer the old value with
+/// no caveat at all, and left `emulator/status` quiet about a listing that no longer describes what it
+/// is resolving against.
+///
+/// The shape is [`a_listing_whose_addresses_moved_fires_even_though_the_row_count_did_not`]'s, one axis
+/// over: the two fixtures' `Symbol Table` sections are **byte-identical** (asserted below, not claimed),
+/// so nothing in population one can tell them apart, and the assertion is on the equate door's real
+/// answer rather than on our own opinion of our own state. `spawn_with_rom_file` for §11.37's reason:
+/// a `spawn`ed image was never on disk, so `status.caveat` would carry an unmeasurable-ROM sentence and
+/// the assertion below would pass without the listing half ever speaking.
+#[test]
+fn a_listing_whose_only_change_is_an_equate_value_fires_on_both_doors() {
+    assert_eq!(
+        symbol_section(LST_EQUATES_OLD),
+        symbol_section(LST_EQUATES_MOVED),
+        "the premise: the two fixtures' Symbol Table sections must be byte-identical, or population \
+         one could tell them apart and this test would witness the case that already worked"
+    );
+    assert_ne!(
+        LST_EQUATES_OLD, LST_EQUATES_MOVED,
+        "…and the files must nonetheless differ, or there is nothing here to detect"
+    );
+
+    let (h, _rom) = spawn_with_rom_file("symfresh-equate");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    let lst = write_lst("equate", LST_EQUATES_OLD);
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+
+    // The control, at the same instant: the equate door answers before anything is rewritten, so an
+    // absence below is a real absence and not a broken probe.
+    let held = c.ok("emulator/lookup_equate", json!({"name": "VRAM_Ring"}));
+    assert_eq!(held["value"], json!(VRAM_RING_OLD));
+    assert_eq!(
+        caveat(&held),
+        None,
+        "the OVER-FIRING control: an unconditional caveat satisfies every assertion below and carries \
+         no information. Reply: {held}"
+    );
+    assert_eq!(
+        caveat(&c.ok("emulator/status", json!({}))),
+        None,
+        "…and `status` is quiet too while nothing has moved"
+    );
+
+    std::fs::write(&lst, LST_EQUATES_MOVED).expect("rewrite the listing");
+
+    // The independent channel: the server keeps answering the OLD value, which is correct — the table
+    // was not dropped — and it must SAY that the file it came from has moved past it.
+    let stale = c.ok("emulator/lookup_equate", json!({"name": "VRAM_Ring"}));
+    assert_eq!(
+        stale["value"],
+        json!(VRAM_RING_OLD),
+        "the held table still answers, and answers the value it holds"
+    );
+    assert!(
+        caveat(&stale).is_some(),
+        "a rebuild that moved an equate value is a rewritten listing, and `lookup_equate` resolves \
+         names through the very population that moved. Reply: {stale}"
+    );
+    let status = c.ok("emulator/status", json!({}));
+    assert!(
+        caveat(&status).is_some(),
+        "the STANDING verdict must fire too — a session that never reloads learns from `status` or \
+         from nothing. Reply: {status}"
+    );
+
+    // Anti-vacuity: re-reading the file moves the answer, so the two fixtures genuinely differ on the
+    // wire and the assertions above are not satisfied by a rewrite that changed nothing.
+    c.ok(
+        "emulator/load_symbols",
+        json!({ "path": lst.display().to_string() }),
+    );
+    let fresh = c.ok("emulator/lookup_equate", json!({"name": "VRAM_Ring"}));
+    assert_eq!(
+        fresh["value"],
+        json!(VRAM_RING_MOVED),
+        "ANTI-VACUITY: the re-read must change the served value"
+    );
+    assert_eq!(
+        caveat(&fresh),
+        None,
+        "…and the verdict goes quiet again once the table matches the file: {fresh}"
+    );
+
+    let _ = std::fs::remove_file(&lst);
+}
+
+/// The `Symbol Table` half of a fixture listing — everything before the `Equate Table` header — read
+/// out of the fixture text rather than asserted in prose. The premise above is worth nothing if the
+/// two sections are only *believed* to be identical.
+fn symbol_section(lst: &str) -> &str {
+    lst.split("  Equate Table")
+        .next()
+        .expect("split yields one")
 }
 
 /// The number of symbol rows a fixture listing carries, counted from the fixture text rather than

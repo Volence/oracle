@@ -7388,8 +7388,12 @@ impl Engine {
     ///
     /// ## What the verdict does NOT claim
     ///
-    /// Equality here is over the parsed symbol ROWS, and it answers exactly one question: *would
-    /// resolving a name against the file give a different answer than resolving it against what I hold?*
+    /// Equality here is over every population a name resolves through — labels, equates and phase rows,
+    /// via [`SymbolTable::resolves_identically`] — and it answers exactly one question: *would resolving
+    /// a name against the file give a different answer than resolving it against what I hold?*
+    /// **The row counts below are reporting, not the comparison**: `held_rows` / `disk_rows` count
+    /// `symbols()` alone, so a rebuild that moved only an equate value fires with the two numbers equal,
+    /// exactly as a rebuild that moved only an address already did.
     /// It says nothing about whether the listing describes the loaded ROM — [`Engine::load_symbols`]'s
     /// own caveat is the standard held to here, and `validate_against_rom` is a filter, not a proof. A
     /// quiet verdict means "the file has not moved past the table", never "the table is right".
@@ -7419,7 +7423,16 @@ impl Engine {
                 })
             }
         };
-        if on_disk.symbols() == held.symbols() {
+        // **All three populations, through the table's own comparison** (H23). This used to read
+        // `on_disk.symbols() == held.symbols()`, which answers for `syms` alone — while the question
+        // stated four paragraphs up is *"would resolving a **name** against the file give a different
+        // answer"*, and `emulator/lookup_equate` asks exactly that of a second population, attaching
+        // this same verdict to its own reply. A rebuild moving only `VRAM_Ring = $240` to `$241` left
+        // `syms` byte-identical, so the server answered the OLD value with no caveat at all and
+        // `emulator/status` stayed quiet. [`SymbolTable::resolves_identically`] is where the population
+        // count lives, so a fourth one is a change in the struct that gained it rather than a change
+        // nobody propagates to a comparison written in another crate.
+        if on_disk.resolves_identically(held) {
             return Some(ListingFreshness::Current {
                 path: path.to_string(),
                 rows: held_rows,
@@ -9970,49 +9983,31 @@ pub fn merge_pads(a: Pad, b: Pad) -> Pad {
 /// Read the most recently **completed** frame out of a [`Retain::LastFrame`] capture into `slot`, and report
 /// whether there was one to take.
 ///
-/// This is the same reader the window uses (`oracle-frontend`'s `blit_capture`), down to the two subtleties
-/// that are not obvious and are both load-bearing:
+/// ⚑ **H25.** The doc here used to say *"this is the same reader the window uses"* and then write that
+/// reader out again, restating its two load-bearing subtleties in prose. Four copies existed and this one
+/// backs `emulator/screenshot` and every hosted client, untested. The selection is now
+/// [`ScanlineCapture::completed_frame`](oracle_core::scanline_capture::ScanlineCapture::completed_frame),
+/// where the sum check and the ragged-frame rule live once and are asserted; "the same reader" is now a
+/// fact about the call rather than a claim in a comment.
 ///
-/// * **The sum check is what proves the frame is the one just drawn.** A run that ends mid-frame leaves the
-///   *previous* frame in `pixels()`, whose lines are no longer the tail of the delivery log; without the
-///   check a torn run would hand back a frame stitched from two different geometries.
-/// * **A frame is not guaranteed rectangular.** A game can switch H32↔H40 part-way down (S3K does exactly
-///   that on the first frame after a soft reset), so the width is the width the frame *ended* on — what the
-///   VDP is actually scanning out by V-Blank — and short lines are padded with black to reach it.
-///
-/// Written in place because it runs once per emulated frame on a free-running server: reusing the slot's
-/// `Vec` makes the steady state a memcpy rather than a fresh 215 KB allocation and free every 16.7 ms. `slot`
-/// is left completely untouched when there is nothing to take — every rejection above happens before the
-/// first write — so a caller keeps presenting the frame it already had.
+/// What is still this function's own is the **write policy**: it fills the slot in place because it runs
+/// once per emulated frame on a free-running server, so reusing the `Vec` makes the steady state a memcpy
+/// rather than a fresh 215 KB allocation and free every 16.7 ms. `slot` is left completely untouched when
+/// there is nothing to take — the refusal happens before the first write — so a caller keeps presenting
+/// the frame it already had.
 fn store_from_capture(slot: &mut Option<CapturedFrame>, cap: &ScanlineCapture) -> bool {
-    let px = cap.pixels();
-    let log = cap.lines();
     let height = ACTIVE_LINES as usize;
-    if px.is_empty() || log.len() < height {
+    let Some(frame) = cap.completed_frame(height) else {
         return false;
-    }
-    let widths = &log[log.len() - height..];
-    if widths.iter().map(|&(_, w)| w).sum::<usize>() != px.len() {
-        return false;
-    }
-    let width = widths[height - 1].1;
-    if width == 0 {
-        return false;
-    }
+    };
+    let width = frame.width();
     let f = slot.get_or_insert_with(|| CapturedFrame {
         width,
         rgb: Vec::with_capacity(width * height),
     });
     f.width = width;
     f.rgb.clear();
-    let mut at = 0;
-    for &(_, line_width) in widths {
-        let line = &px[at..at + line_width];
-        at += line_width;
-        for x in 0..width {
-            f.rgb.push(line.get(x).copied().unwrap_or((0, 0, 0)));
-        }
-    }
+    f.rgb.extend(frame.pixels());
     true
 }
 
@@ -10816,6 +10811,96 @@ mod tests {
         assert_eq!(
             rows[0].0, 0x0000_0300,
             "`cycles` decides first, always: the second key is a tie-break and not a second opinion"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // H25 — the completed-frame reader, on the copy that backs `emulator/screenshot`
+    //
+    // `store_from_capture` had no test at all. It is what fills the frame `emulator/screenshot` and every
+    // hosted client reads, and the failure mode of getting the geometry wrong is a picture sheared
+    // mid-screen: nothing throws. The selection now lives in `ScanlineCapture::completed_frame` and is
+    // pinned there; what these two rows assert is that THIS consumer reads it and honours the two rules
+    // that reach the wire — the width the frame ended on, and the untouched slot.
+    // -----------------------------------------------------------------------------------------------
+
+    /// A ragged frame — S3K's post-reset shape, two H32 lines then H40 — must reach the slot at the width
+    /// it **ended** on, with the short lines padded rather than the frame rejected.
+    #[test]
+    fn store_from_capture_takes_the_width_the_frame_ended_on_and_pads_the_short_lines() {
+        use oracle_core::bus::BusEventSink;
+
+        let height = ACTIVE_LINES as usize;
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        for line in 0..height {
+            let w = if line < 2 { 256 } else { 320 };
+            cap.on_scanline(line as u16, &vec![(0x11, 0x22, 0x33); w]);
+        }
+        cap.on_frame_boundary(0);
+        assert!(
+            !cap.pixels().len().is_multiple_of(height),
+            "the payload really is ragged — no single width divides it"
+        );
+
+        let mut slot: Option<CapturedFrame> = None;
+        assert!(
+            store_from_capture(&mut slot, &cap),
+            "a whole frame was drawn"
+        );
+        let f = slot.as_ref().expect("the slot was filled");
+        assert_eq!(
+            f.width, 320,
+            "the width the frame ENDED on, not the first line's"
+        );
+        assert_eq!(
+            f.rgb.len(),
+            320 * height,
+            "a full rectangle reaches the wire"
+        );
+        assert_eq!(
+            f.rgb[255],
+            (0x11, 0x22, 0x33),
+            "the narrow line's own pixels survive"
+        );
+        assert_eq!(
+            f.rgb[256],
+            (0, 0, 0),
+            "…and the rest of that line is padded black rather than pulled forward from the next"
+        );
+    }
+
+    /// A capture holding no completed frame must leave the slot **completely** untouched, so a client
+    /// that reads the frame between runs sees the last good picture instead of an empty or half-written
+    /// one. The refusal happens before the first write; this asserts the slot, not the return value.
+    #[test]
+    fn store_from_capture_leaves_the_held_frame_alone_when_nothing_completed() {
+        use oracle_core::bus::BusEventSink;
+
+        let height = ACTIVE_LINES as usize;
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        for line in 0..height {
+            cap.on_scanline(line as u16, &vec![(4, 5, 6); 256]);
+        }
+        cap.on_frame_boundary(0);
+        let mut slot: Option<CapturedFrame> = None;
+        assert!(
+            store_from_capture(&mut slot, &cap),
+            "the control: a frame lands"
+        );
+        let held = slot.as_ref().expect("filled").rgb.clone();
+
+        // A torn next frame at a different geometry: the log's tail is no longer the held pixels.
+        for line in 0..20u16 {
+            cap.on_scanline(line, &vec![(9, 9, 9); 320]);
+        }
+        assert!(
+            !store_from_capture(&mut slot, &cap),
+            "a run that ended mid-frame has no completed frame to take"
+        );
+        assert_eq!(
+            slot.as_ref().expect("still filled").rgb,
+            held,
+            "the slot must be untouched, not cleared and not half-written"
         );
     }
 }
