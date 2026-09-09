@@ -757,16 +757,71 @@ impl Host {
         sys: &mut System,
         reason: crate::engine::MachineReplacedReason,
     ) -> PumpReport {
+        // The lend, the stamp republish and the before/after generation reads are
+        // [`Host::replacement_report`]'s — shared with the reset and swap doors so the three cannot
+        // drift on an ordering whose failure mode is a report that silently says nothing moved.
+        self.replacement_report(sys, move |e| {
+            e.note_machine_replaced(reason);
+        })
+    }
+
+    /// **Tell the bus that a gesture at this window reset the machine** — the sibling of
+    /// [`machine_replaced`](Host::machine_replaced) for the reset door, lending `sys` the identical way
+    /// and running [`Engine::note_reset`](crate::engine::Engine::note_reset) inside the lend.
+    ///
+    /// The embedder has already run `System::reset` on `sys`; this is the notification it could not make
+    /// for itself. `rom_changed` comes back `true` (the generation moves on `restore`'s precedent — the
+    /// timeline jumped) and `screen_changed` `true` (the latched picture was of the pre-reset machine).
+    ///
+    /// ⚑ **No event is pushed, deliberately** — see `Engine::note_reset`, which carries the argument:
+    /// this server advertises no reset event, and inventing one is a CR rather than a call site. The
+    /// stamp *is* republished inside the lend, for `machine_replaced`'s reason: a connection thread reads
+    /// the cached stamp without a round trip, and after a reset the cached one names a frame from the
+    /// epoch that just ended.
+    ///
+    /// Unlike `machine_replaced` this needs no `window_gestures` gate, because a deployment's advertised
+    /// event set is not touched by a call that emits nothing.
+    pub fn machine_reset(&mut self, sys: &mut System) -> PumpReport {
+        self.replacement_report(sys, |e| {
+            e.note_reset();
+        })
+    }
+
+    /// **Tell the bus that a gesture at this window swapped the cartridge** (the frontend's F5 and its
+    /// ROM browser) — the sibling of [`machine_replaced`](Host::machine_replaced) for the swap door,
+    /// running [`Engine::note_rom_reloaded`](crate::engine::Engine::note_rom_reloaded) inside the lend.
+    ///
+    /// It emits `emulator/romReloaded`, which is in the unconditional
+    /// [`EVENTS`](crate::engine::EVENTS) set — so, like `machine_reset` and unlike `machine_replaced`,
+    /// there is no `window_gestures` flag to honour: every deployment already advertises this one.
+    ///
+    /// ⚑ **Call it after the new cartridge is in `sys`**, and after the embedder has installed the
+    /// incoming listing through [`set_machine_info`](Host::set_machine_info): the engine re-runs the D7
+    /// binding check against `sys.rom()` inside the lend, so the order decides the verdict.
+    pub fn rom_reloaded(&mut self, sys: &mut System, path: String) -> PumpReport {
+        self.replacement_report(sys, move |e| {
+            e.note_rom_reloaded(path);
+        })
+    }
+
+    /// The lend-note-report sandwich the three machine-replacing notifications share.
+    ///
+    /// Extracted rather than copied a third time: the generations are read *before* the lend and compared
+    /// *after* it, and getting that order wrong is silent — the report simply says nothing changed. One
+    /// body means the reset door and the swap door cannot drift from the state-load door on it.
+    fn replacement_report(
+        &mut self,
+        sys: &mut System,
+        note: impl FnOnce(&mut crate::engine::Engine),
+    ) -> PumpReport {
         // Read before the lend, beside each other, exactly as `pump` and `call_reporting` read them.
         let screen_gen = self.engine.screen_generation();
         let rom_gen = self.engine.rom_generation();
         let symbols_gen = self.engine.symbols_generation();
         self.engine.swap_system(sys);
         let mclk_before = self.engine.mclk();
-        self.engine.note_machine_replaced(reason);
+        note(&mut self.engine);
         let mclk_after = self.engine.mclk();
-        // Inside the window, for `pump`'s reason: a connection thread reads this stamp without a round
-        // trip, and after a state load the cached one describes a timeline that no longer exists.
         self.publish_stamp();
         self.engine.swap_system(sys);
         PumpReport {

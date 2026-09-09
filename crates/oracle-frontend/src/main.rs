@@ -1955,6 +1955,18 @@ fn main() {
                     cap.clear(); // the line stream restarts from the reset vector — drop the pre-reset frame
                     #[cfg(feature = "audio")]
                     resync_audio(audio.as_mut());
+                    // …and the bus is told, which until now it was not. This arm repaired every one of
+                    // its own artifacts above and left the engine's holding the pre-reset machine's:
+                    // a paused client read a latched framebuffer of a machine that no longer exists,
+                    // watchpoint hits whose `frame` belongs to an epoch that ended, and a profiler
+                    // stack describing returns that will never come. Ordered AFTER `sys.reset()`,
+                    // because what is lent must be the machine the repairs describe.
+                    //
+                    // ⚑ It emits nothing, and no event is missing: this server advertises none for a
+                    // reset (`Engine::reload_rom` says so beside its own emit — "none of them is a
+                    // reset or a restore"), so a reset event is a contract change and belongs to
+                    // CR-Q-MACHINEREPLACED, not to this call site.
+                    bus.machine_reset(&mut sys);
                     notify(
                         &mut ov,
                         ACCENT,
@@ -2186,6 +2198,22 @@ fn main() {
                 cap.clear(); // a different cartridge draws a different frame — drop the old one
                 #[cfg(feature = "audio")]
                 resync_audio(audio.as_mut());
+                // …and, last, the bus. Everything above repaired one of THIS window's artifacts against
+                // the incoming cartridge; the engine's were left describing the outgoing one — a latched
+                // framebuffer of another game, watchpoint hits stamped in a dead epoch, a profiler stack
+                // for code that is no longer loaded — while `emulator/status` cheerfully reported the new
+                // `romPath` because `set_rom_path` moves the string and not `rom_generation`.
+                //
+                // **Last on purpose**, and in two ways: `sys` must already hold the new cartridge, and
+                // `set_machine_info` above must already have installed the incoming listing, because the
+                // engine re-runs the D7 binding check against the lent `sys.rom()` inside this call.
+                //
+                // The event it pushes is `emulator/romReloaded` — the same one a client-driven
+                // `emulator/reload_rom` pushes for the same act, already in the unconditional `EVENTS`
+                // set. Not `machineReplaced`: that would need a `reason` member the vendored fragment's
+                // closed enum does not accept, and reusing `stateLoad` would put a false reason on the
+                // wire, which is the very thing this pass exists to stop doing.
+                bus.rom_reloaded(&mut sys, rom_path.clone());
             }
         }
 
@@ -3421,6 +3449,111 @@ mod tests {
         assert!(
             prod.contains("resolve_console_filter(env.as_deref(), remembered)"),
             "the startup resolution is wired through the pure precedence function"
+        );
+    }
+
+    /// ★ **Every door in the run loop that replaces the machine tells the bus** — lens finding H4.
+    ///
+    /// This is a **call-site** gate and it has to be, because the defect was a call site. `Bus::machine_
+    /// replaced` worked perfectly, had its own passing test in `oracle-player`, and was reached from
+    /// exactly one of the three doors that replace this window's machine. A test that builds a `Bus` and
+    /// calls the method proves the method; it cannot see that two doors never call it. So this reads the
+    /// run loop's own source and asks the question the other kind of test cannot: *who calls this, and
+    /// where does that not run?*
+    ///
+    /// The doors are **derived, not listed**: every site in the loop that mutates the machine wholesale
+    /// (`sys = loaded`, `sys.reset()`, `sys.load_rom(`) must sit in a region that also notifies the bus.
+    /// A fourth door added later is therefore caught by construction, which is the property H4 needed and
+    /// a hand-written list of three would not have.
+    ///
+    /// **Scope starts at `Bus::start`** on purpose. The startup load above it replaces nothing — there is
+    /// no bus yet, and the machine it builds is the one the bus is started against.
+    ///
+    /// On `the_rom_swap_disarms_spawn_mode_so_a_click_cannot_land_on_a_stale_address`'s precedent, and
+    /// with `rings.rs`'s anti-vacuity floor: the parse is asserted to have found the doors before it is
+    /// allowed to conclude anything about them.
+    #[test]
+    fn every_machine_replacing_door_in_the_run_loop_notifies_the_bus() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("main.rs is readable from its own test");
+        let prod = &src[..src
+            .find("\n#[cfg(test)]")
+            .expect("main.rs has a test module")];
+        let loop_start = prod
+            .find("let mut bus = bus::Bus::start(")
+            .expect("the run loop is the region in which a bus exists to be told");
+        let region = &prod[loop_start..];
+
+        // Segment the region by door: each `commands::Cmd::` arm, plus the shared swap block that runs
+        // after the dispatch loop. Segmenting rather than searching the whole region is the point — a
+        // notification anywhere in `main` would satisfy a file-wide search while leaving a door silent.
+        let mut bounds: Vec<usize> = region
+            .match_indices("commands::Cmd::")
+            .map(|(i, _)| i)
+            .collect();
+        bounds.extend(region.match_indices("'swap: {").map(|(i, _)| i));
+        bounds.push(0);
+        bounds.sort_unstable();
+        bounds.dedup();
+        let segments: Vec<&str> = bounds
+            .iter()
+            .enumerate()
+            .map(|(n, &start)| &region[start..bounds.get(n + 1).copied().unwrap_or(region.len())])
+            .collect();
+
+        const MUTATIONS: [&str; 3] = ["sys = loaded", "sys.reset()", "sys.load_rom("];
+        const NOTIFICATIONS: [&str; 3] = [
+            "bus.machine_replaced(",
+            "bus.machine_reset(",
+            "bus.rom_reloaded(",
+        ];
+
+        let doors: Vec<&&str> = segments
+            .iter()
+            .filter(|s| MUTATIONS.iter().any(|m| s.contains(m)))
+            .collect();
+        // The floor, before any verdict: the parse really found the doors. A renamed local (`sys`) or a
+        // reshaped match would otherwise leave this green while measuring nothing at all — the one way a
+        // source gate passes by saying nothing. Three are known (F4 state load, Tab/F1 reset, F5 and the
+        // ROM browser's shared swap); more is fine and is exactly what this is meant to survive.
+        assert!(
+            doors.len() >= 3,
+            "this gate found only {} machine-replacing door(s) in the run loop and expected at least \
+             the three that exist (state load, reset, cartridge swap). It is measuring its own search \
+             strings {MUTATIONS:?} and not the loop",
+            doors.len()
+        );
+
+        for door in &doors {
+            let mutation = MUTATIONS
+                .iter()
+                .find(|m| door.contains(*m))
+                .expect("filtered on exactly this");
+            assert!(
+                NOTIFICATIONS.iter().any(|n| door.contains(n)),
+                "a door that runs `{mutation}` replaces this window's machine and tells the bus \
+                 nothing. The engine then keeps the OUTGOING machine's artifacts — a latched \
+                 framebuffer another cartridge drew, watchpoint hits stamped in an epoch that ended, a \
+                 profiler stack for returns that will never come — while `emulator/status` answers as \
+                 if nothing happened. Call one of {NOTIFICATIONS:?} at the end of this door, with the \
+                 new machine. Door source:\n{door}"
+            );
+        }
+
+        // **And the reason must not be a lie.** `machineReplaced`'s `reason` is a closed enum with one
+        // member, `stateLoad`. Reaching for `Bus::machine_replaced` from the reset or swap door would
+        // make this gate green and put a false `reason` on the wire — the exact class of defect H4
+        // belongs to. A second machine-replaced door is a CR (a new `reason` member the vendored
+        // fragment must accept), never a second call here.
+        assert_eq!(
+            region.matches("bus.machine_replaced(").count(),
+            1,
+            "`Bus::machine_replaced` emits `reason: \"stateLoad\"`, so it belongs to the state-load \
+             door and to no other. A reset or a swap announced through it tells a client the wrong \
+             reason; those doors have `bus.machine_reset` and `bus.rom_reloaded`. Adding a genuinely \
+             new reason is CR-Q-MACHINEREPLACED's business, not this call site's"
         );
     }
 

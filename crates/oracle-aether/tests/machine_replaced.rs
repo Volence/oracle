@@ -101,6 +101,13 @@ enum Gesture {
     /// all** — not a swap, not a signal — which is what the loader does when its constructor returns
     /// `Err`, and what row 4 asserts from the wire.
     RefusedLoad,
+    /// **The human's reset** (the frontend's Tab / F1) — lens finding H4's first silent door. The window
+    /// runs `System::reset` itself and then makes the notification it could not make for itself.
+    Reset,
+    /// **The human's cartridge swap** (the frontend's F5 and its ROM browser, which share one
+    /// implementation) — H4's second silent door. Re-reads the image from disk, loads it, resets, and
+    /// then signals, in that order, because the engine's D7 binding re-check reads the lent `sys.rom()`.
+    RomSwap,
 }
 
 /// A miniature of a window's run loop: it owns the machine, drains the bus once per iteration, and can be
@@ -166,6 +173,17 @@ impl Window {
                             ack_tx.send(()).ok();
                         }
                         Ok(Gesture::RefusedLoad) => {
+                            ack_tx.send(()).ok();
+                        }
+                        Ok(Gesture::Reset) => {
+                            sys.reset();
+                            host.machine_reset(&mut sys);
+                            ack_tx.send(()).ok();
+                        }
+                        Ok(Gesture::RomSwap) => {
+                            sys.load_rom(std::fs::read(&t_rom).expect("the cartridge is on disk"));
+                            sys.reset();
+                            host.rom_reloaded(&mut sys, t_rom.display().to_string());
                             ack_tx.send(()).ok();
                         }
                         Err(_) => {}
@@ -482,6 +500,114 @@ fn a_refused_load_moves_nothing_and_emits_nothing() {
 // ---------------------------------------------------------------------------------------------------
 // Row 5 — M4, both directions
 // ---------------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------------
+// H4 — the two machine-replacing doors that told the bus nothing
+// ---------------------------------------------------------------------------------------------------
+
+/// ★ **A window reset drains the hits and emits nothing** — lens finding H4, the reset door.
+///
+/// Two claims, and the *absence* is as deliberate as the presence.
+///
+/// **The repair happens.** Before this, the frontend's Tab / F1 reset ran `System::reset` and told the
+/// engine nothing, so a client that had paused the window went on reading a latched framebuffer of the
+/// pre-reset machine and watchpoint hits whose `frame` belonged to an epoch that had ended. The hits are
+/// the half this fixture can see from the wire, so they are what it asserts — recorded first, so the
+/// assertion is about a ring that had something in it.
+///
+/// **No event goes out, and no event is missing.** This server advertises none for a reset:
+/// `Engine::reload_rom` says so beside its own emit — *"this server emits three events and none of them
+/// is a reset or a restore, so a listener still cannot learn that either happened"*. Announcing one here
+/// would mean either a fourth member of `EVENTS` or a second `MachineReplacedReason` whose spelling the
+/// vendored fragment's closed `enum` rejects — a CR (CR-Q-MACHINEREPLACED), not a call site. Reusing
+/// `stateLoad` to get an event out would put a false `reason` on the wire, which is the class of defect
+/// H4 belongs to in the first place. So the negative is pinned, and it is pinned here so that adding an
+/// event is a deliberate act that fails this row rather than a quiet one.
+#[test]
+fn a_window_reset_drains_the_hits_and_deliberately_emits_nothing() {
+    let w = Window::start("h4-reset");
+    let mut c = attach(&w);
+
+    let held = record_some_hits(&mut c);
+
+    w.gesture(Gesture::Reset);
+    let events = stream_to_marker(&mut c);
+
+    assert!(
+        events.is_empty(),
+        "a window reset pushed {} event(s), and this server advertises none for a reset. Adding one \
+         is CR-Q-MACHINEREPLACED's business — and it must never be `machineReplaced` with \
+         `reason: stateLoad`, which is a false reason rather than a missing one: {events:?}",
+        events.len()
+    );
+
+    let after = c.ok("emulator/watchpoint_hits", json!({}))["total"]
+        .as_u64()
+        .expect("`total` is required");
+    assert_eq!(
+        after, 0,
+        "{held} hit(s) recorded before the reset survived it. Their `frame` and cycle stamps restart \
+         from the reset vector, so a survivor is indistinguishable on the wire from a hit in the epoch \
+         now running — §11.38's argument, at the window's own door"
+    );
+}
+
+/// ★ **A window cartridge swap fires `romReloaded` and never `machineReplaced`** — lens finding H4, the
+/// swap door, landing on the same side of §11.40 M4 as the client-driven door two rows below.
+///
+/// The frontend's F5 and its ROM browser share one implementation and neither told the bus anything, so
+/// `emulator/status` reported the *new* `romPath` (`set_rom_path` moves the string) beside a latched
+/// framebuffer another cartridge drew and a `rom_generation` that had not moved. The event it now pushes
+/// is `emulator/romReloaded` — already in the unconditional `EVENTS` set, and already the event a
+/// client-driven `emulator/reload_rom` pushes for exactly this act — so the door is closed with **no**
+/// contract change. `machineReplaced` would have needed a `reason` member the vendored fragment does not
+/// accept.
+///
+/// `recv` validates every line against the vendored schema on its way past, so the three params being
+/// the shape `romReloaded`'s fragment requires is asserted by this row's mere passing.
+#[test]
+fn a_window_cartridge_swap_fires_rom_reloaded_and_never_machine_replaced() {
+    let w = Window::start("h4-swap");
+    let mut c = attach(&w);
+
+    let held = record_some_hits(&mut c);
+
+    w.gesture(Gesture::RomSwap);
+    let events = stream_to_marker(&mut c);
+
+    let reloaded: Vec<&Value> = events
+        .iter()
+        .filter(|v| v["method"] == json!("emulator/romReloaded"))
+        .collect();
+    assert_eq!(
+        reloaded.len(),
+        1,
+        "a window swap must push exactly one romReloaded — the same one-per-boundary contract §11.39 \
+         gives the client-driven door: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|v| v["method"] == json!("emulator/machineReplaced")),
+        "a window swap emitted machineReplaced, whose only `reason` is `stateLoad` — a cartridge swap \
+         announced under it tells a listener the wrong thing happened: {events:?}"
+    );
+    let params = &reloaded[0]["params"];
+    assert_eq!(
+        params["path"],
+        json!(w.rom_path.display().to_string()),
+        "the event names the cartridge that is now loaded"
+    );
+    assert_eq!(
+        params["hitsDropped"], json!(held),
+        "the event reports what the client actually lost. A boundary that emptied the ring and said 0 \
+         would satisfy 'the hits are gone' while lying about the loss — §11.38's confusion exactly"
+    );
+    let after = c.ok("emulator/watchpoint_hits", json!({}))["total"]
+        .as_u64()
+        .expect("`total` is required");
+    assert_eq!(after, 0, "…and the ring really is empty");
+}
 
 /// **A window state load fires `machineReplaced` and never `romReloaded`** — §11.40 M4's first half.
 ///

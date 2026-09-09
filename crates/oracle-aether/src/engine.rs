@@ -2370,6 +2370,110 @@ impl Engine {
         hits_dropped
     }
 
+    /// **Tell the engine that a gesture at the embedder's own window reset the machine** — the
+    /// notification half of [`Engine::reset`], for a window that has already run `System::reset` itself.
+    ///
+    /// It performs exactly what `emulator/reset` performs *after* `self.sys.reset()`, and nothing else:
+    /// the held pads clear (a cold start has nobody holding anything), the latched picture is dropped,
+    /// the recorded watchpoint hits are drained because the frame counter restarted under them (§11.38,
+    /// CR-O), the profiler sample restarts, and `rom_generation` moves so a hosted embedder resyncs off
+    /// [`PumpReport::rom_changed`](crate::host::PumpReport). Returns the count of hits it dropped.
+    ///
+    /// # ⚑ It emits nothing, and that is the contract's position rather than an omission here
+    ///
+    /// [`Engine::reload_rom`] says it in terms beside its own emit: *"this server emits three events and
+    /// none of them is a reset or a restore, so a listener still cannot learn that either happened"* —
+    /// and [`EVENTS`] bears that out. A window reset that pushed an event would therefore be **inventing
+    /// a signal on a contract surface**, which is a CR and not a call site: either a fourth member of
+    /// [`EVENTS`], or a second [`MachineReplacedReason`] whose wire spelling the vendored fragment's
+    /// `enum` does not yet accept. Until that ruling exists, the honest thing for a window reset to do is
+    /// what a client-driven `emulator/reset` does — repair the engine's own stale state, say nothing.
+    ///
+    /// So this closes the half of the defect that *was* closeable: before it, a client that paused the
+    /// frontend and reset it at the window read a latched framebuffer of the pre-reset machine, watchpoint
+    /// hits stamped in an epoch that no longer exists, and a profiler stack describing returns that will
+    /// never come. None of those needed a new event to fix.
+    pub fn note_reset(&mut self) -> usize {
+        self.held = [Pad::default(); 2];
+        self.invalidate_screen();
+        let hits_dropped = self.watchpoints.take_hits().len();
+        self.restart_profiler_sample();
+        self.rom_generation += 1;
+        hits_dropped
+    }
+
+    /// **Tell the engine that a gesture at the embedder's own window swapped the cartridge** — the
+    /// notification half of [`Engine::reload_rom`], for a window that has already read the file and run
+    /// `System::load_rom` + `System::reset` itself (the frontend's F5 and its ROM browser, which share
+    /// one implementation).
+    ///
+    /// It performs `reload_rom`'s tail verbatim — `rom_path`, held pads, latched picture, the hit drain,
+    /// the profiler sample, `rom_generation`, the D7 binding re-check — and then emits
+    /// **`emulator/romReloaded`** with the same three params that method emits. Returns the dropped-hit
+    /// count so the window can say it out loud without recounting it.
+    ///
+    /// # Why `romReloaded` and not `machineReplaced`
+    ///
+    /// Because it is the true thing and it costs no contract change. `emulator/romReloaded` is in
+    /// [`EVENTS`] — the set *every* deployment emits, unconditionally — and this gesture is the same
+    /// event `emulator/reload_rom` describes: the image on the disk was read and the machine was reset
+    /// against it. `emulator/machineReplaced` would need a second [`MachineReplacedReason`] member, whose
+    /// wire spelling the vendored fragment's closed `enum` would reject; and reusing `stateLoad` for a
+    /// cartridge swap would put a false `reason` on the wire, which is the exact class of defect this
+    /// call exists to remove. `tests/machine_replaced.rs`'s
+    /// `a_reload_rom_fires_rom_reloaded_and_never_machine_replaced` already pins that polarity for the
+    /// client-driven door; this keeps the window's own door on the same side of it.
+    ///
+    /// `path` is stored through [`Engine::set_rom_path`] rather than taken on trust, so the path the
+    /// event carries and the path `emulator/status` reports are absolutised by one function and cannot
+    /// disagree — the embedder having already called [`crate::host::Host::set_machine_info`] makes this
+    /// idempotent, not redundant (`absolutise` is idempotent on its own output).
+    ///
+    /// ⚑ **Call it with the NEW cartridge already in `sys`.** The binding re-check reads
+    /// `self.sys.rom()`, so a call taken before the swap would validate the listing against the outgoing
+    /// image and reach the opposite verdict.
+    pub fn note_rom_reloaded(&mut self, path: String) -> usize {
+        self.set_rom_path(Some(path));
+        self.held = [Pad::default(); 2];
+        self.invalidate_screen();
+        let hits_dropped = self.watchpoints.take_hits().len();
+        self.restart_profiler_sample();
+        self.rom_generation += 1;
+
+        // D7, as `reload_rom` runs it: a swap can invalidate the loaded listing, and a table that no
+        // longer describes the image resolves names to confidently wrong addresses.
+        let mut symbols_dropped = false;
+        if let Some(t) = &self.symbols {
+            if matches!(
+                t.validate_against_rom(self.sys.rom()),
+                RomBinding::Mismatch(_)
+            ) {
+                self.symbols = None;
+                self.symbols_path = None;
+                self.symbols_generation += 1;
+                symbols_dropped = true;
+            }
+        }
+
+        let mut params_out = Map::new();
+        // Read back from the engine rather than from the argument, so the event quotes the absolutised
+        // string that `status` will quote — one value, one spelling (§11.30 M1). Unwrapped rather than
+        // serialised as an `Option`: `set_rom_path(Some(_))` above stores `Some`, and a `null` here
+        // would be schema-illegal in a way no local test would notice.
+        let stored = self
+            .rom_path
+            .clone()
+            .expect("set_rom_path(Some(..)) above stores Some");
+        params_out.insert("path".into(), json!(stored));
+        params_out.insert("symbolsDropped".into(), json!(symbols_dropped));
+        // One drain, one number — §11.39 (CR-P) requires the event's count and the caller's to be equal,
+        // and a second `take_hits()` here would answer 0.
+        params_out.insert("hitsDropped".into(), json!(hits_dropped));
+        self.emit("emulator/romReloaded", params_out);
+
+        hits_dropped
+    }
+
     /// **The listing this engine resolves against right now** — the one `emulator/lookup_symbol` answers
     /// from, not a copy of what somebody handed in at startup.
     ///
