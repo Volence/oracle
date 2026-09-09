@@ -145,3 +145,91 @@ Evidence: `shots/23-poke-real.png`, `shots/24-memory-after-poke-top.png` (before
 Screen panel says `0 armed by this panel`; Breakpoints says `NEVER ARMED: No breakpoint has been
 armed` / `RECORDING: 1 of 1 breakpoint armed`. Three phrasings of one counter across two panels.
 Evidence: `shots/01`, `shots/19`.
+
+## F-UXB-8 — oracle-player · Breakpoints table · the DELETE control is drawn as an empty tick-box, one control away from the real tick-box, and it deletes with no confirmation and no undo — I lost a breakpoint to it before I knew it existed
+**misses: can it be found · is it consistent with its neighbours · can a mistake be undone**   ← my top finding
+
+Each row of the breakpoints table begins with **two square controls side by side**:
+
+```
+ id     addr        state     hits
+[✓]  [ ☐ ] b1   0x000BE4D8  ARMED   0 hits  GameSt…
+ ^A     ^B
+```
+
+A = a real tick-box (ticked when armed). B = a **button whose entire label is an empty square glyph**
+— i.e. it is drawn as an *unticked tick-box*, immediately to the right of a ticked one.
+**B deletes the breakpoint.**
+
+I met this as a person, not by reading code. Wanting to re-enable a disabled breakpoint I clicked
+what I took to be its box; the reply was `ok: {"removed":1}`, the table emptied, and the breakpoint
+was gone. Reproduced deliberately afterwards at 08:02:59Z / 08:03:23Z with the two controls measured
+apart (window x=892 vs x=928, 36 px):
+
+* click A (x=892) -> `ok: {"breakpoint":"b1","enabled":false,"hits":0}`, row stays, state `disabled`
+  (`shots/35-bp-tickbox-clicked.png`)
+* click B (x=928) -> `ok: {"removed":1}`, row gone, `clear all` gone (`shots/37-bp-delete-clicked.png`)
+
+Aggravating, all four met on screen:
+1. **The panel's own instructions point at it.** Both the toolbar and the panel say *"or untick them
+   one at a time in the Breakpoints tab"* (`shots/19`, `shots/33`). A person told to untick goes
+   looking for a box to untick; the thing that most looks like an unticked box is the delete button.
+2. **No tooltip.** Hovered 2 s, nothing (`shots/36-bp-delete-hover.png`).
+3. **No confirmation** and **no undo** — the row, its hit count and its label are gone.
+4. The two controls sit in the `id` column with no header of their own.
+
+Evidence: `shots/34-bp-table-zoom.png` (the two controls at 4x), `shots/32-bp-recheck.png` (the
+accidental deletion, met first), `shots/35`, `shots/36`, `shots/37`.
+
+## F-UXB-9 — oracle-player · Breakpoints · after a breakpoint is deleted the panel says it never existed
+**misses: does it answer back**
+
+Immediately after `ok: {"removed":1}` the headline reads
+`NEVER ARMED: No breakpoint has been armed, so nothing here will stop the machine.`
+A breakpoint *had* been armed, had halted the machine once, and had just been deleted. The panel
+states a false history one line above the reply that says what happened.
+Evidence: `shots/32-bp-recheck.png`, `shots/37-bp-delete-clicked.png`.
+
+## F-UXB-10 — oracle-player · toolbar · the same button has two different names depending on state
+**misses: is it consistent with its neighbours (same word, same meaning)**
+
+Machine halted at a breakpoint -> the toolbar button reads **`⏏ release`** and the panel prose says
+*"the ⏏ release button disarms it"* (`shots/19-bp-armed.png`).
+Machine running with a breakpoint armed -> the same button reads **`⏏ disarm`** and the prose says
+*"the ⏏ disarm button disarms it"* (`shots/34-bp-table-zoom.png` toolbar).
+Same control, same icon, same position, two names. A person who learns "release" cannot search for it
+later.
+
+## F-UXB-11 — oracle-player · Breakpoints headline · "STOPPED" is shown while the machine is running
+**misses: is it consistent with its neighbours (same word, same meaning)**
+
+After `release`, the Breakpoints panel headline is
+`STOPPED: nothing is armed. 1 breakpoint held and every one of them disabled, carrying 1 hit between
+them from when they were armed. These figures are what was recorded before it stopped; they will not
+move.` — while the toolbar simultaneously shows `pause` (i.e. the machine is RUNNING) and the frame
+counter is advancing. "STOPPED" here means *recording stopped*; two panels' widths away the same
+concept for the machine is "pause"/"halted". Evidence: `shots/30-released.png` (both in one frame).
+
+## F-UXB-12 — oracle-player · Breakpoints · a stale `ok:` reply contradicts the table above it
+**misses: does it answer back**
+
+After `release`, the table row read `b0 … disabled` while the message directly beneath it still read
+`ok: {"addr":"0x000BE4D8","breakpoint":"b0","enabled":true,…}` — the reply from the earlier *arm*.
+Enabled:true under a row that says disabled. Evidence: `shots/31-bp-table.png`.
+
+## CLEAN — oracle-player · Registers (2 steps) and Objects (2 steps)
+* Registers, halted: full D0-D7/A0-A7/USP/SSP/PC/SR plus a plain-English note
+  *"A7 and SP are one register: the stack pointer the CPU is using right now, SSP in supervisor mode,
+  USP in user…"*. Read-only; clicking a value does nothing and nothing suggests it should
+  (`shots/25`, `shots/26`, `shots/27`).
+* Objects: engine/table-at/slots/slot-size/pools header, a `▶ where these addresses come from`
+  expander that opens to a real explanation (*"Every address here is read out of the loaded listing…
+  Nothing is hardcoded, because an object-table address is a fact about one build."*), then a players
+  table and an object pool (`shots/28`, `shots/29`). Nothing found.
+
+## C-UXB-3 (capture) — Registers panel: label and value collide
+`frames run (player)9720` — the long label eats the column gap, so label and number run together.
+Adjacent rows (`rom bytes    846931`) are aligned. `shots/25-registers-halted.png`.
+
+## C-UXB-4 (capture) — Objects: the first player's `role` cell is a bare `·` while the second says `Player_2`
+`shots/29-objects-expander.png`.
