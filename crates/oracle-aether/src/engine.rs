@@ -7196,6 +7196,19 @@ impl Engine {
                 let Some(prefix) = prefix.as_str() else {
                     return Err(RpcError::invalid_params("`prefix` must be a string"));
                 };
+                // **§6 gives `prefix` `minLength: 1`, and this line is where that stopped being decoration.**
+                // Found by `tests/request_shapes.rs`, which derives its probes from the fragment instead of
+                // from a reading of it: the type check above was the whole of the validation, so `prefix: ""`
+                // reached `equates_with_prefix("")` — which matches EVERY equate — and came back as a
+                // `max_symbol_matches`-truncated dump of the listing wearing the shape of a search result.
+                // The request was out of contract, the server answered it, and nothing in the tree had ever
+                // sent it. Same class as CR-STEP-SHORTFALL: a declared bound the handler never read.
+                if prefix.is_empty() {
+                    return Err(RpcError::invalid_params(
+                        "`prefix` must be a non-empty string: an empty prefix matches every equate, \
+                         which is a listing dump rather than a bounded search",
+                    ));
+                }
                 let all = table.equates_with_prefix(prefix);
                 let total = all.len();
                 let matches: Vec<Value> = all
@@ -8973,7 +8986,14 @@ fn parse_cursor(v: &Value, max: u64) -> Result<u64, RpcError> {
             other => format!("got {}", hex::kind_of(other)),
         };
         return Err(RpcError::invalid_params(format!(
-            "`cursor` must be a token returned by a previous `checkpoint_list` (a JSON string; a bare \
+            // **The method is NOT named here, and it used to be.** This helper serves two callers —
+            // `checkpoint_list` and `watchpoint_hits` — and the message hard-coded `checkpoint_list`, so
+            // half of the refusals it produced told the caller to go and look at a method they had not
+            // called. Found by `tests/request_shapes.rs`'s in-bounds control, which quotes the server
+            // back. A refusal that names the wrong method is worse than one that names none: it is a
+            // confident wrong answer, and the reader has no reason to doubt it.
+            "`cursor` must be a token returned by a previous listing call on this method (a JSON \
+             string; a bare \
              number is also accepted, for clients written against the older numeric spelling): {got}"
         )));
     };
@@ -10097,16 +10117,23 @@ fn parse_buttons(params: &Value) -> Result<Vec<String>, RpcError> {
             ));
         };
         let lower = name.to_ascii_lowercase();
+        // **Both refusals name `buttons`, and that is not decoration.** The messages used to open with the
+        // offending VALUE and never mention the key it arrived under — `unknown button "x"`. A caller
+        // reading that has to know which of a multi-key request the server was talking about, and an agent
+        // reading it cannot tell a refusal about a param from a refusal about the machine's state. It is
+        // also the discriminator `tests/request_bounds.rs` and `tests/request_shapes.rs` both rely on: a
+        // refusal that does not spell the field in backticks is indistinguishable, to them, from a refusal
+        // for some unrelated reason, which is exactly how a differential goes falsely green.
         if BUTTONS_6.contains(&lower.as_str()) {
             return Err(RpcError::invalid_params(format!(
-                "\"{name}\" is a 6-button pad button; this core models a 3-button pad only \
+                "`buttons`: \"{name}\" is a 6-button pad button; this core models a 3-button pad only \
                  (capability `sixButtonPad` is false)"
             ))
             .with_data(json!({"button": lower, "supported": BUTTONS_3})));
         }
         if !BUTTONS_3.contains(&lower.as_str()) {
             return Err(
-                RpcError::invalid_params(format!("unknown button \"{name}\""))
+                RpcError::invalid_params(format!("`buttons`: unknown button \"{name}\""))
                     .with_data(json!({"button": lower, "supported": BUTTONS_3})),
             );
         }
