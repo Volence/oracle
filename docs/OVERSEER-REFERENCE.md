@@ -372,11 +372,20 @@ change and was correctly kept out of the hardening parcel.
   CONSTRUCTION — three briefs went out without the clause anyway.** Knowing a rule is not applying it;
   put the path in the brief.
 * ⚑ **DO NOT COMMIT WHILE A SUITE IS READING THE TREE — and the reason is not the obvious one.**
-  `oracle-aether`'s `the_compiled_in_build_id_still_names_this_tree` correctly caught a mid-run commit
-  (build id vs HEAD). **The hazard is what that does to the RUN: without `--no-fail-fast` the failure
-  aborted at 36 of 85 targets, and an aborted run's tail is indistinguishable from a completed one.**
-  Same family as the capped-run false green below, reached by a different door. Always
-  `--no-fail-fast`, always check the target count, never read the tail.
+  `oracle-aether`'s `the_compiled_in_build_id_still_names_this_tree` correctly catches a mid-run commit:
+  the id is compiled in from the HEAD at build time, and committing moves HEAD out from under it.
+  **The hazard is what that does to the RUN: without `--no-fail-fast` the failure aborted at 36 of 85
+  targets, and an aborted run's tail is indistinguishable from a completed one.** Same family as the
+  capped-run false green above, reached by a different door. Always `--no-fail-fast`, always check the
+  target count, never read the tail.
+  ⚠ **SCOPE, corrected by this seat against the agent that supplied the lesson: the suite is NOT "red on
+  any dirty tree".** `dirty` is computed over a DECLARED path set — `oracle-aether/src`, its `Cargo.toml`
+  and `build.rs`, `oracle-core/src` and its `Cargo.toml`, the workspace `Cargo.toml` and `Cargo.lock`
+  (`build.rs::build_input_paths`). **`docs/` is not in it**, which matters daily because
+  `docs/lane-status.json` is tracked and deliberately never committed, so this tree is permanently dirty
+  by one file and the suite runs fine. **The over-broad form of this rule cost a real run: this seat
+  killed a healthy suite on the strength of it.** A lesson stated wider than its measurement is how a
+  correct finding produces a wrong action — and the fix is to name the scope, not to trust the summary.
 * **A capped foreground run is a silent false green.** `cargo test --workspace` here exceeds ten minutes;
   a run killed at a harness cap aggregates a clean log and exits like a pass. Detach it, write your own
   end marker, poll your own log for that marker, and prove completeness with the TARGET COUNT (85 on
