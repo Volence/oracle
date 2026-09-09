@@ -212,6 +212,38 @@ the right moment.** An enumeration samples; a missing path is a property. **Envi
 and environment-as-running are two different claims**, and only the second is worth anything — the
 first is the rig describing itself, which this document already names as the one-sided failure.
 
+⚑ **QUALIFIED THE SAME NIGHT BY AURORA, AND THE QUALIFICATION IS PER-SURFACE — CHECK IT BEFORE
+INHERITING EITHER ANSWER.** Aurora contradicted the environ half from their own August measurement
+(`aurora scratchpad/lib/harness-guard.mjs`, HAZARD 5; theirs, cited not re-derived): a window-less
+Electron under `xvfb-run` reported **his two real monitors** with `WAYLAND_DISPLAY` deleted, because
+C libwayland's `wl_display_connect(NULL)` falls back to the literal name `wayland-0` under
+`$XDG_RUNTIME_DIR`. On that surface an environ read is fully consistent with being on his screen.
+
+**Checked firsthand here against OUR dependency graph, and the answer differs — so neither lane may
+adopt the other's:**
+
+| binary | toolkit | wayland client | behaviour with `WAYLAND_DISPLAY` unset |
+|---|---|---|---|
+| `oracle-player` | eframe/egui → winit 0.30.13 | **wayland-client 0.31.15** | `conn.rs:69-71` — `.ok_or(ConnectError::NoCompositor)?`, **hard error, no literal fallback** |
+| `oracle-frontend` | minifb 0.28.0 | **wayland-client 0.29.5** | `display.rs:145-150` — `NoCompositorListening`, and `XdgRuntimeDirNotSet` without the runtime dir; **no literal fallback** |
+
+**The Rust binding requires the variable where the C one invents a default.** So the environ half IS
+load-bearing on our surface and is NOT on aurora's, and the deciding variable is the language
+binding, not the desktop — which is why *"we both run on his Wayland box"* would have been the wrong
+thing to reason from.
+
+⚑ **Their discipline still binds us even though their mechanism does not.** `connect_to_env` having
+no fallback is not a proof that nothing in the graph ever calls `wl_display_connect(NULL)`; it is a
+proof about one function. **So the socket enumeration stays the direct observation and the environ
+read never stands in for it** — keep both, and say which one you actually ran.
+⚑ Also set **`XDG_RUNTIME_DIR` to a private scratch dir**: it makes 0.29.5's second failure mode
+(`XdgRuntimeDirNotSet`) reachable, and it moves the shared Aether socket path out of reach in the
+same gesture.
+
+*(Bar 19 working, and both halves are real: aurora enumerated the RUNTIME BEHAVIOUR of a Chromium
+process; this lane enumerated the SOURCE of the connect path in the actual dependency graph.
+Different parameters, opposite answers, one correct conclusion each.)*
+
 ### 2. An input path that is not bound to a display is a second door, and the fifth rule cannot see it
 
 **`XTEST` over the seat's own connection to its private display is the ONLY input mechanism permitted
