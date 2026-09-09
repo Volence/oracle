@@ -117,9 +117,43 @@ pub const PALETTE_LABEL: &str = "⌨ commands";
 /// holds keyboard focus, so a modifier chord cannot be mistaken for a d-pad press).
 pub const SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::P);
 
-/// How [`SHORTCUT`] is written for a human, once, so the button's hover text and any prose about it cannot
-/// disagree with the binding above.
-pub const SHORTCUT_LABEL: &str = "Ctrl+P";
+/// **The second keystroke that opens it**, added on the owner's own 2026-09-09 ask: *"commands should
+/// open with tilde like the other one."*
+///
+/// ⚑ **Added, never substituting.** [`SHORTCUT`] stays bound, and the toolbar button stays: `Ctrl+P` is
+/// the convention every editor he also uses spells it with, and a person who learned this window through
+/// the button must not find it moved. Two ways in and one modal.
+///
+/// **`Backtick`, and the label says "tilde", and that is not a mismatch.** A US keyboard's tilde is the
+/// shifted face of the backtick key, and `egui` names the *key*, not the glyph on the face — there is no
+/// `Key::Tilde` to bind. Binding [`Modifiers::NONE`] means the key opens the palette whether or not shift
+/// is held, which is what "tilde" means to a hand.
+///
+/// Safe to leave unmodified: [`crate::input::pad_from_keys`] reads arrows, `A`/`S`/`D` and `Enter`, so a
+/// backtick can never be mistaken for a d-pad press, and `Palette::handle_shortcut` consumes it before a
+/// focused widget can have it — which is also why it must not be bound at all while something is typing.
+pub const TILDE_SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Backtick);
+
+/// How the two bindings are written for a human, once, so the button's hover text and any prose about
+/// them cannot disagree with the bindings above.
+pub const SHORTCUT_LABEL: &str = "Ctrl+P or ~";
+
+/// **Whether this frame's keystrokes toggled the palette**, as a pure function so the rule is checkable
+/// without a window.
+///
+/// The two bindings are **not** symmetric, and that asymmetry is the whole content of this function:
+///
+/// * `chord` is `Ctrl+P`. A modifier chord is nobody's text, so it fires whatever has focus — which is
+///   what makes it the binding that always works, including from inside the palette's own filter box.
+/// * `tilde` is a bare key. A bare key belongs to whatever is typing, so it fires only when nothing is.
+///   Without that clause, a backtick typed into the archetype filter or the params box would close the
+///   thing the person was typing into.
+///
+/// Both toggle rather than open, so the key that opened it also shuts it, which is what "opens with
+/// tilde like the other one" means to a hand.
+pub fn opened_by(chord: bool, tilde: bool, wants_text: bool) -> bool {
+    chord || (tilde && !wants_text)
+}
 
 /// **Every method this build serves, filtered by what the human has typed.**
 ///
@@ -248,11 +282,21 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// Consume [`SHORTCUT`] if it was pressed this frame, and toggle.
+    /// Consume either binding if it was pressed this frame, and toggle.
     ///
-    /// `consume_shortcut` rather than a raw key read so the chord does not also reach whatever has focus.
+    /// `consume_shortcut` rather than a raw key read so neither keystroke also reaches whatever has
+    /// focus. The rule about *which* of them counts is [`opened_by`], because the two are not alike:
+    /// see there.
     pub fn handle_shortcut(&mut self, ctx: &egui::Context) {
-        if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT)) {
+        let wants_text = ctx.egui_wants_keyboard_input();
+        let (chord, tilde) = ctx.input_mut(|i| {
+            let chord = i.consume_shortcut(&SHORTCUT);
+            // ⚑ **Not consumed at all while something is typing.** An unmodified key must be left for
+            // the box that has the keyboard, whether or not this window would have acted on it.
+            let tilde = !wants_text && i.consume_shortcut(&TILDE_SHORTCUT);
+            (chord, tilde)
+        });
+        if opened_by(chord, tilde, wants_text) {
             self.open = !self.open;
         }
     }
@@ -783,5 +827,66 @@ mod tests {
             "a stale `nothing was sent` must not sit beside a reply that was"
         );
         assert!(p.last.is_some(), "a served method must answer");
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Tilde opens the palette — the owner's 2026-09-09 ask, and the incumbent binding survives it
+    // -------------------------------------------------------------------------------------------
+
+    /// **The binding table, as a table.** The ask was *"commands should open with tilde like the other
+    /// one"*, and the standing instruction with it was that whatever opens it today must not be removed.
+    /// So this asserts both bindings by value, not merely that some binding exists.
+    #[test]
+    fn the_palette_answers_to_the_chord_it_always_did_and_to_tilde_as_well() {
+        assert_eq!(
+            SHORTCUT,
+            KeyboardShortcut::new(Modifiers::CTRL, Key::P),
+            "the incumbent binding was changed; it was to be ADDED to, never replaced"
+        );
+        assert_eq!(
+            TILDE_SHORTCUT,
+            KeyboardShortcut::new(Modifiers::NONE, Key::Backtick),
+            "there is no `Key::Tilde`: a US tilde is the shifted face of the backtick key, and \
+             `Modifiers::NONE` is what makes it fire whether or not shift is held"
+        );
+        assert_ne!(
+            SHORTCUT, TILDE_SHORTCUT,
+            "two names for one chord would be one way in wearing two labels"
+        );
+        // The label a person reads must name both, or the second one is undiscoverable.
+        assert!(
+            SHORTCUT_LABEL.contains("Ctrl+P") && SHORTCUT_LABEL.contains('~'),
+            "the label names only some of the ways in: {SHORTCUT_LABEL:?}"
+        );
+    }
+
+    /// **A bare key belongs to whatever is typing; a chord does not.** The whole truth table, because the
+    /// `wants_text` clause is the one that would have shipped wrong: a backtick typed into the archetype
+    /// filter or the params box would otherwise close the box the person was typing into.
+    #[test]
+    fn tilde_yields_to_a_widget_that_is_typing_and_the_chord_does_not() {
+        for chord in [false, true] {
+            for tilde in [false, true] {
+                for wants_text in [false, true] {
+                    assert_eq!(
+                        opened_by(chord, tilde, wants_text),
+                        chord || (tilde && !wants_text),
+                        "chord={chord} tilde={tilde} wants_text={wants_text}"
+                    );
+                }
+            }
+        }
+        assert!(
+            opened_by(true, false, true),
+            "Ctrl+P is nobody's text and must work from inside the palette's own filter box"
+        );
+        assert!(
+            !opened_by(false, true, true),
+            "a bare backtick must be left to the box that has the keyboard"
+        );
+        assert!(
+            opened_by(false, true, false),
+            "and must open the palette when nothing is typing, which is the ask"
+        );
     }
 }
