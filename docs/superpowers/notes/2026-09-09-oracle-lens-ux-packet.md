@@ -260,3 +260,28 @@ On a pilot the brief is as much under test as the window.
 
 **Owed to the hub:** this packet's landing SHA, and the paragraph above. Items 1-4 were sent early, at
 the hub's request, and are already banked and relayed to sigil and aurora.
+
+## ⚑ ADDENDUM 2026-09-09, for whoever fixes C-3: DO NOT SHORTEN THE SOCKET PATH TO ITS BASENAME
+
+Landed from aurora's own bus-identity parcel, relayed via the hub and **verified against our tree
+before booking**. Their remedy for the identical defect had to keep **two** path segments, derived
+rather than chosen, because a basename label renders two different machines identically.
+
+**It transfers to us exactly, and worse, because the collision is in our own resolver.**
+`crates/oracle-aether/src/server.rs:66-78` resolves `$ORACLE_SOCKET` → `$EXODUS_SOCKET` →
+`$XDG_RUNTIME_DIR/oracle.sock` → `/tmp/oracle.sock`. **The last two share the basename
+`oracle.sock`**, so a window labelled with the basename would show our two machines as the same
+machine — the C-3 defect reintroduced inside C-3's own fix, and **invisible to any test that only
+asserts a label is displayed.**
+
+Two further notes from that parcel, both worth inheriting:
+- **Check how the value reaches the SCREEN, not whether it exists.** Their path was already correct
+  in the payload and already returned correctly by the connect handler; the push that every later
+  status change travelled on passed no argument, so the badge would have shown the path at connect
+  and lost it at the first pause. Nobody predicted it; it surfaced only by tracing the update path.
+  Same family as our own `Host::pump` snapshot defect: **correct at one door, lost at another.**
+- **A warning as loud as a hover is half-surfaced** — their `identityWarning` had been computed for
+  months and displayed nowhere.
+
+Measured here: **neither of our windows displays a socket path today**, so nothing is currently
+wrong. This is a forward hazard on the C-3 fix, not an open defect.
