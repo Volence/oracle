@@ -3,7 +3,8 @@
 //!
 //! Reads the hit ring through the **non-destructive** `hits()`. Never `take_hits()`: the ring is
 //! shared with socket clients, and a lens that consumed it would delete a client's evidence just
-//! by being switched on (the rule main.rs:1152-1155 states for the `W` key).
+//! by being switched on (the rule `main.rs` states on the `W` key — `commands::Cmd::DumpHits`:
+//! *"never `take_hits()`, which would let this key press delete a socket client's evidence"*).
 
 use crate::overlay::{self, ACCENT, INFO};
 use crate::present::Rect;

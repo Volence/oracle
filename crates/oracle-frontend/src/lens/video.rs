@@ -2,7 +2,8 @@
 //! strip, the sprite outlines, and the hover callout.
 //!
 //! **Hover explains, click arms.** The callout only ever *reads*: clicking still arms a watch
-//! (main.rs:1046-1082, `pick.rs`), and nothing here touches that path. The two answer different
+//! (`main.rs`'s click branch — `pick::resolve` into `wp.add_vdp_watch` over `panel_watches` — and
+//! `pick.rs`), and nothing here touches that path. The two answer different
 //! questions about the same dot, which is why they do not share code — `pick::resolve` builds three
 //! `String`s and decodes the whole SAT a second time to describe a watch it is about to arm, and
 //! paying that every frame to label a pixel would be the tail wagging the dog. [`hover_text`] reads
@@ -15,7 +16,7 @@
 //! pixels and knows nothing of the window, and [`draw_sprites`] maps at the last moment.
 //!
 //! **A known, accepted divergence.** The strip is built from `Vdp::cram_decoded()`, which a core
-//! test (`cram_rgb_matches_cram_decoded`, render.rs:1622) pins to agree *exactly* with the
+//! test (`cram_rgb_matches_cram_decoded`, in `oracle-core`'s `render.rs`) pins to agree *exactly* with the
 //! renderer's own per-entry decode at `PixelState::Normal`. The renderer's shadow/highlight-aware
 //! conversion is **private**, so inside an S/H region the picture is drawn at half or upper
 //! intensity while the strip still shows the Normal ramp: the swatch is the palette entry, not the
@@ -147,8 +148,8 @@ pub struct SpriteBox {
 /// `index` — the SAT slot, which is what both lists are keyed by — never by position, since the
 /// walk visits slots in link order and its third entry is very rarely slot 2. The geometry
 /// deliberately comes from the walk even though the two agree by construction today
-/// (`render.rs:648-653` and `render.rs:1141-1148` compute `x`/`y`/`width_cells`/`height_cells`
-/// from the same fields): one source per record beats two that happen to match.
+/// (`render.rs` builds `x`/`y`/`width_cells`/`height_cells` from the same fields twice, once into
+/// `SpriteDecoded` and once into `SpriteEval`): one source per record beats two that happen to match.
 ///
 /// Walk order is preserved, so box `n` is the `n`th sprite the hardware would have evaluated.
 pub fn boxes(
@@ -305,9 +306,12 @@ pub fn hover_text(attr: &PixelAttribution, sprites: &[SpriteDecoded]) -> String 
                         )
                     }
                     // The SAT can move between the frame being drawn and this read (the same
-                    // one-frame skew the click path documents at main.rs:1044-1047), and then the
-                    // winning sprite's box no longer contains the dot. Say so rather than
-                    // inventing a tile — `pick.rs:131-133` makes exactly this distinction.
+                    // one-frame skew the click path documents on `main.rs`'s `draw_crosshair`:
+                    // *"bounds-guarded … e.g. after an H40→H32 mode switch since the click"*), and
+                    // then the winning sprite's box no longer contains the dot. Say so rather than
+                    // inventing a tile — `pick.rs` makes exactly this distinction in the same words:
+                    // *"Report it rather than inventing a tile"* / *"tile unresolved (the SAT moved
+                    // since the frame was drawn)"*.
                     None => format!("slot {index} | tile ? | pal {} | pri {pri}", s.palette),
                 }
             }

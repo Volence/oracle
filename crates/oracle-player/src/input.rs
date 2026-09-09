@@ -119,8 +119,9 @@ pub enum MachineKey {
     /// between widgets, and this window's docked panels have text boxes in them, so one keystroke now
     /// means both "move to the next field" and "reset the console". The owner was told that and took the
     /// trade: *"And I don't care aobut walking focus right now."* So the mechanism was never in doubt,
-    /// only which of the two behaviours is worth more, and `oracle-frontend` binds both keys
-    /// (`main.rs:38`, `main.rs:1919`) so this is parity with the window his hands already know.
+    /// only which of the two behaviours is worth more, and `oracle-frontend` binds both keys — its module
+    /// doc's keymap row *"Tab (or F1) | soft-reset the console"*, and the `commands::Cmd::Reset` arm the
+    /// run loop dispatches it to — so this is parity with the window his hands already know.
     ///
     /// **Reversible, and the comment says so because he said "right now".** He dismissed the cost as it
     /// stands today, not for all time; a window that later grows a form worth tabbing through is a reason

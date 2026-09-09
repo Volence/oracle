@@ -7,7 +7,8 @@
 //!
 //! Lenses are **read-only over core state** and draw into the *window* buffer, never the retained
 //! native framebuffer: a paused frontend re-presents that buffer every iteration, so ink there
-//! accumulates (the lesson `draw_crosshair` records at main.rs:1700-1710).
+//! accumulates (the lesson `main.rs`'s `draw_crosshair` call site records: the crosshair is an XOR, so
+//! it is drawn into a scratch copy and never into the retained buffer).
 //!
 //! This module holds the spine — ids, the toggle bitset, the config-file spelling, and the one
 //! [`models`]/[`draw`] pair the run loop calls. Each lens is its own submodule, declared as it
@@ -1554,7 +1555,8 @@ mod tests {
     //
     // **Nothing on this branch drew a lens and the overlay into the same buffer.** Every test above
     // renders lenses alone; `overlay.rs`'s tests render the overlay alone. The run loop draws both,
-    // lenses first (main.rs:1776-1817), and the overlay's panels are only `PANEL_ALPHA` opaque — so
+    // lenses first (`main.rs`: `lens::draw`, then `palette.draw`, then `ov.draw`), and the overlay's
+    // panels are only `PANEL_ALPHA` opaque — so
     // a lens glyph underneath one is dimmed to about a quarter and reads as *missing* next to its
     // undimmed neighbours. Two real instances shipped through a fully green suite because no test
     // could see across the seam. This is that test.
