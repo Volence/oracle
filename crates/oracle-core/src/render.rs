@@ -12,7 +12,7 @@
 //! transparency-based layer compositing. Sprites (push 4), the priority-bit ordering + shadow/highlight
 //! (push 5), and DMA/FIFO (push 6) are out — see the plan `docs/plans/2026-07-16-vdp-planes.md`.
 
-use crate::state_hash::{CRAM_SIZE, VRAM_SIZE};
+use crate::state_hash::{CRAM_SIZE, VRAM_SIZE, VSRAM_SIZE};
 use crate::vdp::{DmaRecord, Vdp, MCLK_PER_FRAME, MCLK_PER_LINE};
 
 /// One of the three plane-stage nametables (design §4 `plane_decoded`). Sprites are a separate push.
@@ -725,14 +725,19 @@ pub struct FrameReport {
     pub dma: Option<DmaRecord>,
 }
 
-/// Per-line plane-A-slot inputs computed once by `resolve_line` (the window span + the R9 window-bug
-/// predicate), passed to `a_slot_pixel` per dot.
+/// Per-line render inputs computed once by `resolve_line` and passed to the per-dot helpers: the window
+/// span, the R9 window-bug predicate, and **both planes' h-scroll**.
+///
+/// H-scroll is a function of `(plane, line)` only — `plane_hscroll` takes no `x`. Carrying it here is not a
+/// convenience, it is the reason this struct exists in the hot path: the per-dot path used to re-derive it
+/// from VRAM for every plane of every dot, 320× per line more often than it can change.
 #[derive(Clone, Copy)]
-struct ASlotCtx {
+struct LineCtx {
     win: Option<WindowSpan>,
     r9: bool,
     boundary: usize,
     a_hscroll: u16,
+    b_hscroll: u16,
 }
 
 /// A fetched plane pixel before compositing (internal).
@@ -1295,8 +1300,18 @@ impl Vdp {
     }
 
     /// Read VSRAM word entry `idx` (recon RR6): big-endian, wrapped into the 80-byte region.
+    ///
+    /// The wrap is taken against the **constant** [`VSRAM_SIZE`], not `self.vsram().len()`. That is the same
+    /// authority [`Vdp::data_read`] already wraps its VSRAM reads by, and the only length `Vdp::new` ever
+    /// builds the buffer at; a runtime `len()` here compiles to a hardware integer division, and this is a
+    /// per-plane-per-dot call — the single hottest divide in the renderer.
     fn vsram_word(&self, idx: usize) -> u16 {
-        let b = (idx * 2) % self.vsram().len();
+        debug_assert_eq!(
+            self.vsram().len(),
+            VSRAM_SIZE,
+            "VSRAM buffer is not the constant size the wrap assumes"
+        );
+        let b = (idx * 2) % VSRAM_SIZE;
         ((self.vsram()[b] as u16) << 8) | self.vsram()[b | 1] as u16
     }
 
@@ -1355,11 +1370,20 @@ impl Vdp {
     /// conventions: increasing hscroll ⇒ plane right, `plane_x = x − hscroll`; increasing vscroll ⇒ plane up,
     /// `plane_y = line + vscroll`; both wrap modulo the plane's power-of-two pixel size). Shared by
     /// `plane_pixel` (samples the pixel) and `winning_cell` (attribution needs the decoded cell incl. flips).
-    fn plane_sample(&self, plane: Plane, line: u16, x: usize, h40: bool) -> (Cell, u8, u8) {
+    ///
+    /// `hscroll` is passed in rather than fetched: it is `plane_hscroll(plane, line)`, which takes no `x`, so
+    /// every dot of a line sees the same value. The caller hoists it into [`LineCtx`] once per line.
+    fn plane_sample(
+        &self,
+        plane: Plane,
+        line: u16,
+        x: usize,
+        h40: bool,
+        hscroll: u16,
+    ) -> (Cell, u8, u8) {
         let (base, w_cells, h_cells) = self.plane_geometry(plane);
         let plane_w = w_cells as usize * 8;
         let plane_h = h_cells as usize * 8;
-        let hscroll = self.plane_hscroll(plane, line);
         let vscroll = self.plane_vscroll(plane, x, h40, hscroll);
         let plane_x = x.wrapping_sub(hscroll as usize) & (plane_w - 1);
         let plane_y = (line as usize + vscroll as usize) & (plane_h - 1);
@@ -1368,8 +1392,16 @@ impl Vdp {
     }
 
     /// Fetch the plane pixel covering screen (`x`, `line`) — the sampled cell pixel (RR1/RR2 with flips).
-    fn plane_pixel(&self, plane: Plane, line: u16, x: usize, h40: bool) -> PlanePixel {
-        let (cell, px, py) = self.plane_sample(plane, line, x, h40);
+    /// `hscroll` is the line's hoisted [`plane_hscroll`](Self::plane_hscroll) for `plane`.
+    fn plane_pixel(
+        &self,
+        plane: Plane,
+        line: u16,
+        x: usize,
+        h40: bool,
+        hscroll: u16,
+    ) -> PlanePixel {
+        let (cell, px, py) = self.plane_sample(plane, line, x, h40, hscroll);
         self.cell_pixel(cell, px, py)
     }
 
@@ -1468,7 +1500,7 @@ impl Vdp {
     /// window span, else plane A — including the R9 window-bug reuse. Returned even when transparent (its
     /// priority bit feeds RR9 and the R11 shadow/highlight default state). `ctx` holds the per-line window
     /// inputs computed once by `resolve_line`.
-    fn a_slot_pixel(&self, line: u16, x: usize, h40: bool, ctx: &ASlotCtx) -> (PlanePixel, Layer) {
+    fn a_slot_pixel(&self, line: u16, x: usize, h40: bool, ctx: &LineCtx) -> (PlanePixel, Layer) {
         match ctx.win {
             Some(w) if x >= w.start_x as usize && x < w.end_x as usize => {
                 (self.window_pixel(line, x), Layer::Window)
@@ -1477,7 +1509,10 @@ impl Vdp {
                 self.r9_reused_pixel(line, x, ctx.boundary, ctx.a_hscroll),
                 Layer::PlaneA,
             ),
-            _ => (self.plane_pixel(Plane::A, line, x, h40), Layer::PlaneA),
+            _ => (
+                self.plane_pixel(Plane::A, line, x, h40, ctx.a_hscroll),
+                Layer::PlaneA,
+            ),
         }
     }
 
@@ -1644,17 +1679,18 @@ impl Vdp {
         let a_hscroll = self.plane_hscroll(Plane::A, line);
         let boundary = win.map_or(0, |w| w.end_x as usize);
         let r9 = matches!(win, Some(w) if !w.full_line && w.start_x == 0) && a_hscroll & 0x0F != 0;
-        let ctx = ASlotCtx {
+        let ctx = LineCtx {
             win,
             r9,
             boundary,
             a_hscroll,
+            b_hscroll: self.plane_hscroll(Plane::B, line),
         };
         // Shadow/highlight enable (reg $0C bit 3, recon R11).
         let sh = self.regs()[0x0C] & 0x08 != 0;
         let mut out: Vec<PixelResolution> = (0..width)
             .map(|x| {
-                let b = self.plane_pixel(Plane::B, line, x, h40);
+                let b = self.plane_pixel(Plane::B, line, x, h40, ctx.b_hscroll);
                 let (a, a_layer) = self.a_slot_pixel(line, x, h40, &ctx);
                 let s = sprite.buffer[x];
                 self.resolve_dot(sh, x, backdrop, s, &a, a_layer, &b, mask)
@@ -1899,10 +1935,10 @@ impl Vdp {
         line: u16,
         x: usize,
         h40: bool,
-        ctx: &ASlotCtx,
+        ctx: &LineCtx,
     ) -> Option<Cell> {
         match layer {
-            Layer::PlaneB => Some(self.plane_sample(Plane::B, line, x, h40).0),
+            Layer::PlaneB => Some(self.plane_sample(Plane::B, line, x, h40, ctx.b_hscroll).0),
             Layer::Window => Some(self.nametable_cell(
                 self.window_base(),
                 self.window_stride(),
@@ -1920,7 +1956,7 @@ impl Vdp {
                         line / 8,
                     ))
                 } else {
-                    Some(self.plane_sample(Plane::A, line, x, h40).0)
+                    Some(self.plane_sample(Plane::A, line, x, h40, ctx.a_hscroll).0)
                 }
             }
             Layer::Backdrop | Layer::Sprite(_) => None,
@@ -2033,11 +2069,12 @@ impl Vdp {
         let a_hscroll = self.plane_hscroll(Plane::A, y);
         let boundary = win.map_or(0, |w| w.end_x as usize);
         let r9 = matches!(win, Some(w) if !w.full_line && w.start_x == 0) && a_hscroll & 0x0F != 0;
-        let ctx = ASlotCtx {
+        let ctx = LineCtx {
             win,
             r9,
             boundary,
             a_hscroll,
+            b_hscroll: self.plane_hscroll(Plane::B, y),
         };
         let disp = self.regs()[0x01] & 0x40 != 0;
         let lcb = self.regs()[0x00] & 0x20 != 0 && xi < 8;
@@ -2051,7 +2088,7 @@ impl Vdp {
                 verdict: CandidateVerdict::Won,
             }]
         } else {
-            let b = self.plane_pixel(Plane::B, y, xi, h40);
+            let b = self.plane_pixel(Plane::B, y, xi, h40, ctx.b_hscroll);
             let (a, a_layer) = self.a_slot_pixel(y, xi, h40, &ctx);
             self.dot_candidates(
                 backdrop,
