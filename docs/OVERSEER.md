@@ -1054,7 +1054,9 @@ suit" from ORACLE-DEBUG-UI's goal.** Do not restate lenses as a live design dire
 
 **The three things the ruling said to answer BEFORE building are ALL ANSWERED AND BANKED ON `main`
 (measured 2026-09-05, before an agent was spent re-asking them):** (1) **which toolkit**: `egui` 0.36 +
-`eframe` + `egui_dock` 0.21 in `crates/oracle-player`, eight real tabs in `Tab::ALL`; (2) **a measured
+`eframe` + `egui_dock` 0.21 in `crates/oracle-player`, **eleven** real tabs in `Tab::ALL` (eight when
+this was measured on 2026-09-05; `Planes`, `Spawn` and `Effects` have landed since — the count is stated
+here in the present tense, so it is corrected rather than left as a dated figure); (2) **a measured
 frame loop under it**: `docs/2026-09-02-toolkit-spike.md`, **0.22 ms median / 0.66 ms p99, ~1.3 % of a
 16.67 ms frame**, with `docs/2026-09-02-player-pacing-design.md` putting the stall risk in *present*, not
 compute; (3) **panels in a second toolkit-drawn window beside the existing player first**: true by
