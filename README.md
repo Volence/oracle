@@ -119,7 +119,11 @@ Attach a client to the one you mean, by pointing `--socket` at a path you chose.
 
 ## Build and test
 
-CI (`.github/workflows/ci.yml`) pins Rust **1.96.0** and runs exactly this, determinism first:
+The Rust floor is declared once, as `rust-version` under `[workspace.package]` in the root
+`Cargo.toml`, and every CI job installs whatever that says — `./tools/rust-floor.sh` prints it. Run
+that script rather than reading a number out of this paragraph; a number written here is a sixth copy
+waiting to go stale, which is the state this replaced. CI (`.github/workflows/ci.yml`) then runs
+exactly this, determinism first:
 
 ```sh
 # The gating job — nothing else runs unless determinism holds.

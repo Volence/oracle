@@ -14,9 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # THE RUST FLOOR IS READ, NEVER RESTATED. `Cargo.toml`'s `[workspace.package] rust-version` is
+      # the one declaration; `tools/rust-floor.sh` prints it and exits 1 (empty stdout) if it is
+      # missing, and `v=$(...)` under `bash -e` fails the step on that — so an unreadable floor is a
+      # red step, not an empty `toolchain:` that quietly installs whatever `stable` is today.
+      # `crates/oracle-core/tests/toolchain_floor.rs` fails if any site here reverts to a literal.
+      - name: Read the declared Rust floor
+        id: floor
+        run: |
+          v=$(./tools/rust-floor.sh)
+          echo "toolchain=$v" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96.0"
+          toolchain: ${{ steps.floor.outputs.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - name: Determinism gate + invariant proptests
         run: cargo test -p oracle-core --test determinism_gate --test proptests -- --nocapture
@@ -27,9 +37,14 @@ jobs:
     needs: determinism-gate
     steps:
       - uses: actions/checkout@v4
+      - name: Read the declared Rust floor
+        id: floor
+        run: |
+          v=$(./tools/rust-floor.sh)
+          echo "toolchain=$v" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96.0"
+          toolchain: ${{ steps.floor.outputs.toolchain }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       # THE ONLY JOB THAT NEEDS SYSTEM LIBRARIES, and the reason CI died on 2026-08-13.
@@ -173,9 +188,14 @@ jobs:
     needs: determinism-gate
     steps:
       - uses: actions/checkout@v4
+      - name: Read the declared Rust floor
+        id: floor
+        run: |
+          v=$(./tools/rust-floor.sh)
+          echo "toolchain=$v" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96.0"
+          toolchain: ${{ steps.floor.outputs.toolchain }}
       - uses: Swatinem/rust-cache@v2
       # Runs the same script a developer runs locally, so there is one code path and no drift between
       # "what CI runs" and "what I ran". The pin-currency report it prints at the end is REPORT ONLY

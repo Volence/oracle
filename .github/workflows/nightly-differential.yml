@@ -22,9 +22,17 @@ jobs:
     # other branches; scheduled runs surface it for review.
     steps:
       - uses: actions/checkout@v4
+      # Same single source of truth as ci.yml: `Cargo.toml`'s `[workspace.package] rust-version`.
+      # This workflow is the one most likely to be forgotten in a bump — it runs nightly, not on push
+      # — which is exactly why it reads the floor rather than carrying its own copy of the number.
+      - name: Read the declared Rust floor
+        id: floor
+        run: |
+          v=$(./tools/rust-floor.sh)
+          echo "toolchain=$v" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96.0"
+          toolchain: ${{ steps.floor.outputs.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - name: Install xvfb
         run: sudo apt-get update && sudo apt-get install -y xvfb

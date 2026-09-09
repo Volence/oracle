@@ -3,6 +3,9 @@ name = "oracle-replay"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
+# Inherit THE RUST FLOOR (root Cargo.toml [workspace.package]). Cargo enforces MSRV per package, so a
+# member that does not inherit it is a member the declaration does not cover; toolchain_floor.rs checks.
+rust-version.workspace = true
 description = "Headless runner for Aeon's embedded input-replay regression net — boots the DEBUG ROM, arms the stream, and reports PASS / DESYNC / FAULT / TIMEOUT with an exit code."
 
 # One dependency, deliberately. `oracle-core`'s charter is "deterministic, no-I/O" with `bincode` as its
