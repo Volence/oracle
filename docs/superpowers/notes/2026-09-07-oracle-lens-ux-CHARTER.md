@@ -358,3 +358,41 @@ the same line of code and are different findings.
    was worth making: three tools, three directions, one rule. **Do not let the delta be dropped because
    the paragraph is what was asked for.** — sigil runs the pair next, and on this first run
    **the brief is the thing under test**, not the window.
+
+## ⚑ AMENDMENT 5 (2026-09-09, from aurora's pair): CONVERGENCE, AND THE CONTROLS A HEADLESS SEAT CANNOT EVALUATE
+
+**Two seats agreeing is evidence about REPRODUCIBILITY, never about CAUSE.** It tells you the
+observation is real and repeatable and says **nothing** about what produced it. **A shared environment
+is a shared confound, and the seat pair shares an environment BY CONSTRUCTION** — which is precisely
+what the ×2 design does not isolate. Convergence raises confidence that something is *there*; only
+tracing to source says *what*.
+
+**The instance, aurora's, and it nearly cost a serious false filing.** Both their seats hit
+`Open Project…` and nothing happened. Seat A filed it as its costliest finding **while correctly
+refusing to attribute it**; seat B declined to press it again and declared it undrivable. Two honest
+independent seats, one wall. Aurora then reproduced it with a **twelve-line Electron script containing
+none of their own code** — window present on the Xvfb, no dialog anywhere, the promise never settling,
+twice. **It was the headless rig, not the app.** Agreement taken as confirmation would have filed a
+serious defect against the application.
+
+**THE EXCLUSION, AND IT MUST BE DECLARED RATHER THAN DISCOVERED.** No headless seat can evaluate a
+control whose behaviour is **native chrome** — OS file dialogs, system menus, printer sheets, portal
+pickers. **The signature is: pressable, no crash, nothing appears, the call never returns — which is
+indistinguishable from a dead button**, so every seat will find it and every seat will file it.
+**Aurora's line, inverting one of ours: an exemption nobody sees is a hole; an exclusion nobody
+declares is a finding factory.**
+
+**Do not apply this as a blanket — apply it as a CHECK, because the answer is per-surface.** Establish
+whether the control is native chrome before excluding it. **On THIS repo the check comes back
+negative and the exclusion does not bite:** `crates/oracle-frontend/src/rom_browser.rs:16-17` says the
+ROM browser is *"deliberately not a native file dialog"* — `rfd` and friends would pull a GTK/portal
+tree into a frontend whose dependency list is kept small and would need a portal at runtime. It is
+drawn in-window, so it is ordinary pixels and fully evaluable headlessly. That is why the 09-09 pilot
+could judge the ROM-opening paths at all, and it is a property of the design rather than of the rig.
+**The one path that did fail here was traced to source (the window library implements file drops for
+X11/Mac/Windows and not at all for Wayland), which is attribution, not agreement.**
+
+**Corollary for reading your own pair:** a convergence that was traced to source is safe; a convergence
+resting on two seats seeing the same thing is a hypothesis with two samples from one distribution. The
+09-09 pilot's convergences were traced (the success line found from opposite ends; the two-machines
+finding settled from source), and **that tracing did the work, not the agreement.**
