@@ -3424,9 +3424,16 @@ mod tests {
         //
         // ⚑ Written as `MAX_OPS < u8::MAX` rather than the more obvious `MAX_OPS + 1 <= u8::MAX`,
         // which says the same thing and reads closer to the intent. The obvious form is
-        // `clippy::int_plus_one`, a lint that fires on the CI toolchain (1.96, the declared floor)
-        // and NOT on a newer local one, so it passes `cargo clippy` here and reds the gate. It broke
-        // main once already. Do not "fix" this back.
+        // `clippy::int_plus_one` and it broke main once. Do not "fix" this back.
+        //
+        // The first version of this comment blamed a toolchain skew — the lint firing on CI's 1.96
+        // floor but not on a newer local clippy. THAT WAS WRONG, and measured wrong: local clippy
+        // 0.1.98 flags it by default, exit 101, same lint, same line. Nothing about the toolchains
+        // differs here. The gate that would have caught it was one the lander SKIPPED — clippy was
+        // re-run on the merged tree for the two parcels either side of this one and not for this
+        // one. Kept because the wrong explanation was the comfortable one: it named a structural
+        // cause nobody could have prevented, and it would have sent the next session building
+        // tooling for a problem that does not exist.
         assert!(
             MAX_OPS < u8::MAX as usize,
             "the over-long len must fit a u8"
