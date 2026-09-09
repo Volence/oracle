@@ -380,6 +380,30 @@ change and was correctly kept out of the hardening parcel.
 
 ## Ops (each line is a paid-for lesson)
 
+**⚑ RE-VERIFY ON THE MERGED TREE MEANS THE SAME CHECKS EVERY TIME, AND THE VARIANCE IS INVISIBLE FROM
+INSIDE A SINGLE LANDING** *(2026-09-09, this seat, caught by CI after four parcels had landed)*. Three
+merges in ninety minutes: the citations parcel got fmt + check + clippy; the rust-floor parcel got fmt +
+clippy + its own test; **the six-guard parcel got the full suite + fmt and NO CLIPPY.** It reddened `main`
+on a `clippy::int_plus_one` in a test that parcel added. Each landing looked thorough **in isolation** —
+the guard parcel's evidence was the *heaviest* of the three, an 87-leg suite run — and the omission is only
+visible by comparing landings to each other, which nobody does. **Write the landing checks down and run
+the list, or the set silently varies with what felt proportionate that hour.**
+
+⚑ **AND THE HALF THAT IS WORTH MORE THAN THE OMISSION: THE FIRST DIAGNOSIS WAS SELF-EXCULPATING AND
+WRONG.** This seat wrote — into a commit message and into a comment — that the lint fires on CI's 1.96
+floor and not on a newer local clippy, i.e. a **toolchain skew**: structural, unpreventable, nobody's
+fault, and consistent with the L-13 ruling banked hours earlier, which is exactly what made it feel
+confirmed. **Measured, it is false: local clippy 0.1.98 flags it by default, exit 101, same lint, same
+line**, proven by re-introducing the bad form as a positive control. **The gate that would have caught it
+was one this seat SKIPPED, not one it lacked.**
+**The durable rule: when your own work breaks something, check the explanation that makes it your fault
+BEFORE the one that makes it structural.** The structural story is the one that arrives first, survives
+scrutiny longest, and costs the most, because it sends the next session building tooling for a problem
+that does not exist — here, a whole row proposing local-toolchain-matching apparatus for a skew that is
+not there. Same family as bar 9's *"the tell is not the red build, it is WHO IS EXPECTED TO MOVE"*: a
+diagnosis requiring work from nobody is the one to distrust.
+
+
 **⚑ A RECEIVER WHO SILENTLY REPAIRS A BROKEN INSTRUCTION DESTROYS THE ONLY SIGNAL THAT WOULD HAVE
 CORRECTED THE SENDER** *(2026-09-09, this seat's own defect, found when the hub self-reported the
 instruction)*. The hub handed this seat `git -S '<text>' log -- <path>` as the way to read a standing
