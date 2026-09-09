@@ -53,7 +53,7 @@ repository = "oracle-next"
 #   * the two newest-looking APIs actually in use are `slice::as_chunks` (stable 1.88) and
 #     `usize::div_ceil`, which `docs/superpowers/plans/2026-08-17-player-s3-lenses.md` records as
 #     deliberately available at 1.96.
-# NOT closed: there is no 1.96 toolchain and no rust-src on this box, so none of the above is a
-# compile of the tree under 1.96, and CI cannot stand in for one while it is red. Raising this to
+# NOT closed: no toolchain at this floor exists on this box, and no rust-src, so none of the above is
+# a compile of the tree at the floor, and CI cannot stand in for one while it is red. Raising this to
 # 1.98.0 would describe what the code is developed against instead; that is the owner's call.
 rust-version = "1.96.0"

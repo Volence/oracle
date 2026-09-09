@@ -22,11 +22,23 @@
 //!     `README.md`, `.github/**`, `tools/**` and every `Cargo.toml` — see `live_surface_files()` for
 //!     the scope argument and the `docs/**` exemption.
 //!
-//! The first four tests here guarded the workflows and the manifests, and shipped with a hole: the
-//! README. It was found by someone mutating the README by hand and watching all five tests pass, which
-//! is the whole reason the live-surface rules exist. The lesson is worth keeping: the sites a guard
-//! covers are the sites its author was thinking about, and the one that had to be found by reading is
-//! the one the guard did not cover.
+//! THIS FILE HAS SHIPPED THREE HOLES, each found by someone mutating an input its author had not
+//! thought to vary, and the pattern across them is the most useful thing here:
+//!
+//!   1. The first four tests guarded the workflows and the manifests and missed `README.md` — found
+//!      by mutating the README and watching all five tests pass. The sites a guard covers are the
+//!      sites its author was thinking about.
+//!   2. Rule B's keyword window was 14 characters and missed `rustup toolchain install 1.94.0`, where
+//!      the keyword sits 18 back — found by varying the SURFACE and the PHRASING.
+//!   3. Rule B looked only BACKWARD and missed `echo 1.94.0 is the toolchain`, the same words in the
+//!      other order — and no amount of sweeping widths could have found it, because width and
+//!      direction are different axes.
+//!
+//! Varying one parameter does not exhaust the space; the parameter nobody thought to vary is where
+//! the next defect hides. Axes varied so far: which SITE carries the copy, how FAR the keyword sits,
+//! what WORDS are used, which SIDE the keyword falls on, and how many PARTS the version has. Axes not
+//! varied, and so not claimed: anything spanning MULTIPLE LINES, non-UTF-8 or generated files, and
+//! versions written other than as digits-and-dots.
 //!
 //! LOUD ON UNMEASURABLE. A scan that finds no workflows, no `toolchain:` sites, fewer than eight live
 //! files, or a missing/empty `README.md`, FAILS. A grep that matches nothing exits 0, and "I could not
@@ -575,34 +587,58 @@ fn the_declared_version_is_stated_in_exactly_one_place() {
 /// Rule A cannot see the worse failure. A copy that has DRIFTED no longer contains the declared
 /// string: `CI pins Rust 1.94.0` is invisible to an exact-value scan, and it is precisely the
 /// sentence that misleads a reader — an in-sync copy is merely redundant, a drifted one is false. So
-/// this rule looks for the SHAPE of the claim: a toolchain keyword followed closely by a THREE-part
-/// version, anywhere on the live surface except the declaration line itself.
+/// this rule looks for the SHAPE of the claim: a toolchain keyword NEAR a version, on either side of
+/// it, anywhere on the live surface except the declaration line itself.
 ///
-/// Three parts are required, and the keyword must sit within `KEYWORD_WINDOW` characters BEFORE the
-/// version. Both constraints keep this off the ordinary version chatter these files are full of —
-/// `alsa-sys 0.3.1`, `clippy 0.1.98`, `egui 0.36`, `slice::as_chunks` (stable 1.88), `edition =
-/// "2021"`.
+/// THE WINDOW HAS BEEN WRONG TWICE, ON TWO DIFFERENT AXES, and both misses are worth keeping in view
+/// because they were the same mistake made twice:
 ///
-/// THE WINDOW WIDTH IS MEASURED, and the first value was wrong. It started at 14, which caught
-/// `CI pins Rust **1.94.0**` but NOT `rustup toolchain install 1.94.0` — there `toolchain` sits 18
-/// characters back, and that line sailed through all seven tests while pinning a version the project
-/// does not use. Sweeping the whole live surface for false positives at several widths:
+///   1. WIDTH. It started at 14 characters, which caught `CI pins Rust **1.94.0**` but not
+///      `rustup toolchain install 1.94.0` — there `toolchain` sits 18 characters back. Fixed to 60 by
+///      sweeping widths for false positives.
+///   2. DIRECTION. The width sweep could never have found this one: the window only looked BACKWARD,
+///      so `echo 1.94.0 is the toolchain` — the same words in the other order — passed all seven
+///      tests while pinning a version the project does not use.
 ///
-///   window 14 / 25 / 40 / 80 chars -> 0 hits;  whole line -> 1 hit
+/// Varying one parameter does not exhaust the space, and the parameter nobody thought to vary is
+/// where the next defect hides. Width and phrasing are both the "how far / what words" axis; ordering
+/// is a different axis, and no amount of sweeping the first could reach the second.
 ///
-/// The single whole-line hit is a legitimate sentence in `Cargo.toml` ("...has been on 1.98.0 since
-/// 2026-08-18... this is cargo's own MSRV key"), where the keyword is real but unrelated to the
-/// number. So the honest ceiling is "less than a line", and 60 is chosen: triple the phrasing that
-/// defeated 14, with measured zero false positives, and still short of the width that produces one.
+/// THE TWO WIDTHS ARE MEASURED SEPARATELY, because the populations differ — prose FOLLOWING a number
+/// reads differently from a command PRECEDING one. Across the live surface, every version and its
+/// nearest keyword each way:
 ///
-/// KNOWN LIMIT, stated rather than papered over: a bare literal with no toolchain word anywhere near
-/// it (`echo 1.94.0 > /tmp/v`) is caught by neither rule. Rule A covers that case for the CURRENT
-/// value; for a drifted one it is out of reach without a pattern so broad it would fire on every
-/// dependency version in the tree.
+///   * 30 three-part versions (excluding the declaration). Nearest keyword BACKWARD on any of them:
+///     none at all, on any line. So `BACK = 60` has measured zero false positives and no near miss.
+///   * Nearest keyword FORWARD occurs exactly once, at 67 characters (`Cargo.toml`: "...has been on
+///     1.98.0 since 2026-08-18. It is declared HERE because this is cargo's own MSRV key"), where the
+///     keyword is real but unrelated to the number. `FWD = 40` therefore has zero false positives
+///     with 27 characters of margin, while covering the phrasing that defeated the old rule by 5x
+///     (`1.94.0 is the toolchain` puts the keyword 8 characters out).
+///
+/// TWO-PART VERSIONS COUNT TOO (`Rust 1.94`), not just three. That widens the noise population from
+/// 30 to 113 — most dependency chatter is two-part — and at these windows it costs exactly zero false
+/// positives. It did cost one before this commit, in `Cargo.toml`'s own prose ("there is no 1.96
+/// toolchain and no rust-src on this box"), which was rewritten to name no digits rather than have
+/// the rule tuned around it. NOTE FOR A FUTURE EDITOR: the two-part margin is the thin one. If you
+/// add prose near a version number on the live surface, re-run the sweep.
+///
+/// KNOWN LIMIT, now true in BOTH directions — the previous wording ("a bare literal with no toolchain
+/// word anywhere near it") implied the converse held, and it did not for half the orderings, which is
+/// worse than saying nothing. What is caught: a two- or three-part version with a toolchain keyword
+/// on the SAME LINE, within 60 characters before it or 40 after. What is NOT:
+///
+///   * a version whose nearest keyword is further away than that, or on another line (`toolchain:` on
+///     one YAML line and the value on the next is covered instead by the key-level rule);
+///   * a version with no toolchain keyword on its line at all (`echo 1.94.0 > /tmp/v`). Rule A still
+///     catches this shape for the CURRENT value; for a drifted one it is out of reach without a
+///     pattern that would fire on all 113 ordinary version mentions in the tree;
+///   * a version written in words, or in a single part (`Rust 1`).
 #[test]
 fn no_live_file_states_a_different_rust_version() {
     const KEYWORDS: [&str; 4] = ["rust", "rustc", "toolchain", "msrv"];
-    const KEYWORD_WINDOW: usize = 60;
+    const WINDOW_BACK: usize = 60;
+    const WINDOW_FWD: usize = 40;
     let floor = manifest_floor();
     let root = repo_root();
     let declaration_line = format!("rust-version = \"{floor}\"");
@@ -621,27 +657,37 @@ fn no_live_file_states_a_different_rust_version() {
                 continue;
             }
             let bytes = line.as_bytes();
-            // Walk every `d.d.d` on the line and ask whether a toolchain keyword sits just before it.
-            for (at, _) in line.match_indices('.') {
-                let start = bytes[..at]
-                    .iter()
-                    .rposition(|b| !b.is_ascii_digit())
-                    .map_or(0, |p| p + 1);
-                if start == at {
+            // MAXIMAL RUNS of `[0-9.]`, not a walk over every '.'. The dot-walk this replaces found
+            // the version by scanning back from each dot to the previous non-digit, which was correct
+            // only while exactly two dots were required: allowing two-part versions would have made it
+            // read the second dot of `1.96.0` as its own version `96.0`. A maximal run cannot do that,
+            // because `1.96.0` is one run and is validated whole.
+            let mut start = 0usize;
+            while start < bytes.len() {
+                if !bytes[start].is_ascii_digit() {
+                    start += 1;
                     continue;
                 }
-                let mut end = at;
-                let mut dots = 0;
+                // A run may not begin mid-number: `blastem64-0.6.2` starts its run at the `0`.
+                if start > 0 && (bytes[start - 1] == b'.' || bytes[start - 1].is_ascii_digit()) {
+                    start += 1;
+                    continue;
+                }
+                let mut end = start;
                 while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
-                    if bytes[end] == b'.' {
-                        dots += 1;
-                        if dots > 2 {
-                            break;
-                        }
-                    }
                     end += 1;
                 }
-                if dots != 2 || !bytes[end - 1].is_ascii_digit() {
+                let run = &line[start..end];
+                let next = start.max(end);
+                // `d+(.d+){1,2}` exactly — two- or three-part, every part non-empty and numeric. This
+                // rejects `../../..`, `2026`, `1.96.0.1` and a trailing-dot `1.96.` alike.
+                let parts: Vec<&str> = run.split('.').collect();
+                let versionish = (parts.len() == 2 || parts.len() == 3)
+                    && parts
+                        .iter()
+                        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+                if !versionish {
+                    start = next;
                     continue;
                 }
                 // SLICE THE ORIGINAL LINE, THEN LOWERCASE — never the other way round. These files
@@ -649,14 +695,25 @@ fn no_live_file_states_a_different_rust_version() {
                 // one mostly dodged: `to_lowercase()` can change byte lengths, which would make
                 // offsets taken from `line` wrong in a lowercased copy; and a fixed byte offset can
                 // land inside a multi-byte character, which panics. `start` and `end` are always
-                // boundaries (the digits and dots they delimit are ASCII), but `start - 60` need not
-                // be, so it is snapped forward.
-                let mut window_from = start.saturating_sub(KEYWORD_WINDOW);
-                while !line.is_char_boundary(window_from) {
-                    window_from += 1;
+                // boundaries (the digits and dots they delimit are ASCII), but the WINDOW edges need
+                // not be, so both are snapped outward onto one.
+                let mut back_from = start.saturating_sub(WINDOW_BACK);
+                while !line.is_char_boundary(back_from) {
+                    back_from += 1;
                 }
-                let window = line[window_from..start].to_lowercase();
-                if !KEYWORDS.iter().any(|k| window.contains(k)) {
+                let mut fwd_to = (end + WINDOW_FWD).min(line.len());
+                while !line.is_char_boundary(fwd_to) {
+                    fwd_to += 1;
+                }
+                // BOTH DIRECTIONS. Looking only backward is what let `echo 1.94.0 is the toolchain`
+                // through: the claim reads the same to a human whichever side the keyword falls on.
+                let before = line[back_from..start].to_lowercase();
+                let after = line[end..fwd_to].to_lowercase();
+                if !KEYWORDS
+                    .iter()
+                    .any(|k| before.contains(k) || after.contains(k))
+                {
+                    start = next;
                     continue;
                 }
                 offenders.push(format!(
