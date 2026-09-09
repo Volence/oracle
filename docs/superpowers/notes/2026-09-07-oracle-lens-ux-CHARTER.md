@@ -172,11 +172,75 @@ fallback does. **A forced value read back from a log line is one-sided: the rig 
 
 | what | the proof this seat owes |
 |---|---|
-| the **display** | the seat's window on its own Xvfb **and nothing on `:0`** — two-sided |
+| the **display** | ~~the seat's window on its own Xvfb **and nothing on `:0`**~~ — **AMENDED, see below; the `:0` half is not the absent-half on this machine** |
 | the **socket** | yields an error and no artifact, so the printed form stands — one-sided, and that is legitimate here |
 
 **Each seat states WHICH of the two forms it used**, so a reader can tell a two-sided proof from a
 one-sided one at a glance rather than by re-deriving it.
+
+## ⚑ SAFETY AMENDMENT, 2026-09-09, LANDED BEFORE ANY SEAT RAN: **ISOLATE THE SURFACE, NOT THE PROCESS**
+
+Found by building the rig rather than by running a seat, which is why it is here and not in the
+packet: **neither of these is findable from a working rig.** Hub instruction (empyrean `0c0c46b`,
+verified here as a reachable ancestor of their `origin/main`, `--stat` a docs commit carrying docs):
+this text lands **before** a seat runs, because a rig built to the unamended charter would be
+certified safe while a window sits on the owner's live desktop. Sigil and aurora inherit it.
+
+### 1. The absent-half was pointed at a surface the window does not escape to
+
+The struck row asked for *"nothing on `:0`"*. **On a Wayland desktop that check returns a clean
+answer during the exact incident it exists to prevent.** This lane's own measurement,
+`docs/2026-08-29-window-runtime-checks.md:52-55`: `DISPLAY=:91` was set, the launch was made, and
+the window appeared **on the owner's real screen** — the log said `Wayland window` while
+`python-xlib` found **zero windows on the Xvfb**. `WAYLAND_DISPLAY` is inherited by every lane
+session on this box, and both minifb and winit prefer Wayland whenever it is set. An X-only
+enumeration of `:0` would have been empty, and empty reads as clean.
+
+⚑ **Forcing X11 is necessary and NOT sufficient, and the broken half was the VERIFICATION.** The
+suite's standing wording made this a forcing problem; it is a checking problem.
+
+**The display proof is now:**
+
+| half | what is owed |
+|---|---|
+| present | the seat's window enumerated on its **own** Xvfb, matched by a **PID the seat recorded at spawn** |
+| absent | the process **cannot reach the compositor**: `WAYLAND_DISPLAY` and `XDG_SESSION_TYPE` read back **absent from `/proc/<pid>/environ` of the RUNNING process**, and its open sockets showing one to the private X server and **none** to `$XDG_RUNTIME_DIR/wayland-*` |
+| kept | the `:0` enumeration, retained as cheap corroboration and **never as the absent-half alone** |
+
+**Why the replacement is stronger than any enumeration: it does not depend on catching the window at
+the right moment.** An enumeration samples; a missing path is a property. **Environment-as-launched
+and environment-as-running are two different claims**, and only the second is worth anything — the
+first is the rig describing itself, which this document already names as the one-sided failure.
+
+### 2. An input path that is not bound to a display is a second door, and the fifth rule cannot see it
+
+**`XTEST` over the seat's own connection to its private display is the ONLY input mechanism permitted
+in this rig**, with `/usr/bin/import` for capture. No `xdotool`, `ydotool`, `wtype`, `dotool` or
+`xte` exists on this machine (all five checked); `python-xlib` and its `XTEST` extension do.
+
+⚠ **`/dev/uinput` IS reachable here and MUST NOT be used.** This lane had banked it as root-only.
+It is user-writable through a POSIX ACL (`user:volence:rw-`; an open succeeds) which the mode string
+`crw-rw---- root:root` hides — the only signal in a long listing is a `+`/`@` marker. **A mode string
+is not a permission; the ACL decides.** uinput creates a kernel-level device, so its events are bound
+to **no display** and land wherever focus is: the owner's live session, with his window on it.
+
+⚑ **The fifth rule does not reach this.** *No resolver may fall through to a shared last resort*
+governs chains; uinput is not a resolver, it is a **second door with no chain to audit**. So the
+isolation proof covers **the input path as well as the window**, and a seat that finds XTEST
+insufficient files BLOCKED — it never reaches for the unbound door because it is simpler.
+
+### 3. The generalisation, and it is the one worth carrying to the other lanes
+
+**Isolate the surface, not the process.** Both defects are a rig that correctly confines a *process*
+while leaving it a path to the owner's screen that nothing in the proof looks at — one through the
+compositor the check never asked about, one through an input device that answers to no display.
+**An absence check must be pointed at the surface the thing would actually escape to, rather than at
+the one you happen to be able to enumerate.**
+
+⚑ **And the seat-integrity half, which is why item 2 is not merely ergonomics:** a seat with no way to
+press a control does not stop. **It silently substitutes reading the source for driving the window**,
+and keeps emitting findings that look like UX findings while it has stopped being a UX seat. UXb is
+*required* to press every control; a rig that cannot is a BLOCKED report, never a quieter walk.
 
 - **Every finding ships a screenshot, or the diagnostic text verbatim. No evidence, no finding.**
 - **A clean task still ships its step count with a screenshot per step**, so a clean verdict is
