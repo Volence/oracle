@@ -2617,6 +2617,15 @@ const COL_GUTTER: f32 = 14.0;
 /// being a name and the hover is the only place it exists.
 const NAME_COL_FLOOR: f32 = 120.0;
 
+/// The gap between the two columns of a selectable list, and the margin its band carries past the
+/// glyphs.
+///
+/// ⚑ Owed to the owner's 2026-09-09 reading of a subtype row as `$20Down_Red`: the value and the name
+/// were two labels in a `horizontal` whose `item_spacing.x` was **zero**, so a hex value and a symbol
+/// name were drawn touching. Smaller than [`COL_GUTTER`] because these are two columns rather than six
+/// and the list is narrow, but never zero, which is the whole point.
+const LIST_GUTTER: f32 = 10.0;
+
 /// The narrowest a [`StatShape::Tile`]'s **content** may be, so a row of tiles is a row of like-sized
 /// boxes rather than three boxes shrink-wrapped to three different labels.
 ///
@@ -3608,7 +3617,14 @@ fn subtype_list(
 ) -> Option<String> {
     let mut hit = None;
     ui.scope(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+        // ⚑ **The x spacing is a REAL GUTTER now, and that is the whole of the first defect.**
+        //
+        // It was `vec2(0.0, 1.0)` — zero horizontally — which is what made the owner read a row as
+        // `$20Down_Red`: the value and the name were two labels in one `horizontal` with nothing between
+        // them. The listing has carried them as two fields all along (`SubtypeRow::value`,
+        // `SubtypeRow::label`), so nothing about the model changed; the presentation was joining what the
+        // model had kept apart. The y half stays 1.0, because the rows are meant to sit tight.
+        ui.spacing_mut().item_spacing = egui::vec2(LIST_GUTTER, 1.0);
         let weak = ui.visuals().weak_text_color();
         ui.label(
             egui::RichText::new(&listing.count)
@@ -3623,22 +3639,70 @@ fn subtype_list(
         );
         ui.add_space(3.0);
         // P7: an explicit, stable salt, so this scroll position is its own and not the archetype list's.
+        //
+        // ⚑ **`auto_shrink` off across, and that is the second defect.** A `ScrollArea` that shrinks to
+        // its content ends where the longest name ends, so its scrollbar was drawn *inside* the list,
+        // immediately right of the names — which is what the owner's arrow points at. Held to the pane's
+        // width, the bar sits at the list's outer edge where a bar belongs. Vertically it is off for the
+        // same reason it always was: `max_height` is the cap and a short list must not stretch to it.
         egui::ScrollArea::vertical()
             .id_salt(salt)
             .max_height(132.0)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 let strong = ui.visuals().strong_text_color();
+                let mono = ui
+                    .style()
+                    .text_styles
+                    .get(&egui::TextStyle::Monospace)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::monospace(12.0));
+                // The value column, measured once over the whole listing rather than per row, because a
+                // column that is as wide as its own cell is not a column: the rows line up on the value
+                // and that is the only reason it leads.
+                let value_w = listing
+                    .rows
+                    .iter()
+                    .map(|r| text_w(ui, &mono, &r.value))
+                    .fold(0.0_f32, f32::max);
+                // ⚑ **How far the band and the highlight reach, and that is the third defect.** It used
+                // to be `ui.max_rect().x_range()` — the whole pane — so a selected row was a long empty
+                // bar and the zebra banding striped a span with nothing in it. That empty striping is
+                // what he called cluttered.
+                //
+                // Bounded to the LIST's own width instead: the widest row's content plus a margin, so
+                // the click target still comfortably outruns the glyphs (which is why the band was full
+                // width in the first place) without painting across a pane the list does not occupy.
+                // Capped at the pane, so a name longer than the panel cannot push it off the edge.
+                let label_w = listing
+                    .rows
+                    .iter()
+                    .map(|r| text_w(ui, &mono, &r.label))
+                    .fold(0.0_f32, f32::max);
+                let band_w = (value_w + LIST_GUTTER + label_w + LIST_GUTTER * 2.0)
+                    .min(ui.max_rect().width());
+                let cell_h = ui.spacing().interact_size.y;
                 for (i, r) in listing.rows.iter().enumerate() {
                     let ink = if r.offered { strong } else { weak };
                     let bg = ui.painter().add(egui::Shape::Noop);
                     let inner = ui.horizontal(|ui| {
                         // P3's carve-out: the value is hex out of a listing, so it is monospace, and it
-                        // leads because the rows line up on it.
-                        ui.label(egui::RichText::new(&r.value).monospace().color(ink));
+                        // leads because the rows line up on it. Right-aligned inside a column of its own
+                        // for `table_cell`'s reason, which is not a nicety: it is what makes a column of
+                        // machine values comparable down the page, and it is what a padded `{:>4}` in the
+                        // string would only have approximated.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(value_w, cell_h),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(egui::RichText::new(&r.value).monospace().color(ink));
+                            },
+                        );
                         ui.label(egui::RichText::new(&r.label).monospace().color(ink));
                     });
+                    let left = ui.max_rect().left();
                     let band = egui::Rect::from_x_y_ranges(
-                        ui.max_rect().x_range(),
+                        left..=left + band_w,
                         inner.response.rect.y_range(),
                     )
                     .expand2(egui::vec2(0.0, 1.0));
@@ -3785,39 +3849,62 @@ fn select_list(
         // which is the complaint that moved it. In a tab of its own the list is the whole content, so
         // it takes the pane's own height: `ScrollArea` bounds itself by the `Ui`'s available space, and
         // a fixed cap here would leave the bottom of a dedicated pane empty on purpose.
-        egui::ScrollArea::vertical().id_salt(salt).show(ui, |ui| {
-            let strong = ui.visuals().strong_text_color();
-            for (i, r) in rows.iter().enumerate() {
-                // Reserved before the row so the band paints behind it, which is egui's own idiom and
-                // the one `slot_table` already uses.
-                let bg = ui.painter().add(egui::Shape::Noop);
-                let inner = ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&r.name).monospace().color(strong));
-                });
-                // Full width, not the width of the glyphs: a click target that stops where the text
-                // stops is a click target a person misses.
-                let band = egui::Rect::from_x_y_ranges(
-                    ui.max_rect().x_range(),
-                    inner.response.rect.y_range(),
-                )
-                .expand2(egui::vec2(0.0, 1.0));
-                let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
-                ui.painter().set(
-                    bg,
-                    egui::Shape::rect_filled(
-                        band,
-                        0.0,
-                        row_fill(ui, r.selected, resp.hovered(), i),
-                    ),
-                );
-                if resp
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    hit = Some(r.name.clone());
+        //
+        // ⚑ **`auto_shrink` off across**, [`subtype_list`]'s finding and the same fault: a list that
+        // shrinks to its content puts its own scrollbar immediately right of the longest name instead of
+        // at the list's outer edge.
+        egui::ScrollArea::vertical()
+            .id_salt(salt)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let strong = ui.visuals().strong_text_color();
+                let mono = ui
+                    .style()
+                    .text_styles
+                    .get(&egui::TextStyle::Monospace)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::monospace(12.0));
+                // ⚑ **The band reaches past the glyphs, not across the pane.** [`subtype_list`]'s finding
+                // applied to the list beside it, so a selected row is not a long empty bar and the zebra
+                // banding does not stripe a span with nothing in it. The margin is what keeps the original
+                // reason intact: a click target that stops exactly where the text stops is one a person
+                // misses.
+                let band_w = (rows
+                    .iter()
+                    .map(|r| text_w(ui, &mono, &r.name))
+                    .fold(0.0_f32, f32::max)
+                    + LIST_GUTTER * 2.0)
+                    .min(ui.max_rect().width());
+                for (i, r) in rows.iter().enumerate() {
+                    // Reserved before the row so the band paints behind it, which is egui's own idiom and
+                    // the one `slot_table` already uses.
+                    let bg = ui.painter().add(egui::Shape::Noop);
+                    let inner = ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&r.name).monospace().color(strong));
+                    });
+                    let left = ui.max_rect().left();
+                    let band = egui::Rect::from_x_y_ranges(
+                        left..=left + band_w,
+                        inner.response.rect.y_range(),
+                    )
+                    .expand2(egui::vec2(0.0, 1.0));
+                    let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
+                    ui.painter().set(
+                        bg,
+                        egui::Shape::rect_filled(
+                            band,
+                            0.0,
+                            row_fill(ui, r.selected, resp.hovered(), i),
+                        ),
+                    );
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        hit = Some(r.name.clone());
+                    }
                 }
-            }
-        });
+            });
     });
     hit
 }
@@ -6569,6 +6656,204 @@ mod overlay_layout_tests {
             before, after,
             "the control witnesses nothing: this Ui does not move its cursor for a laid-out card \
              either, so the overlay test above is measuring an inert harness"
+        );
+    }
+}
+
+/// **The subtype list, measured off what it actually paints.**
+///
+/// The owner's third finding, 2026-09-09: *"In spawn there's a scrollbar and to the left is the names
+/// but the highlight for select goes all the way through to the right and the names kind of stink too
+/// ($20Down_Red), it's just cluttered looking and gross imo."*
+///
+/// Two of the three defects in that sentence are geometry, and geometry is checkable: `egui` builds a
+/// `Ui` on a headless `Context` and hands back the shapes it painted. So this reads the **drawn** run
+/// positions rather than any intermediate the renderer might get right on its own — the value and the
+/// name must not touch, and the selected row's fill must not run to the edge of the pane.
+///
+/// The third (the scrollbar's position) is `ScrollArea`'s own layout and is **not asserted**; it is
+/// `auto_shrink([false, false])` and a foreground look.
+#[cfg(test)]
+mod subtype_list_tests {
+    use super::*;
+    use crate::spawn_picker::{SubtypeListing, SubtypeRow};
+
+    /// The pane the list is drawn into. Deliberately far wider than the rows need, because that gap is
+    /// exactly where the old band and the old zebra striping went.
+    const PANE: egui::Vec2 = egui::vec2(520.0, 400.0);
+
+    fn row(value: &str, label: &str, selected: bool) -> SubtypeRow {
+        SubtypeRow {
+            name: format!("ObjDef_Spring_{label}"),
+            label: label.into(),
+            value: value.into(),
+            selected,
+            offered: true,
+            note: None,
+        }
+    }
+
+    /// His own rows, spellings included.
+    fn listing() -> SubtypeListing {
+        SubtypeListing {
+            rows: vec![
+                row("$00", "Up_Red", true),
+                row("$02", "Up_Yellow", false),
+                row("$20", "Down_Red", false),
+            ],
+            count: "3 subtypes".into(),
+            absence: None,
+            truncation: None,
+            collision: None,
+            armed: "A click places a spring.".into(),
+        }
+    }
+
+    /// Every `Shape::Text` the frame painted, flattened out of the nesting `egui` produces, as
+    /// (rect, text).
+    fn text_runs(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, String)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, String)>) {
+            match s {
+                egui::Shape::Text(t) => out.push((
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                    t.galley.text().into(),
+                )),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            walk(&c.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every filled rectangle the frame painted, flattened the same way.
+    fn fills(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, egui::Color32)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, egui::Color32)>) {
+            match s {
+                egui::Shape::Rect(r) => out.push((r.rect, r.fill)),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            walk(&c.shape, &mut out);
+        }
+        out
+    }
+
+    fn draw() -> Vec<egui::epaint::ClippedShape> {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, PANE)),
+            ..Default::default()
+        };
+        let l = listing();
+        let mut out = ctx.run_ui(raw, |ui| {
+            subtype_list(ui, &l, "subtype-list-test");
+        });
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    /// **The value and the name are two columns**, and there is daylight between them.
+    ///
+    /// He read a row as `$20Down_Red` because `item_spacing.x` was zero: the model had carried
+    /// `SubtypeRow::value` and `SubtypeRow::label` apart all along and the renderer drew them touching.
+    #[test]
+    fn a_subtype_row_draws_its_value_and_its_name_as_separate_columns() {
+        let shapes = draw();
+        let runs = text_runs(&shapes);
+        for (value, label) in [("$00", "Up_Red"), ("$02", "Up_Yellow"), ("$20", "Down_Red")] {
+            let v = runs
+                .iter()
+                .find(|(_, t)| t == value)
+                .unwrap_or_else(|| panic!("the value {value:?} was never painted: {runs:?}"));
+            let n = runs
+                .iter()
+                .find(|(_, t)| t == label)
+                .unwrap_or_else(|| panic!("the name {label:?} was never painted: {runs:?}"));
+            assert!(
+                (v.0.center().y - n.0.center().y).abs() < 2.0,
+                "{value} and {label} are not on the same row: {v:?} {n:?}"
+            );
+            let gap = n.0.left() - v.0.right();
+            assert!(
+                gap >= LIST_GUTTER * 0.5,
+                "{value} and {label} are drawn {gap} points apart, which is how the owner read one \
+                 row as `{value}{label}`"
+            );
+        }
+        // The value column is a column: every value ends on the same x, or it is not aligned and the
+        // rows do not line up on the thing they are ordered by.
+        let rights: Vec<f32> = ["$00", "$02", "$20"]
+            .iter()
+            .map(|v| {
+                runs.iter()
+                    .find(|(_, t)| t == v)
+                    .expect("painted above")
+                    .0
+                    .right()
+            })
+            .collect();
+        for r in &rights {
+            assert!(
+                (r - rights[0]).abs() < 1.0,
+                "the values do not share a right edge, so they are not a column: {rights:?}"
+            );
+        }
+    }
+
+    /// **The selected row's highlight stops with the list, not with the pane.**
+    ///
+    /// It used to be `ui.max_rect().x_range()`, so a selected row was a long empty bar and the zebra
+    /// banding striped the same emptiness. The pane here is far wider than the rows need, which is what
+    /// gives the assertion something to catch.
+    #[test]
+    fn the_selection_highlight_does_not_run_to_the_edge_of_the_pane() {
+        let shapes = draw();
+        let runs = text_runs(&shapes);
+        let widest_text = runs
+            .iter()
+            .filter(|(_, t)| t == "Up_Red" || t == "Up_Yellow" || t == "Down_Red")
+            .map(|(r, _)| r.right())
+            .fold(0.0_f32, f32::max);
+        let selection = crate::theme::selection();
+        let bands: Vec<egui::Rect> = fills(&shapes)
+            .into_iter()
+            .filter(|(_, c)| *c == selection)
+            .map(|(r, _)| r)
+            .collect();
+        assert_eq!(
+            bands.len(),
+            1,
+            "the fixture arms exactly one row, so exactly one band carries the selection fill: \
+             {bands:?}"
+        );
+        let band = bands[0];
+        assert!(
+            band.right() < PANE.x - 1.0,
+            "the highlight runs to the pane's edge ({} of {}), which is the long empty bar he \
+             reported",
+            band.right(),
+            PANE.x
+        );
+        assert!(
+            band.right() >= widest_text,
+            "the band stops short of the widest name ({} < {widest_text}), so a click target now \
+             stops where the glyphs do",
+            band.right()
         );
     }
 }
