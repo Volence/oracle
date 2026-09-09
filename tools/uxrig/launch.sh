@@ -25,6 +25,7 @@
 #   launch.sh display-start [WxH]   start + own a private Xvfb, verify geometry FROM INSIDE it
 #   launch.sh display-stop          kill only the Xvfb PID we recorded at spawn
 #   launch.sh display-show          print the display, the Xvfb pid, and the scratch paths
+#   launch.sh snapshot-rom ROM      copy a ROM (+ .lst) into scratch, immune to aeon rebuilds
 #   launch.sh env -- CMD [ARGS...]  run any command in the scrubbed private environment
 #   launch.sh frontend [ARGS...]    oracle-frontend --x11 --socket <private> <rom>
 #   launch.sh player   [ARGS...]    oracle-player --socket <private> --rom <rom>
@@ -164,6 +165,53 @@ resolve_bin() {  # $1 = binary name -> echoes absolute path
   printf '%s\n' "$real"
 }
 
+# ⚑ The ROM is a BUILD ARTIFACT OF A TREE SOMEBODY ELSE IS ACTIVELY REBUILDING.
+#
+# `/home/volence/sonic_hacks/aeon/s4.debug.bin` is produced by aeon's `./build.sh`, and that build
+# DELETES the file before it rewrites it. Measured 2026-09-09T07:29Z: both windows launched
+# cleanly at 07:18 and 07:22, and a rehearsal at 07:29 had both exit instantly with
+#
+#     cannot read ROM /home/volence/sonic_hacks/aeon/s4.debug.bin: No such file or directory
+#
+# because aeon's build.sh (pid 2770425) was mid-run in another lane. Nothing in this rig writes to
+# the aeon tree; the file genuinely vanished underneath us.
+#
+# Without this preflight the failure reaches a seat as two processes that die a second after
+# launch, an empty window list, and a stack trace from procproof about a pid that no longer
+# exists -- none of which names the cause. Checked here so the message says what happened.
+preflight_rom() {
+  local a prev="" rom=""
+  # The ROM is the one non-flag argument for the frontend, and the value of --rom for the player.
+  for a in "$@"; do
+    case "$prev" in --rom) rom="$a" ;; esac
+    case "$a" in --*) ;; *) [ "${prev#--}" = "$prev" ] && rom="${rom:-$a}" ;; esac
+    prev="$a"
+  done
+  [ -n "$rom" ] || return 0
+  if [ ! -e "$rom" ]; then
+    die "ROM $rom does not exist. It is a BUILD ARTIFACT of the aeon tree, which another lane may be rebuilding right now (aeon's build.sh deletes it before rewriting it). Check with: ls -l $rom; pgrep -af 'build.sh'. Wait for the build to finish, or snapshot a ROM first: tools/uxrig/launch.sh snapshot-rom $rom"
+  fi
+  [ -r "$rom" ] || die "ROM $rom exists but is not readable"
+  [ -s "$rom" ] || die "ROM $rom is empty (0 bytes) — almost certainly a build in progress"
+}
+
+# Copy a ROM (and its .lst, if present) into rig scratch so a concurrent aeon rebuild cannot pull
+# it out from under a run in progress. Reads only; never writes to the aeon tree.
+cmd_snapshot_rom() {
+  local src="${1:-}"
+  [ -n "$src" ] || die "usage: launch.sh snapshot-rom <rom path>"
+  [ -s "$src" ] || die "$src is missing or empty — nothing to snapshot"
+  mkdir -p "$RIG/rom"
+  cp -- "$src" "$RIG/rom/"
+  note "snapshotted $(basename "$src") ($(stat -c %s "$src") bytes) -> $RIG/rom/"
+  local lst="${src%.bin}.lst"
+  if [ -s "$lst" ]; then
+    cp -- "$lst" "$RIG/rom/"
+    note "snapshotted $(basename "$lst") -> $RIG/rom/"
+  fi
+  printf '%s\n' "$RIG/rom/$(basename "$src")"
+}
+
 # Reject the one flag combination that can reach a shared socket.
 check_socket_flags() {
   local a saw_aether=0 saw_socket=0
@@ -228,6 +276,7 @@ cmd_env() {
 cmd_frontend() {
   require_display
   check_socket_flags "$@"
+  preflight_rom "$@"
   local bin; bin="$(resolve_bin oracle-frontend)"
   local extra=()
   # --x11 is added by the helper, always. Belt and braces with `env -u WAYLAND_DISPLAY`, because
@@ -241,6 +290,7 @@ cmd_frontend() {
 cmd_player() {
   require_display
   check_socket_flags "$@"
+  preflight_rom "$@"
   local bin; bin="$(resolve_bin oracle-player)"
   local extra=()
   case " $* " in *" --socket "*|*" --socket="*) ;; *) extra+=(--socket "$SOCK_DIR/player.sock") ;; esac
@@ -263,6 +313,7 @@ case "${1:-}" in
   display-start) shift; cmd_display_start "$@" ;;
   display-stop)  shift; cmd_display_stop "$@" ;;
   display-show)  shift; cmd_display_show "$@" ;;
+  snapshot-rom)  shift; cmd_snapshot_rom "$@" ;;
   env)           shift; cmd_env "$@" ;;
   frontend)      shift; cmd_frontend "$@" ;;
   player)        shift; cmd_player "$@" ;;
