@@ -436,47 +436,92 @@ impl Machine {
 
 /// The completed frame as egui pixels, or `None` if the run did not finish one.
 ///
-/// This mirrors `crates/oracle-frontend/src/main.rs::blit_capture` — including its two non-obvious rules,
-/// which are load-bearing and are restated because getting them wrong is silent:
-///
-/// * The completed frame is the **last `HEIGHT` deliveries**, and the sum check is what proves it: a run
-///   that ended mid-frame leaves a *previous* frame in `pixels()` whose lines are no longer the tail of
-///   the log.
-/// * A frame is **not guaranteed rectangular** — a game can switch H32↔H40 part-way down, and S3K does on
-///   the first frame after a soft reset. The display width is the width the frame *ended* on (what the VDP
-///   is scanning out by V-Blank) and shorter lines are padded with black; rejecting such frames would
-///   blank the window for as long as a game kept switching.
+/// ⚑ **H25.** This used to *mirror* `oracle-frontend`'s `blit_capture`, restating its two non-obvious
+/// rules in prose *"because getting them wrong is silent"* — which is a true reason to write them down
+/// and not a reason to write the code twice. There were four such copies; the selection now happens once
+/// in [`ScanlineCapture::completed_frame`](oracle_core::scanline_capture::ScanlineCapture::completed_frame),
+/// where the sum check and the ragged-frame rule are stated **and asserted**. What stays here is this
+/// panel's own half: `egui::Color32` and an image header.
 fn capture_to_image(cap: &ScanlineCapture) -> Option<egui::ColorImage> {
-    let px = cap.pixels();
-    let log = cap.lines();
-    if px.is_empty() || log.len() < HEIGHT {
-        return None;
-    }
-    let widths = &log[log.len() - HEIGHT..];
-    if widths.iter().map(|&(_, w)| w).sum::<usize>() != px.len() {
-        return None;
-    }
-    let width = widths[HEIGHT - 1].1;
-    if width == 0 {
-        return None;
-    }
-    let mut pixels = Vec::with_capacity(width * HEIGHT);
-    let mut at = 0;
-    for &(_, line_width) in widths {
-        let line = &px[at..at + line_width];
-        at += line_width;
-        for x in 0..width {
-            let (r, g, b) = line.get(x).copied().unwrap_or((0, 0, 0));
-            pixels.push(egui::Color32::from_rgb(r, g, b));
-        }
-    }
+    let frame = cap.completed_frame(HEIGHT)?;
+    let width = frame.width();
     Some(egui::ColorImage {
         size: [width, HEIGHT],
         source_size: egui::vec2(width as f32, HEIGHT as f32),
-        pixels,
+        pixels: frame
+            .pixels()
+            .map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
+            .collect(),
     })
 }
 
 pub fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oracle_core::bus::BusEventSink;
+
+    /// **H25 — the player's own copy of the completed-frame reader had no test either.**
+    ///
+    /// This panel draws the picture a human is looking at, and a wrong width or a wrong pad is a frame
+    /// sheared mid-screen that throws nothing. The selection is now
+    /// [`ScanlineCapture::completed_frame`], pinned in `oracle-core`; this row asserts that the image
+    /// this window builds carries what that reader decided — the width the frame *ended* on, a full
+    /// rectangle, and black where a short line ran out — on S3K's real post-reset shape.
+    #[test]
+    fn the_window_image_takes_the_width_the_frame_ended_on_and_pads_the_short_lines() {
+        let mut cap = ScanlineCapture::new(Retain::LastFrame);
+        for line in 0..HEIGHT {
+            // Two H32 lines then H40: what S3K draws on the first frame after a soft reset.
+            let w = if line < 2 { 256 } else { 320 };
+            cap.on_scanline(line as u16, &vec![(0x11, 0x22, 0x33); w]);
+        }
+        cap.on_frame_boundary(0);
+        assert!(
+            !cap.pixels().len().is_multiple_of(HEIGHT),
+            "the payload really is ragged — no single width divides it"
+        );
+
+        let img = capture_to_image(&cap).expect("a whole frame was drawn");
+        assert_eq!(img.size, [320, HEIGHT], "the width the frame ENDED on");
+        assert_eq!(img.pixels.len(), 320 * HEIGHT, "a full rectangle");
+        assert_eq!(
+            img.pixels[255],
+            egui::Color32::from_rgb(0x11, 0x22, 0x33),
+            "the narrow line's own pixels survive up to its real width"
+        );
+        assert_eq!(
+            img.pixels[256],
+            egui::Color32::from_rgb(0, 0, 0),
+            "…and the rest of that line is padded black, not pulled forward from the next line"
+        );
+    }
+
+    /// A run that completed no frame must yield `None`, so the caller re-presents the last good texture
+    /// instead of flashing an empty one. The over-firing control for the row above.
+    #[test]
+    fn the_window_image_is_none_when_no_frame_completed() {
+        let empty = ScanlineCapture::new(Retain::LastFrame);
+        assert!(capture_to_image(&empty).is_none(), "nothing was delivered");
+
+        let mut torn = ScanlineCapture::new(Retain::LastFrame);
+        for line in 0..HEIGHT {
+            torn.on_scanline(line as u16, &vec![(7, 7, 7); 256]);
+        }
+        torn.on_frame_boundary(0);
+        assert!(
+            capture_to_image(&torn).is_some(),
+            "the control: a completed frame IS readable, or the assertion below proves nothing"
+        );
+        for line in 0..20u16 {
+            torn.on_scanline(line, &vec![(8, 8, 8); 320]); // a torn next frame, wider
+        }
+        assert!(
+            capture_to_image(&torn).is_none(),
+            "a run that ended mid-frame must not be stitched out of two geometries"
+        );
+    }
 }
