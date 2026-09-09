@@ -2,7 +2,11 @@
 
 **From:** oracle lane, 2026-09-09.
 **Occasion:** lens finding **H33**, filed 2026-09-06 in `docs/superpowers/notes/2026-09-06-oracle-lens-sweep.md`.
-**Status:** filed for adjudication. **Recommendation: option A (documentation), not a shape change.**
+**Status: ADJUDICATED 2026-09-09, ADOPT WITH CHANGES — option A with three MUSTs**, at empyrean `90fc5c4`, `contract/protocol.md` §11.43. Verified here: ancestor of their `origin/main`, a contract commit carrying `protocol.md` +74, and **only prose moved — no schema, no vectors — so no re-vendor is owed**. B and C were rejected on this document's own pricing.
+
+⚠ **Registered upstream as CR-T, not CR-S.** This lane picked `CR-S` without checking and that label belongs to §11.42, the pacing amendment of 09-06. Same collision, and the same remedy §11.42 itself records. The filename is left as written rather than renamed, since it is cited at `4b3b495`.
+
+**What §11.43 added beyond option A as filed:** `boundedList` binds a reply only through that reply's own §6 row; the "two spellings" prose becomes **three shapes**, with the query echo stated in its own right and carrying this document's `spawn.rs` reason; and a new bounded reply SHOULD take `boundedList` or the flat spelling, MAY take the query echo, and then **MUST carry its reason in its own §6 row**. A bespoke shape with no stated reason is a defect; with one it is a decision — readable from the contract rather than from the server. **H33 closes as NOT A DEFECT.**
 
 ⚠ **Read this first: the finding's premise does not survive being checked against the contract, and the
 correction is the substance of this CR.** H33 says `lookup_equate`'s bounded list *"bypasses the blessed
