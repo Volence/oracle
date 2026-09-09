@@ -4,8 +4,11 @@
 //! for the duration of one Z80 step and presents the Z80's own 16-bit address space. This is the
 //! **Z-live** shape — Z80 RAM, the `$6000` serial bank latch, and the `$8000-$FFFF` 68k bank window
 //! (reaching ROM / work RAM / Z80 RAM) are **live**, so a released Z80 can fetch its driver code from RAM
-//! and read music/sample data from ROM through the window. The FM/PSG ports decode (read = not-busy / open
-//! bus, write = drop) — turning those writes into the `BusEvent` VGM tap is **Phase RT**. The `$7F04-$7F0F`
+//! and read music/sample data from ROM through the window. The FM/PSG ports decode on read (not-busy /
+//! open bus); **their writes are tapped, not dropped** — every `$4000-$4003`/`$7F11` write is emitted as a
+//! `BusEvent` (the VGM tap, which this header called "Phase RT" long after it landed) and an FM write
+//! additionally drives [`crate::ym2612::Ym2612`]'s timer model, which is what makes a driver's Timer-A
+//! overflow poll fire. Only the PSG's *value* goes unmodelled. The `$7F04-$7F0F`
 //! VDP status/HV mirror is **live** (K2 fix — routed to the real `Vdp`); VDP/I/O-through-the-bank-window
 //! remain the named deferrals (a sound driver rarely reaches them; routing them needs the `Io` borrow and
 //! is pinned for a later slice).
@@ -16,9 +19,9 @@
 //! |---|---|---|
 //! | `$0000-$1FFF` | Z80 RAM (8 KiB) | **live** — the shared `z80_ram` buffer |
 //! | `$2000-$3FFF` | Z80 RAM mirror | **live** — mirrored (`& 0x1FFF`) |
-//! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; write dropped (Phase RT tap). **Known asymmetry (deferred):** the Z80-side decode deliberately stays `$4000-$4003` — `$4004-$5FFF` falls through to `$FF`/drop below — while the 68k-side window (K4-6) answers FM across the chip's full `$4000-$5FFF` select span (memtest-pinned there). The Z80-side span is unpinned and has zero corpus evidence (no driver touches `$4004+`), so widening it would move sound-currency surface for no gain; ledgered in `docs/2026-07-25-testrom-conformance.md` (K4-6) |
+//! | `$4000-$4003` | YM2612 FM address/data | read = not-busy status; **write tapped as a `BusEvent` and driven into the FM timer model**. **Known asymmetry (deferred):** the Z80-side decode deliberately stays `$4000-$4003` — `$4004-$5FFF` falls through to `$FF`/drop below — while the 68k-side window (K4-6) answers FM across the chip's full `$4000-$5FFF` select span (memtest-pinned there). The Z80-side span is unpinned and has zero corpus evidence (no driver touches `$4004+`), so widening it would move sound-currency surface for no gain; ledgered in `docs/2026-07-25-testrom-conformance.md` (K4-6) |
 //! | `$6000` | bank-address register | **live** — 9-bit LSB-first serial latch |
-//! | `$7F11` | PSG (SN76489), write-only | decode: read open bus, write dropped (Phase RT tap) |
+//! | `$7F11` | PSG (SN76489), write-only | read open bus; **write tapped as a `BusEvent`** (the value itself is unmodelled — no PSG chip here) |
 //! | `$7F00-$7F03` | VDP data port mirror | read = open bus `$FF` (hardware LOCKS UP — ledgered `vdp-dataport-read-lockup`); write dropped |
 //! | `$7F04-$7F07` | VDP control port mirror | **live** read — real status read of the `Vdp` (clears the write-toggle, K2); write dropped |
 //! | `$7F08-$7F0F` | VDP HV counter mirror | **live** read — the live HV counter (side-effect-free); write dropped |

@@ -4,9 +4,11 @@
 //! master clock and sole RNG). It is plain owned data: `Clone` + bincode `Encode`/`Decode`, so a
 //! snapshot is an O(struct) copy with no pointer fixup, and `state_hash` is byte-compatible with Oracle.
 //!
-//! Chips (the CPUs, the VDP) will be added as fields here and driven through a `Bus` adapter that borrows
-//! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
-//! at their fixed hardware sizes by [`System::new`].
+//! The chips **are** fields here — the 68000 ([`Cpu68000`]), the Z80 ([`Z80`]), the VDP and the YM2612 —
+//! each driven through a `Bus` adapter that borrows the relevant fields per step (split-borrow):
+//! [`MegaDriveBus`] for the 68000, [`Z80Bus`] for the sound CPU. Memory regions are owned byte buffers,
+//! always allocated at their fixed hardware sizes by [`System::new`]. (This paragraph promised them in the
+//! future tense — the first paragraph of the core's central module — until the lens sweep.)
 
 use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StepRetire, StopWhen, Z80_RAM_SIZE};
 use crate::m68000::microop::{Cpu68000, StepOutcome};
@@ -202,15 +204,19 @@ pub struct System {
     /// The cartridge SRAM-access-enable latch (`$A130F1` bit0): `true` once a game has written bit0 = 1 to
     /// `$A130F1` (SRAM mapped at `$200001+`), `false` after bit0 = 0 (ROM shown). **Power-on = `false`** —
     /// real hardware and the shipping drivers (S3K `sonic3k.asm:293` disables access at boot) power up with
-    /// SRAM off. S0 promotes `$A130F1` from a drop-stub to a real latch but adds **no** SRAM buffer, so this
-    /// scalar has no consumer yet and no golden ROM writes `$A130F1` → currency-neutral by construction.
+    /// SRAM off. **It gates the live SRAM overlay** — `MegaDriveBus::sram_index` maps `$200001+` to the
+    /// buffer only while this is set. This said "adds **no** SRAM buffer, so this scalar has no consumer yet"
+    /// from S0 until the lens sweep; the buffer is [`System::sram`], twenty lines below. Currency-neutrality
+    /// now rests on the second clause alone — **no golden ROM writes `$A130F1`** — not on the latch being
+    /// inert.
     /// A cartridge bus-control scalar exactly like `z80_busreq`: rides this bincode snapshot for determinism,
     /// but is **not** in `export_state` and **not** in `state_hash`. Semantics pinned in
     /// `docs/2026-07-23-sram-design-recon.md` (§"S0 — `$A130F1` semantics").
     sram_enabled: bool,
     /// The cartridge SRAM write-protect latch (`$A130F1` bit1): `true` = SRAM read-only. Convention-pinned
     /// (no in-tree driver exercises it; the Sega mapper convention pairs enable at bit0 with write-protect at
-    /// bit1) and latched now so S1's writable buffer can honor it without a second bus change. **Power-on =
+    /// bit1). S1 landed and the write path honours it (a protected write is dropped), so it is a live gate
+    /// rather than the latched-ahead scalar this line described. **Power-on =
     /// `false`**. Cartridge bus-control scalar like `sram_enabled`/`z80_busreq`: in this bincode snapshot for
     /// determinism, **not** in `export_state`/`state_hash`. See `docs/2026-07-23-sram-design-recon.md`.
     sram_write_protect: bool,
@@ -245,7 +251,8 @@ pub struct System {
     /// they really are bincode-only — which is precisely why nobody re-read this one.
     sram: Vec<u8>,
     /// Set on any guest write into visible SRAM; the frontend's persistence throttle (S2) polls it so a `.srm`
-    /// is flushed only after a real save, not every frame (`sram_dirty()`/`clear_sram_dirty()` land in S2). A
+    /// is flushed only after a real save, not every frame — via [`System::sram_dirty`] and
+    /// [`System::clear_sram_dirty`], which landed in S2 and are just below. A
     /// non-currency scalar (like `z80_frontier_mclk`): in this bincode snapshot for determinism, **not** in
     /// `export_state`/`state_hash`.
     sram_dirty: bool,

@@ -651,7 +651,10 @@ impl Z80 {
     /// `IN A,(n)`/`OUT (n),A`, the 8-bit `LD`/ALU blocks, and the ALU-immediate `A,n` ops) this includes the
     /// branch/stack control flow: `DJNZ e`/`JR e`/`JR cc,e`, `JP nn`/`JP cc,nn`, `CALL nn`/`CALL cc,nn`,
     /// `RET`/`RET cc`, `RST p`, and `PUSH qq`/`POP qq`. Only the prefix escapes (`CB`/`ED`/`DD`/`FD`, handled
-    /// in [`Self::execute`]) reach elsewhere; `CB` is done and `ED`/`DD`/`FD` are the next slice.
+    /// in [`Self::execute`]) reach elsewhere, and **all four are served** — [`Self::execute`] dispatches
+    /// `CB`, `ED`, and `DD`/`FD` (plus the `DDCB`/`FDCB` group). This said "`CB` is done and `ED`/`DD`/`FD`
+    /// are the next slice" after those slices landed; this module's own header already said "Nothing is
+    /// deferred" twenty-six lines up. Lens sweep.
     fn execute_base<B: Z80Io>(&mut self, opcode: u8, bus: &mut B) -> u32 {
         match opcode {
             0x00 => 4, // NOP

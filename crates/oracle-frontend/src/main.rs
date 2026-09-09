@@ -71,7 +71,8 @@
 //!
 //! ## Lenses
 //!
-//! Five read-only overlays ([`lens`]), rebuilt from live machine state every frame and drawn over
+//! Six read-only overlays ([`lens`]; seven [`lens::LensId`]s, since the CPU chip's register block is its
+//! own id), rebuilt from live machine state every frame and drawn over
 //! the picture but beneath the palette and the toasts: a **watch ticker** along the bottom (the
 //! newest hits plus the armed and dropped counts, read non-destructively so switching a lens on can
 //! never delete a socket client's evidence); a **CPU chip** top-right (PC as a symbol, SR, the
@@ -79,10 +80,16 @@
 //! **CRAM strip** top-left (the 64 live palette entries, 4x16); **sprite outlines** around the
 //! sprites the hardware actually link-walks, not the 80 raw attribute-table slots, most of which
 //! hold whatever was last written there; and a **hover callout** naming what is under the cursor.
-//! Hover *explains*, a click still *arms* — the two never trade jobs.
+//! Hover *explains*, a click still *arms* — the two never trade jobs. Sixth, and unnamed here until the
+//! lens sweep found the count one short: a **profiler readout** ([`lens::profile`]).
+//!
+//! ⚑ The durable statement is [`lens::LensId::ALL`], which is what
+//! [`commands`] maps over to build the toggle rows — the figures in this paragraph are prose and have
+//! already drifted once.
 //!
 //! They are **palette-only this slice**: no default hotkeys, because every obvious key is already
-//! taken and rebinding belongs to a later slice. Six toggle rows (the register block registers its
+//! taken and rebinding belongs to a later slice. Seven toggle rows, one per `LensId::ALL` entry (the
+//! register block registers its
 //! own) sit in the palette's LENSES group, and the set that is on persists between runs under the
 //! `lenses` key. The CPU chip is the one exception to "off means absent": it **shows itself while
 //! the machine is paused**, in amber, even with every lens off — "where did it stop?" is the first
