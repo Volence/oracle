@@ -70,6 +70,9 @@ fn main() -> ExitCode {
     if !pace {
         config.engine.free_run_pace = None;
     }
+    // Read off the config this process is about to bind with, because `bind` consumes it and because the
+    // banner below must describe THIS deployment, not the struct's default.
+    let presents_frames = config.engine.presents_frames;
 
     let server = match Server::bind(config) {
         Ok(s) => s,
@@ -83,9 +86,21 @@ fn main() -> ExitCode {
         server.socket_path().display(),
         oracle_aether::rpc::PROTOCOL_VERSION
     );
+    // ⚑ **`advertised_methods`, not `METHODS.len()`** — the word in this line is *advertised*, and until
+    // 2026-09-09 it counted *defined*. Since §11.42 (CR-S) the two are different numbers in this very
+    // process: `PRESENTING_ONLY` keeps `emulator/pacing` off a headless deployment, `presents_frames`
+    // defaults to `false`, and nothing here sets it — so the standalone server printed 62 while its own
+    // `initialize` advertised 61. `advertised_methods`' doc comment already said the answers differ and
+    // pointed at `tests/pacing.rs`; the knowledge was in the crate and this line did not use it.
+    //
+    // The stakes are not tidiness. empyrean §11.46 rules that `methods` names what THIS process serves,
+    // not what the build implements, and that no count derived from it may be used as a build-identity or
+    // freshness signal — a consumer was about to treat this banner as a stale-binary detector and would
+    // have accused a current server of being one revision behind, off by exactly the filtered row.
+    // `tests/banner.rs` holds the number to what the socket answers.
     println!(
         "aether: {} methods advertised",
-        oracle_aether::engine::METHODS.len()
+        oracle_aether::engine::advertised_methods(presents_frames).count()
     );
 
     let mut machine = Machine::new(sys);
