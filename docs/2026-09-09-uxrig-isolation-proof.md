@@ -539,5 +539,54 @@ python3 tools/uxrig/drive.py procproof --display $DISP \
 tools/uxrig/launch.sh display-stop                   # kills ONLY the recorded pid
 ```
 
+### The rehearsal — the handover's commands, run verbatim from a clean state
+
+Everything above was torn down (only pids recorded at spawn were killed; the owner's pid 1570308
+was confirmed alive afterwards) and the handover was followed literally on a **fresh Xvfb** (pid
+2760496, display `:90` re-probed) with a **different ROM**, at 2026-09-09T07:33-07:34Z:
+
+```
+$ python3 tools/uxrig/drive.py windows --display :90
+display :90: 4 windows in tree, 2 shown (named/with-pid)
+      0x200021  pid=    None     896x672+192+144   viewable  class=oracle-frontend/...  name='Oracle: draws 826'
+      0x400002  pid= 2973729        1280x800+0+0   viewable  class=/oracle-player       name='oracle-player'
+
+frontend: STRUCTURAL ISOLATION: PROVEN   (Xvfb pid 2760496, no compositor socket)
+player:   STRUCTURAL ISOLATION: PROVEN   (Xvfb pid 2760496, no compositor socket)
+
+$ python3 tools/uxrig/drive.py windows --display :0 --pid 2973729
+  (NO window on :0 matches pid=2973729)
+$ python3 tools/uxrig/drive.py windows --display :0 --wm-class oracle-frontend
+  (NO window on :0 matches class~'oracle-frontend')
+
+place/type/key/shot: all as documented; root 1280x960 4292 colours, game window 896x672 27 colours.
+```
+
+The rehearsal is what found the ROM-volatility defect below; it is the reason it is worth running a
+handover rather than only writing one.
+
+### ⚠ An external hazard the brief did not mention: the ROM is not stable
+
+The brief describes `/home/volence/sonic_hacks/aeon/s4.debug.bin` as an existing, read-only file.
+Both halves are true and neither is *stable*: it is a build artifact of a tree other lanes actively
+rebuild, and aeon's `build.sh` **deletes it before rewriting it**. Measured — the identical launch
+commands that worked at 07:18Z and 07:22Z gave, at 07:29Z:
+
+```
+cannot read ROM /home/volence/sonic_hacks/aeon/s4.debug.bin: No such file or directory (os error 2)
+```
+
+with aeon's `build.sh` (pid 2770425, then 2832587 for `build.sh demo`) mid-run in another lane.
+**Nothing in this rig writes to the aeon tree**; the file genuinely went away underneath us, and
+was still gone at 07:33Z. Untreated it reaches a seat as two processes that die a second after
+launch, an empty window list, and a `procproof` stack trace about a pid that no longer exists —
+none of which names the cause. `launch.sh` now preflights the ROM and refuses with an explanatory
+message, and `snapshot-rom` copies a ROM plus its `.lst` into rig scratch so a concurrent rebuild
+cannot pull it out from under a run. Verified the aeon tree is untouched by the snapshot (source
+mtimes unchanged at 2026-08-10).
+
+None of the isolation proofs above are affected: each ran while the ROM was present and each
+succeeded on its own terms, and the rehearsal reproduced every one of them on a different ROM.
+
 Commits: `14869af` (the two tools), `254516d` (isolation proved from kernel state), `79686f0`
-(placement and focus).
+(placement and focus), `434977a` (these documents), `cb53006` (the ROM preflight).

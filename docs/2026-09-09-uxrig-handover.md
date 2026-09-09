@@ -26,6 +26,29 @@ first.
 
 ---
 
+## ⚠ The ROM will vanish underneath you — snapshot it first
+
+`s4.debug.bin` is a **build artifact of a tree other lanes actively rebuild**, and aeon's
+`build.sh` *deletes* it before rewriting it. This is not hypothetical: both windows launched
+cleanly at 07:18Z and 07:22Z on 2026-09-09, and the identical commands at 07:29Z gave
+`cannot read ROM ... No such file or directory` because another lane's `build.sh` was mid-run.
+
+So take a private copy before you start, and point everything at that:
+
+```sh
+ROM=$(tools/uxrig/launch.sh snapshot-rom /home/volence/sonic_hacks/aeon/s4.debug.bin)
+# copies the ROM and its .lst into .uxrig/rom/ ; reads only, never writes to the aeon tree
+```
+
+Then use `$ROM` and `.uxrig/rom/s4.debug.lst` everywhere below. Your run is then immune to a
+concurrent rebuild, and you know exactly which bytes you tested.
+
+If you skip the snapshot, `launch.sh` still refuses with an explanatory message rather than letting
+the window die a second after launch — but you will have lost the run. Check with
+`pgrep -af build.sh` if you see the refusal.
+
+---
+
 ## Start the display (once per session)
 
 ```sh
@@ -52,7 +75,7 @@ binary's own pid, because the helper `exec`s it.
 **The game window** (`oracle-frontend`, minifb):
 
 ```sh
-nohup tools/uxrig/launch.sh frontend /home/volence/sonic_hacks/aeon/s4.debug.bin \
+nohup tools/uxrig/launch.sh frontend $ROM \
   > .uxrig/frontend.log 2>&1 & echo $! > .uxrig/frontend.pid
 ```
 
@@ -60,10 +83,12 @@ nohup tools/uxrig/launch.sh frontend /home/volence/sonic_hacks/aeon/s4.debug.bin
 
 ```sh
 nohup tools/uxrig/launch.sh player \
-  --rom /home/volence/sonic_hacks/aeon/s4.debug.bin \
-  --symbols /home/volence/sonic_hacks/aeon/s4.debug.lst \
+  --rom $ROM --symbols .uxrig/rom/s4.debug.lst \
   > .uxrig/player.log 2>&1 & echo $! > .uxrig/player.pid
 ```
+
+(`$ROM` is the snapshot from the section above. Give `--symbols` an absolute path if you are not
+running from the tree root.)
 
 `--x11` and `--socket <private>` are supplied by the helper. **Do not pass `--aether`** — a bare one
 is refused, by design. Extra flags pass straight through, so `--dock every-tab`, `--scale`,
