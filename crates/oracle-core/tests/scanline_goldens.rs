@@ -137,8 +137,19 @@ const BASELINE: &[(&str, &str)] = &[
         // has held that actually contains the effect the ROM exists to demonstrate. The colour count is
         // unchanged in kind (still ~1400 vs the post-hoc 4); the gradient is now correct *within* each row
         // as well as between rows.
+        //
+        // RE-PINNED 2026-09-08, C2 — the FIFO double-charge (was 0x9ae4acc58d2a382d). `Vdp::data_write_at`
+        // billed a full-FIFO /DTACK stall from the instruction's frozen `now` instead of from the drain
+        // instant the CPU had already been held to, so a second stalling data-port write inside one
+        // instruction was charged again for the first one's hold. Measured on this branch over the 120
+        // hashed frames: 11 full-FIFO data-port writes, 5 of them same-instruction repeats, 1,239 mclk
+        // (~177 CPU cycles) of already-billed hold re-charged. Correcting it shifts those instructions'
+        // costs, hence `now_mclk`, hence where this ROM's mid-scanline CRAM writes land — and slice 4 above
+        // resolves each landing to a pixel, so the picture is sensitive to exactly that. **This literal
+        // still equals `conformance_roms.rs`'s**: both harnesses were re-measured on this branch and both
+        // moved to the SAME value, which is the cross-check described above doing its job.
         "color_1536",
-        "LIVE-DIFFERS frame_hash=0x9ae4acc58d2a382d",
+        "LIVE-DIFFERS frame_hash=0x87ecf46f3cd54fda",
     ),
     ("cram_flicker", "IDENTICAL-TO-POST-HOC"),
     ("direct_color_dma", "IDENTICAL-TO-POST-HOC"),

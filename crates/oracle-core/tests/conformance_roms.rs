@@ -87,8 +87,20 @@ const BASELINE: &[(&str, &str)] = &[
         // the picture. **This literal must stay equal to `scanline_goldens.rs`'s** — that agreement is a
         // live cross-check that the two harnesses share a byte layout and run shape, so the two move together
         // to one measured value or not at all.
+        //
+        // Re-pinned 2026-09-08 (C2, the FIFO double-charge; was 0x9ae4acc58d2a382d). MECHANISM, measured on
+        // this branch over the 120 hashed frames: the ROM performs **11 data-port writes into a full FIFO**,
+        // and **5 of them are a second-or-later stalling write inside the SAME 68000 instruction** — the
+        // shape `Vdp::data_write_at` used to bill from the instruction's frozen `now` rather than from the
+        // drain instant the CPU had already been held to, re-charging **1,239 mclk (~177 CPU cycles)** of
+        // hold that was already in the instruction's cost. Removing that changes those instructions' cycle
+        // counts, which moves `now_mclk` for everything after them, which relocates this ROM's mid-scanline
+        // CRAM landings — and since `F-SCANLINE-SUBLINE` slice 4 those landings are resolved to a *pixel*
+        // inside the row they land on, so a few cycles of shift is visible in the picture. This ROM is the
+        // ONLY row in the corpus that moved: the other 16 scorecard lines, including every pass/fail verdict
+        // (`vdp_port_access` 16/0/16, `m68k_memory_test` 13/13, `vdp_sprite_masking`), are byte-identical.
         "color_1536",
-        "VISUAL-BASELINE frame_hash=0x9ae4acc58d2a382d (per-scanline capture)",
+        "VISUAL-BASELINE frame_hash=0x87ecf46f3cd54fda (per-scanline capture)",
     ),
     (
         // Re-adjudicated 2026-08-03 under the per-scanline capture (ledger L1a). The HASH is unchanged —
