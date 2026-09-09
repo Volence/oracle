@@ -578,13 +578,31 @@ fn the_declared_version_is_stated_in_exactly_one_place() {
 /// this rule looks for the SHAPE of the claim: a toolchain keyword followed closely by a THREE-part
 /// version, anywhere on the live surface except the declaration line itself.
 ///
-/// Three parts are required, and the keyword must sit within 14 characters, because that is what
-/// keeps this from firing on the ordinary version chatter these files are full of — `alsa-sys 0.3.1`,
-/// `clippy 0.1.98`, `egui 0.36`, `slice::as_chunks` (stable 1.88), `edition = "2021"`. Measured over
-/// the whole live surface, this pattern has exactly one hit today and it is the declaration.
+/// Three parts are required, and the keyword must sit within `KEYWORD_WINDOW` characters BEFORE the
+/// version. Both constraints keep this off the ordinary version chatter these files are full of —
+/// `alsa-sys 0.3.1`, `clippy 0.1.98`, `egui 0.36`, `slice::as_chunks` (stable 1.88), `edition =
+/// "2021"`.
+///
+/// THE WINDOW WIDTH IS MEASURED, and the first value was wrong. It started at 14, which caught
+/// `CI pins Rust **1.94.0**` but NOT `rustup toolchain install 1.94.0` — there `toolchain` sits 18
+/// characters back, and that line sailed through all seven tests while pinning a version the project
+/// does not use. Sweeping the whole live surface for false positives at several widths:
+///
+///   window 14 / 25 / 40 / 80 chars -> 0 hits;  whole line -> 1 hit
+///
+/// The single whole-line hit is a legitimate sentence in `Cargo.toml` ("...has been on 1.98.0 since
+/// 2026-08-18... this is cargo's own MSRV key"), where the keyword is real but unrelated to the
+/// number. So the honest ceiling is "less than a line", and 60 is chosen: triple the phrasing that
+/// defeated 14, with measured zero false positives, and still short of the width that produces one.
+///
+/// KNOWN LIMIT, stated rather than papered over: a bare literal with no toolchain word anywhere near
+/// it (`echo 1.94.0 > /tmp/v`) is caught by neither rule. Rule A covers that case for the CURRENT
+/// value; for a drifted one it is out of reach without a pattern so broad it would fire on every
+/// dependency version in the tree.
 #[test]
 fn no_live_file_states_a_different_rust_version() {
     const KEYWORDS: [&str; 4] = ["rust", "rustc", "toolchain", "msrv"];
+    const KEYWORD_WINDOW: usize = 60;
     let floor = manifest_floor();
     let root = repo_root();
     let declaration_line = format!("rust-version = \"{floor}\"");
@@ -602,7 +620,6 @@ fn no_live_file_states_a_different_rust_version() {
             if line.trim() == declaration_line {
                 continue;
             }
-            let lower = line.to_lowercase();
             let bytes = line.as_bytes();
             // Walk every `d.d.d` on the line and ask whether a toolchain keyword sits just before it.
             for (at, _) in line.match_indices('.') {
@@ -627,11 +644,19 @@ fn no_live_file_states_a_different_rust_version() {
                 if dots != 2 || !bytes[end - 1].is_ascii_digit() {
                     continue;
                 }
-                let window_from = start.saturating_sub(14);
-                if !KEYWORDS
-                    .iter()
-                    .any(|k| lower[window_from..start].contains(k))
-                {
+                // SLICE THE ORIGINAL LINE, THEN LOWERCASE — never the other way round. These files
+                // are full of em dashes, so two hazards go live at a 60-byte window that a 14-byte
+                // one mostly dodged: `to_lowercase()` can change byte lengths, which would make
+                // offsets taken from `line` wrong in a lowercased copy; and a fixed byte offset can
+                // land inside a multi-byte character, which panics. `start` and `end` are always
+                // boundaries (the digits and dots they delimit are ASCII), but `start - 60` need not
+                // be, so it is snapped forward.
+                let mut window_from = start.saturating_sub(KEYWORD_WINDOW);
+                while !line.is_char_boundary(window_from) {
+                    window_from += 1;
+                }
+                let window = line[window_from..start].to_lowercase();
+                if !KEYWORDS.iter().any(|k| window.contains(k)) {
                     continue;
                 }
                 offenders.push(format!(
