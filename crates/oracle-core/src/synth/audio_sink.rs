@@ -94,7 +94,11 @@ pub const fn samples_in_frame(sample_rate: u32, frame: u64) -> u32 {
 pub const fn nominal_samples_per_frame(sample_rate: u32) -> u32 {
     // Round to nearest rather than floor: at 44.1 kHz the true value is 735.95, and flooring it would
     // reproduce the very 735 this finding is about, in the one place it is still allowed to appear.
-    (((sample_rate as u128 * MCLK_PER_FRAME as u128 * 2) / MCLK_HZ as u128 + 1) / 2) as u32
+    // Written as `(2n + d) / 2d` rather than `(2n/d + 1)/2` so it is a single rounded division and not a
+    // shape clippy reads as a `div_ceil` (it is not one — `div_ceil` would give 736 at every rate).
+    let n = sample_rate as u128 * MCLK_PER_FRAME as u128;
+    let d = MCLK_HZ as u128;
+    ((2 * n + d) / (2 * d)) as u32
 }
 
 /// Post-mix PSG gain in Q15 — **reference-derived, no longer a by-ear knob.** The SN76489
@@ -841,7 +845,7 @@ mod tests {
              that straddle it"
         );
         assert!(
-            counts.iter().any(|&c| c == lo) && counts.iter().any(|&c| c == hi),
+            counts.contains(&lo) && counts.contains(&hi),
             "anti-vacuity: a constant count would make the min/max check above pass with one value"
         );
         // The running total never leaves the exact rational by more than a sample — the property a
