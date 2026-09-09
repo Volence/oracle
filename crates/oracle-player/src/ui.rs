@@ -3717,15 +3717,18 @@ fn subtype_list(
         ui.add_space(3.0);
         // P7: an explicit, stable salt, so this scroll position is its own and not the archetype list's.
         //
-        // ⚑ **`auto_shrink` off across, and that is the second defect.** A `ScrollArea` that shrinks to
-        // its content ends where the longest name ends, so its scrollbar was drawn *inside* the list,
-        // immediately right of the names — which is what the owner's arrow points at. Held to the pane's
-        // width, the bar sits at the list's outer edge where a bar belongs. Vertically it is off for the
-        // same reason it always was: `max_height` is the cap and a short list must not stretch to it.
+        // ⚑ **`auto_shrink([false, true])`, and the ACROSS half is the second defect.** A vertical
+        // `ScrollArea` has `auto_shrink.x = true` by default, so its width follows its content: the list
+        // ended where the longest name ended and drew its scrollbar *inside* itself, immediately right of
+        // the names, which is what the owner's arrow points at. Off across, the bar is pinned to the
+        // panel's right edge — the exact remedy the watch-hits box already names in this file.
+        //
+        // **Vertically it stays ON**, deliberately: `max_height` is a cap, not a reservation, and a
+        // listing with two subtypes must not hold 132 points of empty box open under it.
         egui::ScrollArea::vertical()
             .id_salt(salt)
             .max_height(132.0)
-            .auto_shrink([false, false])
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 let strong = ui.visuals().strong_text_color();
                 let mono = ui
@@ -3927,12 +3930,13 @@ fn select_list(
         // it takes the pane's own height: `ScrollArea` bounds itself by the `Ui`'s available space, and
         // a fixed cap here would leave the bottom of a dedicated pane empty on purpose.
         //
-        // ⚑ **`auto_shrink` off across**, [`subtype_list`]'s finding and the same fault: a list that
-        // shrinks to its content puts its own scrollbar immediately right of the longest name instead of
-        // at the list's outer edge.
+        // ⚑ **Off ACROSS only**, [`subtype_list`]'s finding and the same fault: a list that shrinks to its
+        // content puts its own scrollbar immediately right of the longest name instead of at the list's
+        // outer edge. Vertically it stays on, for that function's reason and because the paragraph above
+        // is about how much height this list may TAKE, which is not the same as how much it must HOLD.
         egui::ScrollArea::vertical()
             .id_salt(salt)
-            .auto_shrink([false, false])
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 let strong = ui.visuals().strong_text_color();
                 let mono = ui
@@ -6756,7 +6760,7 @@ mod overlay_layout_tests {
 /// name must not touch, and the selected row's fill must not run to the edge of the pane.
 ///
 /// The third (the scrollbar's position) is `ScrollArea`'s own layout and is **not asserted**; it is
-/// `auto_shrink([false, false])` and a foreground look.
+/// `auto_shrink([false, true])` and a foreground look.
 #[cfg(test)]
 mod subtype_list_tests {
     use super::*;
