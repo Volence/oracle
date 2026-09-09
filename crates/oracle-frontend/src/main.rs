@@ -2146,6 +2146,35 @@ fn main() {
                 for p in problems {
                     notify_err(&mut ov, p);
                 }
+                // **Spawn mode is disarmed by the swap, for the same reason the watches are re-armed.**
+                //
+                // `spawn::Mode`'s doc has always claimed this ("disarmed after every `reset` / ROM swap"),
+                // and until this line nothing here did it — the only two disarm sites were the explicit
+                // `ToggleSpawnMode` key and `drain.rs`'s bus-driven listing replacement. The engine
+                // explains in words why the drain cannot cover this path: *"A window that swaps its own
+                // cartridge (the frontend's F5) therefore does not get told about its own listing"*
+                // (`oracle-aether/src/host.rs:801`). So an armed mode survived F5 holding archetype names
+                // read out of the OUTGOING listing.
+                //
+                // That is not a failed click, it is a click that succeeds at a different address — of the
+                // symbols `s4.lst` and `s4.debug.lst` share, 92.6% name a different one — which is the
+                // silent-corruption shape §11.32 §8 refuses on the wire. Disarmed rather than re-armed
+                // because the archetype list is read at arm time by a bus call, and the person is the one
+                // who decides the mode is on.
+                //
+                // Silently when it was never armed, on `drain.rs`'s precedent: announcing a mode change to
+                // somebody who had not set the mode is noise.
+                if spawn_mode.is_armed() {
+                    spawn_mode.disarm();
+                    notify(
+                        &mut ov,
+                        ACCENT,
+                        format!(
+                            "spawn mode disarmed: the {what} replaced the listing, so its archetypes \
+                             may now name different addresses"
+                        ),
+                    );
+                }
                 draws = 0;
                 cap.clear(); // a different cartridge draws a different frame — drop the old one
                 #[cfg(feature = "audio")]
@@ -3385,6 +3414,67 @@ mod tests {
         assert!(
             prod.contains("resolve_console_filter(env.as_deref(), remembered)"),
             "the startup resolution is wired through the pure precedence function"
+        );
+    }
+
+    /// ★ **The ROM swap disarms spawn mode** — the invariant `spawn::Mode`'s doc has always stated and
+    /// which, until lens finding H21, no code on this path kept.
+    ///
+    /// An armed `spawn::Mode` holds archetype *names* read out of the listing that was loaded when it
+    /// armed, and `emulator/object_spawn {defSymbol}` re-resolves each at call time. So a swap that
+    /// replaces the listing and leaves the mode armed does not make a click fail — it makes it succeed at
+    /// **a different address**, which of the symbols `s4.lst` and `s4.debug.lst` share is the case 92.6% of
+    /// the time. `drain.rs` already disarms on a bus-driven listing change and has its own test; this path
+    /// could not be covered by that one, because *"a window that swaps its own cartridge (the frontend's
+    /// F5) therefore does not get told about its own listing"* (`oracle-aether/src/host.rs:801`).
+    ///
+    /// Asserted against the source, on `the_env_override_is_never_written_back_to_the_config`'s precedent
+    /// and for its reason: the swap lives inside the `main` run loop, which no test here can drive. What
+    /// this pins is the wiring a regression would move — the disarm being *inside the swap block* rather
+    /// than merely somewhere in the file.
+    #[test]
+    fn the_rom_swap_disarms_spawn_mode_so_a_click_cannot_land_on_a_stale_address() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("main.rs is readable from its own test");
+        let prod = &src[..src
+            .find("\n#[cfg(test)]")
+            .expect("main.rs has a test module")];
+        // The swap block: from the `pending_rom` take to the loop's next phase (input sampling).
+        let start = prod
+            .find("if let Some(target) = pending_rom.take()")
+            .expect("the ROM swap block is where the cartridge is replaced");
+        let end = prod[start..]
+            .find("let keys = poll_pad(&window);")
+            .expect("the input-sampling phase follows the swap block")
+            + start;
+        let swap = &prod[start..end];
+        // The control, first: this slice really is the swap block, so a renamed marker cannot make the
+        // assertion below vacuously true by selecting an empty or wrong region.
+        assert!(
+            swap.contains("sys.load_rom(bytes);") && swap.contains("symbol_file::load_symbols("),
+            "the sliced region is not the ROM swap block — it must both load the ROM and re-read the listing"
+        );
+        assert!(
+            swap.contains("spawn_mode.disarm()"),
+            "the ROM swap replaces the listing and does not disarm spawn mode, so an armed mode survives \
+             F5 holding the OUTGOING listing's archetype names — a click then succeeds at a different \
+             address (`spawn::Mode`'s doc says this path disarms; make it true, do not weaken the doc)"
+        );
+        // The mode is turned off, never silently re-armed against a listing the person did not choose.
+        assert!(
+            !swap.contains("spawn_mode.arm("),
+            "the swap must disarm rather than re-arm: the archetype list is read at arm time and arming \
+             is the person's decision"
+        );
+        // `spawn::Mode`'s doc names exactly two disarm sites in this file (the toggle and the swap); the
+        // third is `drain.rs`'s. A new listing-replacing path added here without one moves this count.
+        assert_eq!(
+            prod.matches("spawn_mode.disarm()").count(),
+            2,
+            "main.rs is supposed to disarm spawn mode in exactly two places — the ToggleSpawnMode key and \
+             the ROM swap. If a third listing-replacing path landed, add it to `spawn::Mode`'s table too"
         );
     }
 
