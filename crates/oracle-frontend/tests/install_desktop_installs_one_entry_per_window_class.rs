@@ -375,6 +375,97 @@ fn a_click_with_no_file_selected_still_reaches_the_binary_with_a_rom() {
     );
 }
 
+/// The launcher, addressed from this crate the way [`script`] addresses the installer.
+fn launch_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join("oracle-launch.sh")
+}
+
+/// Run the launcher in `--dry-run`, which takes the freshness decision and then neither builds nor
+/// execs, and hand back everything it said.
+fn dry_launch(rig: &Rig, args: &[&str], rom: &Path) -> String {
+    let out = Command::new(launch_script())
+        .args(args)
+        .arg("--dry-run")
+        .arg(rom)
+        .env("PATH", rig.path())
+        .output()
+        .expect("the launcher is runnable");
+    assert!(
+        out.status.success(),
+        "the dry run failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// ⚑ **The freshness gate names the arm it took, including when the arm is "do nothing".**
+///
+/// A gate that is silent when it decides not to act is indistinguishable from a gate that was never
+/// reached, which is the shape of a check that quietly stops working. Both no-op arms are driven here
+/// because they are the ones with nothing else to show for themselves.
+#[test]
+fn the_freshness_gate_says_which_arm_it_took() {
+    let rig = Rig::new("freshness");
+    let rom = rig.root.join("fixture.bin");
+    fs::write(&rom, b"not a real ROM").expect("fixture ROM");
+
+    let said = dry_launch(&rig, &["--player", "--no-build"], &rom);
+    assert!(
+        said.contains("not rebuilding: --no-build was given"),
+        "--no-build did not report itself, so a launch that skipped the rebuild looks the same as one \
+         that never considered it:\n{said}"
+    );
+
+    let said = dry_launch(&rig, &["--player", "--bin", "/bin/sh"], &rom);
+    assert!(
+        said.contains("not rebuilding:") && said.contains("/bin/sh"),
+        "a --bin outside this checkout was not reported as the reason nothing is rebuilt:\n{said}"
+    );
+
+    let said = dry_launch(&rig, &["--player"], &rom);
+    assert!(
+        said.contains("not rebuilding:") || said.contains("would rebuild:"),
+        "the freshness gate reached no verdict at all, so nothing decides whether a stale binary is \
+         rebuilt:\n{said}"
+    );
+}
+
+/// ⚑ **REGRESSION: the tracked-source sweep must actually measure when it is run inside a checkout.**
+///
+/// The first version read `list="$(git ls-files -z ...)"`. Command substitution STRIPS NUL bytes, so the
+/// separators disappeared, `xargs -0` was handed one concatenated filename, `stat` failed, and the sweep
+/// returned nothing. The gate then took its honest "cannot measure, ask cargo" arm on EVERY launch: the
+/// rebuild still happened, so nothing looked broken, but the cheap check that exists to keep cargo off
+/// `target/`'s lock had silently stopped working. It was caught by running `--dry-run` and reading bash's
+/// own `warning: command substitution: ignored null byte in input` above the verdict.
+///
+/// This file lives in a checkout, so "cannot read tracked-source timestamps" here is that bug and not a
+/// legitimate answer.
+#[test]
+fn the_tracked_source_sweep_measures_rather_than_giving_up_inside_a_checkout() {
+    let rig = Rig::new("sweep");
+    let rom = rig.root.join("fixture.bin");
+    fs::write(&rom, b"not a real ROM").expect("fixture ROM");
+
+    let said = dry_launch(&rig, &["--player"], &rom);
+    assert!(
+        !said.contains("cannot read tracked-source timestamps"),
+        "the sweep gave up inside a checkout, which is the NUL-stripping defect returning:\n{said}"
+    );
+    assert!(
+        !said.contains("ignored null byte"),
+        "the shell warned about a stripped NUL, so the file list is being round-tripped through a \
+         variable again:\n{said}"
+    );
+}
+
 /// ⚑ **A launch that cannot happen SAYS SO.** The defect being fixed was silent: a click produced no
 /// window, no dialog and nothing a person could read. Every refusal in the launcher must exit non-zero
 /// with the reason in it.

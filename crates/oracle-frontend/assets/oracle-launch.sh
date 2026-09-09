@@ -2,7 +2,11 @@
 # The launcher every Oracle `.desktop` entry runs, instead of running a binary directly.
 #
 #   usage: oracle-launch.sh (--player | --frontend) [--bin PATH] [--rom PATH] [ROM]
-#                           [--no-build] [--print-argv] [-- EXTRA ARGS...]
+#                           [--no-build] [--print-argv] [--dry-run] [-- EXTRA ARGS...]
+#
+# `--print-argv` resolves a ROM and prints the command line it would run. `--dry-run` goes one step
+# further and takes the freshness decision as well, reporting which arm it took. Neither builds and
+# neither execs, which is what makes both checkable from a test with no window and no compiler.
 #
 # WHY THIS EXISTS AT ALL. A `.desktop` `Exec=` is one line with no room to think, and the two windows it
 # has to launch disagree about almost everything a launch needs to decide:
@@ -57,6 +61,7 @@ bin=""
 rom=""
 build=1
 print_argv=0
+dry_run=0
 extra=()
 
 while [ $# -gt 0 ]; do
@@ -69,6 +74,9 @@ while [ $# -gt 0 ]; do
     # Resolve everything, print the argv that would be `exec`'d, and stop. Builds nothing and launches
     # nothing, which is what lets a test feed this argv to the real parser without a window appearing.
     --print-argv) print_argv=1 ;;
+    # Go one step further: take the freshness decision too, report it, and still neither build nor exec.
+    # This is how the rebuild rule is checkable without a compiler in the loop.
+    --dry-run) dry_run=1 ;;
     -h|--help) command sed -n '2,40p' "$0"; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     -*) die "$prog: unknown option '$1' (see --help)" ;;
@@ -114,7 +122,7 @@ esac
 default_rom="$(cd "$root/.." 2>/dev/null && pwd)/aeon/s4.debug.bin"
 if [ -z "$rom" ]; then rom="${ORACLE_ROM:-}"; fi
 if [ -z "$rom" ] && [ -f "$default_rom" ]; then rom="$default_rom"; fi
-if [ -z "$rom" ] && [ "$print_argv" = 0 ] && have zenity; then
+if [ -z "$rom" ] && [ "$print_argv" = 0 ] && [ "$dry_run" = 0 ] && have zenity; then
   # Cancelling is an answer, not an error to retry: `|| true` keeps `set -e` from turning it into a
   # crash, and the empty result falls into the refusal below with its own message.
   rom="$(zenity --file-selection --title='Oracle: choose a ROM' \
@@ -161,13 +169,24 @@ fi
 # not `git status`, because a tracked file edited and not yet committed is exactly the case the owner
 # cares about.
 # ---------------------------------------------------------------------------------------------------
+# ⚑ **THE NUL-SEPARATED LIST NEVER PASSES THROUGH A VARIABLE, AND THAT IS THE WHOLE POINT.** The first
+# version of this function did `list="$(git ... ls-files -z ...)"`. Command substitution STRIPS NUL bytes,
+# so the separators vanished, `xargs -0` was handed one enormous concatenated filename, `stat` failed on
+# it, and the function returned nothing. The gate then took its "cannot measure" arm and asked cargo on
+# EVERY launch. Measured, not reasoned: running `--dry-run` printed bash's own
+# `warning: command substitution: ignored null byte in input` above the verdict, which is how it was
+# caught. Keep the NULs inside one pipeline.
+#
+# `pipefail` is off for the pipeline because a `stat` that cannot see one file should not turn the whole
+# measurement into a hard failure; emptiness is the signal the caller reads, and the caller treats empty
+# as "unmeasurable, so ask cargo" rather than as "fresh".
 newest_tracked_mtime() {
-  local list
-  list="$(git -C "$root" ls-files -z -- crates Cargo.toml Cargo.lock 2>/dev/null)" || return 1
-  [ -n "$list" ] || return 1
-  printf '%s' "$list" \
-    | (cd "$root" && xargs -0 -r stat -c %Y -- 2>/dev/null) \
-    | sort -n | tail -n 1
+  (
+    set +o pipefail
+    git -C "$root" ls-files -z -- crates Cargo.toml Cargo.lock 2>/dev/null \
+      | (cd "$root" && xargs -0 -r stat -c %Y -- 2>/dev/null) \
+      | sort -n | tail -n 1
+  )
 }
 
 run_build() {
@@ -209,29 +228,39 @@ To run the old binary anyway, add --no-build to the entry's Exec= line."
   say "build ok"
 }
 
-if [ "$build" = 1 ]; then
-  if [ "$bin" != "$root/target/release/$name" ]; then
-    say "not rebuilding: --bin '$bin' is not this checkout's own target/release/$name"
-  else
-    need=0
-    if src_mtime="$(newest_tracked_mtime)" && [ -n "${src_mtime:-}" ]; then
-      if [ ! -x "$bin" ]; then
-        say "no binary at $bin yet"
-        need=1
-      elif [ "$(stat -c %Y "$bin")" -lt "$src_mtime" ]; then
-        say "$name is older than the newest tracked source"
-        need=1
-      fi
-    else
-      # ⚑ Unmeasurable is not fresh. If the tracked-source timestamps cannot be read — not a checkout,
-      # no git — the honest move is to hand the question to cargo, which answers it properly, rather
-      # than to assume the binary is current because the cheap gate could not say otherwise.
-      say "cannot read tracked-source timestamps under $root; asking cargo instead of assuming fresh"
-      need=1
-    fi
-    [ "$need" = 1 ] && run_build
-  fi
+# ⚑ **EVERY ARM OF THIS DECISION SAYS WHICH ARM IT TOOK, INCLUDING THE ONE THAT DOES NOTHING.** The
+# "already current" case used to be the silent one, and a freshness gate that is silent when it decides
+# not to act is indistinguishable from a freshness gate that was never reached. That is also what makes
+# the decision testable without a compiler: `--dry-run` runs exactly this block, prints the same verdict,
+# and stops before `run_build` and before the exec.
+freshness=""
+if [ "$build" = 0 ]; then
+  freshness="not rebuilding: --no-build was given"
+elif [ "$bin" != "$root/target/release/$name" ]; then
+  freshness="not rebuilding: --bin '$bin' is not this checkout's own target/release/$name"
+elif ! src_mtime="$(newest_tracked_mtime)" || [ -z "${src_mtime:-}" ]; then
+  # ⚑ Unmeasurable is not fresh. If the tracked-source timestamps cannot be read (not a checkout, no
+  # git) the honest move is to hand the question to cargo, which answers it properly, rather than to
+  # assume the binary is current because the cheap gate could not say otherwise.
+  freshness="would rebuild: cannot read tracked-source timestamps under $root, so asking cargo instead \
+of assuming fresh"
+elif [ ! -x "$bin" ]; then
+  freshness="would rebuild: no binary at $bin yet"
+elif [ "$(stat -c %Y "$bin")" -lt "$src_mtime" ]; then
+  freshness="would rebuild: $name is older than the newest tracked source"
+else
+  freshness="not rebuilding: $name is newer than every tracked source"
 fi
+say "$freshness"
+
+if [ "$dry_run" = 1 ]; then
+  say "dry run: stopping here. Would exec: ${argv[*]}"
+  exit 0
+fi
+
+case "$freshness" in
+  "would rebuild:"*) run_build ;;
+esac
 
 # ---------------------------------------------------------------------------------------------------
 # THE ALREADY-SERVING WARNING.
