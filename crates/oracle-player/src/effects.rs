@@ -103,7 +103,8 @@
 //! *"if I choose like bands and stuff it's not meant to be permanent, just testing stuff."* Authoring
 //! lives in aurora. This module holds no serde derive, no storage key and no path, and
 //! [`crate::layout`]'s persistence carries `DockState<Tab>` — the dock's *shape* — and nothing a panel
-//! selected. `nothing_this_panel_selects_can_reach_the_saved_layout` in [`crate::layout`] is the gate.
+//! selected. `nothing_the_effects_panel_selects_can_reach_the_saved_layout` in [`crate::layout`] is the
+//! gate.
 
 use oracle_frontend::spawn::{Caller, Refusal};
 

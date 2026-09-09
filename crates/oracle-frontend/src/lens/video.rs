@@ -736,7 +736,7 @@ mod tests {
     // hand-written `Vec<SpriteEval>` would test the fixture's length, not the production rule —
     // the test would pass with the cap deleted from the core.
     //
-    // The behaviour is not left unguarded: `the_walk_stops_at_the_parse_cap_in_h32` in `lens/mod.rs`
+    // The behaviour is not left unguarded: `the_walk_stops_at_the_parse_cap` in `lens/mod.rs`
     // drives it end to end through a real VDP, where the cap is genuinely in play, and it is
     // mutation-verified there.
 

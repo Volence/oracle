@@ -1036,7 +1036,8 @@ fn console_stage_line(model: oracle_core::synth::ConsoleModel, source: FilterSou
 }
 
 /// The toast for a cycled filter: the status-line label, what it does, and that it is now remembered.
-/// Kept short enough to fit a toast whole at the 320x224 floor (`the_filter_toast_fits_a_toast_whole`).
+/// Kept short enough to fit a toast whole at the 320x224 floor
+/// (`the_filter_toast_fits_a_toast_whole_at_the_native_floor`).
 #[cfg(feature = "audio")]
 fn filter_toast(model: oracle_core::synth::ConsoleModel) -> String {
     let effect = match model.cutoff_hz() {
