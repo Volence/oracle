@@ -468,7 +468,22 @@ pub fn write_params(space: Space, addr: u32, payload: &str) -> Result<Value, Str
 /// What the address box did with what was typed.
 pub enum Resolved {
     /// A hex literal, parsed here. No dispatch: `"0x1234"` is not a question the server can answer better.
-    Hex(u32),
+    Hex {
+        /// The address to read: **the one the machine puts on the bus**, and the field to compute with.
+        addr: u32,
+        /// ⚑ **The 68000 listing's own spelling, present only when it differs from `addr`** — i.e. only
+        /// when the typed value carried bits above the 24 the 68000 actually drives, and only in
+        /// [`Space::Bus`].
+        ///
+        /// An Aeon listing writes work RAM as `FFFF8CFA`; the machine drives 24 address lines and puts
+        /// `$FF8CFA` on the bus. `emulator/lookup_symbol` has always answered **both**
+        /// (`{"addr":"0x00FF8000","rawAddr":"0xFFFF8000"}`), so typing the *symbol* `VBlank_Flag` read
+        /// fine while typing its address by hand was refused — one field, two behaviours, neither
+        /// explained. This carries the same pair for the number, so the panel can say *which* location it
+        /// went to and *why* that is the same location, rather than either refusing a spelling a person
+        /// read out of the listing in front of them or silently reading somewhere they did not name.
+        listing: Option<u32>,
+    },
     /// A name the server resolved. Carries the server's own reply so the panel can show the symbol it
     /// actually landed on, its displacement, and any `caveat` the server attached.
     Symbol { addr: u32, reply: Value },
@@ -480,7 +495,8 @@ pub enum Resolved {
 
 /// Resolve what a human typed into the address box, **through the served surface**.
 ///
-/// * A hex literal is taken as one.
+/// * A hex literal is taken as one — **in [`Space::Bus`], through the same 24-bit mask the symbol path
+///   has always applied**, with the listing spelling kept beside it. See below.
 /// * Anything else is a name, and the name goes to the server:
 ///   * in the **bus** space, to `emulator/lookup_symbol`, which is what the design means by *"the address
 ///     box **is** this method"*;
@@ -488,6 +504,28 @@ pub enum Resolved {
 ///     server's own words**: *"`symbol` is valid only with space \"bus\" — a VDP-internal byte address
 ///     has no symbol"*. That refusal is the answer, and asking for it costs one non-mutating read rather
 ///     than a second sentence this panel would have had to write and keep in step.
+///
+/// # ⚑ One field, two behaviours — and this is the half that was wrong
+///
+/// `emulator/lookup_symbol` masks: `VBlank_Flag` answers `{"addr":"0x00FF8000","rawAddr":"0xFFFF8000"}`
+/// and reads. Typing `0xFFFF8000` into the *same box* was refused. So the address box did the masking
+/// silently for a name and refused it for a number, explaining neither — and the refused spelling is the
+/// one an Aeon listing puts in front of a person (`FFFF8CFA` for work RAM; the 68000 drives 24 address
+/// lines and puts `$FF8CFA` on them). The panel's own default was that spelling, which is how the Memory
+/// tab came to greet a first-time click with a refusal of a value it had pre-filled itself.
+///
+/// **The mask here is not the wire's rule, and the difference is the point.**
+/// `bus-protocol.schema.json`'s `rawAddr` note pins the wire behaviour: passing the listing spelling to
+/// `read_memory` is *"refused loudly … so a joining client that takes the wrong field pays a round trip,
+/// never gets a wrong byte"*. That is a rule about a **client**, which cannot read an explanation and
+/// must not guess. A person at this box is the other case: they read the number off a listing, and there
+/// is exactly one location it can mean. So this masks — and then **says so, on screen, naming both
+/// spellings** ([`Resolved::Hex::listing`]). Loud, which is what the schema note is actually protecting,
+/// rather than refusing. Nothing is silent, and no byte comes from an address the panel did not name.
+///
+/// **[`Space::Bus`] only.** VRAM, CRAM, VSRAM and Z80 addresses are not 68000 bus addresses; masking one
+/// with a 24-bit bus mask would be arithmetic about the wrong machine, and those spaces have their own
+/// ranges and refuse out of them in their own words.
 pub fn resolve_address(bus: &mut Bus, sys: &mut System, space: Space, text: &str) -> Resolved {
     let t = text.trim();
     if t.is_empty() {
@@ -499,7 +537,19 @@ pub fn resolve_address(bus: &mut Bus, sys: &mut System, space: Space, text: &str
         .unwrap_or(t);
     if !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return match u32::from_str_radix(hex, 16) {
-            Ok(a) => Resolved::Hex(a),
+            Ok(a) if space == Space::Bus && a & !oracle_core::symbols::BUS_ADDR_MASK != 0 => {
+                // The mask is the core's own constant, not a literal typed here: it is the same
+                // `BUS_ADDR_MASK` `SymbolTable` applies on the path that already worked, so the two
+                // spellings of one address cannot drift apart in the one box that shows both.
+                Resolved::Hex {
+                    addr: a & oracle_core::symbols::BUS_ADDR_MASK,
+                    listing: Some(a),
+                }
+            }
+            Ok(a) => Resolved::Hex {
+                addr: a,
+                listing: None,
+            },
             Err(e) => Resolved::Rejected(format!("{t:?}: {e}")),
         };
     }
@@ -687,12 +737,31 @@ pub struct MemoryPanel {
     gates_at_paused: Option<bool>,
 }
 
+/// ⚑ **Where the Memory panel opens** — work RAM's base, as the 68000 puts it on the bus.
+///
+/// It used to be `0xFFFF0000`, which is the *listing* spelling of the same place and which the read path
+/// refused: the panel's first click, with nothing typed, answered `REFUSED -32004: only cartridge ROM
+/// ($000000..rom_len) and work RAM ($E00000-$FFFFFF) are readable in this slice` — **a refusal of a value
+/// the panel had pre-filled itself.** The hazard was written up in this repo a week earlier
+/// (`bus-protocol.schema.json`'s `rawAddr` note, signed *"found by hitting it"*) and then shipped as the
+/// default.
+///
+/// One constant for the box, the page base and the hint text, so the three cannot disagree about where
+/// this panel opens — and derived, not typed: it is the bottom of the work-RAM window `engine.rs` decodes
+/// and the refusal above names, so a build that moved that window would have to move this too.
+pub const DEFAULT_BASE: u32 = 0x00FF_0000;
+
+/// [`DEFAULT_BASE`] as the address box shows it, and as the box's own hint advertises it.
+pub fn default_base_text() -> String {
+    oracle_aether::hex::addr(DEFAULT_BASE)
+}
+
 impl Default for MemoryPanel {
     fn default() -> Self {
         Self {
             space: Space::Bus,
-            addr_text: "0xFFFF0000".into(),
-            base: 0xFFFF_0000,
+            addr_text: default_base_text(),
+            base: DEFAULT_BASE,
             addr_note: None,
             write_text: String::new(),
             write_note: None,
@@ -1163,10 +1232,14 @@ mod bus_parity {
             Resolved::Refused(e) => assert_eq!(e.code, code::SYMBOL_NOT_FOUND),
             _ => panic!("an absent name must be refused"),
         }
-        // Hex never dispatches: it is not a question the server can answer better.
+        // Hex never dispatches: it is not a question the server can answer better. `listing` is `None`
+        // because a value already inside the 24 bits the 68000 drives has only one spelling.
         assert!(matches!(
             resolve_address(&mut b, &mut sys, Space::Bus, "$FF0000"),
-            Resolved::Hex(0x00FF_0000)
+            Resolved::Hex {
+                addr: 0x00FF_0000,
+                listing: None
+            }
         ));
 
         // ⚑ And a symbol in a non-bus space is refused, in **every** non-bus space — walked from
@@ -1224,12 +1297,123 @@ mod bus_parity {
                          {why:?}"
                     );
                 }
-                Resolved::Hex(a) => {
-                    panic!("{space:?}: `Boot` is not a hex literal, yet it was taken as ${a:X}")
+                Resolved::Hex { addr, .. } => {
+                    panic!("{space:?}: `Boot` is not a hex literal, yet it was taken as ${addr:X}")
                 }
                 Resolved::Symbol { addr, .. } => panic!(
                     "{space:?}: only the 68000 bus has symbols, yet `Boot` resolved to ${addr:X}"
                 ),
+            }
+        }
+    }
+
+    /// ★ **The Memory panel opens on an address it can read** — the first click, with nothing typed.
+    ///
+    /// UX packet finding 4. The panel greeted a newcomer with
+    /// `REFUSED -32004: only cartridge ROM ($000000..rom_len) and work RAM ($E00000-$FFFFFF) are readable
+    /// in this slice` **under a value it had pre-filled itself** (`0xFFFF0000`, the 68000 *listing*
+    /// spelling of work RAM's base). A first contact that refuses its own default teaches a person the
+    /// tool is broken before they have asked it anything.
+    ///
+    /// The row reads the default **off `MemoryPanel::default()`**, not off a constant retyped here: a
+    /// test that names the address it expects would pass against a panel that opens somewhere else
+    /// entirely. It asserts three things, and the third is the one that stops this becoming vacuous —
+    /// a `View` with no rows and no error would satisfy the first two.
+    #[test]
+    fn the_memory_panel_opens_on_an_address_it_can_actually_read() {
+        let sys = booted();
+        let p = MemoryPanel::default();
+        let v = view(p.space, &sys, p.base, ROWS, PER_ROW);
+        assert!(
+            v.error.is_none(),
+            "the Memory panel's first click refuses its own default ({}): {:?}",
+            oracle_aether::hex::addr(p.base),
+            v.error
+        );
+        assert_eq!(
+            p.addr_text,
+            oracle_aether::hex::addr(p.base),
+            "the box and the page it reads must be one value, or the panel shows an address it is not \
+             reading"
+        );
+        assert_eq!(
+            v.rows.len(),
+            ROWS,
+            "a full page, so `error: None` is a read that happened and not an empty grid"
+        );
+        assert_eq!(
+            v.region,
+            Some("work RAM"),
+            "the panel opens in work RAM, which is where a person debugging a game is looking"
+        );
+    }
+
+    /// ★ **One box, one behaviour, for a name and for a number.**
+    ///
+    /// The other half of finding 4, and the part fixing the default alone would have left standing: the
+    /// address box did the 24-bit masking **silently for a symbol** (`emulator/lookup_symbol` answers
+    /// `addr` masked and `rawAddr` unmasked, and the panel read it fine) and **refused it for a number**,
+    /// explaining neither. The refused spelling is the one an Aeon listing puts in front of a person.
+    ///
+    /// Both premises are asserted before the claim, because each is a way this row could pass while
+    /// measuring nothing: an unmasked value that happens to be readable, or a masked one that is not.
+    #[test]
+    fn a_listing_address_and_its_bus_address_reach_the_same_page_and_the_panel_says_so() {
+        let mut sys = booted();
+        let mut b = bus(&mut sys, false);
+
+        let listing_spelling = DEFAULT_BASE | !oracle_core::symbols::BUS_ADDR_MASK;
+        assert_ne!(
+            listing_spelling, DEFAULT_BASE,
+            "premise: the two spellings differ, so there is something for the mask to do"
+        );
+        assert!(
+            view(Space::Bus, &sys, listing_spelling, 1, PER_ROW)
+                .error
+                .is_some(),
+            "premise: the unmasked spelling is genuinely unreadable, which is what made this a refusal \
+             and not a preference"
+        );
+
+        match resolve_address(
+            &mut b,
+            &mut sys,
+            Space::Bus,
+            &oracle_aether::hex::addr(listing_spelling),
+        ) {
+            Resolved::Hex { addr, listing } => {
+                assert_eq!(
+                    addr, DEFAULT_BASE,
+                    "the listing spelling must land on the address the machine puts on the bus"
+                );
+                assert_eq!(
+                    listing,
+                    Some(listing_spelling),
+                    "the spelling the person typed must be CARRIED, so the panel can name both numbers \
+                     rather than moving them somewhere silently"
+                );
+            }
+            _ => panic!("a hex literal must not dispatch, whichever spelling it is written in"),
+        }
+
+        // …and the same mask is NOT applied to a space that is not the 68000 bus, where it would be
+        // arithmetic about the wrong machine.
+        for space in [Space::Vram, Space::Cram, Space::Vsram, Space::Z80] {
+            match resolve_address(
+                &mut b,
+                &mut sys,
+                space,
+                &oracle_aether::hex::addr(listing_spelling),
+            ) {
+                Resolved::Hex { addr, listing } => {
+                    assert_eq!(
+                        (addr, listing),
+                        (listing_spelling, None),
+                        "{space:?}: a 68000 bus mask was applied to an address that is not on the \
+                         68000 bus"
+                    );
+                }
+                _ => panic!("{space:?}: a hex literal must not dispatch"),
             }
         }
     }

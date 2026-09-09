@@ -78,7 +78,8 @@ Watchpoints are a separate, working surface (`capabilities.watchpoints`, four se
 
 ## Layout
 
-Four crates in one workspace (`Cargo.toml`):
+The workspace members (`Cargo.toml`), and there is a **sixth** directory under `crates/` that is not
+one of them — see the note under the list:
 
 - **`crates/oracle-core`** — the emulator. Deterministic and I/O-free by charter; one dependency
   (`bincode`), `#![forbid(unsafe_code)]`, no threads. One `System` owns all memory and chips and a
@@ -90,10 +91,31 @@ Four crates in one workspace (`Cargo.toml`):
   `server` (the bus owns the machine on its own thread) and `host` (something else owns the run
   loop and pumps the bus).
 - **`crates/oracle-frontend`** — a windowed player (minifb) over the same core: keyboard + gamepad,
-  audio, save states, a command palette, and debug lenses. Can host the Aether bus in-process with
-  `--aether`.
+  audio, save states, a command palette, and debug lenses. **The game window.** Can host the Aether
+  bus in-process with `--aether`.
+- **`crates/oracle-player`** — **the debug window** (egui + `egui_dock` + wgpu): Registers, Memory,
+  Objects, Screen, Planes, Spawn, Effects, Breakpoints, Watchpoints, Profiler, and a `commands`
+  console that can issue any served method by hand. This is where breakpoints are armed, memory is
+  read and written, and the object pool is listed — **none of which the game window can do.** It can
+  host the Aether bus in-process too (`--aether` / `--socket PATH`).
 - **`crates/oracle-replay`** — `replay_runner`, a headless gate binary that boots Aeon's debug ROM,
   replays a recorded input fixture, and exits PASS / DESYNC / FAULT / TIMEOUT.
+
+⚠ **`crates/oracle-panels-spike` is deliberately NOT a member.** It is a throwaway measurement spike
+that priced the `oracle-player` rebuild, kept out of `members` so its ~250 transitive crates never
+enter this workspace's `Cargo.lock`; `Cargo.toml`'s `exclude` carries the full reasoning. It is not
+built, not tested and not run by anything here. Counting the directories under `crates/` therefore
+gives one more than the workspace has, which is the one number in this section worth being careful
+with.
+
+### ⚑ The two windows are two separate machines
+
+`oracle-frontend` and `oracle-player` are **separate processes**. Each owns its own `System` and
+binds its own socket, and there is no mode in which they share a machine. Running both — which is the
+only way to have the game and the debug tabs on screen at once — gives you **two emulators running
+the same ROM independently**: a breakpoint armed in the debug window halts *that* machine and the
+game window keeps drawing, correctly and confusingly. Neither window says which machine it is yet.
+Attach a client to the one you mean, by pointing `--socket` at a path you chose.
 
 ## Build and test
 
@@ -115,11 +137,31 @@ cargo clippy --all-targets -- -D warnings
 cargo test --workspace        # includes the SST sweep; it takes minutes, it is not hung
 ```
 
-Run the bus server, or the player:
+### Where a ROM comes from
+
+**This repo ships one.** `fixtures/aeon/s4.debug.bin` is a committed, bootable Aeon debug build, with
+its listing `fixtures/aeon/s4.debug.lst` beside it — checked in as bytes, not fetched, so a fresh
+clone can run something immediately. `fixtures/aeon/PROVENANCE.md` records which Aeon build is pinned
+and why the copy is frozen here rather than read out of the sibling `../aeon/` checkout. `s4.bin` (the
+release build), `demo.lst` and `demo.debug.lst` are there too.
+
+Prefer the **debug** ROM for anything you intend to inspect: it is the build the symbol listing is
+richest for. To use a live Aeon build instead, build it in the sibling checkout (`cd ../aeon &&
+./build.sh`, which writes `s4.bin` and `s4.debug.bin` into that tree) and pass its path; the tests
+that read these artifacts honour `ORACLE_AEON_DIR` for the same purpose.
+
+### Run it
 
 ```sh
-cargo run -p oracle-aether -- <rom.bin> [--socket PATH] [--symbols PATH] [--no-pace]
-cargo run --release -p oracle-frontend -- <rom.bin> [--scale N] [--aether]
+# The bus server, headless.
+cargo run -p oracle-aether -- fixtures/aeon/s4.debug.bin [--socket PATH] [--symbols PATH] [--no-pace]
+
+# The GAME window. The ROM is positional; there is no --help here yet, and `-h` is taken as a filename.
+cargo run --release -p oracle-frontend -- fixtures/aeon/s4.debug.bin [--scale N] [--aspect tv|square|integer] \
+    [--aether | --socket PATH]
+
+# The DEBUG window — note `--rom`, which is a FLAG here and not positional. `--help` works.
+cargo run --release -p oracle-player -- --rom fixtures/aeon/s4.debug.bin [--symbols PATH] [--aether]
 ```
 
 With `--socket` omitted the path resolves `$ORACLE_SOCKET` → `$EXODUS_SOCKET` →

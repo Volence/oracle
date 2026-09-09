@@ -694,7 +694,18 @@ impl RomOpen {
                             }
                         });
                     }
-                    if ui.button("↑ up").clicked() {
+                    // ⚑ **`\u{2191}` was a hollow box on this button.** It is drawable in the monospace
+                    // family and NOT in the proportional one, and this is a proportional button — a
+                    // narrower version of the delete-button defect two modules over, found by the same
+                    // guard (`screen::tests::every_string_literal_the_player_can_show_is_drawable`) and
+                    // reported by nobody, because a box beside the word `up` still reads as an ornament.
+                    //
+                    // The obvious substitute is worse than it looks: `\u{25B2}` is ALSO a box in the
+                    // proportional family, on a build where `\u{25B6}` two buttons away draws fine — this
+                    // font set's geometric shapes are patchy, not present. Rather than hunt for a
+                    // survivor, the label is the word. That is the same call `crate::ui::REMOVE_LABEL`
+                    // makes and for a compounding reason: `\u{2191}` says nothing `up` does not.
+                    if ui.button("up").clicked() {
                         up = true;
                     }
                     if ui.button("⟳ refresh").clicked() {
