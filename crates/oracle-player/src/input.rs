@@ -56,6 +56,26 @@ pub fn release_latch(latch: bool, any_game_key_down: bool) -> bool {
     latch && any_game_key_down
 }
 
+/// **Whether this frame's `Esc` should leave a placement mode**, as a pure function so the rule is
+/// checkable without a window.
+///
+/// Three conditions and each is load-bearing:
+///
+/// * `armed` — the keystroke is only ours while a click on the picture would *place* something. A window
+///   that swallowed `Esc` whenever it was open would take it from `egui`'s own uses of it (dropping
+///   widget focus, closing a floating window), which is a regression paid by every gesture that is not a
+///   spawn.
+/// * `wants_text` — `Context::egui_wants_keyboard_input()`. `Esc` typed at a focused text box is that
+///   box's, exactly as [`machine_keys`]' callers already hold for `Tab` and the digits: the archetype
+///   filter is a text box on the very tab that arms this mode, and taking `Esc` out of it would disarm
+///   the mode a person was in the middle of aiming.
+/// * `esc_pressed` — pressed, not down, because leaving a mode is an event.
+///
+/// The owner's finding it answers is on [`crate::screen_pick::Panel::disarm`].
+pub fn wants_disarm(armed: bool, wants_text: bool, esc_pressed: bool) -> bool {
+    armed && !wants_text && esc_pressed
+}
+
 /// The whole per-iteration input decision, as one pure function so it can be tested without a window.
 ///
 /// * `keys` — what the keyboard says right now ([`pad_from_keys`]).
@@ -492,5 +512,40 @@ mod tests {
 
         let none = frame(&ctx, vec![key(egui::Key::ArrowRight, false)]);
         assert_eq!(none, Pad::default(), "everything released");
+    }
+
+    /// **`Esc` is ours only while a click would place and no widget is typing** — the whole truth table,
+    /// because each of the three inputs is a separate way to get this wrong and two of them are silent.
+    ///
+    /// The `wants_text` leg is the one that would have shipped: the archetype filter is a text box on the
+    /// very tab that arms the mode, so an `Esc` typed at it would otherwise disarm the mode the person
+    /// was in the middle of aiming.
+    #[test]
+    fn esc_leaves_a_placement_mode_only_when_the_window_is_entitled_to_the_key() {
+        for armed in [false, true] {
+            for wants_text in [false, true] {
+                for pressed in [false, true] {
+                    let want = armed && !wants_text && pressed;
+                    assert_eq!(
+                        wants_disarm(armed, wants_text, pressed),
+                        want,
+                        "armed={armed} wants_text={wants_text} pressed={pressed}"
+                    );
+                }
+            }
+        }
+        // Spelled out once as prose, so a reader of a failure above knows which cell is the point.
+        assert!(
+            wants_disarm(true, false, true),
+            "armed, nothing typing, Esc pressed: this is the gesture"
+        );
+        assert!(
+            !wants_disarm(true, true, true),
+            "a focused text box keeps its own Esc"
+        );
+        assert!(
+            !wants_disarm(false, false, true),
+            "an unarmed window must hand Esc back to egui"
+        );
     }
 }

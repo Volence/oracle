@@ -337,6 +337,24 @@ impl Panels<'_> {
         // same condition as "a click here would place one", so the ghost is never a claim about a gesture
         // that is not available.
         if self.screen.is_armed() {
+            // ⚑ **The armed statement, ON THE PICTURE, and unconditional inside this branch.**
+            //
+            // The owner's finding, 2026-09-09: *"With spawn, if I want to click into the window to move
+            // the character around (even if it shows nothing) it'll spawn something there."* The ghost
+            // below was the only thing this window drew inside the picture while armed, and it is
+            // conditional twice over — a pointer that is over the picture *and* a preview that is
+            // drawable. Both of the states he described fall outside it, so the picture that ate his
+            // click looked exactly like an unarmed one. This does not: it is drawn from
+            // [`screen_pick::Panel::is_armed`] and nothing else, which is the same predicate the click
+            // itself reads.
+            //
+            // The frame is what carries it at a glance and the chip is what makes it say *what* and *how
+            // to get out*; neither is decoration, and the wording is
+            // [`screen_pick::Panel::armed_notice`]'s, derived from the badge so the strip and the glass
+            // cannot name two different modes.
+            if let Some(notice) = self.screen.armed_notice() {
+                armed_frame(ui, image_rect, &notice);
+            }
             if let (Some(p), Some(pos)) = (
                 self.screen
                     .preview()
@@ -633,7 +651,15 @@ impl Panels<'_> {
             if self.screen.object_armed() {
                 if ui
                     .button("spawn: off")
-                    .on_hover_text("a click on the picture goes back to arming a watch")
+                    // Names the key as well as the button, because the key is the one that is reachable
+                    // from the picture — which is where a person is when they want out. The word for it
+                    // is `screen_pick::DISARM_KEY_LABEL`, so this and the notice on the glass cannot
+                    // name two different keys.
+                    .on_hover_text(format!(
+                        "a click on the picture goes back to arming a watch. {} does the same from \
+                         anywhere in this window.",
+                        screen_pick::DISARM_KEY_LABEL
+                    ))
                     .clicked()
                 {
                     self.screen.disarm_spawn();
@@ -3104,6 +3130,103 @@ fn preview_texture(
     let tex = ctx.load_texture("object-preview", img, egui::TextureOptions::NEAREST);
     ctx.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
     Some(tex)
+}
+
+/// Padding inside an overlay chip drawn on the picture, and the inset of the chip from the picture's own
+/// edge. One constant, so the two chips this file draws over the game cannot sit at two different insets.
+const OVERLAY_PAD: f32 = 6.0;
+
+/// **Paint a block of text over the picture, at one of its corners, on its own panel.**
+///
+/// The one thing this exists to get right is that it takes **no layout space**: everything is painted
+/// through [`egui::Painter`] against a rect that was already allocated for the image, so nothing it draws
+/// can move the picture. That is the whole of the owner's second finding — *"whenever I place something
+/// this text box comes up and shifts the window for the game"* — and it is a property of the mechanism
+/// here rather than of any caller's care.
+///
+/// `lines` are drawn top to bottom in the order given, each with its own face and colour, wrapped to the
+/// picture's width less the padding on both sides. Returns the rect it covered so a caller can stack a
+/// second block clear of the first.
+fn overlay_block(
+    ui: &egui::Ui,
+    picture: egui::Rect,
+    lines: &[(String, egui::FontId, egui::Color32)],
+    top: bool,
+) -> egui::Rect {
+    if lines.is_empty() {
+        return egui::Rect::NOTHING;
+    }
+    let wrap = (picture.width() - OVERLAY_PAD * 4.0).max(40.0);
+    let galleys: Vec<_> = lines
+        .iter()
+        .map(|(t, face, colour)| {
+            (
+                ui.painter().layout(t.clone(), face.clone(), *colour, wrap),
+                *colour,
+            )
+        })
+        .collect();
+    let w = galleys
+        .iter()
+        .map(|(g, _)| g.size().x)
+        .fold(0.0_f32, f32::max);
+    let h: f32 = galleys.iter().map(|(g, _)| g.size().y).sum::<f32>()
+        + OVERLAY_PAD * 0.5 * (galleys.len().saturating_sub(1)) as f32;
+    let size = egui::vec2(w + OVERLAY_PAD * 2.0, h + OVERLAY_PAD * 2.0);
+    let min = if top {
+        picture.min + egui::vec2(OVERLAY_PAD, OVERLAY_PAD)
+    } else {
+        egui::pos2(
+            picture.min.x + OVERLAY_PAD,
+            picture.max.y - OVERLAY_PAD - size.y,
+        )
+    };
+    let panel = egui::Rect::from_min_size(min, size);
+    // Clipped to the picture for [`ghost`]'s reason: this is a statement *about the picture*, and one
+    // painted over the letterbox bars would be a statement about somewhere the machine is not showing.
+    let painter = ui.painter().with_clip_rect(picture);
+    // Opaque enough to read a proportional face against arbitrary game art, and never fully opaque: a
+    // person must be able to see that there is a picture under it.
+    painter.rect_filled(
+        panel,
+        egui::CornerRadius::same(3),
+        egui::Color32::from_black_alpha(215),
+    );
+    let mut y = panel.min.y + OVERLAY_PAD;
+    for (g, colour) in &galleys {
+        let at = egui::pos2(panel.min.x + OVERLAY_PAD, y);
+        painter.galley(at, g.clone(), *colour);
+        y += g.size().y + OVERLAY_PAD * 0.5;
+    }
+    panel
+}
+
+/// **The standing armed statement, drawn inside the picture**: an accent border round the whole of it and
+/// a chip naming the mode and the way out.
+///
+/// See the call site for the finding. The border is not redundant with the chip: the chip is at one
+/// corner and a person aiming at the far side of the picture is not looking at it, whereas an edge is in
+/// peripheral vision wherever the pointer is.
+fn armed_frame(ui: &egui::Ui, picture: egui::Rect, notice: &str) {
+    let painter = ui.painter().with_clip_rect(picture);
+    painter.rect_stroke(
+        picture,
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(2.0, ui.visuals().warn_fg_color),
+        egui::StrokeKind::Inside,
+    );
+    let face = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Small)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(10.0));
+    overlay_block(
+        ui,
+        picture,
+        &[(notice.to_owned(), face, ui.visuals().warn_fg_color)],
+        true,
+    );
 }
 
 /// **Draw the preview under the pointer, as a ghost.**
