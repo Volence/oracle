@@ -39,11 +39,22 @@ and **before landing**. It is not part of the boot read.
 (`wc -c docs/OVERSEER.md` against 100,000). A previous revision of this line asserted "so there is real
 headroom" and was still asserting it at 99,578 B with 422 B left: a measurement written in the present
 tense, in the one section whose job is to warn about exactly that. Cuts so far: 2026-09-06 (99,798 →
-87,2xx B with its repair pass) and 2026-09-09 (99,578 → 93,149 B, three closed blocks).
+87,2xx B with its repair pass), 2026-09-09 morning (99,578 → 93,149 B, three closed blocks) and
+2026-09-09 evening (98,275 B / 1,142 lines → the figure you get from `wc` today; 8 closed blocks to the
+log, 7 ops lessons to the reference). ⚑ **The BYTE bound is met with real room; the LINE half is not,
+and that is reported rather than closed.** Every block that could move has moved: what is left over
+~900 lines is live rulings and live follow-up-register bookings, and the protocol's own
+measure-then-move rule 3 says the residual goes to the owner rather than into a trim.
 When the bound is next reached, move history out in ONE cut with `tools/prove_doc_split.py` — run it from
 THIS repo, script by absolute path, and check its provenance lines name this document's line count before
 reading the verdict. Read BOTH PROOF 3 numbers: `--headings` gates the verdict on one of them, so confirm
-the heading-blind seams land on headings rather than accepting the gated number alone. `## Where the detail lives` at the foot of this file says which of the three files takes what.
+the heading-blind seams land on headings rather than accepting the gated number alone.
+⚑ **And expect it to refuse a cut you were sure of.** The 09-09 evening cut also tried to move
+`F-HOSTED-RESET-SRM`'s closed narrative; PROOF 3 disproved it, because that entry is a parenthetical
+INSIDE the follow-up register's running comma-list — no blank line anywhere near the cut, so the torn
+sentence was invisible to every paragraph- or sentence-boundary check a person would run by hand.
+**The register's list-shaped entries are not movable at all**; do not try again without reshaping the
+list first. `## Where the detail lives` at the foot of this file says which of the three files takes what.
 
 ## The queue (2026-08-19 end of day; reorder only with cause, record the cause)
 
@@ -67,7 +78,9 @@ moved with them.)*
    the gate must be carried on its own merits again: **one method's refusals being covered by hand
    is not the gate**, and nothing systematic yet reads a `params` fragment and asks the server to
    refuse what falls outside it.
-   **FOREGROUND runtime follow-ups: ALL FOUR CLOSED 2026-09-04, and none of them cost a probe.** Three were stale and one was never ours — CR-B had been reading **`oracle-old`**, and the Z80 pair we actually serve (`0f35ae1`, 08-29) refuses LOUDLY and WHOLE, measured firsthand against the binary a consumer spawns with a control proving the probe could see a write. `write_vram` closed 09-04; `step`'s frame-budget shortfall closed by the CR-STEP-SHORTFALL parcel the same day, and it was never a which-server question — it named a contract SHAPE gap binding any conformant server, which is why it survived the conflation the other three did not. The entries, and the 2026-08-22 runtime attempt correctly ABANDONED rather than deferred for convenience (my MCP client's `Errno 2` said nothing about the world, and the live emulator was another lane's harness), moved whole to `OVERSEER-LOG.md` 2026-09-06 for the boot-read bound. Detail in the 2026-09-04 register entry.
+   **FOREGROUND runtime follow-ups: ALL FOUR CLOSED 2026-09-04** (three stale, one never ours), together with
+   `step`'s frame-budget shortfall. The measurement, and the 2026-08-22 runtime attempt correctly ABANDONED
+   rather than deferred, are in `OVERSEER-LOG.md`; the two live rules they produced are in the register below.
    **AEON OBLIGATION: SCOPE WAS WRONG, and the correction makes it bigger.** Item 7 recorded it
    as a dated heads-up before serving `emulator/wait_for_break`, because their gates send
    `timeout_ms`. **The survey found it covers THREE methods, not one, and I verified it firsthand
@@ -142,38 +155,9 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 
 - **▶ CLOSED 2026-09-04: the four foreground runtime follow-ups (three stale, one never ours) and `step`'s frame-budget shortfall, closed by a CR that went the whole way to §11.33. Moved whole to `OVERSEER-LOG.md` 2026-09-05 for the boot-read bound. The two live rules they produced are kept: a register entry naming a contract gap is worth re-reading against the CURRENT CONTRACT, not only the current code; and a perishable claim decays where nobody re-reads it, the distinguishing variable being whether the claim is ABOUT THE CODE IT SITS BESIDE.**
 
-**▶ CR-Q ADOPTED WITH CHANGES: §11.40, and it is OWED, not done.**
-
-Adjudicated 2026-09-05 at empyrean **`31e0b7c`**, **verified firsthand, not taken from the relay**: an
-ancestor of their `origin/main`, and a **contract** commit carrying `protocol.md` +54,
-`bus-protocol.schema.json` +27 and `vectors.json` +43, so its SHA class matches what it anchors. §11.40,
-the §3 row and the schema member are all present at `origin/main`. **Reviewer named: aeon.**
-
-**▶ WHAT WE OWED: ALL THREE DISCHARGED, and the row asserting the debt outlived the work by four days.**
-~~serve `emulator/machineReplaced` (`reason` enum `{stateLoad}` + **`hitsDropped`, required and present at
-0**), **re-vendor the fragment by blob id**, and close against item 28's extended rows. Sequenced behind the
-icon parcel, the build-identity line and the first style pass.~~ **Measured firsthand 2026-09-09 before an
-agent was spent on it:** the serve landed at **`d631b5a`** (2026-09-05), both windows emitting and a headless
-server correctly NOT advertising (`handshake.rs:173` asserts the absence); the vendored blob is
-**`da37da70`**, byte-identical to `empyrean origin/main:contract/schema/bus-protocol.schema.json`, both read
-at committed revisions and neither from a working tree; item 28's extended rows are carried by name in
-`crates/oracle-aether/tests/machine_replaced.rs`, the refused-load negative included. `H4` (`a5e18cb`) is
-built on top of it, which is the strongest single sign the serve was real: a later parcel depended on it.
-
-⛑ **THE SIXTH INSTANCE IN TWO DAYS OF A ROW'S JUSTIFICATION AGEING WHILE THE ROW SAT STILL, and the first
-one caught BEFORE the agent rather than after.** The standing rule that caught it is the 09-09 frontier's:
-**before dispatching any row, check whether the WORK landed, not whether the ROW is open.** Both artifacts
-asserting this debt — this paragraph and the `CR-Q-MACHINEREPLACED` board row — were self-consistent, correctly
-cited, and wrong, which is why neither could correct the other.
-
-⛑ **AND THE HUB READ IT THE SAME WAY FROM THE OTHER SIDE, which makes this a shared-frame instance rather
-than a lane defect.** Backing the parcel as contract owner, it reported *"your crates reference it in 8 files
-… so the contract is written, the structure is there, and the signal is not delivered"* — it had grepped the
-references and read **presence of structure as evidence of absent emission**. That is bar 16 running in the
-NEGATIVE direction: name-is-not-behaviour normally over-reads a name as work, and here it under-read eight
-real emission sites as scaffolding. The discriminator was one grep separating **test** references from
-**production call sites** (`states.rs:237`, `main.rs:1926`), which is the command that converts a reference
-count into behaviour.
+**▶ CR-Q / §11.40 (`emulator/machineReplaced`): ADOPTED WITH CHANGES, SERVED, AND ALL THREE OWED ITEMS
+DISCHARGED** — the adjudication provenance, the reviewer, and the 2026-09-09 discharge measurement are in
+`OVERSEER-LOG.md`. The adopted changes stay here because M2 is a live hazard on a live surface:
 
 **The four changes to our proposal, transcribed rather than summarised:**
 - **M2: `capabilities.events` advertises the member ONLY on a process that can produce the gesture; a
@@ -185,13 +169,6 @@ count into behaviour.
 - **M4: one boundary, one signal**, with V7-V11 in our suite.
 - **S1 as proposed** (the single-member `reason` enum, so `reset`/`restore` later are an added member
   rather than a renamed event).
-
-**And a correction to OUR §5 worth keeping: events ARE schematized in this repo**, so the schema cost is
-one fragment, which the hub added. We priced it as more.
-**The pre-adoption check we flagged and could not run, the hub ran:** `clients/python` validates no closed
-set (boolean negotiation), the MCP shim negotiates `want_events=False`, and the handshake fragment is free
-strings. **So the check came back clear, but it was right to hand it over rather than assert it**, which
-is bar 24's second-instrument rule working in the direction of a peer rather than a document.
 
 **▶ RULED 2026-09-05 by the contract owner (hub, under delegation; theirs, not his): DO NOT widen the
 aether build script's dirty scope to cover `crates/oracle-player/src`.**
@@ -210,28 +187,9 @@ settled the stale-binary incident was the executable's **mtime**, which already 
 somebody *editing* the window, not the owner *running* it, and he is not editing it. Revival: someone is
 regularly running a hand-built window and being misled by it.
 
-**Registered 2026-09-05, from landing S3:**
-
-- **⚑ A SHIPPED DEFECT IN THE WINDOW THE OWNER WAS USING: every palette gesture that replaced the machine
-  ran NO repair at all.** `Host::pump` snapshots the three generation counters **inside itself** (deliberate:
-  it is what stops `set_machine_info` surfacing as a client's doing). The unintended half: **a change made
-  through `Host::call` between two drains is invisible to both**, landing after drain N reads back and
-  before drain N+1 snapshots. `oracle-frontend` never met it because it calls `System::load_rom` directly
-  and repairs inline; `oracle-player` dispatches **everything** through `Host::call`. So at `17ee2c6`,
-  `emulator/reset`, `reload_rom`, `restore` and `run_frames` from the window's own palette each left the
-  audio sink's frame clock above the restored one (**silence**), the capture on a dead timeline, and the
-  symbol cache and ROM row stale. **Verified at the shipped revision before accepting the fix**
-  (`host.rs:653-661` snapshot, `731-733` compare; `Bus::call` discarded everything but the result).
-  **Every one of those repairs already existed and already ran: for a client, one door over.**
-  ⚑ **MY BRIEF WARNED ABOUT THE MIRROR IMAGE AND THE THING IT WARNED ABOUT COULD NOT HAPPEN.** I wrote that
-  *"two copies of this repair is the defect this slice is most likely to ship"*. There was nowhere for a
-  second copy to live: the palette is **derived from `METHODS`**, so `reload_rom` was always reachable
-  through the one registry and an F5 binding is a keyboard alias for a call that already existed. **The
-  real defect was a door that ran NO repair, not two doors running it differently.** Fixed by recording in
-  `Bus::call` itself rather than a per-call-site list: a per-site list is a list of methods that replace
-  the machine, and the palette is registry-derived precisely so no such list exists to go stale.
-  **Proved by this seat restoring the defect**: deleting `self.own.absorb(&report)` turns all four
-  `bus::one_door::*` rows red.
+**Registered 2026-09-05, from landing S3:** *(the one-door palette defect that opened this group is
+closed; its narrative is in `OVERSEER-LOG.md` and the brief lesson it produced in
+`docs/OVERSEER-REFERENCE.md`.)*
 
 - **▶ CR OWED UPSTREAM: F-STATELOAD-SILENT-REPLACE.** A **window** save-state load replaces the machine
   **without moving `rom_generation`**, so a connected client is never told the machine underneath it
@@ -276,10 +234,6 @@ regularly running a hand-built window and being misled by it.
   `set_layer_enabled` inside the same `build_ui`) or when a masked render yields nothing. So `Panel::pick`
   takes the glass's mask as a **parameter** and refuses only on disagreement, with `None` the honest
   *"no picture yet"* rather than a fourth state. Invisible on every ordinary frame.
-  ⚑ **THIRD CONSECUTIVE AGENT ON THIS ARC TO CORRECT ITS BRIEF ON A MATERIAL POINT**: the recon on the
-  module list, S0-S2 on the fit inverse, this one on the refusal. **That is the delegation corollary paying
-  out: a brief's frame is the thing an agent is best placed to break, and all three were caught because the
-  brief asked for disagreement first rather than last.** Keep leading dispatches with that request.
 
 **Registered 2026-09-05, from verifying a relayed authorisation instead of absorbing it:**
 
@@ -461,14 +415,8 @@ rule; ~~direct owner confirmation requested in-session.~~
 it.** The owner answered decision `d-1` directly in this session on 2026-08-24, choosing **"Confirm it
 as standing permission"** from the two options put to him. **This lane may now push its own repo's
 master without asking each time**, under the four conditions below, which ride with the grant and are
-unchanged by the confirmation.
-
-**The granting act is named, which is why this relay is usable at all.** The hub consolidated a
-question two lanes had stopped on separately (sigil asked outright; aeon was sitting on three
-finished docs commits for the same reason, neither able to see the other asking), put three options
-to him (own-repo standing / standing-for-docs-ask-for-code / per-push), and he chose the widest.
-That is a granting act described, not a status field quoted, which is the distinction the
-never-record-an-unwitnessed-approval bar exists to draw.
+unchanged by the confirmation. *Why this relay was usable before the confirmation arrived — a granting
+act described rather than a status field quoted — is in `docs/OVERSEER-REFERENCE.md`.*
 
 **The conditions ride with the grant and are part of it**, transcribed rather than paraphrased:
 - **verify `origin` actually moved: the push is not the act, the remote moving is.** This is the
@@ -637,11 +585,8 @@ owner confirmation requested in-session; replace this flag with the confirmation
 owner armed an overnight delegation in his own words (*"if anything needs decision that they can't
 make you make it for them"*, transcribed by the hub into empyrean `OVERSEER.md` addition (f) at
 05:39Z, banked `091ac59`) and went to bed; the hub ruled in his place and **he reviews it on return.**
-Record it as the hub's ruling. Do not upgrade it to his.
-
-**The question (d-16):** the premium independent-reviewer seat was parked days ago when it blocked
-nothing. It had come to block three items: OVERLAY-STATE and CR-A, five of the sixteen unserved
-methods among them. **Ruled: SUBSTITUTE.**
+Record it as the hub's ruling. Do not upgrade it to his. *The question it answered, and what it was
+blocking, are in `OVERSEER-LOG.md` under* **d-16, the question the SUBSTITUTE ruling answered**.
 
 **THE STANDING RULE THIS CREATES, and it outlives tonight.** Adjudications run on the ordinary model
 while the seat is parked, and **every ruling produced that way NAMES ITS OWN REVIEWER, at the top, in
@@ -696,11 +641,8 @@ implementation and the correction did not say so**: a defect created *while appl
 correctly, in the act of fixing a different staleness.* **We have the same exposure and more of it:**
 this repo's recon, demand and CR docs describe "the server" throughout, and D-10/D-13/D-17 are already
 booked as having **two implementers**. A sweep is owed: every claim about server behaviour either
-names its implementation or is a latent two-implementer conflation.
-*Durable formulation from the same thread, worth more than its instance:* **freshness is not
-transitive across a document, and proximity reads as verification**: a stale figure beside a
-freshly-updated one is read as cross-checked, which is how my own 37 survived hours next to a correct
-18.
+names its implementation or is a latent two-implementer conflation. *The durable formulation this
+produced — freshness is not transitive across a document — is in `docs/OVERSEER-REFERENCE.md`.*
 
 ## ⚑ THE SOCKET CHAIN, AND F-CHAIN-QUOTED
 
@@ -711,11 +653,6 @@ not a stale comment. **Operational consequence: start a server on `/run/user/100
 **F-CHAIN-QUOTED stands:** two historical recon docs here name the socket paths and neither was written
 from the resolver. Revival: before any doc here is cited to a peer as the transport's behaviour.
 Full measurement, and what each of the three lanes had right and wrong, in the log.
-
-**OPERATIONAL CONSEQUENCE for the d-4 parcel: start the server on `/run/user/1000/oracle.sock`.** That
-is what every lane resolves to. Unlinking the stale `/tmp/oracle.sock` (aurora's suggestion) is **not
-required** for any consumer using the reference client, since it is unreachable; it may still matter
-for a client with its own resolution, which is aurora's to determine and not mine to touch.
 
 *(The shim-half measurement is in the log. The hazard it leaves behind is live and is this:)*
 
@@ -753,13 +690,9 @@ type system. Do not add a mask parameter to it.** Design calls and the resume pa
 
 ## ▶ GUI-LAYERS: **DISCHARGED 2026-09-09.** Every premise it was queued on is now false
 
-Queued 2026-08-26 on three claims, all measured false today before the section was cut:
-`oracle-frontend` **does** have layer toggles (`commands.rs` builds them from `LayerMask::targets`);
-`pick::resolve` **takes a `LayerMask` and has no unmasked twin to fall into**; and the invariant the
-section wanted asserted *is* asserted — `pick.rs`'s own header says the parity guard now runs over masked
-states, *"so that is an assertion rather than a precondition"*. Aurora's five consumer rules were adopted
-and are satisfied in the shipped code, `mask_clause` being the standing on-screen statement rule 5 asked
-for. The section and their full input moved whole to `OVERSEER-LOG.md` 2026-09-09.
+*The discharge measurement — all three queued claims put to the tree and found false — is in
+`OVERSEER-LOG.md` under* **GUI-LAYERS: the discharge measurement, all three premises false**. *The
+queued section and aurora's five consumer rules moved there the same day.*
 
 ⚑ **ONE HAZARD IS KEPT, because it binds anything BUILT LATER rather than describing what shipped: if a
 surface ever names a blob-local tile slot, the rebase can land OUTSIDE the blob.** `tile` is VRAM-absolute;
@@ -804,24 +737,10 @@ caller of a road already built, not a build.
 
 **Also carried in that same message and both banked; moved whole to `OVERSEER-LOG.md` 2026-09-06:** our landing recorded upstream with correct attribution (their number cited as *ours*, not re-derived), and **F-RESUME-STOP-RACE relayed to aurora** as the suite's outbound client, which is the right destination — no reply was requested and none is owed. With them, the content-addressed check that verified our vendored `bus-protocol.schema.json` against empyrean's blob id **in both trees, neither read from a working file**, which is why a relayed claim about our own tree was safe to accept.
 
-**Board row id: `F-FROZEN-FIXTURE-DRIFTS`** — landed 2026-09-06, and it is the second application of the
-ruling directly above, reached independently before the ruling was re-read. Our frozen `fixtures/aeon/*.lst`
-had drifted from aeon's build in four dimensions consuming tests rely on (`ObjSub_` 0→8, `ObjDef_`
-archetypes 3→4 and 5→6, `Phase Table` absent→`PHASE-COUNT 6`, `Level_Width`/`Level_Height` absent→present),
-and every one of those was invisible to the suite by construction.
-
-**The shape is `SCHEMA-DRIFT-NIGHTLY`'s, applied one level up from bytes:** `fixtures/aeon/DIMENSIONS.tsv`
-pins the listings' SHAPE the way `PIN.tsv` pins their bytes; the hermetic recovery gate is
-`crates/oracle-core/tests/aeon_dimensions.rs`; the currency half is a new non-gating section in
-`tools/aeon_pin_report.py`. **No second owner card was filed**, per this section's own prohibition — the
-standing-timer question is already open as empyrean `d-9`.
-
-**The correction worth carrying**, because the brief asserted the opposite and it is a reusable move: the
-`.lst` files being untracked does **not** mean there is no committed revision to ask. The *source* the
-dimensions come from is tracked (`ObjSub_Spring__Up_Red` is a `pub equ` in
-`games/sonic4/objects/test_solid.emp`), so a currency check reads aeon's **object store at a ref** and the
-live-tree hazard is avoidable for the primary measurement rather than inherent. Detail and the falsifiers:
-`docs/2026-09-06-fixture-dimension-drift.md`.
+**Board row id: `F-FROZEN-FIXTURE-DRIFTS`** — landed 2026-09-06. Its detail (the four drifted dimensions,
+the `DIMENSIONS.tsv`/`aeon_dimensions.rs` shape, and why no second owner card was filed) is in
+`OVERSEER-LOG.md` under the row's own name; the reusable correction it produced is in
+`docs/OVERSEER-REFERENCE.md`.
 
 **▶ BOOKED, NOT BUILT, 2026-09-09: `F-CITATION-LINT` — make a drifted cross-repo citation UNEXPRESSIBLE
 rather than detectable.** The claim-vacuity agent's proposal, recorded verbatim in shape because it should not
@@ -1037,8 +956,6 @@ its refusal*. That grants his correctness half in full and costs JSON per click,
 **Mirror he did not state and it follows from his own default:** a served capability that **changes what the
 window does** must be *visible* in it; `hold` ORs a client's pad into the player's, so a disconnected client
 can leave someone walking left forever with nothing on screen able to say why.
-
-⚠ **STALE, AND IT COST A PARCEL: the parcel-2 line item here said layout persistence was one `serde` flag, deliberately OFF *"until the placeholders are gone"*.** It is **ON and shipped** — `crates/oracle-player/src/layout.rs`, eframe `Storage`/RON, `LAYOUT_VERSION = 2` in its own storage key, `eframe = { features = ["persistence"] }` in the manifest. The condition the line named was met, the flag was flipped, and the line was never struck, so a brief was written from it to decide a question that did not exist. The paragraph and both of its corrections moved whole to `OVERSEER-LOG.md` 2026-09-06 for the boot-read bound; **the durable rule is in `docs/OVERSEER-REFERENCE.md`: when a conditional line's condition is met, strike the line in the same commit that meets it.**
 
 ## ⚑ OWNER RULING, 2026-09-02T20:05:08Z, d-25 DOCK SHAPE: **option 3 `swap-toolkit`, NOT our recommendation**
 
