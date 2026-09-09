@@ -378,6 +378,36 @@ independently verifying row presence against a source-derived expectation; that 
 change and was correctly kept out of the hardening parcel.
 
 
+## The landing checks — RUN THE LIST, do not compose it each time
+
+*(Written 2026-09-09 after this seat ran three different check sets across three merges in ninety
+minutes and reddened `main` with the one it shortened. The omission is invisible from inside a single
+landing: the parcel that skipped a check had the HEAVIEST evidence of the three, an 87-leg suite run.)*
+
+**On the MERGED tree, never branch-side, in this order. All five, every time, whatever the parcel:**
+
+1. `cargo fmt --all -- --check` — exit code captured **outside any pipe**.
+2. `cargo clippy --workspace --all-targets -- -D warnings` — **`--workspace` and `--all-targets`**, not
+   per-crate and not lib-only. The lint that broke `main` was in a **test target** in a crate the parcel
+   touched, and a `-p` scoped run is what an agent will report from its branch.
+3. The tests. Full suite when code moved; a targeted run is acceptable **only** for a change proven to
+   add no executable lines, and the proof is stated (for Rust: no non-comment additions **and no code
+   fences**, since a fenced doc-comment becomes a doctest that runs).
+4. **Completeness, not just green**: the leg count. It MOVES when a parcel adds a test target — expected
+   86, got 87, reconciled as the new `toolchain_floor` target. **A moved count is an explanation or a
+   problem; find out which.** Never read a capped, killed or absent run as a pass.
+5. `git push`, then **verify `origin` actually moved** — the push is not the act, the remote moving is.
+
+**Then, and this is the step that was missing entirely tonight: READ CI.** Four parcels landed on a
+signal nobody looked at. `gh run list --limit 6 --json conclusion,headSha,status`. **A normal run here
+takes 35-45 minutes** — measured, so a long one is not a stall; judging a duration against an assumption
+nearly produced a false alarm about a stuck runner an hour after the false all-clear.
+⚑ **A wait-for-CI loop that times out EXITS 0 and reads exactly like success.** Re-read the run list;
+never trust the waiter's exit code, and never trust `cmd | head; echo $?`, which hands back `head`'s.
+
+⚑ **If your own landing breaks something, test the explanation that makes it YOUR FAULT first.** See the
+ops entry below; the structural story arrives first and costs the most.
+
 ## Ops (each line is a paid-for lesson)
 
 **⚑ RE-VERIFY ON THE MERGED TREE MEANS THE SAME CHECKS EVERY TIME, AND THE VARIANCE IS INVISIBLE FROM
