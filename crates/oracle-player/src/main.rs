@@ -876,6 +876,27 @@ impl Loop {
         for line in self.battery.tick(self.machine.system_mut()) {
             loud(&line);
         }
+        // ⚑ **The listing was replaced, so the Screen tab's object mode is retracted** (H20).
+        //
+        // `bus::drain` published this and it was read by **nothing**: this window had copied
+        // `oracle-frontend`'s signal for this repair without copying the repair. The consequence is not a
+        // click that fails — `emulator/object_spawn {defSymbol}` re-resolves the archetype name at call
+        // time — it is a click that **succeeds at a different address**, which is the silent-corruption
+        // shape, on a table where 92.6 % of the shared names move between `s4.lst` and `s4.debug.lst`.
+        //
+        // Here rather than inside `bus::drain` for the reason the battery lines and the swap notice are:
+        // the drain's job is to report what moved, and what a *window* retracts in response is the
+        // window's. `screen_pick::Panel::listing_replaced` is silent and returns `false` when nothing was
+        // armed, so a quiet drain stays quiet.
+        //
+        // ⚑ **`listing_replaced` and NOT `drained.symbols`.** The latter is the cache-repair receipt and
+        // is raised on `rom_changed` too, so it is true after an `emulator/reset` — which keeps the
+        // listing — and true on the first iteration of a loop that has only just been handed one.
+        // Keyed there, this retracted spawn mode on a reset and at startup;
+        // `a_quiet_iteration_leaves_the_object_mode_armed` is the control that caught it.
+        if drained.listing_replaced_by_a_client && self.screen.listing_replaced() {
+            loud(oracle_frontend::spawn::DISARMED_BY_LISTING_CHANGE);
+        }
         // A cartridge swap re-keys the slot files with it, for the `.srm`'s reason one field over: a
         // state written against the previous image would restore the previous image.
         if drained.rom_path {
@@ -1988,6 +2009,255 @@ mod loop_tests {
             "the engine still holds a listing it said it dropped"
         );
         let _ = std::fs::remove_file(&rom_path);
+    }
+
+    /// A fixture listing that names an `ObjDef_` archetype, so `arm_spawn` can actually arm on it.
+    ///
+    /// `bus::pumped::LST` deliberately names none, so the test below cannot borrow it: a spawn mode that
+    /// never armed would be retracted by a listing change trivially and the row would prove nothing.
+    const ARCHETYPE_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ ObjDef_Spring : 1000 C |
+ ObjDef_Monitor : 1010 C |
+
+    2 symbols
+    0 unused symbols
+";
+
+    /// The listing a client installs mid-run: **the same archetype names at different addresses**.
+    ///
+    /// That is the whole shape of the defect and it is why the fixture is built this way rather than by
+    /// removing a name. A listing that dropped `ObjDef_Spring` would make the next click *fail*, which is
+    /// loud and recoverable. This one leaves every name resolvable, so the click succeeds — a hundred and
+    /// ninety-two bytes away from where the person aiming it meant. `$1000` -> `$1800` here stands in for
+    /// the measured 92.6 % of names that move between `s4.lst` and `s4.debug.lst`.
+    const ARCHETYPE_LST_MOVED: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ ObjDef_Spring : 1800 C |
+ ObjDef_Monitor : 1810 C |
+
+    2 symbols
+    0 unused symbols
+";
+
+    /// Turn the shipped loop exactly once, headlessly.
+    ///
+    /// One implementation for the three rows below, which is the point: a turn spelled three times is
+    /// three chances for one of them to stop being the loop the other two are about.
+    fn turn(ctx: &egui::Context, lp: &mut Loop) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |root| {
+            let c = root.ctx().clone();
+            lp.iterate(&c, root, Instant::now());
+        });
+        out.textures_delta.clear();
+    }
+
+    /// ⚑ **The startup listing install arrives as a listing change on the FIRST turn**, so every row
+    /// below primes one turn before it arms anything.
+    ///
+    /// `Loop::new` hands the engine the listing it was launched with, and that reaches the next drain as
+    /// `symbols_changed` exactly as a client's `emulator/load_symbols` would — correctly, since it *is* a
+    /// listing arriving. It is invisible in production because a person cannot arm spawn mode before the
+    /// window has drawn its first frame, and drawing it is what turns the loop. It is very visible to a
+    /// test that arms before the first turn, which is what the first draft of these rows did.
+    fn primed(lp: &mut Loop, ctx: &egui::Context) {
+        turn(ctx, lp);
+    }
+
+    /// ⚑ **A quiet iteration does NOT retract the object mode** — the control for the row below.
+    ///
+    /// The repair keys on `Drained::symbols`, and a repair that fired on every iteration would make the
+    /// row below pass while proving nothing: the mode would be gone before the client ever connected.
+    #[test]
+    fn a_quiet_iteration_leaves_the_object_mode_armed() {
+        let tag = format!("{}-{}", std::process::id(), line!());
+        let rom_path = std::env::temp_dir().join(format!("pl-{tag}.bin"));
+        std::fs::write(&rom_path, oracle_core::testrom::build()).expect("write the fixture ROM");
+        let table =
+            oracle_core::symbols::SymbolTable::parse(ARCHETYPE_LST).expect("the fixture parses");
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            Some(0.0),
+            rom_path.display().to_string(),
+            symbols::Loaded {
+                table: Some(table),
+                path: None,
+                fatal: None,
+            },
+            // No socket at all: nothing can replace the listing, so every iteration here is a quiet one.
+            Some(None),
+        );
+        let ctx = egui::Context::default();
+        // The launch listing arrives as a listing change on the first turn; see `primed`.
+        primed(&mut lp, &ctx);
+        lp.screen.arm_spawn(&mut lp.machine, &mut lp.bus);
+        assert!(lp.screen.object_armed(), "the fixture arms");
+
+        for i in 0..8 {
+            turn(&ctx, &mut lp);
+            assert!(
+                lp.screen.object_armed(),
+                "iteration {i} retracted spawn mode with nothing having replaced the listing: {:?}",
+                lp.screen.readout().map(screen_pick::Readout::text)
+            );
+        }
+        let _ = std::fs::remove_file(&rom_path);
+    }
+
+    /// ★ **The SHIPPED loop retracts the Screen tab's object mode when a client replaces the listing**
+    /// (H20).
+    ///
+    /// `bus::drain` published `Drained::symbols` and **nothing read it**. This window had copied
+    /// `oracle-frontend`'s signal for the stale-archetype repair without copying the repair, so a listing
+    /// replaced over the bus left spawn mode holding archetype names out of a listing the engine no
+    /// longer had. `emulator/object_spawn {defSymbol}` re-resolves each name at call time, so the click
+    /// does not fail — **it succeeds at a different address**, on a table where 92.6 % of the shared
+    /// names move between `s4.lst` and `s4.debug.lst`.
+    ///
+    /// ⚑ **This has to be driven through the real `Loop::iterate` and nothing smaller.** The defect was
+    /// precisely a wiring absence: `bus::drain` was already correct, `screen_pick::Panel` would already
+    /// have disarmed if asked, and every test of either would have stayed green forever. A panel-level
+    /// row (`a_listing_change_retracts_the_object_mode_and_leaves_ring_mode_alone`, below in
+    /// `screen_pick`) pins *what* the repair does; only this one can see whether the loop performs it.
+    ///
+    /// **The alternative green paths, ruled out:** spawn mode is asserted armed before the client is
+    /// spawned, so it did not start disarmed; the reload's own `symbolsDropped` is asserted `true`, so
+    /// the disarm cannot be a reaction to something that did not happen; and nothing in an iteration but
+    /// this repair touches the mode — frames do not, and the headless `egui` pass raises no click.
+    #[test]
+    fn the_shipped_loop_retracts_spawn_mode_when_a_client_replaces_the_listing() {
+        use std::io::{BufRead as _, Write as _};
+
+        let tag = format!("{}-{}", std::process::id(), line!());
+        let socket = std::env::temp_dir().join(format!("pl-{tag}.sock"));
+        let rom_path = std::env::temp_dir().join(format!("pl-{tag}.bin"));
+        std::fs::write(&rom_path, oracle_core::testrom::build()).expect("write the fixture ROM");
+        let lst_path = std::env::temp_dir().join(format!("pl-{tag}.lst"));
+        std::fs::write(&lst_path, ARCHETYPE_LST_MOVED).expect("write the replacement listing");
+
+        let table =
+            oracle_core::symbols::SymbolTable::parse(ARCHETYPE_LST).expect("the fixture parses");
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            Some(0.0),
+            rom_path.display().to_string(),
+            symbols::Loaded {
+                table: Some(table),
+                path: None,
+                fatal: None,
+            },
+            Some(Some(socket.clone())),
+        );
+
+        let ctx = egui::Context::default();
+        // The launch listing arrives as a listing change on the first turn; see `primed`. Arming before
+        // it would be retracted by the loop's very first drain, and the row would pass for that reason.
+        primed(&mut lp, &ctx);
+
+        // Arm the object mode through the same call the Spawn tab's button makes.
+        lp.screen.arm_spawn(&mut lp.machine, &mut lp.bus);
+        assert!(
+            lp.screen.object_armed(),
+            "the fixture must arm, or this test is about a mode that was never on: {:?}",
+            lp.screen.readout().map(screen_pick::Readout::text)
+        );
+
+        let path = lst_path.display().to_string();
+        let client = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let stream = loop {
+                match std::os::unix::net::UnixStream::connect(&socket) {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut send = |v: serde_json::Value| {
+                writeln!(writer, "{v}").unwrap();
+                writer.flush().unwrap();
+            };
+            let recv = |reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>| loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).expect("read") > 0, "hung up");
+                let v: serde_json::Value = serde_json::from_str(&line).expect("bad JSON");
+                if v.get("id").is_some_and(|i| !i.is_null()) {
+                    return v;
+                }
+            };
+            send(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "clientId":"h20-wiring","clientName":"loop","clientVersion":"0",
+                "protocolVersion":1,"clientCapabilities":{"events":false}}}),
+            );
+            recv(&mut reader);
+            send(serde_json::json!({"jsonrpc":"2.0","method":"initialized"}));
+            // ⚑ `emulator/load_symbols` and NOT `reload_rom`: this is the exact gesture H20 names, it
+            // needs no pause, and it replaces the listing against an UNCHANGED cartridge — so nothing
+            // about the machine moves and the retraction below can only be about the listing.
+            send(
+                serde_json::json!({"jsonrpc":"2.0","id":2,"method":"emulator/load_symbols",
+                "params":{"path": path}}),
+            );
+            recv(&mut reader)
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while lp.screen.object_armed() {
+            assert!(
+                Instant::now() < deadline,
+                "the client replaced the listing and the shipped loop left spawn mode armed against \
+                 it. A click on the picture would now place an object at whatever address the NEW \
+                 listing gives the archetype it is still holding — it would succeed, at the wrong \
+                 address. `Loop::iterate` is not acting on `Drained::listing_replaced_by_a_client`."
+            );
+            turn(&ctx, &mut lp);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let reply = client.join().expect("the client thread");
+        assert!(
+            reply.get("error").is_none(),
+            "the client's load_symbols was refused, so the disarm above cannot be a reaction to it: \
+             {reply}"
+        );
+        assert_eq!(
+            lp.bus.symbols().and_then(|t| t.address_of("ObjDef_Spring")),
+            Some(0x1800),
+            "the engine must be holding the REPLACED listing — otherwise nothing moved and the \
+             retraction above is a reaction to something that did not happen"
+        );
+        // …and the window says WHY, rather than only showing a mode that is suddenly off.
+        let said = lp
+            .screen
+            .readout()
+            .map(screen_pick::Readout::text)
+            .unwrap_or_default();
+        assert_eq!(
+            said,
+            oracle_frontend::spawn::DISARMED_BY_LISTING_CHANGE,
+            "a person who pressed nothing is owed the cause and not just the new state"
+        );
+        let _ = std::fs::remove_file(&rom_path);
+        let _ = std::fs::remove_file(&lst_path);
     }
 
     /// ★ **A client can read this window's glass, and what it reads follows the window** —

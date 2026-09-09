@@ -498,6 +498,33 @@ impl Panel {
         self.take_preview(machine, bus);
     }
 
+    /// ⚑ **The symbol listing was replaced, so the object mode is retracted** (H20). `true` if there was
+    /// something to retract.
+    ///
+    /// The repair `bus::drain`'s `symbols` flag exists for, and until now did not have: the player
+    /// published that flag and **nothing read it**, so a `emulator/load_symbols` over the bus left this
+    /// window holding archetype names read out of the listing the engine no longer has. The click does
+    /// not fail — `emulator/object_spawn {defSymbol}` re-resolves the name at call time — it **succeeds
+    /// at a different address**. See [`spawn::DISARMED_BY_LISTING_CHANGE`] for the measurement.
+    ///
+    /// **The ring mode is deliberately left armed**, and that is not an oversight. Ring placement reads
+    /// every bound it needs from the listing *at the moment of the click* ([`Panel::arm_rings`] takes
+    /// nothing at arm time), so it has no stale names to carry across a listing change. Disarming it here
+    /// would be this window retracting a mode that a listing change cannot have invalidated.
+    ///
+    /// Silent when nothing was armed: a window that announced a mode change to somebody who had not set
+    /// the mode is noise.
+    pub fn listing_replaced(&mut self) -> bool {
+        if !self.object_armed() {
+            return false;
+        }
+        self.disarm_spawn();
+        // …and then say WHY, over `disarm_spawn`'s own "a click arms a watch again". A person who did not
+        // press anything is owed the cause, not just the new state.
+        self.last = Some(Readout::ok(spawn::DISARMED_BY_LISTING_CHANGE.to_string()));
+        true
+    }
+
     /// Turn spawn mode off. A click picks again.
     ///
     /// [`Panel::run`] is deliberately **not** cleared: what this window did to the machine's run state is
@@ -3197,6 +3224,49 @@ EQU ObjSub_Spring__Wide_Huge = $00000140
             .map(Readout::text)
             .unwrap_or_default()
             .contains("arms a watch"));
+    }
+
+    /// ⚑ **A listing change retracts the object mode, says why, and leaves ring mode alone** (H20).
+    ///
+    /// The *what* half of the repair `Drained::symbols` exists for. The *whether the loop performs it*
+    /// half cannot be seen from here and is
+    /// `the_shipped_loop_retracts_spawn_mode_when_a_client_replaces_the_listing` in `main.rs` — the
+    /// defect was a wiring absence, and a panel-level row like this one would have stayed green through
+    /// the whole of it.
+    ///
+    /// The ring arm is not an afterthought row: leaving it armed is a **decision**, and an undocumented
+    /// decision is one somebody later "fixes". Ring placement reads every bound it needs at the moment of
+    /// the click, so a listing change cannot have staled it, and retracting it would be this window
+    /// taking away a mode that is still correct.
+    #[test]
+    fn a_listing_change_retracts_the_object_mode_and_leaves_ring_mode_alone() {
+        let (_machine, _bus, mut panel) = armed_rig();
+        assert!(panel.object_armed(), "the fixture arms the object mode");
+
+        assert!(panel.listing_replaced(), "there was something to retract");
+        assert!(!panel.object_armed(), "…and it is retracted");
+        assert_eq!(
+            panel.readout().map(Readout::text).as_deref(),
+            Some(spawn::DISARMED_BY_LISTING_CHANGE),
+            "a person who pressed nothing is owed the cause, not just `spawn mode off`"
+        );
+
+        // Idempotent, and silent when there is nothing to retract: a window that announced a mode
+        // change to somebody who had not set the mode is noise.
+        assert!(!panel.listing_replaced());
+
+        // ⚑ And the ring mode, which a listing change cannot stale, survives one.
+        let mut panel = Panel::default();
+        panel.arm_rings();
+        assert!(
+            !panel.listing_replaced(),
+            "a ring arm is not an object arm, so there is nothing here to retract"
+        );
+        assert!(
+            panel.ring_listing().armed && panel.is_armed(),
+            "ring placement reads its bounds at the moment of the click, so a replaced listing cannot \
+             have made it stale and this window must not take it away"
+        );
     }
 
     /// A listing that **parses**, names symbols, and names no `ObjDef_` archetype.
