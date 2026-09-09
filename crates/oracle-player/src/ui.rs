@@ -2054,7 +2054,8 @@ impl Panels<'_> {
         ui.separator();
     }
 
-    /// **The Breakpoints tab.** The armed set, an add box, a per-row toggle, a per-row ✕ and a clear-all.
+    /// **The Breakpoints tab.** The armed set, an add box, a per-row toggle, a per-row `remove` and a
+    /// clear-all.
     ///
     /// The table is [`Bus::read_breakpoints`] — the `Host`'s own list, the one
     /// `emulator/breakpoint_list` pages — read fresh every repaint. The four gestures are
@@ -2171,6 +2172,12 @@ impl Panels<'_> {
                 "{:<5} {:<10} {:<8} {:>9}",
                 "id", "addr", "state", "hits"
             ));
+            // The armed-for-removal handle is read out here and written back after the closure, so the
+            // scroll area borrows neither `self` nor a field of it. `confirm` is the handle the human has
+            // already pressed `remove` on; `next_confirm` is `Some(new value)` only when this frame moved
+            // it, which keeps "nothing happened" distinguishable from "cleared".
+            let confirm = self.stopping.confirm_remove.clone();
+            let mut next_confirm: Option<Option<String>> = None;
             egui::ScrollArea::vertical()
                 .id_salt("breakpoint-rows")
                 .max_height(220.0)
@@ -2195,11 +2202,45 @@ impl Panels<'_> {
                                     stopping::breakpoint_enable_params(&r.handle, on),
                                 ));
                             }
-                            if ui.small_button("✕").clicked() {
-                                gesture = Some((
-                                    stopping::BREAKPOINT_CLEAR,
-                                    stopping::breakpoint_clear_params(&r.handle),
-                                ));
+                            // ⚑ **Two presses, and a word.** This is the control that destroyed a
+                            // breakpoint under a UX seat who thought it was the tick-box: it drew as a
+                            // hollow box (see [`REMOVE_LABEL`]) 36 px from a real one, and it took effect
+                            // on the first click with no tooltip, no confirmation and no undo. Both halves
+                            // are fixed here, because a legible label on a control that still fires
+                            // instantly only narrows the accident.
+                            if stopping::confirming(confirm.as_deref(), &r.handle) {
+                                if ui
+                                    .small_button(
+                                        egui::RichText::new(REMOVE_CONFIRM_LABEL)
+                                            .color(ui.visuals().error_fg_color),
+                                    )
+                                    .on_hover_text(
+                                        "emulator/breakpoint_clear on this handle alone. It does not \
+                                         come back: re-arming the same address makes a NEW breakpoint, \
+                                         with a new handle and `hits` at zero. To keep the row and stop \
+                                         it halting the machine, untick it instead.",
+                                    )
+                                    .clicked()
+                                {
+                                    gesture = Some((
+                                        stopping::BREAKPOINT_CLEAR,
+                                        stopping::breakpoint_clear_params(&r.handle),
+                                    ));
+                                    next_confirm = Some(None);
+                                }
+                                if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
+                                    next_confirm = Some(None);
+                                }
+                            } else if ui
+                                .small_button(REMOVE_LABEL)
+                                .on_hover_text(
+                                    "Clear this breakpoint. Asks once more before it does, because it \
+                                     cannot be undone. The tick-box to the left is the one that turns a \
+                                     breakpoint OFF and keeps it.",
+                                )
+                                .clicked()
+                            {
+                                next_confirm = Some(Some(r.handle.clone()));
                             }
                             let text = egui::RichText::new(r.summary()).monospace();
                             // A disabled row is dimmed, from `enabled` — the same field the word in the
@@ -2213,6 +2254,9 @@ impl Panels<'_> {
                         });
                     }
                 });
+            if let Some(v) = next_confirm {
+                self.stopping.confirm_remove = v;
+            }
         }
 
         if let Some((method, params)) = gesture {
@@ -2340,6 +2384,10 @@ impl Panels<'_> {
         // --- the armed watches ---
         if !view.watches.is_empty() {
             ui.separator();
+            // Read out and written back after the closure, exactly as in `breakpoints` above. The two tabs
+            // share the field and cannot collide: the handles are the server's own `b…`/`w…` spellings.
+            let confirm = self.stopping.confirm_remove.clone();
+            let mut next_confirm: Option<Option<String>> = None;
             egui::ScrollArea::vertical()
                 .id_salt("watch-rows")
                 .max_height(160.0)
@@ -2347,19 +2395,44 @@ impl Panels<'_> {
                     for row in &view.watches {
                         let w = &row.report;
                         ui.horizontal(|ui| {
-                            if ui
-                                .small_button("✕")
+                            // ⚑ **The same word, the same two presses, as Breakpoints.** This control was
+                            // the *first* thing in the row and there is no tick-box here at all, so the
+                            // hollow box it used to draw read as this tab's on/off switch while it was in
+                            // fact this tab's delete. The remedy for that is a word, not a font.
+                            if stopping::confirming(confirm.as_deref(), &row.handle) {
+                                if ui
+                                    .small_button(
+                                        egui::RichText::new(REMOVE_CONFIRM_LABEL)
+                                            .color(ui.visuals().error_fg_color),
+                                    )
+                                    .on_hover_text(
+                                        "emulator/watchpoint_clear. The watch goes and does not come \
+                                         back; its recorded HITS stay, deliberately, because a \
+                                         destructive clear would let one client erase another's \
+                                         evidence. The headline above changes to STOPPED.",
+                                    )
+                                    .clicked()
+                                {
+                                    gesture = Some((
+                                        stopping::WATCHPOINT_CLEAR,
+                                        stopping::watch_clear_params(&row.handle),
+                                    ));
+                                    next_confirm = Some(None);
+                                }
+                                if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
+                                    next_confirm = Some(None);
+                                }
+                            } else if ui
+                                .small_button(REMOVE_LABEL)
                                 .on_hover_text(
-                                    "emulator/watchpoint_clear. The watch goes; its recorded HITS stay, \
-                                     deliberately: a destructive clear would let one client erase \
-                                     another's evidence. The headline above changes to STOPPED.",
+                                    "Clear this watch. Asks once more before it does, because it cannot \
+                                     be undone. This tab has no off switch: a watch is armed or it is \
+                                     gone, which is why the word here is the same one Breakpoints uses \
+                                     for its destructive control and not for its tick-box.",
                                 )
                                 .clicked()
                             {
-                                gesture = Some((
-                                    stopping::WATCHPOINT_CLEAR,
-                                    stopping::watch_clear_params(&row.handle),
-                                ));
+                                next_confirm = Some(Some(row.handle.clone()));
                             }
                             ui.monospace(format!(
                                 "{:<4} {:?} {}..={}  {:?}  matched {}{}{}",
@@ -2382,6 +2455,9 @@ impl Panels<'_> {
                         });
                     }
                 });
+            if let Some(v) = next_confirm {
+                self.stopping.confirm_remove = v;
+            }
         }
 
         // --- the hit log ---
@@ -4615,6 +4691,35 @@ pub const RELOAD_ROM: &str = "emulator/reload_rom";
 pub const PAUSE_LABEL: &str = "⏸ pause";
 pub const RESUME_LABEL: &str = "▶ resume";
 pub const STEP_LABEL: &str = "⏭ step";
+
+/// ⚑ **The destructive per-row control is a WORD, and the same word in every tab that has one.**
+///
+/// It used to be `\u{2715}` — a sensible delete icon that **no face in egui's bundled set carries**, so
+/// the whole label drew as the replacement box. In Breakpoints that box landed 36 px right of a real
+/// tick-box, which is what an unticked tick-box looks like; a UX seat destroyed a breakpoint with it while
+/// trying to *re-enable* one, before it knew the control existed. In Watchpoints the same box was the
+/// **first** control in a row with no tick-box at all, so one glyph meant *disable* in one tab and *delete
+/// forever* in the next.
+///
+/// **A word rather than a bundled font, deliberately.** Shipping a face that covers `\u{2715}` would fix
+/// the drawing and leave the ambiguity exactly where it was: an icon that reads as "off" in one tab and
+/// "gone" in the other is a wrong meaning, not a missing glyph, and no font can correct it. The glyph half
+/// is separately guarded by `screen::tests::every_string_literal_the_player_can_show_is_drawable`, which
+/// is what makes the *next* icon safe; this constant is what makes this control legible.
+pub const REMOVE_LABEL: &str = "remove";
+
+/// The second press, after [`REMOVE_LABEL`] has armed a row.
+///
+/// **Confirmation and not undo, and the choice is not a shortcut.** Re-adding a cleared breakpoint is one
+/// `breakpoint_add` away, but what comes back is a **new** row: a fresh handle, and `hits` reset to zero.
+/// A row wearing the old row's clothes while carrying none of its evidence is a believable wrong answer,
+/// and this surface's whole rule about `hits` is that it never resets a count. So the destructive gesture
+/// is made deliberate instead of reversible, and the irreversibility is stated on the hover rather than
+/// papered over.
+pub const REMOVE_CONFIRM_LABEL: &str = "confirm remove";
+
+/// Beside [`REMOVE_CONFIRM_LABEL`], so the armed state has a way out that is not "press the other one".
+pub const REMOVE_CANCEL_LABEL: &str = "cancel";
 
 /// The name in the top bar's left corner, and the window manager's title for this window
 /// (`ViewportBuilder::with_title` in `main.rs`). One string for both, so the title `screen_text` reports

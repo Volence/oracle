@@ -112,7 +112,7 @@ impl Live {
 /// rather than from a JSON page of it.
 pub struct BreakRow {
     /// The opaque handle, spelled by [`breakpoint_wire_id`] — **the server's own function**, so the string
-    /// a row shows is byte-for-byte the string its ✕ sends back.
+    /// a row shows is byte-for-byte the string its `remove` sends back.
     pub handle: String,
     /// `hex::addr`'s spelling, which is the one on the wire — **the only spelling of this address the row
     /// carries.** A raw `u32` beside it would invite a second `{:08X}` at some call site, and two
@@ -212,7 +212,7 @@ pub fn breakpoints_live(set: &Breakpoints) -> Live {
 /// One armed watch, as the panel draws it.
 pub struct WatchRow {
     /// The opaque handle, spelled by [`watch_wire_id`] — **the server's own function**, so the string a
-    /// row shows is byte-for-byte the string its ✕ sends back. A `format!("w{}", …)` written in the panel
+    /// row shows is byte-for-byte the string its `remove` sends back. A `format!("w{}", …)` written in the panel
     /// would be a second spelling of one fact, agreeing right up until it did not, in the one place where
     /// being wrong retires somebody else's watch.
     pub handle: String,
@@ -223,7 +223,7 @@ pub struct WatchRow {
 /// Everything the Watchpoints tab draws for one repaint: the armed watches, the hit log, and the three
 /// aggregate counters that make a *negative* finding readable.
 pub struct WatchView {
-    /// The armed watches, each paired with the handle its ✕ sends back.
+    /// The armed watches, each paired with the handle its `remove` sends back.
     pub watches: Vec<WatchRow>,
     /// The retained hit log, newest last.
     pub hits: Vec<WatchHit>,
@@ -899,6 +899,20 @@ pub struct Panel {
     pub bp_label: String,
     pub bp_note: Option<crate::memory::Line>,
 
+    /// ⚑ **The handle whose `remove` has been pressed once and not yet confirmed** — the whole of the
+    /// confirmation step, and the reason it is one field rather than two.
+    ///
+    /// Breakpoint and watch handles are spelled by the **server's** `breakpoint_wire_id` / `watch_wire_id`
+    /// (`b0`, `w0`), which never collide, so one field cannot arm a row in the other tab by accident even
+    /// when `egui_dock` has both on screen at once. A `bool` per panel could: two panels each holding
+    /// "yes, confirming" says nothing about *which row*, and a list that has moved under it — a peer
+    /// clearing a breakpoint between repaints — would land the confirmation on whatever now occupies that
+    /// position. The handle is the identity, so a row that has gone simply stops matching.
+    ///
+    /// **Not a copy of the list** (R2): it is one identifier the human pointed at, and it is compared
+    /// against the `Host`'s freshly-read rows rather than standing in for them.
+    pub confirm_remove: Option<String>,
+
     pub w_target: String,
     /// A **decimal** byte count. See [`watch_add_params`] for why the panel parses it rather than passing
     /// the text through.
@@ -916,12 +930,31 @@ pub struct Panel {
     pub prof_note: Option<crate::memory::Line>,
 }
 
+/// **Is THIS row the one whose `remove` has been pressed once?** — the whole of the two-press rule, in one
+/// place, because both stopping tabs draw it and a rule written twice is a rule that can disagree with
+/// itself over which row is about to be destroyed.
+///
+/// `confirm` is [`Panel::confirm_remove`]; `handle` is the row's, spelled by the server. Row identity is
+/// the handle and nothing else — never a row index, which moves the instant a peer clears something, and
+/// never a per-tab flag, which cannot say *which* row.
+///
+/// ⚑ **This is safe only because handles are never re-issued**, and that is a fact about
+/// `oracle_aether::breakpoints`, not about this module: `Breakpoints::clear` leaves `next_id` untouched,
+/// so a confirmation left armed on a row that has since gone can never match a row that arrives later. If
+/// that ever changes, a stale confirmation would greet a brand-new breakpoint already armed for
+/// destruction, one click from gone. Pinned in
+/// [`a_stale_confirmation_cannot_arm_a_row_it_was_never_pointed_at`](tests::a_stale_confirmation_cannot_arm_a_row_it_was_never_pointed_at).
+pub fn confirming(confirm: Option<&str>, handle: &str) -> bool {
+    confirm == Some(handle)
+}
+
 impl Default for Panel {
     fn default() -> Self {
         Panel {
             bp_target: String::new(),
             bp_label: String::new(),
             bp_note: None,
+            confirm_remove: None,
             w_target: String::new(),
             // The handler's own default is 1, and the box shows it rather than being blank: a length box
             // whose emptiness silently means "one byte" is a box that lies by omission.
@@ -991,6 +1024,86 @@ mod tests {
         assert!(
             !memory::is_served("emulator/breakpoint_add_but_spelled_wrong"),
             "`is_served` answered true for a method that cannot exist, so the loop above witnesses nothing"
+        );
+    }
+
+    /// ★ **A confirmation left armed on a row that is gone cannot arm a row that arrives later.**
+    ///
+    /// The destructive control in both stopping tabs is two presses, and the memory between them is a
+    /// **handle** ([`Panel::confirm_remove`]). That is only safe while the server never re-issues one: if
+    /// `b0` could come back, a human who pressed `remove` on the old `b0`, thought better of it, and left
+    /// the tab would return to find a *different* breakpoint already showing `confirm remove`, one click
+    /// from destroyed — the exact accident the two presses were added to prevent, reintroduced by the fix.
+    ///
+    /// The property lives in `oracle_aether::breakpoints` (`clear` leaves `next_id` untouched), so this
+    /// row asserts it **through** [`breakpoints`] rather than restating it: the handles come out of the
+    /// same view the panel draws, spelled by the same `breakpoint_wire_id`.
+    ///
+    /// The three assertions are ordered so each one means something. First the premise — the handle really
+    /// was the live row's, so the scenario is reachable; then the property; then [`confirming`] itself
+    /// answering `false`, which is the sentence the panel actually acts on.
+    #[test]
+    fn a_stale_confirmation_cannot_arm_a_row_it_was_never_pointed_at() {
+        let mut set = Breakpoints::new();
+        let first = breakpoint_wire_id(set.add(0x400, true, String::new()));
+        let view = breakpoints(&set, None);
+        assert_eq!(
+            view.rows
+                .iter()
+                .map(|r| r.handle.clone())
+                .collect::<Vec<_>>(),
+            vec![first.clone()],
+            "premise: the handle a human would have pressed `remove` on is this row's"
+        );
+        assert!(
+            confirming(Some(&first), &first),
+            "premise: a confirmation pointed at a live row DOES arm it, so the assertion below is a \
+             disagreement rather than a function that answers false for everything"
+        );
+
+        // The row goes — by this human, by a peer, or by `clear all`; the panel cannot tell which, and
+        // the stale confirmation is identical in all three.
+        assert_eq!(set.clear(), 1);
+        let second = breakpoint_wire_id(set.add(0x400, true, String::new()));
+        let view = breakpoints(&set, None);
+
+        assert_ne!(
+            second, first,
+            "a cleared breakpoint's handle has been RE-ISSUED to a new one. `Breakpoints::clear` no \
+             longer leaves `next_id` untouched, and the two-press remove in both stopping tabs is now \
+             unsafe: a confirmation left armed on the old row greets the new one already armed"
+        );
+        assert!(
+            view.rows
+                .iter()
+                .all(|r| !confirming(Some(&first), &r.handle)),
+            "a stale confirmation matched a row it was never pointed at: {:?}",
+            view.rows
+                .iter()
+                .map(|r| r.handle.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// **The two-press rule is scoped to one row**, which is the other half of the same design: pressing
+    /// `remove` on one breakpoint must not put every other row one click from gone.
+    #[test]
+    fn arming_one_rows_remove_leaves_every_other_row_asking() {
+        let mut set = Breakpoints::new();
+        let a = breakpoint_wire_id(set.add(0x400, true, String::new()));
+        let b = breakpoint_wire_id(set.add(0x500, true, String::new()));
+        let view = breakpoints(&set, None);
+        assert_eq!(view.rows.len(), 2, "premise: two rows to tell apart");
+        let armed: Vec<&String> = view
+            .rows
+            .iter()
+            .map(|r| &r.handle)
+            .filter(|h| confirming(Some(&a), h))
+            .collect();
+        assert_eq!(
+            armed,
+            vec![&a],
+            "exactly the row whose `remove` was pressed shows its confirmation, and {b} is not it"
         );
     }
 

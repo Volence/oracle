@@ -555,4 +555,289 @@ mod tests {
              makes the two assertions above a disagreement rather than a dead API"
         );
     }
+
+    /// ★ **Every character this window can put on the glass draws whole — no hollow boxes.**
+    ///
+    /// The row above proves the *instrument*; this one turns it on the crate. It is the player's answer to
+    /// `oracle-frontend`'s `every_string_literal_the_frontend_can_show_is_drawable`, and it exists because
+    /// the hand-written list in the row above is a **list**: it covers the top bar, and the top bar is not
+    /// where the defect was.
+    ///
+    /// ⚑ **The defect this row was written for.** The Breakpoints and Watchpoints tabs drew their delete
+    /// button as `\u{2715}`, a sensible delete icon that **no face in egui's bundled set carries**, so the
+    /// whole label rendered as the replacement box — and in Breakpoints it landed 36 px right of a real
+    /// tick-box, where an unticked box is exactly what it looks like. A UX seat destroyed a breakpoint with
+    /// it while trying to re-enable one, before it knew the control existed. A list-shaped guard could not
+    /// have caught that, because nobody would have thought to put a delete button's glyph on the list.
+    ///
+    /// ⚑ **And it immediately found a second one nobody had reported**: `rom_open.rs`'s `"\u{2191} up"`.
+    /// `\u{2191}` is drawable in the **monospace** family and NOT in the proportional one, and that button
+    /// is proportional — which is the whole reason this row asks about **both** families rather than
+    /// guessing which one a literal will be drawn in. A literal in this crate reaches the glass through
+    /// `ui.label`, `ui.button`, `ui.monospace`, a hover tooltip, or as a `format!` argument to any of them,
+    /// and nothing at the literal says which. Asking both is the only rule that is a fact about the string
+    /// rather than a guess about its call site.
+    ///
+    /// **Derived, not listed.** The modules come from `main.rs`'s own `mod` declarations, so a file that is
+    /// not compiled in cannot smuggle a literal into the measurement or hide one from it; the literals come
+    /// from a lexer over each module's production region (everything before its first `#[cfg(test)]`), so a
+    /// label added next week is measured without anyone remembering to add it here. Format placeholders are
+    /// stripped, because what reaches the glass is the substituted value.
+    ///
+    /// **Red-first, on the pristine tree** — no mutation was needed, because the defect was live:
+    ///
+    /// ```text
+    /// 5 undrawable literal(s), of 1792 lexed across 27 modules:
+    ///   ui.rs: "\u{2715}" -> U+2715 is a hollow box in the proportional family
+    ///   ui.rs: "\u{2715}" -> U+2715 is a hollow box in the monospace family
+    ///   ui.rs: "\u{2715}" -> U+2715 is a hollow box in the proportional family
+    ///   ui.rs: "\u{2715}" -> U+2715 is a hollow box in the monospace family
+    ///   rom_open.rs: "\u{2191} up" -> U+2191 is a hollow box in the proportional family
+    /// ```
+    ///
+    /// Five rows for three sites, because each character is asked of both families and `\u{2715}` fails in
+    /// both. The obvious repair for the third one was also a box: `\u{25B2}` is undrawable in the
+    /// proportional family on a build where `\u{25B6}` draws, which is how this row earned its second
+    /// finding — the substitute was measured rather than assumed.
+    #[test]
+    fn every_string_literal_the_player_can_show_is_drawable() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // The module tree from the crate's own `mod` declarations, the way rustc resolves them: `mod x;`
+        // is `x.rs` or `x/mod.rs`, and the walk follows declarations into subdirectories. An inline
+        // `mod x { .. }` has no `;` and is skipped here, because its body is already inside the file.
+        let mut modules: Vec<std::path::PathBuf> = Vec::new();
+        let mut pending: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+            vec![(root.join("main.rs"), root.clone())];
+        while let Some((file, dir)) = pending.pop() {
+            let src = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                panic!(
+                    "cannot read {}: {e} (a `mod` with a #[path]?)",
+                    file.display()
+                )
+            });
+            for line in src.lines() {
+                let Some(rest) = line.trim().strip_prefix("mod ") else {
+                    continue;
+                };
+                let Some(name) = rest.strip_suffix(';') else {
+                    continue;
+                };
+                let name = name.trim();
+                let flat = dir.join(format!("{name}.rs"));
+                let nested = dir.join(name).join("mod.rs");
+                if flat.is_file() {
+                    pending.push((flat, dir.clone()));
+                } else if nested.is_file() {
+                    pending.push((nested, dir.join(name)));
+                } else {
+                    panic!(
+                        "`mod {name};` in {} resolves to neither {} nor {}",
+                        file.display(),
+                        flat.display(),
+                        nested.display()
+                    );
+                }
+            }
+            modules.push(file);
+        }
+        assert!(
+            modules.len() > 10,
+            "COULD NOT MEASURE: only {} modules found, so the `mod` scan is broken and not the font",
+            modules.len()
+        );
+
+        // The lexer, proven on planted samples before it is trusted on the crate. Both halves earn their
+        // lines: the first is the literal this row exists for, the second is a line whose lifetime, char
+        // literal and trailing comment are what break a scanner that treats every quote as a boundary.
+        assert_eq!(
+            string_literals("if ui.small_button(\"\u{2715}\").clicked() {"),
+            vec!["\u{2715}".to_string()],
+            "the lexer does not recover a plain literal"
+        );
+        assert_eq!(
+            string_literals("fn f(s: &'static str) { let q = '\"'; g(\"kept\"); } // \"dropped\""),
+            vec!["kept".to_string()],
+            "the lexer is confused by a lifetime, a quote char literal, or a line comment"
+        );
+
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        // A real frame, so the fonts exist: `Context::fonts*` panics before the first `run`.
+        let mut out = ctx.run_ui(raw, |ui| {
+            ui.monospace("GOVERNOR");
+            ui.strong("oracle-player");
+        });
+        out.textures_delta.clear();
+        let mut g = Glyphs::new(&ctx);
+
+        // ⚑ **The instrument's own controls, run here rather than borrowed from the row above.** A context
+        // that draws nothing would report every character below as a box, and a context whose references
+        // have become drawable would report every character as fine. Both are failures of the measurement
+        // that look like results, in opposite directions.
+        for mono in [false, true] {
+            assert_eq!(
+                g.drawable('A', mono),
+                Some(true),
+                "positive control (mono={mono}): this build cannot draw the letter A, so nothing below is \
+                 a measurement"
+            );
+            assert_eq!(
+                g.drawable(GLYPH_REFERENCES[0], mono),
+                Some(false),
+                "negative control (mono={mono}): the reference character is no longer a hollow box, so \
+                 this row can no longer tell a box from a glyph"
+            );
+        }
+
+        let mut checked = 0usize;
+        let mut defects: Vec<String> = Vec::new();
+        for path in &modules {
+            let file = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            let src = std::fs::read_to_string(path).expect("read a module the walk already opened");
+            // Production only: everything up to the module's first `#[cfg(test)]`. An assertion message is
+            // read by a developer in a terminal, not by a person in the window.
+            let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+            for lit in string_literals(prod) {
+                checked += 1;
+                for c in lit.chars() {
+                    for mono in [false, true] {
+                        let family = if mono { "monospace" } else { "proportional" };
+                        match g.drawable(c, mono) {
+                            Some(true) => {}
+                            Some(false) => defects.push(format!(
+                                "  {file}: {lit:?} -> U+{:04X} is a hollow box in the {family} family",
+                                c as u32
+                            )),
+                            // Loud on unmeasurable rather than silent: a family this build cannot measure
+                            // is not a family this build has been shown to draw.
+                            None => defects.push(format!(
+                                "  {file}: {lit:?} -> U+{:04X} is UNMEASURABLE in the {family} family",
+                                c as u32
+                            )),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 400,
+            "COULD NOT MEASURE: only {checked} literals lexed across {} modules, so the lexer is broken \
+             and not the font",
+            modules.len()
+        );
+        assert!(
+            defects.is_empty(),
+            "{} undrawable literal(s), of {checked} lexed across {} modules:\n{}",
+            defects.len(),
+            modules.len(),
+            defects.join("\n")
+        );
+    }
+
+    /// The string literals in a chunk of Rust source, unescaped as the compiler would (`\"`, `\\`,
+    /// `\u{..}`, and the backslash-newline continuation), with `{...}` format placeholders removed and
+    /// `\n`/`\t` dropped as line structure rather than glyphs. Line comments are skipped; char literals
+    /// are stepped over so their quotes cannot open a string.
+    ///
+    /// Deliberately small: this is a test aid over one crate's own style, not a Rust lexer, and its caller
+    /// asserts both a planted sample and a floor on what it finds, so a silent miss cannot pass as clean.
+    /// It is a sibling of `oracle-frontend`'s function of the same name, and the duplication is deliberate:
+    /// that crate measures its own 5x7 bitmap table and this one measures a live `egui::Context`, and
+    /// neither crate exposes a library the other could reach.
+    fn string_literals(src: &str) -> Vec<String> {
+        let chars: Vec<char> = src.chars().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '/' && chars.get(i + 1) == Some(&'/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            } else if c == '\'' {
+                // A char literal, or a lifetime. `'\..'` and `'x'` are chars; anything else is a lifetime
+                // and only the quote itself is consumed.
+                if chars.get(i + 1) == Some(&'\\') {
+                    i += 2;
+                    while i < chars.len() && chars[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if chars.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            } else if c == '"' {
+                i += 1;
+                let mut lit = String::new();
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                        match chars.get(i) {
+                            Some('n') | Some('t') | Some('r') | Some('0') => i += 1,
+                            Some('\n') => {
+                                // Continuation: the newline and the next line's indent both vanish.
+                                i += 1;
+                                while i < chars.len() && chars[i].is_whitespace() {
+                                    i += 1;
+                                }
+                            }
+                            Some('u') => {
+                                let start = i + 2;
+                                let mut end = start;
+                                while end < chars.len() && chars[end] != '}' {
+                                    end += 1;
+                                }
+                                let hex: String = chars[start..end].iter().collect();
+                                let cp =
+                                    u32::from_str_radix(&hex, 16).expect("\\u{..} escape is hex");
+                                lit.push(char::from_u32(cp).expect("\\u{..} escape is a scalar"));
+                                i = end + 1;
+                            }
+                            Some(&e) => {
+                                lit.push(e);
+                                i += 1;
+                            }
+                            None => {}
+                        }
+                    } else if chars[i] == '{' {
+                        // A format placeholder: what reaches the glass is the substituted value, not this.
+                        // `{{` is a literal brace and is kept.
+                        if chars.get(i + 1) == Some(&'{') {
+                            lit.push('{');
+                            i += 2;
+                        } else {
+                            while i < chars.len() && chars[i] != '}' && chars[i] != '"' {
+                                i += 1;
+                            }
+                            if chars.get(i) == Some(&'}') {
+                                i += 1;
+                            }
+                        }
+                    } else {
+                        lit.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                i += 1;
+                if !lit.is_empty() {
+                    out.push(lit);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
 }
