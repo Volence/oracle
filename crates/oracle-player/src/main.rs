@@ -1121,6 +1121,26 @@ impl Loop {
         // was minifb-specific. Read before the bar draws so a dropped image is acted on in the frame it
         // arrived rather than the one after.
         rom_open.handle_drops(&ctx, machine, bus);
+        // ⚑ **`Esc` leaves a placement mode**, and it is read here beside the other two chords because it
+        // is the same kind of thing: a keystroke that must be consumed before a widget can have it.
+        //
+        // The owner's finding, 2026-09-09: armed spawn made every click on the picture place an object,
+        // and his own described way out was to click back in the Spawn panel — two gestures, and behind
+        // a tab strip at the moment he wants it, because when he is playing the visible tab is the
+        // picture. One key, always available, named on the picture itself by
+        // `screen_pick::Panel::armed_notice`.
+        //
+        // `consume_key` rather than a raw read for the palette's reason, and only when
+        // `input::wants_disarm` says the keystroke is ours — that predicate is where the rule lives and
+        // where it is asserted; this line is the wiring.
+        if crate::input::wants_disarm(
+            screen_panel.is_armed(),
+            ctx.egui_wants_keyboard_input(),
+            ctx.input_mut(|i| i.key_pressed(egui::Key::Escape)),
+        ) {
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            screen_panel.disarm();
+        }
         egui::Panel::top("bar").show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.strong(ui::APP_NAME);

@@ -290,7 +290,14 @@ impl Panels<'_> {
     /// this draws. This function decides where the picture goes and what the pointer did, and nothing else.
     fn screen(&mut self, ui: &mut egui::Ui) {
         let Some(tex) = self.tex else {
-            ui.centered_and_justified(|ui| ui.label("no frame yet"));
+            ui.label("no frame yet");
+            // ⚑ **The one branch where the readout is laid out rather than overlaid**, and it is stated
+            // rather than silent. The overlay below exists so that a click's answer cannot move the
+            // picture; with no picture there is nothing to move, and a readout painted over an empty
+            // pane would be floating on nothing. So the card comes back here, and only here.
+            if let Some(r) = self.screen.readout() {
+                readout_card(ui, r);
+            }
             return;
         };
         // ⚑ **Retire a picture whose art has been replaced, immediately before the ghost can draw it.**
@@ -337,6 +344,24 @@ impl Panels<'_> {
         // same condition as "a click here would place one", so the ghost is never a claim about a gesture
         // that is not available.
         if self.screen.is_armed() {
+            // ⚑ **The armed statement, ON THE PICTURE, and unconditional inside this branch.**
+            //
+            // The owner's finding, 2026-09-09: *"With spawn, if I want to click into the window to move
+            // the character around (even if it shows nothing) it'll spawn something there."* The ghost
+            // below was the only thing this window drew inside the picture while armed, and it is
+            // conditional twice over — a pointer that is over the picture *and* a preview that is
+            // drawable. Both of the states he described fall outside it, so the picture that ate his
+            // click looked exactly like an unarmed one. This does not: it is drawn from
+            // [`screen_pick::Panel::is_armed`] and nothing else, which is the same predicate the click
+            // itself reads.
+            //
+            // The frame is what carries it at a glance and the chip is what makes it say *what* and *how
+            // to get out*; neither is decoration, and the wording is
+            // [`screen_pick::Panel::armed_notice`]'s, derived from the badge so the strip and the glass
+            // cannot name two different modes.
+            if let Some(notice) = self.screen.armed_notice() {
+                armed_frame(ui, image_rect, &notice);
+            }
             if let (Some(p), Some(pos)) = (
                 self.screen
                     .preview()
@@ -345,6 +370,27 @@ impl Panels<'_> {
             ) {
                 ghost(ui, p, image_rect, pos, size.x / src.x);
             }
+        }
+
+        // ⚑ **The last click's answer, OVER the picture and not above it.**
+        //
+        // The owner's second finding, 2026-09-09: *"whenever I place something this text box comes up and
+        // shifts the window for the game which doesn't feel great or look good."* It was a card in
+        // [`Panels::screen_controls`], which is drawn **above** the picture in the same vertical stack, so
+        // [`Panels::screen`] got `available_size()` minus the card and the picture jumped down by the
+        // height of a sentence the moment a click produced one — and jumped back the next time the
+        // sentence was shorter.
+        //
+        // Deleting it was never an option: it is the standing answer to the click, and the whole reason
+        // this panel is honest about a refusal. So it moves onto the glass, where it costs no layout at
+        // all: [`overlay_block`] paints through `Painter` against a rect that was already allocated, so
+        // there is no arrangement in which it can move anything.
+        //
+        // **Bottom left**, opposite the armed notice at the top: the two are simultaneously present on
+        // every placement, and a corner each is what keeps them from stacking into the single tall block
+        // that is what he was complaining about in the first place.
+        if let Some(r) = self.screen.readout() {
+            readout_overlay(ui, image_rect, r);
         }
 
         if let (true, Some(pos)) = (hit.clicked(), hit.interact_pointer_pos()) {
@@ -541,50 +587,6 @@ impl Panels<'_> {
             };
             ui.colored_label(colour, &n.text);
         }
-        if let Some(r) = self.screen.readout() {
-            // ⚑ **The last click's answer, laid out in three weights instead of one wrapped block.**
-            //
-            // The three parts are `screen_pick::Readout`'s own fields, handed over by whoever composed
-            // them: `pick::Pick` already carries the sentence and the addressing separately, and the
-            // outcome is this panel's own count. Nothing here recovers structure by looking at the text,
-            // which is the same rule that keeps the colour on `refused` rather than on a `"REFUSED"`
-            // prefix.
-            //
-            // The card is what makes it findable at all. A standing readout drawn as loose text under a
-            // column of controls reads as one more control's label, which is how a correct answer ends up
-            // unread.
-            //
-            // Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
-            let refused = r.refused;
-            card(ui, |ui| {
-                let head = if refused {
-                    ui.visuals().error_fg_color
-                } else {
-                    ui.visuals().strong_text_color()
-                };
-                ui.label(egui::RichText::new(&r.head).color(head));
-                if let Some(d) = &r.detail {
-                    // The addressing recedes and goes monospace: it is what a reader checks the sentence
-                    // against, in the spelling they would compare with a tool's reply.
-                    ui.label(
-                        egui::RichText::new(d)
-                            .monospace()
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                }
-                if let Some(o) = &r.outcome {
-                    ui.label(
-                        egui::RichText::new(o)
-                            .text_style(egui::TextStyle::Small)
-                            .color(if refused {
-                                ui.visuals().error_fg_color
-                            } else {
-                                crate::theme::SUCCESS
-                            }),
-                    );
-                }
-            });
-        }
     }
 
     /// **The Spawn tab** — arm the mode, then choose the archetype a click on the picture places.
@@ -633,7 +635,15 @@ impl Panels<'_> {
             if self.screen.object_armed() {
                 if ui
                     .button("spawn: off")
-                    .on_hover_text("a click on the picture goes back to arming a watch")
+                    // Names the key as well as the button, because the key is the one that is reachable
+                    // from the picture — which is where a person is when they want out. The word for it
+                    // is `screen_pick::DISARM_KEY_LABEL`, so this and the notice on the glass cannot
+                    // name two different keys.
+                    .on_hover_text(format!(
+                        "a click on the picture goes back to arming a watch. {} does the same from \
+                         anywhere in this window.",
+                        screen_pick::DISARM_KEY_LABEL
+                    ))
                     .clicked()
                 {
                     self.screen.disarm_spawn();
@@ -1809,12 +1819,29 @@ impl Panels<'_> {
         card(ui, |ui| {
             fact_grid(ui, "objects-layout", &pool.layout_facts());
         });
-        ui.small(
-            "Every address here is read out of the loaded listing: the base from Object_RAM/Player_1, \
-             the stride from Player_2 minus Player_1, the count from Object_RAM_End, and the ring \
-             buffer below from Ring_Count minus Ring_Buffer. Nothing is hardcoded, because an \
-             object-table address is a fact about one build.",
-        );
+        // ⚑ **Folded, not deleted, and this is the only prose on the tab that is.** The owner's fourth
+        // finding is about reading the tables — *"look how difficult objects is to read"*, *"especially
+        // if it's not fully open"* — and on a short pane four lines of derivation sat between the card
+        // and the first table he came here for.
+        //
+        // It is a derivation a reader needs **once**, when they first doubt the addresses, and never
+        // again in a session; that is exactly the shape a collapsing header is for, and it is why every
+        // other line on this tab stays where it is. A refusal, a warning or a count is a fact about THIS
+        // frame and none of them may be behind a click.
+        egui::CollapsingHeader::new(
+            egui::RichText::new("where these addresses come from")
+                .text_style(egui::TextStyle::Small)
+                .color(ui.visuals().weak_text_color()),
+        )
+        .id_salt("objects-layout-why")
+        .show(ui, |ui| {
+            ui.small(
+                "Every address here is read out of the loaded listing: the base from \
+                 Object_RAM/Player_1, the stride from Player_2 minus Player_1, the count from \
+                 Object_RAM_End, and the ring buffer below from Ring_Count minus Ring_Buffer. \
+                 Nothing is hardcoded, because an object-table address is a fact about one build.",
+            );
+        });
 
         // --- the player section: the same decoder, the same layout, its own refusal ---
         ui.add_space(SECTION_GAP);
@@ -2607,6 +2634,15 @@ const COL_GUTTER: f32 = 14.0;
 /// being a name and the hover is the only place it exists.
 const NAME_COL_FLOOR: f32 = 120.0;
 
+/// The gap between the two columns of a selectable list, and the margin its band carries past the
+/// glyphs.
+///
+/// ⚑ Owed to the owner's 2026-09-09 reading of a subtype row as `$20Down_Red`: the value and the name
+/// were two labels in a `horizontal` whose `item_spacing.x` was **zero**, so a hex value and a symbol
+/// name were drawn touching. Smaller than [`COL_GUTTER`] because these are two columns rather than six
+/// and the list is narrow, but never zero, which is the whole point.
+const LIST_GUTTER: f32 = 10.0;
+
 /// The narrowest a [`StatShape::Tile`]'s **content** may be, so a row of tiles is a row of like-sized
 /// boxes rather than three boxes shrink-wrapped to three different labels.
 ///
@@ -3106,6 +3142,187 @@ fn preview_texture(
     Some(tex)
 }
 
+/// Padding inside an overlay chip drawn on the picture, and the inset of the chip from the picture's own
+/// edge. One constant, so the two chips this file draws over the game cannot sit at two different insets.
+const OVERLAY_PAD: f32 = 6.0;
+
+/// **Paint a block of text over the picture, at one of its corners, on its own panel.**
+///
+/// The one thing this exists to get right is that it takes **no layout space**: everything is painted
+/// through [`egui::Painter`] against a rect that was already allocated for the image, so nothing it draws
+/// can move the picture. That is the whole of the owner's second finding — *"whenever I place something
+/// this text box comes up and shifts the window for the game"* — and it is a property of the mechanism
+/// here rather than of any caller's care.
+///
+/// `lines` are drawn top to bottom in the order given, each with its own face and colour, wrapped to the
+/// picture's width less the padding on both sides. Returns the rect it covered so a caller can stack a
+/// second block clear of the first.
+fn overlay_block(
+    ui: &egui::Ui,
+    picture: egui::Rect,
+    lines: &[(String, egui::FontId, egui::Color32)],
+    top: bool,
+) -> egui::Rect {
+    if lines.is_empty() {
+        return egui::Rect::NOTHING;
+    }
+    let wrap = (picture.width() - OVERLAY_PAD * 4.0).max(40.0);
+    let galleys: Vec<_> = lines
+        .iter()
+        .map(|(t, face, colour)| {
+            (
+                ui.painter().layout(t.clone(), face.clone(), *colour, wrap),
+                *colour,
+            )
+        })
+        .collect();
+    let w = galleys
+        .iter()
+        .map(|(g, _)| g.size().x)
+        .fold(0.0_f32, f32::max);
+    let h: f32 = galleys.iter().map(|(g, _)| g.size().y).sum::<f32>()
+        + OVERLAY_PAD * 0.5 * (galleys.len().saturating_sub(1)) as f32;
+    let size = egui::vec2(w + OVERLAY_PAD * 2.0, h + OVERLAY_PAD * 2.0);
+    let min = if top {
+        picture.min + egui::vec2(OVERLAY_PAD, OVERLAY_PAD)
+    } else {
+        egui::pos2(
+            picture.min.x + OVERLAY_PAD,
+            picture.max.y - OVERLAY_PAD - size.y,
+        )
+    };
+    let panel = egui::Rect::from_min_size(min, size);
+    // Clipped to the picture for [`ghost`]'s reason: this is a statement *about the picture*, and one
+    // painted over the letterbox bars would be a statement about somewhere the machine is not showing.
+    let painter = ui.painter().with_clip_rect(picture);
+    // Opaque enough to read a proportional face against arbitrary game art, and never fully opaque: a
+    // person must be able to see that there is a picture under it.
+    painter.rect_filled(
+        panel,
+        egui::CornerRadius::same(3),
+        egui::Color32::from_black_alpha(215),
+    );
+    let mut y = panel.min.y + OVERLAY_PAD;
+    for (g, colour) in &galleys {
+        let at = egui::pos2(panel.min.x + OVERLAY_PAD, y);
+        painter.galley(at, g.clone(), *colour);
+        y += g.size().y + OVERLAY_PAD * 0.5;
+    }
+    panel
+}
+
+/// **The standing armed statement, drawn inside the picture**: an accent border round the whole of it and
+/// a chip naming the mode and the way out.
+///
+/// See the call site for the finding. The border is not redundant with the chip: the chip is at one
+/// corner and a person aiming at the far side of the picture is not looking at it, whereas an edge is in
+/// peripheral vision wherever the pointer is.
+fn armed_frame(ui: &egui::Ui, picture: egui::Rect, notice: &str) {
+    let painter = ui.painter().with_clip_rect(picture);
+    painter.rect_stroke(
+        picture,
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(2.0, ui.visuals().warn_fg_color),
+        egui::StrokeKind::Inside,
+    );
+    let face = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Small)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(10.0));
+    overlay_block(
+        ui,
+        picture,
+        &[(notice.to_owned(), face, ui.visuals().warn_fg_color)],
+        true,
+    );
+}
+
+/// **The click's standing answer, drawn over the picture at its bottom left.**
+///
+/// The three parts are [`screen_pick::Readout`]'s own fields, handed over by whoever composed them:
+/// `pick::Pick` already carries the sentence and the addressing separately, and the outcome is the
+/// panel's own count. Nothing here recovers structure by looking at the text, which is the same rule that
+/// keeps the colour on `refused` rather than on a `"REFUSED"` prefix.
+///
+/// Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
+fn readout_overlay(ui: &egui::Ui, picture: egui::Rect, r: &screen_pick::Readout) {
+    let style = |s: egui::TextStyle, fallback: f32| {
+        ui.style()
+            .text_styles
+            .get(&s)
+            .cloned()
+            .unwrap_or_else(|| egui::FontId::proportional(fallback))
+    };
+    let body = style(egui::TextStyle::Body, 13.0);
+    let mono = style(egui::TextStyle::Monospace, 12.0);
+    let small = style(egui::TextStyle::Small, 10.0);
+    // Against a picture rather than against the panel, so the head is the theme's own emphasis colour
+    // and not `strong_text_color`, which is tuned for a panel ground and can vanish on light game art.
+    let head_colour = if r.refused {
+        ui.visuals().error_fg_color
+    } else {
+        egui::Color32::WHITE
+    };
+    let mut lines = vec![(r.head.clone(), body, head_colour)];
+    if let Some(d) = &r.detail {
+        // The addressing recedes and goes monospace: it is what a reader checks the sentence against, in
+        // the spelling they would compare with a tool's reply.
+        lines.push((d.clone(), mono, egui::Color32::from_white_alpha(190)));
+    }
+    if let Some(o) = &r.outcome {
+        lines.push((
+            o.clone(),
+            small,
+            if r.refused {
+                ui.visuals().error_fg_color
+            } else {
+                crate::theme::SUCCESS
+            },
+        ));
+    }
+    overlay_block(ui, picture, &lines, false);
+}
+
+/// The same readout **as a laid-out card**, for the one state that has no picture to draw it over.
+///
+/// A second rendering of one fact, which this file otherwise refuses — and it is here because the
+/// alternative is worse: a panel that showed nothing when there is no frame yet would swallow exactly the
+/// refusals a person hits before the first frame. It reads the identical fields in the identical order.
+fn readout_card(ui: &mut egui::Ui, r: &screen_pick::Readout) {
+    let refused = r.refused;
+    let head = r.head.clone();
+    let detail = r.detail.clone();
+    let outcome = r.outcome.clone();
+    card(ui, |ui| {
+        let head_colour = if refused {
+            ui.visuals().error_fg_color
+        } else {
+            ui.visuals().strong_text_color()
+        };
+        ui.label(egui::RichText::new(head).color(head_colour));
+        if let Some(d) = detail {
+            ui.label(
+                egui::RichText::new(d)
+                    .monospace()
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+        if let Some(o) = outcome {
+            ui.label(
+                egui::RichText::new(o)
+                    .text_style(egui::TextStyle::Small)
+                    .color(if refused {
+                        ui.visuals().error_fg_color
+                    } else {
+                        crate::theme::SUCCESS
+                    }),
+            );
+        }
+    });
+}
+
 /// **Draw the preview under the pointer, as a ghost.**
 ///
 /// ⚑ **It must not look like a placed object**, and that is a correctness requirement rather than a taste:
@@ -3282,21 +3499,34 @@ fn text_w(ui: &egui::Ui, face: &egui::FontId, text: &str) -> f32 {
         .x
 }
 
+/// The face a **header** cell is measured and drawn in.
+///
+/// ⚑ One function because the two used to disagree, and that is half of the owner's fourth finding.
+/// [`column_widths`] measured every header in [`egui::TextStyle::Small`] and [`table_cell`] then drew it
+/// in the *cell's* face, which is the body or the monospace face and is larger. A header wider than
+/// anything in its column was therefore laid out in a box measured for a smaller font and ran into its
+/// neighbour. There is now one face, and [`header_cell`] is what draws it.
+fn head_face(ui: &egui::Ui) -> egui::FontId {
+    ui.style()
+        .text_styles
+        .get(&egui::TextStyle::Small)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(10.0))
+}
+
 /// Column widths for `cols` over `cells`: the widest cell in each column, header included.
 ///
 /// The **last** column is left out of that and takes whatever room remains, because it is the name column
 /// and a symbol name has no bound: sized to its widest entry it would push the numeric columns off the
 /// panel, which is the one failure a fixed-column table exists to prevent.
+///
+/// ⚑ **The gutter is NOT folded in here any more.** See [`fit_columns`], which is where the arithmetic
+/// and the reason both live.
 fn column_widths(ui: &egui::Ui, cols: &[objects::Col], cells: &[Vec<String>]) -> Vec<f32> {
     if cols.is_empty() {
         return Vec::new();
     }
-    let head = ui
-        .style()
-        .text_styles
-        .get(&egui::TextStyle::Small)
-        .cloned()
-        .unwrap_or_else(|| egui::FontId::proportional(10.0));
+    let head = head_face(ui);
     let faces: Vec<egui::FontId> = cols.iter().map(|c| cell_face(ui, c)).collect();
     let mut w: Vec<f32> = cols.iter().map(|c| text_w(ui, &head, c.head)).collect();
     for row in cells {
@@ -3304,15 +3534,39 @@ fn column_widths(ui: &egui::Ui, cols: &[objects::Col], cells: &[Vec<String>]) ->
             w[i] = w[i].max(text_w(ui, &faces[i], cell));
         }
     }
-    for x in w.iter_mut() {
-        *x += COL_GUTTER;
-    }
-    let used: f32 = w[..cols.len() - 1].iter().sum();
-    if let Some(last) = w.last_mut() {
-        // Whatever is left, but never so little that the column is unreadable: a narrow panel gets a
-        // truncated name with the whole of it on the hover, not a name reduced to one letter.
-        *last = (ui.available_width() - used).max(last.min(NAME_COL_FLOOR));
-    }
+    fit_columns(&w, ui.available_width(), COL_GUTTER, NAME_COL_FLOOR)
+}
+
+/// **Natural widths in, drawn widths out** — the whole column arithmetic, with no `Ui` in it so the rule
+/// is checkable rather than merely visible.
+///
+/// `natural` is what each column's widest entry actually measures, header included and **with no gutter
+/// folded in**. That distinction is the owner's fourth finding, 2026-09-09: *"look how difficult objects
+/// is to read"*, with headers reading as `slotaddrcode  x  yname`.
+///
+/// The gutter used to be added to every column's own width, and a width is not a gap: `slot` is
+/// right-aligned (it is numeric) so its glyphs hug the RIGHT edge of its box, and `addr` is left-aligned
+/// so its glyphs hug the LEFT edge of the next one. Two adjacent boxes, two sets of glyphs at the seam,
+/// and the fourteen points of "gutter" sitting harmlessly at the far end of each column where nothing
+/// needed separating. `slot` and `addr` were drawn touching.
+///
+/// So the gutter leaves the widths and becomes `item_spacing.x` in the row layouts, where it is a real
+/// gap between every pair of columns whatever either one's alignment is. This function's job is then the
+/// one thing that changes: the last column's remainder has to pay for the gutters as well as for the
+/// other columns.
+///
+/// The last column takes what is left because it is the name column and a symbol name has no bound;
+/// `floor` is the width below which a name stops being a name, and a column narrower than its own
+/// content is left at its content width rather than stretched to the floor.
+fn fit_columns(natural: &[f32], avail: f32, gutter: f32, floor: f32) -> Vec<f32> {
+    let mut w = natural.to_vec();
+    let Some((last, others)) = w.split_last_mut() else {
+        return w;
+    };
+    let used: f32 = others.iter().sum::<f32>() + gutter * others.len() as f32;
+    // Whatever is left, but never so little that the column is unreadable: a narrow panel gets a
+    // truncated name with the whole of it on the hover, not a name reduced to one letter.
+    *last = (avail - used).max(last.min(floor));
     w
 }
 
@@ -3344,6 +3598,29 @@ fn table_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, text: &str, colour: e
             // A truncated cell is unreadable, not merely tidy, so the whole of it is one hover away.
             r.on_hover_text(text);
         }
+    });
+}
+
+/// One **header** cell, `w` points wide, aligned as its column's cells are so the header sits over the
+/// digits it names.
+///
+/// Separate from [`table_cell`] because a header is not a cell: it is drawn in [`head_face`], which is
+/// the face [`column_widths`] measured it in, and it carries none of that function's hovers — a header
+/// is never `objects::NO_NAME` and never truncated, because its own width is one of the terms its
+/// column's width is the maximum of.
+fn header_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, colour: egui::Color32) {
+    let layout = if c.numeric {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+    let h = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
+        ui.label(
+            egui::RichText::new(c.head)
+                .text_style(egui::TextStyle::Small)
+                .color(colour),
+        );
     });
 }
 
@@ -3417,7 +3694,14 @@ fn subtype_list(
 ) -> Option<String> {
     let mut hit = None;
     ui.scope(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+        // ⚑ **The x spacing is a REAL GUTTER now, and that is the whole of the first defect.**
+        //
+        // It was `vec2(0.0, 1.0)` — zero horizontally — which is what made the owner read a row as
+        // `$20Down_Red`: the value and the name were two labels in one `horizontal` with nothing between
+        // them. The listing has carried them as two fields all along (`SubtypeRow::value`,
+        // `SubtypeRow::label`), so nothing about the model changed; the presentation was joining what the
+        // model had kept apart. The y half stays 1.0, because the rows are meant to sit tight.
+        ui.spacing_mut().item_spacing = egui::vec2(LIST_GUTTER, 1.0);
         let weak = ui.visuals().weak_text_color();
         ui.label(
             egui::RichText::new(&listing.count)
@@ -3432,22 +3716,73 @@ fn subtype_list(
         );
         ui.add_space(3.0);
         // P7: an explicit, stable salt, so this scroll position is its own and not the archetype list's.
+        //
+        // ⚑ **`auto_shrink([false, true])`, and the ACROSS half is the second defect.** A vertical
+        // `ScrollArea` has `auto_shrink.x = true` by default, so its width follows its content: the list
+        // ended where the longest name ended and drew its scrollbar *inside* itself, immediately right of
+        // the names, which is what the owner's arrow points at. Off across, the bar is pinned to the
+        // panel's right edge — the exact remedy the watch-hits box already names in this file.
+        //
+        // **Vertically it stays ON**, deliberately: `max_height` is a cap, not a reservation, and a
+        // listing with two subtypes must not hold 132 points of empty box open under it.
         egui::ScrollArea::vertical()
             .id_salt(salt)
             .max_height(132.0)
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 let strong = ui.visuals().strong_text_color();
+                let mono = ui
+                    .style()
+                    .text_styles
+                    .get(&egui::TextStyle::Monospace)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::monospace(12.0));
+                // The value column, measured once over the whole listing rather than per row, because a
+                // column that is as wide as its own cell is not a column: the rows line up on the value
+                // and that is the only reason it leads.
+                let value_w = listing
+                    .rows
+                    .iter()
+                    .map(|r| text_w(ui, &mono, &r.value))
+                    .fold(0.0_f32, f32::max);
+                // ⚑ **How far the band and the highlight reach, and that is the third defect.** It used
+                // to be `ui.max_rect().x_range()` — the whole pane — so a selected row was a long empty
+                // bar and the zebra banding striped a span with nothing in it. That empty striping is
+                // what he called cluttered.
+                //
+                // Bounded to the LIST's own width instead: the widest row's content plus a margin, so
+                // the click target still comfortably outruns the glyphs (which is why the band was full
+                // width in the first place) without painting across a pane the list does not occupy.
+                // Capped at the pane, so a name longer than the panel cannot push it off the edge.
+                let label_w = listing
+                    .rows
+                    .iter()
+                    .map(|r| text_w(ui, &mono, &r.label))
+                    .fold(0.0_f32, f32::max);
+                let band_w = (value_w + LIST_GUTTER + label_w + LIST_GUTTER * 2.0)
+                    .min(ui.max_rect().width());
+                let cell_h = ui.spacing().interact_size.y;
                 for (i, r) in listing.rows.iter().enumerate() {
                     let ink = if r.offered { strong } else { weak };
                     let bg = ui.painter().add(egui::Shape::Noop);
                     let inner = ui.horizontal(|ui| {
                         // P3's carve-out: the value is hex out of a listing, so it is monospace, and it
-                        // leads because the rows line up on it.
-                        ui.label(egui::RichText::new(&r.value).monospace().color(ink));
+                        // leads because the rows line up on it. Right-aligned inside a column of its own
+                        // for `table_cell`'s reason, which is not a nicety: it is what makes a column of
+                        // machine values comparable down the page, and it is what a padded `{:>4}` in the
+                        // string would only have approximated.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(value_w, cell_h),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(egui::RichText::new(&r.value).monospace().color(ink));
+                            },
+                        );
                         ui.label(egui::RichText::new(&r.label).monospace().color(ink));
                     });
+                    let left = ui.max_rect().left();
                     let band = egui::Rect::from_x_y_ranges(
-                        ui.max_rect().x_range(),
+                        left..=left + band_w,
                         inner.response.rect.y_range(),
                     )
                     .expand2(egui::vec2(0.0, 1.0));
@@ -3594,39 +3929,63 @@ fn select_list(
         // which is the complaint that moved it. In a tab of its own the list is the whole content, so
         // it takes the pane's own height: `ScrollArea` bounds itself by the `Ui`'s available space, and
         // a fixed cap here would leave the bottom of a dedicated pane empty on purpose.
-        egui::ScrollArea::vertical().id_salt(salt).show(ui, |ui| {
-            let strong = ui.visuals().strong_text_color();
-            for (i, r) in rows.iter().enumerate() {
-                // Reserved before the row so the band paints behind it, which is egui's own idiom and
-                // the one `slot_table` already uses.
-                let bg = ui.painter().add(egui::Shape::Noop);
-                let inner = ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&r.name).monospace().color(strong));
-                });
-                // Full width, not the width of the glyphs: a click target that stops where the text
-                // stops is a click target a person misses.
-                let band = egui::Rect::from_x_y_ranges(
-                    ui.max_rect().x_range(),
-                    inner.response.rect.y_range(),
-                )
-                .expand2(egui::vec2(0.0, 1.0));
-                let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
-                ui.painter().set(
-                    bg,
-                    egui::Shape::rect_filled(
-                        band,
-                        0.0,
-                        row_fill(ui, r.selected, resp.hovered(), i),
-                    ),
-                );
-                if resp
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    hit = Some(r.name.clone());
+        //
+        // ⚑ **Off ACROSS only**, [`subtype_list`]'s finding and the same fault: a list that shrinks to its
+        // content puts its own scrollbar immediately right of the longest name instead of at the list's
+        // outer edge. Vertically it stays on, for that function's reason and because the paragraph above
+        // is about how much height this list may TAKE, which is not the same as how much it must HOLD.
+        egui::ScrollArea::vertical()
+            .id_salt(salt)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                let strong = ui.visuals().strong_text_color();
+                let mono = ui
+                    .style()
+                    .text_styles
+                    .get(&egui::TextStyle::Monospace)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::monospace(12.0));
+                // ⚑ **The band reaches past the glyphs, not across the pane.** [`subtype_list`]'s finding
+                // applied to the list beside it, so a selected row is not a long empty bar and the zebra
+                // banding does not stripe a span with nothing in it. The margin is what keeps the original
+                // reason intact: a click target that stops exactly where the text stops is one a person
+                // misses.
+                let band_w = (rows
+                    .iter()
+                    .map(|r| text_w(ui, &mono, &r.name))
+                    .fold(0.0_f32, f32::max)
+                    + LIST_GUTTER * 2.0)
+                    .min(ui.max_rect().width());
+                for (i, r) in rows.iter().enumerate() {
+                    // Reserved before the row so the band paints behind it, which is egui's own idiom and
+                    // the one `slot_table` already uses.
+                    let bg = ui.painter().add(egui::Shape::Noop);
+                    let inner = ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&r.name).monospace().color(strong));
+                    });
+                    let left = ui.max_rect().left();
+                    let band = egui::Rect::from_x_y_ranges(
+                        left..=left + band_w,
+                        inner.response.rect.y_range(),
+                    )
+                    .expand2(egui::vec2(0.0, 1.0));
+                    let resp = ui.interact(band, ui.id().with((salt, i)), egui::Sense::click());
+                    ui.painter().set(
+                        bg,
+                        egui::Shape::rect_filled(
+                            band,
+                            0.0,
+                            row_fill(ui, r.selected, resp.hovered(), i),
+                        ),
+                    );
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        hit = Some(r.name.clone());
+                    }
                 }
-            }
-        });
+            });
     });
     hit
 }
@@ -3649,14 +4008,21 @@ fn slot_table(
     let mut hit = None;
 
     ui.scope(|ui| {
-        // Table rows sit tighter than a panel's default flow; `item_spacing` here is the row gap, and the
-        // zebra band below is what separates them rather than whitespace.
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+        // Table rows sit tighter than a panel's default flow; the y half is the row gap, and the zebra
+        // band below is what separates rows rather than whitespace.
+        //
+        // ⚑ **The x half is the COLUMN gutter, and it used to be zero.** See [`fit_columns`] for the
+        // whole finding: the gutter was folded into each column's own width, which puts the space at the
+        // far end of a column instead of at the seam between two, so a right-aligned column's digits and
+        // the next left-aligned column's glyphs were drawn touching. Here it is a real gap between every
+        // pair of columns, whatever either one's alignment is.
+        ui.spacing_mut().item_spacing = egui::vec2(COL_GUTTER, 1.0);
 
         let weak = ui.visuals().weak_text_color();
         ui.horizontal(|ui| {
             for (c, w) in cols.iter().zip(&widths) {
-                table_cell(ui, c, *w, c.head, weak);
+                // [`header_cell`], not [`table_cell`]: a header is drawn in the face it was measured in.
+                header_cell(ui, c, *w, weak);
             }
         });
         let y = ui.cursor().top();
@@ -6301,5 +6667,392 @@ mod planes_layout_tests {
             !NO_ROOM_FOR_PICTURE.contains("  ") && !NO_ROOM_FOR_PICTURE.contains('\t'),
             "P2: a run of spaces or a tab is a column drawn inside a string"
         );
+    }
+}
+
+/// **Nothing drawn over the picture may cost the picture a pixel of layout.**
+///
+/// The owner's second finding, 2026-09-09: *"whenever I place something this text box comes up and shifts
+/// the window for the game."* The readout was a card **above** the picture in the same vertical stack, so
+/// the picture moved down by the height of whatever sentence the last click produced.
+///
+/// This is the property that fix rests on, and it is checkable without a window because `egui` will build
+/// a `Ui` on a headless `Context` — the same harness `crate::input`'s key tests already use. The two
+/// overlays are run against a real `Ui` and the `Ui`'s own layout state is compared before and after: a
+/// helper that reached for `ui.label` instead of `Painter` would move the cursor, and that is exactly the
+/// regression.
+#[cfg(test)]
+mod overlay_layout_tests {
+    use super::*;
+
+    fn readout() -> screen_pick::Readout {
+        screen_pick::Readout {
+            head: "a long enough sentence that laying it out would visibly move whatever came after it"
+                .into(),
+            detail: Some("vram 0x0000C123..0x0000C124".into()),
+            outcome: Some("2 watches armed by this click".into()),
+            refused: false,
+        }
+    }
+
+    #[test]
+    fn an_overlay_on_the_picture_takes_no_layout_space() {
+        let ctx = egui::Context::default();
+        let mut before = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        let mut after = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        let r = readout();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            // A picture rect the caller allocated for the image, exactly as `Panels::screen` does.
+            let picture = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(320.0, 224.0));
+            before = (ui.min_rect(), ui.cursor());
+            readout_overlay(ui, picture, &r);
+            armed_frame(
+                ui,
+                picture,
+                "SPAWN: ObjDef_Spring. Press Esc to leave the mode.",
+            );
+            after = (ui.min_rect(), ui.cursor());
+        });
+        // `FullOutput` panics on drop with unapplied texture deltas; no backend applies them here.
+        out.textures_delta.clear();
+        assert_eq!(
+            before.0, after.0,
+            "the overlays grew the Ui's minimum rect, so whatever is laid out next moves"
+        );
+        assert_eq!(
+            before.1, after.1,
+            "the overlays advanced the layout cursor, which is how the picture got shifted"
+        );
+    }
+
+    /// The control for the assertion above: the **card** form, which is what the overlay replaced, does
+    /// move the cursor. Without this leg a broken headless `Ui` would make the test above pass by
+    /// measuring nothing at all.
+    #[test]
+    fn the_card_form_the_overlay_replaced_does_move_the_layout() {
+        let ctx = egui::Context::default();
+        let mut before = egui::Rect::NOTHING;
+        let mut after = egui::Rect::NOTHING;
+        let r = readout();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            before = ui.cursor();
+            readout_card(ui, &r);
+            after = ui.cursor();
+        });
+        out.textures_delta.clear();
+        assert_ne!(
+            before, after,
+            "the control witnesses nothing: this Ui does not move its cursor for a laid-out card \
+             either, so the overlay test above is measuring an inert harness"
+        );
+    }
+}
+
+/// **The subtype list, measured off what it actually paints.**
+///
+/// The owner's third finding, 2026-09-09: *"In spawn there's a scrollbar and to the left is the names
+/// but the highlight for select goes all the way through to the right and the names kind of stink too
+/// ($20Down_Red), it's just cluttered looking and gross imo."*
+///
+/// Two of the three defects in that sentence are geometry, and geometry is checkable: `egui` builds a
+/// `Ui` on a headless `Context` and hands back the shapes it painted. So this reads the **drawn** run
+/// positions rather than any intermediate the renderer might get right on its own — the value and the
+/// name must not touch, and the selected row's fill must not run to the edge of the pane.
+///
+/// The third (the scrollbar's position) is `ScrollArea`'s own layout and is **not asserted**; it is
+/// `auto_shrink([false, true])` and a foreground look.
+#[cfg(test)]
+mod subtype_list_tests {
+    use super::*;
+    use crate::spawn_picker::{SubtypeListing, SubtypeRow};
+
+    /// The pane the list is drawn into. Deliberately far wider than the rows need, because that gap is
+    /// exactly where the old band and the old zebra striping went.
+    const PANE: egui::Vec2 = egui::vec2(520.0, 400.0);
+
+    fn row(value: &str, label: &str, selected: bool) -> SubtypeRow {
+        SubtypeRow {
+            name: format!("ObjDef_Spring_{label}"),
+            label: label.into(),
+            value: value.into(),
+            selected,
+            offered: true,
+            note: None,
+        }
+    }
+
+    /// His own rows, spellings included.
+    fn listing() -> SubtypeListing {
+        SubtypeListing {
+            rows: vec![
+                row("$00", "Up_Red", true),
+                row("$02", "Up_Yellow", false),
+                row("$20", "Down_Red", false),
+            ],
+            count: "3 subtypes".into(),
+            absence: None,
+            truncation: None,
+            collision: None,
+            armed: "A click places a spring.".into(),
+        }
+    }
+
+    /// Every `Shape::Text` the frame painted, flattened out of the nesting `egui` produces, as
+    /// (rect, text).
+    pub(super) fn text_runs(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, String)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, String)>) {
+            match s {
+                egui::Shape::Text(t) => out.push((
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                    t.galley.text().into(),
+                )),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            walk(&c.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every filled rectangle the frame painted, flattened the same way.
+    fn fills(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, egui::Color32)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, egui::Color32)>) {
+            match s {
+                egui::Shape::Rect(r) => out.push((r.rect, r.fill)),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            walk(&c.shape, &mut out);
+        }
+        out
+    }
+
+    fn draw() -> Vec<egui::epaint::ClippedShape> {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, PANE)),
+            ..Default::default()
+        };
+        let l = listing();
+        let mut out = ctx.run_ui(raw, |ui| {
+            subtype_list(ui, &l, "subtype-list-test");
+        });
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    /// **The value and the name are two columns**, and there is daylight between them.
+    ///
+    /// He read a row as `$20Down_Red` because `item_spacing.x` was zero: the model had carried
+    /// `SubtypeRow::value` and `SubtypeRow::label` apart all along and the renderer drew them touching.
+    #[test]
+    fn a_subtype_row_draws_its_value_and_its_name_as_separate_columns() {
+        let shapes = draw();
+        let runs = text_runs(&shapes);
+        for (value, label) in [("$00", "Up_Red"), ("$02", "Up_Yellow"), ("$20", "Down_Red")] {
+            let v = runs
+                .iter()
+                .find(|(_, t)| t == value)
+                .unwrap_or_else(|| panic!("the value {value:?} was never painted: {runs:?}"));
+            let n = runs
+                .iter()
+                .find(|(_, t)| t == label)
+                .unwrap_or_else(|| panic!("the name {label:?} was never painted: {runs:?}"));
+            assert!(
+                (v.0.center().y - n.0.center().y).abs() < 2.0,
+                "{value} and {label} are not on the same row: {v:?} {n:?}"
+            );
+            let gap = n.0.left() - v.0.right();
+            assert!(
+                gap >= LIST_GUTTER * 0.5,
+                "{value} and {label} are drawn {gap} points apart, which is how the owner read one \
+                 row as `{value}{label}`"
+            );
+        }
+        // The value column is a column: every value ends on the same x, or it is not aligned and the
+        // rows do not line up on the thing they are ordered by.
+        let rights: Vec<f32> = ["$00", "$02", "$20"]
+            .iter()
+            .map(|v| {
+                runs.iter()
+                    .find(|(_, t)| t == v)
+                    .expect("painted above")
+                    .0
+                    .right()
+            })
+            .collect();
+        for r in &rights {
+            assert!(
+                (r - rights[0]).abs() < 1.0,
+                "the values do not share a right edge, so they are not a column: {rights:?}"
+            );
+        }
+    }
+
+    /// **The selected row's highlight stops with the list, not with the pane.**
+    ///
+    /// It used to be `ui.max_rect().x_range()`, so a selected row was a long empty bar and the zebra
+    /// banding striped the same emptiness. The pane here is far wider than the rows need, which is what
+    /// gives the assertion something to catch.
+    #[test]
+    fn the_selection_highlight_does_not_run_to_the_edge_of_the_pane() {
+        let shapes = draw();
+        let runs = text_runs(&shapes);
+        let widest_text = runs
+            .iter()
+            .filter(|(_, t)| t == "Up_Red" || t == "Up_Yellow" || t == "Down_Red")
+            .map(|(r, _)| r.right())
+            .fold(0.0_f32, f32::max);
+        let selection = crate::theme::selection();
+        let bands: Vec<egui::Rect> = fills(&shapes)
+            .into_iter()
+            .filter(|(_, c)| *c == selection)
+            .map(|(r, _)| r)
+            .collect();
+        assert_eq!(
+            bands.len(),
+            1,
+            "the fixture arms exactly one row, so exactly one band carries the selection fill: \
+             {bands:?}"
+        );
+        let band = bands[0];
+        assert!(
+            band.right() < PANE.x - 1.0,
+            "the highlight runs to the pane's edge ({} of {}), which is the long empty bar he \
+             reported",
+            band.right(),
+            PANE.x
+        );
+        assert!(
+            band.right() >= widest_text,
+            "the band stops short of the widest name ({} < {widest_text}), so a click target now \
+             stops where the glyphs do",
+            band.right()
+        );
+    }
+}
+
+/// **The Objects table's columns, in arithmetic and in paint.**
+///
+/// The owner's fourth finding, 2026-09-09: *"look how difficult objects is to read"*, *"especially if
+/// it's not fully open"*, with the headers running together as `slotaddrcode  x  yname`.
+#[cfg(test)]
+mod slot_table_tests {
+    use super::*;
+
+    /// Natural widths with an obvious total, so every number below is derived rather than observed.
+    const NATURAL: [f32; 4] = [30.0, 50.0, 20.0, 40.0];
+    const GUTTER: f32 = 14.0;
+    const FLOOR: f32 = 120.0;
+
+    /// **A column's width is its content's width, and the gutter is what goes BETWEEN two of them.**
+    ///
+    /// This is the fault, stated: a gutter folded into a column's own width sits at that column's far
+    /// end, which for a right-aligned column is nowhere near the seam. Two adjacent boxes could then be
+    /// laid out with their glyphs touching while every width in the table claimed to carry fourteen
+    /// points of separation.
+    #[test]
+    fn a_columns_width_carries_no_gutter_of_its_own() {
+        let w = fit_columns(&NATURAL, 400.0, GUTTER, FLOOR);
+        assert_eq!(
+            &w[..3],
+            &NATURAL[..3],
+            "a fixed column was handed anything other than what it measures, so the gap between two \
+             columns is once again hidden inside one of them"
+        );
+    }
+
+    /// The last column takes what is left **after the gutters as well as the other columns**, so a table
+    /// laid out with a real gap between every pair still ends inside the pane.
+    #[test]
+    fn the_name_column_pays_for_the_gutters_it_sits_between() {
+        let avail = 400.0;
+        let w = fit_columns(&NATURAL, avail, GUTTER, FLOOR);
+        let total: f32 = w.iter().sum::<f32>() + GUTTER * (w.len() - 1) as f32;
+        assert!(
+            (total - avail).abs() < 0.01,
+            "the columns and the three gutters between them come to {total}, not the {avail} the \
+             pane has: the last column is not paying for the gaps and the table runs off the edge"
+        );
+    }
+
+    /// A pane too narrow for the table leaves the name readable rather than shrinking it to a letter,
+    /// and a name column narrower than the floor to begin with is left at its own width.
+    #[test]
+    fn a_cramped_pane_keeps_the_name_column_readable() {
+        let w = fit_columns(&NATURAL, 60.0, GUTTER, FLOOR);
+        assert!(
+            w[3] >= NATURAL[3].min(FLOOR),
+            "the name column was squeezed to {}, below what a name needs",
+            w[3]
+        );
+        // A column whose own content is narrower than the floor is not stretched to it: the floor is a
+        // minimum for a name, not a reservation for one that is not there.
+        let short = fit_columns(&[30.0, 8.0], 10.0, GUTTER, FLOOR);
+        assert!(
+            (short[1] - 8.0).abs() < 0.01,
+            "a short last column was stretched to the floor: {short:?}"
+        );
+    }
+
+    /// **The drawn headers do not touch**, measured off what the table actually paints.
+    ///
+    /// `slot` is numeric and therefore right-aligned; `addr` is not and is left-aligned. Their two boxes
+    /// are adjacent, so before the gutter moved out of the widths those two headers were drawn with
+    /// nothing between them at all: `slotaddr`. Every adjacent pair is checked, because which pair
+    /// collides depends on which way each column happens to align.
+    #[test]
+    fn every_pair_of_headers_is_drawn_with_daylight_between_them() {
+        let ctx = egui::Context::default();
+        let rows: Vec<objects::Row> = Vec::new();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                slot_table(ui, &objects::POOL_COLS, &rows, None, "header-gap-test");
+            },
+        );
+        out.textures_delta.clear();
+        let runs = super::subtype_list_tests::text_runs(&out.shapes);
+        let heads: Vec<(egui::Rect, String)> = objects::POOL_COLS
+            .iter()
+            .map(|c| {
+                runs.iter()
+                    .find(|(_, t)| t == c.head)
+                    .unwrap_or_else(|| {
+                        panic!("the header {:?} was never painted: {runs:?}", c.head)
+                    })
+                    .clone()
+            })
+            .collect();
+        for pair in heads.windows(2) {
+            let gap = pair[1].0.left() - pair[0].0.right();
+            assert!(
+                gap >= COL_GUTTER * 0.5,
+                "the headers {:?} and {:?} are {gap} points apart, which is how they read as one \
+                 run-together word",
+                pair[0].1,
+                pair[1].1
+            );
+        }
     }
 }

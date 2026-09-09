@@ -99,6 +99,16 @@ pub(crate) fn pause_remedy() -> String {
 // Geometry
 // -------------------------------------------------------------------------------------------------------
 
+/// **How the key that leaves a placement mode is spelled for a human**, once, so the notice on the
+/// picture and the hover in the panel cannot name two different keys.
+///
+/// The binding itself is [`crate::input::wants_disarm`]'s caller in `main.rs`; this is the word for it,
+/// and it lives beside [`Panel::armed_notice`] because that is the surface that has to teach it.
+pub const DISARM_KEY_LABEL: &str = "Esc";
+
+/// The whole way-out clause, appended to the badge on the picture.
+pub const DISARM_HINT: &str = "Press Esc to leave the mode and give clicks back to the picture.";
+
 /// The picture's size **in egui points**, for a `src_w x src_h` native frame in an `avail`-sized panel,
 /// under `aspect`.
 ///
@@ -341,6 +351,49 @@ impl Panel {
     /// with it.
     pub fn object_armed(&self) -> bool {
         self.mode.is_armed()
+    }
+
+    /// **What the PICTURE says while a click would place**, or `None` when a click would not.
+    ///
+    /// ⚑ The owner's own finding, 2026-09-09: *"With spawn, if I want to click into the window to move
+    /// the character around (even if it shows nothing) it'll spawn something there, I have to re-click
+    /// out here to get the preview again."* The mode was stated in the control strip and nowhere on the
+    /// picture, and the one thing drawn **inside** the picture — [`crate::ui::ghost`] — is conditional on
+    /// a pointer that is over it *and* a preview that is drawable, so the two states he actually hits
+    /// (pointer elsewhere; archetype with no drawable art) both showed a picture that looked unarmed and
+    /// swallowed his click.
+    ///
+    /// So this is [`Panel::badge`] plus the way out, and it is drawn on the glass. It is the same rule
+    /// [`mask_statement`] already earned for the lens — *a thing that changes what the picture means, or
+    /// what a click on it does, says so where the picture is* — applied to the one case that had the
+    /// statement in the panel only.
+    ///
+    /// Deliberately **derived from [`Panel::badge`]** rather than composed a second time: two spellings of
+    /// "what is armed" is exactly the defect the badge exists to prevent, one tab apart.
+    pub fn armed_notice(&self) -> Option<String> {
+        self.badge().map(|b| format!("{b}. {DISARM_HINT}"))
+    }
+
+    /// **Leave whichever placement mode is on, in one action.** `true` if there was one to leave.
+    ///
+    /// The single-gesture half of the owner's finding. He described his own recovery as clicking back in
+    /// the panel, which is two gestures and a tab away when the Spawn tab is not the visible one — and it
+    /// is *not* the visible one precisely when he is playing, because the picture is.
+    ///
+    /// Both modes and not one: a person who wants out of "a click places something" does not first have
+    /// to work out which of the two things it places, and [`Panel::rings`]'s exclusion means at most one
+    /// of these ever fires. The `false` return is what lets a caller leave the keystroke for whoever else
+    /// wants it rather than swallowing it in a window that was not armed.
+    pub fn disarm(&mut self) -> bool {
+        if self.rings {
+            self.disarm_rings();
+            true
+        } else if self.mode.is_armed() {
+            self.disarm_spawn();
+            true
+        } else {
+            false
+        }
     }
 
     /// **Arm ring placement.** A click on the picture puts a ring in the engine's ring buffer.
@@ -3172,6 +3225,78 @@ EQU ObjSub_Spring__Wide_Huge = $00000140
             !bus.is_paused(),
             "the window paused this machine to try, and a refused placement is no reason to leave it \
              stopped"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The armed mode says so ON THE PICTURE, and one key leaves it — the owner's 2026-09-09 finding
+    // ---------------------------------------------------------------------------------------------
+
+    /// **`armed_notice` is `Some` exactly when a click would place**, which is the invariant the whole
+    /// fix rests on: the statement the picture carries and the predicate the click reads are the same
+    /// fact, so there is no state in which the picture eats a click while looking unarmed.
+    ///
+    /// Driven through `arm_rings`/`disarm`, which are the two entry points that need neither a machine
+    /// nor a bus — this crate's own precedent for a panel assertion with no window
+    /// (`RomOpen::activate`, `decide_drop`, `typed`).
+    #[test]
+    fn the_picture_states_the_armed_mode_exactly_when_a_click_would_place() {
+        let mut panel = Panel::default();
+        assert!(
+            !panel.is_armed(),
+            "the control: a fresh panel places nothing"
+        );
+        assert_eq!(
+            panel.armed_notice(),
+            None,
+            "an unarmed picture must not claim a mode"
+        );
+
+        panel.arm_rings();
+        assert!(panel.is_armed());
+        let badge = panel.badge().expect("armed implies a badge");
+        let notice = panel
+            .armed_notice()
+            .expect("an armed picture must say so on the glass");
+        assert!(
+            notice.contains(DISARM_KEY_LABEL),
+            "the statement must name the way out, or it is the dead end he reported: {notice:?}"
+        );
+        assert!(
+            notice.starts_with(&badge),
+            "the glass and the control strip must not spell one mode two ways: {notice:?}"
+        );
+
+        assert!(panel.disarm(), "one action leaves the mode");
+        assert!(!panel.is_armed());
+        assert_eq!(
+            panel.armed_notice(),
+            None,
+            "a disarmed picture must stop claiming the mode in the same frame"
+        );
+    }
+
+    /// **`disarm` reports whether there was anything to leave**, so a caller can hand the keystroke back.
+    ///
+    /// Not a nicety: `Esc` is `egui`'s own (drop focus, close a floating window), and a window that
+    /// swallowed it unconditionally would take it from every gesture that is not a spawn.
+    #[test]
+    fn disarming_an_unarmed_panel_reports_that_it_did_nothing() {
+        let mut panel = Panel::default();
+        assert!(
+            !panel.disarm(),
+            "nothing was armed, so the keystroke was not ours"
+        );
+        assert!(
+            panel.readout().is_none(),
+            "a no-op must not write a sentence claiming a mode was turned off"
+        );
+
+        panel.arm_rings();
+        assert!(panel.disarm(), "the first disarm had something to do");
+        assert!(
+            !panel.disarm(),
+            "the second one did not, and must say so rather than reporting a second success"
         );
     }
 }
