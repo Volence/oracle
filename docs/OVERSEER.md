@@ -430,6 +430,18 @@ regularly running a hand-built window and being misled by it.
   clearest statement of this register's own no-consumer-broke hazard anyone has offered, and it came from
   the consumer. **Four repos remain unenumerated** (aeon, seraph, sigil, empyrean), so the booking stands;
   aurora has asked to be told if it moves, so they can re-point their fixtures.
+  ⚑ **AMENDED 2026-09-09: the field now has a named live READER, and aurora's clearance asked the wrong
+  question.** Their bus badge renders `serverName ?? 'oracle'`, so it displays **`connected · oracle-next`**
+  in every deployment — measured here at `aca9e9a`: `server_name` has exactly TWO sites, the field
+  (`engine.rs:213`) and the default (`engine.rs:279`), and **nothing sets it**, so §2.1's "a deployment
+  label a config may set" is unreachable in this tree and its stated justification (two same-implementation
+  processes wanting distinguishable names) describes the very case it cannot serve. Their sweep cleared this
+  field as *"every use is display or pass-through"* — **display was in the clear list**, which is right for
+  almost every field and exactly wrong for an identity one. **Durable, and it is bar 14's blind spot: a
+  consumer sweep asking "does anyone BRANCH on this?" cannot see "does anyone SHOW this?"** A rename would
+  have left their suite green, their sweep correct, and a wrong name on screen. Revival condition is
+  unchanged (a deliberate handshake pass, never alone) but it is no longer cosmetic; aurora's
+  `parcel/bus-identity-displayed` is the live consumer.
 
 - **F-RSP-XVFB-ORPHAN: AUDITED CLEAN, and that is a measurement rather than an assumption.** aurora's O16 warning was about a `pkill -f '<dist path>'` teardown that had killed a peer's processes three times; enumerated here by what *touches process teardown* rather than by the token, **this repo's teardown sites are exactly one** — `rsp.py:157 self.p.kill()`, on the `Popen` handle that object itself spawned — and every `pkill`/`killall` string in the tree is docs prose warning against it, with a 165-hit bare-`kill` control proving the grep could see what was there. Moved whole to `OVERSEER-LOG.md` 2026-09-06. Revival: the differential harness run in anger again, or a stray blastem/Xvfb outliving it — fix is a process group, not a wider pattern.
 
