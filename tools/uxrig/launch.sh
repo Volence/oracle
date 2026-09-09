@@ -189,7 +189,7 @@ preflight_rom() {
   done
   [ -n "$rom" ] || return 0
   if [ ! -e "$rom" ]; then
-    die "ROM $rom does not exist. It is a BUILD ARTIFACT of the aeon tree, which another lane may be rebuilding right now (aeon's build.sh deletes it before rewriting it). Check with: ls -l $rom; pgrep -af 'build.sh'. Wait for the build to finish, or snapshot a ROM first: tools/uxrig/launch.sh snapshot-rom $rom"
+    die "ROM $rom does not exist. It is a BUILD ARTIFACT of the aeon tree, which another lane may be rebuilding right now. Check with: ls -l $rom; pgrep -af 'build.sh'. Wait for the build to finish, or snapshot a ROM first: tools/uxrig/launch.sh snapshot-rom $rom"
   fi
   [ -r "$rom" ] || die "ROM $rom exists but is not readable"
   [ -s "$rom" ] || die "ROM $rom is empty (0 bytes) — almost certainly a build in progress"
