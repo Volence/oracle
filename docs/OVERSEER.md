@@ -866,6 +866,75 @@ mechanism reading is in the log. What stays live:
    **silently, in the direction that presents as a successful boot restore over a write window that never
    opened.** Booked here because a code comment is where a perishable rule goes to be read by nobody.
 
+## ⚑ MEASURED 2026-09-08: THE PLANE RASTER IS **NOT** DRAWING IN HIS LIVE WINDOW, SO IT CANNOT BE THE LAG. AND THE TAB STATE IS READABLE WITHOUT HIM.
+
+**`F-PLANES-RASTER-EVERY-FRAME` has been sitting on the owner for a ten-second tab test. It did not
+need one.** `eframe`'s storage writes the dock layout to
+`~/.local/share/oracle-player/app.ron` periodically from the running window, so **which tab each pane
+is executing is readable off disk at any moment, without touching his session, without a window, and
+without the `screen_text` surface `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` books.**
+
+**Read 2026-09-08T23:30:24Z, against a file his live window (started 15:01, pid 1207956) had written
+11 seconds earlier.** Four leaves, and a leaf executes only its active tab's body — not inferred:
+`layout.rs:776` says it outright (*"a leaf's active tab, so three tabs sharing a pane execute one body
+per frame"*), which is a second enumeration parameter agreeing with the parse rather than an echo of it.
+
+| pane | tabs | executing |
+|---|---|---|
+| 1 | Screen, Planes | **Screen** |
+| 2 | Registers, Memory, Objects | **Objects** |
+| 3 | Pacing, Effects | **Effects** |
+| 4 | Breakpoints, Profiler | **Breakpoints** |
+
+**`Planes` is the hidden tab behind `Screen` and is executing nothing.** The window was nonetheless
+burning **98.7% of one core** on a machine measured clear at the same minute (the sixteen orphaned
+spinners from the previous session had just been killed; load 23.9 → 8.8). **So the plane raster is not
+what is costing him the core, and a parcel aimed at it would have been aimed at a non-cause.**
+
+**What this does and does not settle.** It does **not** refute the row: the every-frame re-raster is a
+real defect, derived from source, and it would bite the moment he brings that tab forward. It settles
+that it is **not the current explanation**, and it retires the ask on him. ⚑ **The open question is now
+a different one and it needs a baseline before it is called a defect at all: a Mega Drive emulated at
+full speed with four live panels may legitimately cost about a core.** Nothing here establishes that
+98.7% is pathological, and saying "a whole core" to the owner without that baseline would be this
+file's own name-is-not-behaviour bar, one level up: a real number standing in for a verdict it does not
+carry.
+
+⚑ **The durable half, worth more than the instance: an ask parked on the owner should be re-priced
+before it is re-sent.** This one had been on his card for two days and was answerable in two commands
+the whole time, by an artifact the window writes for its own reasons. Before putting a *look at this*
+question to him, ask what the program already writes down.
+
+## ⚑ RULED 2026-09-08 BY THIS SEAT, PINNED FROM REFERENCE: H31's I/O A0 DECODE IS **DIRECTION-AGNOSTIC**. THE WRITE PATH IS THE DEFECT.
+
+The lens seat found the "the I/O block does not decode A0" rule applied on the read path
+(`bus.rs:1019`, `io_reg(a | 1)`) and contradicted on the write path (`bus.rs:1152`, `io_reg(a)`), so
+`read8($A10008)` answers while `write8($A10008)` drops. **It correctly REFUSED to adjudicate the
+hardware question and TAGGED it.** That was the right call and the question is now settled — from the
+reference, not from an opinion, per this lane's rule that a behavioural-correctness unknown is pinned
+and never deferred.
+
+**The measurement, firsthand in `oracle-old` (reference-only, which is the correct use of it):**
+`AddressDiscardLowerBitCount` is parsed once per *mapping* (`BusInterface::MapDevice` and `MapPort`,
+lines 605 and 776 — both mapping parsers, neither a direction), stored on the map entry
+(`BuildMapEntry`, line 229), and applied through the identical expression
+`(((location - mapEntry->address) & mapEntry->addressMask) >> mapEntry->addressDiscardLowerBitCount)`
+at **eight** sites: `ReadMemory` 2454, **`WriteMemory` 2507**, `TransparentReadMemory` 2541,
+**`TransparentWriteMemory` 2574**, `ReadPort` 2647, **`WritePort` 2700**, `TransparentReadPort` 2734,
+**`TransparentWritePort` 2767**. Four reads, four writes, one expression. **The discard is a property
+of the address decoder, not of the access direction**, which is what "the block does not decode A0"
+means physically: the line is not wired, and a wire has no direction.
+
+**So: our write arm must decode `a | 1` exactly as the read arm does**, and `write8($A10008)` reaching
+the P1 control register is the correct behaviour. ⚑ **Why no golden catches it: word writes are
+unaffected** (they carry the odd byte anyway), and the covering test at `bus.rs:2069` writes the
+**odd** address `$A10009` and reads the even one, so it exercises the read mirror and never the write
+mirror. **A fix therefore owes the write-direction case the existing test structurally cannot reach**,
+and that case is the whole point of the row.
+
+⚑ **This is currency-touching**: an even-byte I/O write that used to drop now lands. Price it as a
+byte-mover and sequence it accordingly; it does not ride along with an unrelated parcel.
+
 ## ⚑ HUB RULING, 2026-09-07: HOW THE LENS COUNT IS REPORTED — **"PACKET MINUS FIXED", NEVER THE LEDGER'S OPEN COUNT**
 
 ⚑ **The hub's, under delegation; do not upgrade it to his.** It settles a defect this seat found while

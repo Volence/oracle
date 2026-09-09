@@ -230,6 +230,13 @@ pub struct Vdp {
     /// forward to a finished transfer's end instant while entries are still pending (T16/S2), so a DMA's
     /// residual drains from where the transfer ended rather than from where it began. Real timing state,
     /// serialized; in neither frozen currency. Power-on = 0.
+    ///
+    /// **It is also the 68k's "already charged to" mark (C2).** Whenever this clock sits *ahead* of a bus
+    /// access's `now`, it is because the CPU has already been billed a hold reaching that far — either a
+    /// /DTACK stall an earlier access of the same (clock-frozen) instruction returned, or a Mem DMA's hold
+    /// window, which `MegaDriveBus::run_mem_dma` bills to the arming instruction in full. So both stall
+    /// paths measure their wait from `fifo_slot_clock.max(now)`; measuring from `now` alone re-charged
+    /// every earlier stall of the same instruction inside each later one.
     fifo_slot_clock: u64,
     /// mclk before which the status DMA-busy bit (bit 1) reads set (recon R4 / Eke: DMA-busy sets on the
     /// control-port setup write; a fill/copy runs the 68k in parallel, so a poll sees busy for the coarse
@@ -1339,7 +1346,23 @@ impl Vdp {
             let oldest = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize];
             let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
             let drain_at = self.fifo_slot_clock + cost;
-            wait_mclk = drain_at.saturating_sub(now);
+            // C2: bill from where the CPU has ALREADY been held to, not from the caller's `now`. `now` is
+            // frozen for a whole 68000 instruction (`MegaDriveBus::now_mclk` is taken by value; only
+            // `System::run_until` advances the clock, by the retiring instruction's total cost), while
+            // `fifo_slot_clock` advances one drain per stalling write — so a burst of data-port writes
+            // inside one instruction (`movem.l dN-dM,(a6)` at `$C00000`, the common shape) hands every
+            // write the same origin, and measuring `drain_at - now` re-charges write *k* for every stall
+            // writes 1..k-1 were already billed. The bus SUMS these waits into one instruction cost
+            // (`MegaDriveBus::stall_cycles`), so the burst was billed roughly quadratically in its length.
+            //
+            // `fifo_slot_clock.max(now)` is exactly the already-charged mark, with no extra state to carry
+            // and nothing new in the snapshot: the clock is only ever ahead of `now` because the CPU was
+            // already held that far. `fifo_drain` above leaves it at or before `now` in every other case
+            // (it breaks with `slot_clock + cost > now`, and coasts to `max(now)` when it empties), and the
+            // one other thing that can push it past `now` — `dma_complete`'s T16/S2 re-anchor to a
+            // transfer's end instant — is a window `MegaDriveBus::run_mem_dma` bills to this same
+            // instruction in full. See `a_burst_of_stalling_writes_at_one_instant_bills_each_drain_once`.
+            wait_mclk = drain_at.saturating_sub(self.fifo_slot_clock.max(now));
             self.fifo_slot_clock = drain_at;
             self.fifo_len -= 1;
         }
@@ -1397,6 +1420,12 @@ impl Vdp {
     pub fn data_read_at(&mut self, open_bus: u16, now: u64) -> (u16, u32) {
         self.fifo_drain(now);
         let mut wait_mclk = 0u64;
+        // C2, same rule as `data_write_at`: measure from the already-charged mark, not from the caller's
+        // frozen `now`. Within one call this loop could never double-count (it takes ONE final difference
+        // after draining everything) — which is exactly why the asymmetry with the write path went unseen —
+        // but across two port accesses of the SAME instruction it could, so both paths now read the mark.
+        // Latched before the loop, because the loop is what moves the clock.
+        let charged_to = self.fifo_slot_clock.max(now);
         // Reads wait for the write FIFO to empty (recon R3): drain every pending entry, banking the elapsed
         // time as the read's stall.
         while self.fifo_len > 0 {
@@ -1404,7 +1433,7 @@ impl Vdp {
             let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
             self.fifo_slot_clock += cost;
             self.fifo_len -= 1;
-            wait_mclk = self.fifo_slot_clock.saturating_sub(now);
+            wait_mclk = self.fifo_slot_clock.saturating_sub(charged_to);
         }
         let out = self.data_read(open_bus);
         (
@@ -3369,6 +3398,107 @@ mod tests {
         assert_ne!(
             early, late,
             "the stall depends on where in the line the FIFO filled — it is not a uniform period"
+        );
+    }
+
+    /// **C2 — the FIFO double-charge.** A burst of data-port writes inside ONE 68000 instruction hands
+    /// `data_write_at` the same frozen `now` every time (`MegaDriveBus::now_mclk` is taken by value for the
+    /// whole instruction; only `System::run_until` advances the clock, by the retiring instruction's total
+    /// cost). `fifo_slot_clock` meanwhile advances one drain per stalling write. Measuring every write's
+    /// wait as `drain_at - now` therefore re-charges, inside write *k*, the whole stall writes 1..k-1 were
+    /// already billed for — and the bus SUMS those waits (`MegaDriveBus::stall_cycles`) into one
+    /// instruction cost. The CPU is held off the bus **once**, from `now` to the last drain instant.
+    ///
+    /// Derivation of the expected charge, entirely from constants in this file / `system.rs`:
+    ///
+    /// * H40 (reg 12 bit 0) with the display OFF (`fresh()` leaves reg 1 bit 6 clear) → `entry_drain_cost`
+    ///   takes its **blanked** branch, the position-independent closed form
+    ///   `slots * MCLK_PER_LINE / slots_per_line(at)` — the same branch
+    ///   `blanked_lines_keep_the_aggregate_slot_rate` pins.
+    /// * `Vdp::slots_per_line` → `(h40 = true, blanked = true)` = **205**.
+    /// * `Vdp::entry_drain_cost` → `Target::Vram => 2` slots.
+    /// * [`MCLK_PER_LINE`] = **3420**.
+    ///
+    /// so every entry drains in `COST = 2 * 3420 / 205 = 33` mclk, at every instant.
+    ///
+    /// Ten writes at one frozen `now`: the first four fill the empty FIFO for free, and each of the six
+    /// after that forces exactly one drain. The 68k resumes at `now + 6*COST`, and each of those six bus
+    /// accesses is extended by `COST` mclk = `div_ceil(COST, MCLK_PER_CPU_CYCLE)` whole CPU cycles (a
+    /// /DTACK-extended 68000 bus cycle ends on a cycle boundary, which is why the rounding is per access
+    /// and not once over the burst — the pre-existing convention on both port paths).
+    ///
+    /// The pre-fix code billed write *k* the full `k*COST` span from the frozen `now`, i.e.
+    /// `COST*(1+2+...+6) = 21*COST = 693` mclk → 102 CPU cycles against a true 198 mclk → 30 cycles: the
+    /// first stall charged six times over, a 3.4× over-bill on this shape.
+    #[test]
+    fn a_burst_of_stalling_writes_at_one_instant_bills_each_drain_once() {
+        const SLOTS_PER_LINE_H40_BLANKED: u64 = 205; // Vdp::slots_per_line, (h40, blanked)
+        const VRAM_SLOTS_PER_WORD: u64 = 2; // Vdp::entry_drain_cost, Target::Vram
+        let cost = VRAM_SLOTS_PER_WORD * MCLK_PER_LINE / SLOTS_PER_LINE_H40_BLANKED;
+        assert_eq!(cost, 33, "closed-form blanked drain cost");
+
+        let now = 250 * MCLK_PER_LINE + 700; // any instant: the blanked branch is position-independent
+        let mut v = fresh(); // reg 1 bit 6 clear → display off → blanked
+        v.control_write(0x8C81, 0); // reg 12 = $81 → H40
+        vram_write_cmd(&mut v, 0x8000);
+
+        let mut billed = 0u32;
+        for i in 0..10u16 {
+            billed += v.data_write_at(0x1000 + i, now);
+        }
+
+        let stalling_writes = 10 - 4; // the first four fill the empty FIFO without stalling
+        assert_eq!(
+            v.fifo_slot_clock,
+            now + stalling_writes * cost,
+            "six forced drains, so the 68k resumes {stalling_writes} drains past the frozen instant"
+        );
+        // The model-level law first, stated without reference to any number above so it can fail on its own:
+        // the billed time covers the span from `now` to the resume instant and overshoots it by at most the
+        // per-access rounding — under one whole CPU cycle for each extended bus access. Pre-fix this read
+        // 714 mclk billed against a 198 mclk hold, a 516 mclk overshoot against a 36 mclk budget.
+        let billed_mclk = billed as u64 * crate::system::MCLK_PER_CPU_CYCLE;
+        let span = v.fifo_slot_clock - now;
+        let rounding_budget = stalling_writes * (crate::system::MCLK_PER_CPU_CYCLE - 1);
+        assert!(
+            billed_mclk >= span && billed_mclk - span <= rounding_budget,
+            "billed {billed_mclk} mclk against a {span} mclk hold (rounding budget {rounding_budget}) — \
+             that is not rounding, it is double-charging"
+        );
+        // Then the exact pin.
+        assert_eq!(
+            billed,
+            (stalling_writes * cost.div_ceil(crate::system::MCLK_PER_CPU_CYCLE)) as u32,
+            "each stalling write bills only the drain IT forced — the burst is not re-charged per write"
+        );
+    }
+
+    /// Companion to the burst test with **both** parameters moved: a CRAM target (1 slot per word, not 2)
+    /// and H32 (167 blanked slots per line, not 205), driven eight writes deep rather than ten. Same law.
+    /// `COST = 1 * 3420 / 167 = 20` mclk, four stalling writes.
+    #[test]
+    fn the_burst_law_holds_for_a_cram_target_in_h32_too() {
+        const SLOTS_PER_LINE_H32_BLANKED: u64 = 167; // Vdp::slots_per_line, (!h40, blanked)
+        const CRAM_SLOTS_PER_WORD: u64 = 1; // Vdp::entry_drain_cost, `_ => 1`
+        let cost = CRAM_SLOTS_PER_WORD * MCLK_PER_LINE / SLOTS_PER_LINE_H32_BLANKED;
+        assert_eq!(cost, 20, "closed-form blanked drain cost, CRAM word, H32");
+
+        let now = 3 * MCLK_PER_LINE + 55;
+        let mut v = fresh(); // display off → blanked; reg 12 left at 0 → H32
+        v.control_write(0x8F02, 0); // reg 15 = autoinc 2
+        v.control_write(0xC000, 0); // CRAM write @ $0000, word 1
+        v.control_write(0x0000, 0); // word 2 → code $03
+        assert_eq!(v.code, 0x03, "CRAM write command armed");
+
+        let mut billed = 0u32;
+        for i in 0..8u16 {
+            billed += v.data_write_at(0x2000 + i, now);
+        }
+        let stalling_writes = 8 - 4;
+        assert_eq!(v.fifo_slot_clock, now + stalling_writes * cost);
+        assert_eq!(
+            billed,
+            (stalling_writes * cost.div_ceil(crate::system::MCLK_PER_CPU_CYCLE)) as u32
         );
     }
 
