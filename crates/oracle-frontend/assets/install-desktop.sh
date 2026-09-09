@@ -64,7 +64,7 @@ args=()
 for a in "$@"; do
   case "$a" in
     --dry-run) dry=1 ;;
-    -h|--help) command sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help) command sed -n '2,59p' "$0"; exit 0 ;;
     -*) echo "install-desktop: unknown option '$a' (see --help)" >&2; exit 2 ;;
     *) args+=("$a") ;;
   esac

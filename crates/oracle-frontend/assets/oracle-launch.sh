@@ -77,7 +77,7 @@ while [ $# -gt 0 ]; do
     # Go one step further: take the freshness decision too, report it, and still neither build nor exec.
     # This is how the rebuild rule is checkable without a compiler in the loop.
     --dry-run) dry_run=1 ;;
-    -h|--help) command sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) command sed -n '2,33p' "$0"; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     -*) die "$prog: unknown option '$1' (see --help)" ;;
     *)
