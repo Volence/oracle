@@ -53,3 +53,63 @@ The two windows disagree about the same fact — *how do I ask this program what
 game window's answer to `-h` is actively misleading: it reports a **missing ROM file called `-h`**,
 never mentions that `-h` is not a flag, and prints no usage at all. `--help` is called an *error*
 by the one window and is the documented way in by the other.
+
+---
+
+## Rig and ROM (facts the findings rest on)
+
+* Display `:90`, Xvfb pid 3863285, geometry read back from inside: 1280x960x24.
+* **Isolation proof form used: TWO-SIDED**, `isolation-proof.txt`. Present half — both windows
+  enumerated on `:90` (`oracle-player` by `--pid 1039145`, `oracle-frontend` by
+  `--wm-class oracle-frontend`, which is the filter that discriminates; the pid filter finds it
+  nowhere). Absent half — `WAYLAND_DISPLAY`/`XDG_SESSION_TYPE` read ABSENT from
+  `/proc/<pid>/environ` of the RUNNING processes, **and** their open unix sockets enumerated:
+  X11 only, to the Xvfb this rig spawned, no socket to `/run/user/1000/wayland-0`, which **does
+  exist on this box** (positive control on the absence target). Private sockets bound:
+  `.uxrig/sock/{frontend,player}.sock`, never the shared chain.
+* **ROM outage: 07:39:39 → 07:48:13 UTC = 8m34s** with up to three of another lane's `./build.sh`
+  in flight. Not a product finding; time burned is real. Snapshot validated COMPLETE:
+  header end `0xcec52` → 846931 bytes == file size, `sha256
+  bb492d964eb30440c27feb0ae7a67a5be875e2a6547325822c03bbee63d13b34`, domestic name
+  `SONIC THE HEDGEHOG 4` (`rom-integrity.txt`).
+
+## Job 1 — a game rendering. DONE, 1 step once a ROM existed.
+
+`launch.sh frontend $ROM`. `shots/job1-game-window.png` — Sonic 4 level art, rings, a sprite.
+The **launch banner on stdout is excellent** and lists every key binding; a newcomer who launches
+from a menu or a desktop file never sees it. The in-window route it names is the `` ` `` palette.
+
+## Job 2 — what drew this pixel. DONE, 1 click, in BOTH windows — and they answer differently.
+
+| | `oracle-frontend` (game window) | `oracle-player` (debug tabs) |
+|---|---|---|
+| gesture | one click on the sprite | one click on the sprite in the Screen panel |
+| on-screen answer | `WATCH SPRITE 0 TILE $3F8 + SAT $B800` | `That dot is sprite 0, drawn from VRAM-absolute tile $3F8.` / `sprite 0 at (152,104) 2x2 cells, base $3F8, pal 1 hi-pri: tile $3F8 @ VRAM $7F00-$7F1F, SAT entry @ VRAM $B800-$B807` |
+| layer | yes (SPRITE) | yes |
+| tile | yes ($3F8) | yes |
+| **palette** | **NO** | yes (`pal 1 hi-pri`) |
+| evidence | `shots/job2-a-gamewindow-click.png` | `shots/job2-b-player-screen-click.png` |
+
+Job 2 asks for layer, tile **and palette**. The game window's on-screen line drops the palette; the
+identical click prints the full line, palette included, to the game window's **stdout** — so the
+window is a strict subset of its own terminal output.
+
+## Job 3 — stop at a chosen moment. DONE in `oracle-player`, 6 steps, ~3m50s, most of it lost.
+
+07:50:52 typed `VBlank` (a newcomer's guess) → 07:51:13 armed → REFUSED.
+07:51:13→07:53:47 (**2m34s**) hunting a valid symbol name.
+07:55:05 armed `VBlank_Handler` → `HALTED BY BREAKPOINT b0 at 0x00002334 (VBlank_Handler)`.
+
+## Job 4 — read a register and a memory address while stopped. DONE in `oracle-player`.
+
+PC `00002334`, SR `2604`, A7=SP `FFFFFEF6`, D3 `0000FFFF` (`shots/job4-b-registers-scrolled.png`).
+Memory `0x00FF8000` = `00 00 23 58 00 00 22 8F ...`, labelled `region work RAM`
+(`shots/job4-d-memory-read.png`). The A7/SP/USP/SSP explanatory note under the register file is
+genuinely good.
+
+## Job 5 — what is alive. DONE in `oracle-player`, 1 click.
+
+Objects tab: engine `aeon-sst`, table `0x00FF8FFE`, 66 slots, `$50` bytes each.
+Identified: **slot 36, `Spring_Main`, addr `0x00FF9B3E`, code `0x2A3A`, at (520,536)**; also
+slot 0 `Player_Main` `0x00FF8FFE` code `0x0208` at (256,256).
+Evidence `shots/job5-a-objects-tab.png`, `shots/job5-b-objects-live.png`.
