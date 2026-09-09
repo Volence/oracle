@@ -90,7 +90,29 @@ struct FifoEntry {
     addr: u16,
 }
 
-/// Which VDP-internal memory a captured write ([`VdpWrite`]) landed in (watchpoints v2).
+/// **Which of the three VDP-internal memories** — the one name for it, with three consumers.
+///
+/// # Why this is one type and not two (H30)
+///
+/// It was two, `VdpTarget` here and a second one spelled `Target` ~1,650 lines down, in **this same
+/// module**: same three
+/// variants in the same order, the same six derives, both `pub`, both on wire types (`VdpWrite::target`
+/// and [`DmaRecord::target`]), and neither doc mentioning the other. [`Vdp::write_data`] read the
+/// data-port decode as one spelling and then re-spelled it variant-for-variant to `capture` the write —
+/// **twice, inside one function body** — so the conversion was the only thing asserting they agreed, and
+/// it asserted it by being written out by hand.
+///
+/// Merging them is byte-identical on the wire and provably so: `bincode`'s derive encodes an enum as its
+/// **variant index**, the two variant lists were `Vram, Cram, Vsram` in that order, and every save-state
+/// and `frame_report` field that carried either one carried the same three indices before and after.
+///
+/// Its three consumers are the data-port decode ([`Vdp::target_of`]), the captured-write record
+/// ([`VdpWrite`], watchpoints v2), and the DMA record ([`DmaRecord`], the `frame_report` introspection
+/// surface). A fourth would add a consumer, never a fourth spelling.
+///
+/// **Note the one thing this type is not.** Code `$0C` — the 8-bit VRAM read — decodes to
+/// [`VdpTarget::Vram`] and is told apart by [`Vdp::is_vram_byte_read`], a predicate on the read path,
+/// **not** by a fourth variant here; see that method for the A2 argument.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
 pub enum VdpTarget {
     Vram,
@@ -567,17 +589,17 @@ impl Vdp {
 
     /// The current data-port target region, decoded from CD3..CD0 (recon R1). The low nibble names the
     /// region for both plain and DMA (CD5) codes.
-    fn target(&self) -> Target {
+    fn target(&self) -> VdpTarget {
         Self::target_of(self.code)
     }
 
     /// The data-port target region for an arbitrary command `code` (recon R1) — the FIFO stores the code at
     /// enqueue time, so the drain/snoop path decodes a captured code rather than the live one.
-    fn target_of(code: u8) -> Target {
+    fn target_of(code: u8) -> VdpTarget {
         match code & 0x0F {
-            0x3 | 0x8 => Target::Cram,  // CRAM write (0x3) / CRAM read (0x8)
-            0x4 | 0x5 => Target::Vsram, // VSRAM read (0x4) / write (0x5)
-            _ => Target::Vram,          // VRAM read (0x0) / write (0x1); unknown → VRAM
+            0x3 | 0x8 => VdpTarget::Cram,  // CRAM write (0x3) / CRAM read (0x8)
+            0x4 | 0x5 => VdpTarget::Vsram, // VSRAM read (0x4) / write (0x5)
+            _ => VdpTarget::Vram,          // VRAM read (0x0) / write (0x1); unknown → VRAM
         }
     }
 
@@ -602,8 +624,8 @@ impl Vdp {
     /// read like code `0000`, but only half of the 16-bit result comes from VRAM: the low byte is the
     /// single byte at `address ^ 1`, and the high byte is stale FIFO contents (see [`Vdp::data_read`]).
     ///
-    /// Deliberately a *predicate on the read path*, not a new [`Target`] variant: code `$0C` still decodes
-    /// to `Target::Vram` for the write path (where it names no valid write target and is ignored, the A2
+    /// Deliberately a *predicate on the read path*, not a new [`VdpTarget`] variant: code `$0C` still decodes
+    /// to `VdpTarget::Vram` for the write path (where it names no valid write target and is ignored, the A2
     /// rule) and for the FIFO drain-cost model, both of which A4 leaves byte-identical.
     fn is_vram_byte_read(code: u8) -> bool {
         code & 0x0F == 0x0C
@@ -727,7 +749,7 @@ impl Vdp {
     /// inconsistency in the model — follow-up **F-BLANKSLOT**.
     fn entry_drain_cost(&self, code: u8, at: u64) -> u64 {
         let slots = match Self::target_of(code) {
-            Target::Vram => 2,
+            VdpTarget::Vram => 2,
             _ => 1,
         };
         if self.vblank(at) || !self.display_enabled() {
@@ -792,19 +814,19 @@ impl Vdp {
             // inventing a new one. The ROM is silent on the seam (follow-up F-SNOOPWHEN); where it is
             // silent, preserving prior behaviour is the conservative choice. Behaviour for $0C itself —
             // the only case the ROM pins — is identical either way.
-            Target::Vram if Self::is_vram_byte_read(self.code) => {
+            VdpTarget::Vram if Self::is_vram_byte_read(self.code) => {
                 let b = (self.addr & 0xFFFE) as usize;
                 ((self.vram[b] as u16) << 8) | self.vram[(self.addr ^ 1) as usize] as u16
             }
-            Target::Vram => {
+            VdpTarget::Vram => {
                 let b = (self.addr & 0xFFFE) as usize;
                 ((self.vram[b] as u16) << 8) | self.vram[b | 1] as u16
             }
-            Target::Cram => {
+            VdpTarget::Cram => {
                 let b = (self.addr as usize) & 0x7E;
                 ((self.cram[b] as u16) << 8) | self.cram[b | 1] as u16
             }
-            Target::Vsram => {
+            VdpTarget::Vsram => {
                 let b = ((self.addr & 0xFFFE) as usize) % VSRAM_SIZE;
                 ((self.vsram[b] as u16) << 8) | self.vsram[b | 1] as u16
             }
@@ -845,7 +867,7 @@ impl Vdp {
     /// (`0x0EEE`); VSRAM to 11 bits (`0x07FF`); CRAM/VSRAM big-endian.
     fn write_target(&mut self, w: u16) {
         match self.target() {
-            Target::Vram => {
+            VdpTarget::Vram => {
                 // VRAM odd-address byte-swap (recon R3): high byte → `addr`, low byte → `addr ^ 1`, so an
                 // odd address swaps the two bytes of the word. (Implementation-time pin, unit-tested below.)
                 // Both bytes route through `write_vram_byte` so the SAT-cache write-through sees every byte
@@ -854,7 +876,7 @@ impl Vdp {
                 self.write_vram_byte(a & (VRAM_SIZE - 1), (w >> 8) as u8);
                 self.write_vram_byte((a ^ 1) & (VRAM_SIZE - 1), (w & 0xFF) as u8);
             }
-            Target::Cram => {
+            VdpTarget::Cram => {
                 let masked = w & 0x0EEE; // 9-bit colour (---- BBB- GGG- RRR-)
                 let b = (self.addr as usize) & 0x7E;
                 // Watchpoints v2: the CRAM choke — capture the word write (old read before the store).
@@ -867,7 +889,7 @@ impl Vdp {
                 // caveat has to be answerable on a machine nobody armed anything on.
                 self.cram_written_mclk[b >> 1] = Some(self.now_mclk);
             }
-            Target::Vsram => {
+            VdpTarget::Vsram => {
                 let masked = w & 0x07FF; // 11-bit vertical scroll
                 let b = ((self.addr & 0xFFFE) as usize) % VSRAM_SIZE;
                 // Watchpoints v2: the VSRAM choke — capture the word write (old read before the store).
@@ -993,7 +1015,7 @@ impl Vdp {
     }
 
     /// The live data-port target region (recon R1) — exposed for the `DmaRecord` / introspection.
-    pub fn dma_target(&self) -> Target {
+    pub fn dma_target(&self) -> VdpTarget {
         self.target()
     }
 
@@ -1257,7 +1279,7 @@ impl Vdp {
         let dest = self.addr;
         self.in_dma = true; // watchpoints v2: fill writes attribute to the triggering DMA
         match target {
-            Target::Vram => {
+            VdpTarget::Vram => {
                 let byte = (fill >> 8) as u8; // top byte (recon R4(b))
                 for _ in 0..count {
                     // A3b / P3: a VRAM *byte* write from the fill engine lands at `address ^ 1`, not at
@@ -1323,7 +1345,7 @@ impl Vdp {
             source: source as u32,
             dest,
             len,
-            target: Target::Vram,
+            target: VdpTarget::Vram,
         });
         self.dma_busy_until = now + cost;
     }
@@ -1391,8 +1413,8 @@ impl Vdp {
         // full 16-bit word and is the one read target that does NOT snoop. Behavioral, currency-safe
         // (rendering + the hashed currencies read the stored bytes directly, never through `data_read`).
         match self.target() {
-            Target::Cram => out = (out & 0x0EEE) | (self.fifo_snoop_word() & !0x0EEE),
-            Target::Vsram => out = (out & 0x07FF) | (self.fifo_snoop_word() & !0x07FF),
+            VdpTarget::Cram => out = (out & 0x0EEE) | (self.fifo_snoop_word() & !0x0EEE),
+            VdpTarget::Vsram => out = (out & 0x07FF) | (self.fifo_snoop_word() & !0x07FF),
             // A4: the undocumented 8-bit VRAM read (code $0C) is the third snooping target. Only its LOW
             // byte is defined — the pre-cache put `vram[address ^ 1]` there — so the whole HIGH byte is
             // undefined and reads back the next-available FIFO entry's high byte, MASKING AWAY the real
@@ -1402,10 +1424,10 @@ impl Vdp {
             // marker words' last four, the high byte walks $99 → $BB → $DD → $12 as one CRAM write per
             // group advances the cursor, while both reads *within* a group return the same high byte — a
             // read does not advance it.
-            Target::Vram if Self::is_vram_byte_read(self.code) => {
+            VdpTarget::Vram if Self::is_vram_byte_read(self.code) => {
                 out = (out & 0x00FF) | (self.fifo_snoop_word() & 0xFF00)
             }
-            Target::Vram => {}
+            VdpTarget::Vram => {}
         }
         self.autoinc();
         self.read_buffer = self.read_target();
@@ -1620,7 +1642,7 @@ impl Vdp {
     /// # Why the arithmetic is duplicated rather than shared
     ///
     /// The `0x0EEE` mask and the big-endian byte layout are lifted verbatim from `write_target`'s
-    /// `Target::Cram` arm. Factoring the two into a shared helper would be an edit to a function on the
+    /// `VdpTarget::Cram` arm. Factoring the two into a shared helper would be an edit to a function on the
     /// **currency path** — every frozen golden depends on guest-driven CRAM writes — so the duplication
     /// is the conservative choice, and `cram_poke_matches_the_port_path` is the test that stops the two
     /// from drifting.
@@ -1747,14 +1769,9 @@ fn ramp3(level: u8) -> u8 {
     (level as u16 * 255 / 7) as u8
 }
 
-/// The data-port target region, decoded from the command code's low nibble (recon R1). Public + serializable
-/// because [`DmaRecord`] carries it for the `frame_report` introspection surface.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
-pub enum Target {
-    Vram,
-    Cram,
-    Vsram,
-}
+// ⚑ **A second enum spelled `Target` used to be declared here** — `pub enum { Vram, Cram, Vsram }`, the same six
+// derives as [`VdpTarget`] ~1,650 lines up, on a wire type, with neither doc mentioning the other (H30).
+// There is now one type; see [`VdpTarget`] for why the merge is byte-identical on the wire.
 
 /// The three DMA modes (recon R4 / RD2): 68k→VDP transfer, VRAM fill, VRAM copy.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
@@ -1796,7 +1813,7 @@ pub struct DmaRecord {
     /// (`Vdp::last_dma` → `FrameReport::dma`) and is in neither frozen currency.
     pub dest: u16,
     pub len: u16,
-    pub target: Target,
+    pub target: VdpTarget,
 }
 
 #[cfg(test)]
@@ -2954,7 +2971,7 @@ mod tests {
             source: 0x1234,
             dest: 0xC000,
             len: 16,
-            target: Target::Vram,
+            target: VdpTarget::Vram,
         });
         let bytes = bincode::encode_to_vec(&v, bincode::config::standard()).unwrap();
         let (back, _): (Vdp, usize) =
@@ -3416,7 +3433,7 @@ mod tests {
     ///   `slots * MCLK_PER_LINE / slots_per_line(at)` — the same branch
     ///   `blanked_lines_keep_the_aggregate_slot_rate` pins.
     /// * `Vdp::slots_per_line` → `(h40 = true, blanked = true)` = **205**.
-    /// * `Vdp::entry_drain_cost` → `Target::Vram => 2` slots.
+    /// * `Vdp::entry_drain_cost` → `VdpTarget::Vram => 2` slots.
     /// * [`MCLK_PER_LINE`] = **3420**.
     ///
     /// so every entry drains in `COST = 2 * 3420 / 205 = 33` mclk, at every instant.
@@ -3433,7 +3450,7 @@ mod tests {
     #[test]
     fn a_burst_of_stalling_writes_at_one_instant_bills_each_drain_once() {
         const SLOTS_PER_LINE_H40_BLANKED: u64 = 205; // Vdp::slots_per_line, (h40, blanked)
-        const VRAM_SLOTS_PER_WORD: u64 = 2; // Vdp::entry_drain_cost, Target::Vram
+        const VRAM_SLOTS_PER_WORD: u64 = 2; // Vdp::entry_drain_cost, VdpTarget::Vram
         let cost = VRAM_SLOTS_PER_WORD * MCLK_PER_LINE / SLOTS_PER_LINE_H40_BLANKED;
         assert_eq!(cost, 33, "closed-form blanked drain cost");
 
@@ -3641,7 +3658,7 @@ mod tests {
                 source: 0,
                 dest: 0x8000,
                 len: 4,
-                target: Target::Vram,
+                target: VdpTarget::Vram,
             },
             0,
             end,
