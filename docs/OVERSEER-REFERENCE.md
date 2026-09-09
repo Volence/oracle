@@ -380,6 +380,34 @@ change and was correctly kept out of the hardening parcel.
 
 ## Ops (each line is a paid-for lesson)
 
+**⚑ RESOLVE A PEER'S DEFAULT BRANCH; NEVER ASSUME IT — AND THE ASSUMPTION FAILS SILENT** *(2026-09-09,
+found by a dispatched agent against this seat's own brief; extended by the hub, who measured wider than
+this seat did and was right to)*. Measured across all six repos: **aeon, sigil and AURORA are `master`;
+empyrean, seraph and oracle are `main`**, and `git rev-parse --verify origin/main` **fails in all three
+master repos**. This seat had been writing `git -C ../<repo> show origin/main:<path>` into dispatch briefs.
+**The failure mode is the whole hazard: that read comes back EMPTY and reads as "nothing there", never as
+an error** — bar 16(d)'s absence class, hosted in boilerplate, which is the worst possible host because
+boilerplate is not re-read. **Correct form, which costs one command and cannot rot:**
+
+```sh
+B=$(git -C ../<repo> rev-parse --abbrev-ref origin/HEAD)   # e.g. origin/master
+git -C ../<repo> show "$B:<path>"
+```
+
+⚑ **AURORA IS THE ONE THIS SEAT WOULD NOT HAVE CAUGHT**, because its own peer reads point at aeon and
+sigil; the hub found it by enumerating all six rather than the two in the conversation. **Bar 14's
+consumer-set rule arriving on a branch name.**
+
+⚑ **AND THE HOST IS THE FINDING.** The shared `dispatching-empyrean-agents` skill was checked and carries
+**zero** `origin/` occurrences, and this repo's own docs mention `origin/main` only for empyrean and
+oracle, which genuinely are `main`. **So there was no file to correct: the wrong instruction existed only
+in brief text composed fresh at each dispatch.** That is bar 20 (*mail is not part of the tree, so no tree
+can surface a wrong claim made in mail*) arriving on **dispatch briefs**, which are the same artifact class
+— authored once, read by one agent, never re-read, and invisible to every sweep this repo runs. A brief is
+mail. **Anything a brief asserts twice belongs in THIS file, where a later dispatch will meet it.**
+
+
+
 **2026-09-09, and the first is THIS SEAT'S defect in its own dispatch briefs.**
 
 * ⚑ **A COMPLETED AGENT'S WORKTREE IS NOT IDLE.** Measured 2026-09-09 while considering a routine tidy of
