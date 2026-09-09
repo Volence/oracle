@@ -68,11 +68,21 @@ pub const MAX_FRAMES_PER_ITER: usize = 2;
 /// exactly the old behaviour (run anyway; [`push_frame`] discards what will not fit).
 pub const MAX_CONSECUTIVE_SKIPS: usize = 4;
 
-/// `f32` the synth produces per emulated video frame at `sample_rate`: one interleaved-stereo pair per sample,
-/// 60 frames a second. The single definition of the ring's unit of account — [`make_ring`], the pre-roll and
+/// `f32` the synth produces per emulated video frame at `sample_rate`: one interleaved-stereo pair per
+/// sample. The single definition of the ring's unit of account — [`make_ring`], the pre-roll and
 /// [`frames_to_run`] all measure in these.
+///
+/// **Delegates to the core rather than re-deriving** (lens finding H8). This was
+/// `2 * (sample_rate / 60)`, a second and disagreeing opinion about how long a frame is: an NTSC frame is
+/// 1/59.9227 s, so at 44.1 kHz it is 735.95 samples and not 735. The core owns that arithmetic now, and a
+/// unit of account that drifted from what the sink actually produces would mis-place the water marks this
+/// module steers the whole emulator with.
+///
+/// It is deliberately the **nominal** (rounded) count and not [`samples_in_frame`]'s exact per-frame one:
+/// a ring capacity and a hysteresis band want one representative frame's worth, and asking for "frame
+/// *n*'s" size when sizing a buffer would be asking a question with no answer.
 pub fn frame_samples(sample_rate: u32) -> usize {
-    2 * (sample_rate as usize / 60)
+    2 * oracle_core::synth::nominal_samples_per_frame(sample_rate) as usize
 }
 
 /// How many emulated frames the window loop should run this iteration, from the ring's current `occupied`
@@ -82,8 +92,10 @@ pub fn frame_samples(sample_rate: u32) -> usize {
 /// **Why this exists.** The window is paced by `minifb::set_target_fps(60)`, whose limiter sleeps
 /// `target - elapsed` and only *then* restarts its clock — so its period is always `16.667 ms + sleep
 /// overshoot` and its rate is always **under** 60. Measured here: 59.54–59.63 fps. The synth, meanwhile,
-/// emits exactly `sample_rate / 60` pairs per *emulated* frame, so an open-loop producer delivers
-/// `735 x 59.63 = 43,826` samples/s into a device consuming 44,100 — a **permanent 0.62 % deficit**. A
+/// emits one *emulated* frame's worth of pairs — `samples_in_frame`, ~735.95 at 44.1 kHz — so an open-loop
+/// producer delivers `735.95 x 59.63 = 43,883` samples/s into a device consuming 44,100 — a **permanent
+/// 0.49 % deficit**. (The measurement above was taken when the synth emitted a flat `sample_rate / 60`;
+/// lens finding H8 corrected that count, which moves the deficit's size and not its sign or its cause.) A
 /// deficit is not a latency problem: it drains any reservoir, so neither a bigger ring nor a pre-roll fixes
 /// it alone (both measured: 8.3 % of callbacks underrunning becomes 7.7 %). The ring simply sits pinned at
 /// empty and the callback silence-fills 8–16 % of its buffers — 233 ms of inserted silence every 30 s,
@@ -395,11 +407,15 @@ mod tests {
     }
 
     /// Design §7 Test 3 — producer smoke path: render frames into a persistent `AudioSink`, drain, convert,
-    /// push into the ring, pop, and assert `2 · (rate/60)` f32 flow per rendered frame in FIFO order.
+    /// push into the ring, pop, and assert one frame's worth of f32 flows per rendered frame in FIFO order.
+    ///
+    /// The per-frame size is asked of the core **per frame** (lens finding H8): it was `2 · (rate/60)`,
+    /// which is 1600 at 48 kHz where an NTSC frame is really 801.03 samples. Ring capacity still uses the
+    /// nominal size, because a capacity is not a frame.
     #[test]
     fn producer_smoke_path_flows_samples() {
         let rate = 48_000u32;
-        let per_frame = 2 * (rate as usize / 60); // 1600 f32 / frame
+        let per_frame = frame_samples(rate);
         let mut sink = AudioSink::new(rate);
         // A ring large enough to hold several frames without overrun for this test.
         let (mut prod, mut cons) = AudioRing::new(8 * per_frame).split();
@@ -415,12 +431,16 @@ mod tests {
         for f in 1..=3u64 {
             sink.on_step_boundary(0, f); // renders exactly one frame
             let pcm = sink.drain();
-            assert_eq!(pcm.len(), per_frame, "one frame renders 2·(rate/60) i16");
+            assert_eq!(
+                pcm.len(),
+                2 * oracle_core::synth::samples_in_frame(rate, f - 1) as usize,
+                "one frame renders 2 · that frame's own sample count"
+            );
             let dropped = push_frame(&mut prod, &pcm, gain_for(VOLUME_STEPS, false));
             assert_eq!(dropped, 0, "ring is sized to not overrun in this test");
-            let mut out = vec![0.0f32; per_frame];
+            let mut out = vec![0.0f32; pcm.len()];
             let n = cons.pop_slice(&mut out);
-            assert_eq!(n, per_frame, "every pushed sample pops back out");
+            assert_eq!(n, pcm.len(), "every pushed sample pops back out");
             if out.iter().any(|&s| s != 0.0) {
                 popped_any_nonzero = true;
             }
@@ -599,9 +619,14 @@ mod tests {
         for f in 0..=5u64 {
             sink.on_step_boundary(0, f);
         }
+        // Derived per frame, because since H8 the count is not constant: frames 1..=5 are the ones
+        // rendered (boundary 0 only latches), and they are not all the same size.
+        let expected: usize = (1..=5u64)
+            .map(|f| 2 * oracle_core::synth::samples_in_frame(44_100, f - 1) as usize)
+            .sum();
         assert_eq!(
             sink.drain().len(),
-            5 * 2 * (44_100 / 60),
+            expected,
             "five frames render after the resync"
         );
     }
@@ -609,9 +634,15 @@ mod tests {
     /// The feedback policy itself, at every boundary that matters. Pure arithmetic, no device.
     #[test]
     fn frames_to_run_policy_boundaries() {
-        let f = frame_samples(44_100); // 1470
-        assert_eq!(f, 1470);
-        let cap = RING_FRAMES * f; // 11760
+        let f = frame_samples(44_100);
+        // Derived, not transcribed: this was `1470` (2·735) until lens finding H8 corrected the frame
+        // length. `frame_samples` is one interleaved-stereo pair per sample, so the identity that has to
+        // hold is against the core's own count, not against a number typed here.
+        assert_eq!(
+            f,
+            2 * oracle_core::synth::nominal_samples_per_frame(44_100) as usize
+        );
+        let cap = RING_FRAMES * f;
         let low = LOW_WATER_FRAMES * f;
         let run = |occ: usize| frames_to_run(occ, cap, f, 0);
 
@@ -722,9 +753,22 @@ mod tests {
     /// ticking at the window's *measured* 59.63 fps (minifb's rate limiter can never exceed its target and
     /// always lands under it) and a device consuming at exactly 44,100 Hz in fixed blocks.
     ///
-    /// Open-loop — one emulated frame per iteration, whatever the ring says — that is a permanent 0.62 %
+    /// Open-loop — one emulated frame per iteration, whatever the ring says — that is a permanent
     /// production deficit, and the assertion below is that it audibly breaks: the ring pins at empty and the
     /// callback silence-fills a large fraction of its buffers. With the feedback loop, zero.
+    ///
+    /// ⚑ **The deficit's SIZE moved under lens finding H8, and this row is written so that it can.** The
+    /// producer's frame was `sample_rate / 60` = 735 samples, giving `735 x 59.6272 = 43,826`/s against
+    /// 44,100 — a 0.6213 % deficit. An NTSC frame is really 735.9476 samples, so the true deficit is
+    /// **0.4932 %**, and the open-loop underrun rate at 256-frame blocks fell from 5.2 % to 4.0 %. The old
+    /// `>= 5` floor was tuned to the defective arithmetic and sat within 4 % of its own vacuity — one
+    /// correct change to the frame length tipped it over.
+    ///
+    /// So the load-bearing assertion is now the **threshold-free** one: a deficit, however small, drains any
+    /// reservoir, so the open-loop ring reaches **empty**. That is true for any deficit and false the
+    /// instant the producer keeps up, which is exactly the property this row exists to hold. The percentage
+    /// floor is kept as a coarse "and it is audibly bad", re-measured, and deliberately not re-tuned to the
+    /// edge.
     #[test]
     fn occupancy_feedback_eliminates_the_underruns_an_open_loop_producer_guarantees() {
         const RATE: f64 = 44_100.0;
@@ -767,9 +811,21 @@ mod tests {
         }
 
         for block in [256usize, 512, 1024, 2048] {
-            let (under, cbs, _, _) = sim(block, false, 30.0);
+            let (under, cbs, _, ran) = sim(block, false, 30.0);
+            // **The mechanism, with no tuned number in it**: over the run the open-loop producer hands
+            // the device strictly less audio than the device asks for. That is what "deficit" means, it
+            // holds for a deficit of any size, and it is false the instant the producer keeps up — which
+            // is why it, and not the percentage below, is the assertion this row rests on. It is also the
+            // claim `RING_FRAMES`' doc rests on: no ring capacity can cover a shortfall that never stops.
+            let produced = ran * frame_samples(RATE as u32);
+            let demanded = cbs * block * 2;
             assert!(
-                under * 100 / cbs >= 5,
+                produced < demanded,
+                "open loop at {block}-frame blocks produced {produced} f32 against {demanded} demanded \
+                 — with no shortfall there is no crackle to fix and every assertion below is vacuous"
+            );
+            assert!(
+                under * 100 / cbs >= 3,
                 "open loop at {block}-frame blocks must underrun badly (this is the reported crackle): \
                  {under}/{cbs}"
             );
@@ -847,8 +903,8 @@ mod tests {
         // (b) The AudioSink rendered a frame of audio through the same composite.
         assert_eq!(
             audio.samples().len(),
-            1470,
-            "one 44.1 kHz frame = 2·735 i16"
+            2 * oracle_core::synth::samples_in_frame(44_100, 0) as usize,
+            "one 44.1 kHz frame = 2 · that frame's own sample count (H8: not a flat 735)"
         );
     }
 

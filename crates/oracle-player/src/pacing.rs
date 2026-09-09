@@ -39,8 +39,9 @@
 //!    construction — which is why the measurement this parcel owes can be taken without a real GPU.
 //! 2. **Clock (fine, [`frames_to_run`] below, delegating to the player's own policy).** The audio device
 //!    remains the master clock. Ring occupancy decides 0, 1 or 2 emulated frames per iteration. Nothing
-//!    about that is changed: a host's "60 Hz" is never the device's 44 100/735, and only the consumer
-//!    knows the truth.
+//!    about that is changed: a host's "60 Hz" is never the device's `sample_rate / samples_in_frame`, and
+//!    only the consumer knows the truth. (That divisor was a flat 735 until lens finding H8; an NTSC frame
+//!    is 735.9476… samples at 44.1 kHz, and the difference *was* the emulator's speed — see below.)
 //! 3. **Display (slave).** Whatever the compositor does. If present blocks — vsync on a 60 Hz panel — the
 //!    governor's wait is simply already satisfied and it costs nothing. If present blocks *longer* than a
 //!    period (a 50 Hz panel, a compositor hiccup, a shader recompile), the loop falls behind, the governor
@@ -58,10 +59,17 @@
 //!   master is the one that absorbs the error, and video is the one that can absorb it silently.
 //! * It is the only clock whose true rate is **knowable at runtime**. `sample_rate` is nominal; the actual
 //!   crystal is not 44 100.000 Hz and no API reports what it is. Ring occupancy measures it directly.
-//! * It is the clock the core already produces against — the synth emits exactly `sample_rate / 60` pairs
-//!   per *emulated* frame, so pacing on anything else creates a permanent one-directional deficit. That
-//!   deficit is measured in `audio.rs`: 0.62 %/s, which pins the ring at empty and silence-fills 8–16 % of
-//!   callbacks. A bigger ring does not fix a deficit.
+//! * It is the clock the core already produces against — the synth emits one emulated frame's worth of
+//!   pairs (`oracle_core::synth::samples_in_frame`), so pacing on anything else creates a permanent
+//!   one-directional deficit. That deficit is measured in `audio.rs`: ~0.5 %/s, which pins the ring at
+//!   empty and silence-fills 8–16 % of callbacks. A bigger ring does not fix a deficit.
+//!
+//! ⚑ **And it is why the per-frame sample count is an accuracy surface, not a buffer size.** Because the
+//! device cannot be made to wait, this loop runs the machine at whatever rate keeps the ring fed:
+//! `emulated fps = sample_rate / samples-per-frame`, exactly. While the synth emitted `sample_rate / 60`
+//! that pinned the machine at 60.000 Hz against a real 59.92274 — 278 extra emulated frames an hour,
+//! growing linearly (lens finding H8). Anything that changes how many samples a frame carries changes how
+//! fast this emulator runs, and belongs to `oracle-core::synth`, never to a dial here.
 //!
 //! The alternative — vsync as master, emulate one frame per present — was considered and rejected: it is
 //! only correct when the panel is exactly 60 Hz, it makes the emulator's speed a property of the user's
@@ -107,6 +115,12 @@ use crate::audio;
 /// The nominal NTSC video period, 60.0 Hz. The emulator's *true* rate is set by the audio ring (layer 2);
 /// this is only the governor's target, and being slightly wrong here is harmless by design — that is the
 /// point of having a trim.
+///
+/// ⚑ **Harmless in one direction specifically, and it is worth knowing which.** This is a ceiling: the
+/// loop refuses to emulate when woken early. NTSC is 59.92274 Hz
+/// (`oracle_core::synth::FRAME_RATE_HZ`), which is *below* 60, so the true rate passes under this bound
+/// and layer 2 sets it. A period made shorter than the truth would stop being a ceiling and start being
+/// the rate.
 pub const FRAME_PERIOD: Duration = Duration::from_nanos(16_666_667);
 
 /// Ring occupancy, in video frames, below which an extra emulated frame is run — the render-path value.

@@ -10,18 +10,96 @@
 //! Scope: **PSG + FM**. SY-1 added the PSG; SY-2 adds the minimal hand-rolled YM2612 (see
 //! [`Ym2612Synth`]) and mixes it into the same render. Both chips are driven off the identical decoded
 //! `(bank, reg, value)` write stream. Output is native `sample_rate` Hz stereo `i16` (the PSG is mono and
-//! duplicated to both channels; the FM carries its own stereo pan), a fixed `sample_rate / 60` samples per
-//! NTSC frame.
+//! duplicated to both channels; the FM carries its own stereo pan), [`samples_in_frame`] samples per NTSC
+//! frame — **not** a fixed `sample_rate / 60`, which is lens finding H8: an NTSC frame is 1/59.9227 s, so
+//! at 44.1 kHz it is 735.9476… samples and the count alternates 735/736 rather than sitting at 735.
 
 use crate::bus::{BusEvent, BusEventSink, BusOp};
 use crate::synth::console_filter::{ConsoleModel, ConsoleOutputFilter};
 use crate::synth::sn76489::Sn76489;
+use crate::synth::sn76489::PSG_CLOCK;
 use crate::synth::ym2612_synth::Ym2612Synth;
-use crate::system::MCLK_PER_FRAME;
+use crate::system::{MCLK_PER_FRAME, MCLK_PER_Z80_CYCLE};
 use std::collections::BTreeMap;
 
 /// The canonical output sample rate for SY-1 (Hz).
 pub const DEFAULT_SAMPLE_RATE: u32 = 44_100;
+
+/// **The NTSC master clock (Hz) — derived, never typed.**
+///
+/// Nothing in `crates/` stated this number before, which is how `sample_rate / 60` survived: without a
+/// master clock there is no way to write down how long a frame *is*, so "a frame" quietly became "1/60 s".
+/// It is derivable from two constants the tree already had, and the derivation is exact:
+/// [`PSG_CLOCK`] is the NTSC colour subcarrier and the PSG sits on the same mclk/15 leg as the Z80, so
+/// `3 579 545 · `[`MCLK_PER_Z80_CYCLE`]` = 53 693 175` Hz.
+///
+/// **The FM leg is the cross-check, not the source.** `ym2612_synth::YM2612_CLOCK` is 7 670 453 — the
+/// rounded value the VGM header carries — while mclk/7 is 7 670 453.571…, so `YM2612_CLOCK · 7` lands 4 Hz
+/// low. The two agree to within that rounding, which is the confirmation; the PSG leg is what is used,
+/// because it is the one that divides exactly.
+pub const MCLK_HZ: u64 = PSG_CLOCK as u64 * MCLK_PER_Z80_CYCLE;
+
+/// **The true NTSC frame rate, as a rational** — `(numerator, denominator)` = `(MCLK_HZ,
+/// MCLK_PER_FRAME)`, i.e. 53 693 175 / 896 040 = **59.92274… Hz**, not 60.
+///
+/// Exposed as the pair rather than an `f64` so a caller that needs it exactly can have it exactly; the
+/// only float in the story should be the one a human reads.
+pub const FRAME_RATE_HZ: (u64, u64) = (MCLK_HZ, MCLK_PER_FRAME);
+
+/// **How many output samples the machine has produced by the start of frame `frame`**, at `sample_rate`.
+///
+/// `frame · sample_rate · MCLK_PER_FRAME / MCLK_HZ`, floored — the exact running total, in `u128` because
+/// the numerator passes `u64::MAX` after about three months of emulated runtime and a silent wrap there
+/// would be a defect of exactly the kind this function exists to remove.
+pub const fn samples_through_frame(sample_rate: u32, frame: u64) -> u64 {
+    ((frame as u128 * sample_rate as u128 * MCLK_PER_FRAME as u128) / MCLK_HZ as u128) as u64
+}
+
+/// **How many output samples frame `frame` carries**, at `sample_rate` — the difference of two running
+/// totals, which is the whole of the fix for lens finding H8.
+///
+/// One NTSC frame is 896 040 mclk = 16.688 ms, and at 44 100 Hz that is **735.9476… samples**. It is not
+/// an integer and it is not 735, so a constant cannot be right: the residual has to go somewhere. Here it
+/// goes into the count itself, which alternates 735/736 so that the running total is never more than one
+/// sample from the exact rational — the standard Bresenham arrangement, and the reason
+/// [`Ym2612Synth::begin_frame`] has always taken the count as a parameter instead of reading a field.
+///
+/// # Why this decides the emulator's speed, and not just its pitch
+///
+/// The player makes the audio device the master clock (`oracle-player::pacing`,
+/// `oracle-frontend::audio::frames_to_run`): ring occupancy steers how many frames are emulated per
+/// iteration, so in the long run the machine produces exactly as many samples per second as the device
+/// consumes. That closes the loop `emulated fps = sample_rate / samples_per_frame` — so the old
+/// `sample_rate / 60` did not merely mislabel a buffer size, it **ran the machine at 60.000 Hz instead of
+/// 59.9227**: 0.129 % fast, **278 extra emulated frames every hour**, growing linearly for as long as the
+/// session lasts. Headless callers pace on nothing and were unaffected.
+///
+/// The chips agree with the new count and disagreed with the old one. `Sn76489::new` and
+/// `Ym2612Synth::new` advance their phase by one output sample's worth of chip time per `next_sample`, so
+/// rendering 735 of them for a 16.688 ms frame under-advanced both chips by the same 0.129 % — the FM and
+/// PSG pitch were sharp by ~2.2 cents. One fix, both symptoms.
+pub const fn samples_in_frame(sample_rate: u32, frame: u64) -> u32 {
+    (samples_through_frame(sample_rate, frame + 1) - samples_through_frame(sample_rate, frame))
+        as u32
+}
+
+/// **A per-frame sample count for SIZING a buffer** — the exact value rounded to nearest (736 at 44.1 kHz),
+/// never a rate.
+///
+/// A ring's capacity and its water marks are hysteresis bands; they want one representative frame's worth
+/// and do not care about the 0.05-sample residual. What they must *not* do is re-derive the rate from a
+/// number of their own, which is how `2 * (sample_rate / 60)` came to state a second, disagreeing opinion
+/// about how fast this machine runs. Callers that need the real count of a real frame want
+/// [`samples_in_frame`].
+pub const fn nominal_samples_per_frame(sample_rate: u32) -> u32 {
+    // Round to nearest rather than floor: at 44.1 kHz the true value is 735.95, and flooring it would
+    // reproduce the very 735 this finding is about, in the one place it is still allowed to appear.
+    // Written as `(2n + d) / 2d` rather than `(2n/d + 1)/2` so it is a single rounded division and not a
+    // shape clippy reads as a `div_ceil` (it is not one — `div_ceil` would give 736 at every rate).
+    let n = sample_rate as u128 * MCLK_PER_FRAME as u128;
+    let d = MCLK_HZ as u128;
+    ((2 * n + d) / (2 * d)) as u32
+}
 
 /// Post-mix PSG gain in Q15 — **reference-derived, no longer a by-ear knob.** The SN76489
 /// [`VOL_TABLE`](crate::synth::sn76489) peaks at 4000/channel, and this multiplies the summed PSG sample
@@ -53,8 +131,11 @@ const PSG_LEVEL_Q15: i64 = 11_185;
 pub struct AudioSink {
     /// Output sample rate (Hz).
     sample_rate: u32,
-    /// Samples rendered per NTSC frame (`sample_rate / 60`).
-    samples_per_frame: u32,
+    // ⚑ There is deliberately no `samples_per_frame` field any more. Holding one number *was* lens
+    // finding H8: a per-frame count cannot be a constant (735.9476… at 44.1 kHz), and a field made "a
+    // frame" quietly mean 1/60 s at every site that read it. The count a given frame renders is
+    // [`samples_in_frame`], taken from the frame index; a caller sizing a buffer wants
+    // [`nominal_samples_per_frame`].
     /// The hand-rolled SN76489 synthesizer (SY-1).
     psg: Sn76489,
     /// The minimal hand-rolled YM2612 FM synthesizer (SY-2).
@@ -97,7 +178,7 @@ impl AudioSink {
     pub fn with_console_model(sample_rate: u32, model: ConsoleModel) -> Self {
         Self {
             sample_rate,
-            samples_per_frame: sample_rate / 60,
+
             psg: Sn76489::new(sample_rate),
             fm: Ym2612Synth::new(sample_rate),
             fm_addr_latch: [0; 2],
@@ -144,10 +225,19 @@ impl AudioSink {
     /// Turn an absolute master-clock into a `(frame, intra-frame sample)` pair (design §3.2). Integer math
     /// from the write's own mclk — the derived `frame` agrees with the run loop's boundary stamp
     /// (`scheduler.now() / MCLK_PER_FRAME`) by construction. The top-boundary clamp mirrors the DAC clamp.
+    /// The count frame `frame` renders — [`samples_in_frame`] at this sink's rate. Every site that used to
+    /// read the old fixed field goes through here, so the write's intra-frame index and the render loop's
+    /// bound are the same number for the same frame by construction.
+    fn spf(&self, frame: u64) -> u32 {
+        samples_in_frame(self.sample_rate, frame)
+    }
+
     fn frame_and_sample(&self, mclk: u64) -> (u64, u32) {
         let frame = mclk / MCLK_PER_FRAME;
-        let sample = ((mclk % MCLK_PER_FRAME) * self.samples_per_frame as u64 / MCLK_PER_FRAME)
-            .min(self.samples_per_frame as u64 - 1) as u32;
+        // The frame's OWN count, not a global one: a write is placed inside the frame that will render
+        // it, and neighbouring frames differ by a sample.
+        let spf = self.spf(frame) as u64;
+        let sample = ((mclk % MCLK_PER_FRAME) * spf / MCLK_PER_FRAME).min(spf - 1) as u32;
         (frame, sample)
     }
 
@@ -191,7 +281,7 @@ impl AudioSink {
     /// write bucket. Instead of applying every write at the frame boundary (SY-3), the writes are walked in
     /// `sample` order and each one's register effect fires as the per-sample loop reaches its sample.
     fn render_frame(&mut self, frame: u64) {
-        let spf = self.samples_per_frame;
+        let spf = self.spf(frame);
         let mut bucket = self.pending.remove(&frame).unwrap_or_default();
         // Writes arrive mostly-sorted (monotone mclk); a stable sort by sample makes the per-sample walk
         // exact regardless of any cross-master (68k/Z80) interleaving within the frame.
@@ -313,18 +403,22 @@ mod tests {
     }
 
     /// A frame boundary renders exactly one frame of stereo audio; the buffer grows by
-    /// `2 · samples_per_frame` per elapsed frame.
+    /// `2 · samples_in_frame(rate, frame)` per elapsed frame.
+    ///
+    /// The expected count is **derived from the frame index**, not typed: since H8 it is not a constant.
+    /// Frame 0 happens to be 735 and frame 1 is 736 — writing `735` here would still pass and would be
+    /// pinning a coincidence.
     #[test]
     fn frame_boundary_renders_one_frame_of_stereo() {
         let mut sink = AudioSink::new(44_100);
-        assert_eq!(sink.samples_per_frame, 735);
+        let f0 = samples_in_frame(44_100, 0);
 
         sink.on_step_boundary(0, 0); // first boundary: latch, no render
         assert_eq!(sink.samples().len(), 0);
 
-        sink.on_step_boundary(0, 1); // one frame elapsed → 735 stereo samples = 1470 i16
-        assert_eq!(sink.samples().len(), 1470);
-        assert_eq!(sink.len_frames(), 735);
+        sink.on_step_boundary(0, 1); // one frame elapsed → frame 0's count, interleaved stereo
+        assert_eq!(sink.samples().len(), 2 * f0 as usize);
+        assert_eq!(sink.len_frames(), f0 as usize);
     }
 
     /// Render a fixed PSG tone through a given console model, returning the frame's PCM.
@@ -568,25 +662,37 @@ mod tests {
     #[test]
     fn mclk_maps_to_frame_and_sample() {
         let sink = AudioSink::new(44_100);
-        assert_eq!(sink.samples_per_frame, 735);
+        // Each frame's own count. ⚑ They are not equal — frame 0 is 735 and frame 2 is 736 — which is
+        // exactly why every expectation below is derived per frame rather than sharing one literal.
+        let f0 = samples_in_frame(44_100, 0) as u64;
+        let f2 = samples_in_frame(44_100, 2) as u64;
+        assert_ne!(
+            f0, f2,
+            "anti-vacuity: this row exists to prove the mapping uses the FRAME's count, so the two \
+             frames it compares must genuinely differ"
+        );
         // Frame boundaries: offset 0 → sample 0 of that frame.
         assert_eq!(sink.frame_and_sample(0), (0, 0));
         assert_eq!(sink.frame_and_sample(MCLK_PER_FRAME), (1, 0));
-        // Just under the next boundary → the last sample of frame 0 (734), and the clamp holds it there.
+        // Just under the next boundary → the last sample of frame 0, and the clamp holds it there.
         let (tf, ts) = sink.frame_and_sample(MCLK_PER_FRAME - 1);
         assert_eq!(tf, 0);
-        assert_eq!(ts, 734, "top of frame clamps to samples_per_frame - 1");
-        // Hand-computed mid-frame value: offset * 735 / 896_040.
+        assert_eq!(
+            ts as u64,
+            f0 - 1,
+            "top of frame clamps to that frame's samples_in_frame - 1"
+        );
+        // Mid-frame, computed from frame 0's own count.
         let mid = MCLK_PER_FRAME / 2; // 448_020
         assert_eq!(
             sink.frame_and_sample(mid),
-            (0, (mid * 735 / MCLK_PER_FRAME) as u32)
+            (0, (mid * f0 / MCLK_PER_FRAME) as u32)
         );
-        // Frame-2 offset carries the frame index with the same intra-frame math.
+        // Frame-2 offset carries the frame index — and uses FRAME 2's count, not frame 0's.
         let m = 2 * MCLK_PER_FRAME + 12_345;
         assert_eq!(
             sink.frame_and_sample(m),
-            (2, (12_345u64 * 735 / MCLK_PER_FRAME) as u32)
+            (2, (12_345u64 * f2 / MCLK_PER_FRAME) as u32)
         );
     }
 
@@ -624,9 +730,10 @@ mod tests {
     fn monotonic_mclk_yields_monotonic_sample() {
         let sink = AudioSink::new(44_100);
         let base = 3 * MCLK_PER_FRAME; // frame 3
-        let step = MCLK_PER_FRAME / 735; // ~1219 mclk ≈ one output sample
+        let spf = samples_in_frame(44_100, 3) as u64; // frame 3's own count, derived
+        let step = MCLK_PER_FRAME / spf; // ~1217 mclk ≈ one output sample
         let mut prev = 0u32;
-        for k in 0..735u64 {
+        for k in 0..spf {
             let (frame, sample) = sink.frame_and_sample(base + k * step);
             assert_eq!(frame, 3, "the swept mclk stays within frame 3");
             assert!(
@@ -636,6 +743,124 @@ mod tests {
             prev = sample;
         }
         assert!(prev > 0, "the sample index must advance across the frame");
+    }
+
+    /// ★ **The machine runs at the NTSC rate, and the rate is the SINK's to set** — lens finding H8.
+    ///
+    /// # Who reads this number, and when
+    ///
+    /// The player makes the audio device the master clock: ring occupancy decides how many frames to
+    /// emulate per iteration (`oracle-frontend::audio::frames_to_run`, `oracle-player::pacing`), so over
+    /// any long run the machine produces exactly as many samples as the device consumes. That closes
+    /// `emulated fps = sample_rate / samples-per-frame` — the sink's per-frame count *is* the emulator's
+    /// wall-clock speed, and `sample_rate / 60` set it to 60.000 Hz against a real 59.92274 Hz. **278
+    /// extra emulated frames per hour, growing linearly.** Headless callers pace on nothing, which is why
+    /// this was invisible everywhere but the two windows.
+    ///
+    /// # What is asserted, and why it is asserted through `render`
+    ///
+    /// An hour of frames is walked and the samples counted **off the rendered buffer**, not off
+    /// [`samples_in_frame`]. Calling the helper and checking its arithmetic would prove the helper; it
+    /// could not see a `render_frame` that ignored it, which is the shape of the defect being fixed. So
+    /// the subject is `on_step_boundary`'s output.
+    ///
+    /// The expectation is **derived from the machine's own constants** — `MCLK_HZ` (itself derived from
+    /// [`PSG_CLOCK`] and [`MCLK_PER_Z80_CYCLE`]) over `MCLK_PER_FRAME` — never from a typed 59.9227. A
+    /// literal here would be the same defect with a better number.
+    #[test]
+    fn an_hour_of_frames_carries_an_hour_of_samples_at_the_true_ntsc_rate() {
+        const RATE: u32 = 44_100;
+        let (num, den) = FRAME_RATE_HZ;
+
+        // ---- (a) the render path really renders the derived count, observed frame by frame.
+        //
+        // Bounded at 600 frames because this drives the whole FM+PSG mix: an hour of real rendering is
+        // ~2 minutes of test time, and what the render path has to prove is that it FOLLOWS
+        // `samples_in_frame`, which 600 frames pins exactly. The hour is then arithmetic on the function
+        // the render was just shown to obey — part (b).
+        const RENDERED: u64 = 600;
+        let mut sink = AudioSink::new(RATE);
+        let mut rendered: u64 = 0;
+        let mut seen: Vec<u64> = Vec::new();
+        for f in 0..=RENDERED {
+            sink.on_step_boundary(0, f);
+            let n = sink.drain().len() as u64 / 2;
+            if f > 0 {
+                seen.push(n);
+            }
+            rendered += n;
+        }
+        assert_eq!(
+            rendered,
+            samples_through_frame(RATE, RENDERED),
+            "the rendered buffer must carry exactly the derived running total — a `render_frame` that \
+             ignored `samples_in_frame` would still pass a test that only called the helper"
+        );
+        // Anti-vacuity: the render path must actually have produced two different frame lengths, or the
+        // equality above is satisfiable by any constant that happens to average out.
+        assert!(
+            seen.contains(&735) && seen.contains(&736),
+            "the rendered frames were all one length ({:?}…), so this row cannot tell the fix from the \
+             defect",
+            &seen[..seen.len().min(8)]
+        );
+
+        // ---- (b) what that rate means over an hour, against the pre-H8 count.
+        let frames_per_hour = 3600 * num / den;
+        let honest = samples_through_frame(RATE, frames_per_hour);
+        let old = frames_per_hour * (RATE as u64 / 60); // `sample_rate / 60` = 735
+        assert!(
+            old < honest,
+            "COULD NOT MEASURE: the pre-H8 count {old} must be SHORTER than an honest hour {honest}, \
+             or this control is not measuring the defect it names"
+        );
+        // The device consumes at `sample_rate`, and the loop runs the machine as fast as it must to keep
+        // up — so a short frame is a fast machine. Stated as the frames-per-hour the finding quotes:
+        let fast_fps = RATE as f64 / (RATE / 60) as f64; // 60.000
+        let true_fps = num as f64 / den as f64; // 59.92274…
+        let extra_per_hour = (fast_fps - true_fps) * 3600.0;
+        assert!(
+            (extra_per_hour - 278.1).abs() < 0.5,
+            "the defect this row guards is 278 extra emulated frames an hour; this arithmetic makes it \
+             {extra_per_hour:.1}, so the row and the finding have drifted apart"
+        );
+    }
+
+    /// **Neighbouring frames differ, and that is the mechanism** — the residual has to live somewhere.
+    ///
+    /// A single constant cannot render 735.9476 samples, so the count alternates. This pins that it
+    /// really does (a rounded constant of 736 would pass the hour row above to within ~15 frames and fail
+    /// here), that both values are the two integers straddling the exact rational, and that the running
+    /// total never drifts more than a sample from it.
+    #[test]
+    fn the_per_frame_count_straddles_the_exact_rational_and_never_drifts() {
+        const RATE: u32 = 44_100;
+        let counts: Vec<u32> = (0..1_000).map(|f| samples_in_frame(RATE, f)).collect();
+        let lo = *counts.iter().min().expect("non-empty");
+        let hi = *counts.iter().max().expect("non-empty");
+        assert_eq!(
+            (lo, hi),
+            (735, 736),
+            "at 44.1 kHz an NTSC frame is 735.9476… samples, so the only honest integers are the two \
+             that straddle it"
+        );
+        assert!(
+            counts.contains(&lo) && counts.contains(&hi),
+            "anti-vacuity: a constant count would make the min/max check above pass with one value"
+        );
+        // The running total never leaves the exact rational by more than a sample — the property a
+        // rounded constant does not have.
+        let (num, den) = FRAME_RATE_HZ;
+        let mut total: u64 = 0;
+        for (f, &c) in counts.iter().enumerate() {
+            total += c as u64;
+            let exact = (f as u128 + 1) * RATE as u128 * den as u128 / num as u128;
+            assert!(
+                (total as u128).abs_diff(exact) <= 1,
+                "after {} frames the total is {total} and the exact value is {exact}",
+                f + 1
+            );
+        }
     }
 
     /// `drain` returns the buffer and clears it.

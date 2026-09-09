@@ -349,6 +349,38 @@ impl Bus {
             .machine_replaced(sys, oracle_aether::engine::MachineReplacedReason::StateLoad);
     }
 
+    /// **Tab / F1 reset the machine** — the same call for the reset door that
+    /// [`Bus::machine_replaced`] is for F4, and it exists for the same reason: this window repairs its
+    /// own gesture inline (the SRAM flush, the capture clear, the audio resync are all right there in
+    /// the `Cmd::Reset` arm) and the one repair it cannot make for itself is telling the bus.
+    ///
+    /// Without it a client that had paused this frontend and then watched a human reset it read a
+    /// latched framebuffer of the pre-reset machine, watchpoint hits stamped in an epoch that had ended,
+    /// and a profiler stack describing returns that were never coming — while `emulator/status` answered
+    /// as if nothing had happened.
+    ///
+    /// ⚑ **It pushes no event, and that is on purpose** — this server advertises none for a reset, and
+    /// `Engine::note_reset` carries the argument for why inventing one is a CR and not a call site. Call
+    /// it *after* `sys.reset()`, with the machine that is now running.
+    pub fn machine_reset(&mut self, sys: &mut System) {
+        self.host.machine_reset(sys);
+    }
+
+    /// **F5 or the ROM browser swapped the cartridge** — the notification half of the swap the shared
+    /// block below the dispatch loop performs, and the one thing in that block this window could not do
+    /// for itself.
+    ///
+    /// It emits `emulator/romReloaded`, exactly as a client-driven `emulator/reload_rom` does, so a
+    /// listener learns about the window's own swap on the same event it already learns about its own.
+    ///
+    /// ⚑ **Ordering is load-bearing.** Call it last in the swap block: after `sys.load_rom` and
+    /// `sys.reset`, and after [`Bus::set_machine_info`] has installed the incoming listing. The engine
+    /// re-runs the D7 binding check against the lent `sys.rom()`, so a call taken earlier validates the
+    /// listing against the outgoing cartridge and reaches the opposite verdict.
+    pub fn rom_reloaded(&mut self, sys: &mut System, path: String) {
+        self.host.rom_reloaded(sys, path);
+    }
+
     /// **The listing the engine resolves against right now**, for the loop to re-derive its own clone from
     /// after [`Pumped::symbols_changed`]. `None` both when nothing was ever loaded and when a
     /// `reload_rom` dropped one on the D7 check — the two are the same state to a caller, which is why
