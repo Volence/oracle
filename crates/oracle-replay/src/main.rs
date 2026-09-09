@@ -221,8 +221,12 @@ fn go_restamp(args: &Args, mut prepared: Prepared, cfg: RunConfig) -> Result<i32
     };
 
     // 3. Where anything would go, checked before a single frame is spent.
-    let guard = artifacts::guard_for_inputs(
-        &[args.rom.as_path(), args.lst.as_path()],
+    // M47: the fixture is in this list. It is the file the repair rewrites, so its repository is the
+    // one most certain to be the owner's — and it can sit in a different checkout from the ROM.
+    let guard = artifacts::guard_for_run(
+        args.rom.as_path(),
+        args.lst.as_path(),
+        args.fixture_bin.as_deref(),
         args.allow_source_write,
         args.force,
     );
