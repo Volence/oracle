@@ -5751,7 +5751,12 @@ impl Engine {
                 .ok_or_else(|| RpcError::invalid_params("`addr` is required"))?,
         )?;
         let len = match params.get("len") {
-            Some(v) => hex::parse_count("len", v, 0, 0x2000)? as usize,
+            // §11.45 raised this floor 0 -> 1 in the contract, and the handler follows it here. `len: 0`
+            // was the only length-ish field on the surface flooring at 0 while its own `result.bytes` is
+            // `$defs/hex`, whose pattern requires at least one digit — a request the contract PERMITTED
+            // and for which no conformant reply existed. This server used to serve it, and answered
+            // `"0x"`. Its read siblings (`read`, `read_vram`, `read_cram`) have always floored at 1.
+            Some(v) => hex::parse_count("len", v, 1, 0x2000)? as usize,
             None => 1,
         };
         // Forwarded to the free [`z80_read_window`] for R1's reason (see [`debug_read`]) — and the

@@ -60,11 +60,11 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 3f83c6c9b9cd619b9087cc54ab982e21305865cc
-    pin.blob     = 72ad05de47b124a2be6bc4e667927b4cf1059342
-    pin.bytes    = 365492
+    pin.revision = 59d29ac30a166241a25f00c270f7b02baae1661c
+    pin.blob     = da37da7052b5a68a2246878e03fb472fc6417d37
+    pin.bytes    = 365942
 
-    pin.vectors.revision = 3f83c6c9b9cd619b9087cc54ab982e21305865cc
+    pin.vectors.revision = 59d29ac30a166241a25f00c270f7b02baae1661c
     pin.vectors.blob     = e045fac1fdd32624344bab20f062acf193d3b3d0
     pin.vectors.bytes    = 137937
 
@@ -73,12 +73,43 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`3f83c6c9b9cd619b9087cc54ab982e21305865cc`** (2026-09-06) — the §11.42 adoption itself, which wrote **both** paths, so the per-path recipe answers `3f83c6c` twice and the two pins carry one revision without a judgement call for the first time in three re-vendors. `git merge-base --is-ancestor 3f83c6c origin/main` was **run**, not assumed (it exited 0). **70** method fragments (the `methods` object carries 71 keys, one of which is a `$comment`); all 70 declare `params`, all 70 close it with `unevaluatedProperties: false` (handshake exempt), and all 70 declare `result`; 19 `$defs`; **5** event fragments (the `events` object carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **50 leaf paths added, ZERO removed, exactly ONE value changed**, derived by flattening both copies to leaf paths and differencing the sets. Every added path is under `methods["emulator/pacing"]`, which is the one new fragment; the set of fragment names is otherwise identical in both directions. |
-| Last commit that touched the schema | **`3f83c6c9b9cd619b9087cc54ab982e21305865cc`** — *"contract: §11.42 CR-S adjudicated, emulator/pacing (read-only pacing readout), fragment + 10 vectors, gate green"* (2026-09-06). |
-| Git blob | `72ad05de47b124a2be6bc4e667927b4cf1059342` |
-| SHA-256 | `28f741238954dc60c582e91cd2595651efb786c45788b2456095b9125031366f` |
-| Bytes | 365492 |
-| Vendored on | 2026-09-06 |
+| Contract repo revision | **`59d29ac30a166241a25f00c270f7b02baae1661c`** (2026-09-09) — `origin/main`'s tip when this copy was taken, chosen as the pin because it resolves **both** vendored paths to the blobs actually held (the schema's `da37da70`, the vectors' unchanged `e045fac1`), which is what step 0's same-revision assertion needs and what the last commit to WRITE either path cannot give. `git merge-base --is-ancestor 59d29ac origin/main` was **run**, not assumed (it exited 0). **70** method fragments (the `methods` object carries 71 keys, one a `$comment`); all 70 declare `params`, all 70 close it with `unevaluatedProperties: false`, and all 70 declare `result`; 19 `$defs`; **5** event fragments (the `events` object carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy** with a JSON parser, never carried over from the table this replaces. The delta from the copy this replaces is **ZERO leaf paths added, ZERO removed, exactly FOUR values changed**, derived by flattening both copies to leaf paths and differencing the sets; all four are under `methods["emulator/z80_read"]` and are listed in the note below. |
+| Last commit that touched the schema | **`47e77ecfa489fff24e4c8181cb27d4a216e87550`** — *"schema: restore raw UTF-8 (content-identical), and correct 11.45's owes-nothing claim"* (2026-09-09). **Not the pin**, and the gap is the point: `47e77ec` wrote the path, `59d29ac` is the revision this copy was taken from, and only the second is shared with the vectors path. §11.45's own rule change landed one commit earlier at `5f66cc2`. |
+| Git blob | `da37da7052b5a68a2246878e03fb472fc6417d37` |
+| SHA-256 | `e8dabe8cf4b189083828ed7e562db8b7b5e99616eff632c07be8175fd8f5a58e` |
+| Bytes | 365942 |
+| Vendored on | 2026-09-09 |
+
+> **⚑ The whole delta is FOUR leaf values, and the encoding scare that preceded it left no trace.**
+> §11.45 raises `emulator/z80_read`'s `len` floor from 0 to 1 in both `params` and `result`, and touches
+> nothing else. Compared as **parsed structures** (both copies flattened to leaf paths and differenced,
+> `ensure_ascii=False`), the answer is 3097 leaves on each side, **zero paths added, zero removed, four
+> values changed**:
+>
+> | leaf path | old | new |
+> |---|---|---|
+> | `methods["emulator/z80_read"].params.properties.len.minimum` | `0` | `1` |
+> | `methods["emulator/z80_read"].params.properties.len.description` | *(unchanged prefix)* | + a `FLOOR RAISED 0->1 2026-09-09 (§11.45, oracle's F-Z80READ-LEN0-UNSERVEABLE)` clause |
+> | `methods["emulator/z80_read"].result.properties.len.minimum` | `0` | `1` |
+> | `methods["emulator/z80_read"].result.properties.len.description` | `"Bytes actually returned."` | `"Bytes actually returned. Floored at 1 with the request field (§11.45)."` |
+>
+> `$defs/hex` is **unchanged** (`^0x[0-9A-Fa-f]+$`), which is the half of the ruling worth stating: of the
+> two fixes offered when this repo registered the divergence, upstream took the floor and not the pattern,
+> so the empty blob stays unspellable and 0 becomes a refusal like every other `len`'s.
+>
+> **The re-vendor and the handler change are one commit, and there is no red-free ordering the other way.**
+> `tests/request_bounds.rs` derives its probes from these bytes: vendor without the handler and its
+> in-bounds control stops probing `len: 0` while `the_registered_unserveable_bound_is_still_live` still
+> registers it; change the handler without vendoring and the same row's probe sends a `len: 0` the
+> fragment still calls legal and the server now refuses by name. Both directions are red.
+>
+> **⚑ A large encoding churn passed through this file upstream and was reverted before we took it.**
+> Between `5f66cc2` and `47e77ec` the schema was re-serialised to ASCII — 427 lines changed, 314 carrying
+> `\u00XX` escapes where literal `§`, `—`, `–` had been — and `47e77ec` restored the raw UTF-8,
+> content-identical. Vendoring at `59d29ac` therefore takes the de-escaped bytes and the **raw text diff
+> against the copy this replaces is 4 added / 4 removed lines**, not 427. The normalized comparison above
+> was run anyway and doubles as the control: had the size of the raw diff and the size of the semantic
+> delta disagreed, the pin would have been wrong.
 
 > **⚑ The ONE changed value is not the pacing row, and it is recorded rather than absorbed.**
 > `methods["emulator/lookup_symbol"].result.properties.otherMatches.$comment` changed its policy
@@ -192,13 +223,20 @@ until the vectors table describes `c5638e6e`, not the current copy.)*
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/tests/vectors.json` |
-| Contract repo revision | **`3f83c6c9b9cd619b9087cc54ab982e21305865cc`** (2026-09-06) — the recipe was run for this path in its own right and answered `3f83c6c`, the **same** commit the schema path answers, because the §11.42 adoption wrote both files. **295 cases** (`cases[]`, up from 285), of which **176** are `expect: "fail"` and **119** `expect: "pass"`; naming **42** distinct methods (up from 41), of which **10** are `emulator/lookup_equate` and **10** are the new `emulator/pacing`. **14** cases carry `group: "events"`, unchanged. All 285 previous cases are present, unchanged, and still the **leading prefix**: the ten new cases are APPENDED, which is not what §11.41's insertion at index 111 did and is therefore stated rather than assumed — the prefix was compared as whole documents, element by element, and is identical. The ten are §11.42's own: a `params` pass on `{}`, a `params` fail on a client-supplied `{"windowMs": 1000}`, two `result` passes (full, and `samples: 0` with the percentiles absent), and six `result` fails (`unmeasured` absent, a count beside `unmeasured: true`, a bare-number `fps`, half a percentile pair, percentiles over zero samples, `targetFps` absent). `$comment`, `envelope`, `eventEnvelope` and `specExamples` (9) are byte-identical. Every figure re-derived by parsing the bytes written in this commit. |
+| Contract repo revision | **`59d29ac30a166241a25f00c270f7b02baae1661c`** (2026-09-09) — carried up with the schema's pin, which is what step 0's same-revision assertion requires. **These bytes did not move**: `59d29ac` resolves this path to `e045fac1`, the object `3f83c6c` left there, because §11.45 amended a fragment and added no vector. The content figures below therefore still describe `3f83c6c`'s write and were re-derived by parsing the copy held here rather than carried over. in its own right and answered `3f83c6c`, the **same** commit the schema path answers, because the §11.42 adoption wrote both files. **295 cases** (`cases[]`, up from 285), of which **176** are `expect: "fail"` and **119** `expect: "pass"`; naming **42** distinct methods (up from 41), of which **10** are `emulator/lookup_equate` and **10** are the new `emulator/pacing`. **14** cases carry `group: "events"`, unchanged. All 285 previous cases are present, unchanged, and still the **leading prefix**: the ten new cases are APPENDED, which is not what §11.41's insertion at index 111 did and is therefore stated rather than assumed — the prefix was compared as whole documents, element by element, and is identical. The ten are §11.42's own: a `params` pass on `{}`, a `params` fail on a client-supplied `{"windowMs": 1000}`, two `result` passes (full, and `samples: 0` with the percentiles absent), and six `result` fails (`unmeasured` absent, a count beside `unmeasured: true`, a bare-number `fps`, half a percentile pair, percentiles over zero samples, `targetFps` absent). `$comment`, `envelope`, `eventEnvelope` and `specExamples` (9) are byte-identical. Every figure re-derived by parsing the bytes written in this commit. |
 | Git blob | `e045fac1fdd32624344bab20f062acf193d3b3d0` |
 | SHA-256 | `63d0b5fb4932c15fc9309988dbc6cfecc59bbda417ad34661f7d58db195ea1ab` |
 | Bytes | 137937 |
-| Vendored on | 2026-09-06 |
+| Vendored on | 2026-09-09 |
 
-> **⚑ These bytes did not move on this re-vendor, and only the pin's revision did.** Blob `136bb716` was
+> **⚑ Again these bytes did not move, and again only the pin's revision did.** `git rev-parse
+> 59d29ac:contract/schema/tests/vectors.json` answers `e045fac1fdd32624344bab20f062acf193d3b3d0`, which is
+> already the vendored value — §11.45 changed a fragment's bounds and added no case, and no existing
+> `emulator/z80_read` vector sends `len: 0` (the six that name the method use 16, 8193, a missing `addr`,
+> a numeric `addr`, and two `len: 2` results), so the vector set is still consistent with the raised floor.
+> That was checked by parsing this copy, not assumed from the blob equality.
+>
+> *(Retired one step.)* > **⚑ These bytes did not move on this re-vendor, and only the pin's revision did.** Blob `136bb716` was
 > already the vendored value and it still is — re-copied from `88d1077`'s object store rather than left
 > alone, so the file is provably the object at the revision both pins now name and not merely a file that
 > happens to hash the same. Every figure in the table above was re-derived by parsing these bytes
