@@ -1147,9 +1147,20 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 *self.sram_enabled = (byte & 1) != 0;
                 *self.sram_write_protect = (byte & 2) != 0;
             }
-            // I/O register writes ($A10003–$A1001F): data/control latches + serial stubs (recon IO2/IO3).
-            // The version byte and RxData are read-only; even bytes are unmapped. All drop here.
-            0xA1_0000..=0xA1_001F => match io_reg(a) {
+            // I/O register writes ($A10000–$A1001F): data/control latches + serial stubs (recon IO2/IO3).
+            // The block does not decode A0 (K4-4, memtest row 6 `A0A0`), and that discard belongs to the
+            // address DECODER, not to the access direction — a line that is not wired has no direction.
+            // Pinned from the reference (H31, ruled 2026-09-08, `docs/OVERSEER.md`): `oracle-old` parses
+            // `AddressDiscardLowerBitCount` once per MAPPING (`BusInterface::MapDevice` 605 / `MapPort`
+            // 776, stored at `BuildMapEntry` 229) and applies one identical expression at eight sites —
+            // `ReadMemory` 2454, `WriteMemory` 2507, `TransparentReadMemory` 2541,
+            // `TransparentWriteMemory` 2574, `ReadPort` 2647, `WritePort` 2700, `TransparentReadPort`
+            // 2734, `TransparentWritePort` 2767. Four reads, four writes, one expression. So decode
+            // `a | 1` here exactly as the read arm does: an even-byte write reaches the same register as
+            // its odd neighbour. The version byte ($A10000/1) and RxData stay read-only — `a | 1` maps
+            // $A10000 onto $A10001, which `io_reg` deliberately does not map, so both drop. A word write
+            // is unaffected: both lanes hit the register and the low byte, written second, stands.
+            0xA1_0000..=0xA1_001F => match io_reg(a | 1) {
                 Some((port, IoReg::Data)) => self.io.write_data(port, byte),
                 Some((port, IoReg::Ctrl)) => self.io.write_ctrl(port, byte),
                 Some((port, IoReg::TxData)) => self.io.write_txdata(port, byte),
@@ -2048,6 +2059,57 @@ mod tests {
         let mut sink = Vec::new();
         let mut bus = mem.bus(&mut sink);
         assert_eq!(bus.read8(0xA1_0001, 5).0, MD_VERSION, "version register");
+    }
+
+    #[test]
+    fn io_registers_ignore_a0_even_byte_writes_reach_the_register() {
+        // H31, ruled 2026-09-08 from the reference (`docs/OVERSEER.md`): the A0 discard belongs to the
+        // address DECODER, not to the access direction. In `oracle-old` the identical expression
+        // `(((location - mapEntry->address) & mapEntry->addressMask) >> addressDiscardLowerBitCount)`
+        // runs at eight sites — four reads AND four writes (`ReadMemory` 2454, `WriteMemory` 2507,
+        // `TransparentReadMemory` 2541, `TransparentWriteMemory` 2574, `ReadPort` 2647, `WritePort`
+        // 2700, `TransparentReadPort` 2734, `TransparentWritePort` 2767) — and
+        // `AddressDiscardLowerBitCount` is parsed per MAPPING (`MapDevice` 605 / `MapPort` 776), never
+        // per direction. So an even-byte WRITE must reach the same register its odd neighbour does. The
+        // sibling read test below can only ever exercise the read mirror, because it writes the ODD
+        // address; this is the write-direction case it structurally cannot reach.
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        // P1 control ($A10009): write the EVEN lane, read the ODD register back.
+        bus.write8(0xA1_0008, 5, 0x40);
+        assert_eq!(
+            bus.read8(0xA1_0009, 5).0,
+            0x40,
+            "even-byte write lands in P1 ctrl"
+        );
+        // P1 data ($A10003) the same way; with TH an output the latch bit reads back through the IO3
+        // model.
+        bus.write8(0xA1_0002, 5, 0x40);
+        assert_eq!(
+            bus.read8(0xA1_0003, 5).0 & 0x40,
+            0x40,
+            "even-byte write lands in P1 data (TH latch high)"
+        );
+        // And a serial stub, to show the mirror is the whole block and not one register: P1 SCtrl
+        // ($A10013) written through its even lane $A10012.
+        bus.write8(0xA1_0012, 5, 0x38);
+        assert_eq!(
+            bus.read8(0xA1_0013, 5).0,
+            0x38,
+            "even-byte write lands in P1 SCtrl"
+        );
+        // The version byte stays read-only on BOTH lanes — `a | 1` maps $A10000 to $A10001, which
+        // `io_reg` deliberately does not map, so both writes drop instead of aliasing a register.
+        bus.write8(0xA1_0000, 5, 0x5A);
+        bus.write8(0xA1_0001, 5, 0x5A);
+        assert_eq!(bus.read8(0xA1_0001, 5).0, MD_VERSION, "version read-only");
+        assert_eq!(bus.read8(0xA1_0000, 5).0, MD_VERSION, "version read-only");
+        // A WORD write is unchanged by this fix, which is exactly why no frozen artifact catches the
+        // defect: both lanes now hit the register, and the low byte — written second — is what stands,
+        // the same value the odd-lane-only model left behind.
+        bus.write16(0xA1_0008, 5, 0x0080);
+        assert_eq!(bus.read8(0xA1_0009, 5).0, 0x80, "word write: low byte wins");
     }
 
     #[test]
