@@ -58,6 +58,40 @@
 //!
 //! [`a_probe_that_never_finishes_is_reported_as_such_and_never_as_a_refusal`] is the positive control for
 //! the third: it drives a real server-side block and requires the verdict to be DID-NOT-FINISH.
+//!
+//! # What the request side is now covered by, and the two families STILL uncovered
+//!
+//! Written down because a differential's blind spots are invisible by construction, and because a green
+//! run across three files reads like a closed surface when it is not one:
+//!
+//! | obligation family | count | covered by |
+//! |---|---|---|
+//! | `minimum` / `maximum` | 97 | `request_bounds.rs` |
+//! | undeclared key refused (`unevaluatedProperties: false`) | 70 params objects | `params_closure.rs` |
+//! | unconditional `required` | 30 | **this file** |
+//! | `pattern` | 24 | **this file** |
+//! | `minLength` | 21 | **this file** |
+//! | `oneOf` disjunction (supply none) | 17 | **this file** |
+//! | `enum` | 10 | **this file** |
+//! | `minItems` | 1 | **this file** |
+//! | `dependentRequired` | 6 | **NOBODY** |
+//! | `if`/`then` | 2 | **NOBODY** |
+//!
+//! The two uncovered families are conditional obligations, and they are not covered because the walk
+//! here is unconditional by construction — it mutates one site of an otherwise-legal baseline, and a
+//! conditional obligation is a statement about a COMBINATION of keys:
+//!
+//! * **`dependentRequired` (6).** `write_cram` declares `{r: [g,b], g: [r,b], b: [r,g]}` — the colour
+//!   components travel as a trio — and `write_memory` declares `{value: [width], width: [value],
+//!   disp: [symbol]}`. The obligation is *"this key present without its companions is refused"*, which
+//!   needs a mutation that REMOVES a sibling of the key under test rather than touching the key itself.
+//! * **`if`/`then` (2).** `watchpoint_add` declares, twice and symmetrically, that `censusKey` and
+//!   `mode: "census"` imply each other. This server does enforce it — the refusal *"`censusKey` is only
+//!   meaningful with `mode: \"census\"`"* was measured while building [`baseline`], which is the only
+//!   reason it is known at all, and it is measured by nothing that would notice if it stopped.
+//!
+//! Both are tractable extensions of the same machinery — another [`Kind`] and another [`Mutation`] each
+//! — and neither is done here. `F-COND-OBLIGATIONS-UNPROBED`.
 
 mod common;
 
