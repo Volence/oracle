@@ -149,10 +149,31 @@ ancestor of their `origin/main`, and a **contract** commit carrying `protocol.md
 `bus-protocol.schema.json` +27 and `vectors.json` +43, so its SHA class matches what it anchors. §11.40,
 the §3 row and the schema member are all present at `origin/main`. **Reviewer named: aeon.**
 
-**What we owe:** serve `emulator/machineReplaced` (`reason` enum `{stateLoad}` + **`hitsDropped`, required
-and present at 0**), **re-vendor the fragment by blob id**, and close against item 28's extended rows.
-**Sequenced behind the icon parcel, the build-identity line and the first style pass**: the hub's order
-and this seat agrees; nothing is attached to the owner's window today.
+**▶ WHAT WE OWED: ALL THREE DISCHARGED, and the row asserting the debt outlived the work by four days.**
+~~serve `emulator/machineReplaced` (`reason` enum `{stateLoad}` + **`hitsDropped`, required and present at
+0**), **re-vendor the fragment by blob id**, and close against item 28's extended rows. Sequenced behind the
+icon parcel, the build-identity line and the first style pass.~~ **Measured firsthand 2026-09-09 before an
+agent was spent on it:** the serve landed at **`d631b5a`** (2026-09-05), both windows emitting and a headless
+server correctly NOT advertising (`handshake.rs:173` asserts the absence); the vendored blob is
+**`da37da70`**, byte-identical to `empyrean origin/main:contract/schema/bus-protocol.schema.json`, both read
+at committed revisions and neither from a working tree; item 28's extended rows are carried by name in
+`crates/oracle-aether/tests/machine_replaced.rs`, the refused-load negative included. `H4` (`a5e18cb`) is
+built on top of it, which is the strongest single sign the serve was real: a later parcel depended on it.
+
+⛑ **THE SIXTH INSTANCE IN TWO DAYS OF A ROW'S JUSTIFICATION AGEING WHILE THE ROW SAT STILL, and the first
+one caught BEFORE the agent rather than after.** The standing rule that caught it is the 09-09 frontier's:
+**before dispatching any row, check whether the WORK landed, not whether the ROW is open.** Both artifacts
+asserting this debt — this paragraph and the `CR-Q-MACHINEREPLACED` board row — were self-consistent, correctly
+cited, and wrong, which is why neither could correct the other.
+
+⛑ **AND THE HUB READ IT THE SAME WAY FROM THE OTHER SIDE, which makes this a shared-frame instance rather
+than a lane defect.** Backing the parcel as contract owner, it reported *"your crates reference it in 8 files
+… so the contract is written, the structure is there, and the signal is not delivered"* — it had grepped the
+references and read **presence of structure as evidence of absent emission**. That is bar 16 running in the
+NEGATIVE direction: name-is-not-behaviour normally over-reads a name as work, and here it under-read eight
+real emission sites as scaffolding. The discriminator was one grep separating **test** references from
+**production call sites** (`states.rs:237`, `main.rs:1926`), which is the command that converts a reference
+count into behaviour.
 
 **The four changes to our proposal, transcribed rather than summarised:**
 - **M2: `capabilities.events` advertises the member ONLY on a process that can produce the gesture; a
