@@ -18,10 +18,22 @@
 //!     manifest parse.
 //!   * `script_is_loud_when_the_floor_is_missing` is a negative control that runs the script against a
 //!     manifest with the key deleted and requires a non-zero exit with empty stdout.
+//!   * the two LIVE-SURFACE rules scan every file that tells a human or a machine which Rust to use —
+//!     `README.md`, `.github/**`, `tools/**` and every `Cargo.toml` — see `live_surface_files()` for
+//!     the scope argument and the `docs/**` exemption.
 //!
-//! LOUD ON UNMEASURABLE. A scan that finds no workflows, or no `toolchain:` sites, FAILS. A grep that
-//! matches nothing exits 0, and "I could not measure it" rendered as green is the failure mode this
-//! whole parcel exists to remove.
+//! The first four tests here guarded the workflows and the manifests, and shipped with a hole: the
+//! README. It was found by someone mutating the README by hand and watching all five tests pass, which
+//! is the whole reason the live-surface rules exist. The lesson is worth keeping: the sites a guard
+//! covers are the sites its author was thinking about, and the one that had to be found by reading is
+//! the one the guard did not cover.
+//!
+//! LOUD ON UNMEASURABLE. A scan that finds no workflows, no `toolchain:` sites, fewer than eight live
+//! files, or a missing/empty `README.md`, FAILS. A grep that matches nothing exits 0, and "I could not
+//! measure it" rendered as green is the failure mode this whole parcel exists to remove. Rule A goes
+//! further and is SELF-VALIDATING: it hunts a string that must be present (the declaration), so zero
+//! hits proves the scanner broken rather than the tree clean, and the hit it found is printed on fd 2
+//! on every green run.
 //!
 //! RUNNER: `cargo test --workspace`, the `Test` step of the `build-test-lint` job in
 //! `.github/workflows/ci.yml`. Targeted locally as
@@ -108,6 +120,71 @@ fn script_floor() -> String {
         .expect("rust-floor.sh stdout is utf-8")
         .trim()
         .to_string()
+}
+
+/// THE LIVE SURFACE — every file in the tree that tells a human or a machine which Rust to use.
+///
+/// SCOPE, and why it is drawn here rather than wider or narrower. The defect is not "the README" and
+/// it is not "documentation"; it is *a copy of the version in a place that is read as current
+/// instruction*. Four such places exist:
+///
+///   * `README.md` — instructs a human. This is where the gap was found by hand.
+///   * `.github/**` — instructs the runner. Already guarded at `toolchain:` keys, but a literal in a
+///     comment, or a future `apt install` / `rustup` line, is the same copy in the same file and was
+///     not covered.
+///   * `tools/**` — executable configuration, and the single most likely home for the next copy: a
+///     setup script that hardcodes a toolchain.
+///   * every `Cargo.toml` — where the one legitimate statement lives.
+///
+/// DELIBERATELY EXEMPT, and how a future dated record stays clean:
+///
+///   * `docs/**` — the record archive, exempt WHOLESALE and by directory rather than by a list of
+///     lines. This is principled, not a convenience: everything there is dated by construction —
+///     `decisions.jsonl` and `lane-log.jsonl` are append-only ledgers, and the plan documents carry
+///     the date in the filename (`2026-08-17-player-s3-lenses.md`). `docs/decisions.jsonl` (d-46) and
+///     that plan document both legitimately state the floor as a record of what was true then, and
+///     a guard that made someone edit either to get green would be worse than the gap it closed. So
+///     the rule for a future historical note about the toolchain is simply: it belongs in `docs/`,
+///     which is already where this repo puts such notes.
+///   * `crates/**/*.rs` — a Rust source file cannot select a toolchain; the manifest beside it can,
+///     and that IS scanned. Including half a million lines of source whose comments discuss
+///     dependency versions would buy nothing and cost the first false positive.
+///   * `target/`, `vendor/` — build output and pinned third-party corpora, not ours to edit.
+///
+/// The result needs NO exemption list at all: measured over the whole live surface, the only match is
+/// the declaration itself.
+fn live_surface_files() -> Vec<PathBuf> {
+    let root = repo_root();
+    let mut files: Vec<PathBuf> = vec![root.join("README.md"), root.join("Cargo.toml")];
+    for dir in [".github", "tools"] {
+        collect_files(&root.join(dir), &mut files);
+    }
+    for member in workspace_members() {
+        files.push(root.join(member).join("Cargo.toml"));
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Recursive walk. A directory that does not exist is a FINDING, not an empty result: `.github` and
+/// `tools` are both load-bearing here, and silently scanning nothing is the vacuity this file exists
+/// to prevent.
+fn collect_files(dir: &PathBuf, out: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "cannot list {} ({e}) — refusing to scan nothing",
+            dir.display()
+        )
+    });
+    for entry in entries {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
 }
 
 /// Every `*.yml` / `*.yaml` under `.github/workflows`, sorted. Fails if there are none.
@@ -306,11 +383,9 @@ fn workflows_using_the_derived_toolchain_actually_run_the_script() {
     );
 }
 
-/// Cargo enforces MSRV PER PACKAGE. A `[workspace.package] rust-version` that no member inherits is a
-/// declaration with no teeth — it would read as a fix and check nothing. The member list is derived
-/// from the root manifest, never copied, so a new crate is covered the day it is added.
-#[test]
-fn every_workspace_member_inherits_the_floor() {
+/// The workspace's member paths, derived from the root manifest so a new crate is covered the day it
+/// is added.
+fn workspace_members() -> Vec<String> {
     let root = repo_root();
     let text = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
 
@@ -349,6 +424,16 @@ fn every_workspace_member_inherits_the_floor() {
          small workspace; refusing to report ok on a list this test did not really read",
         members.len()
     );
+    members
+}
+
+/// Cargo enforces MSRV PER PACKAGE. A `[workspace.package] rust-version` that no member inherits is a
+/// declaration with no teeth — it would read as a fix and check nothing. The member list is derived
+/// from the root manifest, never copied, so a new crate is covered the day it is added.
+#[test]
+fn every_workspace_member_inherits_the_floor() {
+    let root = repo_root();
+    let members = workspace_members();
 
     // On fd 2, where libtest's per-thread capture cannot swallow it: a passing test that prints
     // nothing cannot be told apart from one that checked an empty list.
@@ -379,5 +464,201 @@ fn every_workspace_member_inherits_the_floor() {
         missing.len(),
         members.len(),
         missing.join("\n  ")
+    );
+}
+
+/// Is `hay[at..]`'s match a standalone version rather than part of a longer token (`1.96.01`,
+/// `v1.96.0-beta`)? Guards against a substring match reading as a finding.
+fn standalone_at(hay: &str, at: usize, needle_len: usize) -> bool {
+    let before_ok = hay[..at]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_ascii_digit() && c != '.');
+    let after_ok = hay[at + needle_len..]
+        .chars()
+        .next()
+        .is_none_or(|c| !c.is_ascii_digit() && c != '.');
+    before_ok && after_ok
+}
+
+/// RULE A — THE DECLARED VALUE APPEARS EXACTLY ONCE IN THE LIVE TREE.
+///
+/// This is the gap found by hand after the first four mutations: the parcel de-duplicated five sites
+/// and guarded four, leaving `README.md` — the site that had to be found by reading — unprotected,
+/// while the README's own new text promised that a number written there would go stale and be caught.
+/// A doc that says *always* with nothing checking it is this repo's recurring shape.
+///
+/// SELF-VALIDATING, which is the anti-vacuity property that matters here. The scan searches for a
+/// string KNOWN TO BE PRESENT: the declaration itself. A green run therefore proves the scanner can
+/// see occurrences at all, and finding ZERO means a broken scanner (wrong root, unreadable files, a
+/// needle that stopped matching) and FAILS rather than passing quietly. The legitimate hit is printed
+/// on fd 2 every run, so the log names what was found instead of asserting silence.
+#[test]
+fn the_declared_version_is_stated_in_exactly_one_place() {
+    let floor = manifest_floor();
+    let files = live_surface_files();
+    let root = repo_root();
+
+    assert!(
+        files.len() >= 8,
+        "the live surface scan found only {} files ({files:?}) — README.md, both workflows, tools/*, \
+         and six manifests are all expected. A short list is a broken walk, not a small repo, and \
+         must not report ok",
+        files.len()
+    );
+    let readme = root.join("README.md");
+    assert!(
+        files.contains(&readme) && fs::metadata(&readme).is_ok_and(|m| m.len() > 0),
+        "README.md is missing or empty, so the guard covering it measured nothing. A file this test \
+         is specifically responsible for cannot be allowed to vanish into a green run."
+    );
+
+    let mut hits: Vec<String> = Vec::new();
+    for file in &files {
+        // Non-utf8 files are skipped by `read_to_string`, which is correct: a version literal that
+        // misleads anybody is text.
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        for (i, line) in text.lines().enumerate() {
+            let mut from = 0;
+            while let Some(off) = line[from..].find(&floor) {
+                let at = from + off;
+                if standalone_at(line, at, floor.len()) {
+                    hits.push(format!("{}:{}  {}", file.display(), i + 1, line.trim()));
+                }
+                from = at + floor.len();
+            }
+        }
+    }
+
+    assert!(
+        !hits.is_empty(),
+        "scanned {} live files for the declared floor {floor:?} and found it NOWHERE — not even in \
+         the manifest that declares it. That is this scan being broken, not the tree being clean; \
+         refusing to report ok.",
+        files.len()
+    );
+    eprintln!(
+        "FLOOR GUARD: {} live files scanned for {floor:?}; {} occurrence(s):",
+        files.len(),
+        hits.len()
+    );
+    for h in &hits {
+        eprintln!("  {h}");
+    }
+
+    let declaration_prefix = format!("{}:", root.join("Cargo.toml").display());
+    let strays: Vec<&String> = hits
+        .iter()
+        .filter(|h| !h.starts_with(&declaration_prefix) || !h.contains("rust-version ="))
+        .collect();
+
+    assert!(
+        strays.is_empty(),
+        "the Rust version is stated in {} place(s) outside its declaration:\n  {}\n\
+         Only `rust-version = \"{floor}\"` in the workspace Cargo.toml may carry this number. Every \
+         other live site must DERIVE it — CI via `tools/rust-floor.sh`, prose by pointing at the \
+         manifest instead of repeating the digits. If it is a dated historical note, it belongs in \
+         `docs/`, which is exempt precisely so that records never have to be falsified to get green.",
+        strays.len(),
+        strays
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}
+
+/// RULE B — NO *OTHER* VERSION IS STATED AS THIS PROJECT'S RUST VERSION EITHER.
+///
+/// Rule A cannot see the worse failure. A copy that has DRIFTED no longer contains the declared
+/// string: `CI pins Rust 1.94.0` is invisible to an exact-value scan, and it is precisely the
+/// sentence that misleads a reader — an in-sync copy is merely redundant, a drifted one is false. So
+/// this rule looks for the SHAPE of the claim: a toolchain keyword followed closely by a THREE-part
+/// version, anywhere on the live surface except the declaration line itself.
+///
+/// Three parts are required, and the keyword must sit within 14 characters, because that is what
+/// keeps this from firing on the ordinary version chatter these files are full of — `alsa-sys 0.3.1`,
+/// `clippy 0.1.98`, `egui 0.36`, `slice::as_chunks` (stable 1.88), `edition = "2021"`. Measured over
+/// the whole live surface, this pattern has exactly one hit today and it is the declaration.
+#[test]
+fn no_live_file_states_a_different_rust_version() {
+    const KEYWORDS: [&str; 4] = ["rust", "rustc", "toolchain", "msrv"];
+    let floor = manifest_floor();
+    let root = repo_root();
+    let declaration_line = format!("rust-version = \"{floor}\"");
+
+    let files = live_surface_files();
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+
+    for file in &files {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        scanned += 1;
+        for (i, line) in text.lines().enumerate() {
+            if line.trim() == declaration_line {
+                continue;
+            }
+            let lower = line.to_lowercase();
+            let bytes = line.as_bytes();
+            // Walk every `d.d.d` on the line and ask whether a toolchain keyword sits just before it.
+            for (at, _) in line.match_indices('.') {
+                let start = bytes[..at]
+                    .iter()
+                    .rposition(|b| !b.is_ascii_digit())
+                    .map_or(0, |p| p + 1);
+                if start == at {
+                    continue;
+                }
+                let mut end = at;
+                let mut dots = 0;
+                while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+                    if bytes[end] == b'.' {
+                        dots += 1;
+                        if dots > 2 {
+                            break;
+                        }
+                    }
+                    end += 1;
+                }
+                if dots != 2 || !bytes[end - 1].is_ascii_digit() {
+                    continue;
+                }
+                let window_from = start.saturating_sub(14);
+                if !KEYWORDS
+                    .iter()
+                    .any(|k| lower[window_from..start].contains(k))
+                {
+                    continue;
+                }
+                offenders.push(format!(
+                    "  {}:{}  {}  (reads as: {})",
+                    file.display(),
+                    i + 1,
+                    line.trim(),
+                    &line[start..end]
+                ));
+                break;
+            }
+        }
+    }
+
+    assert!(
+        scanned >= 8,
+        "only {scanned} readable files on the live surface — a scan this thin measured nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "{} live site(s) state a Rust version that is not the declaration:\n{}\n\
+         The declared floor is {floor:?}. A number here that disagrees is the drift this parcel \
+         exists to remove, and it is worse than an in-sync copy because it actively misleads. Derive \
+         it (`tools/rust-floor.sh`, or point at {}), or move the sentence to `docs/` if it is a dated \
+         record.",
+        offenders.len(),
+        offenders.join("\n"),
+        root.join("Cargo.toml").display()
     );
 }

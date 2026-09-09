@@ -41,7 +41,9 @@ repository = "oracle-next"
 # that script into a step output, and `crates/oracle-core/tests/toolchain_floor.rs` fails if any
 # workflow reintroduces a literal that disagrees with it, or if a member stops inheriting it.
 #
-# WHY 1.96.0 AND NOT THE LOCAL 1.98.0 — measured, not assumed:
+# WHY THIS FLOOR AND NOT THE LOCAL 1.98.0 — measured, not assumed. (The number is deliberately not
+# repeated in this prose: the line below is the only place in the live tree that may state it, and
+# `toolchain_floor.rs` enforces exactly that — including here.)
 #   * max declared `rust-version` across the 539 of 544 locked packages present in the registry cache
 #     is 1.95 (the egui/eframe 0.36 family); the 5 unmeasured are this workspace's own members.
 #   * no `#![feature(...)]` gate anywhere in `crates/`; edition 2021 needs >= 1.56.
