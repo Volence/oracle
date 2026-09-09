@@ -1269,6 +1269,44 @@ impl Loop {
                         ui.style().as_ref(),
                         crate::theme::DEFAULT_FAMILY,
                     ))
+                    // ⚑ **These two were the crate's defaults and are now written down**, because
+                    // `crate::nav`'s arranging block PROMISES them in prose. A promise resting on an
+                    // upstream default is a promise a patch bump can quietly break: the hint would keep
+                    // saying "drag a tab" long after a changed default stopped it working, and nothing in
+                    // this repo would go red. Stated here, the two facts move together — the settings and
+                    // the sentence that describes them are one edit apart, not one dependency apart.
+                    .draggable_tabs(true)
+                    .allowed_splits(egui_dock::AllowedSplits::All)
+                    // ⚑ **The one control removed from every tab strip**, and the owner's §1.4 is why:
+                    //
+                    // > *"If multiple are open it's really hard as well"*
+                    //
+                    // `egui_dock` gives each leaf THREE chrome controls beyond the tab titles — the
+                    // collapse arrow at the strip's left, the per-tab `x` on the active tab, and this
+                    // close-all at the strip's right. On his layout that is four strips' worth, and the
+                    // clutter he is describing is partly ours to stop drawing.
+                    //
+                    // **This is the one of the three that goes, and the choice is not a taste call:**
+                    //
+                    // * It is the only **bulk-destructive** one — a single click closes every panel in
+                    //   the strip.
+                    // * It is **unlabelled where he uses it**. On the main surface an enabled close-all
+                    //   gets `on_hover_cursor(PointingHand)` and nothing else: the tooltip branches are
+                    //   for the *disabled* button, and the context menu that names it is gated on
+                    //   `!path.surface.is_main()` (`show/leaf.rs:678-775`). So its effect can be learned
+                    //   only by suffering it, one pixel-hop from an arrow that looks like it.
+                    // * It is the only one whose capability is **fully available elsewhere and labelled
+                    //   there**: `crate::nav`'s menu closes panels by name, one at a time, with hover
+                    //   text saying what each click will do.
+                    //
+                    // The other two stay, deliberately. The per-tab `x` is the ordinary close. The
+                    // **collapse arrow stays and is now explained** (`nav::ARRANGE_COLLAPSE`) rather than
+                    // removed, because it is the one existing answer to the complaint above — fold the
+                    // strips you are not reading and the one you are gets their height — and it toggles
+                    // (`show/leaf.rs:879`, `set_collapsed(!collapsed)`), so it is its own undo. Removing
+                    // the remedy for the complaint while removing the clutter would have been the fix
+                    // that reads well and makes the window worse.
+                    .show_leaf_close_all_buttons(false)
                     .show_inside(ui, &mut panels);
             });
         // ⚑ Drawn AFTER the dock so the modal floats over the panels rather than under them, and outside
