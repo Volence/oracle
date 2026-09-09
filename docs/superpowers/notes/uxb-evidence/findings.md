@@ -538,3 +538,63 @@ Vocabulary also diverges for the same quantity: player says `frames emulated` / 
   Nothing was written to the aeon tree.
 * Processes: only pids 1025404 (frontend), 1043405 (player), 4179530 (Xvfb) — all recorded at spawn.
   The owner's pid 1570308 was never touched. No `pkill`/`killall` was ever run.
+
+---
+
+# What the brief and the charter got wrong (lead item, as asked)
+
+**1. The F2 rule contradicts the snapshot rule in the same document, and obeying it literally would
+have deleted six controls from this audit.** The brief: *"F2 in the game window writes a save state
+INTO that tree"* (aeon). Handover rule 3: *"Never press F2 in either window."* But the handover also
+**mandates** snapshotting the ROM into `.uxrig/rom/`, and states are written *next to the ROM* — so
+after the mandated snapshot they land in the seat's own scratch dir, not aeon. Both binaries print
+the exact target path in their launch line:
+`states: … e.g. /home/volence/sonic_hacks/oracle-uxb/.uxrig/rom/s4.debug.state0`.
+Obeyed literally the rule would have removed the entire save-state row (`◀ slot ▶ save load`, six
+controls) from the walk, and with it **F-UXB-17**, the errno-on-an-empty-slot finding. I read the
+launch line, pressed it, and proved aeon byte-identical before and after.
+**The rule should be: read the state path off the launch line and press F2 only if it is inside your
+own tree.** As written it is a blanket ban standing in for a check that takes one second.
+
+**2. "Press it, do not read it" collides with a pointer-only rig, and the brief does not say which
+wins.** `drive.py` has no drag and no modifier chords. Two controls the product *advertises in its
+own text* are therefore unpressable: `Ctrl+O` in the open-ROM dialog, and the dock splitters — and
+the splitter is the **only remedy** for the clipping I filed as F-UXB-5. The brief handles the first
+half (undrivable -> BLOCKED) but not the second: **a rig limit can make a real defect look worse than
+it is**, and nothing told me to say so. I said so anyway.
+
+**3. "Look and taste are NOT findings" has no test, and it cuts straight through this seat's best
+material.** Text clipped mid-word is *presented as* layout. I filed it (F-UXB-5, F-UXB-24) on my own
+test — *does the person lose information they need to act?* — and captured column alignment
+(`frames run (player)9720`) as taste on the same test. That test is mine, not the charter's, and the
+next seat will invent a different one and draw the line somewhere else. **Give it a test.**
+
+**4. "No volume, mute, or sound findings" is written as a SUBJECT ban when the real constraint is an
+EVIDENCE ban.** I cannot judge sound. I can judge, from the window's own text against the process's
+own stdout, that it reports `VOL 10/10` and `[MUTED]` for a device it has already established does
+not exist. Filed as F-UXB-25 with the tension declared. A subject ban costs a finding an evidence ban
+would have kept.
+
+**5. Nobody told me what the two windows' relationship IS, and it is upstream of half of what this
+seat is asked to judge.** The charter's surface table reads as two surfaces of one product — which is
+what a newcomer will assume. They are in fact two processes, two machines, two Aether sockets and two
+divergent frame counters, and **neither window names the other or says its machine is its own**. I
+could not settle whether that is the intended topology without reading source, which this seat may
+not do, so a real question had to end as a capture (C-UXB-14). *"Where the two disagree about the
+same fact, that disagreement is itself the finding"* presumes they are looking at the same machine.
+**The charter should state the topology.**
+
+**6. The two pins disagree.** The brief says build from `cb21f43`; the handover's tree is pinned
+`e06a371`. `cb21f43` is the later `main` tip and is what I used; `tools/uxrig/` is identical at both,
+so nothing broke. Reconcile it so the next seat does not have to check.
+
+**7. What the charter got RIGHT, and it earned its place tonight.** *"An absence check is only
+evidence once the same filter has been shown to FIND the thing somewhere."* I ran the `--wm-class`
+filter against `:91` and saw the hit before I trusted its zero on `:0`. Without that instruction I
+would have written the `--pid` absence check, which returns a clean zero for `oracle-frontend` on the
+display where it demonstrably is.
+
+**8. The handover's ROM-wait snippet was wrong** (`until [ -s … ]` fires on the first byte of an
+in-place rewrite). Caught by the controller mid-run and fixed at `418bef2`. I had used it, for 3.5
+minutes, before the file appeared; my snapshot was header-validated immediately after and again at
+08:09Z — `COMPLETE`, md5 `7d2cc2fab38b4273fb2bbb859d699bf6`. **Nothing was discarded.**
