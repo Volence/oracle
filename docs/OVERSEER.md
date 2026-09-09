@@ -823,6 +823,23 @@ dimensions come from is tracked (`ObjSub_Spring__Up_Red` is a `pub equ` in
 live-tree hazard is avoidable for the primary measurement rather than inherent. Detail and the falsifiers:
 `docs/2026-09-06-fixture-dimension-drift.md`.
 
+**▶ BOOKED, NOT BUILT, 2026-09-09: `F-CITATION-LINT` — make a drifted cross-repo citation UNEXPRESSIBLE
+rather than detectable.** The claim-vacuity agent's proposal, recorded verbatim in shape because it should not
+be re-derived: a ~30-line test **in this repo**, no peer checkout, no network, no host question — regex every
+comment under `crates/**` for `(aeon|sigil|empyrean|seraph|aurora)[:/][\w./-]+:\d+` and fail unless the
+enclosing comment block also carries a 7+ hex revision. `effects.rs`'s `NOTE = "aeon c4c5c3d8 …"` passes by
+construction; every citation fixed in that parcel passes by carrying no bare number at all.
+
+**RULED: do not build it now, and the reason is the moratorium, NOT the merits.** The owner's CUT THE CEREMONY
+ruling bars instrument work that is not a DoD item or shipping wrong output, and a comment is not shipped
+output. Said plainly to the agent rather than dressed as a design objection.
+**The cost of adopting it is not the 30 lines**: ~15 citations resolve correctly TODAY while being bare line
+numbers into moving HEADs, so the lint goes red on arrival and either drags a second parcel with it or gets an
+exemption list that hollows it out. So the row is ONE row doing both halves, never the lint alone.
+**Revival:** the moratorium lifting, or anyone touching those ~15 sites for another reason.
+⚑ **And it stays distinct from `SCHEMA-DRIFT-NIGHTLY`, which owns CONTENT drift** — a revision-pinned citation
+that has gone stale is a different question from one that was never pinned. Do not merge the two rows.
+
 **Board row id: `ATTR-RGB-LATCH`**. Detail lives in `docs/2026-08-30-rgb-live-resolve.md`
 (aeon's colour finding: reproduced 55/55, closed as a server change; ~~what remains is a contract change
 so the reply says which moment its colour is for and names `emulator/scanlines` as the caller's path~~).
