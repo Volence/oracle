@@ -39,11 +39,22 @@ and **before landing**. It is not part of the boot read.
 (`wc -c docs/OVERSEER.md` against 100,000). A previous revision of this line asserted "so there is real
 headroom" and was still asserting it at 99,578 B with 422 B left: a measurement written in the present
 tense, in the one section whose job is to warn about exactly that. Cuts so far: 2026-09-06 (99,798 →
-87,2xx B with its repair pass) and 2026-09-09 (99,578 → 93,149 B, three closed blocks).
+87,2xx B with its repair pass), 2026-09-09 morning (99,578 → 93,149 B, three closed blocks) and
+2026-09-09 evening (98,275 B / 1,142 lines → the figure you get from `wc` today; 8 closed blocks to the
+log, 7 ops lessons to the reference). ⚑ **The BYTE bound is met with real room; the LINE half is not,
+and that is reported rather than closed.** Every block that could move has moved: what is left over
+~900 lines is live rulings and live follow-up-register bookings, and the protocol's own
+measure-then-move rule 3 says the residual goes to the owner rather than into a trim.
 When the bound is next reached, move history out in ONE cut with `tools/prove_doc_split.py` — run it from
 THIS repo, script by absolute path, and check its provenance lines name this document's line count before
 reading the verdict. Read BOTH PROOF 3 numbers: `--headings` gates the verdict on one of them, so confirm
-the heading-blind seams land on headings rather than accepting the gated number alone. `## Where the detail lives` at the foot of this file says which of the three files takes what.
+the heading-blind seams land on headings rather than accepting the gated number alone.
+⚑ **And expect it to refuse a cut you were sure of.** The 09-09 evening cut also tried to move
+`F-HOSTED-RESET-SRM`'s closed narrative; PROOF 3 disproved it, because that entry is a parenthetical
+INSIDE the follow-up register's running comma-list — no blank line anywhere near the cut, so the torn
+sentence was invisible to every paragraph- or sentence-boundary check a person would run by hand.
+**The register's list-shaped entries are not movable at all**; do not try again without reshaping the
+list first. `## Where the detail lives` at the foot of this file says which of the three files takes what.
 
 ## The queue (2026-08-19 end of day; reorder only with cause, record the cause)
 
