@@ -828,8 +828,11 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// The Z80 RESET-release latch (`$A11200` bit0): `true` = reset released (Z80 runs), `false` = reset
     /// asserted (Z80 held). **Power-on = `false`** — real hardware holds the Z80 in reset until the 68000
     /// releases it (Plutiedev "Using the Z80"). Stored positively (`z80_running`) to avoid the reset-polarity
-    /// foot-gun. This slice (Z-skeleton) promotes it from the old constant-0/drop stub to a real latch, but
-    /// nothing releases it in any committed fixture, so the Z80 executes zero instructions. Bus-internal +
+    /// foot-gun. Promoted from the old constant-0/drop stub to a real latch at Z-skeleton. No committed
+    /// **ROM fixture** releases it, so on the corpus the Z80 executes zero instructions and every frozen
+    /// currency stays byte-identical — a statement about the fixtures, not about the machine: the run loop
+    /// steps a released Z80 for real (`system.rs`'s `z80_executes_in_the_run_loop_when_released`, and the
+    /// `$A11200` tests below). Scope word sharpened by the lens sweep, finding H16. Bus-internal +
     /// bincode-serialized like `z80_busreq`; NOT in `export_state`. See `docs/2026-07-22-z80-core-design.md`
     /// (ZC6/ZC13).
     z80_running: &'a mut bool,
@@ -847,18 +850,25 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     z80_bank: &'a mut u16,
     /// The cartridge SRAM-access-enable latch (`$A130F1` bit0): `true` once a game writes bit0 = 1 (SRAM
     /// mapped at `$200001+`), `false` after bit0 = 0 (ROM shown). Latched from the ODD-byte write to
-    /// `$A130F1` (the shipping S3K driver does `move.b #1,($A130F1)`; `skdisasm/sonic3k.asm:344`). S0 promotes
-    /// the old drop-stub to a real latch but adds NO SRAM buffer and NO `$200000+` mapping change, so this
-    /// scalar has no consumer yet — currency-neutral by construction. Threaded like `z80_busreq`; NOT in
-    /// `export_state`/`state_hash`. Semantics: `docs/2026-07-23-sram-design-recon.md` (§"S0 — `$A130F1`").
+    /// `$A130F1` (the shipping S3K driver does `move.b #1,($A130F1)`; `skdisasm/sonic3k.asm:344`). **It gates
+    /// the live SRAM overlay**: [`Self::sram_index`] returns a mapped index only while this is set, so reads
+    /// and writes at `$200001+` reach the buffer through it. This said "adds NO SRAM buffer … so this scalar
+    /// has no consumer yet" from S0 until the lens sweep; the buffer landed ten lines below it (`sram`) and
+    /// the consumer is in this same file. Currency-neutrality now rests on **no golden ROM writing
+    /// `$A130F1`**, not on the scalar being inert — a materially different guarantee, and the one a reader
+    /// needs. Threaded like `z80_busreq`; NOT in `export_state`/`state_hash`.
+    /// Semantics: `docs/2026-07-23-sram-design-recon.md` (§"S0 — `$A130F1`").
     sram_enabled: &'a mut bool,
     /// The cartridge SRAM write-protect latch (`$A130F1` bit1): `true` = SRAM read-only. Convention-pinned
-    /// (no in-tree driver exercises it) and latched now so S1's buffer honors it without a second bus change.
+    /// (no in-tree driver exercises it). S1 landed: the visible-SRAM write path honours it (a protected write
+    /// is dropped), so this is a live gate rather than the latched-ahead scalar this line used to describe.
     /// Bus-internal + bincode-serialized like `sram_enabled`; NOT in `export_state`. See the design recon.
     sram_write_protect: &'a mut bool,
     /// The live cartridge SRAM bytes (empty when no cart declared SRAM). A visible SRAM read/write indexes
     /// this by `(a - base) >> 1` (the every-other-byte wiring, §A4). Split-borrowed like `z80_ram`; rides the
-    /// bincode snapshot but is NOT in `export_state` (S3) / `state_hash`. See the design recon (§B5-B7, Fork 5).
+    /// bincode snapshot **and is in `export_state`** since the S3 go-live that bumped the image to v2, but is
+    /// NOT in `state_hash`. (This read "NOT in `export_state` (S3)" — the same stale claim `System::sram`'s
+    /// own doc carried, lens finding H15, copied.) See the design recon (§B5-B7, Fork 5).
     sram: &'a mut [u8],
     /// Set `true` on any guest write into visible SRAM — the frontend's S2 persistence throttle. Threaded
     /// like the latches; a non-currency scalar (in the snapshot for determinism, out of the frozen currencies).
@@ -1102,7 +1112,9 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             }
             // Z80 BUSREQ ($A11100): latch bit0 from the EVEN byte only — a word write (`move.w #$100/#$0`)
             // puts the meaningful byte at $A11100 and 0 at $A11101, which must not clobber the latch. $A11101
-            // and $A11200 (RESET, deferred to Z7) fall through and drop (recon Z1/Z5).
+            // falls through and drops (recon Z1/Z5). $A11200 is NOT deferred — it is latched by the arm
+            // directly below; this line said "and $A11200 (RESET, deferred to Z7) fall through and drop"
+            // for as long as that arm has existed.
             0xA1_1100 => *self.z80_busreq = (byte & 1) != 0,
             // Z80 RESET ($A11200): latch bit0 from the EVEN byte only (a word write `move.w #$100,$A11200`
             // puts the meaningful byte at $A11200, 0 at $A11201). 1 = release reset (Z80 runs), 0 = assert

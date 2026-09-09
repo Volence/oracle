@@ -863,7 +863,9 @@ fn ea_dst_long(
 /// then stores that scratch slot at the same address.
 ///
 /// Covers the alterable-memory destination modes `(An)` (2), `(An)+` (3), `-(An)` (4), `d16(An)` (5),
-/// `abs.w` (7/0) and `abs.l` (7/1); the indexed `d8(An,Xn)` mode lands in a later commit. For `(An)+`/`-(An)`
+/// `abs.w` (7/0), `abs.l` (7/1) **and the indexed `d8(An,Xn)` (6)** — the `(6, _)` arm below, 18 cycles.
+/// (That last mode was listed as "lands in a later commit" until the lens sweep, in the doc of the very
+/// function whose body decodes it.) For `(An)+`/`-(An)`
 /// the register side effect is an explicit `AdjustAddr` committed **before** the read (predecrement so the
 /// read/write hit the decremented address; postincrement after capturing the pre-increment EA, so an
 /// address-error fault on the RMW read still bumps the register — the RMW always faults on the read).

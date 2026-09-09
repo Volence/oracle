@@ -686,9 +686,31 @@ impl Placed {
 
 /// **Whether a left-click places an object, and which one.**
 ///
-/// Disarmed by default and disarmed after every `reset` / ROM swap, because the archetype list was read
-/// out of a listing that may no longer describe the machine — and a stale archetype address is precisely
-/// the silent-corruption shape §11.32 §8 exists to refuse.
+/// Disarmed by default, and disarmed by **every event that can replace the listing**, because the
+/// archetype list was read out of a listing that may no longer describe the machine — and a stale
+/// archetype address is precisely the silent-corruption shape §11.32 §8 exists to refuse.
+///
+/// ⚑ **This type cannot enforce that on its own, so the sites are named here rather than asserted.**
+/// `Mode` holds names, not the generation they were read against; disarming is therefore something each
+/// listing-replacing path must *do*, and the exhaustive list of them is:
+///
+/// | site | event |
+/// |---|---|
+/// | `main.rs`, `Cmd::ToggleSpawnMode` | the person turns it off |
+/// | `drain.rs`, the `symbols` drain | a hosted client called `emulator/load_symbols` over the bus |
+/// | `main.rs`, the `pending_rom` swap block | F5 reload / open — the window replaced its own cartridge |
+///
+/// The third row was missing until the lens sweep found this doc claiming it (finding H21). The gap was
+/// not an oversight of the drain's: the engine cannot cover it, because *"a window that swaps its own
+/// cartridge (the frontend's F5) therefore does not get told about its own listing"*
+/// (`oracle-aether/src/host.rs:801`). A `reset` alone (Tab / F1) does **not** disarm and does not need to
+/// — it re-runs the vector fetch and keeps the cartridge, so the listing still describes the machine.
+///
+/// **The shape that would make this a property rather than a checklist** — derive armed-ness from the
+/// listing generation it was armed against, so no swap path can forget — is the right one and is not built
+/// here; it needs a generation counter the frontend does not yet carry. Until then a fourth
+/// listing-replacing path added without a disarm reintroduces the defect silently, which is why the table
+/// above is exhaustive rather than illustrative.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mode {
     /// The archetypes discovered at arm time. Empty **iff** disarmed: arming with nothing to place is

@@ -2158,9 +2158,16 @@ impl Vdp {
     /// `render_line` / `render_line_report`, this takes `&mut self`: it seeds masking from the current
     /// `sprite_dot_overflow_carry`, then commits the new carry (this line's dot overflow), ORs the
     /// sprite-overflow / collision status latches (sticky until a status read clears them), and returns the
-    /// same [`LineReport`]. This is the hook the eventual per-frame render loop / push-5 golden-frame
-    /// differential drives; it is **not** wired into `System::run` this push (so the export golden is
-    /// untouched — the test ROM drives no rendering).
+    /// same [`LineReport`]. **It IS wired into the run loop**: `System::run_until` calls it for every active
+    /// line (`crates/oracle-core/src/system.rs:1236`), which is how the sprite latches and the masking carry
+    /// evolve during an ordinary `run_frames`.
+    ///
+    /// ⚑ This read "it is **not** wired into `System::run` this push (so the export golden is untouched —
+    /// the test ROM drives no rendering)" until the lens sweep (finding H18). Both clauses were false, and
+    /// the second is the dangerous one: it invites a reader to treat this method as currency-free and edit
+    /// it accordingly. `system.rs`'s own
+    /// `scanline_wiring_evolves_the_sprite_masking_carry_during_a_run` has been asserting the corrected
+    /// fact — that the carry is committed *during the run* — the whole time, in the other file.
     ///
     /// **It takes no [`LayerMask`], and it deliberately has no masked twin.** This is the one render that
     /// writes to the chip, so keeping the mask out of its signature is what makes "a display mask cannot

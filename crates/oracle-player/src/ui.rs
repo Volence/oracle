@@ -37,10 +37,13 @@
 //! instruments this parcel started feeding — Breakpoints, Watchpoints, Profiler — are the next parcel's;
 //! [`Bus::read_instruments`](crate::bus::Bus::read_instruments) is what they will draw from.
 //!
-//! **`PANELS-NAV` adds the way in.** All eight tabs shipped and **six of them were unreachable**:
-//! `egui_dock` draws only each leaf's active tab, [`initial_dock`] stacks three and three, and the window
-//! had no menu, no tab list and no other affordance. [`crate::nav`] is the repair — a `panels` menu in the
-//! top bar, a control rather than a ninth [`Tab`] for the reason [`Transport`] is one, deriving its rows
+//! **`PANELS-NAV` adds the way in.** Every tab shipped and most were unreachable: `egui_dock` draws only
+//! each leaf's active tab, [`initial_dock`] stacks them into four leaves, and the window had no menu, no
+//! tab list and no other affordance. Today that is **seven of eleven** behind another title; this line
+//! said "six of eight" long after the enum had grown past both figures — lens finding H19, and
+//! [`crate::nav`]'s header says why the leaf count rather than the figure is the durable statement.
+//! [`crate::nav`] is the repair — a `panels` menu in the
+//! top bar, a control rather than a twelfth [`Tab`] for the reason [`Transport`] is one, deriving its rows
 //! from [`Tab::ALL`] so the next panel somebody adds cannot be left out of it. Design §5.9.
 
 use crate::bus::Bus;

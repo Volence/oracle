@@ -4,22 +4,23 @@
 //! # What is on the glass, and what is not
 //!
 //! `oracle-frontend` composes its snapshot from a title, an overlay and a status line, and this module
-//! does the same job for a window whose chrome is a different shape: a top bar and **eight dockable
-//! panels** that are mostly text. The tempting answer is *all eight panels' contents*. It is the wrong
+//! does the same job for a window whose chrome is a different shape: a top bar and **eleven dockable
+//! panels** that are mostly text. The tempting answer is *all eleven panels' contents*. It is the wrong
 //! answer, and not marginally:
 //!
 //! * ⚑ **`egui_dock` draws only the ACTIVE tab of a leaf.** [`crate::ui::initial_dock`] puts
-//!   Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so ~~six~~
-//!   **four** of the eight panel bodies do not run on a given frame — that fact is load-bearing enough
+//!   Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so **seven of
+//!   the eleven** panel bodies do not run on a given frame — that fact is load-bearing enough
 //!   that this crate grew `--dock every-tab` ([`crate::ui::every_tab_dock`]) to make a cost measurement
-//!   mean anything. *(Corrected by `PANELS-NAV`, and it had been copied out of here twice before anyone
-//!   counted: `egui_dock` draws one body per **leaf**, and the default layout has four leaves. The six
-//!   counts every tab that shares a pane, but two of those — `Registers` and `Breakpoints` — are their
-//!   own leaf's active tab and do run. Measured in
-//!   `nav::tests::the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured`, which
-//!   derives it from the leaf count rather than restating a figure. The argument below is unchanged: a
-//!   snapshot of all eight would still report text nobody can see.)* A
-//!   snapshot listing all eight would report text **nobody can see**, which is the exact class of wrong
+//!   mean anything. *(This sentence has been wrong twice — `six of eight`, then `four of eight` — and the
+//!   rule underneath it never changed: `egui_dock` draws one body per **leaf**, so bodies-in-front is the
+//!   **leaf count** (four) and everything else is hidden. Chasing the figure is not the repair; the enum
+//!   grows. Derived in
+//!   `nav::tests::the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured`, which has
+//!   survived both drifts untouched, and these sentences are now pinned to `Tab::ALL` by
+//!   `nav::tests::panel_counts_in_prose_match_the_enum`. Lens finding H19. The argument below is
+//!   unchanged: a snapshot of all eleven would still report text nobody can see.)* A
+//!   snapshot listing all eleven would report text **nobody can see**, which is the exact class of wrong
 //!   answer `screen_text` exists to avoid: a caller reading it would be told the window says something it
 //!   does not say.
 //! * **The active tab is no better, only less obviously wrong.** What a panel body actually reveals
@@ -27,7 +28,7 @@
 //!   painting loop. Restating them here is precisely the drift `oracle-frontend`'s rule 2 forbids: a
 //!   restated copy agrees with itself while diverging from the drawing code. `oracle-frontend` refused
 //!   `palette` and `lens` for this reason in so many words, and its argument transfers unchanged.
-//! * **Six of the eight panels have another reader anyway.** Registers, Memory, Objects, Breakpoints,
+//! * **Six of the eleven panels have another reader anyway.** Registers, Memory, Objects, Breakpoints,
 //!   Watchpoints and Profiler are renderings of `emulator/registers`, `emulator/read_memory`,
 //!   `emulator/object_list`, `emulator/breakpoint_list`, `emulator/watchpoint_hits` and
 //!   `emulator/get_profiler`. Reading them back as *text* is the worst available way to get them, and the
@@ -55,7 +56,7 @@
 //!   than a transient overlay, so it is reported as part of the `statusLine` run it is drawn in, not as a
 //!   toast it is not.
 //! * **`palette`**, **`lens`** — `oracle-frontend`'s reasons (`F-SCREEN-TEXT-PALETTE-LENS`), plus the dock
-//!   argument above. The player's lenses are its eight panels.
+//!   argument above. The player's lenses are its eleven panels.
 
 use oracle_aether::engine::{ScreenSurface, ScreenSurfaceKind};
 

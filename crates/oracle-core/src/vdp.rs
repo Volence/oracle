@@ -180,10 +180,12 @@ pub struct Vdp {
     /// The HINT line counter (recon R7): reloaded from reg 10 on every vblank line and on underflow;
     /// decremented once per active line (0..=224). Underflow sets [`Vdp::hint_pending`].
     hint_counter: u8,
-    /// Sprite-overflow status latch (status bit 6). Set by the render pipeline (push 4); serialized here so
-    /// the status word can report it. Read-only this push.
+    /// Sprite-overflow status latch (status bit 6). OR-set by `commit_scanline_sprites` (the render
+    /// pipeline's per-line commit) and cleared by a status read — both in this file. Serialized here so the
+    /// status word can report it. (Said "Read-only this push" until the lens sweep.)
     sprite_overflow: bool,
-    /// Sprite-collision status latch (status bit 5). Set by the render pipeline (push 4); read-only here.
+    /// Sprite-collision status latch (status bit 5). Same lifecycle as `sprite_overflow`: OR-set by
+    /// `commit_scanline_sprites`, cleared on a status read. (Said "read-only here".)
     sprite_collision: bool,
     /// Odd-frame flag (status bit 4). Advanced each frame when the VInt latch is set (recon R12 delivery)
     /// under the reference's toggle rule `interlace_enabled && !odd` — forced to 0 while interlace is off
@@ -428,8 +430,10 @@ impl Vdp {
         ((self.regs[0x05] & mask) as usize) << 9
     }
 
-    /// Mutable access to VRAM (used by tests to perturb state; the data-port write path lands in a later
-    /// slice). Kept crate-internal-friendly but public for the `System::vram_mut` pass-through.
+    /// Mutable access to VRAM — a test/introspection escape hatch **beside** a live data-port write path
+    /// ([`Vdp::data_write`] / [`Vdp::data_write_at`]), not a stand-in for one. (It read "the data-port write
+    /// path lands in a later slice" until the lens sweep.) Kept crate-internal-friendly but public for the
+    /// `System::vram_mut` pass-through.
     pub fn vram_mut(&mut self) -> &mut [u8] {
         &mut self.vram
     }
@@ -1561,9 +1565,10 @@ impl Vdp {
     }
 
     // --- Introspection primitives (design §4, state-shaped only) -----------------------------------------
-    // The wire-protocol wrapping (the Oracle-parity ops) is out of scope this push; these are the pure,
-    // state-derived primitives the API owes now so it does not accrete later. render_line_report /
-    // pixel_attribution land with their pipeline stages (pushes 3–5).
+    // These are the pure, state-derived primitives the API owes. render_line_report and pixel_attribution
+    // both landed (in render.rs, with their pipeline stages) and the wire wrapping is SERVED —
+    // `emulator/pixel_attribution` is in oracle-aether's dispatch table. This banner said the wrapping was
+    // "out of scope this push" and that those two "land with … pushes 3-5" until the lens sweep.
 
     /// Decode tile `index` from VRAM to its 64 4-bit colour indices, row-major (8×8). A Genesis tile is 32
     /// bytes (8 rows × 4 bytes; each byte packs two pixels, high nibble = left). Pure VRAM decode.

@@ -12,10 +12,29 @@
 //! load-bearing (every address is resolved by name, because *every documented address in the plans is
 //! stale* — see the crate docs), so a refusal is fatal.
 //!
-//! This is the third copy of that table in the tree (`oracle-frontend/src/symbol_file.rs:50`,
-//! `oracle-aether/src/engine.rs:970`, here). That is accepted for exactly one slice: extracting it is a
-//! mechanical, no-behaviour-change edit across three crates, and bundling it would blur the review of the
-//! runner itself. It is the immediately-following slice, not a follow-up ticket.
+//! ⚑ **This is the FOURTH copy of that table in the tree, and the extraction this note promised never
+//! happened.** The copies, by symbol rather than by line (the line numbers this note used to carry had
+//! drifted by ~6,100 lines, which is its own small lesson about citing a moving file by position):
+//!
+//! | crate | site |
+//! |---|---|
+//! | `oracle-aether` | `engine.rs`, the `match table.validate_against_rom(rom)` in the symbol-load handler |
+//! | `oracle-frontend` | `symbol_file.rs::judge` |
+//! | `oracle-replay` | [`judge_listing`], below |
+//! | `oracle-player` | `symbols.rs`, ported from the frontend's |
+//!
+//! What this note said when there were three was: *"That is accepted for exactly one slice … It is the
+//! immediately-following slice, not a follow-up ticket."* The slice did not happen, and a fourth copy
+//! landed instead — so the sentence that licensed the duplication is now the record of it. Lens finding
+//! H6.
+//!
+//! **No test can assert the four agree**, which is why this is worth reading twice: `oracle-replay`
+//! depends on `oracle-core` alone, so no crate in the workspace can see the replay copy and any other one
+//! at the same time. The four-arm table includes the **fail-open guard** (`Indeterminate` + not intact →
+//! refuse), so a copy that drifts on that arm accepts a listing for a different ROM and every annotation
+//! it produces is confidently wrong. They agree today; that was checked by reading all four, not by a
+//! gate. The fix shape is extraction into `oracle-core::symbols` — where all four crates can see it and a
+//! compile-time agreement becomes possible at all.
 //!
 //! # 2. The ROM must be a DEBUG build
 //!

@@ -4,9 +4,11 @@
 //! master clock and sole RNG). It is plain owned data: `Clone` + bincode `Encode`/`Decode`, so a
 //! snapshot is an O(struct) copy with no pointer fixup, and `state_hash` is byte-compatible with Oracle.
 //!
-//! Chips (the CPUs, the VDP) will be added as fields here and driven through a `Bus` adapter that borrows
-//! the relevant fields per step (split-borrow). Memory regions are owned byte buffers, always allocated
-//! at their fixed hardware sizes by [`System::new`].
+//! The chips **are** fields here — the 68000 ([`Cpu68000`]), the Z80 ([`Z80`]), the VDP and the YM2612 —
+//! each driven through a `Bus` adapter that borrows the relevant fields per step (split-borrow):
+//! [`MegaDriveBus`] for the 68000, [`Z80Bus`] for the sound CPU. Memory regions are owned byte buffers,
+//! always allocated at their fixed hardware sizes by [`System::new`]. (This paragraph promised them in the
+//! future tense — the first paragraph of the core's central module — until the lens sweep.)
 
 use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StepRetire, StopWhen, Z80_RAM_SIZE};
 use crate::m68000::microop::{Cpu68000, StepOutcome};
@@ -202,15 +204,19 @@ pub struct System {
     /// The cartridge SRAM-access-enable latch (`$A130F1` bit0): `true` once a game has written bit0 = 1 to
     /// `$A130F1` (SRAM mapped at `$200001+`), `false` after bit0 = 0 (ROM shown). **Power-on = `false`** —
     /// real hardware and the shipping drivers (S3K `sonic3k.asm:293` disables access at boot) power up with
-    /// SRAM off. S0 promotes `$A130F1` from a drop-stub to a real latch but adds **no** SRAM buffer, so this
-    /// scalar has no consumer yet and no golden ROM writes `$A130F1` → currency-neutral by construction.
+    /// SRAM off. **It gates the live SRAM overlay** — `MegaDriveBus::sram_index` maps `$200001+` to the
+    /// buffer only while this is set. This said "adds **no** SRAM buffer, so this scalar has no consumer yet"
+    /// from S0 until the lens sweep; the buffer is [`System::sram`], twenty lines below. Currency-neutrality
+    /// now rests on the second clause alone — **no golden ROM writes `$A130F1`** — not on the latch being
+    /// inert.
     /// A cartridge bus-control scalar exactly like `z80_busreq`: rides this bincode snapshot for determinism,
     /// but is **not** in `export_state` and **not** in `state_hash`. Semantics pinned in
     /// `docs/2026-07-23-sram-design-recon.md` (§"S0 — `$A130F1` semantics").
     sram_enabled: bool,
     /// The cartridge SRAM write-protect latch (`$A130F1` bit1): `true` = SRAM read-only. Convention-pinned
     /// (no in-tree driver exercises it; the Sega mapper convention pairs enable at bit0 with write-protect at
-    /// bit1) and latched now so S1's writable buffer can honor it without a second bus change. **Power-on =
+    /// bit1). S1 landed and the write path honours it (a protected write is dropped), so it is a live gate
+    /// rather than the latched-ahead scalar this line described. **Power-on =
     /// `false`**. Cartridge bus-control scalar like `sram_enabled`/`z80_busreq`: in this bincode snapshot for
     /// determinism, **not** in `export_state`/`state_hash`. See `docs/2026-07-23-sram-design-recon.md`.
     sram_write_protect: bool,
@@ -232,11 +238,21 @@ pub struct System {
     sram_odd: bool,
     /// The live cartridge SRAM bytes, sized to the detected chip (`(end-base)/2 + 1` for the every-other-byte
     /// wiring); **empty when `!sram_present`**. Real mutable state — rides this bincode snapshot (like
-    /// `z80_ram`) so it survives save-states/determinism, but is **NOT** in `export_state` (that go-live is S3)
-    /// and **NOT** in `state_hash` (Oracle excludes SRAM). See the design recon (§B5-B7, Fork 5).
+    /// `z80_ram`) so it survives save-states/determinism, **and IS in `export_state`** since the S3 go-live
+    /// that bumped the image to v2 (written at the tail region — see [`EXPORT_SRAM_LEN`] and the write site
+    /// in [`export_state`](System::export_state)). Still **NOT** in `state_hash` (Oracle's `OpStateHash`
+    /// hashes VDP-only). See the design recon (§B5-B7, Fork 5).
+    ///
+    /// ⚑ That first half read "**NOT** in `export_state` (that go-live is S3)" until the lens sweep (finding
+    /// H15) — written before S3 and never revisited after it landed. It matters more than a stale sentence
+    /// usually does: `export_state_hash` is the determinism gate's currency, so a reader asking *"can an
+    /// SRAM write move the gate?"* consulted this line and got **no**. The answer is yes. Note the two
+    /// neighbouring fields (`sram_dirty`, `sram_used`) make the same-shaped claim and are **correct** —
+    /// they really are bincode-only — which is precisely why nobody re-read this one.
     sram: Vec<u8>,
     /// Set on any guest write into visible SRAM; the frontend's persistence throttle (S2) polls it so a `.srm`
-    /// is flushed only after a real save, not every frame (`sram_dirty()`/`clear_sram_dirty()` land in S2). A
+    /// is flushed only after a real save, not every frame — via [`System::sram_dirty`] and
+    /// [`System::clear_sram_dirty`], which landed in S2 and are just below. A
     /// non-currency scalar (like `z80_frontier_mclk`): in this bincode snapshot for determinism, **not** in
     /// `export_state`/`state_hash`.
     sram_dirty: bool,
@@ -256,8 +272,16 @@ pub struct System {
     /// survives snapshot/restore. Reset to 0 at power-on.
     frame_boundary_mclk: u64,
     /// The Z80 sound CPU (register + interrupt state). Driven over a [`Z80Bus`] in the [`System::run_until`]
-    /// catch-up; held in reset this slice (Z-skeleton), so it steps zero instructions. Its register region
-    /// stays zeroed in `export_state` region 4 until the later Z-live go-live slice.
+    /// catch-up, which **does** step it whenever `z80_running && !z80_busreq` — see [`catch_up_z80`](System::catch_up_z80).
+    /// Its register region is live in `export_state` region 4 (the Z-live go-live), and reads all-zero only
+    /// because a Z80 held in reset *has* an all-zero register file.
+    ///
+    /// ⚑ This said "held in reset this slice (Z-skeleton), so it steps zero instructions … stays zeroed in
+    /// `export_state` region 4 until the later Z-live go-live slice" until the lens sweep (finding H16).
+    /// Both halves outlived their slice. **The accurate statement is fixture-scoped, not absolute**: no
+    /// committed ROM fixture releases the Z80, so in practice these bytes stay zero and every frozen
+    /// currency is byte-identical — but the run loop reaches [`Z80::step`] the moment one does, and this
+    /// module's own `z80_executes_in_the_run_loop_when_released` proves it by doing exactly that.
     z80: Z80,
     /// The absolute mclk up to which the Z80 has been simulated (its next-instruction boundary) — the Z80
     /// frontier the catch-up in [`System::run_until`] chases the 68000's clock with (ZC4). When the Z80 is
@@ -1121,8 +1145,10 @@ impl System {
             }
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
             // Catch the Z80 up to the 68000's new `now` (ZC4): the fixed total order is events → 68000 step
-            // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`; held in reset this slice, so the
-            // catch-up runs zero instructions and only tracks `now`.
+            // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`. No committed ROM fixture releases
+            // the Z80, so on the corpus this only tracks `now` — but the gate is live and a released Z80
+            // executes here (H16: this said "held in reset this slice, so the catch-up runs zero
+            // instructions", at the top of the production run loop, long after that stopped being the rule).
             self.catch_up_z80(sink);
             // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
             // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit
@@ -1359,9 +1385,14 @@ impl System {
     /// frontier reaches or passes `now`, carrying the bounded overshoot forward — the identical
     /// absolute-deadline pattern the 68000 frame loop uses. When gated off (held in reset or bus-granted to
     /// the 68000) the frontier is advanced to `now`, so it runs nothing but never falls behind: a later
-    /// reset-release resumes from `now` with **zero** backlog (ZC5). This slice holds the Z80 in reset
-    /// (`z80_running == false` in every fixture), so only the gated-off branch is ever taken and
-    /// [`Z80::step`] is never reached.
+    /// reset-release resumes from `now` with **zero** backlog (ZC5).
+    ///
+    /// **On the committed ROM corpus only the gated-off branch is taken**, because no fixture releases the
+    /// Z80 (`z80_running == false` in every one) — which is what keeps every frozen currency byte-identical.
+    /// That is a statement about the fixtures, not about this function: the gated-on branch is live, and
+    /// `z80_executes_in_the_run_loop_when_released` drives real instructions through it. This said
+    /// "[`Z80::step`] is never reached" until the lens sweep (finding H16) — the absolute overstating the
+    /// fixture-scoped fact that sat in the same sentence.
     fn catch_up_z80<S: BusEventSink>(&mut self, sink: &mut S) {
         let now = self.scheduler.now();
         if self.z80_running && !self.z80_busreq {
