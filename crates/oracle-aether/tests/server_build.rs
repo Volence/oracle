@@ -371,6 +371,159 @@ fn the_build_id_folds_in_the_configuration_that_changes_the_served_surface() {
     );
 }
 
+/// Whether the token at `start` sits inside a `cfg(…)` / `cfg!(…)` / `cfg_attr(…)`, found by walking
+/// left tracking parenthesis depth: the first unclosed `(` is the group that encloses it, and
+/// `all` / `any` / `not` mean "keep going outward". Anything else — a function call, a plain doc
+/// comment — is a no. Bounded so a scan cannot walk the whole file for every hit.
+fn enclosed_by_cfg(text: &str, start: usize) -> bool {
+    /// How far outward the enclosing group may sit. Wide enough for a wrapped
+    /// `cfg(any(feature = …, feature = …))`; the depth walk, not this, is what excludes prose.
+    const REACH: usize = 400;
+
+    let mut lo = start.saturating_sub(REACH);
+    while lo < start && !text.is_char_boundary(lo) {
+        lo += 1;
+    }
+    let head = &text.as_bytes()[lo..start];
+    let mut depth = 0usize;
+    let mut i = head.len();
+    while i > 0 {
+        i -= 1;
+        match head[i] {
+            b')' => depth += 1,
+            b'(' if depth > 0 => depth -= 1,
+            b'(' => {
+                // The identifier immediately left of this unclosed `(` names the group.
+                let mut j = i;
+                while j > 0
+                    && (head[j - 1].is_ascii_alphanumeric() || matches!(head[j - 1], b'_' | b'!'))
+                {
+                    j -= 1;
+                }
+                match std::str::from_utf8(&head[j..i])
+                    .unwrap_or("")
+                    .trim_end_matches('!')
+                {
+                    "cfg" | "cfg_attr" => return true,
+                    // A combinator: this is not the outermost group, so keep walking.
+                    "all" | "any" | "not" => {}
+                    _ => return false,
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Every feature name read by a `cfg` in `text`, with the 1-based line it sits on.
+///
+/// **M49, half two.** The scanner this replaces looked for the literal `"cfg(feature"`, so it saw only
+/// the simplest spelling. The idiomatic compound forms — `cfg(all(feature = "x", unix))`,
+/// `cfg(any(feature = "a", feature = "b"))`, `cfg(not(feature = "x"))` — and every multi-line attribute
+/// `rustfmt` produces escaped it entirely, which is the shape a real crate acquires first. This one
+/// scans the whole file rather than line by line, and asks three questions of each `feature`:
+///
+/// * it is a whole token — `target_feature = "sse2"` is a different key and is not this;
+/// * it is followed by `= "name"`, so prose that merely says the word does not count;
+/// * it is *enclosed* by a `cfg` — established by walking the parentheses outward rather than by
+///   "a `cfg` appeared nearby", which is the version that first went in here and let a doc comment
+///   discussing `feature = "prose"` inherit the `cfg!` two lines above it.
+///
+/// A false positive here fails the suite loudly and a false negative is silent, so where the two are
+/// in tension this errs towards including.
+fn feature_cfg_sites(text: &str) -> Vec<(String, usize)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(found) = text[at..].find("feature") {
+        let start = at + found;
+        let end = start + "feature".len();
+        at = end;
+
+        // A whole token: `target_feature` and `my_feature` are other keys.
+        let prev_ok = start == 0 || {
+            let c = bytes[start - 1] as char;
+            !(c.is_ascii_alphanumeric() || c == '_')
+        };
+        if !prev_ok {
+            continue;
+        }
+        // Enclosed by a `cfg`, walking the parens outward through any `all`/`any`/`not` nesting.
+        if !enclosed_by_cfg(text, start) {
+            continue;
+        }
+        // `= "name"`, with whatever whitespace (a wrapped attribute puts a newline here).
+        let rest = text[end..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('"') else {
+            continue;
+        };
+        let Some(close) = rest.find('"') else {
+            continue;
+        };
+        let line = text[..start].lines().count();
+        out.push((rest[..close].to_string(), line));
+    }
+    out
+}
+
+/// **M49, half one: the positive control, which is why this test now asserts something at all.**
+///
+/// `oracle-aether` has no `[features]` section and no `cfg(feature = …)` in its source, so the
+/// conformance loop below iterates over an empty population and the test used to pass having executed
+/// zero assertions — while its own preamble claimed *"the gap is closed here rather than described in
+/// a comment."* An empty world and a broken scanner produce the identical green.
+///
+/// So the scanner is measured against source it is KNOWN to contain, every run, whatever the crate
+/// holds. This is the assertion that stays live when the crate's own count is zero, and it is what
+/// makes that zero readable as "nothing to find" rather than "nothing was looked for".
+#[test]
+fn the_cfg_feature_scanner_sees_every_spelling_it_claims_to() {
+    let fixture = "\
+#[cfg(feature = \"plain\")]\n\
+#[cfg(feature=\"tight\")]\n\
+#[cfg(all(feature = \"compound\", unix))]\n\
+#[cfg(any(feature = \"first\", feature = \"second\"))]\n\
+#[cfg(not(feature = \"negated\"))]\n\
+#[cfg(all(\n    feature = \"wrapped\",\n    unix\n))]\n\
+if cfg!(feature = \"macro_form\") {}\n\
+#[cfg(target_feature = \"sse2\")]\n\
+/// A doc comment discussing feature = \"prose\" far from any attribute.\n";
+
+    let found: Vec<String> = feature_cfg_sites(fixture)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    let expected = [
+        "plain",
+        "tight",
+        "compound",
+        "first",
+        "second",
+        "negated",
+        "wrapped",
+        "macro_form",
+    ];
+    assert_eq!(
+        found, expected,
+        "the scanner must see every cfg spelling in the fixture, in order"
+    );
+    // The negatives, named individually: a scanner that simply returned every `= \"…\"` in the file
+    // would satisfy the assertion above and be useless.
+    assert!(
+        !found.iter().any(|n| n == "sse2"),
+        "`target_feature` is a different key and must not enter the population: {found:?}"
+    );
+    assert!(
+        !found.iter().any(|n| n == "prose"),
+        "prose far from any `cfg` must not enter the population: {found:?}"
+    );
+}
+
 #[test]
 fn no_cfg_feature_in_this_crate_escapes_the_build_id() {
     // **The completeness check behind M1's `features=` component.** Cargo tells a build script this
@@ -378,6 +531,12 @@ fn no_cfg_feature_in_this_crate_escapes_the_build_id() {
     // workspace unification. That is only a gap if this crate reads a cfg the build script cannot see —
     // so the gap is closed here rather than described in a comment: every `cfg(feature = "X")` in this
     // crate's source must name a feature THIS crate declares.
+    //
+    // **M49.** The population below is EMPTY today (this crate has no `[features]` section and reads no
+    // feature cfg), so this test's own loop asserts nothing and cannot. The assertion that always runs
+    // is `the_cfg_feature_scanner_sees_every_spelling_it_claims_to` above; without it, a scanner that
+    // had stopped working would report the same zero as a crate with nothing to find. The count is
+    // printed below so a green run says which of the two it was.
     let manifest = std::fs::read_to_string(crate_root().join("Cargo.toml")).expect("Cargo.toml");
     let declared: Vec<String> = manifest
         .split("[features]")
@@ -393,28 +552,25 @@ fn no_cfg_feature_in_this_crate_escapes_the_build_id() {
         })
         .unwrap_or_default();
 
-    let mut used: Vec<String> = Vec::new();
-    for (path, body) in src_files() {
-        for (i, line) in body.lines().enumerate() {
-            let mut rest = line;
-            while let Some(at) = rest.find("cfg(feature") {
-                rest = &rest[at + "cfg(feature".len()..];
-                let Some(open) = rest.find('"') else { break };
-                let after = &rest[open + 1..];
-                let Some(close) = after.find('"') else { break };
-                used.push(format!("{}|{}:{}", &after[..close], path.display(), i + 1));
-                rest = &after[close + 1..];
-            }
+    let files = src_files();
+    let scanned: usize = files.iter().map(|(_, b)| b.len()).sum();
+    let mut used: Vec<(String, String)> = Vec::new();
+    for (path, body) in &files {
+        for (name, line) in feature_cfg_sites(body) {
+            used.push((name, format!("{}:{}", path.display(), line)));
         }
     }
+    // Loud about the size of what was measured, never just about the answer: "0 sites" is only
+    // meaningful beside "over N files / M bytes actually read".
     println!(
-        "cfg(feature) sites in oracle-aether/src: {} ; features declared by this crate: {declared:?}",
-        used.len()
+        "cfg(feature) sites in oracle-aether/src: {} over {} files / {scanned} bytes ; features \
+         declared by this crate: {declared:?}",
+        used.len(),
+        files.len(),
     );
-    for entry in &used {
-        let (name, whence) = entry.split_once('|').unwrap();
+    for (name, whence) in &used {
         assert!(
-            declared.iter().any(|d| d == name),
+            declared.contains(name),
             "{whence} reads `cfg(feature = \"{name}\")`, but `{name}` is not a feature THIS crate \
              declares — so Cargo sets no `CARGO_FEATURE_{}` for the build script, the feature never \
              reaches `serverBuild.id`, and two builds with different served surfaces would carry the \
