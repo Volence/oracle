@@ -172,6 +172,9 @@ fn load_symbols(path: &Path, rom: &[u8]) -> (Option<SymbolTable>, Option<String>
                 path.display(),
                 binding_note(&binding)
             );
+            if let Some(w) = integrity_warning(path, &table) {
+                eprintln!("{w}");
+            }
             (Some(table), Some(path.display().to_string()))
         }
     }
@@ -200,6 +203,25 @@ fn binding_note(binding: &RomBinding) -> &'static str {
     }
 }
 
+/// The warning for a listing that **binds but is not whole**, or `None` when it is whole.
+///
+/// A listing in that state is accepted, and correctly: its symbols are real, there are simply fewer of
+/// them. That is precisely why it must be said out loud — an address then resolves to the nearest
+/// SURVIVING label, and a coarser name looks exactly like a correct one. `oracle-frontend`,
+/// `oracle-player` and `oracle-replay` all warn here; this surface and `Engine::load_symbols` did not,
+/// so the same truncated file warned in the window and loaded in silence over the socket.
+///
+/// **Extracted for [`binding_note`]'s reason**, which this file already learned once: a sentence built
+/// inline inside a `println!` is out of reach of a test, and this one is the difference between a
+/// disclosure and no disclosure at all.
+fn integrity_warning(path: &Path, table: &SymbolTable) -> Option<String> {
+    let why = table.integrity_note()?;
+    Some(format!(
+        "symbols: WARNING {} is not intact ({why}); addresses will resolve to coarser names",
+        path.display()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +248,46 @@ mod tests {
         assert!(notes[1].contains("EndOfRom is the image's end"));
         assert!(!notes[1].contains("no EndOfRom"));
         assert!(notes[2].contains("no EndOfRom"));
+    }
+
+    /// H24, this surface's half. A listing that binds and is **not** intact must warn; a whole one must
+    /// not. Both directions, because the silent half is the defect and an always-on warning would be a
+    /// different one.
+    #[test]
+    fn a_damaged_listing_warns_here_and_a_whole_one_does_not() {
+        // Whole: symbol table section, footer agreeing, nothing unrecognised.
+        let whole = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Player_1 : FFFF8CFA C |
+
+    2 symbols
+    0 unused symbols
+";
+        let t = SymbolTable::parse(whole).unwrap();
+        assert!(t.is_intact());
+        assert_eq!(
+            integrity_warning(Path::new("/tmp/s4.lst"), &t),
+            None,
+            "a whole listing must not be warned about — an unconditional warning is a second defect"
+        );
+
+        // The same file with one unreadable row: still parses, still resolves, no longer whole.
+        let damaged = whole.replace(" Player_1 : FFFF8CFA C |", " Player_1 : ZZZZZZZZ C |");
+        let t = SymbolTable::parse(&damaged).unwrap();
+        assert!(!t.is_intact());
+        let w = integrity_warning(Path::new("/tmp/s4.lst"), &t)
+            .expect("a damaged listing that binds must announce itself");
+        assert!(w.contains("WARNING") && w.contains("/tmp/s4.lst"));
+        assert!(
+            w.contains("unrecognised rows"),
+            "the reason must be stated, not gestured at: {w}"
+        );
+        assert!(
+            w.contains("coarser names"),
+            "…along with what it costs the reader: {w}"
+        );
     }
 }

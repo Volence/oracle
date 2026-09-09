@@ -3645,6 +3645,22 @@ impl Engine {
                      This is an unimplemented encoding in the emulator, not a fault in the ROM."
                 )
             }),
+            // **The damaged-but-binding listing, standing rather than one-shot.** `load_symbols` says
+            // this in its own reply, which is enough for the client that performed the load and nothing
+            // at all for the other three routes into this state: a `--symbols` path taken at startup, a
+            // client that joined an already-running server, and a hosted player whose window did the
+            // loading. This row is where `symbolAtPc` is served, so it is where a reader of that field
+            // meets the caveat. Conditional by construction (a whole listing yields `None`), so §11.27's
+            // MUST NOT on unconditional caveats is respected, and it goes LAST for the same reason the
+            // Z80 row does: a stale image or a stale listing makes every other reading suspect, while
+            // this is a precise fact about one file.
+            self.symbols.as_ref().and_then(|t| t.integrity_note()).map(|why| {
+                format!(
+                    "The loaded symbol listing is NOT INTACT ({why}), so symbolAtPc and every other \
+                     name resolves to the nearest SURVIVING label — a coarser answer that looks like a \
+                     correct one."
+                )
+            }),
         ]
         .into_iter()
         .flatten()
@@ -7184,6 +7200,39 @@ impl Engine {
         // 12,410, and the five are exactly these. Carried in the EXISTING `caveat` string, deliberately:
         // a new reply key is contract surface and this is an explanation, not a datum a client branches
         // on.
+        // **The damaged-but-BINDING listing, which this surface accepted in silence.**
+        //
+        // `is_intact()` is a fact about the FILE, not about which ROM it describes, and the two refusal
+        // arms above use it only in combination with `Indeterminate`. A listing that positively binds
+        // (or is honestly unfingerprinted) and is *also* damaged is accepted here, correctly — its
+        // symbols are real, there are simply fewer of them. What follows from that is the hazard: a PC
+        // then lands on the nearest SURVIVING label rather than on the one that owns it, so
+        // `lookup_symbol`, a watch hit's PC and a profiler routine name all come back plausible,
+        // healthy-looking and not the routine the address is in.
+        //
+        // The frontend, the player and `oracle-replay` all say this out loud, in the frontend's own
+        // words: *"a PC lands on a coarser name rather than a wrong one… Say so out loud (the coarser
+        // name looks perfectly healthy)."* Both `oracle-aether` surfaces said nothing — so the SAME
+        // truncated listing warned in the window and accepted clean over the socket. Carried in the
+        // EXISTING `caveat` (§2.4, declared by this fragment), which is why this needs no contract
+        // change: the vehicle was already here and was never filled in.
+        let damage = table.integrity_note();
+        let caveat = match (caveat, damage) {
+            (c, None) => c,
+            (c, Some(why)) => {
+                let note = format!(
+                    "This listing is NOT INTACT ({why}). It binds, and every symbol in it is real, but \
+                     rows are missing — so an address resolves to the nearest SURVIVING label, which \
+                     looks exactly like a correct answer and is a coarser one. Every downstream name \
+                     (lookup_symbol, watch-hit PCs, profiler routines) inherits that."
+                );
+                Some(match c {
+                    Some(existing) => format!("{existing} {note}"),
+                    None => note,
+                })
+            }
+        };
+
         let addressless = table.non_address_rows();
         let caveat = match (caveat, addressless) {
             (c, 0) => c,

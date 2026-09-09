@@ -250,6 +250,29 @@ pub enum SymbolKind {
     Equate,
 }
 
+/// One way a listing is **not** a whole file — the units [`SymbolTable::is_intact`] is defined over and
+/// [`SymbolTable::integrity_note`] renders.
+///
+/// A closed enum rather than a bare string, because a surface that wants to *branch* on the damage (a
+/// missing footer is a truncation; an unrecognised row is a dialect drift) should not have to parse
+/// prose, and because a sixth variant will fail to compile at every exhaustive match rather than fall
+/// into a `_` arm — the lesson `oracle-aether`'s `binding_note` already records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntegrityFault {
+    /// The `Symbol Table` section was absent, so parsing fell back to the body lines.
+    NoSymbolTableSection,
+    /// No `N symbols` footer to check against — usually the tail fell off, taking the footer with it.
+    NoSymbolFooter,
+    /// The footer's count and the rows accounted for disagree.
+    SymbolCountMismatch,
+    /// Rows in the table were not recognised at all.
+    UnrecognisedRows,
+    /// The `Equate Table` states a row count and it disagrees with the rows parsed.
+    EquateCountMismatch,
+    /// The `Phase Table` states a `PHASE COUNT` and it disagrees with the rows parsed.
+    PhaseCountMismatch,
+}
+
 /// Which half of the listing a table was built from. Recorded so a caller can tell a full listing from a
 /// body-only one (the fallback path loses the `unused` and `Equate` markers, which body lines do not carry).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1089,12 +1112,78 @@ impl SymbolTable {
     /// [`validate_against_rom`](Self::validate_against_rom) for that. Callers should combine the two: a
     /// listing whose ROM binding is `Indeterminate` *and* which is not intact should be refused, because
     /// "no fingerprint" may simply be the fingerprint symbol having fallen off the end.
+    /// ⚑ **Defined as "no [`integrity_faults`](Self::integrity_faults)", not as its own list of
+    /// conditions.** The two were separate lists — this predicate checked five conditions and the human
+    /// explanation printed beside it checked three — so an `Equate Table` or `Phase Table` miscount
+    /// produced the warning `does not look intact ()`: a refusal with an empty reason, on two of the five
+    /// damage shapes this method exists to catch. Both of those shapes are live (see the module doc's
+    /// account of `s4.debug.lst`'s phase table). One derivation, two consumers.
     pub fn is_intact(&self) -> bool {
-        self.source == TableSource::SymbolTable
-            && self.matches_declared_count() == Some(true)
-            && self.skipped_lines == 0
-            && self.matches_declared_equates() != Some(false)
-            && self.matches_declared_phase() != Some(false)
+        self.integrity_faults().next().is_none()
+    }
+
+    /// Every way in which this listing is **not** a whole file, in reporting order. Empty ⇔
+    /// [`is_intact`](Self::is_intact).
+    ///
+    /// Lazy and allocation-free, because `is_intact` is its only hot caller: a client polling
+    /// `emulator/status` reaches this on every call and a healthy table stops at the first `next()`.
+    pub fn integrity_faults(&self) -> impl Iterator<Item = IntegrityFault> + '_ {
+        [
+            (self.source != TableSource::SymbolTable)
+                .then_some(IntegrityFault::NoSymbolTableSection),
+            match self.matches_declared_count() {
+                None => Some(IntegrityFault::NoSymbolFooter),
+                Some(false) => Some(IntegrityFault::SymbolCountMismatch),
+                Some(true) => None,
+            },
+            (self.skipped_lines > 0).then_some(IntegrityFault::UnrecognisedRows),
+            // `None` is vacuous, not failed: a listing with no `Equate Table`/`Phase Table` at all is
+            // whole. Only a section that STATES a count and disagrees with it is damage — which is why
+            // these two are `!= Some(false)` where the symbol footer's absence is itself a fault.
+            (self.matches_declared_equates() == Some(false))
+                .then_some(IntegrityFault::EquateCountMismatch),
+            (self.matches_declared_phase() == Some(false))
+                .then_some(IntegrityFault::PhaseCountMismatch),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// A short human account of **how** this listing failed [`is_intact`](Self::is_intact), or `None`
+    /// when it is whole — the sentence a surface puts in a warning or a caveat.
+    ///
+    /// Lives here rather than in each presenting crate for the reason
+    /// [`resolves_identically`](Self::resolves_identically) gives: a sixth damage shape is a row in
+    /// [`integrity_faults`](Self::integrity_faults), in the file that gained it, instead of an edit
+    /// nobody propagates to the four copies that render it.
+    pub fn integrity_note(&self) -> Option<String> {
+        let mut faults = self.integrity_faults().peekable();
+        faults.peek()?;
+        Some(
+            faults
+                .map(|f| match f {
+                    IntegrityFault::NoSymbolTableSection => {
+                        "no `Symbol Table` section (fell back to the body lines)".to_string()
+                    }
+                    IntegrityFault::NoSymbolFooter => "no `N symbols` footer".to_string(),
+                    IntegrityFault::SymbolCountMismatch => format!(
+                        "parsed {} but the footer declares {:?}",
+                        self.len(),
+                        self.declared_count()
+                    ),
+                    IntegrityFault::UnrecognisedRows => {
+                        format!("{} unrecognised rows", self.skipped_lines())
+                    }
+                    IntegrityFault::EquateCountMismatch => {
+                        "the `Equate Table` trailer disagrees with the rows parsed".to_string()
+                    }
+                    IntegrityFault::PhaseCountMismatch => {
+                        "the `Phase Table` `PHASE COUNT` disagrees with the rows parsed".to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     }
 
     /// **Would resolving a NAME against this table give a different answer than against `other`?**
@@ -2111,6 +2200,70 @@ EQU zone_count = $0000000C
         let t = SymbolTable::parse(&junk).unwrap();
         assert_eq!(t.skipped_lines(), 1);
         assert!(!t.is_intact());
+    }
+
+    /// **Every damage shape must have a REASON**, because every surface that refuses or warns prints one.
+    ///
+    /// The three presenting crates each carried a byte-identical `integrity_note` covering three of the
+    /// five conditions `is_intact` checks, so an `Equate Table` or `Phase Table` miscount produced
+    /// `does not look intact ()` — a warning with an empty parenthesis where its whole justification
+    /// belongs. Both of those shapes are live: the module doc records `s4.debug.lst`'s phase table
+    /// costing 684 phantom `skipped_lines` before it was recognised.
+    ///
+    /// Walks the same five mutations `is_intact_catches_every_damage_shape` walks, asserting the
+    /// biconditional both ways, so a sixth condition added to one list and not the other lands here.
+    #[test]
+    fn every_damage_shape_names_itself_and_a_whole_listing_names_nothing() {
+        // The control, in both directions: a whole listing is intact and has nothing to say.
+        assert!(table().is_intact());
+        assert_eq!(table().integrity_note(), None);
+        assert_eq!(table().integrity_faults().count(), 0);
+        assert_eq!(
+            SymbolTable::parse(&phase_fixture())
+                .unwrap()
+                .integrity_note(),
+            None,
+            "a listing WITH a phase table is whole too — the control for the two new arms"
+        );
+
+        let cases: [(&str, String); 5] = [
+            (
+                "a deleted row (footer disagrees)",
+                FIXTURE.replace(" EndOfRom : A11F0 C |\n", ""),
+            ),
+            (
+                "no footer at all (the usual truncation)",
+                FIXTURE.replace("   10 symbols\n", ""),
+            ),
+            (
+                "an unrecognised row",
+                FIXTURE.replace(" EndOfRom : A11F0 C |", " EndOfRom : ZZZZ C |"),
+            ),
+            (
+                "a miscounted Equate Table",
+                FIXTURE.replace("    4 equates", "    5 equates"),
+            ),
+            (
+                "a miscounted Phase Table",
+                phase_fixture().replace("PHASE SfxBlobWinTab VMA $0000845F LMA $0001045F\n", ""),
+            ),
+        ];
+        for (what, text) in cases {
+            let t = SymbolTable::parse(&text).expect("still parses");
+            assert!(!t.is_intact(), "{what} must read as damage");
+            let note = t
+                .integrity_note()
+                .unwrap_or_else(|| panic!("{what} is damage with NO stated reason"));
+            assert!(
+                !note.trim().is_empty(),
+                "{what} produced an empty reason, which renders as `not intact ()`"
+            );
+            assert_eq!(
+                t.integrity_faults().count(),
+                note.split("; ").count(),
+                "{what}: every fault must reach the sentence"
+            );
+        }
     }
 
     /// The fail-open path the binding check must not have: a listing that *would* be refused becomes
