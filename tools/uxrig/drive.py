@@ -15,13 +15,15 @@ Every subcommand takes an explicit --display. There is no default, deliberately:
 display that quietly means ":0" is the exact failure this rig exists to make impossible.
 
 SUBCOMMANDS
-  windows     --display :NN [--pid P]        enumerate windows (name, pid, geometry, map state)
+  windows     --display :NN [--pid P] [--wm-class C]   enumerate (name, pid, class, geometry)
+  place       --display :NN --window ID [--raise] [--x X --y Y]   move/raise (no WM runs here)
+  focus       --display :NN --window ID      give a window keyboard focus (REQUIRED before typing)
   move        --display :NN --x X --y Y
   click       --display :NN --x X --y Y [--button 1]
-  key         --display :NN --key Return     press+release one key by keysym name
-  type        --display :NN --text "hello"
-  shot        --display :NN --out FILE.png [--window ID]   screenshot, content-verified
-  procproof   --display :NN --pid P          structural isolation check on a running process
+  key         --display :NN --key Return [--window ID]    press+release one key by keysym name
+  type        --display :NN --text "hello" [--window ID]
+  shot        --display :NN --out FILE.png [--window ID]  screenshot, content-verified
+  procproof   --display :NN --pid P [--xvfb-pid P]        structural isolation check
 """
 
 import argparse
@@ -118,15 +120,28 @@ def cmd_windows(args):
     # the noise down but NEVER filter by pid when the caller asked about a pid, because "absent"
     # is the answer an absence proof depends on.
     interesting = [w for w in out if w["pid"] is not None or w["name"]]
+    # ⚑ `--pid` IS NOT A USABLE ABSENCE FILTER FOR EVERY WINDOW HERE.
+    # minifb (oracle-frontend) sets no `_NET_WM_PID`, so a pid filter returns zero matches on the
+    # display where the window demonstrably IS. An absence check built on it would therefore be
+    # vacuous: it returns the same empty answer whether the window is there or not. `--wm-class`
+    # is the filter that actually discriminates for that window; use both.
     if args.pid is not None:
         interesting = [w for w in interesting if w["pid"] == args.pid]
-    print(f"display {args.display}: {len(out)} windows in tree, {len(interesting)} named/with-pid"
-          + (f", {len(interesting)} matching pid {args.pid}" if args.pid is not None else ""))
+    if args.wm_class is not None:
+        interesting = [w for w in interesting
+                       if w["class"] and args.wm_class.lower() in w["class"].lower()]
+    filt = []
+    if args.pid is not None:
+        filt.append(f"pid={args.pid}")
+    if args.wm_class is not None:
+        filt.append(f"class~{args.wm_class!r}")
+    print(f"display {args.display}: {len(out)} windows in tree, {len(interesting)} shown"
+          + (f" (filter: {', '.join(filt)})" if filt else " (named/with-pid)"))
     for w in interesting:
         print(f"  {w['id']:>12}  pid={str(w['pid']):>8}  {w['geom']:>18}  {w['state']:>9}  "
               f"class={w['class']}  name={w['name']!r}")
-    if args.pid is not None and not interesting:
-        print(f"  (no window on {args.display} carries pid {args.pid})")
+    if filt and not interesting:
+        print(f"  (NO window on {args.display} matches {', '.join(filt)})")
     return 0
 
 
@@ -183,8 +198,39 @@ def press_keysym(d, table, sym):
     return True
 
 
+def set_focus(d, window):
+    """Give a window the keyboard focus explicitly.
+
+    ⚑ REQUIRED BEFORE ANY TYPING ON THIS RIG, and the reason is not obvious.
+    There is no window manager on the Xvfb, so nothing ever assigns keyboard focus: the display
+    sits at `PointerRoot`. Under PointerRoot the X server does deliver key events to the window
+    under the pointer -- so XTEST "works" at the protocol level -- but winit/egui only ACT on keys
+    when they believe the window is focused, and with no FocusIn event they never do. Measured:
+    clicking a text field and typing into it left the field showing its placeholder; the identical
+    sequence with SetInputFocus first filled it in.
+
+    Note that this is a keyboard-only problem. Button events are delivered by pointer position and
+    worked without focus.
+    """
+    w = d.create_resource_object("window", int(window, 0))
+    d.set_input_focus(w, X.RevertToParent, X.CurrentTime)
+    d.sync()
+    time.sleep(0.2)
+
+
+def cmd_focus(args):
+    d = open_display(args.display)
+    set_focus(d, args.window)
+    f = d.get_input_focus()
+    got = hex(f.focus.id) if hasattr(f.focus, "id") else f.focus
+    print(f"input focus on {args.display} is now {got} (asked for {args.window})")
+    return 0
+
+
 def cmd_key(args):
     d = open_display(args.display)
+    if args.window:
+        set_focus(d, args.window)
     sym = XK.string_to_keysym(args.key)
     if sym == 0:
         sys.exit(f"uxrig: unknown keysym name {args.key!r} (try Return, Escape, Tab, F1, space, a)")
@@ -196,6 +242,8 @@ def cmd_key(args):
 
 def cmd_type(args):
     d = open_display(args.display)
+    if args.window:
+        set_focus(d, args.window)
     table = keymap(d)
     missed = []
     for ch in args.text:
@@ -224,6 +272,31 @@ def cmd_click(args):
 # --------------------------------------------------------------------------------------------
 # capture
 # --------------------------------------------------------------------------------------------
+
+
+def cmd_place(args):
+    """Raise and/or move a window.
+
+    There is NO WINDOW MANAGER on the rig's Xvfb, so nothing arranges windows and nothing raises
+    the one you clicked. Both Oracle windows open near the top-left and overlap. That matters for
+    capture: X11 without a compositor does not preserve the contents of an occluded window, so
+    `shot --window <id>` on a covered window returns BLACK, not the window. Move them apart (or
+    raise the one you are about to capture) first.
+    """
+    d = open_display(args.display)
+    win = d.create_resource_object("window", int(args.window, 0))
+    if args.x is not None or args.y is not None:
+        g = win.get_geometry()
+        win.configure(x=args.x if args.x is not None else g.x,
+                      y=args.y if args.y is not None else g.y)
+    if args.raise_:
+        win.configure(stack_mode=X.Above)
+    d.sync()
+    time.sleep(0.2)
+    g = win.get_geometry()
+    print(f"window {args.window} now {g.width}x{g.height}+{g.x}+{g.y} on {args.display}"
+          + (" (raised)" if args.raise_ else ""))
+    return 0
 
 
 def cmd_shot(args):
@@ -393,13 +466,23 @@ def main():
         s.set_defaults(fn=fn)
         return s
 
-    add("windows", cmd_windows, ("--pid", dict(type=int, default=None)))
+    add("windows", cmd_windows, ("--pid", dict(type=int, default=None)),
+        ("--wm-class", dict(default=None, dest="wm_class",
+                            help="substring-match WM_CLASS; the filter that discriminates for "
+                                 "windows with no _NET_WM_PID (minifb sets none)")))
     add("move", cmd_move, ("--x", dict(type=int, required=True)), ("--y", dict(type=int, required=True)))
     add("click", cmd_click, ("--x", dict(type=int, required=True)), ("--y", dict(type=int, required=True)),
         ("--button", dict(type=int, default=1)))
-    add("key", cmd_key, ("--key", dict(required=True)))
-    add("type", cmd_type, ("--text", dict(required=True)))
+    win = ("--window", dict(default=None,
+                            help="window id to focus FIRST (strongly recommended: there is no "
+                                 "window manager, so nothing else ever assigns keyboard focus)"))
+    add("key", cmd_key, ("--key", dict(required=True)), win)
+    add("type", cmd_type, ("--text", dict(required=True)), win)
+    add("focus", cmd_focus, ("--window", dict(required=True)))
     add("shot", cmd_shot, ("--out", dict(required=True)), ("--window", dict(default=None)))
+    add("place", cmd_place, ("--window", dict(required=True)),
+        ("--x", dict(type=int, default=None)), ("--y", dict(type=int, default=None)),
+        ("--raise", dict(action="store_true", dest="raise_")))
     add("procproof", cmd_procproof, ("--pid", dict(type=int, required=True)),
         ("--xvfb-pid", dict(type=int, default=None,
                             help="the Xvfb pid this rig recorded at spawn; when given, the check "
