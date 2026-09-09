@@ -659,3 +659,44 @@ these directly rather than over the bus.
 compared programmatically), so the pacing measurement stands; exactly one `.pump(` in the player, in
 `bus.rs`, outside the frame loop. My own probe — reducing the shared `absolutise` to a pass-through —
 produced the new parity bar and is recorded there.
+
+## L-13 — Declare the Rust floor at 1.96.0 rather than the locally-installed 1.98.0 · `SELF-RULED`
+
+**Verdict.** RULED 2026-09-09, this seat, under the owner's standing delegation of internal
+architecture calls. The workspace declares `rust-version = "1.96.0"` under `[workspace.package]`,
+inherited by all five members, and the five places that restated the literal (three steps in
+`ci.yml`, one in `nightly-differential.yml`, one prose sentence in `README.md`) derive it instead.
+**Reviewer: none — substituted-reviewer rule, seat on HOLD.**
+
+**The alternatives, and why not.** *Declare 1.98.0* (what the code is actually developed against):
+reds CI immediately and buys nothing, since nothing in the tree needs it. *Ship a
+`rust-toolchain.toml`*, the textbook fix: **rejected on measurement, not taste** — that is a rustup
+mechanism and there is no rustup on this machine, so it would read as a fix and change nothing. This
+lane's name for that class is *a wrong instrument does not fail, it answers.*
+
+**Evidence at the time, the implementing agent's and re-checked here.** Max declared `rust-version`
+across the 539 resolvable `Cargo.lock` packages is **1.95** (the egui/eframe 0.36 family), so nothing
+in the graph forces a bump. No `#![feature(...)]` anywhere under `crates/`. Every API named in the
+1.97 and 1.98 release notes greps to zero hits. The one real candidate, `slice::as_chunks`, entered
+at `81ce0a0` on a 1.98 box at clippy's suggestion — the exact shape of an accidental floor crossing —
+and stabilised in **1.88**, so it is safe.
+
+**⚑ THE HONEST LIMIT, recorded because the verdict is weaker than it looks.** There is no 1.96
+toolchain on this box, so **this floor is established by derivation and never by a compile.** Release
+notes are highlights, not an exhaustive stabilisation index, and **red CI cannot stand in for the
+missing compile** — which is the second reason the old d-46 reasoning failed (see below).
+
+**What would have to be true for this to be wrong.** That some 1.97-or-later API reached the tree
+without appearing in the release-note highlights, and CI's redness hid the resulting failure. The
+first green CI run after CI is repaired is the cheap falsifier.
+
+**The audit should re-run:** the release-note grep against a real 1.96 `cargo check`, once a 1.96
+toolchain or a working CI exists.
+
+**⚑ AND IT CORRECTS AN EARLIER SELF-RULED ROW.** `docs/decisions.jsonl` d-46 is wrong on two counts:
+it says CI hardcodes the literal in *three* places (**five**, and my own dispatch brief said four —
+the agent found the fifth), and, load-bearingly, *"CI is green, so 1.96 builds the tree"*. **CI has
+been red for an extended period**, so the row's central evidence for 1.96 compiling the tree never
+held. The row is append-only and stays; this entry is the correction. **The reusable half: d-46
+reasoned from CI's colour without checking that CI was running**, which is this workspace's
+green-log-and-absent-run bar arriving on a decision card rather than on a test.
