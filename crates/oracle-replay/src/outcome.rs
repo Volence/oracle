@@ -33,9 +33,17 @@
 //! # The watchdog is a progress check, not a fixed cap
 //!
 //! `Logic_Tick` is not the frame clock. It increments once per `GameLoop` iteration, *after* `VSync_Wait`
-//! (`aeon/engine/system/game_loop.emp:29-30`, explicitly "lag-immune, unlike `Frame_Counter`"), so
-//! `ticks ≤ frames` and never the reverse — and the boot phase burns frames with **zero** ticks, because
-//! `Level_LoadArt` spins `VSync_Wait` inside a single dispatch (`aeon/engine/level/load_art.emp:124`).
+//! — `aeon/engine/system/game_loop.emp`'s `pub proc GameLoop` opens `jbsr VSync_Wait` / `addq.l #1,
+//! Logic_Tick`, and the declaration in `aeon/engine/ram.emp` is where the counter is called *"lag-immune,
+//! unlike `Frame_Counter` (VBlank count)"*. So `ticks ≤ frames` and never the reverse — and the boot phase
+//! burns frames with **zero** ticks, because `Level_LoadArt` spins `VSync_Wait` inside a single dispatch
+//! (`aeon/engine/level/load_art.emp`).
+//!
+//! ⚑ **The quotation used to be attributed to `game_loop.emp:29-30`, and it is not there.** The two lines
+//! do carry the behaviour, so the citation looked checked; the quoted phrase lives on the `Logic_Tick:
+//! u32` field in `ram.emp` (and, in prose, in `docs/ENGINE_ARCHITECTURE.md`). Verified at aeon `b0f1927e`:
+//! `git grep "lag-immune" -- engine/system/game_loop.emp` returns nothing. Quotation marks around text
+//! that is not at the cited place is the failure mode that makes a citation feel checked.
 //!
 //! So the primary bound is "`Logic_Tick` has not advanced for N frames while armed and not done". That
 //! distinguishes wedged from slow, and catches an arm failure at frame ~10 rather than at the end of a

@@ -1,6 +1,7 @@
 //! The `ARP0` replay-stream header, parsed **out of the ROM image** rather than off a `.bin` on disk.
 //!
-//! The fixture is `embed()`ed into the ROM (`aeon/games/sonic4/test/replay_fixture.emp:16`), so *the ROM is
+//! The fixture is `embed()`ed into the ROM (`aeon/games/sonic4/test/replay_fixture.emp`'s
+//! `pub data Replay_OJZ_Fixture`), so *the ROM is
 //! the fixture*: reading the stream from the resolved `Replay_OJZ_Fixture` symbol makes a fixture-vs-ROM
 //! mismatch structurally impossible, and it costs nothing.
 //!
@@ -22,7 +23,8 @@
 //! "ARP0"      flags pad   ticks=1721    core_hash     seed=0        resv    ring-0 checkpoint    RLE pair
 //! ```
 //!
-//! Body opcodes (`aeon/engine/system/constants.emp:488-492`): `REPLAY_ESCAPE = $FF`, `REPLAY_OP_END = $00`,
+//! Body opcodes (`aeon/engine/system/constants.emp`'s `pub const REPLAY_ESCAPE` / `REPLAY_OP_END` /
+//! `REPLAY_OP_CHECK`): `REPLAY_ESCAPE = $FF`, `REPLAY_OP_END = $00`,
 //! `REPLAY_OP_CHECK = $01` (+ a big-endian u32 expected hash). An ordinary pair is
 //! `buttons u8 (≠ $FF), hold_minus_1 u8`, so a run lasts `hold_minus_1 + 1` ticks. RLE runs are split at
 //! every checkpoint and the packer zero-pads after the terminator, so a decoder must tolerate trailing
@@ -34,7 +36,7 @@ use std::fmt;
 pub const REPLAY_MAGIC: [u8; 4] = *b"ARP0";
 /// Bytes from the fixture symbol to the first stream opcode.
 pub const REPLAY_HEADER_LEN: u32 = 20;
-/// Escape byte introducing an opcode (`aeon/engine/system/constants.emp:488`).
+/// Escape byte introducing an opcode (`aeon/engine/system/constants.emp`'s `pub const REPLAY_ESCAPE`).
 pub const REPLAY_ESCAPE: u8 = 0xFF;
 /// End-of-stream opcode.
 pub const REPLAY_OP_END: u8 = 0x00;

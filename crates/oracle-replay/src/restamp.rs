@@ -4,12 +4,14 @@
 //!
 //! The replay stream embeds an expected 32-bit state hash at every 64-tick checkpoint. When a *legitimate*
 //! engine change alters behaviour, those hashes go stale and the net trips. Re-**recording** is not the
-//! repair: it forfeits the fixture's hand-won coverage, and `aeon/tools/test_replay_fixture.py:53-72` exists
+//! repair: it forfeits the fixture's hand-won coverage, and
+//! `aeon/tools/test_replay_fixture.py`'s `test_ojz_fixture_spindash_input_is_preserved` exists
 //! specifically to catch a re-record masquerading as a re-stamp. The repair is to replace each stale
 //! expected hash with the actual one and change **nothing else**.
 //!
-//! Aeon's ledger (`docs/DEFERRED_WORK.md:113-125`) names this as candidate fix (b), *"a committed re-stamp
-//! tool that makes the manual loop cheap enough to run routinely"*. Today it costs ~7 sequential
+//! Aeon's ledger names this as candidate fix (b), *"a committed re-stamp tool that makes the manual loop
+//! cheap enough to run routinely"* — `aeon/docs/DEFERRED_WORK.md`, the bullet **"The replay net had NO
+//! automated runner"**, read at aeon `b0f1927e`. Today it costs ~7 sequential
 //! playthroughs — each replays from tick 0, trips at the *first* stale checkpoint, and a human reads
 //! `d0`/`d1`/`d2` and patches four bytes before running again.
 //!

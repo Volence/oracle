@@ -2,9 +2,17 @@
 //! to completion, and reports PASS / DESYNC / FAULT / TIMEOUT with an exit code.
 //!
 //! It turns a regression net that is fully built and completely dead into something a CI gate can run.
-//! Aeon's own ledger states the gap (`aeon/docs/DEFERRED_WORK.md:113-125`): *"The replay net has NO
-//! automated runner — it is invisible to every gate we own … it cannot detect a desync — that needs the
-//! emulator."*
+//! Aeon's own ledger stated the gap — `aeon/docs/DEFERRED_WORK.md`, the bullet **"The replay net had NO
+//! automated runner"**: *"`tools/test_replay_fixture.py` gates fixture structure … but it cannot detect a
+//! desync — that needs the emulator."*
+//!
+//! ⚑ **That bullet has since been rewritten, by this crate.** It used to read *"The replay net has NO
+//! automated runner — it is invisible to every gate we own"*, which is what this doc quoted; aeon
+//! `b64b896e` ("wire the replay net into test.sh") struck that phrasing when candidate fix **(a)** landed,
+//! and the bullet now opens *"had NO automated runner — ✅ candidate fix (a) DONE 2026-08-14; (b) still
+//! open"*, naming this binary. Quoted above at aeon `b0f1927e`, and cited by its BULLET rather than by a
+//! line number: the old citation said `:113-125`, and by 2026-09-09 that bullet was at ~4,590 — roughly
+//! **4,470 lines of drift**, which no reader and no gate on this side could have seen.
 //!
 //! Design: `docs/2026-08-14-replay-runner-design.md`.
 //!

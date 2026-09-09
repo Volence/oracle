@@ -864,7 +864,9 @@ mod bus_parity {
     /// `sst.emp` at aeon `f4896139`: `pub struct Sst (size: $50)`. The server does not hold this number —
     /// it measures the stride from two adjacent slot symbols — so the test is the side that must.
     const SST: u32 = 0x50;
-    /// `engine/system/constants.emp:78-90`.
+    /// `aeon/engine/system/constants.emp`, the "Object slot counts per pool" block — the four
+    /// `pub const NUM_*` declarations, and `NUM_TOTAL_SLOTS` computed from them just below.
+    /// (Was `constants.emp:78-90`; those lines are elsewhere in aeon now. Named, not numbered.)
     const NUM_PLAYERS: u32 = 2;
     const NUM_DYNAMIC: u32 = 40;
     const NUM_SYSTEM: u32 = 8;
@@ -877,7 +879,9 @@ mod bus_parity {
     /// fixture ROM, so a planted symbol there is an address the machine really has.
     const OBJ_CODE_BASE: u32 = 0x0001_0000;
 
-    /// `ram.emp:612-618`'s declaration order, as listing rows. Addresses **computed** from base and
+    /// `aeon/engine/ram.emp`'s declaration order — the `mark Object_RAM` .. `mark Object_RAM_End` block
+    /// (`Player_1`, `Player_2`, `Dynamic_Slots`, `System_Slots`, `Effect_Slots`) — as listing rows.
+    /// (Was `ram.emp:612-618`.) Addresses **computed** from base and
     /// stride, never listed: a table of literals would let this test agree with a server holding the
     /// same literals, which is the property under test.
     fn pool_rows(base: u32, stride: u32) -> Vec<(String, u32)> {

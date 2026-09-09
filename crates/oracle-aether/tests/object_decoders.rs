@@ -31,7 +31,9 @@ use serde_json::{json, Value};
 /// catalogue was written for. The tests hold it because they are the ones building the listing.
 const SST: u32 = 0x50;
 
-// `engine/system/constants.emp:78-90`.
+// `aeon/engine/system/constants.emp`, the "Object slot counts per pool" block — the four `pub const
+// NUM_*` declarations. (Was `constants.emp:78-90`; named rather than numbered, because aeon's HEAD moves
+// independently of ours and a drifted line number here is indistinguishable from a verified one.)
 const NUM_PLAYERS: u32 = 2;
 const NUM_DYNAMIC: u32 = 40;
 const NUM_SYSTEM: u32 = 8;
@@ -46,7 +48,9 @@ const BASE: u32 = 0x00FF_8DB0;
 /// `objcodebase.emp:4-6`: *"The object code bank starts at `$10000` (ObjCodeBase)"*.
 const OBJ_CODE_BASE: u32 = 0x0001_0000;
 
-/// `ram.emp:612-618`'s declaration order, as `(name, address)` rows for a listing.
+/// `aeon/engine/ram.emp`'s declaration order — the `mark Object_RAM` .. `mark Object_RAM_End` block
+/// (`Player_1`, `Player_2`, `Dynamic_Slots`, `System_Slots`, `Effect_Slots`) — as `(name, address)` rows
+/// for a listing. (Was `ram.emp:612-618`.)
 ///
 /// The addresses are **computed from `base` and `stride`**, never listed: a table of literals would let a
 /// test agree with a server that had the same literals baked in, which is exactly the property under test.
@@ -304,7 +308,10 @@ fn a_symbol_table_that_names_no_object_pool_is_refused_and_names_what_is_missing
 /// **The `$52` → `$50` fold, arriving again.**
 ///
 /// `sst.emp`'s own comment dates the current record size to a 2026-08-05 fold that shrank it from `$52`,
-/// and `core.emp:52` still carries the stale sentence. A server that measured the stride but kept a field
+/// and `aeon/engine/objects/core.emp` still carries the stale sentence — in the `ensure(…% 4 == 0…)`
+/// parity guard's comment: *"Since the SST grew to `$52` (not itself long-divisible) the property holds
+/// only because the TOTAL slot count is even"*. (Cited as `core.emp:52` until 2026-09-09; the sentence
+/// had moved and 52 held unrelated text.) A server that measured the stride but kept a field
 /// catalogue written for the other size would read `anim` out of `subtype` and report it as a datum. So a
 /// stride that disagrees with the catalogue is a refusal, and both numbers are in the message.
 #[test]
