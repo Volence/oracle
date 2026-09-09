@@ -275,60 +275,104 @@ def cmd_procproof(args):
     pid = args.pid
     ok = True
 
+    # ---- half 1: the environment AS RUNNING -------------------------------------------------
     env_raw = open(f"/proc/{pid}/environ", "rb").read()
-    env = dict(
-        kv.split(b"=", 1) for kv in env_raw.split(b"\0") if b"=" in kv
-    )
+    env = dict(kv.split(b"=", 1) for kv in env_raw.split(b"\0") if b"=" in kv)
     print(f"--- /proc/{pid}/environ (environment AS RUNNING, not as launched) ---")
     for k in (b"WAYLAND_DISPLAY", b"XDG_SESSION_TYPE"):
         present = k in env
-        print(f"  {k.decode():18} {'PRESENT ' + env[k].decode() if present else 'ABSENT  <- required'}")
+        print(f"  {k.decode():18} "
+              f"{'PRESENT ' + env[k].decode() + '  <- FORBIDDEN' if present else 'ABSENT  <- required'}")
         if present:
             ok = False
     for k in (b"DISPLAY", b"WINIT_UNIX_BACKEND", b"XDG_RUNTIME_DIR", b"XDG_DATA_HOME",
               b"ORACLE_SOCKET", b"EXODUS_SOCKET"):
         print(f"  {k.decode():18} {env.get(k, b'(unset)').decode()}")
 
-    print(f"--- /proc/{pid}/fd sockets ---")
+    # ---- half 2: the sockets it actually holds -----------------------------------------------
+    #
+    # An X *client* socket carries no path of its own -- the path is on the listening (server)
+    # side, so `ss` shows our fd as `* <inode> * <peer-inode>`. Grepping our own pid's lines for
+    # "/tmp/.X11-unix" therefore finds nothing even when the connection is real (it did, on the
+    # first version of this check). The connection must be resolved through its PEER inode.
+    #
+    # That turns out to be the stronger proof anyway: the peer is held by a process, and that
+    # process can be compared against the Xvfb pid THIS RIG RECORDED AT SPAWN. It binds the
+    # window process to our own display by kernel state, not by a string in a log.
     fddir = f"/proc/{pid}/fd"
-    x_socks, way_socks, other = [], [], []
-    inodes = set()
-    for fd in sorted(os.listdir(fddir), key=lambda s: int(s)):
+    our_inodes = set()
+    for fd in os.listdir(fddir):
         try:
             t = os.readlink(os.path.join(fddir, fd))
         except OSError:
             continue
         if t.startswith("socket:["):
-            inodes.add(t[8:-1])
-    # Resolve the unix-socket inodes to their peer paths via `ss -xp`.
-    r = subprocess.run(["ss", "-x", "-p", "-a"], capture_output=True, text=True)
-    for line in r.stdout.splitlines():
-        if f"pid={pid}," not in line:
-            continue
-        if "wayland" in line:
-            way_socks.append(line.strip())
-        elif "/tmp/.X11-unix/" in line or "@/tmp/.X11-unix/" in line:
-            x_socks.append(line.strip())
-        else:
-            other.append(line.strip())
-    for l in x_socks:
-        print(f"  X11    {l}")
-    for l in way_socks:
-        print(f"  WAYLAND{l}   <- MUST NOT EXIST")
-    print(f"  ({len(other)} other unix sockets held by this pid)")
+            our_inodes.add(t[8:-1])
 
+    r = subprocess.run(["ss", "-x", "-a", "-p"], capture_output=True, text=True)
+    by_inode = {}   # local inode -> (path, peer_inode, users)
+    for line in r.stdout.splitlines():
+        f = line.split()
+        if len(f) < 7 or not f[0].startswith("u_str"):
+            continue
+        # ... <path> <inode> <peer-path> <peer-inode> [users:(...)]
+        try:
+            path, inode, _peer_path, peer_inode = f[4], f[5], f[6], f[7]
+        except IndexError:
+            continue
+        users = line.split("users:", 1)[1] if "users:" in line else ""
+        by_inode[inode] = (path, peer_inode, users)
+
+    print(f"--- /proc/{pid}/fd unix sockets, resolved through their PEER ---")
+    x_peers, way_peers = [], []
+    for ino in sorted(our_inodes):
+        rec = by_inode.get(ino)
+        if not rec:
+            print(f"  inode {ino}: not a unix socket (netlink/other)")
+            continue
+        path, peer_ino, users = rec
+        prec = by_inode.get(peer_ino)
+        ppath, pusers = (prec[0], prec[2]) if prec else ("(none)", "")
+        kind = "LISTEN(ours)" if path != "*" else "client"
+        print(f"  inode {ino:>12} {kind:12} local={path}")
+        print(f"       peer inode {peer_ino:>12} path={ppath} held by{pusers.strip()}")
+        # ⚑ Classify on the socket PATH, never on the process name in `users:`.
+        # A first version matched the substring "wayland" anywhere in the line and so flagged
+        # `@/tmp/.X11-unix/X0 held by (("Xwayland",...))` as a compositor connection. Xwayland is
+        # an X SERVER; a client talking to it is talking X11, not Wayland. Matching the name would
+        # make this check cry wolf on the one machine it has to be trusted on.
+        #
+        # A compositor socket is `$XDG_RUNTIME_DIR/wayland-<N>` (and its abstract twin), so the
+        # test is on the peer path's basename.
+        base = os.path.basename(ppath.lstrip("@"))
+        if base.startswith("wayland-") and ".X11-unix" not in ppath:
+            way_peers.append(f"{ppath} {pusers}")
+        if ".X11-unix" in ppath:
+            x_peers.append((ppath, pusers))
+
+    # ---- verdict ------------------------------------------------------------------------------
     disp = env.get(b"DISPLAY", b"").decode()
-    want = f"/tmp/.X11-unix/X{disp.lstrip(':')}" if disp else None
-    hits = [l for l in x_socks if want and want in l]
-    print(f"--- verdict ---")
-    print(f"  holds a socket to its OWN Xvfb ({want}): {'YES' if hits else 'NO  <- required'}")
-    if not hits:
+    want = f".X11-unix/X{disp.lstrip(':')}"
+    on_our_display = [p for p in x_peers if want in p[0]]
+    print("--- verdict ---")
+    print(f"  connected to an X server on its own DISPLAY ({disp}, socket *{want}): "
+          f"{'YES' if on_our_display else 'NO  <- required'}")
+    if not on_our_display:
         ok = False
-    print(f"  holds a socket to a Wayland compositor: {'YES  <- FORBIDDEN' if way_socks else 'NO'}")
-    if way_socks:
+    if args.xvfb_pid is not None:
+        matched = [p for p in on_our_display if f"pid={args.xvfb_pid}," in p[1]]
+        print(f"  and that X server is THE Xvfb THIS RIG SPAWNED (pid {args.xvfb_pid}): "
+              f"{'YES' if matched else 'NO  <- required'}")
+        if not matched:
+            ok = False
+    print(f"  holds ANY socket to a Wayland compositor: "
+          f"{'YES  <- FORBIDDEN' if way_peers else 'NO'}")
+    if way_peers:
         ok = False
-    wl = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000"), "wayland-0")
-    print(f"  (the compositor socket that must not appear above: {wl}, exists on this box: {os.path.exists(wl)})")
+    wl = "/run/user/1000/wayland-0"
+    print(f"  (the compositor socket that must not appear above: {wl}; "
+          f"it exists on this box: {os.path.exists(wl)}, so its absence here is a real absence "
+          f"and not a missing target)")
     print(f"  STRUCTURAL ISOLATION: {'PROVEN' if ok else 'NOT PROVEN'}")
     return 0 if ok else 5
 
@@ -356,7 +400,10 @@ def main():
     add("key", cmd_key, ("--key", dict(required=True)))
     add("type", cmd_type, ("--text", dict(required=True)))
     add("shot", cmd_shot, ("--out", dict(required=True)), ("--window", dict(default=None)))
-    add("procproof", cmd_procproof, ("--pid", dict(type=int, required=True)))
+    add("procproof", cmd_procproof, ("--pid", dict(type=int, required=True)),
+        ("--xvfb-pid", dict(type=int, default=None,
+                            help="the Xvfb pid this rig recorded at spawn; when given, the check "
+                                 "also requires that the process is connected to THAT server")))
 
     args = p.parse_args()
     sys.exit(args.fn(args))

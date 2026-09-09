@@ -66,8 +66,10 @@ import sys
 from Xlib import display as xd
 d = xd.Display(sys.argv[1])
 s = d.screen()
-print("%dx%d depth=%d vendor=%s" % (
-    s.width_in_pixels, s.height_in_pixels, s.root_depth, d.get_vendor()))
+i = d.display.info
+print("%dx%d depth=%d vendor=%r protocol=%d.%d screens=%d" % (
+    s.width_in_pixels, s.height_in_pixels, s.root_depth,
+    i.vendor, i.protocol_major, i.protocol_minor, len(i.roots)))
 PY
 }
 
@@ -105,11 +107,21 @@ cmd_display_start() {
   done
   [ -e "/tmp/.X11-unix/X$found" ] || die "Xvfb :$found never created its socket; see $RIG/xvfb.log"
 
-  printf '%s\n' ":$found" > "$DISPLAY_FILE"
+  # The pid file is written FIRST and unconditionally, so that a display which then fails
+  # verification is still one we can clean up by recorded pid rather than orphaning.
   printf '%s\n' "$pid" > "$XVFB_PID_FILE"
 
+  # ⚑ Verify BEFORE publishing $DISPLAY_FILE. `require_display` gates every launch on that file, so
+  # an unverified display must never be able to satisfy the gate. (This ordering is not cosmetic:
+  # the first run of this script wrote both files and *then* failed verification, which left a
+  # display the gate would have accepted and nobody had measured.)
   local seen
-  seen="$(verify_geometry ":$found")" || die "could not read the screen back from :$found — the display is UNMEASURABLE, which is a failure and not a pass"
+  if ! seen="$(verify_geometry ":$found" 2>&1)"; then
+    kill "$pid" 2>/dev/null || true
+    rm -f "$XVFB_PID_FILE"
+    die "could not read the screen back from :$found — the display is UNMEASURABLE, which is a failure and not a pass. Xvfb killed. Detail: $seen"
+  fi
+  printf '%s\n' ":$found" > "$DISPLAY_FILE"
   note "display :$found pid $pid  screen(read back from inside): $seen"
   printf ':%s\n' "$found"
 }
