@@ -200,6 +200,53 @@ report_skips() {
     echo "      the frontend entry. It is no longer written or updated here. To clear the duplicate:"
     echo "      rm $legacy"
   fi
+  report_oracle_debug
+}
+
+# ---------------------------------------------------------------------------------------------------
+# THE HAND-MADE `oracle-debug` ENTRY.
+#
+# Not this script's file, so it is never written, edited or removed here: it is reported, with the reason
+# and the exact commands, and the decision stays with the person whose desktop it is.
+#
+# ⚑ WHY IT IS WORTH A PARAGRAPH RATHER THAN A LINE. Measured on this machine, 2026-09-09:
+#
+#   * It declares `StartupWMClass=oracle-frontend`, so the conflict rule above SKIPS the frontend entry
+#     entirely. On a machine with this file, the only entry this script manages is the player's.
+#   * It runs `~/.local/bin/oracle-debug`, which execs `oracle-frontend` -- the minifb window the owner
+#     has asked to stop using in favour of the toolkit player.
+#   * Its already-serving guard is `pgrep -f 'oracle-frontend'`. That is blind to `oracle-player` holding
+#     the same socket, which is exactly the case its own warning describes (Aurora talking to a window
+#     nobody is looking at), and `-f` matches whole command lines, so a shell carrying the string matches
+#     itself.
+#   * It rebuilds only when the binary is MISSING, and otherwise execs whatever is on disk, so it is a
+#     second source of the staleness `oracle-launch.sh` exists to remove.
+#
+# THE RECOMMENDATION IS TO RETIRE IT, not to repoint it. Repointing it at the player means its class must
+# become `oracle-player`, and it would then collide with `oracle-player.desktop` the way it collides with
+# the frontend's today -- the same defect, moved onto the entry the owner actually uses. What it did is
+# already what the player entry does: `oracle-launch.sh` defaults the ROM to `aeon/s4.debug.bin` (or
+# `$ORACLE_ROM`) and passes `--aether`, so "the debug ROM with Aether on" is one click on Oracle Player.
+report_oracle_debug() {
+  local entry="$apps/oracle-debug.desktop" script="$HOME/.local/bin/oracle-debug" found=0
+  [ -e "$entry" ] && found=1
+  [ -e "$script" ] && found=1
+  [ "$found" = 1 ] || return 0
+  echo "note: a hand-made oracle-debug launcher is installed, and it is not managed here."
+  [ -e "$entry" ] && echo "        $entry"
+  [ -e "$script" ] && echo "        $script"
+  echo "      It runs the minifb oracle-frontend, its already-serving guard cannot see an oracle-player"
+  echo "      holding the same socket, and it rebuilds only when the binary is missing. It also claims"
+  echo "      StartupWMClass=oracle-frontend, which is why the frontend entry above may be skipped."
+  echo "      Oracle Player now covers what it did: oracle-launch.sh defaults the ROM to"
+  echo "      aeon/s4.debug.bin (or \$ORACLE_ROM) and passes --aether. Retiring it is the suggestion,"
+  echo "      and it is yours to make. Nothing here removes it. To do it by hand:"
+  [ -e "$entry" ] && echo "        rm $entry"
+  [ -e "$script" ] && echo "        rm $script"
+  # ⚑ Explicit, and not decoration. Under `set -e` a function whose LAST command is a failing test exits
+  # the whole script: `[ -e "$script" ]` is false whenever only the entry is present, so without this the
+  # note would abort the install it is attached to.
+  return 0
 }
 
 if [ "$dry" = 1 ]; then

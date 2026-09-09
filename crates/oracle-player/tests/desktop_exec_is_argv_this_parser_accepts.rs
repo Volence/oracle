@@ -49,13 +49,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn launcher() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oracle-frontend/assets/oracle-launch.sh")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../oracle-frontend/assets/oracle-launch.sh")
 }
 
 fn installer() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../oracle-frontend/assets/install-desktop.sh")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../oracle-frontend/assets/install-desktop.sh")
 }
 
 /// A temporary tree with a stubbed `PATH`, removed on drop.
@@ -159,7 +157,10 @@ fn resolved_argv(mut argv: Vec<String>, path: &str, rom_env: Option<&str>) -> Ve
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.status.success(), "the launcher resolved no launch:\n{text}");
+    assert!(
+        out.status.success(),
+        "the launcher resolved no launch:\n{text}"
+    );
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::to_string)

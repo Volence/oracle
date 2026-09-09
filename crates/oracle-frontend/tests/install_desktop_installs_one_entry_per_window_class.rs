@@ -204,6 +204,56 @@ fn exec_line(body: &str) -> String {
         .to_string()
 }
 
+/// ⚑ **The hand-made `oracle-debug` launcher is REPORTED and never touched.**
+///
+/// Measured on the owner's machine, 2026-09-09: `oracle-debug.desktop` declares
+/// `StartupWMClass=oracle-frontend`, which is why the frontend entry is skipped there; it runs a shell
+/// script that execs the minifb `oracle-frontend`; and that script's already-serving guard is
+/// `pgrep -f 'oracle-frontend'`, blind to an `oracle-player` holding the same socket. All three are
+/// reasons to retire it and none of them is a licence to delete a file in somebody's home directory.
+///
+/// This test pins both halves. A report that quietly removed the thing it reported would pass an
+/// assertion about its own output while doing the one thing this script has always refused to do, so the
+/// survival of the file is asserted beside the words.
+#[test]
+fn a_hand_made_oracle_debug_launcher_is_reported_and_left_alone() {
+    let rig = Rig::new("oracle-debug");
+    let entry = rig.apps().join("oracle-debug.desktop");
+    fs::write(
+        &entry,
+        "[Desktop Entry]\nType=Application\nName=Oracle (s4 debug)\nExec=/home/x/.local/bin/oracle-debug\n\
+         Icon=oracle-debug\nStartupWMClass=oracle-frontend\n",
+    )
+    .expect("the fixture entry");
+
+    let (ok, text) = rig.run();
+
+    assert!(ok, "the script did not exit 0. Output:\n{text}");
+    assert!(
+        entry.exists(),
+        "the script REMOVED a launcher it does not own. Output:\n{text}"
+    );
+    assert!(
+        text.contains("oracle-debug.desktop"),
+        "the hand-made launcher was not named, so a reader cannot act on the note. Output:\n{text}"
+    );
+    assert!(
+        text.contains("Retiring it is the suggestion"),
+        "the note does not say what it recommends, which leaves the reader with a fact and no next \
+         step. Output:\n{text}"
+    );
+    assert!(
+        text.contains(&format!("rm {}", entry.display())),
+        "the note does not give the exact command, so acting on it means guessing a path. Output:\n\
+         {text}"
+    );
+    // The player entry must still install: a note is not a refusal.
+    assert!(
+        rig.apps().join("oracle-player.desktop").exists(),
+        "the note stopped the install it was attached to. Output:\n{text}"
+    );
+}
+
 /// The `Exec=` line as an argv, with the `%f` field code replaced by `rom` (which is what a desktop does
 /// for "Open With") or dropped entirely when `rom` is `None` (which is what a plain icon click does).
 fn exec_argv(exec: &str, rom: Option<&str>) -> Vec<String> {
