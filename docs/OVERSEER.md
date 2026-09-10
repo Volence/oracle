@@ -80,9 +80,19 @@ moved with them.)*
    asserted as a whole sorted set, so it cannot drift silently. Board row `ACCEPT-16`. The arc's closed
    history (survey, CR-A, trio, CR-B) is in the log.
 
-   **NEXT (not yet dispatched):** open from the survey and **not lost**: stale prose at
-   `schema_conformance.rs:6,222` and the `resolve_target` `oneOf` divergence (**both folded into
-   the in-flight `run_to_scanline` parcel**; remove from here once that lands), and a proposed
+   **NEXT (not yet dispatched):** ⚑ **THE FIRST TWO ARE DISCHARGED AND THIS BLOCK OUTLIVED THEM BY NINETEEN
+   DAYS.** It said the stale prose at `schema_conformance.rs:6,222` and the `resolve_target` `oneOf`
+   divergence were *"folded into the **in-flight** `run_to_scanline` parcel; remove from here once that
+   lands"* — **it landed 2026-08-22** (`4f93583`, `tests/run_to_scanline.rs`, method served from
+   `engine.rs`), and both residuals are resolved in source (`:6` now states the coverage as pinned-empty
+   rather than as a seed; `:222` now describes the committed-revision content-addressed gate). **A
+   self-removing instruction is nobody's job by construction** — it names no owner and no trigger anyone
+   watches, so it reads as live prose forever. This is the NINTH row this week whose justification aged
+   while the row sat still, and the only one that carried its own deletion instruction. Do not write
+   "remove this once X lands" again: book the removal, or write the condition as something a boot read
+   can test. **Verified before deleting, per this file's own rule that a fold is a REFERENCE and closing
+   its target orphans it** — both folded residuals were checked resolved rather than assumed. Still open
+   from the survey is a proposed
    **error-surface gate**: since no fragment declares error conditions, a suite validating only
    replies is blind to every error obligation. ⚠ **NO LONGER A PROPOSAL — `crates/oracle-aether/tests/request_bounds.rs`
    LANDED 2026-09-09 (`84e14f6`, `5f6a670`, `c4eeae5`) and covers all 97 numeric bound obligations, fragment-derived at
@@ -461,7 +471,23 @@ Owner, asked *"did we do something beurocratic to slow things down?"*: *"Yes ple
 arbitrarily slowing us down without like an actual good reason please … as long as it's correct and stuff
 and hitting our goal, that should be what we mainly care about."*
 
-In force until EFFECTS-W1 ships:
+⚑ **"In force until EFFECTS-W1 ships" IS THIS LANE'S SCOPING INFERENCE, NOT HIS WORDS — and its condition
+was MET ON 2026-09-06.** His quote above carries no expiry at all; it is a standing preference. The expiry
+sentence was written in the typographic register this file reserves for his verbatim text, which is the exact
+defect the hub was corrected on this morning. **This is the only mention of EFFECTS-W1 in this document, so
+nothing here moved when the project closed four days ago.**
+⚑ **AND FOUR LIVE HOLDS STILL REST ON THE MORATORIUM BEING IN FORCE**: `SCHEMA-DRIFT-NIGHTLY` (below, *"the
+cut-the-ceremony moratorium alone"*), `F-CITATION-LINT` (*"the reason is the moratorium, NOT the merits"*,
+revival condition *"the moratorium lifting"*), the PARKED bar at the head of `docs/OVERSEER-REFERENCE.md`, and
+two queue rows. **So this file asserts both that the ruling expired and that four things are held by it.**
+⚑ **NOT RULED HERE, DELIBERATELY.** Whether the moratorium lifted is suite-wide — every lane has apparatus
+parked on it — and the owner's overnight clause (3) forbids this seat taking a decision of that size. Routed
+to the hub, which found the identical clause in empyrean's own copy (`while EFFECTS-W1 is open`) the same
+hour. **One blocker spanning lanes gets exactly ONE card**; it is not this lane's to file. Until it is
+answered, treat the moratorium as IN FORCE — that is the status quo every lane has actually been observing,
+which is itself evidence nobody reads the expiry as operative.
+
+*Scoped, per that inference, to EFFECTS-W1:*
 * **No new process bars, no rulings about rules, no boot-doc growth.** New bars go to
   `docs/OVERSEER-PENDING-BARS.md` PARKED, not into force. The protocol pass waits.
 * **A correction is ONE LINE in the lane log. No story.**
