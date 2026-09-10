@@ -716,8 +716,21 @@ its own commit.** I have been asking agents to "mark the ledger row fixed in the
 is unachievable and contradicts every existing fixed row (M47/M48/M49 all append the row afterwards). **Stop
 writing that instruction into briefs**; ask for the fix commit, then the ledger append naming it.
 
-⚑ **RULED 2026-09-10, SEQUENCING: C5 AND H26 TOUCH THIS ONE FUNCTION FROM OPPOSITE ENDS AND MUST NOT RUN
-CONCURRENTLY. H26 first, C5 after it lands.** H26 (`d-47` answered `structural`) is deciding whether this
+⚑ **DISCHARGED 2026-09-10: BOTH LANDED, IN ORDER, AND THE SEQUENCING PAID OUT.** H26 at merge `f759d76`,
+then C5 at merge `282aa93` (fix `470091d`) — `Vdp::advance_scanline`, the cheap unmasked stateful twin, is
+now in the tree beside `render_scanline` and the invariant is intact **because H26 was written to admit it**.
+The replay is **2.58×/2.59× faster by median** (2548→989 ms and 2556→987 ms over 1176 frames, two interleaved
+sessions); the discarded raster was **~61 % of the replay's whole wall clock**. `d-44` discharged: split
+delivered *and* the number he asked for. Guarded by `the_cheap_scanline_advance_leaves_the_same_machine`
+(whole-`Vdp` `PartialEq` after each line, 14 fixtures). Zero currency movement.
+⚑ **Four lessons this pairing produced — the paraphrase sweep, the floor-is-a-prior counter-instance,
+the profile-with-every-baseline ops defect against this seat, and the two-paths-wrong-the-same-way guard
+case — are in `docs/OVERSEER-REFERENCE.md`, because each is read BEFORE DISPATCHING, REVIEWING or
+LANDING and none of them at boot.**
+
+⚑ *(Superseded, kept because a session citing the hold must see it was correct when made.)* ~~**RULED
+2026-09-10, SEQUENCING: C5 AND H26 TOUCH THIS ONE FUNCTION FROM OPPOSITE ENDS AND MUST NOT RUN
+CONCURRENTLY. H26 first, C5 after it lands.**~~ H26 (`d-47` answered `structural`) is deciding whether this
 very claim gets a real mechanism — plausibly by making the no-mask signature structurally locked. C5
 (`d-44` answered `split`) splits that same call so the cheap path stops building a full attributed report
 to obtain three status bits, i.e. **it proposes exactly the "twin" the claim above says does not exist.**

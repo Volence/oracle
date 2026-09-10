@@ -1000,3 +1000,42 @@ the four-pane table and the baseline caveat moved whole to `OVERSEER-LOG.md` 202
 **Never put backquotes in a commit message written as `git commit -m "$(cat <<EOF ...)"` in this harness.** Measured tonight: a backquoted word inside that construct was executed as a command and DELETED from the message, leaving `8d says in terms that  supplies the CONTENT` in a pushed commit, with `command not found` printed into a stream nobody was reading. The heredoc delimiter was quoted and it happened anyway.
 **This is the commit-message bar's own failure mode arriving through the shell rather than through a failed edit** (second instance here; the first was an edit that matched nothing while the chained commit ran regardless). A commit message is a claim about a diff and NOTHING checks it, so it is the one artifact where a silent deletion survives.
 **Remedy: compose the message from a file or a Python string, and READ THE MESSAGE BACK with `git log -1 --format=%B` whenever it contains punctuation the shell owns.** Already pushed means it stays: never rewrite pushed history.
+
+## ⚑ FROM THE C5/H26 PAIRING, 2026-09-10 — read before DISPATCHING, REVIEWING and LANDING
+
+*(Both landed in order: H26 `f759d76`, C5 `282aa93`. The discharge and the numbers are in `docs/OVERSEER.md`; these four are the transferable half.)*
+
+⚑ **THE LESSON THE PAIRING ACTUALLY TAUGHT, and it is not the one the rule below predicted. The canonical
+site was SAFE; its PARAPHRASES were not.** The C5 brief ordered the agent to repair `render_scanline`'s doc
+because a second stateful render would falsify it — and that paragraph never went false, because H26 had
+deliberately written it to anticipate exactly this. What went false were **seven other sites** the brief did
+not name (`oracle-player/machine.rs:318`, `oracle-frontend/main.rs:709`, `oracle-aether/engine.rs:1595`,
+`:1622`, three in `vdp.rs`), each paraphrasing the claim as *"the one render that commits the latches"*.
+**A claim repaired at its canonical site leaves every paraphrase of it standing, and the paraphrases are
+where the next parcel falsifies it.** H26 fixed eleven sites of one spelling; C5 found seven of a *different*
+spelling that H26's own greps had no reason to match. When a doc is hardened, sweep for what RESTATES it, not
+only for what repeats its words.
+⚑ **AND THE COUNTER-INSTANCE TO "PACKET COUNTS ARE FLOORS": here the finding was EXACT.** The brief pushed
+the agent to reach past the ledger's one consumer on the standing floor prior. It reached and found nothing —
+`oracle-player`, `oracle-frontend` and `oracle-aether` all put `ScanlineCapture` in the `Fanout` on **both
+branches of every run path**, so they are armed by construction and `oracle-replay` really was the only
+unarmed consumer. **A floor is a PRIOR, not a law.** Keep sending agents past the stated count; stop treating
+a count that holds as a failure to look.
+⚑ **OPS, AGAINST THIS SEAT: THE BASELINE I QUOTED COULD NOT COME FROM THE COMMAND I QUOTED.** The brief gave
+`88 legs / 2759 / 0 / 3` as the baseline *and* `cargo test --workspace` as the verification. `oracle-replay`'s
+three playthroughs are `cfg_attr(debug_assertions, ignore)`, so **debug reports 2757/6 and release reports
+2760/3** — a baseline from one profile handed over with a command from the other, and the agent had to
+reconcile it (2757 + 3 = 2760) before it could report anything. This is the already-banked *"no single
+`cargo test` runs every test here"* arriving as a defect in my own brief. **State the PROFILE with every
+baseline count.** And at the landing, the arithmetic is not the proof: `comm` the debug and release
+**ignored lists** and confirm the extra legs ran BY NAME — the three that matter here are exactly the ones
+covering the code C5 changed.
+⚑ **THE GUARD LESSON, and it is the parity-pair bar arriving on its own: A SWEEP COMPARING TWO PATHS STAYS
+GREEN WHEN BOTH ARE WRONG THE SAME WAY.** The agent's width mutation (`let width = 256;` in the cheap path)
+came back **applied-and-still-green** over a corpus whose own coverage assertion `saw_h32 && saw_h40` was
+true the whole time — because `width` reaches committed state only through `collision`, only for pixels in
+`x ∈ [256,320)`, and no fixture put an *overlap* in that band. **A coverage assertion that names the axis is
+not a coverage assertion about the MECHANISM.** The repair is the reusable half: a control asserted **before**
+the sweep (this pair collides at 320 and is clipped at 256), with the band coordinate **derived** from where
+width can reach state at all rather than picked. The agent treated the green as a guard defect rather than a
+pass, which is the behaviour bar 8(c) exists to produce.
