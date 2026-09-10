@@ -20,6 +20,11 @@
       "what": "DONE, reviewed by me, waiting to land: the refusal gate",
       "where": "branch parcel/error-surface-gate",
       "agent": false
+    },
+    {
+      "what": "DONE, waiting to land: F-IO-WRITE-MIRROR-UNCOVERED was a FALSE ROW and is retired by measurement. The I/O write mirror was already covered -- `io_registers_ignore_a0_even_byte_writes_reach_the_register` writes the EVEN lane $A10008 (the mirror) and reads canonical $A10009, and deleting `| 1` from the write arm turns it red (left: 0, right: 64). `io_reg` maps ODD addresses only, so odd is canonical and EVEN is the mirror; the row had them swapped. The note was NOT inverted -- its drifted `bus.rs:2069` citation pointed at the newer write test. The alleged shape WAS real one arm over, at `z80_ram[z & (Z80_RAM_SIZE - 1)]`, whose fold width was unpinned in BOTH directions; closed by a new both-directions test at a mask-sensitive offset.",
+      "where": "branch parcel/io-write-mirror-cover",
+      "agent": false
     }
   ],
   "blockedOnOwner": [
@@ -29,7 +34,7 @@
       "id": "d-39"
     },
     {
-      "what": "whether Tab should restart the game the way the old window did, instead of cycling panels — it caught you on day one, but somebody chose the current behaviour deliberately so it needs your word",
+      "what": "whether Tab should restart the game the way the old window did, instead of cycling panels \u2014 it caught you on day one, but somebody chose the current behaviour deliberately so it needs your word",
       "since": "2026-09-05",
       "id": "d-33"
     }
@@ -185,14 +190,6 @@
       "size": "S",
       "blockedBy": null,
       "title": "Done and pushed: the landing checks are now a written list, including the step I skipped tonight -- actually reading the automated checks."
-    },
-    {
-      "id": "F-IO-WRITE-MIRROR-UNCOVERED",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Booked so it does not vanish with the cut: a hardware behaviour we fixed has a test that can only ever check half of it. The note describing the gap also has its premise backwards -- I read the test tonight and it does the opposite of what the note says, though the conclusion it draws is still right."
     }
   ],
   "awaiting": "your word that the machine is free. Four finished parcels are parked on it now, and that is the whole of what I am waiting for. Also d-39 (A or B on the Pacing tab) whenever you are at a keyboard.",
