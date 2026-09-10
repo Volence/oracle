@@ -370,15 +370,24 @@ below exists to prevent.
 lost a morning to `F-CITATION-LINT`.* `--backtest` replays the shipped comparison over the contract
 repo's real history of both paths: **78 content-change events on `origin/main`'s first-parent line, 78
 fired, 0 missed** (schema 56/56 over 57 revisions, 2026-06-18..2026-09-09; vectors 22/22 over 23
-revisions, 2026-08-22..2026-09-06); 97/97 including side branches; **0 false positives**; and the
-vacuous form — the same comparison asked at `pin.revision` instead of at tip — fires **0 of 97**, which
-is why it asks at tip. What that measurement does **not** cover it says itself: `git log
+revisions, 2026-08-22..2026-09-06); 97/97 including side branches. **The load-bearing number is not
+that 100%** — a content-addressed comparison fires exactly when the content differs, so a high rate is
+what correctness looks like here — **it is the vacuity control**: the same comparison asked at
+`pin.revision` instead of at tip fires **0 of 97**, and that is the figure that could have come back
+non-zero. On false positives, two classes travel under one name and only one has a denominator: the
+literal *touched-without-moving-its-blob* class is **0 of 0 and therefore UNMEASURED, structurally** —
+git records a path in a commit's diff only when its blob or mode changes, so that denominator was never
+going to be anything but zero, in this repo or any other, and it is covered by construction in
+`tools/test_contract_drift_report.py` rather than claimed as measured. The class that actually risks
+crying wolf for a **byte** pin is the semantically-null byte change, and that one **is** measured at
+**1 of 97**. What that measurement does **not** cover it says itself: `git log
 --full-history -M --diff-filter=R` over `contract/schema/` is **empty**, so the rename/delete class has
 zero upstream instances and is covered by constructed rows in `tools/test_contract_drift_report.py`
-(runner: `tools/run_contract_drift_tests.sh`, 20 rows) instead. One of the 97 fires — `47e77ec`,
-*"restore raw UTF-8 (content-identical)"* — moved bytes without moving the parsed document; the report
-labels that **semantically null** rather than either hiding it (our pin is on bytes) or sending a
-reader hunting for a shape change.
+(runner: `tools/run_contract_drift_tests.sh`, 20 rows) instead. That one measured false positive is
+`47e77ec`, *"restore raw UTF-8 (content-identical)"*, blob `f0ab1756` → `da37da70`: it moved bytes
+without moving the parsed document. The report labels it **semantically null** rather than either
+hiding it (our pin is on bytes, so hiding it would be a *miss*) or sending a reader hunting for a shape
+change — and that label is what stands between this instrument and crying wolf.
 
 **To re-vendor** (the whole recipe, and it never touches the working tree):
 

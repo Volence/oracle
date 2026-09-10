@@ -63,18 +63,39 @@ repo's real history of both vendored paths.
 
 97 content-change events, **97 fired, 0 missed**, over 100 commits walked (73 schema + 27 vectors).
 
-### False positives
+### The catch rate is close to definitional — read this before quoting the 100%
 
-**0**, over **0** touch-no-change commits. Neither path has a single commit in its entire history that
-touched it without moving its blob — no merge re-resolved either path to a blob equal to its first
-parent's, and there are no mode-only changes. That class exists in principle, has zero instances here,
-and is therefore covered by a constructed fixture rather than claimed as measured.
+The detector is a content-addressed comparison, so it fires **exactly when the content differs**. A high
+catch rate is therefore what correctness looks like here, not a surprising result. What the replay is
+actually for is (a) **enumerating the population** — the step nobody took for `F-CITATION-LINT` — and
+(b) the **vacuity control**, which is the load-bearing measurement because it is the one that could have
+come back non-zero.
 
-### The vacuity control
+### The vacuity control — the load-bearing number
 
 The same comparison asked at `pin.revision` instead of at tip — i.e. a drift check pointed at the
 revision the pin was taken from — fires on **0 of 97** events. A pinned blob equals itself forever. This
-is the number that says the 100% above is not an artifact of the method.
+is the figure that says the 100% above is not an artifact of the method, and it is the one to quote.
+
+### False positives — two different classes, and only one has a denominator
+
+**(i) The literal class — a commit that touches the path without moving its blob: 0 of 0. THE RATE IS
+UNMEASURED, and that is structural rather than a fact about this peer.** git records a path in a
+commit's diff only when its blob or its mode changes, so "touched but unchanged" is a class git very
+nearly cannot produce — in this repo or in any other. That denominator was never going to be anything
+but zero. Reporting the cell states a fact; reporting it as a *rate*, beside a catch rate, implies an
+instrument that was tested and was not. **There was no opportunity to be imprecise.** Its only measured
+coverage is constructed: `TestBacktest.test_a_merge_that_re_resolves_the_same_blob_is_not_a_false_positive`
+builds such a merge on purpose, giving the class a denominator of 1, and asserts 0 flagged — and in the
+same run asserts that the path *without* such a merge prints `RATE UNMEASURED`.
+
+**(ii) The class that actually risks crying wolf for a BYTE pin — the semantically-null byte change:
+1 of 97 fires. This one is measured**, over a real denominator. Bytes move, the parsed document does
+not: empyrean `47e77ec`, *"schema: restore raw UTF-8 (content-identical)"*, blob `f0ab1756` ->
+`da37da70`. It is genuine drift for a copy pinned on bytes — our gate hashes bytes, so suppressing it
+would be a **miss** — and the report labels it *semantically null* instead. **That label is what stands
+between this instrument and crying wolf, and this is the false-positive figure that belongs beside the
+catch rate.**
 
 ### What the fires would have said
 
@@ -86,7 +107,8 @@ is the number that says the 100% above is not an artifact of the method.
 The one is empyrean `47e77ec`, *"schema: restore raw UTF-8 (content-identical), and correct 11.45's
 owes-nothing claim"*. Our pin is on **bytes**, so this is real drift and suppressing it would be a miss;
 it is also not a shape change, so the report labels it *semantically null* rather than sending a reader
-hunting for something that is not there.
+hunting for something that is not there. **This row is the measured false-positive risk** — see the
+false-positive section above, and do not read the 0/0 literal cell as its replacement.
 
 ### What the backtest does NOT cover, stated rather than implied
 
@@ -173,8 +195,11 @@ job is the controller's call. What it would need:
 
 ## How it was verified
 
-* `tools/run_contract_drift_tests.sh` — **20 rows, 20 green, 0.23 s.** Predicted 20 before the first
-  run; 20 collected.
+* `tools/run_contract_drift_tests.sh` — **20 rows, 20 green** (0.23 s first landing, 0.28 s after the
+  false-positive correction). Predicted 20 before the first run; 20 collected. Still 20 after the
+  correction: the merge fixture gained assertions rather than a new row, because it is one run that now
+  asserts **both** denominator branches — the path with a constructed touch-no-change commit must NOT
+  print `RATE UNMEASURED`, and the path without one must.
 * `cargo test -p oracle-aether --test schema_conformance` (**debug** profile) — **25 passed, 0 failed,
   0 ignored**, 0.72 s, after the `PROVENANCE.md` edit. Predicted 25 from `grep -c '^#\[test\]'` before
   running; 25 ran.
@@ -187,6 +212,7 @@ job is the controller's call. What it would need:
   | M2 | `classify` never returns `DRIFTED` | 5 (both drift rows, both backtest rows, the unit row) |
   | M3 | a set-but-wrong `$EMPYREAN_DIR` falls through to the suite root | 1 |
   | M4 | the missing-ref branch prints "no drift found" instead of `UNMEASURABLE` | 1 |
+  | M5 | a zero false-positive denominator printed as a measured rate (the `RATE UNMEASURED` branch disabled) | 1 |
 
   **M4's first attempt did not apply** (a string-escape mismatch) and the suite printed `OK` — the
   unapplied-mutation collision, caught only because the disk grep for the marker came back empty. It was

@@ -35,7 +35,10 @@ Re-pointing a drift check at the revision the pin was taken from makes it vacuou
 resolves those paths to the pinned blobs by construction and forever, so such a check would pass for
 the wrong reason and detect nothing.  (Measured, not asserted: `--backtest` runs that same-revision
 comparison as a control and it fires on **0 of 97** real drift events, against 97 of 97 for the form
-this file ships.  That "97" was written "39" here before the backtest ran — a placeholder from the
+this file ships.  That control is the LOAD-BEARING number, not the 97/97: a content-addressed
+comparison fires exactly when the content differs, so a high catch rate here is close to definitional
+and is what correctness looks like rather than a surprising result.  The control is the figure that
+could have come back non-zero.  That "97" was written "39" here before the backtest ran — a placeholder from the
 design sketch that survived into prose and would have read as a measurement.  Numbers in this file
 come from a run or they do not appear.)
 
@@ -48,6 +51,24 @@ of a peer's CONTENT is fresh reads the peer through git objects at a named revis
 peer's working tree."*  The checkout is *located* by that file's precedence (`--empyrean`,
 `$EMPYREAN_DIR`, `$EMPYREAN_SUITE_ROOT/empyrean`, a marker walk, then a refusal naming every candidate
 tried), and the step that answered is printed before anything is compared.
+
+WHAT A FALSE-POSITIVE RATE CAN MEAN HERE, AND WHAT IT CANNOT
+------------------------------------------------------------
+Two different classes travel under that name and only one of them has a denominator.
+
+* The LITERAL class -- a commit that touches the path without moving its blob -- has a rate that is
+  **UNMEASURED, and structurally so**.  git records a path in a commit's diff only when its blob or
+  its mode changes, so "touched but unchanged" is a class git very nearly cannot produce, in this
+  repo or in any other.  `--backtest` reports 0 of 0 and says in the same breath that 0/0 is an empty
+  cell rather than an instrument that was tested and passed.  It must never be printed beside the
+  catch rate as though it were a precision result.  Its only measured coverage is constructed, in
+  `tools/test_contract_drift_report.py`.
+* The class that actually risks crying wolf for a BYTE pin is the **semantically-null byte change**:
+  the bytes move, the parsed document does not.  That one has a real denominator and a real number --
+  **1 of 97** fires across the peer's whole history (`47e77ec`, *"restore raw UTF-8,
+  content-identical"*).  It is genuine drift for a copy pinned on bytes, so suppressing it would be a
+  MISS; the report labels it instead, and that label is what stands between this instrument and
+  crying wolf.  This is the false-positive figure that belongs next to the catch rate.
 
 THE STALE-MIRROR CASE, AND THE CHOICE MADE ABOUT IT
 ---------------------------------------------------
@@ -729,8 +750,33 @@ def backtest(args):
         # --- the measurement -----------------------------------------------------------------------
         fired = [r for r in events if classify(r["before"], r["after"]) == DRIFTED]
         missed = [r for r in events if classify(r["before"], r["after"]) != DRIFTED]
-        # False positives: a commit with NO content change that the detector nevertheless calls drift.
+        # False positives, the LITERAL class: a commit with no content change that the detector
+        # nevertheless calls drift.  Read the printed block below before quoting this number — its
+        # denominator is structurally near-empty and a rate computed from it means nothing.
         fp = [r for r in touched_nochange if classify(r["before"], r["after"]) == DRIFTED]
+
+        # What each fire would have SAID.  Computed here rather than at the point it prints, because
+        # the false-positive block below needs `null_semantic`: for a BYTE pin, the semantically-null
+        # byte change is the real cry-wolf risk, and it is the false-positive figure that has a
+        # non-empty denominator.
+        null_semantic, real_semantic, unparsable = 0, 0, 0
+        samples = []
+        for r in fired:
+            old = git("cat-file", "blob", r["before"], binary=True)
+            new = git("cat-file", "blob", r["after"], binary=True)
+            if old is None or new is None:
+                unparsable += 1
+                continue
+            try:
+                if json.loads(old.decode("utf-8")) == json.loads(new.decode("utf-8")):
+                    null_semantic += 1
+                    samples.append(
+                        ("semantically null", git("log", "-1", "--format=%h %s", r["commit"]))
+                    )
+                else:
+                    real_semantic += 1
+            except (UnicodeDecodeError, ValueError):
+                unparsable += 1
         # Vanished-path commits: the detector must call these UNMEASURABLE and never SAME.
         vanished_verdicts = {}
         for r in vanished:
@@ -748,8 +794,31 @@ def backtest(args):
         print("  MISSED  %d / %d" % (len(missed), len(events)))
         rate = (100.0 * len(fired) / len(events)) if events else float("nan")
         print("  catch rate: %s" % ("%.1f%%" % rate if events else "n/a — zero events in the window"))
-        print("  FALSE POSITIVES (flagged with no content change): %d / %d such commits"
-              % (len(fp), len(touched_nochange)))
+        print("  ^ a high rate here is CLOSE TO DEFINITIONAL and is not the surprising part: the")
+        print("    detector is a content-addressed comparison, so it fires exactly when the content")
+        print("    differs. What this replay is really for is (a) enumerating the population, which")
+        print("    is what nobody did for F-CITATION-LINT, and (b) the CONTROL below, which is the")
+        print("    load-bearing measurement — it is the number that could have come back non-zero.")
+
+        print("\n  FALSE POSITIVES — read the denominator before quoting either figure.")
+        print("    (i) The LITERAL class, a commit that touches the path without moving its blob:")
+        print("        flagged %d of %d such commits." % (len(fp), len(touched_nochange)))
+        if not touched_nochange:
+            print("        RATE UNMEASURED — the denominator is ZERO, and that is STRUCTURAL rather")
+            print("        than a property of this peer. git records a path in a commit's diff only")
+            print("        when its blob or its mode changes, so 'touched but unchanged' is a class")
+            print("        git very nearly cannot produce, in this repo or any other. The 0 above is")
+            print("        an EMPTY CELL, not an instrument that was tested and passed, and it must")
+            print("        never be quoted beside the catch rate as though it were a precision")
+            print("        result. The class is covered BY CONSTRUCTION instead, in")
+            print("        tools/test_contract_drift_report.py, which builds such a merge on purpose.")
+        print("    (ii) The class that is the REAL cry-wolf risk for a BYTE pin, and this one IS")
+        print("         measured: the SEMANTICALLY-NULL byte change — bytes move, the parsed document")
+        print("         does not. %d of %d fires, over a denominator of %d." % (null_semantic, len(fired), len(fired)))
+        print("         These are genuine drift for a byte-pinned copy (our gate hashes bytes), so")
+        print("         suppressing them would be a MISS. The report labels them instead. That label")
+        print("         is what stands between this instrument and crying wolf, and it is the")
+        print("         false-positive figure that belongs beside the catch rate.")
         if vanished:
             print("  vanished-path commits classified as: %s"
                   % ", ".join("%s=%d" % kv for kv in sorted(vanished_verdicts.items())))
@@ -767,24 +836,6 @@ def backtest(args):
         print("  a drift check pointed at pin.revision would do): fired %d / %d." % (control_fired, len(events)))
         print("  Zero is the expected and correct answer, and it is why this check asks at TIP.")
 
-        # --- what the fires would have SAID --------------------------------------------------------
-        null_semantic, real_semantic, unparsable = 0, 0, 0
-        samples = []
-        for r in fired:
-            old = git("cat-file", "blob", r["before"], binary=True)
-            new = git("cat-file", "blob", r["after"], binary=True)
-            if old is None or new is None:
-                unparsable += 1
-                continue
-            try:
-                if json.loads(old.decode("utf-8")) == json.loads(new.decode("utf-8")):
-                    null_semantic += 1
-                    subj = git("log", "-1", "--format=%h %s", r["commit"])
-                    samples.append(("semantically null", subj))
-                else:
-                    real_semantic += 1
-            except (UnicodeDecodeError, ValueError):
-                unparsable += 1
         print("\n  OF THE %d FIRES, by what actually changed:" % len(fired))
         print("    %3d changed the parsed document (a real shape/value change)" % real_semantic)
         print("    %3d changed BYTES ONLY — the parsed documents are identical (encoding/whitespace)."
@@ -849,9 +900,19 @@ def backtest(args):
     ev = grand.get("content_change_events", 0)
     print("  catch rate:            %s"
           % ("%.1f%%" % (100.0 * grand.get("fired", 0) / ev) if ev else "n/a — NO EVENTS MEASURED"))
-    print("  false positives:       %d (over %d touch-no-change commits)"
-          % (grand.get("false_positives", 0), grand.get("touched_no_change", 0)))
-    print("  vacuity control fired: %d (must be 0)" % grand.get("control_fired_at_own_revision", 0))
+    tnc = grand.get("touched_no_change", 0)
+    print("  false positives (literal, touch-no-change): %d of %d — %s"
+          % (grand.get("false_positives", 0), tnc,
+             "RATE UNMEASURED, zero denominator; git records a path only when its blob or mode "
+             "moves, so this class is structurally near-empty in ANY repo. An empty cell, not a "
+             "tested instrument. Covered by construction in tools/test_contract_drift_report.py."
+             if not tnc else "measured"))
+    print("  false positives (real risk for a BYTE pin — semantically-null byte changes): %d of %d"
+          % (grand.get("fires_bytes_only", 0), grand.get("fired", 0)))
+    print("     measured, non-empty denominator, and labelled in the report rather than hidden.")
+    print("  vacuity control fired: %d of %d (must be 0 — THIS is the load-bearing measurement;"
+          % (grand.get("control_fired_at_own_revision", 0), ev))
+    print("     the catch rate above is close to definitional for a content-addressed comparison)")
     if ev == 0:
         print("\n⚑ ZERO EVENTS. The catch rate is not 100%, it is UNMEASURED. Refuse the check.")
     everything["totals"] = grand

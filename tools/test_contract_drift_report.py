@@ -54,7 +54,9 @@ The failure modes covered, one class each:
                             fixed by construction rather than copied from a run.
   BacktestNoOpMerge         a merge that re-resolves the path to its first parent's blob -> counted as
                             touch-no-change and NOT as a false positive.  Real history has zero of
-                            these, so this fixture is that class's only coverage.
+                            these -- STRUCTURALLY, because git records a path in a commit's diff only
+                            when its blob or mode changes -- so upstream can never supply a non-empty
+                            denominator for that rate and this fixture is its ONLY measured coverage.
   BacktestEmptyPopulation   a path with no history -> "the backtest cannot run on it", never 100%.
 """
 
@@ -527,7 +529,24 @@ class TestBacktest(Scrubbed):
         )
         self.assertNotEqual(first_parent_blob, blob_of(peer, base, SCHEMA_PATH))
         _, out = run_backtest(peer)
-        self.assertIn("FALSE POSITIVES (flagged with no content change): 0", out)
+        # The whole point of this fixture: upstream's history gives the literal false-positive class
+        # a denominator of ZERO — structurally, since git records a path in a diff only when its blob
+        # or mode moves — so the tool prints RATE UNMEASURED there and refuses to be quoted as
+        # precision. Here the denominator is 1, built on purpose, and the rate IS measured.
+        # Scope to the SCHEMA path's section. The same fixture's vectors path has no merge and so
+        # legitimately prints RATE UNMEASURED; asserting over the whole output would conflate the
+        # two paths, which is the very confusion the split-by-path report exists to prevent.
+        schema_section = out.split("PATH: " + SCHEMA_PATH)[1].split("PATH: " + VECTORS_PATH)[0]
+        self.assertIn("flagged 0 of 1 such commits", schema_section)
+        self.assertNotIn(
+            "RATE UNMEASURED",
+            schema_section,
+            "with a real touch-no-change commit present the denominator is not empty",
+        )
+        # ...and the vectors path in the SAME run, which has none, must say the opposite.
+        vectors_section = out.split("PATH: " + VECTORS_PATH)[1]
+        self.assertIn("flagged 0 of 0 such commits", vectors_section)
+        self.assertIn("RATE UNMEASURED", vectors_section)
         self.assertIn("path TOUCHED, blob unchanged", out)
         # The merge is reached only by --full-history; the first-parent walk sees one real change.
         self.assertIn("FIRED 1 / 1 content changes, MISSED 0", out)
