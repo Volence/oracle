@@ -454,8 +454,9 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // `move_flags` + X re-injected). Reuses the AluOp-parameterized `arith_ea_dn` VERBATIM — AND <ea>,Dn = ADD
     // <ea>,Dn byte-for-byte (same `ea_src` skeleton, same cycle counts), minus the illegal An source. The
     // **AND.* files MIX** this genuine register form (nibble 0xC) with the dedicated ANDI immediate opcode
-    // (`0x02xx`, high nibble 0) — a DIFFERENT instruction NOT decoded this push; `covered()` classifies the
-    // ANDI cases OUT by OPCODE (high nibble 0 != 0xC), so decode is only ever reached on the genuine 0xC form.
+    // (`0x02xx`, high nibble 0) — a DIFFERENT instruction, decoded by the shared group-0 immediate-to-EA arm
+    // further down this file (`imm_class` admits ANDI = high byte 0x02); `covered()` classifies the ANDI
+    // cases OUT by OPCODE (high nibble 0 != 0xC), so decode is only ever reached on the genuine 0xC form.
     // The opcode space (nibble 0xC, opmode 0/1/2) is disjoint from the ADD/SUB arms (nibble 0xD/0x9) and the
     // CMP arms (nibble 0xB). opmode 3/7 (0xC0C0/0xC1C0) is MULU/MULS — not matched by these masks.
     if opcode & 0xF1C0 == 0xC000 {
@@ -543,8 +544,9 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // (OR <ea>,Dn = ADD <ea>,Dn = AND <ea>,Dn byte-for-byte), same illegal An-direct (mode 1) source absent
     // (`covered()` never feeds it mode 1). Sets N = msb / Z = (result == 0), clears V/C, PRESERVES X
     // (`AluOp::Or` = `move_flags` + X re-injected). The **OR.* files MIX** this genuine register form (nibble
-    // 0x8) with the dedicated ORI immediate opcode (`0x00xx`, high nibble 0) — a DIFFERENT instruction NOT
-    // decoded this push; `covered()` classifies the ORI cases OUT by OPCODE (high nibble 0 != 0x8), so decode
+    // 0x8) with the dedicated ORI immediate opcode (`0x00xx`, high nibble 0) — a DIFFERENT instruction,
+    // decoded by the shared group-0 immediate-to-EA arm further down this file (`imm_class` admits ORI = high
+    // byte 0x00); `covered()` classifies the ORI cases OUT by OPCODE (high nibble 0 != 0x8), so decode
     // is only ever reached on the genuine 0x8 form. The opcode space (nibble 0x8, opmode 0/1/2) is disjoint
     // from the ADD/SUB arms (0xD/0x9), the AND arms (0xC) and the CMP arms (0xB). opmode 3/7 (0x80C0/0x81C0)
     // is DIVU/DIVS — not matched by these masks.
@@ -745,8 +747,9 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
     // reach this arm the mode is never 001; the `mode == 0 || is_dst_mem_mode` guard also excludes it (mode 1 is
     // neither register-direct nor alterable memory). Sets N = msb / Z = (result == 0), clears V/C, PRESERVES X
     // (`AluOp::Eor` = `move_flags` + X re-injected). The **EOR.* files MIX** this genuine register form (nibble
-    // 0xB) with the dedicated EORI immediate opcode (`0x0Axx`, high nibble 0) — a DIFFERENT instruction NOT
-    // decoded this push; `covered()` classifies the EORI cases OUT by OPCODE (high nibble 0 != 0xB), so decode
+    // 0xB) with the dedicated EORI immediate opcode (`0x0Axx`, high nibble 0) — a DIFFERENT instruction,
+    // decoded by the shared group-0 immediate-to-EA arm further down this file (`imm_class` admits EORI = high
+    // byte 0x0A); `covered()` classifies the EORI cases OUT by OPCODE (high nibble 0 != 0xB), so decode
     // is only ever reached on the genuine 0xB form. `eor_recipe` routes the mode-000 register dest through its
     // own no-memory arm (like `clr_recipe`'s mode-0 path) and the alterable-memory dest through `arith_dn_ea`
     // VERBATIM (EOR Dn,<ea> = ADD Dn,<ea> byte-for-byte). opmode 3/7 (0xB0C0/0xB1C0) is CMPA — handled above.
@@ -987,7 +990,7 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         return pea_recipe(opcode);
     }
     // Bcc / BRA (`0110 cccc dddddddd`, 0x6xxx) — conditional branch. cc = bits 11-8 (cc == 0 is BRA, always
-    // taken); cc == 1 is BSR (a separate decode arm, NOT this commit) and is excluded. The condition is
+    // taken); cc == 1 is BSR (a separate decode arm, immediately below) and is excluded. The condition is
     // evaluated at DECODE time against the live CCR, emitting the taken or not-taken linear recipe directly.
     if opcode >> 12 == 0b0110 && (opcode >> 8) & 0xF != 1 {
         return bcc_recipe(opcode, regs);
@@ -1041,8 +1044,12 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         return unlink_recipe(opcode);
     }
     // ADDQ/SUBQ `#data,<ea>` (`0101 qqq d ss mmm rrr`, 0x5xxx, `ss` = 00/01/10 so `(opcode>>6)&3 != 3`) — the
-    // quick-immediate add (bit 8 = 0 → `AluOp::Add`/`Adda`) / subtract (bit 8 = 1 → `AluOp::Sub`/`Suba`). Only
-    // ADDQ is admitted by `covered()` this commit (SUBQ decodes but is not yet in scope); the recipe is
+    // quick-immediate add (bit 8 = 0 → `AluOp::Add`/`Adda`) / subtract (bit 8 = 1 → `AluOp::Sub`/`Suba`).
+    // `covered()` admits BOTH directions — `addq_covered` classifies by OPCODE (`0x5xxx`, `ss` != 3) with no
+    // bit-8 test, so ADDQ in the `ADD.*` files and SUBQ in the `SUB.*` files are both in scope. (This read
+    // "only ADDQ is admitted by `covered()` this commit (SUBQ decodes but is not yet in scope)" until the
+    // lens sweep: the correction had been written in `singlestep_m68000.rs` — *"correcting the earlier `*Q
+    // skipped` note"* — and never applied here.) The recipe is
     // parameterized by direction so both route through `addq_recipe`. Dest in scope: `Dn` (0), `An` word/long
     // (1, not byte), the seven alterable-memory modes (2-6, 7/0, 7/1). The `ss == 3` space (bits 7-6 == 11) is
     // Scc/DBcc, handled by their own arms below and disjoint from ADDQ/SUBQ by size — this arm never sees it.
@@ -6321,16 +6328,16 @@ mod tests {
         assert!(is_move_word(0x3490), "0x3490 MOVE.w (A0),(A2)");
         assert!(is_move_word(0x3203), "0x3203 MOVE.w D3,D1");
         assert!(is_move_word(0x3e84), "0x3e84 MOVE.w D4,(A7)");
-        // dst_mode == 1 (An) is MOVEA — NOT this commit. 0x3040 = 0011 000 001 000 000 → dst_mode 001.
+        // dst_mode == 1 (An) is MOVEA — its own arm (`movea_recipe`). 0x3040 = 0011 000 001 000 000 → dst_mode 001.
         assert!(!is_move_word(0x3040), "dst_mode 1 is MOVEA, not MOVE");
         // size 01 = byte (M2), 10 = long (M3), 00 = not MOVE.
         assert!(
             !is_move_word(0x1203),
-            "0x1203 size 01 = MOVE.b — not this commit"
+            "0x1203 size 01 = MOVE.b — its own arm"
         );
         assert!(
             !is_move_word(0x2203),
-            "0x2203 size 10 = MOVE.l — not this commit"
+            "0x2203 size 10 = MOVE.l — its own arm"
         );
         assert!(!is_move_word(0xD040), "ADD.w — not MOVE");
     }
@@ -6623,7 +6630,7 @@ mod tests {
         assert!(!is_move_long(0x3203), "0x3203 size 11 = MOVE.w — not long");
         assert!(!is_move_long(0x1203), "0x1203 size 01 = MOVE.b — not long");
         assert!(!is_move_long(0xD040), "ADD.w — not MOVE");
-        // dst_mode == 1 (An) is MOVEA.l — NOT this commit; 0x2040 = 0010 000 001 000 000.
+        // dst_mode == 1 (An) is MOVEA.l — its own arm (`movea_recipe`); 0x2040 = 0010 000 001 000 000.
         assert!(!is_move_long(0x2040), "dst_mode 1 is MOVEA.l, not MOVE.l");
     }
 
@@ -7109,7 +7116,7 @@ mod tests {
         assert_eq!(0x62b6u16 & 0xFF, 0xB6, "0x62b6 disp8 = 0xB6 (byte form)");
         assert_eq!((0x6700u16 >> 8) & 0xF, 7, "0x6700 cc = 7 (EQ)");
         assert_eq!(0x6700u16 & 0xFF, 0x00, "0x6700 disp8 = 0 (word form)");
-        // cc == 0 is BRA (always taken); cc == 1 is BSR (a SEPARATE decode arm, NOT this commit).
+        // cc == 0 is BRA (always taken); cc == 1 is BSR (a SEPARATE decode arm in this same file).
         assert_eq!((0x6000u16 >> 8) & 0xF, 0, "0x6000 cc = 0 (BRA)");
         assert_eq!((0x6100u16 >> 8) & 0xF, 1, "0x6100 cc = 1 (BSR — excluded)");
     }
