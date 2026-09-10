@@ -33,8 +33,11 @@ WHICH QUESTION IT ASKS, AND AT WHICH REVISION
 The currency question, and therefore at the peer's **`origin/main` tip** — never at `pin.revision`.
 Re-pointing a drift check at the revision the pin was taken from makes it vacuous: `pin.revision`
 resolves those paths to the pinned blobs by construction and forever, so such a check would pass for
-the wrong reason and detect nothing.  (Measured, not asserted: see `--backtest`, which reports that
-same-revision comparison as a control and finds 0 of 39 real drift events.)
+the wrong reason and detect nothing.  (Measured, not asserted: `--backtest` runs that same-revision
+comparison as a control and it fires on **0 of 97** real drift events, against 97 of 97 for the form
+this file ships.  That "97" was written "39" here before the backtest ran — a placeholder from the
+design sketch that survived into prose and would have read as a measurement.  Numbers in this file
+come from a run or they do not appear.)
 
 HOW IT REACHES THE PEER
 -----------------------
