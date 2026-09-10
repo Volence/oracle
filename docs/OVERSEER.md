@@ -80,18 +80,12 @@ moved with them.)*
    asserted as a whole sorted set, so it cannot drift silently. Board row `ACCEPT-16`. The arc's closed
    history (survey, CR-A, trio, CR-B) is in the log.
 
-   **NEXT (not yet dispatched):** ⚑ **THE FIRST TWO ARE DISCHARGED AND THIS BLOCK OUTLIVED THEM BY NINETEEN
-   DAYS.** It said the stale prose at `schema_conformance.rs:6,222` and the `resolve_target` `oneOf`
-   divergence were *"folded into the **in-flight** `run_to_scanline` parcel; remove from here once that
-   lands"* — **it landed 2026-08-22** (`4f93583`, `tests/run_to_scanline.rs`, method served from
-   `engine.rs`), and both residuals are resolved in source (`:6` now states the coverage as pinned-empty
-   rather than as a seed; `:222` now describes the committed-revision content-addressed gate). **A
-   self-removing instruction is nobody's job by construction** — it names no owner and no trigger anyone
-   watches, so it reads as live prose forever. This is the NINTH row this week whose justification aged
-   while the row sat still, and the only one that carried its own deletion instruction. Do not write
-   "remove this once X lands" again: book the removal, or write the condition as something a boot read
-   can test. **Verified before deleting, per this file's own rule that a fold is a REFERENCE and closing
-   its target orphans it** — both folded residuals were checked resolved rather than assumed. Still open
+   **NEXT (not yet dispatched):** ⚑ **DISCHARGED, AND THIS BLOCK OUTLIVED IT BY NINETEEN DAYS.** It called
+   the `run_to_scanline` parcel *in-flight* and said *"remove from here once that lands"*; it landed
+   **2026-08-22** (`4f93583`), and both folded residuals are resolved in source (checked, not assumed —
+   a fold is a reference and closing its target orphans it). ⚑ **A self-removing instruction is nobody's
+   job by construction**: no owner, no trigger anyone watches, so it reads as live prose forever. Book the
+   removal or write a condition a boot read can test. Still open
    from the survey is a proposed
    **error-surface gate**: since no fragment declares error conditions, a suite validating only
    replies is blind to every error obligation. ⚠ **NO LONGER A PROPOSAL — `crates/oracle-aether/tests/request_bounds.rs`
