@@ -1,18 +1,18 @@
 {
-  "focus": "Three finished parcels parked -- your machine is busy and I am not competing with it. Doing the one job that needs no machine.",
+  "focus": "Four finished parcels parked on your machine. Everything else that can be done without it is done.",
   "inFlight": [
     {
-      "what": "Cutting the document every fresh session must read back under its size limit, before the next session hits the wall mid-work",
+      "what": "DONE, waiting to land: the boot document cut back under its limit, with every one of your rulings intact",
       "where": "branch parcel/boot-doc-cut-2",
-      "agent": true
+      "agent": false
     },
     {
-      "what": "DONE, waiting to land: our most-repeated safety claim was false, and the agent proved it by planting the forbidden code and watching 891 tests pass anyway",
+      "what": "DONE, waiting to land: the false safety claim, replaced with the real guarantee that was sitting next to it",
       "where": "branch parcel/h26-claim-mechanism",
       "agent": false
     },
     {
-      "what": "DONE, waiting to land: the copy-paste that undid an earlier cleanup, with the danger proven rather than asserted",
+      "what": "DONE, waiting to land: the copy-paste that undid an earlier cleanup",
       "where": "branch parcel/h25-drift-dedupe",
       "agent": false
     },
@@ -174,10 +174,10 @@
     },
     {
       "id": "BOOT-DOC-LINE-BOUND",
-      "state": "doing",
+      "state": "next",
       "size": "M",
-      "blockedBy": null,
-      "title": "Being cut now. It had 1,531 bytes left, and the rule that was blocking it is settled: a document like this gets SPLIT, never trimmed by deleting your rulings to hit a number."
+      "blockedBy": "the machine, like the other three",
+      "title": "CUT AND VERIFIED, waiting to land. 98,469 down to 91,654 bytes, and I checked the important part myself rather than trust it: all eleven of your and the hub's rulings are still there, and every line of the old document is accounted for except four the agent openly rewrote -- one of which was a sentence claiming nothing more could be moved, written yesterday and false today."
     },
     {
       "id": "LANDING-CHECKS-WRITTEN-DOWN",
@@ -185,9 +185,17 @@
       "size": "S",
       "blockedBy": null,
       "title": "Done and pushed: the landing checks are now a written list, including the step I skipped tonight -- actually reading the automated checks."
+    },
+    {
+      "id": "F-IO-WRITE-MIRROR-UNCOVERED",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Booked so it does not vanish with the cut: a hardware behaviour we fixed has a test that can only ever check half of it. The note describing the gap also has its premise backwards -- I read the test tonight and it does the opposite of what the note says, though the conclusion it draws is still right."
     }
   ],
-  "awaiting": "still just your word that the machine is free -- three finished parcels are parked on it. Another lane measured your box busy, so I am not asking you to stop; I am asking you to tell me when. Also d-39 (A or B on the Pacing tab) whenever you are at a keyboard.",
-  "atBoundary": false,
-  "updatedAt": "2026-09-10T03:11:46Z"
+  "awaiting": "your word that the machine is free. Four finished parcels are parked on it now, and that is the whole of what I am waiting for. Also d-39 (A or B on the Pacing tab) whenever you are at a keyboard.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-10T03:22:27Z"
 }
