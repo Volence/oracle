@@ -2091,8 +2091,8 @@ fn movefrom_sr_recipe(opcode: u16) -> MicroState {
 /// `MOVEtoCCR <ea>` (`0x44C0 | ea`, `to_sr = false`) / `MOVEtoSR <ea>` (`0x46C0 | ea`, `to_sr = true`): move a
 /// WORD from a data source EA into the CCR / SR. `to_sr = false` → `CCR = (SR & 0xFF00) | (src.w & 0x1F)` (the
 /// SR SYSTEM byte preserved, CCR bits 5-7 forced 0, S never changes) via [`MicroOp::LoadCcr`]; `to_sr = true`
-/// → `SR = src.w & 0xA71F` via [`MicroOp::LoadSr`] (a later commit — which CAN clear S, switching the trailing
-/// reads' function code). Reuses the immediate [`to_sr_recipe`] shape generalized to the full data-source EA
+/// → `SR = src.w & 0xA71F` via [`MicroOp::LoadSr`] (emitted by this very function, below — and it CAN clear
+/// S, switching the trailing reads' function code). Reuses the immediate [`to_sr_recipe`] shape generalized to the full data-source EA
 /// set.
 ///
 /// The ONE novel bus shape (verified 0-mismatch over every mode): the operand read (with its extension-word
@@ -4170,7 +4170,7 @@ fn mul_recipe(opcode: u16, op: AluOp) -> MicroState {
 const DIV_IMM_SRC_SLOT: u8 = 0;
 
 /// `DIV <ea>,Dn` — the shared recipe for `DIVU` (`opcode & 0xF1C0 == 0x80C0`, opmode 3, [`AluOp::Divu`]) and
-/// (in a later commit) `DIVS` (`0x81C0`, opmode 7) in the 0x8 space (both DISJOINT from OR's opmode
+/// `DIVS` (`0x81C0`, opmode 7, its own arm in this file) in the 0x8 space (both DISJOINT from OR's opmode
 /// 0/1/2/4/5/6). The full 32-bit `Dn` (bits 11-9) is the dividend (`a` = [`Operand::DataRegFull`] — NOT MUL's
 /// low-16 multiplicand); the source EA (`mode/reg` in bits 5-0, all 11 legal source modes — An-direct is
 /// illegal/absent) supplies the word divisor. The `AluOp::Divu` exec arm computes value+flags and RETURNS its
