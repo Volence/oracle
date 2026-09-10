@@ -187,7 +187,7 @@
       "state": "next",
       "size": "M",
       "blockedBy": "the machine, like the other three",
-      "title": "CUT AND VERIFIED, waiting to land. 98,469 down to 91,654 bytes, and I checked the important part myself rather than trust it: all eleven of your and the hub's rulings are still there, and every line of the old document is accounted for except four the agent openly rewrote -- one of which was a sentence claiming nothing more could be moved, written yesterday and false today."
+      "title": "CUT, VERIFIED, PARKED -- and now the most time-sensitive thing on this board. The document is 560 bytes from its hard limit because tonight's corrections went into it while the fix waits on the machine. UNTIL IT LANDS, bank new rulings in the reference or log file, NOT this one. The cut still applies cleanly over everything since (checked, no conflicts), so landing it is a merge and a test run, nothing more."
     },
     {
       "id": "LANDING-CHECKS-WRITTEN-DOWN",
@@ -207,5 +207,5 @@
   ],
   "awaiting": "your word that the machine is free -- four finished parcels are parked on it. Nothing else needs you tonight.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T03:42:56Z"
+  "updatedAt": "2026-09-10T03:43:31Z"
 }
