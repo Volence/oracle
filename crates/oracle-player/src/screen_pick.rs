@@ -402,13 +402,18 @@ impl Panel {
     /// claim the click. Nothing is read from the machine at arm time: unlike the archetype list, which is
     /// a listing this window has to go and fetch, there is exactly one thing to place and every bound the
     /// placement needs is read at the moment of the click, on the same freshness rule.
+    /// ⚑ **The arm line does NOT carry [`oracle_frontend::rings::TEMPORARY`], for
+    /// [`oracle_frontend::rings::Placed::terminal`]'s reason.** It used to, and that put the whole
+    /// paragraph on the glass the instant the mode came on, before any ring existed to be temporary. The
+    /// rule is on the same screen twice over at that moment: [`Panel::badge`] names it in the space a
+    /// badge has, and the Spawn tab the person just clicked to arm this carries the statement whole for
+    /// as long as the mode is on. This line says the one thing that just changed.
     pub fn arm_rings(&mut self) {
         self.disarm_spawn();
         self.rings = true;
-        self.last = Some(Readout::ok(format!(
-            "ring placement armed: a click on the picture places a ring. {}",
-            oracle_frontend::rings::TEMPORARY
-        )));
+        self.last = Some(Readout::ok(
+            "ring placement armed: a click on the picture places a ring".to_string(),
+        ));
     }
 
     /// Turn ring placement off. A click picks again.

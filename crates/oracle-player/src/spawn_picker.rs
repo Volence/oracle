@@ -922,8 +922,13 @@ mod tests {
     /// A condition of the feature rather than a polish item. Without it a placed ring disappears the
     /// first time the camera moves, with nothing on screen to explain it, and reads as a broken tool
     /// rather than as the engine's design. The `assert_eq!` against the constant is the load-bearing
-    /// half: a paraphrase here and a paraphrase in the terminal are two accounts of one design, and
-    /// they drift until one of them stops being true.
+    /// half: a paraphrase here would be a second account of one design, and the two drift until one of
+    /// them stops being true.
+    ///
+    /// ⚑ **This panel is now the ONLY place the rule is stated whole**, since 2026-09-10. The readout
+    /// over the picture used to repeat it on every placement and the arm line used to repeat it again;
+    /// both were simultaneously on screen with this panel and with the badge, which is the wall the owner
+    /// asked us to cut. So this assertion carries more weight than it did: if it goes, the rule goes.
     #[test]
     fn arming_ring_placement_puts_the_vanishing_rule_on_the_glass_in_the_frontends_words() {
         let on = ring_listing(true, Some("ObjDef_Spring"));

@@ -27,6 +27,13 @@
 //! the glass as **a condition of this feature** rather than as a polish item: a ring that vanishes the
 //! first time the camera moves, with no explanation, reads as a broken tool rather than as the design.
 //!
+//! ⚑ **It is drawn in exactly one place: the Spawn tab's ring section, whole, for as long as the mode is
+//! armed** (`oracle_player::spawn_picker::RingListing::temporary`). The armed badge over the picture names
+//! the rule in the space a badge has, and [`Placed::terminal`] deliberately does **not** repeat it: the
+//! badge and the readout are two corners of one screen at one moment, so a copy in the readout is the
+//! same paragraph twice rather than a second channel. That was the owner's 2026-09-10 complaint and this
+//! is the rule that answers it.
+//!
 //! ## Rule 2: an index below the section's real ring count breaks a DIFFERENT ring
 //!
 //! A record carries `(section_id, list_index)`, and collecting it calls `Collected_MarkRing` with that
@@ -627,18 +634,31 @@ pub struct Placed {
 }
 
 impl Placed {
-    /// The full line for the terminal.
+    /// **The full line for the readout**, carrying what changes from click to click and nothing that does
+    /// not.
     ///
-    /// ⚑ **It carries [`TEMPORARY`] verbatim.** The standing statement on the panel is the primary
-    /// channel and this is the second one, because the person who reads a placement line and then scrolls
-    /// is the exact person the rule is for. One wording, in one place, so the two cannot drift into two
-    /// accounts of one design.
+    /// ⚑ **It does NOT repeat [`TEMPORARY`], and the absence is the design.** It used to, on the argument
+    /// that *"the person who reads a placement line and then scrolls is the exact person the rule is
+    /// for"* — and that premise is false on the only surface that consumes this. The sentence's one
+    /// caller is the readout painted over the picture in `oracle-player`'s Screen tab
+    /// (`screen_pick::Panel::place_ring`), where nothing scrolls and the standing statement is on the
+    /// same glass at the same instant: the armed badge names the rule in the space a badge has, and the
+    /// Spawn tab carries [`TEMPORARY`] whole for as long as the mode is armed. A copy here was the same
+    /// paragraph twice on one screen, which is what the owner asked us to cut on 2026-09-10.
+    ///
+    /// **The method is not named for a surface that exists.** `terminal` here means *the long form, as
+    /// opposed to [`Self::toast`]*, matching [`crate::spawn::Placed::terminal`] — and that sibling really
+    /// does reach a scrollback, because `main.rs` `println!`s it. Ring placement has no such path: it is
+    /// reachable only from the window. If one is ever built, it gets its **own named method** carrying
+    /// [`TEMPORARY`], never a flag on this one.
+    ///
+    /// The index rule stays, compressed from three lines to a clause. It is the one fact here a person
+    /// cannot check by looking, and it belongs beside the number it is about.
     pub fn terminal(&self) -> String {
         format!(
-            "placed a ring at world ({}, {}): it is buffer slot {} at {:#010X}, and it belongs to \
-             section {} as ring number {}. That number is at or above the {} ring(s) the level's own \
-             data puts in this section, which is what keeps collecting it from marking one of those \
-             real rings as collected. The buffer is now holding {} of {} records. {TEMPORARY}",
+            "placed a ring at world ({}, {}): buffer slot {} at {:#010X}, section {} ring number {}, \
+             at or above that section's {} real ring(s) so collecting it cannot mark a real one \
+             collected. The buffer is now holding {} of {} records.",
             self.world.0,
             self.world.1,
             self.slot,
@@ -1606,13 +1626,24 @@ mod tests {
     // Rule 1, which is the one a reader has to be told
     // -----------------------------------------------------------------------------------------------
 
-    /// **The vanishing is said in plain words, and it is the same words everywhere.**
+    /// **The vanishing is said in plain words, in the one place it is read, and NOT a second time in the
+    /// same corner of the same screen.**
     ///
     /// A condition of the feature rather than a polish item: without it a ring that disappears on the
-    /// first camera move reads as a broken tool. The success line carries the constant rather than a
-    /// paraphrase, so the panel and the terminal cannot end up describing two different designs.
+    /// first camera move reads as a broken tool. [`TEMPORARY`] therefore still exists, whole, and the
+    /// toast still carries the rule in the space a toast has.
+    ///
+    /// ⚑ **What changed on 2026-09-10, and why this assertion is inverted rather than relaxed.**
+    /// [`Placed::terminal`] used to append [`TEMPORARY`] verbatim, justified as a second channel for a
+    /// reader who scrolls. Its only consumer paints it over the picture, where nothing scrolls and the
+    /// standing statement is simultaneously on the glass, so the second channel was the first channel
+    /// twice. The `contains` here is now a `!contains`: this is a **guard against the duplication coming
+    /// back**, not a softened version of the old one, and the old property it protected (the panel says
+    /// the rule in the constant's own words) is asserted where the panel is, in
+    /// `oracle-player`'s `spawn_picker`.
     #[test]
-    fn the_placement_line_says_the_ring_is_temporary_in_the_standing_statement_words() {
+    fn the_placement_line_carries_only_what_changed_and_leaves_the_rule_to_the_standing_statement()
+    {
         let p = Placed {
             world: (100, 200),
             section_id: 3,
@@ -1624,11 +1655,21 @@ mod tests {
             buffer_max: 0x80,
         };
         let t = p.terminal();
-        assert!(
-            t.contains(TEMPORARY),
-            "the success line must carry the standing statement whole, not a second wording of it: \
-             {t:?}"
+        // ⚑ The whole line, spelled out, because the owner's complaint was about its LENGTH and a
+        // `contains` sweep cannot see a paragraph creeping back in beside the parts it checks.
+        assert_eq!(
+            t,
+            "placed a ring at world (100, 200): buffer slot 2 at 0x00FFAF3C, section 3 ring number 9, \
+             at or above that section's 9 real ring(s) so collecting it cannot mark a real one \
+             collected. The buffer is now holding 3 of 128 records.",
+            "the readout is one short sentence of what this click did"
         );
+        assert!(
+            !t.contains(TEMPORARY),
+            "the standing statement is on the same glass at the same moment, so a copy here is the \
+             same paragraph twice: {t:?}"
+        );
+        // The rule itself is unchanged and still says what happens and when, in a person's words.
         assert!(
             TEMPORARY.contains("TEMPORARY") && TEMPORARY.contains("camera"),
             "the statement must say what happens and when, in the words a person reads"
@@ -1637,11 +1678,27 @@ mod tests {
             !TEMPORARY.contains("EntityWindow") && !TEMPORARY.contains("despawn"),
             "the person at this window is not reading the engine's source"
         );
-        // And the numbers that make the placement checkable are on the line.
+        // And every number that makes the placement checkable is still on the line.
         assert!(t.contains("section 3") && t.contains("(100, 200)"));
+        assert!(
+            t.contains("slot 2") && t.contains("0x00FFAF3C"),
+            "the slot and the address are what a person checks the placement against: {t:?}"
+        );
         assert!(
             t.contains("3 of 128"),
             "the buffer's occupancy is what tells a person the next click may be refused: {t:?}"
+        );
+        assert!(
+            t.contains("9 real ring(s)"),
+            "the index rule is compressed to a clause, not dropped: it is the one fact here a person \
+             cannot check by looking: {t:?}"
+        );
+        assert!(
+            t.len() < TEMPORARY.len(),
+            "the readout must stay shorter than the standing statement it stopped repeating, which is \
+             the measurable form of the owner's complaint: {} vs {}",
+            t.len(),
+            TEMPORARY.len()
         );
         assert!(
             p.toast().contains("TEMPORARY"),
