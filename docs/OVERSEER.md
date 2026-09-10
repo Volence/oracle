@@ -834,8 +834,20 @@ BLOCKER is malformed**: it promises revival on an event that says nothing about 
 building. Name what would make it WORTH doing. ⚑ **The real obstacle is untouched by the lapse and is stated
 above: ~15 citations resolve correctly today while being bare line numbers into moving HEADs, so the lint goes
 red on arrival** and either drags a second parcel or takes an exemption list that hollows it out.
-**Revival, restated as merits:** evidence that citation rot is costing more than the one-row fix — which is
-being MEASURED now by the `sweep-t4-comment-truth` verdicts. Decide on those, not on the lapse.
+⚑ **DECIDED 2026-09-10 ON THE MEASUREMENT, under delegation. THE LINT AS DESIGNED IS REFUSED — its catch
+rate on the real population is ZERO.** Its regex is `(aeon|sigil|empyrean|seraph|aurora)[:/]…:\d+`, i.e.
+**cross-repo only**; all five citations the `sweep-t4-comment-truth` parcel actually repaired were **in-repo**,
+and its worst case (a bare basename with five candidate files) is an **ambiguity** problem the shape does not
+model at all. ⚑ **THE DURABLE LESSON, and it is why this was worth measuring rather than arguing: a check
+designed from the FINDING THAT PROMPTED IT, rather than from the POPULATION IT MUST COVER, can have a zero
+catch rate and still look right on review.** Same family as the 09-09 guard holes — the cure is deriving from
+the live population, never another sweep of the same axis.
+**What the measurement DOES support is a different check**, and it is not revived on the strength of that
+either: `\bthis (commit|push)\b|a later commit|not yet` over `crates/**` comments would have caught all 14
+M34 sites in one pass plus ~29 booked siblings, a class four hand passes each declared exhausted. **But that
+population is partly stale — 3 of 3 spot-checked siblings were ALREADY FALSE.** So the order is: **verify the
+~29 first as lens work, then let that number decide the instrument.** Measure the population, then build the
+check; not the reverse.
 ⚑ **And it stays distinct from `SCHEMA-DRIFT-NIGHTLY`, which owns CONTENT drift** — a revision-pinned citation
 that has gone stale is a different question from one that was never pinned. Do not merge the two rows.
 
