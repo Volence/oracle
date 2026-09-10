@@ -4039,7 +4039,7 @@ impl Engine {
         let target = self.resolve_exclusive_target(params)?;
         // `maxFrames` is an *additive optional* param on a catalogued method, not a new op. Without a
         // bound, a target that is never reached is an unbounded run — i.e. exactly the transport hang
-        // that destroyed a frozen repro frame in `aeon/docs/BUGS.md:494-551`.
+        // that destroyed a frozen repro frame in `aeon/docs/2026-09-09-BUGS-archived.md`'s `## BUG-005`.
         let max_frames = match params.get("maxFrames") {
             None => self.config.max_run_frames.min(600),
             Some(v) => hex::parse_count("maxFrames", v, 1, self.config.max_run_frames)?,

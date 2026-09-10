@@ -227,9 +227,10 @@ fn rom_reload_emits_rom_reloaded() {
     let _ = std::fs::remove_file(&p);
 }
 
-/// **The incident test.** `aeon/docs/BUGS.md:494-551` records a frozen repro frame *"lost to an
-/// emulator control-socket hang before the sprite table could be dumped"* — a hang in the debug
-/// transport destroyed irreplaceable evidence. `protocol.md` §8 item 4 requires event writes to be
+/// **The incident test.** `aeon/docs/2026-09-09-BUGS-archived.md`, the `## BUG-005` entry, records a frozen
+/// repro frame *"lost to an emulator control-socket hang before the sprite table could be dumped"* — a
+/// hang in the debug transport destroyed irreplaceable evidence. `protocol.md` §8 item 4 requires event
+/// writes to be
 /// non-blocking on a slow or dead client.
 ///
 /// The setup: one client subscribes to events and then **never reads a byte again**, with a deliberately

@@ -2178,8 +2178,8 @@ fn main() {
                 // `ToggleSpawnMode` key and `drain.rs`'s bus-driven listing replacement. The engine
                 // explains in words why the drain cannot cover this path: *"A window that swaps its own
                 // cartridge (the frontend's F5) therefore does not get told about its own listing"*
-                // (`oracle-aether/src/host.rs:801`). So an armed mode survived F5 holding archetype names
-                // read out of the OUTGOING listing.
+                // (`Host::pump`'s `symbols_generation` snapshot). So an armed mode survived F5
+                // holding archetype names read out of the OUTGOING listing.
                 //
                 // That is not a failed click, it is a click that succeeds at a different address — of the
                 // symbols `s4.lst` and `s4.debug.lst` share, 92.6% name a different one — which is the
@@ -3572,7 +3572,8 @@ mod tests {
     /// **a different address**, which of the symbols `s4.lst` and `s4.debug.lst` share is the case 92.6% of
     /// the time. `drain.rs` already disarms on a bus-driven listing change and has its own test; this path
     /// could not be covered by that one, because *"a window that swaps its own cartridge (the frontend's
-    /// F5) therefore does not get told about its own listing"* (`oracle-aether/src/host.rs:801`).
+    /// F5) therefore does not get told about its own listing"* (`Host::pump`'s `symbols_generation`
+    /// snapshot, in `oracle-aether`).
     ///
     /// Asserted against the source, on `the_env_override_is_never_written_back_to_the_config`'s precedent
     /// and for its reason: the swap lives inside the `main` run loop, which no test here can drive. What
