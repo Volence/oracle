@@ -933,8 +933,20 @@ The discard is a property of the address decoder, not of the access direction, s
 currency-touching sequencing note it carried is discharged. Derivation (eight sites in `oracle-old`, four
 reads and four writes through one expression) moved whole to `OVERSEER-LOG.md` 2026-09-09.
 
-⚑ **The live residual is a COVERAGE fact, not a hardware one: the covering test at `bus.rs:2069` writes the
-ODD address and reads the even one, so it exercises the read mirror and can never reach the write mirror.**
+⚑ **There is no residual: the coverage debt was paid by the fix itself, and the row booked against it
+(`F-IO-WRITE-MIRROR-UNCOVERED`) was false.** `28cf665` added
+`io_registers_ignore_a0_even_byte_writes_reach_the_register`, which writes the EVEN lane `$A10008` — the
+mirror — and reads canonical `$A10009`. Verified 2026-09-09 by mutation: delete `| 1` from the write arm
+and that test goes red on its first assertion (`left: 0, right: 64`). The 2026-09-08 sentence this
+replaces was **true of the test it described** (the read test, which does write the odd address); it was
+its `bus.rs:2069` citation that drifted onto the newer write test and made the note read as inverted.
+⚑ **Cite tests by name, not by line.**
+
+⚑ **Where the alleged shape was actually real: `z80_ram[z & (Z80_RAM_SIZE - 1)]`.** Its tests touch window
+offset 0 only, where every candidate fold agrees, so the mask WIDTH was unpinned in both directions —
+narrowing the write arm to `& 0x0FFF` left the suite green at its baseline count. Closed by
+`z80_ram_mirror_folds_both_directions_at_a_mask_sensitive_offset`. ⚑ **The lesson generalises: a mirror
+test written at offset 0 proves the mirror EXISTS and pins nothing about its width.**
 
 ## ⚑ HUB RULING, 2026-09-07: HOW THE LENS COUNT IS REPORTED — **"PACKET MINUS FIXED", NEVER THE LEDGER'S OPEN COUNT**
 
