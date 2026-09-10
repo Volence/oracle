@@ -1676,6 +1676,13 @@ mod tests {
     /// It reports the census counts, which are real, **omits** `censusKey`, and says why in a `caveat`.
     /// Relabelling the key as the nearest exposed spelling — an `AddrPage(8)` census reported as `addr` —
     /// would put a wrong name on a correct number, and a client would read a page count as an address count.
+    ///
+    /// ⚑ This and two sites in `engine.rs` said **seven** until the lens sweep, and — unlike the rest of that
+    /// sweep's stale-claim family — the number was never right. `Via`, the eighth, landed at core `6d21436`;
+    /// the three "seven" sentences landed at aether `4d1bec5`, **thirty seconds later**, in the next commit
+    /// of the same push. The count was copied out of a draft written against the previous shape of the
+    /// sibling crate, so it shipped false rather than going false. A restated count from another crate is
+    /// wrong at the moment it is typed, not at some later drift.
     #[test]
     fn a_census_by_a_key_this_bus_does_not_expose_is_reported_without_one() {
         use oracle_core::watchpoints::{CensusKey, Watch, WatchMode, WatchOp};
