@@ -2,10 +2,18 @@
 //!
 //! # Why this exists
 //!
-//! `aeon/docs/BUGS.md:494-551` records a frozen repro frame *"lost to an emulator control-socket hang
-//! before the sprite table could be dumped"*: a hang in the debug transport destroyed irreplaceable
-//! evidence that could not be re-frozen. `protocol.md` §8 item 4 turns that incident into a requirement —
-//! event writes must be *"thread-safe … non-blocking on a slow/dead client"*.
+//! `aeon/docs/2026-09-09-BUGS-archived.md`, the `## BUG-005` entry, records a frozen repro frame *"lost to
+//! an emulator control-socket hang before the sprite table could be dumped"*: a hang in the debug
+//! transport destroyed irreplaceable evidence that could not be re-frozen. `protocol.md` §8 item 4 turns
+//! that incident into a requirement — event writes must be *"thread-safe … non-blocking on a slow/dead
+//! client"*.
+//!
+//! ⚑ This and three sibling sites cited `aeon/docs/BUGS.md:494-551` until the lens sweep. aeon RETIRED that
+//! file at `d7252d8a` (*"eight survivors confirmed and migrated to the ledger, the file archived not
+//! deleted"*), so the path resolved to nothing at any aeon revision after 2026-09-09 — worse than a drifted
+//! line, because a reader cannot tell a retired file from a mistyped one. Re-anchored on the entry HEADING,
+//! which survived the archive; verified at aeon `origin/master` `d3b01f07` through the object store, never
+//! through the sibling working tree.
 //!
 //! # The rule, stated precisely
 //!

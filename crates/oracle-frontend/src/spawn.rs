@@ -720,8 +720,9 @@ impl Placed {
 /// The third row was missing until the lens sweep found this doc claiming it (finding H21). The gap was
 /// not an oversight of the drain's: the engine cannot cover it, because *"a window that swaps its own
 /// cartridge (the frontend's F5) therefore does not get told about its own listing"*
-/// (`oracle-aether/src/host.rs:801`). A `reset` alone (Tab / F1) does **not** disarm and does not need to
-/// — it re-runs the vector fetch and keeps the cartridge, so the listing still describes the machine.
+/// (`Host::pump`'s `symbols_generation` snapshot, in `oracle-aether`). A `reset` alone (Tab / F1) does
+/// **not** disarm and does not need to — it re-runs the vector fetch and keeps the cartridge, so the
+/// listing still describes the machine.
 ///
 /// **The shape that would make this a property rather than a checklist** — derive armed-ness from the
 /// listing generation it was armed against, so no swap path can forget — is the right one and is not built

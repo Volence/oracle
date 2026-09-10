@@ -2264,8 +2264,11 @@ mod loop_tests {
     /// `emulator/screen_text` (§11.29, CR-H), the gap design §5.8.2 booked as *"unwired here"*.
     ///
     /// **Driven over a real socket, because nothing else reaches the code.** `Host::pump` snapshots its
-    /// generation counters at its own top (`host.rs:640`), so an in-process `Host::call` deliberately does
-    /// not surface changes the way a client's does; and the push under test lives in `Loop::iterate`,
+    /// generation counters at its own top (the `screen_generation` / `rom_generation` / `symbols_generation`
+    /// reads at the head of `Host::pump`; `host.rs:640` until the lens sweep, which is inside `Host::call`'s
+    /// re-entrancy doc and mentions `pump` without saying anything about snapshots), so an in-process
+    /// `Host::call` deliberately does not surface changes the way a client's does; and the push under
+    /// test lives in `Loop::iterate`,
     /// which `crate::screen`'s unit tests cannot run. A private `/tmp` path, never `$XDG_RUNTIME_DIR` —
     /// `crate::bus::serving`'s header has the three reasons.
     ///

@@ -860,7 +860,9 @@ mod tests {
 
     /// Design §7 Test 4 — composite-sink equivalence: `AudioAndWatch { watch: Some(..) }` must (a) render
     /// audio into its `AudioSink` and (b) record the *exact same* watch hits a standalone `Watchpoints` would
-    /// for the identical event/boundary sequence (mirrors the SY-4a forwarder-equivalence test, `bus.rs:613`).
+    /// for the identical event/boundary sequence (mirrors the SY-4a forwarder-equivalence test
+    /// `oracle_core::bus`'s `on_event_at_default_forwards_identically_for_any_mclk`; the bare `bus.rs:613`
+    /// this used to cite named neither crate and had drifted onto an RPC pump loop).
     #[test]
     fn composite_forwards_to_both_audio_and_watch() {
         // A bus-space write watch that the scripted event will hit.

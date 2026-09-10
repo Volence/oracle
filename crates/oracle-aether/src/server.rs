@@ -17,8 +17,8 @@
 //! The emulator thread never touches a socket. It answers on a channel and it broadcasts through
 //! [`Outbound::push_event`], which drops the oldest queued message rather than waiting. So the failure
 //! that destroyed a frozen repro frame — *"lost to an emulator control-socket hang before the sprite
-//! table could be dumped"* (`aeon/docs/BUGS.md:494-551`) — has no path to happen here: there is no
-//! socket write anywhere on the emulator thread to hang on.
+//! table could be dumped"* (`aeon/docs/2026-09-09-BUGS-archived.md`, the `## BUG-005` entry) — has no
+//! path to happen here: there is no socket write anywhere on the emulator thread to hang on.
 //!
 //! `System` stays single-threaded throughout, as the core's charter requires; the channel is the only
 //! way in.

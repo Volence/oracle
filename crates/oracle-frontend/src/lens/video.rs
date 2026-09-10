@@ -283,9 +283,10 @@ const CALLOUT_GAP: usize = 4;
 /// `slot 12 | tile $4A0 | pal 2 | pri 1` for a sprite, the plane's cell for a plane or the window,
 /// the CRAM entry for the backdrop.
 ///
-/// **The separator is `|`, not the spec's `·`.** The 5x7 font has no middle dot (`font.rs:31-98`),
-/// and an unmapped character draws as a hollow box — so the spec's spelling would put three empty
-/// rectangles in the middle of every callout.
+/// **The separator is `|`, not the spec's `·`.** The 5x7 font has no middle dot (`font::glyph`'s match
+/// table — the old `font.rs:31-98` range stopped short of that table's end, which is the shape that lets a
+/// reader "confirm" an absence by reading a truncated list), and an unmapped character draws as a hollow
+/// box — so the spec's spelling would put three empty rectangles in the middle of every callout.
 ///
 /// `sprites` is the frame's one `sprites_decoded()`, indexed by SAT slot, exactly as `pick.rs`
 /// indexes it. Nothing here allocates beyond the returned string.

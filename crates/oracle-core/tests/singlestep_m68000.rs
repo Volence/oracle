@@ -1112,10 +1112,15 @@ fn reset_covered(opcode: u16) -> bool {
     opcode == 0x4E70
 }
 
-/// Whether the framework covers this case out of the 3-way `CMP.*` mix — admitting **only the `Cmp` class**
-/// this commit (`CMP <ea>,Dn`, `1011 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l). The CMPM and CMPI cases in the
-/// same files are deferred to N1/N2 (they classify as [`CmpClass::Cmpm`]/[`CmpClass::Cmpi`] → not covered →
-/// skipped cleanly, never decoded). Classification is by OPCODE (`cmp_class`), never the misleading `name`.
+/// Whether the framework covers this case out of the 3-way `CMP.*` mix. **All three classes are in scope**:
+/// `Cmp` (`CMP <ea>,Dn`, `1011 ddd 0SS mmm rrr`, opmode 0/1/2 = b/w/l), `Cmpm` (N1) and `Cmpi` (N2, on its
+/// data-alterable destination set) — see the arms below, which are the authority. Classification is by
+/// OPCODE (`cmp_class`), never the misleading `name`.
+///
+/// ⚑ This header said CMPM and CMPI were "deferred to N1/N2 ... not covered ... never decoded" until the
+/// lens sweep, with `CmpClass::Cmpm => true` five lines beneath it. N1 and N2 landed and the header did not
+/// move. A doc contradicted by its own body is the cheapest of all these to check and the easiest to skip,
+/// because the body reads as the detail of the summary rather than as its refutation.
 ///
 /// All 12 source modes are in scope (An-direct is legal for w/l, illegal/absent for `.b`); an odd word/long
 /// source EA is an address error the E3/E4 abort covers (no parity filter). The only deferral is the `(A7)`
