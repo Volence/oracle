@@ -808,11 +808,20 @@ stamp, local runs hermetic, drift watched out-of-band.
 
 **THE OPERATIVE INSTRUCTION, and it is a prohibition; read it before filing anything:** the drift job
 is **a queue row here, not an owner card.** The host question it would raise (a standing unattended
-timer on the owner's machine) is **already open with him as empyrean `d-9`**, verified firsthand at
-their `origin/main`, and its question is literally *"Running it means a systemd timer on YOUR machine
-… Do you want that standing job installed?"*, which is the same question ours would ask in different
-words. **One cross-lane question gets one card.** A second card does not add information; it makes him
-answer the same thing twice and lets the two answers diverge. *(`d-7-restated-3` is the companion card on
+timer on the owner's machine) was raised with him as empyrean `d-9`, whose question is literally
+*"Running it means a systemd timer on YOUR machine … Do you want that standing job installed?"* — the same
+question ours would ask in different words. **One cross-lane question gets one card.** A second card does not
+add information; it makes him answer the same thing twice and lets the two answers diverge.
+⚠ **CORRECTED 2026-09-10: `d-9` IS ANSWERED AND THIS PARAGRAPH CARRIED IT AS OPEN FOR EIGHT DAYS.** Verified
+at their `origin/main`: **`chose: "install"`, `by: "hub"`, `at: 2026-09-02T03:47:48Z`**, and empyrean's own
+`blockedOnOwner` carries only `SERAPH-HOLD` and `FILMING-NOD`. **So the host half of this row's blocker is
+DISCHARGED**; what still blocks `SCHEMA-DRIFT-NIGHTLY` is the cut-the-ceremony moratorium alone, and when that
+lifts the row needs no further owner ask.
+⚑ **THE TRAP, AND IT IS WHY THIS SURVIVED: the answer lives under a DIFFERENT ID.** The ledger records it as a
+separate appended row `d-9-answered`; the row actually numbered `d-9` still reads `answered: false`. **A
+lookup by the id you were given returns OPEN and is wrong** — dedup-by-id, the technique this lane uses on its
+own ledger, cannot see an answer filed under a sibling id. Match on the QUESTION, or on an `id` prefix, before
+reporting any peer's card as open. *(Found because the hub went to doubt a citation of mine and checked it.)* *(`d-7-restated-3` is the companion card on
 how many quiet chains before review, provisionally ruled N=5.)*
 
 **Board row id: `SCHEMA-DRIFT-NIGHTLY`**. This section is that row's detail, per `LANE_STATUS.md`
