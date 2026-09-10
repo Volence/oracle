@@ -4521,6 +4521,15 @@ mod tests {
         vdp: Vdp,
     }
 
+    /// The SAT X field's screen-x origin: `x_field` 0 is off-screen-left, `$080` is screen x 0.
+    const SAT_X_ORIGIN: u16 = 0x0080;
+
+    /// A screen x inside the band H40 has and H32 does not (`256..320`), placed clear of both edges so the
+    /// whole 8-px sprite lands inside it. Derived, not picked: it is the *only* range in which the active
+    /// width can change a committed bit at all, because `width` reaches nothing but `draw_sprite`'s buffer
+    /// clip, and the clip can only change `collision`.
+    const WIDE_BAND_X: u16 = 280;
+
     /// A SAT-ready fixture in the requested width, with `display` deciding reg $01 bit 6.
     fn sprite_bed(h40: bool, display: bool) -> Vdp {
         let mut v = pa_fixture(h40);
@@ -4630,6 +4639,26 @@ mod tests {
                 vdp: masked,
             });
 
+            // ⚑ The **H40-only band**, added after a mutation the first corpus could not see. Replacing
+            // `advance_scanline`'s width with a hardcoded 256 left every one of the original twelve cases
+            // green: `width` reaches only `draw_sprite`'s clip, so it is observable in committed state
+            // *solely* through `collision`, and *solely* for sprite pixels landing in x ∈ [256, 320) — the
+            // band that exists in H40 and not in H32. Every original fixture crowded x 0..384 with
+            // non-overlapping sprites or stacked them at x 0, so none of them put an overlap in that band
+            // and "the corpus exercised both widths" was true while being irrelevant. An overlapping pair
+            // at screen x 280 is the discriminator; `WIDE_BAND_X` and the control below state the
+            // arithmetic rather than trusting the placement.
+            let mut band = sprite_bed(h40, true);
+            stack_sprites(&mut band, 2, SAT_X_ORIGIN + WIDE_BAND_X);
+            out.push(Case {
+                name: if h40 {
+                    "H40 collision in the 256..320 band"
+                } else {
+                    "H32 collision in the 256..320 band (clipped away)"
+                },
+                vdp: band,
+            });
+
             let mut off = sprite_bed(h40, false);
             stack_sprites(&mut off, 24, 0x0080); // display DISABLED: the early-return branch, still walking
             out.push(Case {
@@ -4663,6 +4692,28 @@ mod tests {
     /// tripping what it was written to trip.
     #[test]
     fn the_cheap_scanline_advance_leaves_the_same_machine() {
+        // ⚑ **The width control, first, because the corpus without it was measurably too weak.** An
+        // overlapping pair at screen x 280 must collide at 320 px wide and NOT collide at 256, or the only
+        // channel through which `advance_scanline`'s width can reach committed state is unexercised and a
+        // width bug in it passes. This is stated as its own assertion rather than left implicit in the
+        // sweep below: the sweep compares two paths, so it stays green when *both* are wrong in the same
+        // way, which is exactly what a hardcoded 256 in the cheap path plus a corpus with nothing in the
+        // band produced.
+        let band_collides = |h40: bool| {
+            let mut v = sprite_bed(h40, true);
+            stack_sprites(&mut v, 2, SAT_X_ORIGIN + WIDE_BAND_X);
+            v.render_scanline(0).sprite_collision
+        };
+        assert!(
+            band_collides(true),
+            "control: an overlapping pair at screen x {WIDE_BAND_X} must collide in H40 (320 px wide)"
+        );
+        assert!(
+            !band_collides(false),
+            "control: the same pair must be clipped away in H32 (256 px wide) — if it collides here, x \
+             {WIDE_BAND_X} is not in the H40-only band and this corpus cannot see a width bug"
+        );
+
         const LINES: u16 = 8;
         let mut saw_h40 = false;
         let mut saw_h32 = false;
