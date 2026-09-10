@@ -118,7 +118,7 @@ pub enum CmpClass {
 }
 
 /// Classify an opcode into its [`CmpClass`] — see that type's docs. Shared by [`decode`] (which CMP arm to
-/// build) and the SST runner's `covered()` (which CMP-file cases are in scope this commit). Classifying by
+/// build) and the SST runner's `covered()` (which CMP-file cases are in scope). Classifying by
 /// OPCODE — not the misleading `name` field — is the central correctness pin of the CMP family.
 #[inline]
 pub fn cmp_class(opcode: u16) -> CmpClass {
@@ -575,8 +575,10 @@ fn decode_dispatch(regs: &Registers) -> MicroState {
         return arith_dn_ea(opcode, AluOp::Or, Size::Long); // OR.l Dn,<ea>
     }
     // CMP `<ea>,Dn` (`1011 ddd 0SS mmm rrr`, nibble 0xB, opmode 0/1/2 = b/w/l) — the flag-only compare
-    // `Dn − <ea>` (Dn the minuend). Classified by OPCODE (the CMP.* files mix CMP/CMPM/CMPI — CMPM/CMPI are
-    // N1/N2, and `covered()` admits only the Cmp class this commit, so decode is reached on Cmp cases only).
+    // `Dn − <ea>` (Dn the minuend). Classified by OPCODE (the CMP.* files mix CMP/CMPM/CMPI). This arm's own
+    // `matches!(cmp_class(opcode), CmpClass::Cmp)` guard is what keeps CMPM/CMPI out of it — NOT the runner's
+    // scope, which admits all three today (this said "`covered()` admits only the Cmp class this commit"
+    // until the lens sweep, and per finding H17 a disjointness argument must not rest on what is loaded).
     // All 12 source modes via `ea_src` (An-direct legal for w/l, illegal/absent for .b). Sets N/Z/V/C as SUB
     // but PRESERVES X and writes nothing (`AluOp::Cmp` + `Dest::None`). The opcode space is disjoint from the
     // ADD/SUB arms above (nibble 0x9/0xD) and the immediate-to-SR / 0x4Exx arms below.
@@ -1911,8 +1913,8 @@ fn bit_recipe(opcode: u16, op: AluOp, reg_base: u16, regs: &Registers) -> MicroS
     buf.finish()
 }
 
-/// The SHARED shift/rotate recipe builder (modelled on [`bit_recipe`]) — used VERBATIM by ASL (this commit)
-/// and ASR/LSL/LSR/ROL/ROR/ROXL/ROXR (S1-S7); only the `op` (and the decode `(type, dir)` arm) differ. Two
+/// The SHARED shift/rotate recipe builder (modelled on [`bit_recipe`]) — used VERBATIM by all eight of
+/// ASL/ASR/LSL/LSR/ROL/ROR/ROXL/ROXR; only the `op` (and the decode `(type, dir)` arm) differ. Two
 /// forms, classified by OPCODE (bits 7-6):
 ///
 /// - **Register** (`1110 ccc d ss ir tt rrr`, bits 7-6 != 11): shift `Dn` (bits 2-0) at `size` (bits 7-6 =
