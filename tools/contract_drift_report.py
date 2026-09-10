@@ -112,12 +112,20 @@ UNMEASURABLE = "UNMEASURABLE"
 # ---------------------------------------------------------------------------------------------------
 
 
-def read_pins(path=PROVENANCE):
+def read_pins(path=None):
     """Parse the six `pin.*` markers out of PROVENANCE.md.
 
     Same markers `tests/schema_conformance.rs` parses, same "missing is loud" rule: a sidecar that lost
     its pin is a report that cannot run, not a report that says everything is fine.
+
+    `path=None` resolves the module global at CALL time, deliberately.  Written first as
+    `path=PROVENANCE`, a default argument evaluated once at import — so a test that pointed the module
+    at a fixture sidecar was silently served the real one, and seven rows asserted against the live
+    repo's pin while claiming to assert against a fixture.  Found by those rows going red, which is
+    what they are for.
     """
+    if path is None:
+        path = PROVENANCE
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
@@ -529,10 +537,20 @@ def report(args):
             say("    ⚑ DRIFTED")
             say("      pinned  %s  at revision %s" % (pinned, pins[prefix + "revision"]))
             say("      current %s  at %s = %s" % (current, args.ref, tip))
+            # Capture each error as it happens. Reading `git.last_error` after BOTH calls reports
+            # whatever the SECOND one left there — which, when the second succeeded, is `None`, and
+            # the report printed the literal string "None" as its reason. A diagnostic that says
+            # "could not read: None" is a diagnostic that lost the thing it exists to carry.
             old = git("cat-file", "blob", pinned, binary=True)
+            old_err = git.last_error
             new = git("cat-file", "blob", current, binary=True)
+            new_err = git.last_error
             if old is None or new is None:
-                say("      (could not read one of the blobs to summarise the delta: %s)" % git.last_error)
+                say(
+                    "      (could not read one of the blobs to summarise the delta: pinned=%s "
+                    "current=%s)" % (old_err or "ok", new_err or "ok")
+                )
+                say("      The blob ids above are still the answer; only the summary is missing.")
             else:
                 for line in describe_delta(old, new):
                     say("      %s" % line)
