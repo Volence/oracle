@@ -1,6 +1,16 @@
 {
-  "focus": "Four finished parcels parked on your machine. Everything else that can be done without it is done.",
+  "focus": "Two more fixes running -- I had wrongly told you nothing was left that did not need your machine.",
   "inFlight": [
+    {
+      "what": "The Screen tab shows nothing and says nothing when the pane is too narrow -- the same silent give-up already fixed next door",
+      "where": "branch parcel/screen-picture-silent",
+      "agent": true
+    },
+    {
+      "what": "A hardware fix whose test can only check half of it, plus a booked note whose reasoning is backwards",
+      "where": "branch parcel/io-write-mirror-cover",
+      "agent": true
+    },
     {
       "what": "DONE, waiting to land: the boot document cut back under its limit, with every one of your rulings intact",
       "where": "branch parcel/boot-doc-cut-2",
@@ -102,11 +112,11 @@
     },
     {
       "id": "F-SCREEN-PICTURE-SILENT",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The Screen tab has the same silent give-up the plane viewer had: too narrow to draw the picture and it shows nothing and says nothing. Left alone deliberately when the plane one was fixed, so that fix stayed one change."
+      "title": "Being fixed. I had this parked as needing your eyes; it does not -- there is already a test that builds a deliberately too-narrow pane, so the fault is reachable without your screen."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -144,9 +154,9 @@
       "id": "SCHEMA-DRIFT-NIGHTLY",
       "state": "open",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "your standing ruling to stop building apparatus that is not the feature, not the machine",
       "project": "ORACLE-DEFAULT",
-      "title": "A nightly that reports when the contract team moves past our pinned copy, without blocking anyone. Nothing new to build; it calls a road already built."
+      "title": "Corrected on the board: this was sitting as though it were takeable. It is not blocked by anything technical -- it is blocked by your own instruction to cut work that is not the feature, exactly like the citation check. It also needs your answer on the standing background job, which is already on your list from another lane."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -188,14 +198,14 @@
     },
     {
       "id": "F-IO-WRITE-MIRROR-UNCOVERED",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "Booked so it does not vanish with the cut: a hardware behaviour we fixed has a test that can only ever check half of it. The note describing the gap also has its premise backwards -- I read the test tonight and it does the opposite of what the note says, though the conclusion it draws is still right."
     }
   ],
-  "awaiting": "your word that the machine is free. Four finished parcels are parked on it now, and that is the whole of what I am waiting for. Also d-39 (A or B on the Pacing tab) whenever you are at a keyboard.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-10T03:22:27Z"
+  "awaiting": "your word that the machine is free -- four finished parcels are parked on it. Nothing else needs you tonight.",
+  "atBoundary": false,
+  "updatedAt": "2026-09-10T03:40:32Z"
 }
