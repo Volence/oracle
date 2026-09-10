@@ -696,8 +696,7 @@ takes `&mut self` (`vdp.rs`); `oracle-core` is `#![forbid(unsafe_code)]` with no
 absent from `vdp.rs` and `system.rs`, so it is in no snapshot and no `state_hash`.
 
 **What REVIEW holds, and only review: `render_scanline` does not gain a mask parameter.** ⚠ **This section
-asserted that was "enforced by the type system" and it was FALSE** — H26, fixed on `parcel/h26-claim-mechanism`
-(SHA lands with the merge). **Proven vacuous, not argued**: the agent planted the exact forbidden shape
+asserted that was "enforced by the type system" and it was FALSE** — H26, fixed at `37e6d12`, landed. **Proven vacuous, not argued**: the agent planted the exact forbidden shape
 (`render_scanline_masked` committing `overflow && mask.sprites`) and 891 core tests, clippy `-D warnings` and
 `fmt` all stayed green. **Nothing in the language can carry it**, and that is the durable half: *a type system
 constrains programs under a signature, it cannot constrain edits to the signature.* The harm is guarded by the
