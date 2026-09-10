@@ -1,17 +1,6 @@
 {
-  "focus": "Landing the parked work while you sleep. Three in, the fourth in its test run, two behind it.",
-  "inFlight": [
-    {
-      "what": "LANDING NOW: the false safety claim, replaced with the real guarantee that was next to it",
-      "where": "main, gate running",
-      "agent": false
-    },
-    {
-      "what": "Queued behind it: the Screen tab fix, the Z80 mirror width test, and the readout trim you asked for",
-      "where": "branches screen-picture-silent, io-write-mirror-cover, spawn-readout-trim",
-      "agent": false
-    }
-  ],
+  "focus": "Everything parked overnight is landed and pushed. Seven parcels in, including both things you flagged on screen.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
@@ -19,165 +8,23 @@
       "id": "d-39"
     }
   ],
-  "nextBoundary": "After the last of the six lands. Three are in and pushed already.",
+  "nextBoundary": "Now. Nothing running, nothing unpushed, seven parcels landed.",
   "queue": [
     {
-      "id": "SPAWN-READOUT-EXCESSIVE",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Your screenshot, then your wider point. Six different things write into that black box and NOTHING limits how big any of them can get -- so trimming the words fixes the six that exist and not the next one somebody writes. Doing both: cutting each message down to what actually changed, and putting a hard ceiling on the box so no message, now or later, can ever take a quarter of your screen. The accidental click should be the quietest case of all, and it currently costs the same as a deliberate one."
-    },
-    {
-      "id": "H25-DRIFT-DEDUPE",
-      "state": "next",
-      "size": "S",
-      "blockedBy": "the same machine question as the other two",
-      "project": "ORACLE-DEFAULT",
-      "title": "FIXED and proven. The agent showed the danger was real by breaking the old code on purpose: the window's own reset path silently kept the old behaviour and every test still passed. After the fix the same break is caught. Waiting with the others on whether the machine is free."
-    },
-    {
-      "id": "UX-FIX-GROUP-A",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Landed and pushed. Nothing is running on it; what is left is your eye on look-and-feel only."
-    },
-    {
-      "id": "OWNER-UX-GROUP-B",
-      "state": "open",
-      "size": "L",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Five of your ten are fixed and pushed. The other three -- the clutter, the stacked tab strips, and dragging panels to any side -- I had wrongly parked as 'what the rebuild will fix'. The rebuild's frame IS the window you use; nothing later rewrites it, and dragging already works (your saved layout proves you have done it). All three are takeable now. Plus the palette write-up waiting on your read."
-    },
-    {
-      "id": "ROM-DROP-WAYLAND",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "one more drop attempt from you, on the X11 window now up",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Three of the four ways to open a ROM work. Dragging a file in does not, and it is not our bug: the window library implements file drops for X11, Mac and Windows and not at all for Wayland, which your desktop runs. The window is now forced onto X11 where drops do work. If that fixes it you have a choice to make, and I owe you what else differs between the two first."
-    },
-    {
-      "id": "PALETTE-SCOPE",
-      "state": "open",
-      "size": "M",
-      "blockedBy": "your look at the write-up first",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "You said you liked the old command palette and this one has no easy way in. I am not rebuilding it blind: you get a written comparison of what the old one did that this does not, and what I would build, before anyone spends on it."
-    },
-    {
-      "id": "LENS-HIGHS-SIX",
-      "state": "next",
-      "size": "L",
-      "blockedBy": "the machine, like the other two",
-      "project": "LENS-PASS",
-      "title": "One of the two is FIXED and waiting to land. It turned out better than the question asked: there IS a real mechanism protecting the important half, one line away from the false claim, and nobody had noticed. The other is a design call about instruction decoding, not a fix."
-    },
-    {
       "id": "C5-REPLAY-DISCARDED-RASTER",
-      "state": "blocked",
+      "state": "next",
       "size": "M",
-      "blockedBy": "the safety-claim fix landing first (its wording decides what C5 may build)",
+      "blockedBy": null,
       "project": "LENS-PASS",
-      "title": "Now ANSWERED in C5's favour by the other fix: the cheap version it wants to build is allowed, and the dangerous version stays forbidden. Ready to brief the moment that one lands."
+      "title": "Your last open critical, and now unblocked: every replay frame draws a full analysed picture and throws it away. You answered 'split it', and last night's safety fix confirmed the cheap version is allowed."
     },
     {
-      "id": "F-PLANES-RASTER-EVERY-FRAME",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "CLEARED AS THE CAUSE OF YOUR LAG, and you no longer owe me the tab test. The window writes its own tab layout to disk, so I read it: the four panels actually drawing are Screen, Objects, Effects and Breakpoints. The plane viewer is the hidden tab behind Screen and is drawing nothing. Its every-frame redraw is still a real defect and will bite the moment you bring that tab forward, but it is not what is costing you now."
-    },
-    {
-      "id": "F-SCREEN-PICTURE-SILENT",
-      "state": "next",
-      "size": "S",
-      "blockedBy": "the machine, like the others",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "FIXED and waiting to land. It turned out not to be a too-narrow panel at all: the row of controls above the picture has no height limit and no scrollbar, so a short pane lets the controls eat the whole thing and the picture is left with literally zero room. Now it says so instead of vanishing."
-    },
-    {
-      "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The reason I keep asking you to look at panels instead of reading them myself: the window can report its top bar to a connected program but not any panel. Fixing it turns a class of 'please look at this' into something I can measure."
-    },
-    {
-      "id": "STYLE-NUMBER-BAKEOFF",
-      "state": "blocked",
-      "size": "S",
-      "blockedBy": "your A or B (d-39)",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Waiting on you, and it holds the rest of the panel work up: both ways of showing a headline number are on the Pacing tab of the build on your screen. Say A or B and the other is deleted."
-    },
-    {
-      "id": "DATA-DISPLAY-AUDIT",
-      "state": "blocked",
-      "size": "L",
-      "blockedBy": "your look answers",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The remaining panels follow your A/B answer plus four things only your eyes can settle. Run past you one at a time rather than in a batch."
-    },
-    {
-      "id": "ERROR-SURFACE-GATE",
-      "state": "next",
-      "size": "M",
-      "blockedBy": "your word that the machine is free",
-      "project": "ORACLE-DEFAULT",
-      "title": "REVIEWED TONIGHT while waiting on you, so your nod buys a merge and not a review. Three real fixes, each one a case of the server answering a request it was supposed to refuse. I checked the one that could have bitten us -- it now rejects an empty search that used to dump the whole table -- against the written contract, and the contract does require it. I also swept every other project for anything relying on the old wording: nothing does. What is left is the long verification run, which is the part that needs the machine."
-    },
-    {
-      "id": "SCHEMA-DRIFT-NIGHTLY",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "your standing ruling to stop building apparatus that is not the feature -- and NOTHING else now",
-      "project": "ORACLE-DEFAULT",
-      "title": "Corrected twice in an hour. It is not machine-bound, and the background-job question I thought was still sitting with you was answered on your behalf eight days ago (install). The only thing holding it now is your own instruction to cut work that is not the feature. When you lift that, it needs nothing further from you."
-    },
-    {
-      "id": "LIVE-EFFECTS-NUDGES",
-      "state": "open",
-      "size": "M",
-      "blockedBy": "the lens fix list ahead of it",
-      "project": "LIVE-EFFECTS",
-      "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Two constraints from their note: only some of the fields have a reader at runtime, so a slider on the others would be a silent no-op, and the memory it needs is absent in a release build while the entry point resolves, so a panel that armed on the entry point alone would write over code."
-    },
-    {
-      "id": "F-CITATION-LINT",
-      "state": "open",
-      "size": "M",
-      "blockedBy": "the standing cut-the-ceremony ruling, not the merits",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "A cheap in-repo check would make a wrong cross-repo citation impossible to write, instead of something we keep finding by hand. Booked with the design written down; not built, because you told us to stop building apparatus that is not the feature."
-    },
-    {
-      "id": "LENS-LEFT-113",
+      "id": "H22-68000-DECODE",
       "state": "open",
       "size": "L",
       "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The smaller sweep findings that remain. Re-measured tonight: the serious ones are down to two, one waiting on you and one a design call. About 70 minor items left, and each needs checking that it is still real before anyone works it."
-    },
-    {
-      "id": "BOOT-DOC-LINE-BOUND",
-      "state": "next",
-      "size": "M",
-      "blockedBy": "the full landing run, which this repo deliberately requires for ANY docs file except the three board files -- checked, not inherited from the other parcels",
-      "title": "CUT, VERIFIED, PARKED, and the wait has a known cost. The document is 560 bytes from its limit and every ruling tonight grew it. IF IT GOES OVER BEFORE YOU FREE THE MACHINE, THAT IS FINE AND IS NOT A FAULT: the rule is that this file gets split, never trimmed by deleting things you decided, so going over with everything intact is the correct outcome and the next session should not treat it as breakage. Until it lands, new findings go in the other two files."
-    },
-    {
-      "id": "LANDING-CHECKS-WRITTEN-DOWN",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "title": "Done and pushed: the landing checks are now a written list, including the step I skipped tonight -- actually reading the automated checks."
+      "project": "LENS-PASS",
+      "title": "The other remaining serious lens item. A design call about how the processor decodes instructions, not a fix -- it wants thought, not a patch."
     },
     {
       "id": "F-SCREEN-TAB-STRIP-UNBOUNDED",
@@ -185,23 +32,7 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The real cause underneath the blank Screen tab, and it is still there: the control strip above the picture is unbounded and cannot scroll, so it can swallow the entire pane. When it does, even the new explanation is clipped off the bottom. Fixing it means making that tab scroll, which is a layout change and its own job."
-    },
-    {
-      "id": "F-TWO-SPELLINGS-OF-ONE-GIVEUP",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Small tidy the agent offered and I told it not to take: the plane viewer and the Screen tab now say 'I cannot draw this' in two different ways. One of them carries its own explanation and cannot be silenced by accident; the other is the older inline check. Worth collapsing into one."
-    },
-    {
-      "id": "F-Z80RAM-MIRROR-WIDTH",
-      "state": "next",
-      "size": "S",
-      "blockedBy": "the machine, like the others",
-      "project": "ORACLE-DEFAULT",
-      "title": "FIXED and waiting to land, and it is the one that was actually broken. The Z80 memory mirror had a test that only ever checked position zero -- where every possible wrong answer looks identical -- so the WIDTH of the mirror was unchecked in both directions. Now checked at a position where a wrong fold disagrees."
+      "title": "The real cause under the blank Screen tab. The controls above the picture have no size limit and cannot scroll, so on a short window they eat the whole pane. Fixing it means making that tab scroll."
     },
     {
       "id": "F-MACHINEREPLACED-EVENT-RACE",
@@ -209,10 +40,106 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A test failed once during a landing and has not failed since: 1 in 31 runs, and the 30 clean ones were at HIGHER load than the failure. Booked rather than shrugged off -- this repo has twice called a load-only failure a flake and been wrong both times."
+      "title": "A test failed once during a landing and never again: 1 in 31 runs, the clean ones at higher load. Booked as a real bug because this repo has twice called that noise and been wrong."
+    },
+    {
+      "id": "F-TWO-SPELLINGS-OF-ONE-GIVEUP",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Small tidy: the plane viewer and the Screen tab now say 'I cannot draw this' two different ways. One carries its own explanation and cannot be silenced by accident; the older one can."
+    },
+    {
+      "id": "OWNER-UX-GROUP-B",
+      "state": "open",
+      "size": "L",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Three of your ten remain: the clutter, the stacked tab strips, and dragging panels to any side. All three are takeable now -- I had wrongly parked them as things the rebuild would fix."
+    },
+    {
+      "id": "ROM-DROP-WAYLAND",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "one more drop attempt from you",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Three of four ways to open a ROM work. Dragging a file in does not, and it is not our bug -- the window library has no file drops on your desktop type. It is forced onto the older one now; try it."
+    },
+    {
+      "id": "PALETTE-SCOPE",
+      "state": "open",
+      "size": "M",
+      "blockedBy": "your look at the write-up first",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
+    },
+    {
+      "id": "STYLE-NUMBER-BAKEOFF",
+      "state": "blocked",
+      "size": "S",
+      "blockedBy": "your A or B (d-39)",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Waiting on you, and it holds the rest of the panel work up: both ways of showing a headline number are on the Pacing tab. Say A or B and the other is deleted."
+    },
+    {
+      "id": "DATA-DISPLAY-AUDIT",
+      "state": "blocked",
+      "size": "L",
+      "blockedBy": "your A or B (d-39)",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The remaining panels follow your A/B answer plus a few things only your eyes can settle. Run past you one at a time, not in a batch."
+    },
+    {
+      "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The reason I keep asking you to look at panels instead of reading them myself: the window can report its top bar to a connected program but not any panel."
+    },
+    {
+      "id": "F-PLANES-RASTER-EVERY-FRAME",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Cleared as the cause of your lag and you owe me no test. Still a real defect -- the plane viewer redraws every frame while hidden -- and it will bite when you bring that tab forward."
+    },
+    {
+      "id": "LIVE-EFFECTS-NUDGES",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LIVE-EFFECTS",
+      "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
+    },
+    {
+      "id": "SCHEMA-DRIFT-NIGHTLY",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "your cut-the-ceremony ruling, nothing else",
+      "project": "ORACLE-DEFAULT",
+      "title": "A nightly that reports when the contract team moves past our pinned copy. Not machine-bound and needs nothing further from you -- it is held only by your instruction to stop building what is not the feature."
+    },
+    {
+      "id": "F-CITATION-LINT",
+      "state": "open",
+      "size": "M",
+      "blockedBy": "the same cut-the-ceremony ruling",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "A cheap check would make a wrong cross-repo citation impossible to write. Booked with the design written down; not built, because you told us to stop building apparatus that is not the feature."
+    },
+    {
+      "id": "LENS-LEFT-113",
+      "state": "open",
+      "size": "L",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "About 70 minor sweep findings remain. Each needs checking that it is still real before anyone works it -- two of tonight's turned out to be already fixed or never true."
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-10T06:45:52Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-10T06:52:43Z"
 }
