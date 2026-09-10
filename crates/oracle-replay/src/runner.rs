@@ -622,8 +622,10 @@ fn run_inner(
         ));
     }
     // The third cell of the same read-back, and the one that is free. Work RAM is **not** zero at power-on
-    // (`system.rs:393-398` seeds it with deterministic pseudo-random bytes), so `Replay_Done` reading clear
-    // here is a property of *this* build's boot clearing work RAM before `Game.entry` — not of the runner.
+    // (`System::new`'s `fill_random(scheduler.rng_mut(), &mut ram)` seeds it with deterministic
+    // pseudo-random bytes; the old `system.rs:393-398` had drifted onto the SRAM fallback window), so
+    // `Replay_Done` reading clear here is a property of *this* build's boot clearing work RAM before
+    // `Game.entry` — not of the runner.
     // Build-independence is this tool's stated value, so it is asserted rather than assumed: a flag that is
     // already set means the very first poll would report completion and the run would "pass" before it
     // started.
