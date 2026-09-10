@@ -1,8 +1,16 @@
 //! Opt-in per-scanline capture (conformance Limitation L1 follow-up): a [`BusEventSink`] that opts in via
 //! `wants_scanlines` receives every rendered active line (0..=223) **during** `run_frames`, as a borrowed
-//! RGB slice — the line the `Scanline` event already renders and previously discarded. The default path (no
-//! sink, or a sink that does not opt in) is byte-identical to before: same `render_scanline` call, no extra
-//! allocation, no state change (the sink is the caller's; `System` never stores it).
+//! RGB slice — the line the `Scanline` event resolves for it. The default path (no sink, or a sink that does
+//! not opt in) makes the same *machine* state change and no allocation the sink can see (the sink is the
+//! caller's; `System` never stores it).
+//!
+//! ⚑ That last sentence read "byte-identical to before: same `render_scanline` call" until finding C5. It is
+//! the opt-in arm that is now byte-identical to before; the default arm takes `Vdp::advance_scanline`, which
+//! commits the same three sprite bits without compositing the picture it was throwing away. Nothing in this
+//! file exercises the default arm's *output* — there is none — so the rows and the ordering pinned below are
+//! untouched, and the equivalence of the two arms is guarded in `render.rs`
+//! (`the_cheap_scanline_advance_leaves_the_same_machine`) and at system level by `system.rs`'s
+//! `scanline_wiring_evolves_the_sprite_masking_carry_during_a_run`.
 
 use oracle_core::bus::{BusEvent, BusEventSink};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
