@@ -89,4 +89,15 @@ echo
 echo "=== pin currency (REPORT ONLY — does not affect exit status) ==="
 python3 tools/aeon_pin_report.py || true
 
+# The same question, one peer over: has the CONTRACT repo moved past the blobs PROVENANCE.md pins?
+# `schema_conformance.rs` proves our vendored bytes ARE those blobs — self-consistency, hermetic,
+# and structurally unable to notice empyrean moving on (F-SCHEMA-READS-LIVE-EMPYREAN, 2026-09-02).
+# This is the out-of-band notice, and it is non-gating for the same reason the line above is: it
+# reddens because a PEER moved, and a gate with that property ends in someone moving the pin to
+# silence it. `--no-fetch` here because this call is a courtesy inside another runner and must not
+# reach the network; the scheduled nightly invocation fetches. Costs ~0.03 s.
+echo
+echo "=== contract currency (REPORT ONLY — does not affect exit status) ==="
+python3 tools/contract_drift_report.py --no-fetch || true
+
 exit $status
