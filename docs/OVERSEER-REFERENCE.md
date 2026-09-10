@@ -1015,6 +1015,16 @@ not name (`oracle-player/machine.rs:318`, `oracle-frontend/main.rs:709`, `oracle
 where the next parcel falsifies it.** H26 fixed eleven sites of one spelling; C5 found seven of a *different*
 spelling that H26's own greps had no reason to match. When a doc is hardened, sweep for what RESTATES it, not
 only for what repeats its words.
+⚑ **CORROBORATED CROSS-LANE WITHIN THE HOUR, and sigil's framing generalises past docs — take theirs as the
+statement of the class and this as its doc-side instance.** Sigil booked `LINKER-STILL-PRINTS-A-PASS-COUNT`:
+the owner ruled an attempt count out of the assembler's message, and the **linker's copy of the same wording**
+(`crates/sigil-link/src/relax.rs:1116`) stood untouched. Their sentence, which is the durable one:
+**a ruling has CONSUMING SURFACES, nothing in the tree marks a site as one, and so a partial enumeration looks
+exactly like a finished one.** That is why eleven-then-seven happened here and why it is not a docs problem:
+the same shape reaches code, messages and rulings. Practical consequence for any fix that repairs a *claim*
+rather than a behaviour: **the deliverable is the enumeration of consuming surfaces, and it must be produced
+by varying the SPELLING and the AXIS, never by grepping the words the canonical site happens to use.**
+*(Cross-lane generalisation is the hub's and marked as theirs; the eleven/seven numbers are this lane's.)*
 ⚑ **AND THE COUNTER-INSTANCE TO "PACKET COUNTS ARE FLOORS": here the finding was EXACT.** The brief pushed
 the agent to reach past the ledger's one consumer on the standing floor prior. It reached and found nothing —
 `oracle-player`, `oracle-frontend` and `oracle-aether` all put `ScanlineCapture` in the `Fanout` on **both
