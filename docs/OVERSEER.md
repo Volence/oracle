@@ -465,37 +465,23 @@ Owner, asked *"did we do something beurocratic to slow things down?"*: *"Yes ple
 arbitrarily slowing us down without like an actual good reason please … as long as it's correct and stuff
 and hitting our goal, that should be what we mainly care about."*
 
-⚑ **"In force until EFFECTS-W1 ships" IS THIS LANE'S SCOPING INFERENCE, NOT HIS WORDS — and its condition
-was MET ON 2026-09-06.** His quote above carries no expiry at all; it is a standing preference. The expiry
-sentence was written in the typographic register this file reserves for his verbatim text, which is the exact
-defect the hub was corrected on this morning. **This is the only mention of EFFECTS-W1 in this document, so
-nothing here moved when the project closed four days ago.**
-⚑ **AND FOUR LIVE HOLDS STILL REST ON THE MORATORIUM BEING IN FORCE**: `SCHEMA-DRIFT-NIGHTLY` (below, *"the
-cut-the-ceremony moratorium alone"*), `F-CITATION-LINT` (*"the reason is the moratorium, NOT the merits"*,
-revival condition *"the moratorium lifting"*), the PARKED bar at the head of `docs/OVERSEER-REFERENCE.md`, and
-two queue rows. **So this file asserts both that the ruling expired and that four things are held by it.**
-⚑ **RULED BY THE HUB 2026-09-10 under standing delegation, banked at empyrean `origin/main`, overturnable by
-him on read-back. THREE PARTS, and the third is the one that matters.** Routed there rather than ruled here
-because it is suite-wide and his overnight clause (3) forbids this seat a decision that size; the hub holds
-the same clause in its own file. **(a) The boot-doc-growth prohibition HAS LAPSED — by the HUB'S terms, not
-his.** Empyrean's copy carries the expiry inside a block explicitly labelled *"the hub's application, each
-overturnable by him on read-back"*; this file carried the same sentence in the register reserved for his
-verbatim text. His words carry **no expiry and no project scope in either file** — the "few weeks on this
-project" clause is his MOTIVE, not his scope. **(b) It does not lift into PERMISSION.** The preference it
-implemented is undated and stands, so a new bar is now **governed by his test** — *does it arbitrarily slow
-us down without an actual good reason* — rather than forbidden outright. **(c) EACH OF THE FOUR HOLDS IS
-RE-DECIDED ON ITS OWN MERITS**, neither auto-revived by "it lifted" nor kept by "it is still in force".
-⚑ **AND A CORRECTION AGAINST THIS SEAT, ACCEPTED.** I proposed treating the moratorium as in force *because
-in-force is what every lane has been observing*. **That is circular**: universal observance of a lapsed rule
-is the SYMPTOM of the defect, not evidence against it. The instinct — do not let two lanes run different
-moratoria — was right and the ground was not. **When a rule's only remaining support is that everyone still
-obeys it, that is the finding, not the justification.**
-⚑ **WHAT THIS SEAT OWES NOW: four merit arguments, not one blanket answer.** `F-CITATION-LINT` is the sharp
-one, because its own text says the hold is the moratorium *NOT the merits* — **so its merits have never been
-argued and cannot be inherited.** Do not revive it on the lapse. ⚑ **Its merits are being MEASURED right now
-and the answer should wait for the measurement**: the `sweep-t4-comment-truth` batch is returning STILL REAL
-/ ALREADY FIXED / NEVER TRUE on eight citation-rot findings, which is direct evidence on whether the lint
-pays for itself. Decide it on those verdicts, not on this morning's enthusiasm for the defect class.
+⚑ **THE SCOPE CLAUSE BELOW IS A LANE/HUB INFERENCE, NOT HIS WORDS, AND ITS CONDITION WAS MET 2026-09-06.**
+His quote carries **no expiry and no project scope**; the "few weeks on this project" clause is his MOTIVE.
+Empyrean labels the expiry as *the hub's application*; this file carried it in the register reserved for his
+verbatim text — the seraph-hold defect, second file, opposite direction.
+⚑ **RULED BY THE HUB 2026-09-10 under standing delegation (empyrean `origin/main`), overturnable by him on
+read-back. (a)** The boot-doc-growth prohibition **has lapsed**, by the hub's terms not his. **(b)** It does
+**not lift into permission**: the undated preference stands, so a new bar is now **governed by his test** —
+*does it arbitrarily slow us down without an actual good reason* — rather than forbidden. **(c) Each hold that
+rested on it is RE-DECIDED ON ITS OWN MERITS**, neither auto-revived nor auto-kept. Applied below:
+`SCHEMA-DRIFT-NIGHTLY` survives (merits argued, only the blocker outlived them); `F-CITATION-LINT` does not
+(its own text says the hold was *the moratorium, NOT the merits*, so there is nothing to inherit).
+⚑ **CORRECTION ACCEPTED, against this seat:** I proposed treating it as in force *because in-force is what
+every lane observes*. **Circular** — universal observance of a lapsed rule is the SYMPTOM, not evidence
+against it. **When a rule's only remaining support is that everyone still obeys it, that is the finding.**
+⚑ **AND I THEN COMMITTED THE MORNING'S OWN LESSON:** fixed this at its canonical site and left its
+paraphrases standing one screen away (two revival conditions, both firing on the lapse). **A claim repaired
+at its canonical site leaves its paraphrases standing** — I banked that at 08:1xZ and broke it at 09:0xZ.
 
 *Scoped, per that inference, to EFFECTS-W1:*
 * **No new process bars, no rulings about rules, no boot-doc growth.** New bars go to
