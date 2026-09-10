@@ -489,12 +489,26 @@ const PROBE_SYMBOL: &str = "Probe";
 
 /// Load a one-symbol listing naming [`PROBE_SYMBOL`] in work RAM — the `params_closure.rs` fixture,
 /// because `write_memory`'s `disp` is refused outright unless it travels with a `symbol`.
+///
+/// **The filename carries a per-call counter, and that is a fix rather than a flourish.** It used to be
+/// a single `probe.lst` under a per-PROCESS directory — but the three tests in this file are three
+/// tests in ONE binary, and cargo runs them in parallel threads. So all three wrote the same path while
+/// all three servers read it, and `std::fs::write` truncates before it writes: a server that called
+/// `read_to_string` inside another thread's truncate window got **zero bytes** and refused the listing
+/// with *"no symbols found (not a sigil/AS `.lst` listing?)"* — a message about the file's CONTENT, for
+/// a file whose content was fine a microsecond either side.
+///
+/// It presented as a flake: green in isolation, green on most full runs, red on a loaded box. It was
+/// caught on the full-suite run of the parcel that added `request_shapes.rs` — which had copied this
+/// function, and with four parallel tests instead of three would have made it fire more often.
 fn load_probe_symbol(c: &mut Client) {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let lst =
         format!("  Symbol Table (* = unused):\n\n {PROBE_SYMBOL} : FF0600 C |\n\n   1 symbols\n");
     let dir = std::env::temp_dir().join(format!("oracle-rb-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create the symbol fixture dir");
-    let path = dir.join("probe.lst");
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let path = dir.join(format!("probe-{n}.lst"));
     std::fs::write(&path, lst).expect("write the symbol fixture");
     c.ok(
         "emulator/load_symbols",

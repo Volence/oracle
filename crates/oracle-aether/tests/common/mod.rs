@@ -262,6 +262,20 @@ pub struct Client {
     read_timeout: Duration,
 }
 
+/// **What became of one request — with "never came back" as a value, not a panic.**
+///
+/// See [`Client::try_call`] for why this exists. The short version: a null result must not be allowed to
+/// wear the costume of an observation.
+#[derive(Debug)]
+pub enum Settled {
+    /// A reply was read and correlated to the request. It may be a success or an error object; that is
+    /// the caller's question, not this type's.
+    Reply(Value),
+    /// No reply was read — a blown deadline, a closed socket, an unparseable line. **Nothing was
+    /// observed about the server's behaviour**, and the connection is no longer usable.
+    DidNotFinish(String),
+}
+
 /// **The socket read deadline.** Named rather than spelled inline because a failure now quotes it, and a
 /// deadline a test reports has to be a deadline the test can name.
 ///
@@ -494,6 +508,84 @@ impl Client {
         let v = self.call(method, params);
         assert!(v.get("error").is_none(), "{method} failed: {}", v["error"]);
         v["result"].clone()
+    }
+
+    /// **`call`, but a request that never comes back is a RESULT rather than a panic.**
+    ///
+    /// [`Client::call`] is right for almost every test here: a hung transport means the run is over, and
+    /// [`Client::read_line_or_explain`]'s panic says more about why than any caught error could. This is
+    /// the one shape it cannot serve — a sweep that sends *many* deliberately-illegal requests and has to
+    /// report a verdict for each.
+    ///
+    /// The reason is specific to refusals and is the whole point of the seam. **"The server refused this"
+    /// and "the probe never finished" both present as the absence of a successful reply.** A sweep that
+    /// let a timeout panic would lose every row after the first hang; a sweep that treated a failed read
+    /// as "no success reply, so it must have been refused" would score a hang as the obligation being
+    /// MET. Both are wrong, and the second is wrong in the direction that says the server behaved. So the
+    /// third outcome gets its own variant and the caller is made to handle it.
+    ///
+    /// **The connection is not reusable after [`Settled::DidNotFinish`].** Nothing was read, so a reply
+    /// may still be in flight; the next `recv` on this socket would pick it up and correlate it to the
+    /// wrong request. Callers reconnect — see `request_shapes.rs`, which does exactly that and says so.
+    ///
+    /// `deadline` overrides [`READ_TIMEOUT`] for this one call and is restored before returning, so a
+    /// sweep can afford a short deadline per probe without lowering it for the setup calls around it.
+    pub fn try_call(&mut self, method: &str, params: Value, deadline: Duration) -> Settled {
+        let id = self.next_id;
+        self.next_id += 1;
+        let previous = self.read_timeout;
+        self.set_read_timeout(deadline);
+        self.send_raw(
+            &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}).to_string(),
+        );
+        let settled = loop {
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => {
+                    break Settled::DidNotFinish(format!(
+                        "the connection closed while {method} (id {id}) was outstanding"
+                    ))
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break Settled::DidNotFinish(format!(
+                        "no reply to {method} (id {id}) within {deadline:?}"
+                    ))
+                }
+                Err(e) => {
+                    break Settled::DidNotFinish(format!(
+                        "read failed while {method} (id {id}) was outstanding: {e}"
+                    ))
+                }
+                Ok(_) => {}
+            }
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                break Settled::DidNotFinish(format!(
+                    "unparseable line on the wire: {}",
+                    line.trim()
+                ));
+            };
+            // Events queued ahead of the reply are skipped, exactly as `recv_response` does. Each line is
+            // still put through the one validation funnel, so a probe cannot be answered off-contract
+            // without the suite noticing.
+            let for_method = v
+                .get("id")
+                .filter(|i| !i.is_null())
+                .and_then(|i| self.pending.get(&i.to_string()))
+                .cloned();
+            schema::assert_incoming(&v, for_method.as_deref());
+            if v.get("id").is_some_and(|i| !i.is_null()) {
+                self.awaiting = None;
+                assert_eq!(v["id"], json!(id), "response id must correlate");
+                break Settled::Reply(v);
+            }
+        };
+        if matches!(settled, Settled::Reply(_)) {
+            self.set_read_timeout(previous);
+        }
+        settled
     }
 
     /// `call`, asserting failure and returning the error object.
