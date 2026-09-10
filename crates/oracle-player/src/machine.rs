@@ -184,7 +184,8 @@ impl Machine {
             if let Some(img) = capture_to_image(&self.cap) {
                 self.image = Some(img);
                 // The captured frame was composited line by line by `Vdp::render_scanline`, which takes no
-                // mask and must never gain one — so what came out is the unmasked picture, whatever the
+                // mask (and by convention is not to gain one — see its doc) — so what came out is the
+                // unmasked picture, whatever the
                 // engine's mask happens to say. [`crate::bus::drain`] re-derives it under the mask
                 // afterwards when one is set; this records what is actually here until it does.
                 self.image_mask = Some(LayerMask::ALL);
@@ -316,8 +317,13 @@ impl Machine {
     /// The capture's rows were composited line by line during the run by
     /// [`Vdp::render_scanline`](oracle_core::vdp::Vdp::render_scanline) — **the one render that commits the
     /// sprite-overflow and collision latches and the R10 carry, which is why it takes no mask and has no
-    /// masked twin** (`docs/OVERSEER.md`'s LAYER-MASK entry: *"a display mask cannot perturb emulation" is
-    /// enforced by the type system*). This slice adds no mask parameter to it and none may ever be added.
+    /// masked twin**. This slice adds no mask parameter to it.
+    ///
+    /// ⚑ This read that *"a display mask cannot perturb emulation" is enforced by the type system* and that
+    /// *"none may ever be added"* until finding H26. What the compiler actually enforces is that every
+    /// mask-taking render takes `&self` and so cannot reach the `&mut self` latch commit at all; that
+    /// `render_scanline` never gains a mask is a **convention** no check would catch the breach of. That
+    /// split, and the test that guards the harm, are stated once on `render_scanline`'s own doc.
     ///
     /// What the capture leaves behind is decoded colours with the losing layers **already discarded**, so
     /// "mask" applied to those bytes could only mean "paint over" — and painting the backdrop over dots
