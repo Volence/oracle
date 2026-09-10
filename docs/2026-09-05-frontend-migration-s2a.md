@@ -130,6 +130,11 @@ the real one.* A toast cannot carry it, because toasts expire and the mask does 
 picture rather than below for the reason the halting alarm is on the top bar: a standing statement that
 can be cropped out of view is not standing.
 
+> **Amended 2026-09-10 (`F-SCREEN-TAB-STRIP-UNBOUNDED`).** Same correction as the badge's in
+> `2026-09-05-frontend-migration-s0-s2.md`: the unbounded strip could crop this line at the pane's edge with
+> no way to reach it, so being above the picture never guaranteed what this says. The order does. The strip
+> is now bounded and scrollable; the canonical statement is `Panels::screen_controls`'s doc comment.
+
 ### 1.4 Loud on unmeasurable
 
 `Machine::image_mask` records the mask the retained picture was drawn under, written in the same
