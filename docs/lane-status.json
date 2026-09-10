@@ -1,5 +1,5 @@
 {
-  "focus": "Six finished parcels parked on one word from you about the machine. Nothing running; a fresh session would lose nothing.",
+  "focus": "Tab restarts the game again -- and it already did. Six finished parcels still parked on your machine.",
   "inFlight": [
     {
       "what": "DONE, waiting to land: I sent an agent after a coverage hole that did not exist -- it disproved me and found a REAL one next to it",
@@ -37,11 +37,6 @@
       "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
       "since": "2026-09-06",
       "id": "d-39"
-    },
-    {
-      "what": "whether Tab should restart the game the way the old window did, instead of cycling panels — it caught you on day one, but somebody chose the current behaviour deliberately so it needs your word",
-      "since": "2026-09-05",
-      "id": "d-33"
     }
   ],
   "nextBoundary": "Now. Nothing is running and everything is committed and pushed.",
@@ -221,7 +216,7 @@
       "title": "FIXED and waiting to land, and it is the one that was actually broken. The Z80 memory mirror had a test that only ever checked position zero -- where every possible wrong answer looks identical -- so the WIDTH of the mirror was unchecked in both directions. Now checked at a position where a wrong fold disagrees."
     }
   ],
-  "awaiting": "your word that the machine is free -- six finished parcels are parked on it, including the fix for a document that is now 560 bytes from its limit. Also d-39 (A or B on the Pacing tab) whenever you are at a keyboard. Nothing else needs you.",
+  "awaiting": "your word that the machine is free -- six finished parcels are parked on it. Your card is down to ONE: d-39, A or B on the Pacing tab.",
   "atBoundary": true,
-  "updatedAt": "2026-09-10T04:08:53Z"
+  "updatedAt": "2026-09-10T05:20:30Z"
 }
