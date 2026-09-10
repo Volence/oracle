@@ -1,6 +1,11 @@
 {
-  "focus": "Tab restarts the game again -- and it already did. Six finished parcels still parked on your machine.",
+  "focus": "Cutting the wall of text under the picture that you just flagged. Six other parcels still parked on your machine.",
   "inFlight": [
+    {
+      "what": "Cutting the ring-spawn readout you flagged: the header already says 'temporary' and the block below repeats the whole paragraph",
+      "where": "branch parcel/spawn-readout-trim",
+      "agent": true
+    },
     {
       "what": "DONE, waiting to land: I sent an agent after a coverage hole that did not exist -- it disproved me and found a REAL one next to it",
       "where": "branch parcel/io-write-mirror-cover",
@@ -41,6 +46,14 @@
   ],
   "nextBoundary": "Now. Nothing is running and everything is committed and pushed.",
   "queue": [
+    {
+      "id": "SPAWN-READOUT-EXCESSIVE",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Your screenshot: the black block under the picture repeats, in eight lines, the 'temporary' warning the header already gives you in five words. The repetition was deliberate -- someone argued a reader would scroll away from the header and need it again -- but that argument is about a scrolling log, and this is painted on the glass with the header still visible above it. Keeping the facts that change per click, cutting the sermon."
+    },
     {
       "id": "H25-DRIFT-DEDUPE",
       "state": "next",
@@ -217,6 +230,6 @@
     }
   ],
   "awaiting": "your word that the machine is free -- six finished parcels are parked on it. Your card is down to ONE: d-39, A or B on the Pacing tab.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-10T05:20:30Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-10T05:42:55Z"
 }
