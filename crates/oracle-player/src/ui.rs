@@ -7690,15 +7690,26 @@ mod screen_strip_tests {
         picture: egui::Vec2,
         /// The height the tab body actually offered, inside `egui_dock`'s wrapper.
         pane: f32,
-        /// The tab body's own scroll area: what its content wanted, and what it showed.
+        /// The tab body's own scroll area: what its content wanted, and the viewport it was given.
         tab: (f32, f32),
+        /// How far the tab body's own scroll area had moved after a wheel was turned over the pane.
+        tab_offset: f32,
     }
 
     impl Room {
         /// Whether the **tab's** scroll area had anything to scroll — `content_size` past `inner_rect` is
         /// egui's own `content_is_too_large` test.
-        fn tab_scrolls(&self) -> bool {
-            self.tab.0 > self.tab.1 + EPS
+        /// Whether the **tab** actually scrolled when a wheel was turned over it.
+        ///
+        /// ⚑ **Measured by turning a wheel, because the obvious measure is not one.** This began as
+        /// `content_size > inner_rect`, and a mutation that turned the wrapper's scrolling *off*
+        /// (`ScrollArea::new([false, false])`) left it green: `ScrollAreaOutput::inner_rect` is the
+        /// pre-shrink viewport, so content past the viewport reads the same whether that content can be
+        /// reached or is merely clipped. `content_is_too_large` and `show_scroll`, which would say, are
+        /// private to egui. `State::offset` is not — so the harness sends a real wheel event over the
+        /// pane and asks whether the content moved.
+        fn tab_scrolled(&self) -> bool {
+            self.tab_offset > 0.0
         }
     }
 
@@ -7710,13 +7721,19 @@ mod screen_strip_tests {
     /// wrapper would be measuring a pane this window does not have — and would have no way to state the
     /// finding that the wrapper is already there.
     ///
-    /// Two frames, for [`planes_layout_tests`]'s reason: egui settles some sizes off the previous frame's
-    /// state, and a scroll area is one of the things that does.
+    /// Three frames. The first two are [`planes_layout_tests`]'s reason — egui settles some sizes off
+    /// the previous frame's state and a scroll area is one of the things that does — and the third turns
+    /// a **wheel** over the bottom of the pane, which is the only way from outside egui to ask whether
+    /// the tab body's own scroll area can actually be scrolled. See [`Room::tab_scrolled`].
+    ///
+    /// The pointer goes to the bottom edge on purpose: that is over the picture, not over the strip, so
+    /// the wheel reaches the tab's scroll area rather than the strip's own.
     fn lay_out(pane_h: f32, ppp: f32, strip: impl Fn(&mut egui::Ui) + Copy, bound: bool) -> Room {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
         let (mut room, mut picture, mut pane, mut tab) = (None, None, None, None);
-        for _ in 0..2 {
+        let mut tab_offset = None;
+        for frame in 0..3 {
             let mut raw = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -7729,6 +7746,18 @@ mod screen_strip_tests {
                 .get_mut(&id)
                 .expect("egui's own RawInput::default carries the root viewport")
                 .native_pixels_per_point = Some(ppp);
+            if frame == 2 {
+                let at = egui::pos2(PANE_W / 2.0, pane_h - 4.0);
+                raw.events.push(egui::Event::PointerMoved(at));
+                raw.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    // Down the page, and further than any pane here is tall, so a wrapper that can
+                    // scroll at all ends up with a non-zero offset rather than a rounding artefact.
+                    delta: egui::vec2(0.0, -4.0 * pane_h),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
             let mut out = ctx.run_ui(raw, |ui| {
                 let outer = egui::ScrollArea::new([true, true]).show(ui, |ui| {
                     // `leaf.rs` expands the body to the pane before handing it to the viewer.
@@ -7755,6 +7784,7 @@ mod screen_strip_tests {
                     picture = Some(ui.available_size());
                 });
                 tab = Some((outer.content_size.y, outer.inner_rect.height()));
+                tab_offset = Some(outer.state.offset.y);
             });
             // The context is never painted, so a delta nobody consumes would otherwise be leaked.
             out.textures_delta.clear();
@@ -7773,6 +7803,7 @@ mod screen_strip_tests {
             picture: picture.expect("the body ran"),
             pane: pane.expect("the body ran"),
             tab: tab.expect("the wrapper ran"),
+            tab_offset: tab_offset.expect("the wrapper ran"),
         }
     }
 
@@ -7888,10 +7919,10 @@ mod screen_strip_tests {
                 room.strip.cap,
             );
             assert!(
-                !room.tab_scrolls(),
-                "the tab body scrolled on a comfortable pane at {ppp}: content {} in {}",
-                room.tab.0,
-                room.tab.1,
+                !room.tab_scrolled(),
+                "a wheel over a comfortable pane at {ppp} moved the tab body {} points: the strip and \
+                 the picture no longer fit in it, which is the defect one size up",
+                room.tab_offset,
             );
             assert!(
                 screen_room(room.picture, SRC.0, SRC.1, ppp, aspect()).is_ok(),
@@ -7992,9 +8023,11 @@ mod screen_strip_tests {
             for pane_h in [240.0, 160.0, 90.0] {
                 let room = lay_out(pane_h, ppp, over_long(pane_h), false);
                 assert!(
-                    room.tab_scrolls(),
-                    "the tab body reported {} of content in {} at {pane_h}/{ppp}, so it was NOT \
-                     offering to scroll and this gate's premise is wrong",
+                    room.tab_scrolled(),
+                    "a wheel over the pane did not move the tab body at {pane_h}/{ppp} (offset {}, \
+                     content {} in {}), so it was NOT offering to scroll and this gate's premise — \
+                     that the cure the row asked for is already in the build — is wrong",
+                    room.tab_offset,
                     room.tab.0,
                     room.tab.1,
                 );
