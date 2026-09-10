@@ -202,9 +202,17 @@
       "blockedBy": "the machine, like the others",
       "project": "ORACLE-DEFAULT",
       "title": "FIXED and waiting to land, and it is the one that was actually broken. The Z80 memory mirror had a test that only ever checked position zero -- where every possible wrong answer looks identical -- so the WIDTH of the mirror was unchecked in both directions. Now checked at a position where a wrong fold disagrees."
+    },
+    {
+      "id": "F-MACHINEREPLACED-EVENT-RACE",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "A test failed once during a landing and has not failed since: 1 in 31 runs, and the 30 clean ones were at HIGHER load than the failure. Booked rather than shrugged off -- this repo has twice called a load-only failure a flake and been wrong both times."
     }
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-10T06:22:28Z"
+  "updatedAt": "2026-09-10T06:45:52Z"
 }
