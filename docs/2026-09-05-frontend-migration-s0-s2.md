@@ -300,6 +300,13 @@ The **badge** is drawn above the picture on every frame the mode is armed and na
 the picture rather than below for the reason the halting alarm is on the top bar rather than in a tab: a
 standing statement that can be cropped out of view is not standing.
 
+> **Amended 2026-09-10 (`F-SCREEN-TAB-STRIP-UNBOUNDED`).** The last clause was not true of the build it was
+> written for. The strip had no height bound, so in a pane too short for it the badge's own row could be
+> cropped at the pane's edge with no scrollbar and no way to reach it — cropped *and* unreachable, which is
+> worse than the thing the sentence rules out. What holds the guarantee is the ORDER, not the position: the
+> statements are drawn first, so they are what the top of the strip shows. The strip is now bounded and
+> scrollable; the canonical statement is `Panels::screen_controls`'s doc comment in `crates/oracle-player/src/ui.rs`.
+
 The **choreography is not reimplemented** — it is `oracle_frontend::spawn::place`, the same function
 `oracle-frontend` calls, reached through a `PlayerCaller` adapter. See §1.5.
 

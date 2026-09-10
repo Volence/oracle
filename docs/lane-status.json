@@ -27,14 +27,6 @@
       "title": "The other remaining serious lens item. A design call about how the processor decodes instructions, not a fix -- it wants thought, not a patch."
     },
     {
-      "id": "F-SCREEN-TAB-STRIP-UNBOUNDED",
-      "state": "open",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The real cause under the blank Screen tab. The controls above the picture have no size limit and cannot scroll, so on a short window they eat the whole pane. Fixing it means making that tab scroll."
-    },
-    {
       "id": "F-MACHINEREPLACED-EVENT-RACE",
       "state": "open",
       "size": "M",
