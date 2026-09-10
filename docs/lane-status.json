@@ -1,5 +1,5 @@
 {
-  "focus": "Two more fixes running -- I had wrongly told you nothing was left that did not need your machine.",
+  "focus": "Six finished parcels parked on one word from you about the machine. Nothing running; a fresh session would lose nothing.",
   "inFlight": [
     {
       "what": "DONE, waiting to land: I sent an agent after a coverage hole that did not exist -- it disproved me and found a REAL one next to it",
@@ -44,7 +44,7 @@
       "id": "d-33"
     }
   ],
-  "nextBoundary": "When both running fixes return and land. The refusal parcel is a separate, later boundary that only your word opens.",
+  "nextBoundary": "Now. Nothing is running and everything is committed and pushed.",
   "queue": [
     {
       "id": "H25-DRIFT-DEDUPE",
@@ -221,7 +221,7 @@
       "title": "FIXED and waiting to land, and it is the one that was actually broken. The Z80 memory mirror had a test that only ever checked position zero -- where every possible wrong answer looks identical -- so the WIDTH of the mirror was unchecked in both directions. Now checked at a position where a wrong fold disagrees."
     }
   ],
-  "awaiting": "your word that the machine is free -- four finished parcels are parked on it. Nothing else needs you tonight.",
-  "atBoundary": false,
-  "updatedAt": "2026-09-10T03:55:37Z"
+  "awaiting": "your word that the machine is free -- six finished parcels are parked on it, including the fix for a document that is now 560 bytes from its limit. Also d-39 (A or B on the Pacing tab) whenever you are at a keyboard. Nothing else needs you.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-10T03:56:12Z"
 }
