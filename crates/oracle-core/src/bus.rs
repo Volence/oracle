@@ -1804,6 +1804,45 @@ mod tests {
     }
 
     #[test]
+    fn z80_ram_mirror_folds_both_directions_at_a_mask_sensitive_offset() {
+        // The `& (Z80_RAM_SIZE - 1)` fold is a property of the address DECODER, not of the access
+        // direction (the H31 rule, applied to the other mirror in this block): the read arm and the
+        // write arm must fold identically. The sibling test above only ever touches window offset 0,
+        // where EVERY candidate mask agrees — `0x2000 & 0x1FFF` and `0x2000 & 0x0FFF` are both `0` —
+        // so it pins the mirror's existence but not the mask's WIDTH, in either direction.
+        //
+        // Expectations derived from the decoder, not copied from a neighbour: the window masks to 15
+        // bits (`let z = a & 0x7FFF`), then Z80 RAM folds by `Z80_RAM_SIZE - 1` = `0x2000 - 1` =
+        // `0x1FFF`. So $A03ABC -> z $3ABC -> cell $1ABC, the same cell as canonical $A01ABC. The
+        // offsets below are chosen so a NARROWER fold would disagree ($3ABC & $0FFF = $0ABC).
+        let mut mem = MdMem::new(vec![0u8; 0x1000]);
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        open_z80_window(&mut bus);
+        assert_eq!(
+            Z80_RAM_SIZE, 0x2000,
+            "fold width the expectations below are derived from"
+        );
+
+        // WRITE through the mirror, observe the canonical cell. This is the direction the sibling
+        // test structurally cannot reach: it writes canonical and reads mirrored.
+        bus.write8(0xA0_3ABC, 5, 0x5C);
+        assert_eq!(
+            bus.read8(0xA0_1ABC, 5).0,
+            0x5C,
+            "mirrored write at +$3ABC lands in cell $1ABC"
+        );
+
+        // READ through the mirror at a mask-sensitive offset, completing the pair.
+        bus.write8(0xA0_1234, 5, 0xA7);
+        assert_eq!(
+            bus.read8(0xA0_3234, 5).0,
+            0xA7,
+            "mirrored read at +$3234 sees cell $1234"
+        );
+    }
+
+    #[test]
     fn z80_window_closed_is_arbiter_open_bus_and_drops_writes() {
         // K4-3 (design §3 rows 2/3): the 68k-side Z80 window forwards only when the 68k owns the Z80 bus
         // AND reset is released (MDBusArbiter.cpp:482 `!reset && busgrant`). Closed — power-on, or BUSREQ

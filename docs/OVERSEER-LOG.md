@@ -3265,13 +3265,25 @@ means physically: the line is not wired, and a wire has no direction.
 
 **So: our write arm must decode `a | 1` exactly as the read arm does**, and `write8($A10008)` reaching
 the P1 control register is the correct behaviour. ⚑ **Why no golden catches it: word writes are
-unaffected** (they carry the odd byte anyway), and the covering test at `bus.rs:2069` writes the
-**odd** address `$A10009` and reads the even one, so it exercises the read mirror and never the write
-mirror. **A fix therefore owes the write-direction case the existing test structurally cannot reach**,
-and that case is the whole point of the row.
+unaffected** (they carry the odd byte anyway), and the covering test —
+`io_registers_ignore_a0_even_byte_and_word_reads_mirror_the_register`, cited here as `bus.rs:2069` on
+the day — writes the **odd** address `$A10009` and reads the even one, so it exercises the read mirror
+and never the write mirror. **A fix therefore owes the write-direction case the existing test
+structurally cannot reach**, and that case is the whole point of the row.
 
 ⚑ **This is currency-touching**: an even-byte I/O write that used to drop now lands. Price it as a
 byte-mover and sequence it accordingly; it does not ride along with an unrelated parcel.
+
+**2026-09-09 — the debt above was PAID at `28cf665`, and the line citation went bad.** The fix added
+`io_registers_ignore_a0_even_byte_writes_reach_the_register`, which writes the EVEN lane `$A10008` and
+reads canonical `$A10009` — exactly the write direction this section said it owed. Measured, not
+assumed: deleting `| 1` from the write arm turns that test red on its first assertion (`left: 0,
+right: 64`). ⚑ **The paragraph above is correct as written and must not be "corrected".** Its `$A10009`
+is the ODD, *canonical* address — `io_reg` maps odd addresses only, so the EVEN byte is the mirror.
+⚑ **The hazard it left is the line number.** `bus.rs:2069` drifted onto the *new* write test, which runs
+the OPPOSITE direction, and a 2026-09-09 parcel brief read it there and re-reported this note as having
+its premise inverted. It does not. **Cite tests by NAME in this file; a line number silently re-points
+at a neighbour and turns a true sentence into a false one.**
 
 ## 2026-09-09T14:51:37Z — GUI-LAYERS moved whole from `OVERSEER.md` (discharged, not deferred)
 
