@@ -8474,7 +8474,7 @@ impl Engine {
             }
         }
         // The instrument is shared with the player's own panel, which holds a `&mut Watchpoints` and is not
-        // limited to the three census keys §6 exposes. A watch grouped by one of core's other four is
+        // limited to the three census keys §6 exposes. A watch grouped by one of core's other five is
         // reported without a `censusKey` — never relabelled as the nearest exposed one, which would put a
         // wrong name on a correct number — and this says so, because a census with no key is otherwise a
         // reader's puzzle. §2.4: optional, singular, surfaced verbatim, never parsed.
@@ -9429,7 +9429,7 @@ fn mode_name(m: WatchMode) -> &'static str {
 /// The wire spelling of a census key, or `None` for one this bus does not expose.
 ///
 /// **An `Option` rather than a `_ => "addr"` fallback, and the difference is the whole point.** Core has
-/// seven `CensusKey` variants and §6 exposes three; the other four are reachable on the *shared* instrument,
+/// eight `CensusKey` variants and §6 exposes three; the other five are reachable on the *shared* instrument,
 /// because the player's panel holds a `&mut Watchpoints` too and could arm one. Mapping an unexposed key to
 /// the nearest exposed spelling would put a **wrong label on a correct number** — a client would read an
 /// `AddrPage(8)` census as an `addr` census and conclude the ROM touches 60 addresses when it touches

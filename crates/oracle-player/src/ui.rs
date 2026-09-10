@@ -4832,8 +4832,9 @@ pub fn initial_dock() -> egui_dock::DockState<Tab> {
 ///
 /// `egui_dock` draws only the *active* tab of a leaf, so a bench run against [`initial_dock`] executes one
 /// panel body out of the three that share a pane and reports it as the cost of adding three. That is a
-/// measurement of the arrangement rather than of the panels. This function puts all ten in their own
-/// leaves, so every body runs on every frame: the worst case a user could arrange, and the only
+/// measurement of the arrangement rather than of the panels. This function puts every [`Tab::ALL`] variant
+/// — today eleven, and however many there are tomorrow, because it iterates the array — in a leaf of its
+/// own, so every body runs on every frame: the worst case a user could arrange, and the only
 /// arrangement in which measuring N panels measures N panels.
 ///
 /// Reachable only through `--dock every-tab`, which the window mode also honours — a flag whose effect a
@@ -4844,7 +4845,7 @@ pub fn every_tab_dock() -> egui_dock::DockState<Tab> {
     let mut dock = egui_dock::DockState::new(vec![first]);
     let surface = dock.main_surface_mut();
     let mut at = egui_dock::NodeIndex::root();
-    // Alternating right/below, so ten leaves stay roughly square rather than becoming ten slivers in
+    // Alternating right/below, so the leaves stay roughly square rather than becoming slivers in
     // one direction — a leaf too thin to lay out is a leaf whose body egui may skip.
     for (i, tab) in rest.enumerate() {
         let [_, next] = if i % 2 == 0 {

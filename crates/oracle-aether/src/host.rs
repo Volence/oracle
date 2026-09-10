@@ -1670,7 +1670,7 @@ mod tests {
     }
 
     /// The other consequence of one shared instrument: the panel can arm a census by a key this **bus** does
-    /// not expose. §6 exposes three of core's seven `CensusKey` variants, and the panel is not limited to
+    /// not expose. §6 exposes three of core's eight `CensusKey` variants, and the panel is not limited to
     /// them, so `watchpoint_list` must answer for a watch it could not have created.
     ///
     /// It reports the census counts, which are real, **omits** `censusKey`, and says why in a `caveat`.

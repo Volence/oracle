@@ -2,8 +2,10 @@
 //! that tab together, drag anywhere, and keep their layout between runs.* Tabs and drag shipped with parcel
 //! 1; this module is the "between runs" half, and it was deliberately held back until the [`Tab`] enum
 //! stopped moving (design §6). It has `Screen | Pacing | Registers | Memory | Objects` and, since the
-//! stopping parcel, `Breakpoints | Watchpoints | Profiler`, since the planes parcel `Planes`, and since
-//! the picker was lifted out of the Screen strip, `Spawn` — all ten real.
+//! stopping parcel, `Breakpoints | Watchpoints | Profiler`, since the planes parcel `Planes`, since the
+//! live-effects parcel `Effects`, and since the picker was lifted out of the Screen strip, `Spawn` — all
+//! eleven real, and [`Tab::ALL`] is the count that binds (this list said "all ten" and had dropped
+//! `Effects` until the lens sweep).
 //!
 //! # The shape, and why it is this shape
 //!
