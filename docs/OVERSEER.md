@@ -695,6 +695,18 @@ takes no mask and has no masked twin, so "a display mask cannot perturb emulatio
 type system. Do not add a mask parameter to it.** Design calls and the resume path are in the log;
 `docs/2026-08-26-layer-mask.md` is the artifact of record.
 
+⚑ **RULED 2026-09-10, SEQUENCING: C5 AND H26 TOUCH THIS ONE FUNCTION FROM OPPOSITE ENDS AND MUST NOT RUN
+CONCURRENTLY. H26 first, C5 after it lands.** H26 (`d-47` answered `structural`) is deciding whether this
+very claim gets a real mechanism — plausibly by making the no-mask signature structurally locked. C5
+(`d-44` answered `split`) splits that same call so the cheap path stops building a full attributed report
+to obtain three status bits, i.e. **it proposes exactly the "twin" the claim above says does not exist.**
+Neither is wrong; designed in parallel they would each be correct against a tree the other is changing,
+and the merge would resolve cleanly while the safety property quietly stopped being true — the failure
+this section exists to prevent, arriving through the fix rather than through an edit. **The C5 brief must
+carry H26's outcome**: a cheap twin that renders no picture is not a mask parameter, but whether it may
+exist at all is H26's ruling to make first. *(Held while the hub had already said "take C5"; the hazard is
+visible from the source and was not visible from the board.)*
+
 ## ▶ GUI-LAYERS: **DISCHARGED 2026-09-09.** Every premise it was queued on is now false
 
 *The discharge measurement — all three queued claims put to the tree and found false — is in

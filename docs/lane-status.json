@@ -81,11 +81,11 @@
     },
     {
       "id": "C5-REPLAY-DISCARDED-RASTER",
-      "state": "open",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "the safety-claim fix landing first -- both change the same function",
       "project": "LENS-PASS",
-      "title": "UNBLOCKED tonight -- d-44 was answered 'split'. Your last remaining critical: every replay frame draws a complete analysed picture and throws it away to get three status bits. The answer says do it after the other criticals, and it is now the only one left, so that condition is already met. It wants a before-and-after number, which needs the machine."
+      "title": "Your card d-44 freed it and I am deliberately NOT starting it yet. It and the fix running right now both change the one routine that must never be disturbed by a display setting, from opposite ends: one may lock that routine's shape, the other proposes a second cheap version of it. Run together they would each be right and the safety property would quietly stop being true. The other lands first, then this."
     },
     {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
@@ -184,5 +184,5 @@
   ],
   "awaiting": "two things, both cheap: (1) is the machine free -- you were filming, and I am holding a finished merge rather than fight your recording for it; (2) d-39, A or B on the Pacing tab, which is the one answer that unblocks the most of my own board. The other six of your eight cards were answered for you tonight by the audit session.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T02:43:36Z"
+  "updatedAt": "2026-09-10T02:46:43Z"
 }
