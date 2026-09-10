@@ -275,6 +275,56 @@ impl egui_dock::TabViewer for Panels<'_> {
     }
 }
 
+/// What the Screen tab says when the pane cannot hold a picture at all.
+///
+/// Advice about *size* rather than about width: the reachable cause is the control strip above eating the
+/// pane's **height**, not a narrow pane. See [`screen_room`].
+const NO_ROOM_FOR_SCREEN: &str = "no room to draw the picture here; make this pane larger";
+
+/// **The picture's size, or the sentence to say instead.** There is no third outcome, and that is the
+/// point of the `Result`: a caller that handles this at all cannot handle it silently.
+///
+/// ⚑ **The defect this exists to make unrepresentable** (`F-SCREEN-PICTURE-SILENT`). [`Panels::screen`]
+/// used to read `screen_pick::fit` straight and `return` on a zero, drawing nothing and saying nothing.
+/// An empty pane is indistinguishable from a broken one — the rule `machine.rs` states as *no picture
+/// rather than a black rectangle presented as one* cuts both ways, and a refusal that renders as blank is
+/// the same lie with the sign flipped.
+///
+/// **The condition, exactly.** [`screen_pick::fit`] returns `Vec2::ZERO` only when a whole device pixel
+/// does not fit: `(avail * ppp).floor()` is zero on either axis, or `ppp`/`avail` is not finite. It never
+/// returns zero merely for a *narrow* pane, because `present::dest_rect` floors its scale at `max(1)` and
+/// hands back one whole aspect unit however little room there is. So this is a **collapse**, not a
+/// squeeze, and the way it is reached here is the height: `Tab::Screen` draws
+/// [`Panels::screen_controls`] above this in the same vertical stack with no bound of its own, so a short
+/// pane and a long strip leave `available_size().y` at zero. That is the same mechanism as the
+/// `plane_split` bug next door — a sibling in the stack takes the whole allocation — on the other axis.
+fn screen_room(
+    avail: egui::Vec2,
+    src_w: usize,
+    src_h: usize,
+    ppp: f32,
+    aspect: oracle_frontend::present::Aspect,
+) -> Result<egui::Vec2, &'static str> {
+    let size = screen_pick::fit(avail, src_w, src_h, ppp, aspect);
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return Err(NO_ROOM_FOR_SCREEN);
+    }
+    Ok(size)
+}
+
+/// The Screen tab **with no picture in it**, and why, in the one shape both such branches use.
+///
+/// The readout comes back as a laid-out card here rather than as the overlay [`Panels::screen`] paints on
+/// the glass, for the reason that branch already gave: the overlay exists so a click's answer cannot move
+/// the picture, and with no picture there is nothing to move and nothing to paint it over. Losing the
+/// standing answer to the last click along with the picture would be the same silence one level down.
+fn no_picture(ui: &mut egui::Ui, why: &str, readout: Option<&screen_pick::Readout>) {
+    ui.label(why);
+    if let Some(r) = readout {
+        readout_card(ui, r);
+    }
+}
+
 impl Panels<'_> {
     /// The picture, and **the pointer over it**.
     ///
@@ -293,14 +343,10 @@ impl Panels<'_> {
     /// this draws. This function decides where the picture goes and what the pointer did, and nothing else.
     fn screen(&mut self, ui: &mut egui::Ui) {
         let Some(tex) = self.tex else {
-            ui.label("no frame yet");
-            // ⚑ **The one branch where the readout is laid out rather than overlaid**, and it is stated
-            // rather than silent. The overlay below exists so that a click's answer cannot move the
-            // picture; with no picture there is nothing to move, and a readout painted over an empty
-            // pane would be floating on nothing. So the card comes back here, and only here.
-            if let Some(r) = self.screen.readout() {
-                readout_card(ui, r);
-            }
+            // ⚑ **One of two branches where the readout is laid out rather than overlaid**, and both are
+            // stated rather than silent. See [`no_picture`], which is the shape they share: the other is
+            // the no-room branch below, which used to be a bare `return`.
+            no_picture(ui, "no frame yet", self.screen.readout());
             return;
         };
         // ⚑ **Retire a picture whose art has been replaced, immediately before the ghost can draw it.**
@@ -314,16 +360,24 @@ impl Panels<'_> {
         // be two readings of a thing that can change, and the picture would then be fitted to one box and
         // centred in another.
         let avail = ui.available_size();
-        let size = screen_pick::fit(
+        // ⚑ **Never a silent return** (`F-SCREEN-PICTURE-SILENT`). The room is asked for through
+        // [`screen_room`], which answers with a size or with the sentence to say instead; there is no
+        // arm of it that draws nothing. What used to be here was `if size.x <= 0.0 { return; }`, so a
+        // pane whose control strip had taken all the height showed controls and then nothing, with no
+        // statement anywhere that a picture was being withheld.
+        let size = match screen_room(
             avail,
             src.x as usize,
             src.y as usize,
             ppp,
             self.screen.aspect,
-        );
-        if size.x <= 0.0 || size.y <= 0.0 {
-            return;
-        }
+        ) {
+            Ok(size) => size,
+            Err(why) => {
+                no_picture(ui, why, self.screen.readout());
+                return;
+            }
+        };
         let (outer, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
         let image_rect = egui::Rect::from_center_size(outer.center(), size);
         // Nearest sampling, because a Genesis pixel is a Genesis pixel.
@@ -6944,6 +6998,179 @@ mod overlay_layout_tests {
             before, after,
             "the control witnesses nothing: this Ui does not move its cursor for a laid-out card \
              either, so the overlay test above is measuring an inert harness"
+        );
+    }
+}
+
+/// **A pane too small for the picture says so** (`F-SCREEN-PICTURE-SILENT`).
+///
+/// [`Panels::screen`] used to read [`screen_pick::fit`] straight and `return` on a zero result: no
+/// picture, no sentence, and the standing readout of the last click gone with it. The pane was then
+/// indistinguishable from a broken one, which is the failure `plane_picture` records one tab over and the
+/// same rule `machine.rs` states as *no picture rather than a black rectangle presented as one*.
+///
+/// **What is asserted here and what is not.** [`screen_room`] and [`no_picture`] are the decision and the
+/// drawing, and both are checkable on a headless `egui::Context` the way `overlay_layout_tests` already
+/// is. What no test here reaches is [`Panels::screen`] itself wiring the two together: `Panels` borrows a
+/// live `Machine` and `Bus`, so there is no headless value to build one from. The `Result` is what stands
+/// in for that leg — the give-up carries the sentence with it, so a caller that handles it at all cannot
+/// handle it silently.
+#[cfg(test)]
+mod screen_room_tests {
+    use super::*;
+
+    /// The native frame, which is what the Screen tab's texture is.
+    const SRC: (usize, usize) = (320, 224);
+
+    /// The panel's shipped default fit, read rather than restated: pinning `Aspect::Tv` here would be a
+    /// second spelling of a choice `screen_pick::Panel` already makes.
+    fn aspect() -> oracle_frontend::present::Aspect {
+        screen_pick::Panel::default().aspect
+    }
+
+    /// **Derived from the condition, not from a run.** `screen_pick::fit` floors `avail * ppp` into whole
+    /// device pixels and gives up when that is zero, so the collapse is exactly "less than one device
+    /// pixel" and this is half of one.
+    fn under_one_device_pixel(ppp: f32) -> f32 {
+        0.5 / ppp
+    }
+
+    /// Room enough that nothing about the fit is marginal, in the same units.
+    fn plenty(ppp: f32) -> f32 {
+        400.0 / ppp
+    }
+
+    /// The scales the panel is actually drawn at. **1.0 is not enough on its own**: the owner's display is
+    /// not at 1.0, and a threshold expressed in device pixels is exactly where a points-only harness would
+    /// agree with a broken build.
+    const SCALES: [f32; 3] = [1.0, 1.25, 2.0];
+
+    #[test]
+    fn a_pane_with_no_room_answers_with_the_sentence_rather_than_a_zero() {
+        for ppp in SCALES {
+            for (axis, avail) in [
+                (
+                    "width",
+                    egui::vec2(under_one_device_pixel(ppp), plenty(ppp)),
+                ),
+                (
+                    "height",
+                    egui::vec2(plenty(ppp), under_one_device_pixel(ppp)),
+                ),
+                ("both", egui::Vec2::ZERO),
+                ("not a number", egui::vec2(f32::NAN, plenty(ppp))),
+            ] {
+                assert_eq!(
+                    screen_room(avail, SRC.0, SRC.1, ppp, aspect()),
+                    Err(NO_ROOM_FOR_SCREEN),
+                    "a pane collapsed on {axis} at {ppp} points per pixel ({avail:?}) gave up without \
+                     naming a reason, which is how this shipped: an empty pane and no statement"
+                );
+            }
+        }
+    }
+
+    /// The control. Without it the assertion above passes on a `screen_room` that refuses everything, and
+    /// a Screen tab that never draws a picture is a worse defect than the one being fixed.
+    #[test]
+    fn a_pane_with_room_is_not_refused() {
+        for ppp in SCALES {
+            let avail = egui::vec2(plenty(ppp), plenty(ppp) * 0.75);
+            let size = screen_room(avail, SRC.0, SRC.1, ppp, aspect()).unwrap_or_else(|why| {
+                panic!("an ordinary {avail:?} pane at {ppp} was refused: {why}")
+            });
+            assert!(
+                size.x > 0.0 && size.y > 0.0,
+                "the accepted branch handed back {size:?}, which draws nothing either"
+            );
+        }
+    }
+
+    /// **A narrow pane is not the collapse**, and this is the fact the fix rests on: `present::dest_rect`
+    /// floors its scale at one whole aspect unit, so however little width there is the picture still has a
+    /// size. The give-up is a pane with no room at all, which is why the sentence advises making the pane
+    /// larger rather than wider.
+    #[test]
+    fn a_merely_narrow_pane_still_gets_a_picture() {
+        for ppp in SCALES {
+            for w in [4.0, 12.0, 40.0] {
+                let avail = egui::vec2(w / ppp, plenty(ppp));
+                assert!(
+                    screen_room(avail, SRC.0, SRC.1, ppp, aspect()).is_ok(),
+                    "{w} device pixels of width was treated as no room at {ppp}; the give-up has moved \
+                     and the sentence's advice is now wrong"
+                );
+            }
+        }
+    }
+
+    fn readout() -> screen_pick::Readout {
+        screen_pick::Readout {
+            head: "clicked dot 100, 50".into(),
+            detail: Some("vram 0x0000C123".into()),
+            outcome: None,
+            refused: false,
+        }
+    }
+
+    /// Every string [`no_picture`] painted, through the same flattening the subtype list's gates use.
+    fn painted(why: &str, r: Option<&screen_pick::Readout>) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(420.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| no_picture(ui, why, r));
+        out.textures_delta.clear();
+        super::subtype_list_tests::text_runs(&out.shapes)
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect()
+    }
+
+    /// **The branch draws.** This is the assertion the shipped code failed: it painted nothing at all.
+    #[test]
+    fn the_no_room_branch_paints_its_sentence_and_keeps_the_readout() {
+        let r = readout();
+        let runs = painted(NO_ROOM_FOR_SCREEN, Some(&r));
+        assert!(
+            runs.iter().any(|t| t == NO_ROOM_FOR_SCREEN),
+            "the no-room branch painted {runs:?}, which does not contain \
+             {NO_ROOM_FOR_SCREEN:?}: the pane is empty and silent"
+        );
+        assert!(
+            runs.iter().any(|t| t.contains(&r.head)),
+            "the standing readout of the last click went missing with the picture: {runs:?}"
+        );
+    }
+
+    /// The other branch through the same helper, so a change that silenced one would have to silence both
+    /// to pass, and so the harness above is witnessed against text that shipped long before this fix.
+    #[test]
+    fn the_no_frame_branch_still_paints_its_own_sentence() {
+        let runs = painted("no frame yet", None);
+        assert_eq!(
+            runs,
+            vec!["no frame yet".to_string()],
+            "the no-frame branch painted something other than its one line"
+        );
+    }
+
+    /// [`NO_ROOM_FOR_SCREEN`] is shipped text, under the same rules as [`NO_ROOM_FOR_PICTURE`]'s gate.
+    #[test]
+    fn the_no_room_line_keeps_the_panel_text_rules() {
+        for bad in ['\u{2014}', '\u{2013}'] {
+            assert!(
+                !NO_ROOM_FOR_SCREEN.contains(bad),
+                "P10: {bad:?} in user-facing text: {NO_ROOM_FOR_SCREEN:?}"
+            );
+        }
+        assert!(
+            !NO_ROOM_FOR_SCREEN.contains("  ") && !NO_ROOM_FOR_SCREEN.contains('\t'),
+            "P2: a run of spaces or a tab is a column drawn inside a string"
         );
     }
 }
