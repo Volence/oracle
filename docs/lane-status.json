@@ -1,18 +1,18 @@
 {
-  "focus": "Six of your eight questions were answered for you tonight. Two lens fixes are running; the refusal merge still waits on you.",
+  "focus": "Both fixes came back good. Three finished parcels are stacked up waiting on one word from you about the machine.",
   "inFlight": [
     {
-      "what": "Making our most-repeated safety claim either true or honest -- it names a mechanism that does not exist (your d-47, answered)",
+      "what": "DONE, waiting to land: our most-repeated safety claim was false, and the agent proved it by planting the forbidden code and watching 891 tests pass anyway",
       "where": "branch parcel/h26-claim-mechanism",
-      "agent": true
+      "agent": false
     },
     {
-      "what": "DONE and waiting to land: the copy-paste that undid an earlier cleanup is fixed, and the agent PROVED the danger was real rather than asserting it",
+      "what": "DONE, waiting to land: the copy-paste that undid an earlier cleanup, with the danger proven rather than asserted",
       "where": "branch parcel/h25-drift-dedupe",
       "agent": false
     },
     {
-      "what": "Refusal gate reviewed and sound, deliberately NOT merged until you say the machine is free",
+      "what": "DONE, reviewed by me, waiting to land: the refusal gate",
       "where": "branch parcel/error-surface-gate",
       "agent": false
     }
@@ -73,19 +73,19 @@
     },
     {
       "id": "LENS-HIGHS-SIX",
-      "state": "doing",
+      "state": "next",
       "size": "L",
-      "blockedBy": null,
+      "blockedBy": "the machine, like the other two",
       "project": "LENS-PASS",
-      "title": "Both remaining serious items named rather than counted. One (the false safety claim) is being fixed right now, unblocked by your d-47 answer. The other is a design call about how the processor decodes instructions, not a fix."
+      "title": "One of the two is FIXED and waiting to land. It turned out better than the question asked: there IS a real mechanism protecting the important half, one line away from the false claim, and nobody had noticed. The other is a design call about instruction decoding, not a fix."
     },
     {
       "id": "C5-REPLAY-DISCARDED-RASTER",
       "state": "blocked",
       "size": "M",
-      "blockedBy": "the safety-claim fix landing first -- both change the same function",
+      "blockedBy": "the safety-claim fix landing first (its wording decides what C5 may build)",
       "project": "LENS-PASS",
-      "title": "Your card d-44 freed it and I am deliberately NOT starting it yet. It and the fix running right now both change the one routine that must never be disturbed by a display setting, from opposite ends: one may lock that routine's shape, the other proposes a second cheap version of it. Run together they would each be right and the safety property would quietly stop being true. The other lands first, then this."
+      "title": "Now ANSWERED in C5's favour by the other fix: the cheap version it wants to build is allowed, and the dangerous version stays forbidden. Ready to brief the moment that one lands."
     },
     {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
@@ -182,7 +182,7 @@
       "title": "Done and pushed: the landing checks are now a written list, including the step I skipped tonight -- actually reading the automated checks."
     }
   ],
-  "awaiting": "two things, both cheap: (1) is the machine free -- you were filming, and I am holding a finished merge rather than fight your recording for it; (2) d-39, A or B on the Pacing tab, which is the one answer that unblocks the most of my own board. The other six of your eight cards were answered for you tonight by the audit session.",
+  "awaiting": "one word: is the machine free? Three finished parcels are stacked on it -- I will not run a long verification against your recording. Also still d-39 (A or B on the Pacing tab), which unblocks the most of my own board.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T02:55:27Z"
+  "updatedAt": "2026-09-10T02:59:55Z"
 }

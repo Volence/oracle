@@ -732,12 +732,37 @@ spec freeze, so neither lane has one. **Four things not to lose, each argued in 
    stream is modelled) is **unmeasured and theirs to measure, before either lane spends a parcel.** Never
    let a later session cite the three-bucket split as a finding about any ROM.
 
-## ▶ LAYER-MASK: LANDED. One safety property survives it and must not be "finished".
+## ▶ LAYER-MASK: LANDED. One safety property survives it, and HALF OF IT IS A CONVENTION
 
-**`render_scanline`, the one render that commits sprite-overflow/collision latches and the R10 carry,
-takes no mask and has no masked twin, so "a display mask cannot perturb emulation" is enforced by the
-type system. Do not add a mask parameter to it.** Design calls and the resume path are in the log;
-`docs/2026-08-26-layer-mask.md` is the artifact of record.
+**What the compiler enforces — verified firsthand here, not taken from the parcel:** *no render that takes a
+`LayerMask` takes `&mut self`.* The four mask-taking renders are all `&self` (`render.rs`
+`resolve_line_masked`, `render_line_masked`, `render_line_report_masked`, `pixel_attribution_masked`);
+`Vdp::commit_scanline_sprites` — the write behind the sprite-overflow/collision latches and the R10 carry —
+takes `&mut self` (`vdp.rs`); `oracle-core` is `#![forbid(unsafe_code)]` with no interior mutability in fact.
+**So a masked path cannot compile a call to the commit.** `LayerMask` is also a parameter and never a field,
+absent from `vdp.rs` and `system.rs`, so it is in no snapshot and no `state_hash`.
+
+**What REVIEW holds, and only review: `render_scanline` does not gain a mask parameter.** ⚠ **This section
+asserted that was "enforced by the type system" and it was FALSE** — H26, fixed on `parcel/h26-claim-mechanism`
+(SHA lands with the merge). **Proven vacuous, not argued**: the agent planted the exact forbidden shape
+(`render_scanline_masked` committing `overflow && mask.sprites`) and 891 core tests, clippy `-D warnings` and
+`fmt` all stayed green. **Nothing in the language can carry it**, and that is the durable half: *a type system
+constrains programs under a signature, it cannot constrain edits to the signature.* The harm is guarded by the
+named test `masked_renders_leave_the_committed_sprite_latches_untouched`, never by this paragraph.
+⚑ **Eleven sites, not the packet's eight** — found by varying the grep SPELLING over six phrasings; the real
+mechanism was found by varying the RECEIVER (`&self` vs `&mut self`), an axis no phrasing search reaches.
+
+⚑ **THIS RESOLVES THE C5/H26 SEQUENCING QUESTION RULED EARLIER TODAY, and in C5's favour.** The invariant is
+deliberately *not* "there is exactly one stateful render": **C5's cheap UNMASKED twin cannot violate it and is
+admissible; a MASKED twin stays forbidden.** The parcel was written that way on purpose after `6b0b75e` landed
+mid-flight — had it finished twenty minutes earlier the doc would have said "exactly one stateful render" and
+C5 would have falsified it on landing. **C5's brief must carry this sentence.** `docs/2026-08-26-layer-mask.md`
+is the artifact of record.
+
+⚑ **PROCESS CORRECTION, from the agent, against my own brief: `fixedAt` is a commit SHA and CANNOT exist inside
+its own commit.** I have been asking agents to "mark the ledger row fixed in the same commit as the fix", which
+is unachievable and contradicts every existing fixed row (M47/M48/M49 all append the row afterwards). **Stop
+writing that instruction into briefs**; ask for the fix commit, then the ledger append naming it.
 
 ⚑ **RULED 2026-09-10, SEQUENCING: C5 AND H26 TOUCH THIS ONE FUNCTION FROM OPPOSITE ENDS AND MUST NOT RUN
 CONCURRENTLY. H26 first, C5 after it lands.** H26 (`d-47` answered `structural`) is deciding whether this
