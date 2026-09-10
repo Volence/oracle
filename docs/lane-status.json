@@ -186,8 +186,8 @@
       "id": "BOOT-DOC-LINE-BOUND",
       "state": "next",
       "size": "M",
-      "blockedBy": "the machine, like the other three",
-      "title": "CUT, VERIFIED, PARKED -- and now the most time-sensitive thing on this board. The document is 560 bytes from its hard limit because tonight's corrections went into it while the fix waits on the machine. UNTIL IT LANDS, bank new rulings in the reference or log file, NOT this one. The cut still applies cleanly over everything since (checked, no conflicts), so landing it is a merge and a test run, nothing more."
+      "blockedBy": "the full landing run, which this repo deliberately requires for ANY docs file except the three board files -- checked, not inherited from the other parcels",
+      "title": "CUT, VERIFIED, PARKED, and the wait has a known cost. The document is 560 bytes from its limit and every ruling tonight grew it. IF IT GOES OVER BEFORE YOU FREE THE MACHINE, THAT IS FINE AND IS NOT A FAULT: the rule is that this file gets split, never trimmed by deleting things you decided, so going over with everything intact is the correct outcome and the next session should not treat it as breakage. Until it lands, new findings go in the other two files."
     },
     {
       "id": "LANDING-CHECKS-WRITTEN-DOWN",
@@ -223,5 +223,5 @@
   ],
   "awaiting": "your word that the machine is free -- six finished parcels are parked on it, including the fix for a document that is now 560 bytes from its limit. Also d-39 (A or B on the Pacing tab) whenever you are at a keyboard. Nothing else needs you.",
   "atBoundary": true,
-  "updatedAt": "2026-09-10T03:56:12Z"
+  "updatedAt": "2026-09-10T04:08:53Z"
 }
