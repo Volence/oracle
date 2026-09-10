@@ -917,3 +917,9 @@ dimensions come from is tracked (`ObjSub_Spring__Up_Red` is a `pub equ` in
 `games/sonic4/objects/test_solid.emp`), so a currency check reads aeon's **object store at a ref** and the
 live-tree hazard is avoidable for the primary measurement rather than inherent. Detail and the falsifiers:
 `docs/2026-09-06-fixture-dimension-drift.md`.
+
+## OPS 2026-09-10: a commit message composed through a command substitution is SHELL INPUT
+
+**Never put backquotes in a commit message written as `git commit -m "$(cat <<EOF ...)"` in this harness.** Measured tonight: a backquoted word inside that construct was executed as a command and DELETED from the message, leaving `8d says in terms that  supplies the CONTENT` in a pushed commit, with `command not found` printed into a stream nobody was reading. The heredoc delimiter was quoted and it happened anyway.
+**This is the commit-message bar's own failure mode arriving through the shell rather than through a failed edit** (second instance here; the first was an edit that matched nothing while the chained commit ran regardless). A commit message is a claim about a diff and NOTHING checks it, so it is the one artifact where a silent deletion survives.
+**Remedy: compose the message from a file or a Python string, and READ THE MESSAGE BACK with `git log -1 --format=%B` whenever it contains punctuation the shell owns.** Already pushed means it stays: never rewrite pushed history.
