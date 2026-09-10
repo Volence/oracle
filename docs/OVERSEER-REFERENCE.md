@@ -917,3 +917,72 @@ dimensions come from is tracked (`ObjSub_Spring__Up_Red` is a `pub equ` in
 `games/sonic4/objects/test_solid.emp`), so a currency check reads aeon's **object store at a ref** and the
 live-tree hazard is avoidable for the primary measurement rather than inherent. Detail and the falsifiers:
 `docs/2026-09-06-fixture-dimension-drift.md`.
+
+## ⚑ THE LEDGER, 2026-09-10: SEVEN LINES REWRITTEN IN PLACE — **DO NOT REPAIR** — AND ONE THAT HAD TO BE
+
+**(a) Closed out of shape, do not repair: `d-31, d-35, d-38, d-39, d-40, d-44, d-47`.** The 2026-09-09
+audit session answered six and re-shaped one **by rewriting the settled lines** (`31982af`, `docs/decisions.jsonl`
+**+7/−7, zero appends** — measured here, not taken from the hub's numstat). `contract/DECISIONS.md` rule 8
+forbids exactly that. **They stay as written — CITE RULE 8f**, `contract/DECISIONS.md` at empyrean `2e070bf`
+(ancestor-verified, a contract commit carrying the rule). The pre-rewrite text is preserved in git at `627295f`.
+⚠ **This seat first cited the pre-8d "closed out of shape, do not repair" bullet and that was ONE NOTCH WIDE**:
+8d's bullet says *"before this rule"* and 8f now says so explicitly — 8d took force 2026-08-30T01:58:05Z and
+these were rewritten 09-09, so the bullet does not reach them. **Same disposition, different route**; the
+sentence that actually forbids the rewrite is *"Nothing in 8d is an instruction to touch an existing line."*
+⚑ **The hub proposed aurora's append-a-sibling repair and withdrew it on this lane's objection**: appending
+siblings would put a second answered row under a second id for each question, double-counting on the console —
+a repair creating the defect it repairs. **8f's discriminator, now written down because the hub told two lanes
+opposite things in one day and both were right: REPAIR ONLY WHEN A GATE IS RED AND THE REPAIR CLEARS IT;
+otherwise list and leave.** Aurora's rewrite failed `check-ledger-timestamps`, so aurora repaired; ours failed
+nothing, so ours is listed. **A repair with no red gate behind it is history edited to look compliant.**
+⚑ **And the uncomfortable half, kept because it is the sharpest instance either lane produced: the correction
+this seat served the hub at 02:44Z was sourced from those seven rewritten lines.** The conclusion was right and
+was independently confirmed, but **both lanes were reading the ledger as ground truth inside an argument about
+reading the cheaper artifact.**
+
+**(b) THE ONE REWRITE THIS SEAT MADE, DELIBERATELY AND LOUDLY: `d-46` appeared TWICE** (lines 46 and 49), the
+second filed by this lane at 2026-09-09T15:20:19Z as a corrected re-file that reused the id instead of taking
+the next free one. **`tools/lane-check.py` was RED on it from 15:20Z, hours before the audit** — so the hub's
+warning was right about the class and wrong about the instance, and the red was ours. **G2b runs on every
+landing, fast path or full**, so the landing lane was blocked for both live parcels and would have refused them
+with a message about malformed lane files, reading as a fault in their branches.
+**Repair: line 49's `id` → `d-49` plus `supersedes: "d-46"`, one line, `--numstat` verified 1/1, the other 48
+lines proven byte-identical, gate exit 0.**
+⚑ **NOW CONTRACT RULE 8e, adopted from this lane's finding** (empyrean `2e070bf`): **a duplicate id cannot be
+repaired by any legal append.** Rule 8's sanctioned shape-fix (sigil's d-15 over d-14) adds a new id and leaves
+the malformed line — which does not remove a *duplicate*, so a uniqueness gate stays red forever and the file's
+own gate demands the one move its contract forbids. **Ruled: id-uniqueness wins, narrowly. Re-id the LATER line
+with `supersedes` naming what it left, exactly one line, `--numstat` reading `1 1` with the rest byte-identical,
+loud in the commit.** It is the ONLY sanctioned edit to an existing line in that document. The hub's rationale,
+worth keeping because it is better than the one this seat argued from: **a duplicate makes the reader resolve
+last-line-wins and SILENTLY SHADOW the earlier decision, so the owner never sees it** — the exact failure
+append-only exists to prevent, arriving through the rule that prevents it.
+⚑ **The move was made and flagged BEFORE the ruling existed, and the ruling ratified it.** That is the right
+order and worth keeping as the pattern: act on the critical path, be loud about which rule you are bending and
+why, and let the contract catch up — never bend it quietly and never block a landing lane on a bookkeeping
+defect while waiting for permission.
+
+## ▶ GUI-LAYERS: **DISCHARGED 2026-09-09.** Every premise it was queued on is now false
+
+*The discharge measurement — all three queued claims put to the tree and found false — is in
+`OVERSEER-LOG.md` under* **GUI-LAYERS: the discharge measurement, all three premises false**. *The
+queued section and aurora's five consumer rules moved there the same day.*
+
+⚑ **ONE HAZARD IS KEPT, because it binds anything BUILT LATER rather than describing what shipped: if a
+surface ever names a blob-local tile slot, the rebase can land OUTSIDE the blob.** `tile` is VRAM-absolute;
+aurora's `BG_TILE_BASE_SLOT` is 1024, so **any `tile < 1024` rebases NEGATIVE**, and capacity does not
+rescue it — their formulation, **in-capacity is not in-blob**. Plane B can legitimately show engine art or
+another act's. So such a surface answers *"that is not part of your background"* and above all does not
+guess: an unchecked rebase either throws or confidently names a slot the author does not own, which is
+indistinguishable from a correct answer.
+
+
+## ⚑ MEASURED 2026-09-08: THE PLANE RASTER IS NOT THE LAG, AND THE ASK ON HIM IS RETIRED
+
+`F-PLANES-RASTER-EVERY-FRAME` sat on the owner for a tab test it never needed: `eframe` writes the dock
+layout to `~/.local/share/oracle-player/app.ron`, so which tab each pane executes is readable off disk at
+any moment. The row STANDS as a real defect and is NOT the current explanation of his cost. Measurement,
+the four-pane table and the baseline caveat moved whole to `OVERSEER-LOG.md` 2026-09-09.
+
+⚑ **The live rule: an ask parked on the owner should be RE-PRICED before it is re-sent.** Before putting a
+*look at this* question to him, ask what the program already writes down.

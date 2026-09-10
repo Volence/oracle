@@ -3411,3 +3411,29 @@ standing-timer question is already open as empyrean `d-9`.
 ### The parcel-2 layout-persistence line, stale and struck (orig line 1041)
 
 ⚠ **STALE, AND IT COST A PARCEL: the parcel-2 line item here said layout persistence was one `serde` flag, deliberately OFF *"until the placeholders are gone"*.** It is **ON and shipped** — `crates/oracle-player/src/layout.rs`, eframe `Storage`/RON, `LAYOUT_VERSION = 2` in its own storage key, `eframe = { features = ["persistence"] }` in the manifest. The condition the line named was met, the flag was flipped, and the line was never struck, so a brief was written from it to decide a question that did not exist. The paragraph and both of its corrections moved whole to `OVERSEER-LOG.md` 2026-09-06 for the boot-read bound; **the durable rule is in `docs/OVERSEER-REFERENCE.md`: when a conditional line's condition is met, strike the line in the same commit that meets it.**
+
+## ⚑ SIGIL CYCLE DUMPER: DORMANT (2026-08-24; detail in `OVERSEER-LOG.md`)
+
+`blocked` on `no filed ask exists`, and sigil's own consumer (Spec 2 cycle budgets) is deferred at their
+spec freeze, so neither lane has one. **Four things not to lose, each argued in the log:**
+1. **Do not re-raise the join objection.** I priced this as blocked on who supplies the opcode-to-key join;
+   sigil owns both halves and the gap is one adapter inside their repo. The premise was right, the
+   conclusion over-reached.
+2. **Branch outcome per execution, not just a cycle count**: `CycleCost::Branch` is outcome-keyed, so a
+   measured count is uncomparable unless the dump says which way the branch went. A real design change.
+3. **The assertion comes from the DATA:** rows carry `exact: bool`, so the gate is `measured <= modeled` on
+   inexact rows and `==` on exact ones, read off the flag rather than chosen by us.
+4. **⚑ The coverage number is a PREDICTION, not a measurement.** `CycleCost::Unmodeled` exists, so the
+   differential's domain is partial by construction, and the deciding number (what fraction of a real ROM's
+   stream is modelled) is **unmeasured and theirs to measure, before either lane spends a parcel.** Never
+   let a later session cite the three-bucket split as a finding about any ROM.
+
+## ⚑ RULED 2026-09-08, PINNED FROM REFERENCE: H31's I/O A0 DECODE IS DIRECTION-AGNOSTIC — **FIXED**
+
+The discard is a property of the address decoder, not of the access direction, so the write arm decodes
+`a | 1` exactly as the read arm does. **Landed; H31 is `fixed` in the ledger at `28cf665`**, so the
+currency-touching sequencing note it carried is discharged. Derivation (eight sites in `oracle-old`, four
+reads and four writes through one expression) moved whole to `OVERSEER-LOG.md` 2026-09-09.
+
+⚑ **The live residual is a COVERAGE fact, not a hardware one: the covering test at `bus.rs:2069` writes the
+ODD address and reads the even one, so it exercises the read mirror and can never reach the write mirror.**
