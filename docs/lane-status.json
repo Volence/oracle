@@ -1,39 +1,14 @@
 {
-  "focus": "Cutting every message in that black box down, and capping the box itself so it cannot swallow your screen again.",
+  "focus": "Landing the parked work while you sleep. Three in, the fourth in its test run, two behind it.",
   "inFlight": [
     {
-      "what": "Cutting the ring-spawn readout you flagged: the header already says 'temporary' and the block below repeats the whole paragraph",
-      "where": "branch parcel/spawn-readout-trim",
-      "agent": true
-    },
-    {
-      "what": "DONE, waiting to land: I sent an agent after a coverage hole that did not exist -- it disproved me and found a REAL one next to it",
-      "where": "branch parcel/io-write-mirror-cover",
+      "what": "LANDING NOW: the false safety claim, replaced with the real guarantee that was next to it",
+      "where": "main, gate running",
       "agent": false
     },
     {
-      "what": "DONE, waiting to land: the Screen tab now says why it cannot draw instead of going blank -- and the cause was not what I briefed",
-      "where": "branch parcel/screen-picture-silent",
-      "agent": false
-    },
-    {
-      "what": "DONE, waiting to land: the boot document cut back under its limit, with every one of your rulings intact",
-      "where": "branch parcel/boot-doc-cut-2",
-      "agent": false
-    },
-    {
-      "what": "DONE, waiting to land: the false safety claim, replaced with the real guarantee that was sitting next to it",
-      "where": "branch parcel/h26-claim-mechanism",
-      "agent": false
-    },
-    {
-      "what": "DONE, waiting to land: the copy-paste that undid an earlier cleanup",
-      "where": "branch parcel/h25-drift-dedupe",
-      "agent": false
-    },
-    {
-      "what": "DONE, reviewed by me, waiting to land: the refusal gate",
-      "where": "branch parcel/error-surface-gate",
+      "what": "Queued behind it: the Screen tab fix, the Z80 mirror width test, and the readout trim you asked for",
+      "where": "branches screen-picture-silent, io-write-mirror-cover, spawn-readout-trim",
       "agent": false
     }
   ],
@@ -44,7 +19,7 @@
       "id": "d-39"
     }
   ],
-  "nextBoundary": "Now. Nothing is running and everything is committed and pushed.",
+  "nextBoundary": "After the last of the six lands. Three are in and pushed already.",
   "queue": [
     {
       "id": "SPAWN-READOUT-EXCESSIVE",
@@ -229,7 +204,7 @@
       "title": "FIXED and waiting to land, and it is the one that was actually broken. The Z80 memory mirror had a test that only ever checked position zero -- where every possible wrong answer looks identical -- so the WIDTH of the mirror was unchecked in both directions. Now checked at a position where a wrong fold disagrees."
     }
   ],
-  "awaiting": "your word that the machine is free -- six finished parcels are parked on it. Your card is down to ONE: d-39, A or B on the Pacing tab.",
+  "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-10T05:46:52Z"
+  "updatedAt": "2026-09-10T06:22:28Z"
 }
