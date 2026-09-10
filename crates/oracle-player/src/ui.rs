@@ -255,10 +255,11 @@ impl egui_dock::TabViewer for Panels<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             Tab::Screen => {
-                // Controls and the standing readout first, then the picture with whatever is left. The
-                // order is the layout: `screen` allocates all remaining space.
-                self.screen_controls(ui);
-                ui.separator();
+                // Controls first, then the picture with whatever is left — the order is the layout, and
+                // `screen` allocates all of the remainder. ⚑ The strip is drawn through
+                // [`screen_strip`], which bounds it, because "all of the remainder" was reachably
+                // NOTHING: see that function for why the tab's own scroll area cannot fix that.
+                screen_strip(ui, |ui| self.screen_controls(ui));
                 self.screen(ui);
             }
             Tab::Planes => self.planes(ui),
@@ -322,6 +323,136 @@ fn no_picture(ui: &mut egui::Ui, why: &str, readout: Option<&screen_pick::Readou
     ui.label(why);
     if let Some(r) = readout {
         readout_card(ui, r);
+    }
+}
+
+/// **The most of the Screen pane the control strip may ever take**, as a share of the pane's height.
+///
+/// ⚑ **Not a tuned number, and the reason it is one half rather than a fraction someone liked the look
+/// of.** The rule it expresses is *the strip may not take more of the pane than it leaves for the
+/// picture*, and one half is the only value that states which of the two siblings is the larger. Every
+/// other share is a preference with a knob on it.
+///
+/// The consequence is the property [`screen_strip_cap`]'s gate asserts and is what makes this safe to
+/// apply unconditionally: the bound **bites only where the picture was already the minority**. A strip
+/// whose natural height is under half the pane is not touched at all, so nothing about the tab changes at
+/// any ordinary size; a strip over half the pane is exactly the case in which today's build hands the
+/// picture less than half — and, past `avail`, hands it nothing.
+const SCREEN_STRIP_MAX_SHARE: f32 = 0.5;
+
+/// The strip's height budget in a pane of `available_height` points. See [`SCREEN_STRIP_MAX_SHARE`].
+///
+/// ⚑ **Unmeasurable is unbounded, never zero.** A pane whose height is not a finite positive number is
+/// not a short pane, it is a broken one, and a cap of `0` there would erase the strip — the mask
+/// statement, the effects statement and the spawn badge with it — with nothing on screen to say why. So
+/// the bound stands down and the pane is left to [`screen_room`], which refuses a non-finite `avail`
+/// outright and paints [`NO_ROOM_FOR_SCREEN`]. Loud on unmeasurable, in the one direction that says so.
+fn screen_strip_cap(available_height: f32) -> f32 {
+    if !available_height.is_finite() || available_height <= 0.0 {
+        return f32::INFINITY;
+    }
+    available_height * SCREEN_STRIP_MAX_SHARE
+}
+
+/// What [`screen_strip`] did, for the gate. The tab ignores it.
+///
+/// The fields are read only by `screen_strip_tests`, and that is the point rather than an oversight: the
+/// alternative is a gate that re-derives the budget and the occupancy from egui's own internals, which
+/// is a second implementation of the thing under test. `screen_strip` reports what it did; nothing has to
+/// guess.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct StripRoom {
+    /// The budget [`screen_strip_cap`] set from the pane's height, before anything was drawn.
+    cap: f32,
+    /// The height the strip actually occupied, which is what the picture does not get.
+    ///
+    /// ⚑ Measured off **the caller's cursor**, not off `ScrollAreaOutput::inner_rect`. That field is read
+    /// before the area shrinks to its content (`egui-0.36.1/src/containers/scroll_area.rs:1038` takes it
+    /// from `prepared`, and the shrink happens in `end` at `:1184`), so it reports the *budget* on a
+    /// strip that fits — a first draft of this read it and had a two-row strip occupying half an
+    /// 800-point pane.
+    shown: f32,
+    /// The height the strip's content wanted. Greater than `shown` means it is scrolling.
+    wanted: f32,
+}
+
+/// **The Screen tab's vertical split**: the control strip under a height bound, then the rule, then
+/// whatever is left for the picture — which the caller draws.
+///
+/// ⚑ **The defect** (`F-SCREEN-TAB-STRIP-UNBOUNDED`). `Tab::Screen` used to call
+/// [`Panels::screen_controls`] straight, and the strip is a column of up to nine rows, six of them
+/// conditional (`docs/2026-09-09-palette-shape-and-the-strip.md` §2.1). Nothing bounded it, and
+/// [`Panels::screen`] takes `ui.available_size()` — so the strip took its natural height and **the
+/// picture absorbed the whole deficit**, down to zero and past it. The owner's symptom was a Screen tab
+/// with no picture in it.
+///
+/// # Why this is not "make the tab scroll", which is what the row asked for
+///
+/// **Because the tab already scrolls, and it does not help.** `egui_dock` wraps every tab body in
+/// `ScrollArea::new(tab_viewer.scroll_bars(tab))` (`egui_dock-0.21.1/src/widgets/dock_area/show/
+/// leaf.rs:1390`), `TabViewer::scroll_bars` defaults to `[true, true]`, and [`Panels`] does not override
+/// it. That scroll area has been there the whole time. It cannot reach this defect for a reason that is
+/// structural rather than incidental: **a scroll area scrolls content that overflows, and this content
+/// never overflows.** The picture is elastic — it asks for what is left — so the strip's excess is
+/// swallowed rather than pushed past the viewport, `content_size` stays inside `inner_size`, and there is
+/// nothing to scroll. Scrolling a pane whose picture is zero points tall shows you a zero-point picture
+/// at every offset.
+///
+/// So the cure is not a scroll area over the whole tab. It is **a floor under the picture**, and the only
+/// way to give the picture a floor is to give the strip a ceiling — [`screen_strip_cap`].
+///
+/// # Why the strip and not the tab gets the scrollbar
+///
+/// Putting the whole tab in a scroll area (or, equivalently, letting the picture push past the viewport
+/// so `egui_dock`'s own one engages) trades a picture that is too short for a picture that is *not in the
+/// pane*: the strip is drawn first, so at scroll offset zero — where the tab opens — you would see the
+/// controls and no game at all, and the thing the tab exists for would be below the fold. Bounding the
+/// strip keeps the picture on screen at every size and puts the scrollbar on the column of text, which is
+/// the half a person scrolls through by nature.
+///
+/// **Nothing here changes what the strip looks like.** The owner has a parked look call on this exact
+/// strip (`docs/2026-09-09-palette-shape-and-the-strip.md` §2, *"the box above screen kind of looks bad
+/// too imo"*) and it is his: no row is added, removed, reordered or restyled. `max_height` is a cap and
+/// not a reservation, so a strip shorter than the cap is laid out exactly as it is today, and a scroll
+/// area with nothing to scroll draws no bar at all. The only pane in which anything looks different is
+/// the one where the picture is currently gone.
+///
+/// ⚠ **What does change there, stated rather than discovered later.** `crate::theme` sets
+/// `scroll.floating = false` with a 6-point bar (CHROME_SPEC), so on the frames the strip *is* scrolling
+/// the bar takes 6 points of width from the strip's rows. That is the theme's own bar at the theme's own
+/// width, in the regime where the alternative is content cropped with no way to reach it — but it is the
+/// one visible consequence of this parcel and it wants the owner's eye, not this seat's.
+///
+/// `auto_shrink` is off **across** and on **down**, the pairing this file already argues for at the
+/// subtype list: off across so the scrollbar sits at the pane's edge rather than inside the text, and so
+/// the strip's prose wraps against the same width it wraps against today; on down so a two-line strip
+/// does not hold half a pane of empty box open under it.
+///
+/// `min_scrolled_height(0.0)` because egui otherwise floors a scrollable area at 64 points
+/// (`egui-0.36.1/src/containers/scroll_area.rs:399`, applied at `:776`), which would break the bound in
+/// exactly the panes it exists for — a 90-point pane would hand the strip 64 of it and the picture 26.
+fn screen_strip(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> StripRoom {
+    let before = ui.available_height();
+    let cap = screen_strip_cap(before);
+    let out = egui::ScrollArea::vertical()
+        // P7: an explicit, stable salt. The Screen tab's strip owns its own scroll position.
+        .id_salt("screen_controls")
+        .max_height(cap)
+        .min_scrolled_height(0.0)
+        .auto_shrink([false, true])
+        .show(ui, add);
+    // What the strip cost the pane, off the cursor rather than off the scroll area's own report: see
+    // [`StripRoom::shown`]. The `item_spacing` comes back out because egui advances the cursor past the
+    // widget *and* the gap before the next one, and that gap is the picture's business, not the strip's.
+    let shown = before - ui.available_height() - ui.spacing().item_spacing.y;
+    // The rule between the strip and the picture, exactly where it was: outside the scroll area, so it
+    // marks the boundary of the strip's box rather than scrolling away with the strip's last row.
+    ui.separator();
+    StripRoom {
+        cap,
+        shown,
+        wanted: out.content_size.y,
     }
 }
 
@@ -467,7 +598,17 @@ impl Panels<'_> {
     /// Separate from [`Panels::screen`] because the picture takes all the room there is: a control drawn
     /// inside that allocation would be over the game, and one drawn after it would have no room at all.
     /// Above rather than below for the reason the halting alarm is on the top bar rather than in a tab —
-    /// a standing statement that can be scrolled or cropped out of view is not standing.
+    /// a standing statement a person has to go looking for is not standing.
+    ///
+    /// ⚑ **Amended by `F-SCREEN-TAB-STRIP-UNBOUNDED`, and the old sentence was wrong when it was
+    /// written.** It read *"a standing statement that can be scrolled or cropped out of view is not
+    /// standing"*, and offered the strip's unbounded height as the thing that guaranteed it. It never
+    /// did: an unbounded strip in a pane too short for it was **cropped** at the pane's edge with no
+    /// scrollbar and no way to reach the rest, so the lines below the fold were not merely scrollable,
+    /// they were unreachable. [`screen_strip`] bounds the strip and gives it a scrollbar, which trades
+    /// that for lines that are off-screen **and reachable**. What actually holds the guarantee is the
+    /// order: these statements are drawn first, so they are what the top of the strip shows, and the pane
+    /// opens on them.
     fn screen_controls(&mut self, ui: &mut egui::Ui) {
         // ⚑ **The standing mask statement (S2a), first and unconditionally.** A mask changes what the
         // picture *is*, so it says so for as long as it is on, in prose, where a person is looking — not
@@ -7489,6 +7630,366 @@ mod screen_room_tests {
             !NO_ROOM_FOR_SCREEN.contains("  ") && !NO_ROOM_FOR_SCREEN.contains('\t'),
             "P2: a run of spaces or a tab is a column drawn inside a string"
         );
+    }
+}
+
+/// **The control strip cannot eat the picture** (`F-SCREEN-TAB-STRIP-UNBOUNDED`).
+///
+/// The owner's symptom was a Screen tab with no picture in it. The strip above the picture is a column of
+/// up to nine rows, six of them conditional, and nothing bounded it; [`Panels::screen`] takes
+/// `ui.available_size()`, so the strip took its natural height and the picture absorbed the whole
+/// deficit, down to zero.
+///
+/// **The row's stated cure was "make that tab scroll", and
+/// [`the_tab_bodys_own_scroll_area_was_there_all_along`] is why it is not this fix.** The tab is already
+/// inside a scroll area — `egui_dock` puts every body in one — and that gate lays the *unfixed*
+/// arrangement out inside it and shows both halves at once: the tab offers to scroll, and the picture is
+/// still nothing. A scroll area moves content that overflows; an elastic picture never overflows,
+/// it collapses.
+///
+/// **Everything here is laid out inside the wrapper the window really uses**, so the pane measured is the
+/// pane the tab gets. What is not the real thing is the strip's *content*: [`Panels::screen_controls`]
+/// needs a live `Machine` and `Bus`, exactly as [`screen_room_tests`] records, so the stand-in is a
+/// column of rows sized off the style. That makes this a gate on the **bound**, which is what changed;
+/// the strip's own rows are unchanged by this parcel and are not what these tests are about.
+#[cfg(test)]
+mod screen_strip_tests {
+    use super::*;
+
+    /// The native frame, which is what the Screen tab's texture is.
+    const SRC: (usize, usize) = (320, 224);
+
+    /// The scales the panel is actually drawn at. **1.0 is not enough on its own**: the bound is spent in
+    /// points but consumed in device pixels, the owner's display is not at 1.0, and a points-only harness
+    /// is exactly where it would agree with a broken build. Same list, same reason, as
+    /// [`screen_room_tests`].
+    const SCALES: [f32; 3] = [1.0, 1.25, 2.0];
+
+    /// Pane heights from comfortable down to absurd. The tall ones are the no-regression cases (the cap
+    /// is far above anything the strip wants); the short ones are the defect.
+    const PANE_HEIGHTS: [f32; 5] = [800.0, 400.0, 240.0, 160.0, 90.0];
+
+    /// A pane wide enough that width is never the constraint — the predecessor proved a narrow pane still
+    /// gets a picture, so width is not the axis under test here.
+    const PANE_W: f32 = 520.0;
+
+    /// One point of slack for the pixel grid: egui rounds a scroll area's content rect to whole device
+    /// pixels, which at 1.25 points-per-pixel moves an edge by a fraction of a point.
+    const EPS: f32 = 1.0;
+
+    /// The panel's shipped default fit, read rather than restated.
+    fn aspect() -> oracle_frontend::present::Aspect {
+        screen_pick::Panel::default().aspect
+    }
+
+    /// What one lay-out of the Screen tab's body left behind.
+    struct Room {
+        /// What [`screen_strip`] budgeted and what it spent.
+        strip: StripRoom,
+        /// `ui.available_size()` at the moment [`Panels::screen`] would read it.
+        picture: egui::Vec2,
+        /// The height the tab body actually offered, inside `egui_dock`'s wrapper.
+        pane: f32,
+        /// The tab body's own scroll area: what its content wanted, and what it showed.
+        tab: (f32, f32),
+    }
+
+    impl Room {
+        /// Whether the **tab's** scroll area had anything to scroll — `content_size` past `inner_rect` is
+        /// egui's own `content_is_too_large` test.
+        fn tab_scrolls(&self) -> bool {
+            self.tab.0 > self.tab.1 + EPS
+        }
+    }
+
+    /// Lay a Screen-tab body out headless **inside the wrapper `egui_dock` really puts it in**.
+    ///
+    /// `egui_dock-0.21.1/src/widgets/dock_area/show/leaf.rs:1390` shows every tab body inside
+    /// `ScrollArea::new(tab_viewer.scroll_bars(tab))`; `TabViewer::scroll_bars` defaults to `[true, true]`
+    /// (`.../src/widgets/tab_viewer.rs:106`) and [`Panels`] does not override it. A harness without that
+    /// wrapper would be measuring a pane this window does not have — and would have no way to state the
+    /// finding that the wrapper is already there.
+    ///
+    /// Two frames, for [`planes_layout_tests`]'s reason: egui settles some sizes off the previous frame's
+    /// state, and a scroll area is one of the things that does.
+    fn lay_out(pane_h: f32, ppp: f32, strip: impl Fn(&mut egui::Ui) + Copy, bound: bool) -> Room {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let (mut room, mut picture, mut pane, mut tab) = (None, None, None, None);
+        for _ in 0..2 {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(PANE_W, pane_h),
+                )),
+                ..Default::default()
+            };
+            let id = raw.viewport_id;
+            raw.viewports
+                .get_mut(&id)
+                .expect("egui's own RawInput::default carries the root viewport")
+                .native_pixels_per_point = Some(ppp);
+            let mut out = ctx.run_ui(raw, |ui| {
+                let outer = egui::ScrollArea::new([true, true]).show(ui, |ui| {
+                    // `leaf.rs` expands the body to the pane before handing it to the viewer.
+                    let body = ui.available_rect_before_wrap();
+                    ui.expand_to_include_rect(body);
+                    pane = Some(ui.available_height());
+                    room = Some(if bound {
+                        screen_strip(ui, strip)
+                    } else {
+                        // ⚑ **The arrangement that shipped**, for the gate that proves the tab's own
+                        // scroll area cannot reach it: the strip straight into the stack, then the rule,
+                        // then whatever is left.
+                        let before = ui.available_height();
+                        strip(ui);
+                        // The same measure [`screen_strip`] reports, so the two arms are comparable.
+                        let taken = before - ui.available_height() - ui.spacing().item_spacing.y;
+                        ui.separator();
+                        StripRoom {
+                            cap: f32::INFINITY,
+                            shown: taken,
+                            wanted: taken,
+                        }
+                    });
+                    picture = Some(ui.available_size());
+                });
+                tab = Some((outer.content_size.y, outer.inner_rect.height()));
+            });
+            // The context is never painted, so a delta nobody consumes would otherwise be leaked.
+            out.textures_delta.clear();
+        }
+        // **Positive control on the scale itself.** Without this the whole `SCALES` loop is three runs of
+        // the same 1.0 pass wearing different labels, which is the precise shape of a points-only harness
+        // agreeing with a broken build.
+        assert_eq!(
+            ctx.pixels_per_point(),
+            ppp,
+            "the context ran at {} rather than the {ppp} this case is about",
+            ctx.pixels_per_point()
+        );
+        Room {
+            strip: room.expect("the body ran"),
+            picture: picture.expect("the body ran"),
+            pane: pane.expect("the body ran"),
+            tab: tab.expect("the wrapper ran"),
+        }
+    }
+
+    /// A strip taller than the pane, made tall the way the real one gets tall: rows of text stacked one
+    /// under another. The count is derived from the pane and **the style's own row height** rather than
+    /// picked, so it stays over-long if the theme's text grows or shrinks.
+    fn over_long(pane_h: f32) -> impl Fn(&mut egui::Ui) + Copy {
+        move |ui: &mut egui::Ui| {
+            let row = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
+            let rows = (pane_h / row.max(1.0)).ceil() as usize + 2;
+            for i in 0..rows {
+                ui.label(format!("strip row {i}"));
+            }
+        }
+    }
+
+    /// A strip that fits anywhere: the two rows the real one always has something like.
+    fn short(ui: &mut egui::Ui) {
+        ui.label("layers:");
+        ui.label("slot 0 (empty)");
+    }
+
+    /// **The bound.** The strip never takes more of the pane than it leaves for the picture, at any pane
+    /// height and any scale.
+    #[test]
+    fn the_strip_never_takes_more_of_the_pane_than_it_leaves() {
+        for ppp in SCALES {
+            for pane_h in PANE_HEIGHTS {
+                let room = lay_out(pane_h, ppp, over_long(pane_h), true);
+                // Positive control: a strip that fits would make every assertion below vacuous.
+                assert!(
+                    room.strip.wanted > room.pane,
+                    "the stand-in strip wanted {} of a {} pane at {ppp}, so it is not the over-long \
+                     case this gate is about",
+                    room.strip.wanted,
+                    room.pane,
+                );
+                assert!(
+                    room.strip.shown <= pane_h * SCREEN_STRIP_MAX_SHARE + EPS,
+                    "the strip took {} of a {pane_h}-point pane at {ppp}, past its \
+                     {SCREEN_STRIP_MAX_SHARE} share ({}). The picture is the remainder, so this is the \
+                     defect: budget {}, wanted {}.",
+                    room.strip.shown,
+                    pane_h * SCREEN_STRIP_MAX_SHARE,
+                    room.strip.cap,
+                    room.strip.wanted,
+                );
+            }
+        }
+    }
+
+    /// **The defect, in the exact terms the tab failed in.** Not a height compared against a number read
+    /// off a run: what the strip left is put through the same [`screen_room`] the picture is put through,
+    /// with the native frame, and asked whether anything comes back. Under the shipped arrangement this
+    /// was `Err` and the tab drew the give-up sentence where the game should be.
+    #[test]
+    fn the_picture_keeps_room_to_draw_under_an_over_long_strip() {
+        for ppp in SCALES {
+            for pane_h in PANE_HEIGHTS {
+                let room = lay_out(pane_h, ppp, over_long(pane_h), true);
+                let fit = screen_room(room.picture, SRC.0, SRC.1, ppp, aspect());
+                assert!(
+                    fit.is_ok(),
+                    "a {pane_h}-point pane at {ppp} left the picture {:?}, which draws nothing ({fit:?}). \
+                     The strip took {} of it against a {} budget.",
+                    room.picture,
+                    room.strip.shown,
+                    room.strip.cap,
+                );
+            }
+        }
+    }
+
+    /// The rows the bound pushes off the strip are **reachable**, which is the whole difference between a
+    /// cap with a scrollbar and a crop. Under the shipped arrangement the strip's overflow was cut off at
+    /// the pane's edge with no way to get at it.
+    #[test]
+    fn an_over_long_strip_is_scrollable_rather_than_cropped() {
+        for ppp in SCALES {
+            for pane_h in PANE_HEIGHTS {
+                let room = lay_out(pane_h, ppp, over_long(pane_h), true);
+                assert!(
+                    room.strip.wanted > room.strip.shown + EPS,
+                    "the strip showed {} of the {} it wanted at {pane_h}/{ppp}: nothing is off the \
+                     bottom, so nothing proves the rest can be reached",
+                    room.strip.shown,
+                    room.strip.wanted,
+                );
+            }
+        }
+    }
+
+    /// **The no-regression control, and the reason the share can be applied unconditionally.** A strip
+    /// that fits is laid out exactly as it was: it takes its natural height, the cap is nowhere near it,
+    /// and nothing scrolls. If this ever fails, the bound has started charging panes it was never meant
+    /// to touch — and with it the parked look call would have been changed by the back door.
+    #[test]
+    fn a_strip_that_fits_is_left_exactly_as_it_was() {
+        for ppp in SCALES {
+            let room = lay_out(800.0, ppp, short, true);
+            assert!(
+                (room.strip.shown - room.strip.wanted).abs() <= EPS,
+                "a two-row strip showed {} of the {} it wanted at {ppp}: the cap is biting a strip that \
+                 fits",
+                room.strip.shown,
+                room.strip.wanted,
+            );
+            assert!(
+                room.strip.wanted < room.strip.cap,
+                "a two-row strip wanted {} against a {} budget at {ppp}, so this case is not the \
+                 comfortable one it is here to measure",
+                room.strip.wanted,
+                room.strip.cap,
+            );
+            assert!(
+                !room.tab_scrolls(),
+                "the tab body scrolled on a comfortable pane at {ppp}: content {} in {}",
+                room.tab.0,
+                room.tab.1,
+            );
+            assert!(
+                screen_room(room.picture, SRC.0, SRC.1, ppp, aspect()).is_ok(),
+                "the comfortable case left the picture {:?}, which draws nothing",
+                room.picture,
+            );
+        }
+    }
+
+    /// **Why the share is one half and not a number someone liked.** The property that makes it safe:
+    /// the bound bites only where the picture was already getting less than the strip. Any larger share
+    /// breaks this, which is the point of writing it as an assertion rather than as a sentence in a doc
+    /// comment.
+    #[test]
+    fn the_bound_bites_only_where_the_picture_was_already_the_minority() {
+        for pane in PANE_HEIGHTS {
+            let cap = screen_strip_cap(pane);
+            for step in 0..=40 {
+                let natural = pane * step as f32 / 40.0;
+                if natural <= cap {
+                    continue;
+                }
+                let picture_before = pane - natural;
+                assert!(
+                    picture_before < natural,
+                    "a {natural}-point strip in a {pane}-point pane is bounded to {cap}, but it was \
+                     leaving the picture {picture_before} — more than it took. The bound is charging a \
+                     strip that was not the larger half, so {SCREEN_STRIP_MAX_SHARE} is a preference \
+                     rather than the rule it is documented as."
+                );
+            }
+        }
+    }
+
+    /// **Loud on unmeasurable.** A pane whose height is not a finite positive number is broken rather
+    /// than short, and a cap of zero there would erase the strip — the mask statement and the effects
+    /// statement with it — silently. The bound stands down, and the pane is refused one level down by
+    /// [`screen_room`], which is where the sentence gets painted.
+    #[test]
+    fn an_unmeasurable_pane_stands_the_bound_down_and_is_loud_one_level_down() {
+        for h in [f32::INFINITY, f32::NAN, 0.0, -10.0, f32::NEG_INFINITY] {
+            let cap = screen_strip_cap(h);
+            assert!(
+                cap.is_infinite() && cap.is_sign_positive(),
+                "a {h}-point pane produced a {cap}-point budget: a finite cap on an unmeasurable pane \
+                 is a strip erased with nothing on screen to say why"
+            );
+        }
+        for ppp in SCALES {
+            assert_eq!(
+                screen_room(
+                    egui::vec2(f32::INFINITY, f32::INFINITY),
+                    SRC.0,
+                    SRC.1,
+                    ppp,
+                    aspect()
+                ),
+                Err(NO_ROOM_FOR_SCREEN),
+                "an unmeasurable pane at {ppp} was not refused downstream either, so standing the \
+                 bound down leaves nothing saying anything"
+            );
+        }
+    }
+
+    /// **The row's stated cure, refuted where it can be checked** (`F-SCREEN-TAB-STRIP-UNBOUNDED` asked
+    /// for *"making that tab scroll"*).
+    ///
+    /// The tab already scrolls. `egui_dock` wraps every body in a `ScrollArea` and this window never
+    /// turned it off, so the arrangement that shipped was **already inside one**. This lays that exact
+    /// arrangement out and reports both halves at once: the wrapper says it has more content than it can
+    /// show — it was offering to scroll the whole time — and the picture is still nothing at every
+    /// offset, because a scroll area moves content that *overflows* and the picture is elastic. It does
+    /// not overflow; it collapses, and the deficit disappears into it.
+    ///
+    /// This gate does not test the fix. It is the standing statement of why the fix is a bound and not a
+    /// scroll area, and it fails the day someone deletes the bound and calls the wrapper the cure.
+    #[test]
+    fn the_tab_bodys_own_scroll_area_was_there_all_along() {
+        for ppp in SCALES {
+            for pane_h in [240.0, 160.0, 90.0] {
+                let room = lay_out(pane_h, ppp, over_long(pane_h), false);
+                assert!(
+                    room.tab_scrolls(),
+                    "the tab body reported {} of content in {} at {pane_h}/{ppp}, so it was NOT \
+                     offering to scroll and this gate's premise is wrong",
+                    room.tab.0,
+                    room.tab.1,
+                );
+                assert_eq!(
+                    screen_room(room.picture, SRC.0, SRC.1, ppp, aspect()),
+                    Err(NO_ROOM_FOR_SCREEN),
+                    "the unbounded strip left the picture {:?} in a {pane_h}-point pane at {ppp}, which \
+                     still draws something — the defect this parcel is named for does not reproduce, \
+                     and the argument against the row's cure rests on it",
+                    room.picture,
+                );
+            }
+        }
     }
 }
 
