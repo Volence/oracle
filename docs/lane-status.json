@@ -2,9 +2,9 @@
   "focus": "Two more fixes running -- I had wrongly told you nothing was left that did not need your machine.",
   "inFlight": [
     {
-      "what": "The Screen tab shows nothing and says nothing when the pane is too narrow -- the same silent give-up already fixed next door",
+      "what": "DONE, waiting to land: the Screen tab now says why it cannot draw instead of going blank -- and the cause was not what I briefed",
       "where": "branch parcel/screen-picture-silent",
-      "agent": true
+      "agent": false
     },
     {
       "what": "A hardware fix whose test can only check half of it, plus a booked note whose reasoning is backwards",
@@ -112,11 +112,11 @@
     },
     {
       "id": "F-SCREEN-PICTURE-SILENT",
-      "state": "doing",
+      "state": "next",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "the machine, like the others",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Being fixed. I had this parked as needing your eyes; it does not -- there is already a test that builds a deliberately too-narrow pane, so the fault is reachable without your screen."
+      "title": "FIXED and waiting to land. It turned out not to be a too-narrow panel at all: the row of controls above the picture has no height limit and no scrollbar, so a short pane lets the controls eat the whole thing and the picture is left with literally zero room. Now it says so instead of vanishing."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -203,9 +203,25 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "Booked so it does not vanish with the cut: a hardware behaviour we fixed has a test that can only ever check half of it. The note describing the gap also has its premise backwards -- I read the test tonight and it does the opposite of what the note says, though the conclusion it draws is still right."
+    },
+    {
+      "id": "F-SCREEN-TAB-STRIP-UNBOUNDED",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The real cause underneath the blank Screen tab, and it is still there: the control strip above the picture is unbounded and cannot scroll, so it can swallow the entire pane. When it does, even the new explanation is clipped off the bottom. Fixing it means making that tab scroll, which is a layout change and its own job."
+    },
+    {
+      "id": "F-TWO-SPELLINGS-OF-ONE-GIVEUP",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Small tidy the agent offered and I told it not to take: the plane viewer and the Screen tab now say 'I cannot draw this' in two different ways. One of them carries its own explanation and cannot be silenced by accident; the other is the older inline check. Worth collapsing into one."
     }
   ],
   "awaiting": "your word that the machine is free -- four finished parcels are parked on it. Nothing else needs you tonight.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T03:43:31Z"
+  "updatedAt": "2026-09-10T03:49:40Z"
 }
