@@ -2373,7 +2373,9 @@ impl Engine {
     /// **Tell the engine that a gesture at the embedder's own window reset the machine** — the
     /// notification half of [`Engine::reset`], for a window that has already run `System::reset` itself.
     ///
-    /// It performs exactly what `emulator/reset` performs *after* `self.sys.reset()`, and nothing else:
+    /// It performs exactly what `emulator/reset` performs *after* `self.sys.reset()`, and nothing else —
+    /// literally so: this is that body, and [`Engine::reset`] calls it. (It was a *copy* of that body
+    /// until H25's fix was re-applied here, which is the drift class this arrangement removes.) Namely:
     /// the held pads clear (a cold start has nobody holding anything), the latched picture is dropped,
     /// the recorded watchpoint hits are drained because the frame counter restarted under them (§11.38,
     /// CR-O), the profiler sample restarts, and `rom_generation` moves so a hosted embedder resyncs off
@@ -2394,9 +2396,23 @@ impl Engine {
     /// hits stamped in an epoch that no longer exists, and a profiler stack describing returns that will
     /// never come. None of those needed a new event to fix.
     pub fn note_reset(&mut self) -> usize {
+        // Held pads clear because a reset is a cold start and a cold start has nobody holding anything:
+        // the debugger's injected input is the debugger's state, not the machine's, and a `hold` left
+        // armed across a reset would silently steer the boot sequence — the exact preamble a scene
+        // reproduction depends on being deterministic. (`reload_rom` clears them for the same reason.)
         self.held = [Pad::default(); 2];
         self.invalidate_screen();
+        // The recorded watchpoint hits go too, and the count rides out on the reply — §11.38, CR-O. The
+        // long form of the argument is in [`Engine::apply_rom_swap`] beside `invalidate_screen`; the weaker
+        // half of it is the one that applies here, and it is still decisive. The image and the symbols
+        // survive a reset, so `pc` keeps resolving to the same name — but the **frame counter restarts**,
+        // and a hit stamped frame 397 from the epoch before is then indistinguishable on the wire from
+        // frame 397 of the epoch now running. That is exactly the confusion the consumer met. Durability
+        // against CLIENT actions is untouched here as there: `watchpoint_clear` keeps hits and reads never
+        // drain, because a reset is a discontinuity in the machine, not one client erasing another's
+        // evidence.
         let hits_dropped = self.watchpoints.take_hits().len();
+        // The sample measured the machine this reset just replaced — see `restart_profiler_sample`.
         self.restart_profiler_sample();
         self.rom_generation += 1;
         hits_dropped
@@ -2407,10 +2423,14 @@ impl Engine {
     /// `System::load_rom` + `System::reset` itself (the frontend's F5 and its ROM browser, which share
     /// one implementation).
     ///
-    /// It performs `reload_rom`'s tail verbatim — `rom_path`, held pads, latched picture, the hit drain,
-    /// the profiler sample, `rom_generation`, the D7 binding re-check — and then emits
+    /// It performs `reload_rom`'s tail — `rom_path`, held pads, latched picture, the hit drain, the
+    /// profiler sample, `rom_generation`, the D7 binding re-check — and then emits
     /// **`emulator/romReloaded`** with the same three params that method emits. Returns the dropped-hit
     /// count so the window can say it out loud without recounting it.
+    ///
+    /// **Not a copy of that tail: the same [`Engine::apply_rom_swap`] body, called from both doors.** It
+    /// was a copy until H25's fix was re-applied here, and the two would have drifted the first time
+    /// either learned something the other did not.
     ///
     /// # Why `romReloaded` and not `machineReplaced`
     ///
@@ -2433,15 +2453,73 @@ impl Engine {
     /// `self.sys.rom()`, so a call taken before the swap would validate the listing against the outgoing
     /// image and reach the opposite verdict.
     pub fn note_rom_reloaded(&mut self, path: String) -> usize {
+        // One body, two doors — see [`Engine::apply_rom_swap`]. The dropped-symbol verdict is discarded
+        // here because this door has nowhere to put it: no event field carries it and this method's
+        // documented answer is the hit count. `emulator/reload_rom` keeps it for its reply.
+        self.apply_rom_swap(path).0
+    }
+
+    /// **Everything a cartridge swap does that is neither reading the file nor answering a client** —
+    /// the single body behind [`Engine::note_rom_reloaded`] (a gesture at the embedder's own window) and
+    /// `emulator/reload_rom` (a client over the bus).
+    ///
+    /// It exists because those two were a copy of each other. That is the shape H25 was raised against:
+    /// two paths that must agree, kept in step by hand, failing silently when one of them learns
+    /// something the other does not — a new piece of epoch state cleared on one door and left standing on
+    /// the other, with no test able to notice because each door's own tests still pass.
+    ///
+    /// ⚑ **Call it with the NEW cartridge already in `self.sys`.** The D7 binding re-check below reads
+    /// `self.sys.rom()`, so a call taken before the swap validates the listing against the *outgoing*
+    /// image and reaches the opposite verdict.
+    ///
+    /// Returns `(hits_dropped, symbols_dropped)`. Both callers need the first; only `reload_rom` has
+    /// anywhere to put the second — its reply's `symbolsDropped` and the caveat that branches on it —
+    /// which is the only reason this is a private pair-returning helper instead of `note_rom_reloaded`
+    /// serving as the shared body directly. That method is `pub`, its documented answer is the count, and
+    /// widening it to a tuple would move an embedder-facing signature to remove one call.
+    fn apply_rom_swap(&mut self, path: String) -> (usize, bool) {
+        // Through `set_rom_path` rather than assigned, so the path this swap stores is absolutised by the
+        // one function every route uses and the event, `emulator/status` and a hosted panel cannot report
+        // three spellings of one file (§11.30 M1). Idempotent on an already-absolute argument, which is
+        // what `reload_rom` hands in.
         self.set_rom_path(Some(path));
+        // Held pads clear because a reset is a cold start and a cold start has nobody holding anything:
+        // the debugger's injected input is the debugger's state, not the machine's, and a `hold` left
+        // armed across a reset would silently steer the boot sequence — the exact preamble a scene
+        // reproduction depends on being deterministic. (`reload_rom` clears them for the same reason.)
         self.held = [Pad::default(); 2];
+        // A different cartridge draws a different picture, and the line stream restarts from the reset
+        // vector — so the frame latched from the previous image is not "slightly stale", it is another
+        // game's. Dropped rather than kept, which puts `framebuffer` back on its honest fallback until the
+        // new image has drawn a frame of its own.
         self.invalidate_screen();
+        // **And the recorded watchpoint hits go for the comment immediately above's reason** — §11.38,
+        // CR-O, 2026-09-05, raised precisely because that argument was already ours and had been applied
+        // to the artifact beside this one. A hit is epoch-relative in *three* fields at once: `frame` and
+        // the cycle stamp restart from the reset vector exactly as the line stream does, and `pc` is
+        // resolved against whatever symbol table is loaded **now**, which after a reload may describe a
+        // different build entirely. So a hit recorded against the previous image is not "slightly stale"
+        // either — it is another game's, wearing a live hit's shape on the wire and indistinguishable
+        // from one. aeon read frames 397 and 655 from a previous build's watchpoints as the new run's
+        // toggles; that is the report, and it is what a survivor looks like.
+        //
+        // **This is NOT the client-facing durability rule, and the two must not be conflated.**
+        // `watchpoint_clear` still keeps recorded hits, and reads still use `hits()` and never
+        // `take_hits()` — those protect one client's evidence from another client on a shared bus. A
+        // reload is not a client action against another client; it is a discontinuity in the machine both
+        // of them are watching. Different question, different answer.
+        //
+        // The count is said out loud rather than the ring silently emptied: a silent clear is an absence
+        // with nothing left to re-examine, and `symbolsDropped` on this same reply is the precedent for
+        // the shape. The instrument's *lifetime* counters — `seen`/`matched`/`dropped` — are deliberately
+        // untouched: they describe the recorder rather than the epoch, and `dropped` answers "the ring
+        // lost some at record time", whose true answer does not change because a cartridge did.
         let hits_dropped = self.watchpoints.take_hits().len();
         self.restart_profiler_sample();
         self.rom_generation += 1;
 
-        // D7, as `reload_rom` runs it: a swap can invalidate the loaded listing, and a table that no
-        // longer describes the image resolves names to confidently wrong addresses.
+        // A reload can invalidate the loaded symbols — that is D7's whole point. Re-run the binding
+        // check and drop the table if it no longer describes the image.
         let mut symbols_dropped = false;
         if let Some(t) = &self.symbols {
             if matches!(
@@ -2450,6 +2528,11 @@ impl Engine {
             ) {
                 self.symbols = None;
                 self.symbols_path = None;
+                // Not routed through `set_symbols` — that would re-run `absolutise` on a `None` to no
+                // effect and read as a store rather than a drop — so the counter is moved by hand. A
+                // host reacting to `symbols_generation` alone has to see this one: it is the drop that
+                // leaves an embedder's clone describing a listing the engine has discarded, which is
+                // the whole of D7.
                 self.symbols_generation += 1;
                 symbols_dropped = true;
             }
@@ -2466,12 +2549,21 @@ impl Engine {
             .expect("set_rom_path(Some(..)) above stores Some");
         params_out.insert("path".into(), json!(stored));
         params_out.insert("symbolsDropped".into(), json!(symbols_dropped));
-        // One drain, one number — §11.39 (CR-P) requires the event's count and the caller's to be equal,
-        // and a second `take_hits()` here would answer 0.
+        // **The event carries the count too, and it is the SAME `hits_dropped` the reply below carries**
+        // — §11.39 (CR-P), which requires them equal in so many words. Read from the one binding made at
+        // the drain above rather than recomputed here: a second `take_hits()` would answer `0` (the ring
+        // is already empty), and any independent recount is a value that can drift from the reply's while
+        // both stay schema-legal. One drain, one number, two places.
+        //
+        // Why the event needs it at all: a client that learns of reloads by *listening* never sees the
+        // reply, so before this it had no route to the count — it saw its hits vanish with nothing
+        // saying how many. §11.39 states the limit of that fix plainly, and it is worth knowing here:
+        // this server emits three events and none of them is a reset or a restore, so a listener still
+        // cannot learn that either happened. This closes one boundary of three, not the class.
         params_out.insert("hitsDropped".into(), json!(hits_dropped));
         self.emit("emulator/romReloaded", params_out);
 
-        hits_dropped
+        (hits_dropped, symbols_dropped)
     }
 
     /// **The listing this engine resolves against right now** — the one `emulator/lookup_symbol` answers
@@ -7405,25 +7497,13 @@ impl Engine {
     /// a hosted player resyncs off `PumpReport::rom_changed`.
     fn reset(&mut self, _params: &Value) -> Result<Value, RpcError> {
         self.sys.reset();
-        // Held pads clear because a reset is a cold start and a cold start has nobody holding anything:
-        // the debugger's injected input is the debugger's state, not the machine's, and a `hold` left
-        // armed across a reset would silently steer the boot sequence — the exact preamble a scene
-        // reproduction depends on being deterministic. (`reload_rom` clears them for the same reason.)
-        self.held = [Pad::default(); 2];
-        self.invalidate_screen();
-        // The recorded watchpoint hits go too, and the count rides out on the reply — §11.38, CR-O. The
-        // long form of the argument is in [`Engine::reload_rom`] beside `invalidate_screen`; the weaker
-        // half of it is the one that applies here, and it is still decisive. The image and the symbols
-        // survive a reset, so `pc` keeps resolving to the same name — but the **frame counter restarts**,
-        // and a hit stamped frame 397 from the epoch before is then indistinguishable on the wire from
-        // frame 397 of the epoch now running. That is exactly the confusion the consumer met. Durability
-        // against CLIENT actions is untouched here as there: `watchpoint_clear` keeps hits and reads never
-        // drain, because a reset is a discontinuity in the machine, not one client erasing another's
-        // evidence.
-        let hits_dropped = self.watchpoints.take_hits().len();
-        // The sample measured the machine this reset just replaced — see `restart_profiler_sample`.
-        self.restart_profiler_sample();
-        self.rom_generation += 1;
+        // **Everything after the /RESET itself is [`Engine::note_reset`]**, which is that body and
+        // nothing besides — the held-pad clear, the dropped picture, the hit drain, the profiler restart
+        // and the generation bump, each with its argument kept beside the code it justifies. Two things
+        // stay here because the window's door must NOT do them: running `System::reset` (a window has
+        // already run its own before it calls) and answering the client. The split is the design; the
+        // copy that used to carry it was not.
+        let hits_dropped = self.note_reset();
         Ok(json!({ "deferred": false, "hitsDropped": hits_dropped }))
     }
 
@@ -7831,74 +7911,14 @@ impl Engine {
         let len = rom.len();
         self.sys.load_rom(rom);
         self.sys.reset();
-        self.held = [Pad::default(); 2];
-        self.rom_path = Some(path.clone());
-        // A different cartridge draws a different picture, and the line stream restarts from the reset
-        // vector — so the frame latched from the previous image is not "slightly stale", it is another
-        // game's. Dropped rather than kept, which puts `framebuffer` back on its honest fallback until the
-        // new image has drawn a frame of its own.
-        self.invalidate_screen();
-        // **And the recorded watchpoint hits go for the comment immediately above's reason** — §11.38,
-        // CR-O, 2026-09-05, raised precisely because that argument was already ours and had been applied
-        // to the artifact beside this one. A hit is epoch-relative in *three* fields at once: `frame` and
-        // the cycle stamp restart from the reset vector exactly as the line stream does, and `pc` is
-        // resolved against whatever symbol table is loaded **now**, which after a reload may describe a
-        // different build entirely. So a hit recorded against the previous image is not "slightly stale"
-        // either — it is another game's, wearing a live hit's shape on the wire and indistinguishable
-        // from one. aeon read frames 397 and 655 from a previous build's watchpoints as the new run's
-        // toggles; that is the report, and it is what a survivor looks like.
-        //
-        // **This is NOT the client-facing durability rule, and the two must not be conflated.**
-        // `watchpoint_clear` still keeps recorded hits, and reads still use `hits()` and never
-        // `take_hits()` — those protect one client's evidence from another client on a shared bus. A
-        // reload is not a client action against another client; it is a discontinuity in the machine both
-        // of them are watching. Different question, different answer.
-        //
-        // The count is said out loud rather than the ring silently emptied: a silent clear is an absence
-        // with nothing left to re-examine, and `symbolsDropped` on this same reply is the precedent for
-        // the shape. The instrument's *lifetime* counters — `seen`/`matched`/`dropped` — are deliberately
-        // untouched: they describe the recorder rather than the epoch, and `dropped` answers "the ring
-        // lost some at record time", whose true answer does not change because a cartridge did.
-        let hits_dropped = self.watchpoints.take_hits().len();
-        self.restart_profiler_sample();
-        self.rom_generation += 1;
-
-        // A reload can invalidate the loaded symbols — that is D7's whole point. Re-run the binding
-        // check and drop the table if it no longer describes the image.
-        let mut symbols_dropped = false;
-        if let Some(t) = &self.symbols {
-            if matches!(
-                t.validate_against_rom(self.sys.rom()),
-                RomBinding::Mismatch(_)
-            ) {
-                self.symbols = None;
-                self.symbols_path = None;
-                // Not routed through `set_symbols` — that would re-run `absolutise` on a `None` to no
-                // effect and read as a store rather than a drop — so the counter is moved by hand. A
-                // host reacting to `symbols_generation` alone has to see this one: it is the drop that
-                // leaves an embedder's clone describing a listing the engine has discarded, which is
-                // the whole of D7.
-                self.symbols_generation += 1;
-                symbols_dropped = true;
-            }
-        }
-
-        let mut params_out = Map::new();
-        params_out.insert("path".into(), json!(path));
-        params_out.insert("symbolsDropped".into(), json!(symbols_dropped));
-        // **The event carries the count too, and it is the SAME `hits_dropped` the reply below carries**
-        // — §11.39 (CR-P), which requires them equal in so many words. Read from the one binding made at
-        // the drain above rather than recomputed here: a second `take_hits()` would answer `0` (the ring
-        // is already empty), and any independent recount is a value that can drift from the reply's while
-        // both stay schema-legal. One drain, one number, two places.
-        //
-        // Why the event needs it at all: a client that learns of reloads by *listening* never sees the
-        // reply, so before this it had no route to the count — it saw its hits vanish with nothing
-        // saying how many. §11.39 states the limit of that fix plainly, and it is worth knowing here:
-        // this server emits three events and none of them is a reset or a restore, so a listener still
-        // cannot learn that either happened. This closes one boundary of three, not the class.
-        params_out.insert("hitsDropped".into(), json!(hits_dropped));
-        self.emit("emulator/romReloaded", params_out);
+        // **The rest of a cartridge swap is [`Engine::apply_rom_swap`]**, which is also the whole of
+        // [`Engine::note_rom_reloaded`] — the window's door and this one now run one body, so a swap
+        // cannot come to mean two things depending on which door it came through. What stays here is what
+        // this door alone owns: reading the file, refusing on a bad path in the caller's own spelling,
+        // `require_paused`, and the reply below. `path` is already absolutised and `apply_rom_swap`
+        // re-absolutises through `set_rom_path`, which `absolutise` being idempotent on its own output
+        // makes a no-op rather than a second answer.
+        let (hits_dropped, symbols_dropped) = self.apply_rom_swap(path.clone());
 
         let mut out = json!({
             "reloaded": true,
