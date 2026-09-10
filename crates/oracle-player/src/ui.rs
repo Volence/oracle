@@ -3253,6 +3253,85 @@ fn preview_texture(
 /// edge. One constant, so the two chips this file draws over the game cannot sit at two different insets.
 const OVERLAY_PAD: f32 = 6.0;
 
+// -------------------------------------------------------------------------------------------------------
+// ⚑ The height bound on anything painted over the picture, and why it is here rather than in the strings
+// -------------------------------------------------------------------------------------------------------
+
+/// The most of the picture's height a single overlay block may cover.
+///
+/// # The owner's complaint is about a class, so the fix has to be about the class
+///
+/// 2026-09-10: *"make sure to audit the verbosity of all things going in the black box please, there's a
+/// lot of times I accidentally click and then like 1/4th of my screen is hidden behind it."* Every
+/// producer that feeds [`readout_overlay`] was free to be as long as it liked, and one was: the ring
+/// placement line carried a whole standing statement it did not need. Shortening that string fixes that
+/// string. It does nothing about the next producer somebody writes, which is what *"a lot of times"* is
+/// about.
+///
+/// So the bound lives **here**, at the one function that paints over the picture, and it holds for callers
+/// that do not exist yet. Two blocks can be on screen at once (the armed notice at the top,
+/// [`readout_overlay`] at the bottom), which is why this is well under the quarter he named rather than
+/// equal to it.
+const OVERLAY_MAX_FRACTION: f32 = 0.20;
+
+/// ...and never more text rows than this, however tall the picture gets.
+///
+/// The fraction alone is not a bound a person can feel: on a maximised window a fifth of the picture is
+/// still eight or nine rows, which is the wall he was looking at. This is what actually binds at the sizes
+/// he plays at, and the fraction is what takes over when the picture is small.
+const OVERLAY_MAX_ROWS: usize = 5;
+
+/// **The rows one overlay block may spend**, as a pure function of the geometry, so it is testable with no
+/// display, no context and no window. See rule 2 of this lane: he is using the window right now.
+///
+/// ⚑ **`max(lines)` is the deliberate exception to the fraction.** On a picture too short for the bound to
+/// afford one row per line, the block goes over rather than dropping a line, because a block that painted
+/// a head and silently swallowed the refusal underneath it is the one failure this must not have. Above
+/// `overlay_min_bounded_height` that case cannot arise and the fraction holds.
+fn overlay_row_budget(picture_h: f32, row_h: f32, lines: usize) -> usize {
+    let gaps = OVERLAY_PAD * 2.0 + OVERLAY_PAD * 0.5 * lines.saturating_sub(1) as f32;
+    let usable = picture_h * OVERLAY_MAX_FRACTION - gaps;
+    let by_height = (usable / row_h.max(1.0)).floor().max(0.0) as usize;
+    by_height.min(OVERLAY_MAX_ROWS).max(lines)
+}
+
+/// The picture height at and above which `overlay_row_budget` is genuinely bounded by the fraction,
+/// which is the precondition the guarantee is stated under.
+///
+/// Test-only: it exists so the guarantee is asserted at its own stated precondition rather than at a
+/// height somebody picked because it passed.
+#[cfg(test)]
+fn overlay_min_bounded_height(row_h: f32, lines: usize) -> f32 {
+    let gaps = OVERLAY_PAD * 2.0 + OVERLAY_PAD * 0.5 * lines.saturating_sub(1) as f32;
+    (row_h * lines as f32 + gaps) / OVERLAY_MAX_FRACTION
+}
+
+/// **Spend a row budget across the lines**, giving each at least one row and handing the surplus out from
+/// the top down.
+///
+/// `want` is what each line would take unbounded. The result is what each line gets.
+///
+/// # Why every line is guaranteed a row before any line gets a second
+///
+/// The lines are `head`, `detail`, `outcome`, in that order, and the last of the three is where a refusal
+/// reason and *"the machine was put back"* live. A budget spent purely greedily from the top would let a
+/// verbose head eat the whole block and leave the outcome unpainted, which converts a verbosity problem
+/// into a swallowed-refusal problem. That trade is not available: this file's own rule is that a refusal
+/// is the one outcome the feature is not allowed to have go missing.
+///
+/// The surplus then goes top down, because the head is the answer to the click and the addressing beneath
+/// it is what a reader checks the answer against.
+fn overlay_spend_rows(want: &[usize], budget: usize) -> Vec<usize> {
+    let mut got = vec![1usize; want.len()];
+    let mut left = budget.saturating_sub(want.len());
+    for (i, w) in want.iter().enumerate() {
+        let extra = w.saturating_sub(1).min(left);
+        got[i] += extra;
+        left -= extra;
+    }
+    got
+}
+
 /// **Paint a block of text over the picture, at one of its corners, on its own panel.**
 ///
 /// The one thing this exists to get right is that it takes **no layout space**: everything is painted
@@ -3264,6 +3343,15 @@ const OVERLAY_PAD: f32 = 6.0;
 /// `lines` are drawn top to bottom in the order given, each with its own face and colour, wrapped to the
 /// picture's width less the padding on both sides. Returns the rect it covered so a caller can stack a
 /// second block clear of the first.
+///
+/// ⚑ **The block's height is bounded here, not by its callers.** See [`OVERLAY_MAX_FRACTION`]: a caller
+/// may hand this any string at all and the result still cannot cover more than a fifth of the picture or
+/// [`OVERLAY_MAX_ROWS`] rows, whichever is smaller. Overflow is **elided with a visible character**, never
+/// dropped, so a reader can tell that a sentence was cut rather than believing they read all of it.
+///
+/// **A scroll region was the obvious alternative and it is barred**: scrolling needs allocated layout, and
+/// this block exists precisely because the readout used to take layout and shove the picture down the
+/// screen. Trading the owner's 2026-09-10 finding for his 2026-09-09 one is not a fix.
 fn overlay_block(
     ui: &egui::Ui,
     picture: egui::Rect,
@@ -3274,13 +3362,32 @@ fn overlay_block(
         return egui::Rect::NOTHING;
     }
     let wrap = (picture.width() - OVERLAY_PAD * 4.0).max(40.0);
-    let galleys: Vec<_> = lines
+    // Laid out once unbounded to learn what each line *wants*, then again against the rows it *gets*.
+    // Two layouts of one job rather than a guess: the budget is spent on measured demand, so a one-row
+    // head does not hold rows the addressing under it needs. egui caches galleys, so the second pass of
+    // an unchanged line is a lookup.
+    let want: Vec<usize> = lines
         .iter()
         .map(|(t, face, colour)| {
-            (
-                ui.painter().layout(t.clone(), face.clone(), *colour, wrap),
-                *colour,
-            )
+            ui.painter()
+                .layout(t.clone(), face.clone(), *colour, wrap)
+                .rows
+                .len()
+        })
+        .collect();
+    let row_h = ui.ctx().fonts_mut(|f| f.row_height(&lines[0].1));
+    let budget = overlay_row_budget(picture.height(), row_h, lines.len());
+    let rows = overlay_spend_rows(&want, budget);
+    let galleys: Vec<_> = lines
+        .iter()
+        .zip(&rows)
+        .map(|((t, face, colour), max_rows)| {
+            let mut job = egui::text::LayoutJob::simple(t.clone(), face.clone(), *colour, wrap);
+            job.wrap.max_rows = *max_rows;
+            // The default is already an ellipsis; named here because *that a cut is visible* is the
+            // property this bound rests on, and a silent truncation would make the block lie.
+            job.wrap.overflow_character = Some('…');
+            (ui.painter().layout_job(job), *colour)
         })
         .collect();
     let w = galleys
@@ -3354,7 +3461,7 @@ fn armed_frame(ui: &egui::Ui, picture: egui::Rect, notice: &str) {
 /// keeps the colour on `refused` rather than on a `"REFUSED"` prefix.
 ///
 /// Coloured on the **field**, never on the shape of the text. See `screen_pick::Readout`.
-fn readout_overlay(ui: &egui::Ui, picture: egui::Rect, r: &screen_pick::Readout) {
+fn readout_overlay(ui: &egui::Ui, picture: egui::Rect, r: &screen_pick::Readout) -> egui::Rect {
     let style = |s: egui::TextStyle, fallback: f32| {
         ui.style()
             .text_styles
@@ -3389,7 +3496,7 @@ fn readout_overlay(ui: &egui::Ui, picture: egui::Rect, r: &screen_pick::Readout)
             },
         ));
     }
-    overlay_block(ui, picture, &lines, false);
+    overlay_block(ui, picture, &lines, false)
 }
 
 /// The same readout **as a laid-out card**, for the one state that has no picture to draw it over.
@@ -6944,6 +7051,215 @@ mod overlay_layout_tests {
             before, after,
             "the control witnesses nothing: this Ui does not move its cursor for a laid-out card \
              either, so the overlay test above is measuring an inert harness"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The height bound, which is about producers that do not exist yet
+    // ---------------------------------------------------------------------------------------------
+
+    /// **The budget arithmetic**, at its own stated precondition rather than at a convenient number.
+    ///
+    /// `overlay_min_bounded_height` is where the `max(lines)` exception stops applying, so the fraction
+    /// is asserted from there upward. A height picked because it passed would leave the boundary
+    /// untested, which is where the exception and the rule meet.
+    #[test]
+    fn a_block_is_never_taller_than_its_share_of_the_picture_once_the_picture_can_afford_one_row_each(
+    ) {
+        let row_h = 14.0_f32;
+        for lines in 1..=4_usize {
+            let floor = overlay_min_bounded_height(row_h, lines);
+            for h in [floor, floor + 1.0, 240.0, 480.0, 1080.0, 4000.0] {
+                if h < floor {
+                    continue;
+                }
+                let budget = overlay_row_budget(h, row_h, lines);
+                assert!(
+                    budget >= lines,
+                    "every line owes at least one row or a refusal can go unpainted: {lines} lines, \
+                     {h} tall, budget {budget}"
+                );
+                assert!(
+                    budget <= OVERLAY_MAX_ROWS,
+                    "the absolute cap is what binds at the sizes he plays at: {budget}"
+                );
+                let gaps = OVERLAY_PAD * 2.0 + OVERLAY_PAD * 0.5 * (lines - 1) as f32;
+                let painted = budget as f32 * row_h + gaps;
+                assert!(
+                    painted <= h * OVERLAY_MAX_FRACTION + 0.001,
+                    "a block {painted} tall on a {h} picture is more than the {OVERLAY_MAX_FRACTION} \
+                     share the owner's 2026-09-10 finding bounds it to"
+                );
+            }
+        }
+    }
+
+    /// **Below the precondition the exception fires, and it fires the safe way.**
+    ///
+    /// The control for the test above: on a picture too short to afford a row per line the budget goes
+    /// over the fraction rather than under the line count, because dropping a line is how a verbosity
+    /// bound turns into a swallowed refusal.
+    #[test]
+    fn a_picture_too_short_for_the_bound_keeps_every_line_rather_than_keeping_the_fraction() {
+        let (row_h, lines) = (14.0_f32, 3_usize);
+        let budget = overlay_row_budget(20.0, row_h, lines);
+        assert_eq!(
+            budget, lines,
+            "one row each and not one more, so the overshoot is the smallest one that keeps the lines"
+        );
+        assert!(
+            budget as f32 * row_h > 20.0 * OVERLAY_MAX_FRACTION,
+            "the control witnesses nothing unless this really is the case where the fraction loses"
+        );
+    }
+
+    /// **The surplus is spent on measured demand, and no line can be starved by the one above it.**
+    #[test]
+    fn the_row_budget_goes_to_the_lines_that_want_it_and_never_leaves_one_unpainted() {
+        // A head that would eat everything. The two lines under it still get their row.
+        let got = overlay_spend_rows(&[40, 2, 1], 5);
+        assert_eq!(
+            got,
+            vec![3, 1, 1],
+            "the head takes the surplus, not the floor"
+        );
+        assert_eq!(
+            got.iter().sum::<usize>(),
+            5,
+            "and it spends the budget, all of it"
+        );
+
+        // A short head does NOT hold rows the addressing under it needs.
+        assert_eq!(
+            overlay_spend_rows(&[1, 3, 1], 5),
+            vec![1, 3, 1],
+            "demand is measured per line, so a one-row head cannot hoard the block"
+        );
+
+        // Nothing to truncate: everybody gets what they asked for and the block is short.
+        assert_eq!(overlay_spend_rows(&[2, 1, 1], 5), vec![2, 1, 1]);
+
+        // The degenerate budget still paints every line.
+        assert_eq!(
+            overlay_spend_rows(&[9, 9, 9], 0),
+            vec![1, 1, 1],
+            "a budget of nothing still owes every line the row that proves it exists"
+        );
+    }
+
+    /// ⚑ **The property in the owner's own terms, through the real painter: a producer may hand this any
+    /// string at all and it still cannot cover his screen.**
+    ///
+    /// The budget tests above are arithmetic. This one runs the actual `overlay_block` on a headless
+    /// `Context` with a deliberately absurd sentence, and measures the rect it says it covered. It is the
+    /// leg that would catch the bound being computed correctly and then not applied.
+    #[test]
+    fn a_producer_that_does_not_exist_yet_still_cannot_cover_a_fifth_of_the_picture() {
+        let ctx = egui::Context::default();
+        let picture_h = 448.0_f32;
+        let mut covered = egui::Rect::NOTHING;
+        let mut picture = egui::Rect::NOTHING;
+        let wall = "the standing statement, the whole design rationale, and a paragraph about the \
+                    engine, repeated until it would fill the window. "
+            .repeat(12);
+        let r = screen_pick::Readout {
+            head: wall.clone(),
+            detail: Some(wall.clone()),
+            outcome: Some(wall),
+            refused: false,
+        };
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            picture = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(640.0, picture_h));
+            // The control: laid out unbounded, this really would be a wall. Measured through the same
+            // painter, so a harness that lays nothing out cannot make the assertion below vacuous.
+            let free = ui
+                .painter()
+                .layout(r.head.clone(), egui::FontId::proportional(13.0), egui::Color32::WHITE, 600.0)
+                .size()
+                .y;
+            assert!(
+                free > picture_h * OVERLAY_MAX_FRACTION,
+                "the fixture is not a wall in this harness, so nothing below is being bounded: {free}"
+            );
+            covered = readout_overlay(ui, picture, &r);
+        });
+        out.textures_delta.clear();
+        assert!(
+            covered.height() <= picture_h * OVERLAY_MAX_FRACTION + 0.001,
+            "an overlay covering {} of a {picture_h} picture is the wall he asked us to bound",
+            covered.height()
+        );
+        assert!(
+            picture.contains_rect(covered),
+            "and it stays inside the picture rather than escaping onto the letterbox"
+        );
+    }
+
+    /// **The trimmed ring readout does not hit the cap**, which is what makes the cap a backstop rather
+    /// than a censor.
+    ///
+    /// It matters because there is no on-demand surface for the remainder yet (a scroll region would
+    /// reintroduce the layout cost of the owner's 2026-09-09 finding). While every producer fits, the
+    /// ellipsis never fires and nothing is lost; the day one does not, this test is what says so.
+    #[test]
+    fn todays_ring_readout_fits_the_bound_with_room_to_spare() {
+        let ctx = egui::Context::default();
+        let picture_h = 448.0_f32;
+        let mut covered = egui::Rect::NOTHING;
+        let r = screen_pick::Readout {
+            head: oracle_frontend::rings::Placed {
+                world: (2048, 512),
+                section_id: 3,
+                list_index: 8,
+                real_rings: 7,
+                slot: 9,
+                addr: 0x00FF_AF3C,
+                buffer_used: 9,
+                buffer_max: 128,
+            }
+            .terminal(),
+            detail: None,
+            outcome: Some("the machine was paused for this click and put back".into()),
+            refused: false,
+        };
+        let mut unbounded = 0.0_f32;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let picture = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(640.0, picture_h));
+            // What the same lines take with no budget at all, through the same painter and the same
+            // wrap. If the bounded block is this tall, the cap did not bite and nothing was elided.
+            let wrap = (picture.width() - OVERLAY_PAD * 4.0).max(40.0);
+            let faces = [egui::TextStyle::Body, egui::TextStyle::Small];
+            let texts = [r.head.clone(), r.outcome.clone().unwrap()];
+            let mut sum = OVERLAY_PAD * 2.0 + OVERLAY_PAD * 0.5;
+            for (t, s) in texts.iter().zip(faces) {
+                let face = ui
+                    .style()
+                    .text_styles
+                    .get(&s)
+                    .cloned()
+                    .unwrap_or_else(|| egui::FontId::proportional(13.0));
+                sum += ui
+                    .painter()
+                    .layout(t.clone(), face, egui::Color32::WHITE, wrap)
+                    .size()
+                    .y;
+            }
+            unbounded = sum;
+            covered = readout_overlay(ui, picture, &r);
+        });
+        out.textures_delta.clear();
+        assert!(
+            covered.height() <= picture_h * OVERLAY_MAX_FRACTION,
+            "the trimmed readout is inside the bound: {} vs {}",
+            covered.height(),
+            picture_h * OVERLAY_MAX_FRACTION
+        );
+        assert!(
+            (covered.height() - unbounded).abs() < 0.5,
+            "the cap BIT on today's own readout, which means the ellipsis is firing and a person is \
+             reading a cut sentence with no way to see the rest: bounded {} vs unbounded {}",
+            covered.height(),
+            unbounded
         );
     }
 }
