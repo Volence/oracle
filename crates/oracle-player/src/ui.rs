@@ -7901,14 +7901,32 @@ mod screen_strip_tests {
         }
     }
 
-    /// **Why the share is one half and not a number someone liked.** The property that makes it safe:
-    /// the bound bites only where the picture was already getting less than the strip. Any larger share
-    /// breaks this, which is the point of writing it as an assertion rather than as a sentence in a doc
-    /// comment.
+    /// **Why the share is one half and not a number someone liked**, pinned from both sides.
+    ///
+    /// The rule is *the strip may not take more of the pane than it leaves for the picture*, and the two
+    /// halves of that sentence fail in opposite directions:
+    ///
+    /// * a **larger** share breaks the ceiling — the strip's own budget becomes more than the remainder,
+    ///   which is the sentence read backwards;
+    /// * a **smaller** share breaks the floor under the strip — the bound starts charging strips that
+    ///   were not the larger half, changing panes that render correctly today.
+    ///
+    /// ⚑ **The first of the two was missing when this gate was written**, and a mutation caught it: at a
+    /// `0.9` share only the second assertion existed and it stayed green, because "bites only where the
+    /// strip was already the majority" is implied by *every* share at or above a half. One assertion for
+    /// a two-sided property is one assertion short.
     #[test]
     fn the_bound_bites_only_where_the_picture_was_already_the_minority() {
         for pane in PANE_HEIGHTS {
             let cap = screen_strip_cap(pane);
+            // The ceiling. The budget itself is never more than what the budget leaves.
+            assert!(
+                cap <= pane - cap,
+                "a {pane}-point pane budgets the strip {cap} and leaves the picture {}, so the strip is \
+                 allowed to be the larger half. {SCREEN_STRIP_MAX_SHARE} is above the rule it is \
+                 documented as.",
+                pane - cap,
+            );
             for step in 0..=40 {
                 let natural = pane * step as f32 / 40.0;
                 if natural <= cap {
