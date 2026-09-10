@@ -1,6 +1,22 @@
 {
-  "focus": "Stopped for your user switch. Everything is pushed; nothing is running or half-finished.",
-  "inFlight": [],
+  "focus": "Six of your eight questions were answered for you tonight. Two lens fixes are running; the refusal merge still waits on you.",
+  "inFlight": [
+    {
+      "what": "Making our most-repeated safety claim either true or honest -- it names a mechanism that does not exist (your d-47, answered)",
+      "where": "branch parcel/h26-claim-mechanism",
+      "agent": true
+    },
+    {
+      "what": "A fix from tonight's audit: two copies of one truth crept back into the reset/reload paths days after we removed them",
+      "where": "branch parcel/h25-drift-dedupe",
+      "agent": true
+    },
+    {
+      "what": "Refusal gate finished and committed, deliberately NOT merged until you say the machine is free",
+      "where": "branch parcel/error-surface-gate",
+      "agent": false
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
@@ -8,124 +24,84 @@
       "id": "d-39"
     },
     {
-      "what": "whether to repin the frozen symbol fixtures to a current build (FIXTURE-REPIN)",
-      "since": "2026-09-06",
-      "id": "d-40"
+      "what": "whether Tab should restart the game the way the old window did, instead of cycling panels — it caught you on day one, but somebody chose the current behaviour deliberately so it needs your word",
+      "since": "2026-09-05",
+      "id": "d-33"
     }
   ],
-  "nextBoundary": "Now. Nothing running, nothing uncommitted, main in sync with origin.",
+  "nextBoundary": "When both running fixes return and land. The refusal parcel is a separate, later boundary that only your word opens.",
   "queue": [
+    {
+      "id": "H25-DRIFT-DEDUPE",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Tonight's audit found the top thing worth fixing: a cleanup we landed days ago was quietly undone by copy-paste, so two paths that must stay identical are hand-kept again. Being made one path."
+    },
+    {
+      "id": "UX-FIX-GROUP-A",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Landed and pushed. Nothing is running on it; what is left is your eye on look-and-feel only."
+    },
+    {
+      "id": "OWNER-UX-GROUP-B",
+      "state": "open",
+      "size": "L",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Five of your ten are fixed and pushed. The other three -- the clutter, the stacked tab strips, and dragging panels to any side -- I had wrongly parked as 'what the rebuild will fix'. The rebuild's frame IS the window you use; nothing later rewrites it, and dragging already works (your saved layout proves you have done it). All three are takeable now. Plus the palette write-up waiting on your read."
+    },
+    {
+      "id": "ROM-DROP-WAYLAND",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "one more drop attempt from you, on the X11 window now up",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Three of the four ways to open a ROM work. Dragging a file in does not, and it is not our bug: the window library implements file drops for X11, Mac and Windows and not at all for Wayland, which your desktop runs. The window is now forced onto X11 where drops do work. If that fixes it you have a choice to make, and I owe you what else differs between the two first."
+    },
+    {
+      "id": "PALETTE-SCOPE",
+      "state": "open",
+      "size": "M",
+      "blockedBy": "your look at the write-up first",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "You said you liked the old command palette and this one has no easy way in. I am not rebuilding it blind: you get a written comparison of what the old one did that this does not, and what I would build, before anyone spends on it."
+    },
+    {
+      "id": "LENS-HIGHS-SIX",
+      "state": "doing",
+      "size": "L",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "Both remaining serious items named rather than counted. One (the false safety claim) is being fixed right now, unblocked by your d-47 answer. The other is a design call about how the processor decodes instructions, not a fix."
+    },
+    {
+      "id": "C5-REPLAY-DISCARDED-RASTER",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "LENS-PASS",
+      "title": "UNBLOCKED tonight -- d-44 was answered 'split'. Your last remaining critical: every replay frame draws a complete analysed picture and throws it away to get three status bits. The answer says do it after the other criticals, and it is now the only one left, so that condition is already met. It wants a before-and-after number, which needs the machine."
+    },
+    {
+      "id": "F-PLANES-RASTER-EVERY-FRAME",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "CLEARED AS THE CAUSE OF YOUR LAG, and you no longer owe me the tab test. The window writes its own tab layout to disk, so I read it: the four panels actually drawing are Screen, Objects, Effects and Breakpoints. The plane viewer is the hidden tab behind Screen and is drawing nothing. Its every-frame redraw is still a real defect and will bite the moment you bring that tab forward, but it is not what is costing you now."
+    },
     {
       "id": "F-SCREEN-PICTURE-SILENT",
       "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The Screen tab has the same silent give-up the plane viewer just had: if the pane is too narrow to draw the picture it shows nothing and says nothing. Found while fixing the plane one; left alone deliberately so the fix you asked for stayed one change."
-    },
-    {
-      "id": "F-Z80-PANICS-UNCONTAINED",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "FIXED and landed -- and it went further than stopping the crash. About 560 real sound-chip instructions used to kill the emulator; they are now properly implemented and checked against 1,268,000 known-good cases. The reason they had been skipped turned out to be wrong: the test data existed all along, we were just never asking for it."
-    },
-    {
-      "id": "LENS-UX-PAIR",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "You asked for a usability lens and ruled we pilot it. Two fresh reviewers on a private off-screen display: one tries jobs a newcomer would want done with only the README to go on and logs every place it gets lost, one walks every panel and message against a checklist. Runs after the fixes in flight land; nothing appears on your screen."
-    },
-    {
-      "id": "F-CI-DEAD-46-DAYS",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "FIXED AND GREEN. Your automated checks ran and passed for the first time since 22 July. Three separate breakages had to go, the third only visible once the first two were cleared. The run's log now names each of the six data checks as it passes, so a future green cannot be a green of nothing."
-    },
-    {
-      "id": "RELAUNCH-CLOSES-TWO",
-      "state": "blocked",
-      "size": "S",
-      "blockedBy": "one relaunch of your window, whenever suits you",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Two finished pieces of work are still waiting on one relaunch of your debug window: it lets the effects switchboard be tried against a running game for the first time, and lets a program take a real frame-rate reading. There is now a desktop shortcut for it."
-    },
-    {
-      "id": "F-RESET-LOSES-SAVE",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": "one live check, whenever your window is up",
-      "project": "LENS-PASS",
-      "title": "FIXED and landed. A reset could strand your save, or write an older one over a newer one. Now proved by two tests that read the actual file on disk -- the old test for this checked the emulator's memory and never the file, which is why it passed for so long. Still worth one live check when your window is up: I proved the mechanism, not the keypress."
-    },
-    {
-      "id": "F-FIFO-DOUBLE-CHARGE",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "Two video writes in one instruction charge the first one's delay twice -- 40 percent over-billed on the most common way games write video memory. The read path next door does it correctly. Every existing test stops one write short of triggering it."
-    },
-    {
-      "id": "LENS-PACKET",
-      "state": "open",
-      "size": "L",
-      "blockedBy": "your ranking",
-      "project": "LENS-PASS",
-      "title": "The rest of the lens sweep: 8 critical, 33 high, ~77 smaller, all in docs/superpowers/notes/2026-09-06-oracle-lens-sweep.md with the derivation for each. Nothing is fixed -- the reviewers were read-only on purpose so the report stays honest. Most of these have their fix already written elsewhere in the tree; they are gaps in coverage, not in knowledge."
-    },
-    {
-      "id": "F-PLANES-RASTER-EVERY-FRAME",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "one ten-second tab test from you",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Your lag report. The plane viewer only redraws when its picture changes -- but on the waterline and floor-fan rows the picture changes every frame by design, so it redraws the whole plane every frame and the saving never applies. Up to half a million pixel lookups per frame. Not confirmed as YOUR lag yet; the tab test confirms or clears it."
-    },
-    {
-      "id": "STYLE-NUMBER-BAKEOFF",
-      "state": "blocked",
-      "size": "S",
-      "blockedBy": "your A or B (d-39)",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Waiting on you, and it is the one that holds the rest up: both ways of showing a headline number are on the Pacing tab of the build now on your screen. Say A or B and the other is deleted. Full text in docs/2026-09-06-queue-detail.md."
-    },
-    {
-      "id": "DATA-DISPLAY-AUDIT",
-      "state": "blocked",
-      "size": "L",
-      "blockedBy": "your look answers",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The remaining panels follow your A/B answer plus four things only your eyes can settle. I am running them past you one at a time rather than in a batch."
-    },
-    {
-      "id": "FIXTURE-REPIN",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": "your go or hold (d-40)",
-      "project": "ORACLE-DEFAULT",
-      "title": "Your call on refreshing our frozen copies of the game's symbol files. I recommend holding until the engine team publishes a build manifest; the silent-drift fault itself is already fixed and landed."
-    },
-    {
-      "id": "F-TOYSTORY-SILENT",
-      "state": "blocked",
-      "size": "M",
-      "blockedBy": "one cheap answer from you",
-      "project": "ORACLE-DEFAULT",
-      "title": "Toy Story is silent here and I have ruled out the obvious causes, so the gap is inside our sound emulation. The next question is cheap and yours: does the OLD emulator play it with sound?"
-    },
-    {
-      "id": "CR-Q-MACHINEREPLACED",
-      "state": "next",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The next thing I would build, and it is owed rather than chosen: when something swaps the machine out from under a connected tool, the tool is currently never told, so it keeps reading a world that no longer exists. The contract team already adopted our request for this."
+      "title": "The Screen tab has the same silent give-up the plane viewer had: too narrow to draw the picture and it shows nothing and says nothing. Left alone deliberately when the plane one was fixed, so that fix stayed one change."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -133,31 +109,31 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The reason I keep having to ask you to look at panels instead of reading them myself: the window can report its top bar to a connected program but not any panel. Fixing it converts a class of 'please look at this' into something I can measure."
+      "title": "The reason I keep asking you to look at panels instead of reading them myself: the window can report its top bar to a connected program but not any panel. Fixing it turns a class of 'please look at this' into something I can measure."
     },
     {
-      "id": "F-PLANE-RASTER-UNGUARDED",
+      "id": "STYLE-NUMBER-BAKEOFF",
       "state": "blocked",
       "size": "S",
-      "blockedBy": "deliberately folded into the lag fix - same file, same parcel",
+      "blockedBy": "your A or B (d-39)",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Nothing notices if the plane picture draws the wrong tile in every cell -- I transposed its lookup and all thirty-one tests stayed green. DELIBERATELY HELD rather than done now: the plane raster is also the prime suspect for your lag, so this guard rides in the same parcel as that fix. Doing it separately would touch the same code twice and cost an extra rebase."
+      "title": "Waiting on you, and it holds the rest of the panel work up: both ways of showing a headline number are on the Pacing tab of the build on your screen. Say A or B and the other is deleted."
     },
     {
-      "id": "F-AUDIT-PAGE-CONTRADICTS-ITSELF",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
+      "id": "DATA-DISPLAY-AUDIT",
+      "state": "blocked",
+      "size": "L",
+      "blockedBy": "your look answers",
       "project": "ORACLE-DEBUG-UI",
-      "title": "The page guiding the rest of the panel work disagrees with itself about what colour a headline number is, and I copied the wrong half onto your decision card before catching it. Fix is an appended correction, since the page's line numbers are stamped to a revision."
+      "title": "The remaining panels follow your A/B answer plus four things only your eyes can settle. Run past you one at a time rather than in a batch."
     },
     {
       "id": "ERROR-SURFACE-GATE",
-      "state": "open",
+      "state": "next",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "your word that the machine is free",
       "project": "ORACLE-DEFAULT",
-      "title": "Our contract checks read replies only, so they are blind to every duty to REFUSE a bad request. This was a proposal for weeks; it now has a real defect it would have caught. Do not re-argue it from principles."
+      "title": "Finished and committed on a branch, waiting only on you. Merging means a long verification run, and I held it off rather than fight your recording for the machine. It gives our checks their first sight of the emulator's REFUSALS: 70 of 71 commands declare rules a bad request would break, 178 of them, none checked before this."
     },
     {
       "id": "SCHEMA-DRIFT-NIGHTLY",
@@ -171,12 +147,42 @@
       "id": "LIVE-EFFECTS-NUDGES",
       "state": "open",
       "size": "M",
-      "blockedBy": "the four critical fixes ahead of it",
+      "blockedBy": "the lens fix list ahead of it",
       "project": "LIVE-EFFECTS",
-      "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Ranked behind the four critical fixes. Two things their note adds that change the design: only SOME of the fields are actually adjustable -- others have no reader at runtime, so a slider on one would be a silent no-op, the exact thing I refused to ship -- and the entry point resolves in a RELEASE build while the memory it needs does not, so a panel deciding 'controls available' by looking for that entry would arm on a release build and write over code. Same two-condition gate as the bands-off control, for the same reason. Third time this shape has appeared today."
+      "title": "The engine team landed the piece the disabled sliders were waiting for, so nudging individual effect numbers can now be built. Two constraints from their note: only some of the fields have a reader at runtime, so a slider on the others would be a silent no-op, and the memory it needs is absent in a release build while the entry point resolves, so a panel that armed on the entry point alone would write over code."
+    },
+    {
+      "id": "F-CITATION-LINT",
+      "state": "open",
+      "size": "M",
+      "blockedBy": "the standing cut-the-ceremony ruling, not the merits",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "A cheap in-repo check would make a wrong cross-repo citation impossible to write, instead of something we keep finding by hand. Booked with the design written down; not built, because you told us to stop building apparatus that is not the feature."
+    },
+    {
+      "id": "LENS-LEFT-113",
+      "state": "open",
+      "size": "L",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "The smaller sweep findings that remain. Re-measured tonight: the serious ones are down to two, one waiting on you and one a design call. About 70 minor items left, and each needs checking that it is still real before anyone works it."
+    },
+    {
+      "id": "BOOT-DOC-LINE-BOUND",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "a call that is not mine to make",
+      "title": "My boot document is now well under the size limit in bytes but still over on line count. Closing that gap means deleting four live rulings, so I have reported it up rather than trimming. No action needed from you unless the hub brings it."
+    },
+    {
+      "id": "LANDING-CHECKS-WRITTEN-DOWN",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "title": "Done and pushed: the landing checks are now a written list, including the step I skipped tonight -- actually reading the automated checks."
     }
   ],
-  "awaiting": "Stopped for your user switch at 99% -- nothing needed from you to resume. Nothing was in flight, so nothing was lost. When you are back: relaunch the debug window to see planes A and B drawing again (the new desktop shortcut does it, and that also closes the two things waiting on a relaunch). Then your call between the usability pilot, the two remaining criticals, or leaving it. Still open for you: the Pacing A/B (d-39) and the frozen fixtures (d-40, hold recommended).",
-  "atBoundary": true,
-  "updatedAt": "2026-09-08T18:23:22Z"
+  "awaiting": "two things, both cheap: (1) is the machine free -- you were filming, and I am holding a finished merge rather than fight your recording for it; (2) d-39, A or B on the Pacing tab, which is the one answer that unblocks the most of my own board. The other six of your eight cards were answered for you tonight by the audit session.",
+  "atBoundary": false,
+  "updatedAt": "2026-09-10T02:43:36Z"
 }
