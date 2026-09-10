@@ -40,15 +40,28 @@ and **before landing**. It is not part of the boot read.
 headroom" and was still asserting it at 99,578 B with 422 B left: a measurement written in the present
 tense, in the one section whose job is to warn about exactly that. Cuts so far: 2026-09-06 (99,798 →
 87,2xx B with its repair pass), 2026-09-09 morning (99,578 → 93,149 B, three closed blocks) and
-2026-09-09 evening (98,275 B / 1,142 lines → the figure you get from `wc` today; 8 closed blocks to the
-log, 7 ops lessons to the reference). ⚑ **The BYTE bound is met with real room; the LINE half is not,
-and that is reported rather than closed.** Every block that could move has moved: what is left over
-~900 lines is live rulings and live follow-up-register bookings, and the protocol's own
+2026-09-09 evening (98,275 B / 1,142 lines; 8 closed blocks to the
+log, 7 ops lessons to the reference) and **2026-09-09 second evening cut (98,469 B / 1,147 lines →
+90,463 B / 1,052 lines; 5 sections, 2 to the log and 3 to the reference)**. ⚑ **The BYTE bound is met
+with real room; the LINE half is not, and that is reported rather than closed.** What is left over
+~1,050 lines is live rulings and live follow-up-register bookings, and the protocol's own
 measure-then-move rule 3 says the residual goes to the owner rather than into a trim.
+⚑ **The claim "every block that could move has moved" stood here for one day and was false when
+written** — the second cut found five more the same night, three of them classified by BODY against a
+heading that reads as closed history. Do not write that sentence again; say what you moved and let the
+next session measure.
 When the bound is next reached, move history out in ONE cut with `tools/prove_doc_split.py` — run it from
 THIS repo, script by absolute path, and check its provenance lines name this document's line count before
 reading the verdict. Read BOTH PROOF 3 numbers: `--headings` gates the verdict on one of them, so confirm
 the heading-blind seams land on headings rather than accepting the gated number alone.
+⚑ **AND ITS PUBLISHED INVOCATION IS VACUOUSLY RED IN THIS REPO. Do not declare `OVERSEER-LOG.md` or
+`OVERSEER-REFERENCE.md` as `--output`.** This lane has cut before, so both already hold thousands of lines
+that were never in `OVERSEER.md`, and the tool correctly reports every one as `1b … NOT DECLARED` — an
+exit 1 that reads as *the agent lost content* and means nothing. It scored 3700 on an UNTOUCHED tree.
+**Declare the appended SLICES instead** (write each moved block to its own scratch file, pass those as
+`--output`, then check the slice text is verbatim-contiguous in its destination), and **run your exact
+invocation against the unmodified tree FIRST and require green there** before you trust any red after.
+A control that is red before you start makes the verdict uninterpretable.
 ⚑ **And expect it to refuse a cut you were sure of.** The 09-09 evening cut also tried to move
 `F-HOSTED-RESET-SRM`'s closed narrative; PROOF 3 disproved it, because that entry is a parenthetical
 INSIDE the follow-up register's running comma-list — no blank line anywhere near the cut, so the torn

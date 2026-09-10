@@ -3168,6 +3168,10 @@ committed blob. Three blocks whose live rules stayed in the head as short stanza
 `F-SPAWN-PICKER-PANEL-SURFACE` booking (closed; its owner question retired unasked by d-25), the
 2026-09-08 plane-raster measurement (the row stands; it is not the current explanation), and the H31
 I/O A0 decode ruling (FIXED at `28cf665`, so its currency-sequencing note is discharged).
+⚠ **"stayed in the head" EXPIRED the same evening**: the second cut of 2026-09-09 moved both of those
+short stanzas out of `OVERSEER.md` too — the plane-raster one to `OVERSEER-REFERENCE.md` (it is an ops
+lesson: re-price a parked ask before re-sending it) and the H31 one to the foot of THIS file. Corrected
+here rather than in `OVERSEER.md`, because the sentence that went stale is this one.
 
 - **F-SPAWN-PICKER-PANEL-SURFACE: the owner's words name a surface that has no pointer at all, and the
   parcel landed on the OTHER one. Booked so the gap is a decision, not an omission.** His tab ruling says
@@ -3277,6 +3281,13 @@ the cut: `oracle-frontend` does have layer toggles; `pick::resolve` takes a `Lay
 unmasked twin; and the conditional invariant is asserted, not merely noted. Aurora's five consumer
 rules were adopted and are satisfied in shipped code. The one hazard that binds FUTURE work (the
 blob-local rebase landing outside the blob) was kept in the head rather than moved.
+⚠ **ALSO EXPIRED the same evening**: the second cut moved that kept hazard, with its discharge stanza,
+to `OVERSEER-REFERENCE.md`, so `OVERSEER.md` now carries no GUI-LAYERS text at all. ⚑ **And the five
+in-tree citations of *"`docs/OVERSEER.md`'s GUI-LAYERS entry, point N"* (`planes.rs:87,99,1624`,
+`ui.rs:420`, `screen_pick.rs:41`, plus two 09-05 migration docs) were ALREADY dangling before that cut
+— the numbered consumer rules they name moved to this file on 09-09 morning, not in the evening cut.
+They are left alone deliberately: a comment is not shipped output, so under the CUT THE CEREMONY
+moratorium they belong to the `F-CITATION-LINT` row, which owns the lint AND the ~15 fixes as one row.**
 
 ## ▶ QUEUED, GUI-LAYERS: the player window's layer toggles + click-an-object
 
@@ -3411,6 +3422,17 @@ standing-timer question is already open as empyrean `d-9`.
 ### The parcel-2 layout-persistence line, stale and struck (orig line 1041)
 
 ⚠ **STALE, AND IT COST A PARCEL: the parcel-2 line item here said layout persistence was one `serde` flag, deliberately OFF *"until the placeholders are gone"*.** It is **ON and shipped** — `crates/oracle-player/src/layout.rs`, eframe `Storage`/RON, `LAYOUT_VERSION = 2` in its own storage key, `eframe = { features = ["persistence"] }` in the manifest. The condition the line named was met, the flag was flipped, and the line was never struck, so a brief was written from it to decide a question that did not exist. The paragraph and both of its corrections moved whole to `OVERSEER-LOG.md` 2026-09-06 for the boot-read bound; **the durable rule is in `docs/OVERSEER-REFERENCE.md`: when a conditional line's condition is met, strike the line in the same commit that meets it.**
+
+## 2026-09-09 evening (second cut) — moved whole from `OVERSEER.md` (boot-read bound, 98,469 → 90,463 B)
+
+*Two closed blocks, byte-identical, proved lossless by `tools/prove_doc_split.py` (exit 0, PROVED by
+all three proofs; control run green on the untouched tree first, since declaring the whole log as an
+`--output` is vacuously red here). Both had already left a half in this file, and this reunites them:
+the cycle-dumper detail is above at* **SIGIL CYCLE DUMPER — my join objection is REFUTED** *and the
+H31 derivation at* **RULED 2026-09-08 BY THIS SEAT … THE WRITE PATH IS THE DEFECT**. *So the two
+`detail in OVERSEER-LOG.md` / `moved whole to OVERSEER-LOG.md` pointers inside the blocks below now
+resolve within this file rather than out of it; they are left as written rather than rewritten,
+because the cut commit is a pure move and this header is the repair.*
 
 ## ⚑ SIGIL CYCLE DUMPER: DORMANT (2026-08-24; detail in `OVERSEER-LOG.md`)
 

@@ -918,6 +918,15 @@ dimensions come from is tracked (`ObjSub_Spring__Up_Red` is a `pub equ` in
 live-tree hazard is avoidable for the primary measurement rather than inherent. Detail and the falsifiers:
 `docs/2026-09-06-fixture-dimension-drift.md`.
 
+## Moved from OVERSEER.md 2026-09-09 evening (second boot-read cut) — read at a moment, not at boot
+
+*Three blocks whose headings read as closed history but whose BODIES are majority live rule, so they
+belong here and not in the log. Read the ledger block* **before landing** *(before any edit to
+`docs/decisions.jsonl`); the GUI-LAYERS hazard* **before designing or reviewing a surface that names
+a tile slot**; *the plane-raster lesson* **before re-sending an ask parked on the owner**. *Proved
+lossless by `tools/prove_doc_split.py`: exit 0, PROVED, 974/974 non-blank lines accounted, PROOF 3
+seams introduced heading-aware 0 AND heading-blind 0.*
+
 ## ⚑ THE LEDGER, 2026-09-10: SEVEN LINES REWRITTEN IN PLACE — **DO NOT REPAIR** — AND ONE THAT HAD TO BE
 
 **(a) Closed out of shape, do not repair: `d-31, d-35, d-38, d-39, d-40, d-44, d-47`.** The 2026-09-09
