@@ -169,10 +169,10 @@
     },
     {
       "id": "BOOT-DOC-LINE-BOUND",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "a call that is not mine to make",
-      "title": "My boot document is now well under the size limit in bytes but still over on line count. Closing that gap means deleting four live rulings, so I have reported it up rather than trimming. No action needed from you unless the hub brings it."
+      "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "title": "NOW URGENT and it was not this morning: the document every fresh session must read is 1,531 bytes under its limit after tonight's rulings. The next session that banks anything breaches it. It needs one careful cut moving closed history out -- done at a boundary, with the checking tool, not squeezed in beside three pending landings."
     },
     {
       "id": "LANDING-CHECKS-WRITTEN-DOWN",
@@ -184,5 +184,5 @@
   ],
   "awaiting": "one word: is the machine free? Three finished parcels are stacked on it -- I will not run a long verification against your recording. Also still d-39 (A or B on the Pacing tab), which unblocks the most of my own board.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T02:59:55Z"
+  "updatedAt": "2026-09-10T03:00:17Z"
 }
