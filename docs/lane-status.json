@@ -133,7 +133,7 @@
       "size": "M",
       "blockedBy": "your word that the machine is free",
       "project": "ORACLE-DEFAULT",
-      "title": "Finished and committed on a branch, waiting only on you. Merging means a long verification run, and I held it off rather than fight your recording for the machine. It gives our checks their first sight of the emulator's REFUSALS: 70 of 71 commands declare rules a bad request would break, 178 of them, none checked before this."
+      "title": "REVIEWED TONIGHT while waiting on you, so your nod buys a merge and not a review. Three real fixes, each one a case of the server answering a request it was supposed to refuse. I checked the one that could have bitten us -- it now rejects an empty search that used to dump the whole table -- against the written contract, and the contract does require it. I also swept every other project for anything relying on the old wording: nothing does. What is left is the long verification run, which is the part that needs the machine."
     },
     {
       "id": "SCHEMA-DRIFT-NIGHTLY",
@@ -184,5 +184,5 @@
   ],
   "awaiting": "two things, both cheap: (1) is the machine free -- you were filming, and I am holding a finished merge rather than fight your recording for it; (2) d-39, A or B on the Pacing tab, which is the one answer that unblocks the most of my own board. The other six of your eight cards were answered for you tonight by the audit session.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T02:46:43Z"
+  "updatedAt": "2026-09-10T02:49:50Z"
 }
