@@ -672,6 +672,37 @@ the handler); the legacy server silently defaults unknown params, which is exact
 sequence a cutover onto the STRICT implementation. **A missing capability that returns something is
 far worse here than one that refuses.**
 
+## ⚑ THE LEDGER, 2026-09-10: SEVEN LINES REWRITTEN IN PLACE — **DO NOT REPAIR** — AND ONE THAT HAD TO BE
+
+**(a) Closed out of shape, do not repair: `d-31, d-35, d-38, d-39, d-40, d-44, d-47`.** The 2026-09-09
+audit session answered six and re-shaped one **by rewriting the settled lines** (`31982af`, `docs/decisions.jsonl`
+**+7/−7, zero appends** — measured here, not taken from the hub's numstat). `contract/DECISIONS.md` rule 8
+forbids exactly that. **They stay as written**, per that contract's own clause: *"Ledgers are NOT rewritten to
+fit this … History that shows the drift is worth more than history edited to look compliant."* The pre-rewrite
+text is preserved in git at `627295f`. ⚑ **The hub proposed aurora's append-a-sibling repair; the contract
+that owns the file says the opposite, and the contract wins.** Appending siblings would also have put a second
+answered row under a second id for each question, which double-counts on the console — a repair creating the
+defect it repairs.
+⚑ **And the uncomfortable half, kept because it is the sharpest instance either lane produced: the correction
+this seat served the hub at 02:44Z was sourced from those seven rewritten lines.** The conclusion was right and
+was independently confirmed, but **both lanes were reading the ledger as ground truth inside an argument about
+reading the cheaper artifact.**
+
+**(b) THE ONE REWRITE THIS SEAT MADE, DELIBERATELY AND LOUDLY: `d-46` appeared TWICE** (lines 46 and 49), the
+second filed by this lane at 2026-09-09T15:20:19Z as a corrected re-file that reused the id instead of taking
+the next free one. **`tools/lane-check.py` was RED on it from 15:20Z, hours before the audit** — so the hub's
+warning was right about the class and wrong about the instance, and the red was ours. **G2b runs on every
+landing, fast path or full**, so the landing lane was blocked for both live parcels and would have refused them
+with a message about malformed lane files, reading as a fault in their branches.
+**Repair: line 49's `id` → `d-49` plus `supersedes: "d-46"`, one line, `--numstat` verified 1/1, the other 48
+lines proven byte-identical, gate exit 0.**
+⚑ **THE CONTRACT GAP, RAISED WITH THE HUB: a duplicate id cannot be repaired by any legal append.** Rule 8's
+sanctioned shape-fix (sigil's d-15 over d-14) adds a new id and leaves the malformed line — which does not
+remove a *duplicate*, so the uniqueness check stays red forever. Append-only and id-uniqueness are in direct
+tension the moment a duplicate is filed, and the file's own gate demands the one move its contract forbids.
+Rewriting was chosen over a permanently red landing lane; the alternative was blocking every parcel in the repo
+on a bookkeeping defect.
+
 ## ⚑ SIGIL CYCLE DUMPER: DORMANT (2026-08-24; detail in `OVERSEER-LOG.md`)
 
 `blocked` on `no filed ask exists`, and sigil's own consumer (Spec 2 cycle budgets) is deferred at their

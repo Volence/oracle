@@ -7,12 +7,12 @@
       "agent": true
     },
     {
-      "what": "A fix from tonight's audit: two copies of one truth crept back into the reset/reload paths days after we removed them",
+      "what": "DONE and waiting to land: the copy-paste that undid an earlier cleanup is fixed, and the agent PROVED the danger was real rather than asserting it",
       "where": "branch parcel/h25-drift-dedupe",
-      "agent": true
+      "agent": false
     },
     {
-      "what": "Refusal gate finished and committed, deliberately NOT merged until you say the machine is free",
+      "what": "Refusal gate reviewed and sound, deliberately NOT merged until you say the machine is free",
       "where": "branch parcel/error-surface-gate",
       "agent": false
     }
@@ -33,11 +33,11 @@
   "queue": [
     {
       "id": "H25-DRIFT-DEDUPE",
-      "state": "doing",
+      "state": "next",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "the same machine question as the other two",
       "project": "ORACLE-DEFAULT",
-      "title": "Tonight's audit found the top thing worth fixing: a cleanup we landed days ago was quietly undone by copy-paste, so two paths that must stay identical are hand-kept again. Being made one path."
+      "title": "FIXED and proven. The agent showed the danger was real by breaking the old code on purpose: the window's own reset path silently kept the old behaviour and every test still passed. After the fix the same break is caught. Waiting with the others on whether the machine is free."
     },
     {
       "id": "UX-FIX-GROUP-A",
@@ -184,5 +184,5 @@
   ],
   "awaiting": "two things, both cheap: (1) is the machine free -- you were filming, and I am holding a finished merge rather than fight your recording for it; (2) d-39, A or B on the Pacing tab, which is the one answer that unblocks the most of my own board. The other six of your eight cards were answered for you tonight by the audit session.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T02:49:50Z"
+  "updatedAt": "2026-09-10T02:55:27Z"
 }
