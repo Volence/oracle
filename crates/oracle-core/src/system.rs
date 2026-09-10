@@ -1280,19 +1280,35 @@ impl System {
                 // HInt handler are visible to this line's reload (the S3K/aeon arm-chain idiom).
                 self.scheduler
                     .schedule(deadline + self.vdp.hint_offset(), EventKind::HInt);
-                // Render active lines (0..=223) so the sprite overflow/collision status bits + the R10 masking
-                // carry evolve during normal runs (games poll them). Currency-safe: the sprite flags/carry are
-                // in neither frozen currency, and render output is discarded here — unless the sink opts in
-                // (conformance Limitation L1), in which case the already-built report is retained and decoded
-                // to RGB at the next line's event. The sink is the caller's; `System` never stores it.
+                // Advance active lines (0..=223) so the sprite overflow/collision status bits + the R10
+                // masking carry evolve during normal runs (games poll them). Currency-safe: the sprite
+                // flags/carry are in neither frozen currency.
+                //
+                // ⚑ **Which advance depends on whether anyone wants the picture** (finding C5). Until this
+                // parcel both arms called `render_scanline` and the unarmed arm dropped its `LineReport` on
+                // the floor — 224 fully composited, fully attributed scanlines built and discarded every
+                // frame, on `oracle-replay`'s runs and on every null-sink `run_frames` in the tree. The
+                // unarmed arm now calls `Vdp::advance_scanline`, which runs the identical sprite pipeline and
+                // commits the identical three bits with no composite and no report; see its doc for why the
+                // equivalence is structural (the sprite walk runs first and unconditionally, everything the
+                // composite adds feeds only `pixels`, and all of it is `&self`). The armed arm is unchanged
+                // to the instruction — same call, same instant, same inputs — so no capture consumer, and no
+                // golden, can tell this parcel happened.
+                //
+                // The opt-in is still **re-consulted here** rather than read from `run_until_with_sink`'s
+                // `wants_rows`, deliberately: the trait requires a constant answer for a run, so hoisting
+                // would be correct, but the deferred emitter's design note directly above says it has no
+                // armed flag on purpose — one source of truth, nothing to keep in sync. A hoist would buy one
+                // inlined `bool` call per line against re-introducing that second source, which is not a
+                // trade worth making for a branch the optimiser already sees through.
                 if line < 224 {
-                    let report = self.vdp.render_scanline(line as u16);
                     if sink.wants_scanlines() {
-                        // Retain the resolved row + a 128-byte CRAM snapshot instead of decoding it now.
-                        // `render_scanline` itself has NOT moved — same instant, same inputs, same sprite
-                        // latch commit — so the unarmed hot path and every ROM's timing are untouched; only
-                        // the instant the sink is handed the bytes moves, by one line.
+                        // Retain the resolved row + a 128-byte CRAM snapshot instead of decoding it now
+                        // (conformance Limitation L1); the run loop decodes it at the next line's event.
+                        let report = self.vdp.render_scanline(line as u16);
                         self.scanline_scaffold.stash(report, self.vdp.cram());
+                    } else {
+                        self.vdp.advance_scanline(line as u16);
                     }
                 }
                 if line == 224 {
@@ -1839,8 +1855,11 @@ mod tests {
 
     #[test]
     fn scanline_wiring_evolves_the_sprite_masking_carry_during_a_run() {
-        // The Scanline event now calls render_scanline for active lines, so the sprite pipeline's state (here
-        // the R10 dot-overflow masking carry) evolves during run_frames. Program nine 4-cell sprites on the
+        // The Scanline event advances the sprite pipeline on every active line, so its state (here the R10
+        // dot-overflow masking carry) evolves during run_frames. ⚑ This sink is `&mut ()`, which wants no
+        // rows, so since finding C5 this run takes `Vdp::advance_scanline` — the picture-free arm. That makes
+        // this test the *system-level* guard on the split: if the cheap arm stopped committing, or were wired
+        // to the wrong lines, the carry would not be set here. Program nine 4-cell sprites on the
         // last active line (223) — 288 px > the 256-px H32 budget → dot overflow. The carry is NOT cleared by
         // status reads, so committing it on line 223 survives to the end of the frame (robust vs the ROM).
         let mut s = booted(0x1111);

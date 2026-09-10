@@ -2185,7 +2185,11 @@ impl Vdp {
     /// **What the compiler enforces.** The invariant is **no render that takes a [`LayerMask`] takes
     /// `&mut self`** — deliberately not "there is exactly one stateful render", which is a fact about
     /// today's file rather than a property, and which a cheap second *unmasked* stateful render would make
-    /// false without weakening anything. Every mask-taking render is `&self`: the `resolve_line_masked`
+    /// false without weakening anything. ⚑ **That second render now exists**: [`Vdp::advance_scanline`]
+    /// (finding C5) is `&mut self`, takes no mask, and commits the same three bits without building the
+    /// picture. It is the case the wording above was written to admit, and it is why the wording is what it
+    /// is: "exactly one stateful render" would have gone false here, "no masked render is stateful" did not.
+    /// Every mask-taking render is `&self`: the `resolve_line_masked`
     /// they all share, [`Vdp::render_line_masked`], [`Vdp::render_line_report_masked`],
     /// [`Vdp::pixel_attribution_masked`]. [`Vdp::commit_scanline_sprites`], the write that seeds the R10
     /// carry and ORs the sprite-overflow / collision latches, takes `&mut self`. So a masked render
@@ -2215,6 +2219,43 @@ impl Vdp {
         let report = self.line_report_from(line, resolved);
         self.commit_scanline_sprites(dot, over, coll);
         report
+    }
+
+    /// [`render_scanline`](Self::render_scanline)'s **chip-state advance without the picture** (finding C5):
+    /// the same per-line sprite walk, the same three committed bits, and no composite, no [`LineReport`],
+    /// no pixels. For a run whose sink does not want rows, this is the whole of what `render_scanline` was
+    /// there to do — the report it returned was dropped at the call site
+    /// ([`System::run_until_with_sink`](crate::system::System::run_until_with_sink)'s `Scanline` arm), which
+    /// on `oracle-replay`'s unarmed runs meant compositing 224 full attributed scanlines a frame in order to
+    /// throw all 224 away.
+    ///
+    /// **Why this is equivalent, structurally rather than empirically.** In `resolve_line_masked` the sprite
+    /// pipeline runs **first and unconditionally** — before the display-enable early return, before the
+    /// composite — and the three bits committed here are all products of that one call. Everything the
+    /// composite adds (`plane_pixel`, `a_slot_pixel`, `resolve_dot`, the leftmost-column blank) feeds
+    /// `ResolvedLine::pixels` and nothing else, `line_report_from` reads only registers and the already-built
+    /// `SpriteLine`, and all of it is `&self` in a crate that is `#![forbid(unsafe_code)]` with no interior
+    /// mutability — so none of it can perturb a field the sprite walk reads. The one carried field,
+    /// `sprite_dot_overflow_carry`, is read in exactly one place in this module (`sprite_line`'s
+    /// `seen_nonzero` seed) and written in exactly one (`commit_scanline_sprites`), and this function
+    /// preserves their order: read at entry, written at exit, nothing between. Dropping the composite can
+    /// therefore change the picture nobody asked for and nothing else.
+    ///
+    /// Guarded, not merely argued, by `the_cheap_scanline_advance_leaves_the_same_machine` below: over a
+    /// corpus that varies H40/H32, display on/off, overflow, collision and the incoming carry, driving N
+    /// lines through this and through `render_scanline` must leave two **`PartialEq`-identical `Vdp`s** —
+    /// every field, not just the three bits.
+    ///
+    /// **It takes no [`LayerMask`], and must not gain one.** It is the "cheap second *unmasked* stateful
+    /// render" that `render_scanline`'s doc above named in advance: the invariant this tree holds is *no
+    /// render taking a `LayerMask` takes `&mut self`*, so this signature is admissible exactly as long as it
+    /// stays unmasked. A masked twin of *either* stateful render is the forbidden shape, for the reason
+    /// stated there — a display filter must not be able to move a status bit the ROM polls.
+    pub fn advance_scanline(&mut self, line: u16) {
+        let h40 = self.render_h40();
+        let width = if h40 { 320 } else { 256 };
+        let sprite = self.sprite_line(line, h40, width);
+        self.commit_scanline_sprites(sprite.dot_overflow, sprite.overflow, sprite.collision);
     }
 }
 
@@ -4467,6 +4508,240 @@ mod tests {
             got, want,
             "line 1's R10 masking differs, so the dot-overflow carry the commit seeded differs — \
              the mask reached chip state"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // C5 — the picture-free scanline advance, and the corpus that makes its equivalence a measurement
+    // ---------------------------------------------------------------------------------------------
+
+    /// One corpus row: a name, and a VDP posed in some state worth distinguishing.
+    struct Case {
+        name: &'static str,
+        vdp: Vdp,
+    }
+
+    /// A SAT-ready fixture in the requested width, with `display` deciding reg $01 bit 6.
+    fn sprite_bed(h40: bool, display: bool) -> Vdp {
+        let mut v = pa_fixture(h40);
+        set_reg(&mut v, 0x0F, 2); // autoincrement 2 — write_sprite streams four words
+        set_reg(&mut v, 0x05, 0x10); // SAT base 0x2000
+        fill_tile(&mut v, 3, 3);
+        write_cram(&mut v, 3, 0x00E0); // entry 3 = green
+        if !display {
+            // Clear reg $01 bit 6 but keep M5 (bit 2): the display-disabled early return in
+            // `resolve_line_masked`, which returns after the sprite walk and before any composite.
+            set_reg(&mut v, 0x01, 0x04);
+        }
+        v
+    }
+
+    /// `n` 1×1 opaque sprites stacked at screen (0,0) — they overlap (collision) and, past the per-line
+    /// count limit, overflow. `x` places them; `0x0080` is screen x 0.
+    fn stack_sprites(v: &mut Vdp, n: u16, x: u16) {
+        for i in 0..n {
+            let link = if i == n - 1 { 0 } else { i + 1 };
+            write_sprite(v, i as usize, 0x0080, link, 0x0003, x);
+        }
+    }
+
+    /// `n` **4-cell-wide** sprites side by side on line 0: 32 px each, so `n` of them ask for `32n` px
+    /// against the 256-px (H32) / 320-px (H40) budget — the dot-overflow lever, distinct from the count one.
+    fn wide_sprites(v: &mut Vdp, n: u16) {
+        for i in 0..n {
+            let link = if i == n - 1 { 0 } else { i + 1 };
+            // sizelink $0C00 | link = 4 cells wide, 1 cell tall.
+            write_sprite(
+                v,
+                i as usize,
+                0x0080,
+                0x0C00 | link,
+                0x0003,
+                0x0080 + i * 32,
+            );
+        }
+    }
+
+    /// The corpus: every axis the cheap advance could plausibly be wrong on, posed separately so a failure
+    /// names the axis. Deliberately **not** one maximal fixture — a single state that happens to set every
+    /// bit would let a whole branch (display-disabled, say) go unexercised while the assertion still passed.
+    fn advance_corpus() -> Vec<Case> {
+        let mut out = Vec::new();
+        for &h40 in &[false, true] {
+            let mut quiet = sprite_bed(h40, true);
+            write_sprite(&mut quiet, 0, 0x0080, 0, 0x0003, 0x0080); // one lone sprite: nothing to trip
+            out.push(Case {
+                name: if h40 {
+                    "H40 one sprite"
+                } else {
+                    "H32 one sprite"
+                },
+                vdp: quiet,
+            });
+
+            let mut pair = sprite_bed(h40, true);
+            stack_sprites(&mut pair, 2, 0x0080); // overlapping pair: collision WITHOUT overflow
+            out.push(Case {
+                name: if h40 {
+                    "H40 collision only"
+                } else {
+                    "H32 collision only"
+                },
+                vdp: pair,
+            });
+
+            let mut stack = sprite_bed(h40, true);
+            stack_sprites(&mut stack, 24, 0x0080); // past both the H32 (16) and H40 (20) count limits
+            out.push(Case {
+                name: if h40 {
+                    "H40 count overflow"
+                } else {
+                    "H32 count overflow"
+                },
+                vdp: stack,
+            });
+
+            let mut wide = sprite_bed(h40, true);
+            wide_sprites(&mut wide, 12); // 384 px asked for, against 256 / 320 — dot overflow, so the
+                                         // NEXT line's R10 masking seeds from a set carry
+            out.push(Case {
+                name: if h40 {
+                    "H40 dot overflow"
+                } else {
+                    "H32 dot overflow"
+                },
+                vdp: wide,
+            });
+
+            let mut masked = sprite_bed(h40, true);
+            // The R10 masking lever: a dot-overflow line (12 wide sprites) followed by a first-on-line x=0
+            // sprite, which masks every later sprite once the carry seeds `seen_nonzero`. This is the one
+            // place the carry the commit writes changes what the *next* walk decides, so it is the case
+            // that would catch a commit landing in the wrong order.
+            wide_sprites(&mut masked, 12);
+            write_sprite(&mut masked, 12, 0x0080, 13, 0x0003, 0x0000); // x=0 masker
+            write_sprite(&mut masked, 13, 0x0080, 0, 0x0003, 0x0100);
+            out.push(Case {
+                name: if h40 {
+                    "H40 x=0 masking"
+                } else {
+                    "H32 x=0 masking"
+                },
+                vdp: masked,
+            });
+
+            let mut off = sprite_bed(h40, false);
+            stack_sprites(&mut off, 24, 0x0080); // display DISABLED: the early-return branch, still walking
+            out.push(Case {
+                name: if h40 {
+                    "H40 display disabled"
+                } else {
+                    "H32 display disabled"
+                },
+                vdp: off,
+            });
+        }
+        out
+    }
+
+    /// **The C5 guard: the picture-free advance leaves the machine in the state the full render leaves it
+    /// in — every field, not just the three bits it commits.**
+    ///
+    /// `Vdp::advance_scanline` exists so an unarmed run (`oracle-replay`, every null-sink `run_frames`) can
+    /// evolve the sprite-overflow / collision latches and the R10 carry without compositing 224 scanlines a
+    /// frame and discarding them. That is only admissible if the machine cannot tell which arm it took, so
+    /// the assertion is `Vdp: PartialEq` over the **whole chip** — VRAM, CRAM, VSRAM, registers, FIFO,
+    /// latches, the lot — after each of eight consecutive lines, checked per line so a divergence names the
+    /// line it appeared on rather than the end of the run.
+    ///
+    /// **The corpus is checked for being a corpus.** A guard like this fails the useful way only if the
+    /// inputs actually differ, and "every case agrees" is exactly what a confound looks like: run it over
+    /// twelve fixtures that all quietly produce `overflow=false, collision=false, carry=false` and it is
+    /// green for a reason unrelated to the property. So the coverage assertions below are part of the test,
+    /// not decoration — they require the corpus to have exercised both widths, both display states, and
+    /// both values of each of the three committed bits, and go red if a future edit to a fixture stops it
+    /// tripping what it was written to trip.
+    #[test]
+    fn the_cheap_scanline_advance_leaves_the_same_machine() {
+        const LINES: u16 = 8;
+        let mut saw_h40 = false;
+        let mut saw_h32 = false;
+        let mut saw_display_off = false;
+        let mut saw_display_on = false;
+        let mut saw_overflow = (false, false);
+        let mut saw_collision = (false, false);
+        let mut saw_carry = (false, false);
+
+        for case in advance_corpus() {
+            let mut full = case.vdp.clone();
+            let mut cheap = case.vdp;
+            for line in 0..LINES {
+                let report = full.render_scanline(line);
+                cheap.advance_scanline(line);
+
+                // Record what this line actually exercised, from the full path's own report.
+                if report.h40 {
+                    saw_h40 = true;
+                } else {
+                    saw_h32 = true;
+                }
+                if report.display_enabled {
+                    saw_display_on = true;
+                } else {
+                    saw_display_off = true;
+                }
+                let slot = |t: &mut (bool, bool), v: bool| {
+                    if v {
+                        t.1 = true;
+                    } else {
+                        t.0 = true;
+                    }
+                };
+                slot(&mut saw_overflow, report.sprite_overflow);
+                slot(&mut saw_collision, report.sprite_collision);
+                slot(&mut saw_carry, full.sprite_dot_overflow_carry());
+
+                // The three bits, named individually so a failure says which one moved…
+                assert_eq!(
+                    cheap.sprite_dot_overflow_carry(),
+                    full.sprite_dot_overflow_carry(),
+                    "{}: line {line} — the cheap advance committed a different R10 dot-overflow carry",
+                    case.name
+                );
+                // …and then the whole chip, which subsumes them and catches anything the composite was
+                // secretly doing that neither of us thought to name. `Vdp` has no `Debug`, so this is an
+                // `assert!` on `PartialEq` rather than an `assert_eq!`.
+                assert!(
+                    cheap == full,
+                    "{}: line {line} — the cheap advance and the full render left DIFFERENT machines. \
+                     Some field the composite touches is not read-only after all, and \
+                     `Vdp::advance_scanline`'s equivalence argument is wrong",
+                    case.name
+                );
+            }
+        }
+
+        // The corpus controls. Each of these is a statement that the run above was not vacuous.
+        assert!(saw_h32 && saw_h40, "corpus never exercised both widths");
+        assert!(
+            saw_display_on && saw_display_off,
+            "corpus never exercised the display-disabled early return, which is the branch that returns \
+             before the composite — exactly the shape the cheap path is"
+        );
+        assert!(
+            saw_overflow.0 && saw_overflow.1,
+            "corpus never produced BOTH sprite-overflow states ({saw_overflow:?}); a guard that only ever \
+             saw one is agreeing about a constant"
+        );
+        assert!(
+            saw_collision.0 && saw_collision.1,
+            "corpus never produced BOTH collision states ({saw_collision:?})"
+        );
+        assert!(
+            saw_carry.0 && saw_carry.1,
+            "corpus never produced BOTH R10 dot-overflow carry states ({saw_carry:?}); the carry is the \
+             only committed bit that feeds back into the next line's walk, so a corpus that never sets it \
+             has not tested the ordering this function has to preserve"
         );
     }
 

@@ -226,7 +226,9 @@ pub struct Vdp {
     /// pixel-budget) overflow. Seeds the next line's x=0 masking latch so a first-on-line x=0 sprite masks
     /// (Nemesis's previous-line-dot-overflow exception; Kabuto's "previous line/frame" reach). Persists
     /// across lines *and* frames. Real state, serialized (round-trips); not in either frozen currency.
-    /// Power-on = false. Committed by [`Vdp::render_scanline`]; the pure `render_line` seeds from it read-only.
+    /// Power-on = false. Committed by [`Vdp::render_scanline`] and by its picture-free twin
+    /// [`Vdp::advance_scanline`] (the run loop calls one or the other every active line, per finding C5);
+    /// the pure `render_line` seeds from it read-only.
     sprite_dot_overflow_carry: bool,
     /// The 4-entry write FIFO (recon R3), a physical ring. Each data-port write enqueues a [`FifoEntry`] here.
     /// `fifo_write` is the next slot to fill; the oldest pending entry is `fifo[(fifo_write − fifo_len) & 3]`;
@@ -439,7 +441,7 @@ impl Vdp {
 
     /// The R10 sprite-masking carry (recon R10): whether the previously-rendered line ended in a sprite-pixel
     /// (dot) overflow. The pure `render_line` seeds the next line's masking latch from this (read-only);
-    /// [`Vdp::render_scanline`] advances it.
+    /// [`Vdp::render_scanline`] and [`Vdp::advance_scanline`] advance it.
     pub fn sprite_dot_overflow_carry(&self) -> bool {
         self.sprite_dot_overflow_carry
     }
@@ -1534,7 +1536,9 @@ impl Vdp {
         self.hint_pending = true;
     }
 
-    /// Commit one scanline's sprite latches (recon R10), driven by [`Vdp::render_scanline`]. Sets the R10
+    /// Commit one scanline's sprite latches (recon R10), driven by [`Vdp::render_scanline`] and by
+    /// [`Vdp::advance_scanline`], the picture-free twin an unarmed run takes instead (finding C5) — the two
+    /// hand this function the same three values, which is the whole of what makes them equivalent. Sets the R10
     /// masking carry to **this line's** dot overflow (so the next line's first-on-line x=0 sprite masks), and
     /// **ORs** the sprite-overflow (status bit 6) / collision (status bit 5) status latches — sticky until a
     /// status read clears them. Kept in `vdp.rs` (the owner of these serialized fields); the renderer computes

@@ -315,9 +315,15 @@ impl Machine {
     /// # Why a masked picture cannot be made out of the captured one
     ///
     /// The capture's rows were composited line by line during the run by
-    /// [`Vdp::render_scanline`](oracle_core::vdp::Vdp::render_scanline) — **the one render that commits the
+    /// [`Vdp::render_scanline`](oracle_core::vdp::Vdp::render_scanline) — **a render that commits the
     /// sprite-overflow and collision latches and the R10 carry, which is why it takes no mask and has no
     /// masked twin**. This slice adds no mask parameter to it.
+    ///
+    /// ⚑ This read *"the one render that commits"* until finding C5 added `Vdp::advance_scanline`, a second
+    /// `&mut self` render that commits the same three bits without building a picture, taken by runs that
+    /// want no rows. That does not touch anything here — the player always arms the capture, so its frames
+    /// still come from `render_scanline` — but the invariant is the narrower one stated on that method's
+    /// doc: *no render taking a `LayerMask` takes `&mut self`*, not "there is one stateful render".
     ///
     /// ⚑ This read that *"a display mask cannot perturb emulation" is enforced by the type system* and that
     /// *"none may ever be added"* until finding H26. What the compiler actually enforces is that every

@@ -1591,9 +1591,12 @@ pub struct Engine {
     ///   nothing here, so a debugging session keeps its masks across a timeline jump — the thing a client
     ///   would have to notice going missing, silently, mid-investigation.
     /// * **It cannot perturb emulation**, and the compiler is what says so for the part that matters: this
-    ///   field reaches the VDP only as a parameter to the **`&self`** renders, while the one render that
-    ///   writes to the chip (`Vdp::render_scanline`, which commits the sprite-overflow / collision latches
-    ///   the ROM polls) takes `&mut self` and no mask — so no masked path can compile a call to the commit.
+    ///   field reaches the VDP only as a parameter to the **`&self`** renders, while the renders that
+    ///   write to the chip (`Vdp::render_scanline` and, since finding C5, the picture-free
+    ///   `Vdp::advance_scanline` an unarmed run takes instead — both commit the sprite-overflow / collision
+    ///   latches the ROM polls) take `&mut self` and no mask — so no masked path can compile a call to the
+    ///   commit. ⚑ This read "the one render that writes to the chip" until C5 added the second one; the
+    ///   invariant was never a count, it is *no render taking a `LayerMask` takes `&mut self`*.
     ///   `System::run` is byte-for-byte unchanged. ⚑ That `render_scanline` never *gains* a mask parameter
     ///   is a convention rather than a mechanism (finding H26); its own doc states the split and names the
     ///   test that guards the harm.
@@ -1618,9 +1621,9 @@ pub struct Engine {
     ///   and no `state_hash`/`memory_hash` input — those cannot see it even in principle.
     /// * **`reset` / `reload_rom` / `restore` cannot touch it.** All three replace `self.sys`; the glass
     ///   still says what it says.
-    /// * **It cannot perturb emulation.** Nothing here reaches a render. The one render that writes to the
-    ///   chip (`Vdp::render_scanline`, which commits the sprite-overflow / collision latches) is not on any
-    ///   path from this field.
+    /// * **It cannot perturb emulation.** Nothing here reaches a render. Neither render that writes to the
+    ///   chip (`Vdp::render_scanline` and `Vdp::advance_scanline`, which commit the sprite-overflow /
+    ///   collision latches) is on any path from this field.
     ///
     /// **`None` means there is no window**, and that is load-bearing rather than incidental: a windowed
     /// player showing *no* text is the ordinary default launch state and pushes `Some(vec![])`. An empty
