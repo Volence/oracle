@@ -677,12 +677,18 @@ far worse here than one that refuses.**
 **(a) Closed out of shape, do not repair: `d-31, d-35, d-38, d-39, d-40, d-44, d-47`.** The 2026-09-09
 audit session answered six and re-shaped one **by rewriting the settled lines** (`31982af`, `docs/decisions.jsonl`
 **+7/−7, zero appends** — measured here, not taken from the hub's numstat). `contract/DECISIONS.md` rule 8
-forbids exactly that. **They stay as written**, per that contract's own clause: *"Ledgers are NOT rewritten to
-fit this … History that shows the drift is worth more than history edited to look compliant."* The pre-rewrite
-text is preserved in git at `627295f`. ⚑ **The hub proposed aurora's append-a-sibling repair; the contract
-that owns the file says the opposite, and the contract wins.** Appending siblings would also have put a second
-answered row under a second id for each question, which double-counts on the console — a repair creating the
-defect it repairs.
+forbids exactly that. **They stay as written — CITE RULE 8f**, `contract/DECISIONS.md` at empyrean `2e070bf`
+(ancestor-verified, a contract commit carrying the rule). The pre-rewrite text is preserved in git at `627295f`.
+⚠ **This seat first cited the pre-8d "closed out of shape, do not repair" bullet and that was ONE NOTCH WIDE**:
+8d's bullet says *"before this rule"* and 8f now says so explicitly — 8d took force 2026-08-30T01:58:05Z and
+these were rewritten 09-09, so the bullet does not reach them. **Same disposition, different route**; the
+sentence that actually forbids the rewrite is *"Nothing in 8d is an instruction to touch an existing line."*
+⚑ **The hub proposed aurora's append-a-sibling repair and withdrew it on this lane's objection**: appending
+siblings would put a second answered row under a second id for each question, double-counting on the console —
+a repair creating the defect it repairs. **8f's discriminator, now written down because the hub told two lanes
+opposite things in one day and both were right: REPAIR ONLY WHEN A GATE IS RED AND THE REPAIR CLEARS IT;
+otherwise list and leave.** Aurora's rewrite failed `check-ledger-timestamps`, so aurora repaired; ours failed
+nothing, so ours is listed. **A repair with no red gate behind it is history edited to look compliant.**
 ⚑ **And the uncomfortable half, kept because it is the sharpest instance either lane produced: the correction
 this seat served the hub at 02:44Z was sourced from those seven rewritten lines.** The conclusion was right and
 was independently confirmed, but **both lanes were reading the ledger as ground truth inside an argument about
@@ -696,12 +702,19 @@ landing, fast path or full**, so the landing lane was blocked for both live parc
 with a message about malformed lane files, reading as a fault in their branches.
 **Repair: line 49's `id` → `d-49` plus `supersedes: "d-46"`, one line, `--numstat` verified 1/1, the other 48
 lines proven byte-identical, gate exit 0.**
-⚑ **THE CONTRACT GAP, RAISED WITH THE HUB: a duplicate id cannot be repaired by any legal append.** Rule 8's
-sanctioned shape-fix (sigil's d-15 over d-14) adds a new id and leaves the malformed line — which does not
-remove a *duplicate*, so the uniqueness check stays red forever. Append-only and id-uniqueness are in direct
-tension the moment a duplicate is filed, and the file's own gate demands the one move its contract forbids.
-Rewriting was chosen over a permanently red landing lane; the alternative was blocking every parcel in the repo
-on a bookkeeping defect.
+⚑ **NOW CONTRACT RULE 8e, adopted from this lane's finding** (empyrean `2e070bf`): **a duplicate id cannot be
+repaired by any legal append.** Rule 8's sanctioned shape-fix (sigil's d-15 over d-14) adds a new id and leaves
+the malformed line — which does not remove a *duplicate*, so a uniqueness gate stays red forever and the file's
+own gate demands the one move its contract forbids. **Ruled: id-uniqueness wins, narrowly. Re-id the LATER line
+with `supersedes` naming what it left, exactly one line, `--numstat` reading `1 1` with the rest byte-identical,
+loud in the commit.** It is the ONLY sanctioned edit to an existing line in that document. The hub's rationale,
+worth keeping because it is better than the one this seat argued from: **a duplicate makes the reader resolve
+last-line-wins and SILENTLY SHADOW the earlier decision, so the owner never sees it** — the exact failure
+append-only exists to prevent, arriving through the rule that prevents it.
+⚑ **The move was made and flagged BEFORE the ruling existed, and the ruling ratified it.** That is the right
+order and worth keeping as the pattern: act on the critical path, be loud about which rule you are bending and
+why, and let the contract catch up — never bend it quietly and never block a landing lane on a bookkeeping
+defect while waiting for permission.
 
 ## ⚑ SIGIL CYCLE DUMPER: DORMANT (2026-08-24; detail in `OVERSEER-LOG.md`)
 
