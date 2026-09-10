@@ -2,14 +2,14 @@
   "focus": "Two more fixes running -- I had wrongly told you nothing was left that did not need your machine.",
   "inFlight": [
     {
-      "what": "DONE, waiting to land: the Screen tab now says why it cannot draw instead of going blank -- and the cause was not what I briefed",
-      "where": "branch parcel/screen-picture-silent",
+      "what": "DONE, waiting to land: I sent an agent after a coverage hole that did not exist -- it disproved me and found a REAL one next to it",
+      "where": "branch parcel/io-write-mirror-cover",
       "agent": false
     },
     {
-      "what": "A hardware fix whose test can only check half of it, plus a booked note whose reasoning is backwards",
-      "where": "branch parcel/io-write-mirror-cover",
-      "agent": true
+      "what": "DONE, waiting to land: the Screen tab now says why it cannot draw instead of going blank -- and the cause was not what I briefed",
+      "where": "branch parcel/screen-picture-silent",
+      "agent": false
     },
     {
       "what": "DONE, waiting to land: the boot document cut back under its limit, with every one of your rulings intact",
@@ -197,14 +197,6 @@
       "title": "Done and pushed: the landing checks are now a written list, including the step I skipped tonight -- actually reading the automated checks."
     },
     {
-      "id": "F-IO-WRITE-MIRROR-UNCOVERED",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Booked so it does not vanish with the cut: a hardware behaviour we fixed has a test that can only ever check half of it. The note describing the gap also has its premise backwards -- I read the test tonight and it does the opposite of what the note says, though the conclusion it draws is still right."
-    },
-    {
       "id": "F-SCREEN-TAB-STRIP-UNBOUNDED",
       "state": "open",
       "size": "M",
@@ -219,9 +211,17 @@
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "Small tidy the agent offered and I told it not to take: the plane viewer and the Screen tab now say 'I cannot draw this' in two different ways. One of them carries its own explanation and cannot be silenced by accident; the other is the older inline check. Worth collapsing into one."
+    },
+    {
+      "id": "F-Z80RAM-MIRROR-WIDTH",
+      "state": "next",
+      "size": "S",
+      "blockedBy": "the machine, like the others",
+      "project": "ORACLE-DEFAULT",
+      "title": "FIXED and waiting to land, and it is the one that was actually broken. The Z80 memory mirror had a test that only ever checked position zero -- where every possible wrong answer looks identical -- so the WIDTH of the mirror was unchecked in both directions. Now checked at a position where a wrong fold disagrees."
     }
   ],
   "awaiting": "your word that the machine is free -- four finished parcels are parked on it. Nothing else needs you tonight.",
   "atBoundary": false,
-  "updatedAt": "2026-09-10T03:49:40Z"
+  "updatedAt": "2026-09-10T03:55:37Z"
 }
