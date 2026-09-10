@@ -142,12 +142,18 @@ impl Layer {
 ///
 /// # It does not perturb the machine
 ///
-/// This type is a **parameter**, never a field: no `Vdp` and no `System` holds one, so it is in no
-/// snapshot, no `state_hash`, and nothing a reset or a restore can carry or drop. The only stateful render
-/// — [`Vdp::render_scanline`], which commits the sprite-overflow / collision latches and the R10 masking
-/// carry the ROM itself polls — takes no mask and has no masked twin. Sprite *evaluation* runs identically
-/// under every mask (`resolve_line_masked` calls `sprite_line` before consulting the mask at all), so
-/// masking `sprites` hides them from the picture and changes nothing the game can observe.
+/// This type is a **parameter**, never a field: no `Vdp` and no `System` holds one — the type does not
+/// occur in `vdp.rs` or `system.rs` at all — so it is in no snapshot, no `state_hash`, and nothing a reset
+/// or a restore can carry or drop. Every render that takes one takes **`&self`**, and the only stateful
+/// render — [`Vdp::render_scanline`], which commits the sprite-overflow / collision latches and the R10
+/// masking carry the ROM itself polls — takes `&mut self` and no mask. So the borrow checker refuses a
+/// masked path a call to the commit. Sprite *evaluation* runs identically under every mask
+/// (`resolve_line_masked` calls `sprite_line` before consulting the mask at all), so masking `sprites`
+/// hides them from the picture and changes nothing the game can observe.
+///
+/// ⚑ That `render_scanline` never *gains* a mask parameter is a **convention**, not a mechanism — no check
+/// would fail if one were added. [`Vdp::render_scanline`]'s own doc is the canonical statement of which
+/// half is the compiler's and which half is review's, and names the test that guards the harm.
 ///
 /// # The backdrop is not a mask target
 ///
@@ -2169,10 +2175,36 @@ impl Vdp {
     /// `scanline_wiring_evolves_the_sprite_masking_carry_during_a_run` has been asserting the corrected
     /// fact — that the carry is committed *during the run* — the whole time, in the other file.
     ///
-    /// **It takes no [`LayerMask`], and it deliberately has no masked twin.** This is the one render that
-    /// writes to the chip, so keeping the mask out of its signature is what makes "a display mask cannot
-    /// perturb emulation" a property of the type system rather than a promise in a comment: there is no
-    /// argument to thread, so no caller can reach the sprite-latch commit through a mask.
+    /// **It takes no [`LayerMask`], and it deliberately has no masked twin.** ⚑ This read "keeping the mask
+    /// out of its signature is what makes *a display mask cannot perturb emulation* a property of the type
+    /// system rather than a promise in a comment" until the lens sweep (finding H26). That named a mechanism
+    /// that does not exist: **nothing would fail if a mask parameter were added here.** The property is real,
+    /// but it is held by two different things and only one of them is the compiler. This is the canonical
+    /// statement of the split; the other sites that repeat it point here.
+    ///
+    /// **What the compiler enforces.** The invariant is **no render that takes a [`LayerMask`] takes
+    /// `&mut self`** — deliberately not "there is exactly one stateful render", which is a fact about
+    /// today's file rather than a property, and which a cheap second *unmasked* stateful render would make
+    /// false without weakening anything. Every mask-taking render is `&self`: the `resolve_line_masked`
+    /// they all share, [`Vdp::render_line_masked`], [`Vdp::render_line_report_masked`],
+    /// [`Vdp::pixel_attribution_masked`]. [`Vdp::commit_scanline_sprites`], the write that seeds the R10
+    /// carry and ORs the sprite-overflow / collision latches, takes `&mut self`. So a masked render
+    /// **cannot compile a call to the commit**: the borrow it holds is the wrong one, and the crate is
+    /// `#![forbid(unsafe_code)]` with no interior mutability anywhere, so `&self` means what it says. That
+    /// half is the borrow checker's, in the same way `Engine::read_vdp_registers`' peek property is —
+    /// `&Vdp` handed out, `control_read_status` needing `&mut`. Likewise, `LayerMask` is a **parameter and
+    /// never a field**: the type does not occur in `vdp.rs` or `system.rs` at all, so no `Vdp` and no
+    /// `System` can hold one and it is in no bincode snapshot and no `state_hash` input.
+    ///
+    /// **What review holds.** That *this* signature never gains a mask is a **convention**, not a mechanism.
+    /// No check would fail if one were added, and none can be built out of the type system: `LayerMask` is
+    /// `pub` and must be (aether, the frontend and the player all construct masks) and it is declared in
+    /// this same module, so no privacy boundary can stop this function from naming it — a type system
+    /// constrains programs under a signature, it cannot constrain edits to the signature. What does guard
+    /// the *harm* is a test rather than a paragraph:
+    /// `masked_renders_leave_the_committed_sprite_latches_untouched` below drives every single-layer mask
+    /// through the pure renders and requires the committed overflow, collision and R10 carry to be identical
+    /// to committing straight away. A mask that reached chip state turns that red.
     pub fn render_scanline(&mut self, line: u16) -> LineReport {
         let resolved = self.resolve_line(line);
         let (dot, over, coll) = (
@@ -4383,8 +4415,12 @@ mod tests {
         }
     }
 
-    /// The other half of the same guarantee: the stateful render has no masked twin, so the latches it
-    /// commits cannot be reached through a mask. Driving every mask through the pure renders first and then
+    /// The other half of the same guarantee, and **the only part of it that is checked at all**: the
+    /// compiler stops a masked `&self` render from calling the `&mut self` commit, but nothing stops a
+    /// future editor giving [`Vdp::render_scanline`] a mask parameter (see its doc for the split). This row
+    /// is what would go red if one arrived and changed what is committed.
+    ///
+    /// Driving every mask through the pure renders first and then
     /// committing must land the VDP in exactly the state committing straight away does — including the R10
     /// dot-overflow carry, which is checked on the *next* line because that is the only place it shows.
     #[test]

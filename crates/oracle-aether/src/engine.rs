@@ -1590,10 +1590,13 @@ pub struct Engine {
     /// * **`reset` / `reload_rom` / `restore` cannot lose it.** All three replace `self.sys` and touch
     ///   nothing here, so a debugging session keeps its masks across a timeline jump — the thing a client
     ///   would have to notice going missing, silently, mid-investigation.
-    /// * **It cannot perturb emulation.** The only render that writes to the chip
-    ///   (`Vdp::render_scanline`, which commits the sprite-overflow / collision latches the ROM polls)
-    ///   takes no mask argument at all, and this field reaches the VDP only as a parameter to the pure
-    ///   `&self` renders. `System::run` is byte-for-byte unchanged.
+    /// * **It cannot perturb emulation**, and the compiler is what says so for the part that matters: this
+    ///   field reaches the VDP only as a parameter to the **`&self`** renders, while the one render that
+    ///   writes to the chip (`Vdp::render_scanline`, which commits the sprite-overflow / collision latches
+    ///   the ROM polls) takes `&mut self` and no mask — so no masked path can compile a call to the commit.
+    ///   `System::run` is byte-for-byte unchanged. ⚑ That `render_scanline` never *gains* a mask parameter
+    ///   is a convention rather than a mechanism (finding H26); its own doc states the split and names the
+    ///   test that guards the harm.
     ///
     /// The cost is paid in [`framebuffer`](Engine::framebuffer): the latched raster frame was drawn
     /// unmasked, so a masked read cannot use it and re-renders from current VDP state instead. That is
@@ -3548,7 +3551,8 @@ impl Engine {
     /// # A masked read cannot use the latched frame
     ///
     /// The retained frame was composited line by line *during the run*, by `Vdp::render_scanline`, which
-    /// takes no mask — and it must not, since that is the render that commits the sprite latches. So a
+    /// takes no mask — and by convention is not to gain one, since that is the render that commits the
+    /// sprite latches (its doc says which half of that the compiler enforces). So a
     /// masked read takes the post-hoc path and says so (`from_raster: false`). Re-masking the latched RGB
     /// is not an option and not a shortcut missed: the retained rows are decoded colours with the losing
     /// layers already discarded, so "mask" applied there could only mean "paint over", which is the wrong
@@ -6717,7 +6721,8 @@ impl Engine {
     /// The mask lives on the engine (see [`Engine::layers`]), never in the `System`. So this call cannot
     /// enter `emulator/state_hash` or `emulator/memory_hash`, cannot be undone by `emulator/reset`,
     /// `emulator/reload_rom` or a checkpoint `emulator/restore`, and cannot move a bit the ROM can read —
-    /// sprite overflow and sprite collision are latched by the one render that takes no mask. §6's
+    /// sprite overflow and sprite collision are latched by the one render that takes no mask, and the masked
+    /// renders are `&self` so they cannot reach that commit. §6's
     /// run-control state rule does not reach it either: it changes the picture, not the machine, so a
     /// free-running client can toggle a layer without pausing.
     ///

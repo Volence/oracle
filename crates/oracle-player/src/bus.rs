@@ -879,7 +879,8 @@ impl Bus {
     ///
     /// **Unmasked, and since S2a that is no longer a split.** This hands over the engine's *latched* frame,
     /// which the engine composed with `render_scanline` during the client's own run — the render that takes
-    /// no mask and must never gain one. [`drain`] re-derives the picture under the mask immediately after
+    /// no mask, and by convention is not to gain one (its own doc says which half of that the compiler
+    /// enforces and which half review does). [`drain`] re-derives the picture under the mask immediately after
     /// adopting this one, whenever a mask is set, so **both** pixel sources end up under one rule.
     ///
     /// Before S2a this doc had to say the opposite: masking here would have made a client-driven frame the
@@ -3257,7 +3258,7 @@ pub mod pumped {
     /// ORDERING inside [`drain`].**
     ///
     /// `Host::framebuffer` hands over the engine's *latched* frame, composed during the client's own run by
-    /// `render_scanline` — the render that takes no mask and must never gain one. So an adopted frame is
+    /// `render_scanline` — the render that takes no mask, and by convention is not to gain one. So an adopted frame is
     /// unmasked by construction, and the masked re-derivation has to come **after** the adoption or exactly
     /// one kind of frame — the one a client asked for — would ignore `emulator/set_layer_enabled`. One
     /// window, two rules for what it is showing.

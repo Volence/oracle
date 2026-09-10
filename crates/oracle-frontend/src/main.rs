@@ -707,7 +707,9 @@ fn blit_capture(cap: &ScanlineCapture, buf: &mut Vec<u32>) -> Option<usize> {
 ///
 /// **A masked read cannot use the captured frame, and this is not a shortcut missed.** The capture's rows
 /// were composited line by line during the run by `Vdp::render_scanline` — the one render that commits the
-/// sprite-overflow and collision latches, which is why it takes no mask and has no masked twin. What it
+/// sprite-overflow and collision latches, which is why it takes no mask and has no masked twin (a
+/// convention on that signature; what the compiler enforces is that the masked renders are `&self` and so
+/// cannot reach the commit — see `render_scanline`'s own doc). What it
 /// leaves behind is decoded colours with the losing layers *already discarded*, so "mask" applied to those
 /// bytes could only mean "paint over", and painting the backdrop over dots plane B was visible at is the
 /// believable-wrong-answer this whole surface is built to avoid. So a masked picture is re-derived from VDP
