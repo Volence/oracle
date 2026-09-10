@@ -802,7 +802,9 @@ add information; it makes him answer the same thing twice and lets the two answe
 at their `origin/main`: **`chose: "install"`, `by: "hub"`, `at: 2026-09-02T03:47:48Z`**, and empyrean's own
 `blockedOnOwner` carries only `SERAPH-HOLD` and `FILMING-NOD`. **So the host half of this row's blocker is
 DISCHARGED**; what still blocks `SCHEMA-DRIFT-NIGHTLY` is the cut-the-ceremony moratorium alone, and when that
-lifts the row needs no further owner ask.
+lifts the row needs no further owner ask. ⚑ **IT LIFTED 2026-09-10 (hub ruling above), SO THIS ROW IS
+UNBLOCKED AND OWES HIM NOTHING.** Unlike `F-CITATION-LINT` it survives ruling (c) on its own: its merits were
+argued and only the blocker outlived them. **Take it as ordinary queue work, not as a revival.**
 ⚑ **THE TRAP, AND IT IS WHY THIS SURVIVED: the answer lives under a DIFFERENT ID.** The ledger records it as a
 separate appended row `d-9-answered`; the row actually numbered `d-9` still reads `answered: false`. **A
 lookup by the id you were given returns OPEN and is wrong** — dedup-by-id, the technique this lane uses on its
@@ -838,7 +840,16 @@ output. Said plainly to the agent rather than dressed as a design objection.
 **The cost of adopting it is not the 30 lines**: ~15 citations resolve correctly TODAY while being bare line
 numbers into moving HEADs, so the lint goes red on arrival and either drags a second parcel with it or gets an
 exemption list that hollows it out. So the row is ONE row doing both halves, never the lint alone.
-**Revival:** the moratorium lifting, or anyone touching those ~15 sites for another reason.
+⚑ **REVIVAL CONDITION FIRED 2026-09-10 AND THE ANSWER IS STILL NO — this line was written wrong, not merely
+overtaken.** It said *"revival: the moratorium lifting"*; the moratorium's clause 2 lapsed today, and the hub's
+ruling is that **merits cannot be inherited from a lapse** — and this row's own text says the hold was *the
+moratorium, NOT the merits*, so there are no merits to inherit. **A revival condition that names only the
+BLOCKER is malformed**: it promises revival on an event that says nothing about whether the thing is worth
+building. Name what would make it WORTH doing. ⚑ **The real obstacle is untouched by the lapse and is stated
+above: ~15 citations resolve correctly today while being bare line numbers into moving HEADs, so the lint goes
+red on arrival** and either drags a second parcel or takes an exemption list that hollows it out.
+**Revival, restated as merits:** evidence that citation rot is costing more than the one-row fix — which is
+being MEASURED now by the `sweep-t4-comment-truth` verdicts. Decide on those, not on the lapse.
 ⚑ **And it stays distinct from `SCHEMA-DRIFT-NIGHTLY`, which owns CONTENT drift** — a revision-pinned citation
 that has gone stale is a different question from one that was never pinned. Do not merge the two rows.
 
