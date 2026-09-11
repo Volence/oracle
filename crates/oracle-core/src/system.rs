@@ -2589,11 +2589,17 @@ mod tests {
 
         s.reset();
 
-        assert_eq!(
-            s.cart_banks(),
-            crate::bus::CartBanks::IDENTITY,
-            "a soft reset restores the identity mapping"
-        );
+        // ⚑ Asserted per window against `k`, NOT against `CartBanks::IDENTITY` — because the constant is
+        // what would be wrong if the identity mapping were wrong, and a comparison to it is therefore
+        // circular. Measured: with `IDENTITY` mutated to `[0; 8]` this test stayed GREEN while seven others
+        // went red. That is the mutation (M3) that found the hole, and this is the repair.
+        for k in 0..crate::bus::CART_WINDOWS {
+            assert_eq!(
+                s.cart_banks().bank(k),
+                k as u8,
+                "a soft reset restores window {k} to bank {k}"
+            );
+        }
     }
 
     #[test]
@@ -2612,11 +2618,15 @@ mod tests {
 
         s.load_rom(mapper_rom(10));
 
-        assert_eq!(
-            s.cart_banks(),
-            crate::bus::CartBanks::IDENTITY,
-            "a fresh cartridge powers on unbanked"
-        );
+        // Per window against `k` rather than against the constant, for the reason spelled out in
+        // `a_soft_reset_restores_the_identity_bank_mapping`.
+        for k in 0..crate::bus::CART_WINDOWS {
+            assert_eq!(
+                s.cart_banks().bank(k),
+                k as u8,
+                "a fresh cartridge powers on unbanked: window {k} -> bank {k}"
+            );
+        }
         assert_eq!(
             s.mega_bus(&mut ()).read8(0x08_0000, 6).0,
             mapper_bank_label(1),
