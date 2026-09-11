@@ -235,6 +235,42 @@ use std::fmt;
 /// `FFFF8CFA` are masked with this to get the address the machine actually puts on the bus (`$FF8CFA`).
 pub const BUS_ADDR_MASK: u32 = 0x00FF_FFFF;
 
+/// The two derived RAM words that carry **the act's true pixel extent** in an aeon listing, and the only
+/// two the suite accepts as the answer to *is this placement inside the level* (§11.35, CR-L).
+///
+/// **Why a name about somebody else's game lives in the listing reader.** Two crates join on it — the
+/// bus's `oracle-aether::objreq` (the server refusing a placement) and `oracle-frontend::spawn` (the
+/// window refusing a click) — and this is the one crate both link unconditionally: the frontend's edge to
+/// `oracle-aether` is `optional`, while `spawn`'s refusal sentences quote these names in every build, and
+/// `oracle-aether` cannot link the frontend (that edge runs the other way). They used to be two copies,
+/// each restating aeon's measurement, with nothing comparing them (lens M66). Both crates now re-export
+/// these; neither spells the name.
+///
+/// aeon published them for exactly this join, and their declaration states the box: *"the act's TRUE
+/// pixel extent — the valid world box is `[0, Level_Width) × [0, Level_Height)`"*
+/// (`games/sonic4/config/ram.emp`, where both are declared `u16`). They are written by
+/// `Player_BoundsInit` from the values it holds **before** it subtracts its margins, and they exist in
+/// both the release and the DEBUG shape — which is why a build with no `Obj_Req_*` mailbox can still
+/// answer the question. ⚠ **No frozen listing here carries them**: `fixtures/aeon/*.lst` predate the two
+/// words, so every test of them builds its own listing and spells the name itself, which is what makes a
+/// change to this constant fail those tests.
+///
+/// ⚠ **`Player_Bound_Right` / `Player_Bound_Bottom` are NOT these.** They are the *player's* clamp
+/// edges, inset by `PBOUND_RIGHT_MARGIN` and `SCREEN_HEIGHT`; objects are deliberately unclamped, so a
+/// placement between `Player_Bound_Right` and `Level_Width` is **legal and renders**. A consumer that
+/// read the clamp edges would refuse real placements *and look correct doing it*, because a refusal near
+/// an edge is half expected — and they are the symbols a grep for "the bounds" finds first, since the
+/// warp path clamps against them. There is no `Player_Bound_Left`/`_Top` at all: the low edge of the box
+/// is a literal `0`.
+///
+/// ⚑ **Resolved by name, per call, independently of each other, never cached** — the rule §11.26 was
+/// amended to impose on `Camera_X`. Measured on this box: `Level_Width` is `$FFFFBABE` in `s4.lst` and
+/// `$FFFFE95C` in `s4.debug.lst`, ~11 KB apart, so a cached address does not fault in the other build
+/// shape — it returns a number, and a number is what the check compares against.
+pub const LEVEL_WIDTH_SYMBOL: &str = "Level_Width";
+/// See [`LEVEL_WIDTH_SYMBOL`].
+pub const LEVEL_HEIGHT_SYMBOL: &str = "Level_Height";
+
 /// What kind of value a row declares, from the listing's type column. Note trap 3: this does **not**
 /// separate code from RAM — Aeon emits `Code` for everything, variables included.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

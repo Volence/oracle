@@ -115,30 +115,13 @@ pub const ERR_OWNED: u8 = 5;
 /// that can disagree with the machine.
 pub const CART_WINDOW_END: u32 = 0x0040_0000;
 
-/// The two derived RAM words that carry **the act's true pixel extent**, and the only two this server
-/// will accept as the answer to *is this placement inside the level* (§11.35, CR-L).
-///
-/// aeon published them for exactly this join, and their declaration states the box: *"the act's TRUE
-/// pixel extent — the valid world box is `[0, Level_Width) × [0, Level_Height)`"*. They are written by
-/// `Player_BoundsInit` from the values it holds **before** it subtracts its margins, and they exist in
-/// both the release and the DEBUG shape — which is why a build with no `Obj_Req_*` mailbox can still
-/// answer this question.
-///
-/// ⚠ **`Player_Bound_Right` / `Player_Bound_Bottom` are NOT these.** They are the *player's* clamp
-/// edges, inset by `PBOUND_RIGHT_MARGIN` and `SCREEN_HEIGHT`; objects are deliberately unclamped, so a
-/// placement between `Player_Bound_Right` and `Level_Width` is **legal and renders**. A server that
-/// read the clamp edges would refuse real placements *and look correct doing it*, because the refusals
-/// would cluster at an edge where a refusal is half expected — and it is the symbol a grep for "the
-/// bounds" finds first, since the warp path clamps against it. There is no `Player_Bound_Left`/`_Top`
-/// at all: the low edge of the box is a literal `0`.
-///
-/// ⚑ **Resolved by name, per call, independently of each other, never cached** — the rule §11.26 was
-/// amended to impose on `Camera_X`. Measured on this box: `Level_Width` is `$FFFFBABE` in `s4.lst` and
-/// `$FFFFE95C` in `s4.debug.lst`, ~11 KB apart, so a cached address does not fault in the other build
-/// shape — it returns a number, and a number is what this check compares against.
-pub const LEVEL_WIDTH_SYMBOL: &str = "Level_Width";
-/// See [`LEVEL_WIDTH_SYMBOL`].
-pub const LEVEL_HEIGHT_SYMBOL: &str = "Level_Height";
+// The two derived RAM words that carry **the act's true pixel extent**, and the only two this server will
+// accept as the answer to *is this placement inside the level* (§11.35, CR-L). Owned by
+// `oracle_core::symbols` — aeon's measurement, the `Player_Bound_*` trap and the never-cache rule are
+// stated there once — and re-exported here so `objreq::LEVEL_WIDTH_SYMBOL` keeps meaning what it did.
+// `oracle-frontend::spawn` re-exports the same two, which is what makes them one name rather than two
+// agreeing copies (lens M66).
+pub use oracle_core::symbols::{LEVEL_HEIGHT_SYMBOL, LEVEL_WIDTH_SYMBOL};
 
 /// **The act's pixel extent, as read out of the machine on this call.** Never a constant: the one act
 /// measured on this box reads `$1800 × $1800` (6144), and that is *one act's value*, not the engine's.

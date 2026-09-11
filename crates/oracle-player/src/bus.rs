@@ -1674,9 +1674,9 @@ mod seam {
     use oracle_core::io::Pad;
     use serde_json::json;
 
-    /// `move.w (A0),D0` in the fixture ROM's inner loop — the address `oracle-aether/tests/hosted.rs`
-    /// uses for the same purpose, taken from there rather than re-derived.
-    pub(super) const HOT_PC: u32 = 0x0000_020E;
+    /// `move.w (A0),D0` in the fixture ROM's inner loop, imported from the ROM's builder (lens M61) —
+    /// the same name `oracle-aether/tests/hosted.rs` arms at, rather than a second typed copy of it.
+    pub(super) const HOT_PC: u32 = oracle_core::testrom::INNER_LOOP_PC;
 
     /// Every test below is vacuous if this address stopped being hot, so it is **checked** rather than
     /// asserted in prose. Same check as `hosted.rs::assert_hot_pc_is_the_stirring_loop`.

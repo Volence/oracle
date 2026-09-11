@@ -51,6 +51,11 @@ const NUM_TOTAL: u32 = NUM_PLAYERS + NUM_DYNAMIC + NUM_SYSTEM + NUM_EFFECTS;
 const OBJ_CODE_BASE: u32 = 0x0001_0000;
 
 /// The mailbox, in the engine's declaration order and at its declared widths.
+///
+/// The **order and the widths are aeon's** — `games/sonic4/config/ram.emp`'s `Obj_Req_*` block:
+/// `Def` u32, `X`/`Y`/`Slot`/`Place` u16, `Op`/`Status`/`Flag` u8 (read at aeon `origin/master`
+/// `7c719ef`). The base address is this fixture's own. `oracle-frontend/src/bus.rs`'s `spawn_picker`
+/// double transcribes the same block, and the two agree cell for cell.
 const MB: u32 = 0x00FF_9600;
 const MB_DEF: u32 = MB;
 const MB_X: u32 = MB + 4;
@@ -68,6 +73,15 @@ const SCRIPT_HANDLE: u32 = 0x00FF_9702;
 const DEAF: u32 = 0x00FF_9704;
 
 /// What the double saw at the moment it observed the flag set.
+///
+/// ⚑ **This witness area is this double's private scratch, and it deliberately does NOT match the one
+/// in `oracle-frontend/src/bus.rs`** (lens M68, which read the difference as drift). No `W_*` cell is
+/// ever named to the server: this double writes each one and this file reads the same constant back, so
+/// each fixture is self-consistent and neither layout is stale. The frontend's double was forked from
+/// this one (`4104371`, *"reduced to the spawn path"*), so it has no `W_SLOT`. When `1603512` later
+/// needed the placement word there, it appended `W_PLACE` after `W_OP`, at `$FF9720`, instead of
+/// reusing this file's `$FF971A`. The only part of the two fixtures transcribed from aeon is the
+/// mailbox block above, and that part agrees.
 const W_DEF: u32 = 0x00FF_9710;
 const W_X: u32 = 0x00FF_9714;
 const W_Y: u32 = 0x00FF_9716;

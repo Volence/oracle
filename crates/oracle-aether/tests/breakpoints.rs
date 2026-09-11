@@ -26,13 +26,22 @@ use serde_json::{json, Value};
 use std::time::Instant;
 
 /// A PC the fixture ROM executes constantly: `move.w (A0), D0`, the head of `testrom::build`'s inner
-/// stirring loop, which runs 0x4000 times per outer pass and never stops. Read from `testrom.rs` rather
-/// than measured, so a ROM change breaks this loudly instead of silently un-arming the fixture.
-const HOT_PC: &str = "0x0000020E";
+/// stirring loop, which runs 0x4000 times per outer pass and never stops. Formatted from the ROM
+/// builder's own name (lens M61) rather than typed as a string here, so a ROM change moves it.
+///
+/// The format is the wire's own spelling of an address (`0x` and eight upper-case hex digits), written
+/// out here rather than borrowed from the server's formatter, because `emulator/stopped`'s `pc` is
+/// compared against it and a shared formatter would agree with itself.
+fn hot_pc() -> String {
+    format!("0x{:08X}", oracle_core::testrom::INNER_LOOP_PC)
+}
 
 /// A PC the fixture ROM never reaches: the head of `ILLEGAL_H`, reachable only through vector 4, which
-/// this ROM's main loop cannot take. The negative control — a breakpoint here must never fire.
-const COLD_PC: &str = "0x00000280";
+/// this ROM's main loop cannot take. The negative control — a breakpoint here must never fire. Formatted
+/// from `testrom::TRAP_HANDLER_ADDR`, which `hosted.rs`'s `COLD_PC` already imports.
+fn cold_pc() -> String {
+    format!("0x{:08X}", oracle_core::testrom::TRAP_HANDLER_ADDR)
+}
 
 fn armed(tag: &str) -> (ServerHandle, Client) {
     let h = spawn(tag);
@@ -85,8 +94,8 @@ fn row(list: &Value, handle: &str) -> Option<Value> {
 #[test]
 fn one_address_carries_several_breakpoints() {
     let (_h, mut c) = armed("bp-two-at-one");
-    let a = add(&mut c, json!({"addr": HOT_PC, "label": "first"}));
-    let b = add(&mut c, json!({"addr": HOT_PC, "label": "second"}));
+    let a = add(&mut c, json!({"addr": hot_pc(), "label": "first"}));
+    let b = add(&mut c, json!({"addr": hot_pc(), "label": "second"}));
     assert_ne!(
         a, b,
         "a re-add at an occupied address must issue a NEW handle"
@@ -113,12 +122,12 @@ fn one_address_carries_several_breakpoints() {
 #[test]
 fn a_handle_is_never_reused() {
     let (_h, mut c) = armed("bp-never-reused");
-    let first = add(&mut c, json!({"addr": HOT_PC}));
+    let first = add(&mut c, json!({"addr": hot_pc()}));
     assert_eq!(
         c.ok("emulator/breakpoint_clear", json!({"all": true}))["removed"],
         json!(1)
     );
-    let second = add(&mut c, json!({"addr": HOT_PC}));
+    let second = add(&mut c, json!({"addr": hot_pc()}));
     assert_ne!(
         first, second,
         "a handle issued after a clear-all must not be one already handed out"
@@ -141,7 +150,7 @@ fn a_handle_is_never_reused() {
 #[test]
 fn set_enabled_carries_hits_across_the_toggle() {
     let (_h, mut c) = armed("bp-toggle-hits");
-    let bp = add(&mut c, json!({"addr": HOT_PC, "label": "keep me"}));
+    let bp = add(&mut c, json!({"addr": hot_pc(), "label": "keep me"}));
     // Earn a hit, so "carried across" is a claim about a non-zero number.
     c.ok("emulator/resume", json!({}));
     c.ok("emulator/wait_for_break", json!({"timeoutMs": 5000}));
@@ -178,7 +187,7 @@ fn set_enabled_carries_hits_across_the_toggle() {
 #[test]
 fn a_toggle_refuses_what_a_clear_forgives() {
     let (_h, mut c) = armed("bp-unknown-handle");
-    let stale = add(&mut c, json!({"addr": HOT_PC}));
+    let stale = add(&mut c, json!({"addr": hot_pc()}));
     c.ok("emulator/breakpoint_clear", json!({"breakpoint": stale}));
 
     let e = c.err(
@@ -229,9 +238,9 @@ fn the_advertised_cap_is_the_cap_that_is_enforced() {
         .expect("limits.maxBreakpoints is REQUIRED once the family is advertised");
 
     for _ in 0..cap {
-        add(&mut c, json!({"addr": HOT_PC}));
+        add(&mut c, json!({"addr": hot_pc()}));
     }
-    let e = c.err("emulator/breakpoint_add", json!({"addr": HOT_PC}));
+    let e = c.err("emulator/breakpoint_add", json!({"addr": hot_pc()}));
     assert_eq!(e["code"], json!(-32005));
     assert_eq!(e["data"]["reason"], json!("breakpointCapReached"));
     assert_eq!(e["data"]["cap"], json!(cap));
@@ -258,8 +267,8 @@ fn clear_all_reaches_another_clients_breakpoints() {
     let mut theirs = Client::connect(&h);
     theirs.handshake(false);
 
-    let ours = add(&mut mine, json!({"addr": HOT_PC}));
-    let bp = add(&mut theirs, json!({"addr": COLD_PC}));
+    let ours = add(&mut mine, json!({"addr": hot_pc()}));
+    let bp = add(&mut theirs, json!({"addr": cold_pc()}));
     assert_eq!(list(&mut mine)["total"], json!(2), "one bus, one set");
 
     assert_eq!(
@@ -296,10 +305,10 @@ fn a_breakpoint_actually_halts_a_free_running_machine() {
     // a fixture whose breakpoint address executes every few microseconds, the first firing lands before a
     // second `breakpoint_add` can be dispatched, and the "every enabled breakpoint increments" claim below
     // would be measuring the scheduler rather than the rule.
-    let bp = add(&mut c, json!({"addr": HOT_PC, "label": "inner"}));
+    let bp = add(&mut c, json!({"addr": hot_pc(), "label": "inner"}));
     let hot = add(
         &mut c,
-        json!({"addr": HOT_PC, "label": "second at one address"}),
+        json!({"addr": hot_pc(), "label": "second at one address"}),
     );
     c.ok("emulator/resume", json!({}));
 
@@ -316,13 +325,13 @@ fn a_breakpoint_actually_halts_a_free_running_machine() {
     );
     assert_eq!(
         r["pc"],
-        json!(HOT_PC),
+        json!(hot_pc()),
         "a breakpoint halts BEFORE the instruction at its address executes"
     );
 
     let stopped = next_stopped(&mut events);
     assert_eq!(stopped["reason"], json!("breakpoint"));
-    assert_eq!(stopped["pc"], json!(HOT_PC));
+    assert_eq!(stopped["pc"], json!(hot_pc()));
     assert_eq!(
         stopped["breakpoint"],
         json!(bp),
@@ -344,7 +353,7 @@ fn a_breakpoint_actually_halts_a_free_running_machine() {
 #[test]
 fn a_disabled_breakpoint_does_not_halt() {
     let (_h, mut c) = armed("bp-disabled-silent");
-    let bp = add(&mut c, json!({"addr": HOT_PC, "enabled": false}));
+    let bp = add(&mut c, json!({"addr": hot_pc(), "enabled": false}));
     c.ok("emulator/resume", json!({}));
     let r = c.ok("emulator/wait_for_break", json!({"timeoutMs": 250}));
     assert_eq!(
@@ -365,7 +374,7 @@ fn a_disabled_breakpoint_does_not_halt() {
 #[test]
 fn resuming_from_a_breakpoint_address_makes_progress() {
     let (_h, mut c) = armed("bp-resume-progress");
-    let bp = add(&mut c, json!({"addr": HOT_PC}));
+    let bp = add(&mut c, json!({"addr": hot_pc()}));
     c.ok("emulator/resume", json!({}));
     let first = c.ok("emulator/wait_for_break", json!({"timeoutMs": 5000}));
     let mclk0 = first["mclk"].as_u64().expect("the stamp's mclk");
@@ -411,7 +420,7 @@ fn a_wait_does_not_stall_another_client() {
     other.handshake(false);
 
     // A breakpoint the fixture ROM can never reach, so the wait runs its full budget.
-    add(&mut waiter, json!({"addr": COLD_PC}));
+    add(&mut waiter, json!({"addr": cold_pc()}));
     waiter.ok("emulator/resume", json!({}));
 
     let started = Instant::now();
@@ -481,7 +490,7 @@ fn a_timeout_past_the_ceiling_is_refused_and_refused_at_once() {
 #[test]
 fn a_zero_timeout_polls_once_and_returns() {
     let (_h, mut c) = armed("bp-zero-timeout");
-    add(&mut c, json!({"addr": COLD_PC}));
+    add(&mut c, json!({"addr": cold_pc()}));
     c.ok("emulator/resume", json!({}));
     let started = Instant::now();
     let r = c.ok("emulator/wait_for_break", json!({"timeoutMs": 0}));
@@ -525,7 +534,7 @@ fn the_list_pages_and_the_cursor_walks_the_whole_set() {
     let (_h, mut c) = armed("bp-paging");
     let mut all = Vec::new();
     for _ in 0..5 {
-        all.push(add(&mut c, json!({"addr": HOT_PC})));
+        all.push(add(&mut c, json!({"addr": hot_pc()})));
     }
 
     let complete = list(&mut c);
@@ -594,7 +603,7 @@ fn add_refuses_the_shapes_the_fragment_forbids() {
     let (_h, mut c) = armed("bp-add-refusals");
     let both = c.err(
         "emulator/breakpoint_add",
-        json!({"addr": HOT_PC, "symbol": "Anything"}),
+        json!({"addr": hot_pc(), "symbol": "Anything"}),
     );
     assert_eq!(both["code"], json!(-32602));
 
@@ -616,7 +625,7 @@ fn add_refuses_the_shapes_the_fragment_forbids() {
     assert_eq!(numeric["code"], json!(-32602));
 
     // A toggle whose argument may be omitted is a toggle whose caller cannot tell which way it went.
-    let bp = add(&mut c, json!({"addr": HOT_PC}));
+    let bp = add(&mut c, json!({"addr": hot_pc()}));
     let no_state = c.err(
         "emulator/breakpoint_set_enabled",
         json!({"breakpoint": bp.clone()}),
@@ -640,7 +649,7 @@ fn add_refuses_the_shapes_the_fragment_forbids() {
 fn the_whole_surface_is_legal_while_the_machine_runs() {
     let (_h, mut c) = armed("bp-legal-while-running");
     c.ok("emulator/resume", json!({}));
-    let bp = add(&mut c, json!({"addr": COLD_PC}));
+    let bp = add(&mut c, json!({"addr": cold_pc()}));
     c.ok(
         "emulator/breakpoint_set_enabled",
         json!({"breakpoint": bp.clone(), "enabled": false}),
