@@ -548,7 +548,9 @@ pub(crate) struct RetainedRow {
 pub(crate) struct CramLanding {
     /// First active-display pixel that shows the new colour (`0..=width`).
     pub(crate) x: usize,
-    /// CRAM byte address of the written word — even, `0..CRAM_SIZE`.
+    /// CRAM byte address of the written word — even, `0..CRAM_SIZE`. **Enforced where a landing is made**:
+    /// [`ScanlineScaffold::journal_cram`] asserts it (lens L4), which is what lets `row_rgb` write the
+    /// pair unmasked.
     pub(crate) addr: usize,
     /// The 9-bit-masked colour word, as the VDP stored it.
     pub(crate) word: u16,
@@ -639,6 +641,19 @@ impl ScanlineScaffold {
     /// passes (every write is accounted for, just filed under the wrong row) and the picture is silently
     /// wrong. Doing the reduction here is what makes that class visible.
     pub(crate) fn journal_cram(&mut self, mclk: u64, addr: usize, word: u16) {
+        // Lens L4: [`CramLanding::addr`]'s invariant is enforced HERE, the one place a landing is made, and
+        // ahead of the retained-row check so a bad producer is caught on every call, not only on the calls
+        // that happen to land in a row. `row_rgb` writes each landing into a `[u8; CRAM_SIZE]` as a
+        // big-endian pair at `addr..addr + 2`: an odd address would split the word across two entries and
+        // corrupt both silently, and one past the end would panic there on an index that names neither the
+        // write nor its source. The VDP's own capture masks with `& 0x7E`, so this is a statement about the
+        // producer; a release `assert!` because what it rules out is a wrong picture. Two comparisons per
+        // journalled write, and only while a scanline capture is armed.
+        assert!(
+            addr.is_multiple_of(2) && addr < CRAM_SIZE,
+            "CRAM landing address {addr:#x} is not an even byte address below CRAM_SIZE ({CRAM_SIZE:#x}): \
+             the capture feeding journal_cram must deliver the word-aligned address the VDP stored to"
+        );
         let Some(row) = self.pending.as_mut() else {
             return;
         };
@@ -896,8 +911,9 @@ pub(crate) fn row_rgb(row: &RetainedRow) -> (Vec<(u8, u8, u8)>, [u8; CRAM_SIZE])
         // ...then apply every landing at that same pixel (one segment, decision C-6 / the coalescing rule).
         let at = row.journal[k].x;
         while let Some(l) = row.journal.get(k).filter(|l| l.x == at) {
-            cram[l.addr] = (l.word >> 8) as u8;
-            cram[l.addr | 1] = (l.word & 0xFF) as u8;
+            // Even and in range by construction (`journal_cram` asserts it, lens L4), so this is one entry,
+            // stored big-endian exactly as the VDP stores it.
+            cram[l.addr..l.addr + 2].copy_from_slice(&l.word.to_be_bytes());
             k += 1;
         }
     }
@@ -2827,6 +2843,40 @@ mod tests {
             sc.journal_cram(d_mclk, addr, word); // line 0, so the absolute clock IS the in-line offset
         }
         sc.take().expect("a row was stashed")
+    }
+
+    /// **Lens L4: a landing's CRAM address is refused where the landing is made**, not discovered where it
+    /// is used. `row_rgb` writes each landing into the CRAM image as a big-endian pair: an odd address
+    /// would split the word across two palette entries and corrupt both, silently.
+    #[test]
+    #[should_panic(expected = "is not an even byte address below CRAM_SIZE")]
+    fn journal_cram_refuses_an_odd_address() {
+        let v = backdrop_fixture();
+        let mut sc = ScanlineScaffold::default();
+        sc.stash(v.render_line_report(0), v.cram());
+        sc.journal_cram(1000, 3, 0x0E00);
+    }
+
+    /// …and one past the end, which `row_rgb` would have met later as an out-of-bounds index naming
+    /// neither the write nor where it came from.
+    #[test]
+    #[should_panic(expected = "is not an even byte address below CRAM_SIZE")]
+    fn journal_cram_refuses_an_address_past_the_end() {
+        let v = backdrop_fixture();
+        let mut sc = ScanlineScaffold::default();
+        sc.stash(v.render_line_report(0), v.cram());
+        sc.journal_cram(1000, CRAM_SIZE, 0x0E00);
+    }
+
+    /// The control for both rows above: the first and the last entry are legal landings and each lands as
+    /// one big-endian word, so the bound is off by one in neither direction.
+    #[test]
+    fn the_first_and_last_cram_entries_are_legal_landings() {
+        let v = backdrop_fixture();
+        let row = retained(&v, &[(1000, 0, 0x0123), (1000, CRAM_SIZE - 2, 0x0ABC)]);
+        let (_, cram) = row_rgb(&row);
+        assert_eq!(&cram[..2], &[0x01, 0x23], "entry 0");
+        assert_eq!(&cram[CRAM_SIZE - 2..], &[0x0A, 0xBC], "the last entry");
     }
 
     /// **The behaviour slice, at core level** (`F-SCANLINE-SUBLINE` slice 4): a CRAM write inside the row's
