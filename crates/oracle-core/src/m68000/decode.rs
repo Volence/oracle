@@ -8,7 +8,8 @@
 
 use super::bus68k::Bus68k;
 use super::ea::{
-    ea_cmpa, ea_dst, ea_move, ea_movea, ea_read_word_operand, ea_src, ea_tas, ea_tst, RecipeBuf,
+    ea_cmpa, ea_dst, ea_move, ea_movea, ea_read_word_operand, ea_src, ea_tas, ea_tst, step_bytes,
+    RecipeBuf,
 };
 use super::exception::{
     push_interrupt_frame, push_standard_frame, push_trace_frame, vector_fetch_and_reload,
@@ -2313,24 +2314,6 @@ fn nbcd_recipe(opcode: u16) -> MicroState {
     buf.finish()
 }
 
-/// The `-(An)` byte step for the X-arith predecrement forms: 2 for `A7` (keep the SP even), else the size's
-/// step (word 2, long 4, byte 1). Mirrors [`super::ea::step_bytes`] (a private helper there) for the ADDX /
-/// SUBX / ABCD / SBCD two-operand predecrement.
-#[inline]
-fn xarith_step(size: Size, reg: u8) -> i8 {
-    match size {
-        Size::Word => 2,
-        Size::Long => 4,
-        Size::Byte => {
-            if reg == 7 {
-                2
-            } else {
-                1
-            }
-        }
-    }
-}
-
 /// `ADDX`/`SUBX`/`ABCD`/`SBCD` — the X-flag arithmetic cluster's TWO recipe shapes, selected by `M = bit 3`.
 ///
 /// **M = 0 — register-direct** (`<op> Dy,Dx`): read `Dy` (src) and `Dx` (dst) at `size`, run the dedicated
@@ -2460,7 +2443,7 @@ fn xarith_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
     // refill; write @ Ax. `-(A7).b` steps by 2.
     buf.push(MicroOp::AdjustAddr {
         reg: ry,
-        delta: -xarith_step(size, ry),
+        delta: -step_bytes(size, ry),
     });
     buf.push(MicroOp::Read {
         addr: Operand::AddrReg(ry),
@@ -2470,7 +2453,7 @@ fn xarith_recipe(opcode: u16, op: AluOp, size: Size) -> MicroState {
     });
     buf.push(MicroOp::AdjustAddr {
         reg: rx,
-        delta: -xarith_step(size, rx),
+        delta: -step_bytes(size, rx),
     });
     buf.push(MicroOp::Read {
         addr: Operand::AddrReg(rx),
@@ -2667,23 +2650,6 @@ fn eor_recipe(opcode: u16, size: Size) -> MicroState {
     }
 }
 
-/// The `(An)+` auto-increment step (bytes) for `CMPM`: word 2, long 4, byte 1 — except `(A7)+` byte steps by 2
-/// to keep the stack pointer even (the in-scope A7 rule, mirroring `ea.rs`'s `step_bytes`).
-#[inline]
-fn cmpm_step(size: Size, reg: u8) -> i8 {
-    match size {
-        Size::Word => 2,
-        Size::Long => 4,
-        Size::Byte => {
-            if reg == 7 {
-                2
-            } else {
-                1
-            }
-        }
-    }
-}
-
 /// `CMPM (Ay)+,(Ax)+` (`1011 xxx 1SS 001 yyy`, opmode 4/5/6 = b/w/l): compare memory — read the **source** at
 /// `(Ay)+` FIRST, then the **destination** at `(Ax)+`, and set N/Z/V/C for `(Ax) − (Ay)` (X preserved, no
 /// write — `AluOp::Cmp` + `Dest::None`). `xxx` (bits 11-9) = Ax (dest), `yyy` (bits 2-0) = Ay (src). Each
@@ -2791,7 +2757,7 @@ fn cmpm_recipe(opcode: u16, size: Size) -> MicroState {
         });
         buf.push(MicroOp::AdjustAddr {
             reg: ay,
-            delta: cmpm_step(size, ay),
+            delta: step_bytes(size, ay),
         });
         buf.push(MicroOp::Read {
             addr: Operand::Scratch(AY_BASE),
@@ -2808,7 +2774,7 @@ fn cmpm_recipe(opcode: u16, size: Size) -> MicroState {
         });
         buf.push(MicroOp::AdjustAddr {
             reg: ax,
-            delta: cmpm_step(size, ax),
+            delta: step_bytes(size, ax),
         });
         buf.push(MicroOp::Read {
             addr: Operand::Scratch(AX_BASE),
