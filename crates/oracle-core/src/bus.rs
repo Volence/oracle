@@ -863,6 +863,55 @@ impl CartBanks {
     }
 }
 
+/// The last byte of cartridge address space: eight 512 KiB mapper windows, `$000000-$3FFFFF`.
+pub const CART_SPACE_END: u32 = (CART_WINDOWS * CART_BANK_SIZE) as u32 - 1;
+
+/// What backs one cartridge-space byte (`$000000-$3FFFFF`) right now — the result of [`cart_decode`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CartByte {
+    /// The SRAM overlay is visible at this address: an index into the SRAM buffer.
+    Sram(usize),
+    /// ROM, resolved through the bank table: a byte offset into the ROM image. It may lie **past the image
+    /// end**, which is open bus to the CPU; the caller decides what that means (the bus substitutes its
+    /// open-bus latch, a debug read refuses).
+    Rom(usize),
+}
+
+/// The SRAM buffer index a cartridge-space address resolves to, or `None` when SRAM is not visible at `a`.
+/// Visible iff a map is present, the game has enabled SRAM via `$A130F1` bit0, `a` is inside the mapped
+/// range, **and** `a`'s parity is the chip's byte lane (odd-byte carts answer only odd addresses; the unused
+/// parity falls through to ROM/open-bus). The index is `(a - base) >> 1` (§A4/Fork 5). Free so the bus's
+/// read and write arms and [`cart_decode`] share one reading of the gate.
+#[inline]
+pub fn sram_visible_index(map: Option<SramMap>, enabled: bool, a: u32) -> Option<usize> {
+    let m = map?;
+    (enabled && a >= m.base && a <= m.end && ((a & 1) == 1) == m.odd)
+        .then(|| ((a - m.base) >> 1) as usize)
+}
+
+/// **The one decode of cartridge space**: which claimant answers a read at `a` (`$000000-$3FFFFF`), and
+/// where in it. The SRAM overlay is consulted FIRST, then ROM through the bank table.
+///
+/// Two consumers, one function, on purpose. [`MegaDriveBus::mapped_byte`] (every CPU fetch and every 68k
+/// DMA source byte) and [`crate::system::System::cart_peek`] (the side-effect-free view the debug surfaces
+/// serve — `emulator/read`, `read_memory`, `memory_hash` and the player's Memory panel) both resolve through
+/// here, so a debugger's view of cartridge space cannot drift from the CPU's: not on the bank table, and not
+/// on the SRAM-before-ROM precedence that mapper window 4 makes load-bearing
+/// (`docs/2026-09-11-cart-mapper-design.md` §4, `docs/2026-09-11-debugread-banked.md`). Pure: no latch,
+/// no event, no state.
+#[inline]
+pub fn cart_decode(
+    a: u32,
+    sram_map: Option<SramMap>,
+    sram_enabled: bool,
+    banks: &CartBanks,
+) -> CartByte {
+    match sram_visible_index(sram_map, sram_enabled, a) {
+        Some(i) => CartByte::Sram(i),
+        None => CartByte::Rom(banks.rom_offset(a)),
+    }
+}
+
 /// Split-borrow adapter implementing the CPU-facing [`Bus68k`] over the `System`'s memory fields laid out per
 /// the real Mega Drive map, emitting a [`BusEvent`] (with the real function code) per access. The CPU core
 /// cannot tell it apart from the SST harness's `FlatBus` — the point of the unification. Every 24-bit address
@@ -1049,9 +1098,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// mapped range, **and** `a`'s parity is the chip's byte lane (odd-byte carts answer only odd addresses;
     /// the unused parity falls through to ROM/open-bus). The index is `(a - base) >> 1` (§A4/Fork 5).
     fn sram_index(&self, a: u32) -> Option<usize> {
-        let m = self.sram_map?;
-        (*self.sram_enabled && a >= m.base && a <= m.end && ((a & 1) == 1) == m.odd)
-            .then(|| ((a - m.base) >> 1) as usize)
+        sram_visible_index(self.sram_map, *self.sram_enabled, a)
     }
 
     /// The byte backing a mapped address, or `None` for open bus (unmapped ranges, past a short ROM's end,
@@ -1075,12 +1122,15 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // The ROM byte itself is resolved through the Sega/SSF2 bank table rather than by `a` directly
             // (`CartBanks::rom_offset`). At reset the table is the identity mapping, where that offset IS
             // `a` — so this is the pre-mapper decode byte-for-byte until a game writes `$A130F3+`.
+            //
+            // Both decisions (which claimant, which offset) live in [`cart_decode`], not here: the debug
+            // surfaces' view of cartridge space (`System::cart_peek`) resolves through the same function,
+            // so a debugger cannot show a different byte than this arm fetches — not on the bank table and
+            // not on the precedence (`docs/2026-09-11-debugread-banked.md`).
             0x00_0000..=0x3F_FFFF => {
-                if let Some(i) = self.sram_index(a) {
-                    Some(self.sram[i])
-                } else {
-                    let i = self.cart_banks.rom_offset(a);
-                    (i < self.rom.len()).then(|| self.rom[i])
+                match cart_decode(a, self.sram_map, *self.sram_enabled, self.cart_banks) {
+                    CartByte::Sram(i) => Some(self.sram[i]),
+                    CartByte::Rom(i) => (i < self.rom.len()).then(|| self.rom[i]),
                 }
             }
             // The 68k-side Z80 window ($A00000-$A0FFFF): the window's address is masked to 15 bits
