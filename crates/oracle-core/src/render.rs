@@ -969,11 +969,22 @@ pub fn plane_size(reg10: u8) -> (u16, u16) {
     (field(reg10 & 0x03), field((reg10 >> 4) & 0x03))
 }
 
+/// **How many slots the sprite attribute table has: 80** — the H40 table, and the most any mode parses
+/// (H32 parses the first 64; see [`Vdp::parsed_sprite_max`]).
+///
+/// The one name for it in `oracle-core` (lens M62). Read by [`sprite_limits`]' H40 parse cap,
+/// [`Vdp::sprites_decoded`]'s decode range, and the sprite walk's out-of-range-link test, which used to
+/// spell it as three bare `80`s. **Not** the `320` beside it in `sprite_limits`: that is the H40 per-line
+/// *pixel* budget, which happens to equal the H40 width and is neither this nor a width. `vdp.rs` still
+/// spells its own SAT-sized numbers bare (another parcel's file), and `oracle-aether`'s `SAT_SLOTS` is a
+/// second name for this that can now import it.
+pub const SAT_SLOTS: usize = 80;
+
 /// Per-line sprite limits `(max_sprites, max_pixels, parse_cap)` for the mode (recon R10 / RR8): H40 =
 /// 20 / 320 / 80, H32 = 16 / 256 / 64.
 fn sprite_limits(h40: bool) -> (usize, usize, usize) {
     if h40 {
-        (20, 320, 80)
+        (20, 320, SAT_SLOTS)
     } else {
         (16, 256, 64)
     }
@@ -1313,13 +1324,13 @@ impl Vdp {
         out
     }
 
-    /// Decode all 80 SAT entries (design §4 `sprites_decoded`, recon R5 / RR8). Y/size/link come from the
+    /// Decode all [`SAT_SLOTS`] (80) SAT entries (design §4 `sprites_decoded`, recon R5 / RR8). Y/size/link come from the
     /// **SAT cache**; X/tile/attr from **VRAM at the current reg-5 base** — with a per-entry
     /// `cache_divergence` flag exposing the stale-cache state. Pure introspection — recomputed on demand.
     pub fn sprites_decoded(&self) -> Vec<SpriteDecoded> {
         let base = self.sat_base();
         let cache = self.sat_cache();
-        (0..80)
+        (0..SAT_SLOTS)
             .map(|i| {
                 // Cached half (Y + size/link), big-endian.
                 let y_field = (((cache[i * 4] as u16) << 8) | cache[i * 4 + 1] as u16) & 0x03FF;
@@ -1835,7 +1846,7 @@ impl Vdp {
         let mut seen_nonzero = self.sprite_dot_overflow_carry();
         let mut masking_active = false;
         for _ in 0..cap {
-            if idx >= 80 {
+            if idx >= SAT_SLOTS {
                 break; // an out-of-range link terminates the list (MaxCount)
             }
             let y_field = (((cache[idx * 4] as u16) << 8) | cache[idx * 4 + 1] as u16) & 0x03FF;
