@@ -749,8 +749,9 @@ mod tests {
     }
 
     /// The head of the fixture ROM's inner stirring loop (`testrom.rs`: *"$00020E  inner: move.w (A0),
-    /// D0"*, encoding `$3010`), checked against the ROM image below rather than copied as a number.
-    const HOT_PC: u32 = 0x0000_020E;
+    /// D0"*, encoding `$3010`), imported from the ROM's builder (lens M61) and checked against the ROM
+    /// image below as well.
+    const HOT_PC: u32 = oracle_core::testrom::INNER_LOOP_PC;
 
     /// One whole iteration of `main.rs`'s loop, orderings included: the frame (with the breakpoint sink
     /// and the halt handed back), then `set_paused`, then the drain, then follow the bus's answer. This
@@ -920,6 +921,12 @@ mod tests {
         const OBJ_CODE_BASE: u32 = 0x0001_0000;
 
         /// The mailbox, in the engine's declaration order and at its declared widths.
+        ///
+        /// The **order and the widths are aeon's**: `games/sonic4/config/ram.emp`'s `Obj_Req_*`
+        /// block, `Def` u32, `X`/`Y`/`Slot`/`Place` u16, `Op`/`Status`/`Flag` u8 (read at aeon
+        /// `origin/master` `7c719ef`). The base address is this fixture's own.
+        /// `oracle-aether/tests/object_mutation.rs`'s double transcribes the same block, and the two
+        /// agree cell for cell.
         const MB: u32 = 0x00FF_9600;
         const MB_DEF: u32 = MB;
         const MB_X: u32 = MB + 4;
@@ -937,6 +944,15 @@ mod tests {
 
         /// **What the double saw at the moment it observed the flag set.** This is the anchor: it is
         /// written by the *emulated machine*, so nothing on the server side can fake it.
+        ///
+        /// ⚑ **This witness area is this double's private scratch, and it deliberately does NOT match
+        /// `oracle-aether/tests/object_mutation.rs`'s** (lens M68, which read the difference as drift).
+        /// No `W_*` cell is ever named to the server: the double writes each one and these tests read
+        /// the same constant back, so each fixture is self-consistent and neither layout is stale. This
+        /// double was forked from that one (`4104371`, *"reduced to the spawn path"*), so it has no
+        /// `W_SLOT`. When `1603512` added the placement word it was appended after `W_OP`, at
+        /// `$FF9720`, instead of reusing that file's `$FF971A`. The only part of the two fixtures
+        /// transcribed from aeon is the mailbox block above, and that part agrees.
         const W_DEF: u32 = 0x00FF_9710;
         const W_X: u32 = 0x00FF_9714;
         const W_Y: u32 = 0x00FF_9716;

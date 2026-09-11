@@ -1797,9 +1797,9 @@ fn run_window(machine: Machine, args: &Args, loaded: symbols::Loaded) {
 mod loop_tests {
     use super::*;
 
-    /// `move.w (A0),D0` in the fixture ROM's inner loop — the same address `crate::bus`'s seam tests arm
-    /// at, and *checked* there against the ROM's own bytes rather than re-checked here.
-    const HOT_PC: u32 = 0x0000_020E;
+    /// `move.w (A0),D0` in the fixture ROM's inner loop, imported from the ROM's builder (lens M61) —
+    /// the same name `crate::bus`'s seam tests arm at, and *checked* there against the ROM's own bytes.
+    const HOT_PC: u32 = oracle_core::testrom::INNER_LOOP_PC;
 
     /// ★ **The measurement fixture actually arms something**, and the panels it is measured through
     /// actually have rows.

@@ -1759,9 +1759,9 @@ mod tests {
     // ------------------------------------------------------------------ the hosted breakpoint halt
 
     /// The head of the fixture ROM's inner stirring loop — a PC [`booted`]'s machine executes constantly.
-    /// Anchored to the instruction rather than to the number by
+    /// Imported from the ROM's builder (lens M61), and anchored to the instruction as well by
     /// [`assert_hot_pc_is_the_stirring_loop`](tests::assert_hot_pc_is_the_stirring_loop).
-    const HOT_PC: u32 = 0x0000_020E;
+    const HOT_PC: u32 = oracle_core::testrom::INNER_LOOP_PC;
 
     /// `HOT_PC` names `move.w (A0), D0` (`$3010`) in the ROM [`booted`] loads. A test that armed a
     /// breakpoint at a dead address would pass its ordering assertions vacuously, so this is checked

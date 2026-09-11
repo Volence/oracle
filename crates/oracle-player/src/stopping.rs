@@ -1596,10 +1596,20 @@ mod tests {
     // ARMED-STATE-VISIBLE — what can halt the game, that it did, and the way out
     // -----------------------------------------------------------------------------------------------
 
-    /// The address the fixture ROM's inner loop runs on every pass (`testrom`'s `INNER`, `move.w (A0),
-    /// D0`). A breakpoint here halts within the first emulated frame and **halts again on every resume**,
-    /// which is the incident's own shape rather than a convenient one-shot.
-    const HOT: &str = "0x20E";
+    /// The address the fixture ROM's inner loop runs on every pass (`testrom::INNER_LOOP_PC`, `move.w
+    /// (A0), D0`), as the panel's address box takes it. A breakpoint here halts within the first emulated
+    /// frame and **halts again on every resume**, which is the incident's own shape rather than a
+    /// convenient one-shot. Formatted from the ROM builder's name (lens M61), no longer typed as `"0x20E"`.
+    fn hot() -> String {
+        format!("0x{:X}", oracle_core::testrom::INNER_LOOP_PC)
+    }
+
+    /// The same address as the window's sentences spell it (`0x` and eight hex digits), for the rows that
+    /// check a headline names it. Written out here rather than taken from the window's own formatter,
+    /// which would agree with itself.
+    fn hot_wire() -> String {
+        format!("0x{:08X}", oracle_core::testrom::INNER_LOOP_PC)
+    }
 
     /// **One iteration of the player's real loop**, in `Loop::iterate`'s order: adopt the bus's run state
     /// at the top, run a frame only if not paused, drain at the bottom.
@@ -1678,7 +1688,7 @@ mod tests {
         let a = bus.call(
             machine.system_mut(),
             BREAKPOINT_ADD,
-            &breakpoint_add_params(HOT, "hot").expect("a hex target"),
+            &breakpoint_add_params(&hot(), "hot").expect("a hex target"),
         );
         let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
         let armed_only = halting_now(&machine, &bus);
@@ -1688,7 +1698,7 @@ mod tests {
             .headline()
             .expect("an armed breakpoint must be stated while the machine is still running");
         assert!(
-            running_head.contains("ARMED") && running_head.contains("0x0000020E"),
+            running_head.contains("ARMED") && running_head.contains(&hot_wire()),
             "the running-and-armed line must name what is armed and where: {running_head}"
         );
 
@@ -1710,7 +1720,7 @@ mod tests {
         let head = h.headline().expect("a halted window must say so");
         let advice = h.advice().expect("…and must say how to get out");
         assert!(
-            head.contains("HALTED") && head.contains(&handle) && head.contains("0x0000020E"),
+            head.contains("HALTED") && head.contains(&handle) && head.contains(&hot_wire()),
             "the headline must name the state, the handle and the address: {head}"
         );
         assert!(
@@ -1775,7 +1785,7 @@ mod tests {
         let a = bus.call(
             machine.system_mut(),
             BREAKPOINT_ADD,
-            &breakpoint_add_params(HOT, "").expect("a hex target"),
+            &breakpoint_add_params(&hot(), "").expect("a hex target"),
         );
         let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
         // 1: nothing recorded yet.
@@ -1869,7 +1879,7 @@ mod tests {
         let a = bus.call(
             machine.system_mut(),
             BREAKPOINT_ADD,
-            &breakpoint_add_params(HOT, "hot").expect("a hex target"),
+            &breakpoint_add_params(&hot(), "hot").expect("a hex target"),
         );
         let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
         assert!(run_until_halted(&mut machine, &mut bus, &mut paused));
@@ -1947,7 +1957,7 @@ mod tests {
         bus.call(
             machine.system_mut(),
             BREAKPOINT_ADD,
-            &breakpoint_add_params(HOT, "").expect("a hex target"),
+            &breakpoint_add_params(&hot(), "").expect("a hex target"),
         );
         assert!(run_until_halted(&mut machine, &mut bus, &mut paused));
 
@@ -1996,14 +2006,14 @@ mod tests {
         bus.call(
             machine.system_mut(),
             BREAKPOINT_ADD,
-            &breakpoint_add_params(HOT, "").expect("a hex target"),
+            &breakpoint_add_params(&hot(), "").expect("a hex target"),
         );
         let h = Halting {
             frames_since: Some(0),
             stopped: true,
             last: Some(oracle_aether::engine::LastBreak {
                 id: oracle_aether::breakpoints::BreakpointId(1),
-                pc: 0x20E,
+                pc: oracle_core::testrom::INNER_LOOP_PC,
                 frame: 0,
                 ordinal: 1,
             }),
@@ -2113,7 +2123,7 @@ mod tests {
         let a = bus.call(
             machine.system_mut(),
             BREAKPOINT_ADD,
-            &breakpoint_add_params(HOT, "").expect("a hex target"),
+            &breakpoint_add_params(&hot(), "").expect("a hex target"),
         );
         let handle = ok(&a)["breakpoint"].as_str().expect("a handle").to_owned();
         assert_eq!(breakpoints_live(bus.read_breakpoints()), Live::Yes);
@@ -2140,7 +2150,7 @@ mod tests {
             frames_since: Some(0),
             last: Some(oracle_aether::engine::LastBreak {
                 id: oracle_aether::breakpoints::BreakpointId(1),
-                pc: 0x20E,
+                pc: oracle_core::testrom::INNER_LOOP_PC,
                 frame: 0,
                 ordinal: 9,
             }),
@@ -2192,7 +2202,7 @@ mod tests {
         bus.call(
             machine.system_mut(),
             BREAKPOINT_ADD,
-            &breakpoint_add_params(HOT, "").expect("a hex target"),
+            &breakpoint_add_params(&hot(), "").expect("a hex target"),
         );
         let h = halting_now(&machine, &bus);
         let advice = h.advice().expect("armed, so there is advice");

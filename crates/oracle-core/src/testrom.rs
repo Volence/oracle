@@ -44,6 +44,19 @@ const INNER: u32 = 0x0000_020E;
 const ILLEGAL_H: u32 = 0x0000_0280;
 const INT_H: u32 = 0x0000_02A0;
 
+/// **The head of [`build`]'s inner stirring loop**: `move.w (A0), D0` at `$00020E`, which this ROM
+/// executes on every one of the loop's `$4000` passes per reload. It is the address every test that
+/// needs a breakpoint that *will* fire arms at.
+///
+/// Published for those tests (lens M61). Seven of them had typed `0x0000_020E` or `"0x0000020E"` for
+/// themselves, each promising in prose to break loudly if the ROM moved. It is [`build`]'s own branch
+/// target, not a second spelling of it: the `dbra` is assembled against `INNER`, the way
+/// [`TRAP_HANDLER_ADDR`] is `ILLEGAL_H`. The unit test
+/// `inner_loop_pc_is_move_w_a0_d0_and_the_dbra_lands_on_it` pins it to the bytes (the opcode is placed
+/// by a literal address, the branch is decoded from its displacement word), so a name that stopped
+/// naming the loop fails here before any consumer arms a dead address.
+pub const INNER_LOOP_PC: u32 = INNER;
+
 /// Initial supervisor stack pointer (top of the 64 KiB work RAM, kept even).
 const INITIAL_SSP: u32 = 0x00FF_FFFE;
 
@@ -1251,6 +1264,28 @@ mod tests {
             "…and TRAP_HANDLER_STOP_SR is the immediate it loads (mask 7 — nothing wakes it)"
         );
         assert_eq!(rd_word(&rom, 0x2A8), 0x4E73, "rte");
+    }
+
+    /// [`INNER_LOOP_PC`] is pinned to the ROM's **bytes**, not to `INNER`. The opcode is read at the
+    /// published address (it was placed by a literal `put_word(0x20E, …)`, not by the name), and the
+    /// loop's branch target is decoded from the `dbra`'s own displacement word. Every consumer that arms
+    /// a breakpoint at the name is vacuous if either stops being true.
+    #[test]
+    fn inner_loop_pc_is_move_w_a0_d0_and_the_dbra_lands_on_it() {
+        let rom = build();
+        assert_eq!(
+            rd_word(&rom, INNER_LOOP_PC as usize),
+            0x3010,
+            "INNER_LOOP_PC must name `move.w (A0),D0`, the head of the stirring loop"
+        );
+        assert_eq!(rd_word(&rom, 0x214), 0x51C9, "dbra D1 at $214");
+        // The 68000 adds the displacement to the address of the extension word itself ($216).
+        let target = 0x216_i64 + i64::from(rd_word(&rom, 0x216) as i16);
+        assert_eq!(
+            target,
+            i64::from(INNER_LOOP_PC),
+            "the loop's dbra must branch back to INNER_LOOP_PC"
+        );
     }
 
     #[test]

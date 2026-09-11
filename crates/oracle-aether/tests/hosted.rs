@@ -683,10 +683,10 @@ fn a_client_load_symbols_reaches_the_player_as_a_symbols_change_and_not_a_rom_ch
 
 /// The head of the fixture ROM's inner stirring loop, which it executes constantly.
 ///
-/// Not copied from a neighbouring pin: [`assert_hot_pc_is_the_stirring_loop`] reads the opcode back out
-/// of the ROM image this fixture actually loads, so the address is anchored to the *instruction* rather
-/// than to a number, and a ROM change breaks it loudly instead of silently un-arming the fixture.
-const HOT_PC: u32 = 0x0000_020E;
+/// Imported from the ROM's builder rather than typed here (lens M61), the way [`COLD_PC`] is.
+/// [`assert_hot_pc_is_the_stirring_loop`] still reads the opcode back out of the ROM image this fixture
+/// actually loads, so the address is anchored to the *instruction* as well as to the one name.
+const HOT_PC: u32 = oracle_core::testrom::INNER_LOOP_PC;
 
 /// The negative control, taken from the core's own public constant rather than re-typed: the
 /// illegal-instruction handler, reachable only through vector 4, which this ROM's main loop cannot take.

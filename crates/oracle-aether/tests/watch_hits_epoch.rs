@@ -565,7 +565,7 @@ fn the_aggregates_survive_every_boundary_while_the_epoch_relative_records_are_dr
 
     // ---- one observer of each kind, both with a life longer than one epoch ------------------------
     // A breakpoint in the fixture's main loop, earned the way `tests/breakpoints.rs` earns one.
-    let bp = c.ok("emulator/breakpoint_add", json!({"addr": HOT_PC}))["breakpoint"]
+    let bp = c.ok("emulator/breakpoint_add", json!({"addr": hot_pc()}))["breakpoint"]
         .as_str()
         .expect("a breakpoint handle")
         .to_string();
@@ -628,9 +628,11 @@ fn the_aggregates_survive_every_boundary_while_the_epoch_relative_records_are_dr
     let _ = std::fs::remove_file(&path);
 }
 
-/// The PC the fixture ROM's main loop reaches every pass — `tests/breakpoints.rs`'s `HOT_PC`, quoted
-/// rather than re-derived so the two files break together if the ROM moves.
-const HOT_PC: &str = "0x0000020E";
+/// The PC the fixture ROM's main loop reaches every pass, formatted from the ROM builder's own name
+/// (lens M61) — the same one `tests/breakpoints.rs`'s `hot_pc` formats, so the two cannot disagree.
+fn hot_pc() -> String {
+    format!("0x{:08X}", oracle_core::testrom::INNER_LOOP_PC)
+}
 
 /// The three lifetime aggregates of the recorder, plus the ring's current occupancy, read in one call.
 struct Aggregates {
