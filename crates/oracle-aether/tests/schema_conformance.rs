@@ -31,7 +31,7 @@ use common::schema::{
     check_incoming, check_incoming_strict, compile_fragment, divergence_report, schema_root,
     schemas, vectors_root, KNOWN_CONTRACT_DIVERGENCES,
 };
-use oracle_aether::engine::METHODS;
+use oracle_aether::engine::{EVENTS, METHODS, WINDOW_GESTURE_EVENTS};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -936,6 +936,88 @@ fn the_schema_covers_every_method_we_advertise_and_the_uncovered_list_is_pinned_
          is not reading the whole document.",
         unsplit.len()
     );
+}
+
+/// **M2: the EVENT half of the coverage split, pinned as a whole set against the schema.**
+///
+/// Until this row, events were only printed here (`events with a params schema (N)`), and the one events
+/// pin in the tree (`handshake.rs`) compares what a headless server advertises to `engine::EVENTS` — the
+/// code against itself, never against the contract. A fragment arriving for an event we do not emit, or
+/// an event we emit losing its fragment, changed nothing but a printed line.
+///
+/// The served side is the union over every deployment this crate can be built into: [`EVENTS`], which
+/// every process pushes, and [`WINDOW_GESTURE_EVENTS`], which only a process with a window gesture
+/// advertises (§11.40, and `Engine::advertised_events` is exactly that union when the flag is on). The
+/// schema side is every non-`$` key under `events`, straight off the raw document. They must match
+/// exactly once [`SCHEMATIZED_EVENTS_NOT_SERVED`] is added — the house form, the same shape as
+/// `SCHEMATIZED_NOT_ADVERTISED` for methods, and loud in all three directions: a new fragment for an event
+/// nobody emits, an emitted event with no fragment, and an empty or unparsed schema.
+#[test]
+fn every_served_event_has_a_fragment_and_the_rest_are_pinned_by_name() {
+    /// Events the contract defines and no route in this tree emits, each a decision. Literal on purpose,
+    /// like `SCHEMATIZED_NOT_ADVERTISED`: the point is that the set cannot quietly change.
+    ///
+    /// * `emulator/clicked` — a window-click event the contract carries a fragment for; no crate here
+    ///   names it (`git grep 'emulator/clicked' -- '*.rs'` finds nothing outside this line). Remove it here
+    ///   in the commit that starts emitting it; the assertion below forces that.
+    const SCHEMATIZED_EVENTS_NOT_SERVED: &[&str] = &["emulator/clicked"];
+
+    let mut served: Vec<&str> = EVENTS
+        .iter()
+        .chain(WINDOW_GESTURE_EVENTS)
+        .copied()
+        .collect();
+    served.sort_unstable();
+    let mut fragments: Vec<&str> = common::schema::schema_root()["events"]
+        .as_object()
+        .expect("the vendored schema has an events object")
+        .keys()
+        .filter(|k| !k.starts_with('$'))
+        .map(String::as_str)
+        .collect();
+    fragments.sort_unstable();
+    assert!(
+        !served.is_empty() && !fragments.is_empty(),
+        "unmeasurable: served {served:?}, schema fragments {fragments:?} — an empty side makes the \
+         comparison below prove nothing"
+    );
+
+    let mut expected: Vec<&str> = served
+        .iter()
+        .chain(SCHEMATIZED_EVENTS_NOT_SERVED)
+        .copied()
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(
+        fragments, expected,
+        "the schema's event fragments and the events this server can emit have diverged.\n\
+         A fragment ARRIVED for an event nothing here emits: serve it, or pin it in \
+         SCHEMATIZED_EVENTS_NOT_SERVED with the reason.\n\
+         An event we emit has NO fragment: every line carrying it is checked against the envelope and \
+         nothing more — get a fragment into the contract first.\n\
+         A pinned event is now SERVED: remove it from the pin in the commit that ships it."
+    );
+
+    // The two claims the pin implies, re-derived rather than trusted.
+    for e in SCHEMATIZED_EVENTS_NOT_SERVED {
+        assert!(
+            fragments.contains(e),
+            "{e} is pinned but the schema has no fragment for it"
+        );
+        assert!(
+            !served.contains(e),
+            "{e} is pinned as not served, but EVENTS/WINDOW_GESTURE_EVENTS emit it"
+        );
+    }
+    // And every served event's fragment actually constrains its params, so validating its lines is not
+    // vacuous.
+    let with_params = schemas().events_with_params();
+    for e in &served {
+        assert!(
+            with_params.contains(e),
+            "{e} has a fragment but no `params` schema, so its lines are checked against nothing"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------

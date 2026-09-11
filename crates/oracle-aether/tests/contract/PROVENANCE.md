@@ -39,7 +39,8 @@ at all.
 **Why the vectors joined the schema (2026-09-05, §11.36).** A vendored schema alone can only be checked
 against the replies this server happens to emit, and that population contains no *refusals*: nothing here
 could ever have caught a fragment that accepts everything. The vectors are the hub's own anti-vacuity
-evidence — 276 cases, of which the ones marked `expect: "fail"` are the load-bearing half —
+evidence — every case in `vectors.json` (the count each re-vendor carried is recorded in its table
+below, not here), of which the ones marked `expect: "fail"` are the load-bearing half —
 and `schema_conformance::the_contracts_own_vectors_pass_and_fail_exactly_as_declared` runs all of them
 against the vendored fragments (upstream's G3 and G4, replicated). The two files are pinned at the **same
 contract revision**, and the gate asserts that: a schema from one revision beside vectors from another is

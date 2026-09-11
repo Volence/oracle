@@ -307,21 +307,28 @@ const UNCOVERED: &[(&str, &str)] = &[
 /// Every one of these is a value the fragment declares LEGAL, so each entry is a ceiling this file does
 /// not exercise — the differential's boundary at the top end, written down rather than left implicit.
 ///
-/// **The list started at five and measurement cut it to two.** `scanlines.count`, `step.count` and
+/// **The list started at five and measurement cut it to one.** `scanlines.count`, `step.count` and
 /// `write_memory.value` were all skipped on a plausible-sounding reason first, and all three were wrong:
 /// 224 lines from `startLine: 0` serves fine; a million-instruction step costs 0.34 s because
 /// `spawn_for_sweep`'s one-frame budget clamps it anyway; and `value`'s ceiling is refused only because
 /// the baseline carried `width: 1`, which is a baseline bug and now says `width: 4`. A skip written from
 /// reasoning rather than from a measurement is a hole with a confident label on it.
+///
+/// **`wait_for_break.timeoutMs` was the fourth, and the same mistake a fourth time** (lens row M6; it
+/// retires `F-WAITBREAK-CEILING-UNEXERCISED`). It was skipped as *"five minutes inside one blocking call.
+/// REASONED, NOT MEASURED"*, and because it was skipped, `engine::MAX_WAIT_TIMEOUT_MS` could be lowered
+/// below the fragment's maximum with every test in this file still green — measured, at `299_999` with
+/// the skip in place. The reasoning was about a RUNNING machine, which is what stalls
+/// `common::sweep_params`. [`client`] pauses first, and a paused machine has already broken: the handler
+/// answers at once whatever the timeout (`Engine::wait_for_break`: *"a paused machine answers
+/// immediately"*), and the transport's wait returns on entry because the stamp already reads stopped. So
+/// the ceiling costs nothing to send here, and if that ever regressed into a real wait,
+/// `common::READ_TIMEOUT` would fail the probe loudly long before five minutes passed. Both ends are now
+/// tied to the fragment by behaviour — this control refuses a constant set below its maximum, the
+/// differential refuses one set above it — and
+/// [`the_wait_ceiling_is_the_fragments_maximum_and_its_control_is_sent`] makes the tie's preconditions
+/// loud.
 const MAX_CONTROL_SKIPS: &[(&str, &str, &str)] = &[
-    (
-        "emulator/wait_for_break",
-        "timeoutMs",
-        "300000 is five minutes inside one blocking call. REASONED, NOT MEASURED — deliberately, since \
-         measuring it costs the five minutes: `common::sweep_params` records this row stalling the \
-         whole method sweep on its 30-second DEFAULT and tripping the socket read deadline, and 300000 \
-         is ten times that (F-WAITBREAK-CEILING-UNEXERCISED)",
-    ),
     (
         "emulator/press",
         "frames",
@@ -721,6 +728,38 @@ fn the_in_bounds_control_is_never_refused_by_name() {
         failures.join("\n")
     );
     assert!(checked > 0, "the control measured nothing");
+}
+
+/// **M6: `engine::MAX_WAIT_TIMEOUT_MS` is a second copy of one number, and this is the row that says
+/// which copy is the authority.**
+///
+/// The engine refuses `timeoutMs` above its own constant; the fragment declares a `maximum`. The
+/// in-bounds control ties them by behaviour, but only while two things hold that a later edit could
+/// quietly undo: the fragment still declares a maximum for the walk to find, and the control still sends
+/// it. Either going away would leave the constant free to drift with nothing red, which is exactly the
+/// state M6 found. So both are asserted here, and so is the equality itself, which needs no server.
+#[test]
+fn the_wait_ceiling_is_the_fragments_maximum_and_its_control_is_sent() {
+    let site = declared_bounds()
+        .into_iter()
+        .find(|s| s.method == "emulator/wait_for_break" && s.field == "timeoutMs")
+        .expect("the vendored fragment declares a bound on wait_for_break.timeoutMs");
+    let max = site
+        .max
+        .expect("the fragment declares a MAXIMUM for timeoutMs, which is what the constant copies");
+    assert!(
+        !MAX_CONTROL_SKIPS
+            .iter()
+            .any(|(m, f, _)| *m == site.method && *f == site.field),
+        "wait_for_break.timeoutMs is in MAX_CONTROL_SKIPS again, so its ceiling is not sent and the \
+         constant can be lowered below the fragment with every test green (M6)"
+    );
+    assert_eq!(
+        u64::try_from(max).expect("a non-negative maximum"),
+        oracle_aether::engine::MAX_WAIT_TIMEOUT_MS,
+        "engine::MAX_WAIT_TIMEOUT_MS has drifted from the fragment's timeoutMs maximum; the fragment is \
+         the authority"
+    );
 }
 
 /// **The coverage ledger.** The bounded-method set is derived from the schema; `BASELINES ∪ UNCOVERED`

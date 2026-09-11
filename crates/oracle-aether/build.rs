@@ -147,7 +147,17 @@ fn enabled_features() -> String {
 /// declaration incomplete — and an incomplete declaration is the exact M2 defect this script exists to
 /// avoid. A scope that can be declared **completely** is worth more than a wider one that goes stale.
 ///
-/// `oracle-frontend` and `oracle-replay` are deliberately absent: neither links into this binary.
+/// **What is absent, and the real reason.** The scope is this crate's own compile inputs — the ones a
+/// build script can see and declare — so it stops at crates *below* `oracle-aether` in the dependency
+/// graph. `oracle-replay` is absent because it does not link this crate at all. `oracle-frontend` and
+/// `oracle-player` are absent for a different reason: both link it (the frontend behind its `aether`
+/// feature, serving the bus with `--aether`; the player unconditionally), so each is a binary that
+/// reports this crate's `serverBuild` while also compiling sources this scope does not watch. An
+/// uncommitted edit under either crate's `src/` therefore does not raise the `dirty` that process
+/// serves. That is a known gap, not an oversight: the hub ruled on 2026-09-05 not to widen this scope for
+/// a presenting crate (`docs/OVERSEER.md`, "DO NOT widen the aether build script's dirty scope"), the
+/// player's window states the gap in its own hover (`oracle-player/src/identity.rs`), and a caveat on the
+/// wire would be a contract change.
 fn build_input_paths(manifest: &Path) -> Vec<PathBuf> {
     let ws = manifest.join("../..");
     vec![

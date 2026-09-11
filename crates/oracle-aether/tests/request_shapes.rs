@@ -69,7 +69,7 @@
 //! | `minimum` / `maximum` | 97 | `request_bounds.rs` |
 //! | undeclared key refused (`unevaluatedProperties: false`) | 70 params objects | `params_closure.rs` |
 //! | unconditional `required` | 30 | **this file** |
-//! | `pattern` | 24 | **this file** |
+//! | `pattern` | 24 | **this file** (each hex site probed twice since M25: [`empty_payload_value`]) |
 //! | `minLength` | 21 | **this file** |
 //! | `oneOf` disjunction (supply none) | 17 | **this file** |
 //! | `enum` | 10 | **this file** |
@@ -264,6 +264,26 @@ fn illegal_value(sub: &Value, kind: &Kind) -> Option<Value> {
         .find(|c| !validator.is_valid(c))
 }
 
+/// **The second probe on a `pattern` site: the empty payload, `"0x"`** (lens row M25).
+///
+/// [`illegal_value`] keeps ONE violating candidate per site, and one candidate cannot see every way a
+/// pattern can be broken. `"zzz+$FF"` breaks every hex pattern at its prefix, so a handler that checks
+/// the prefix refuses it — and the probe never meets the other violation those patterns carry: a body of
+/// zero digits. `^0x[0-9A-Fa-f]+$` and `^0x([0-9A-Fa-f]{2})+$` both reject `"0x"` by their `+` alone.
+/// That is how `emulator/z80_write` came to answer `bytes: "0x"` while `write_memory` and `write_vram`
+/// refuse it: nothing in the tree ever sent it.
+///
+/// Derived exactly like the first probe — the contract's own validator decides, never a reading of the
+/// regex. A pattern that accepts `"0x"` (`$defs/symbolName` does: it is a legal name) gets no second
+/// probe, and a site whose first probe already is `"0x"` gets no duplicate.
+fn empty_payload_value(sub: &Value) -> Option<Value> {
+    let mut one = serde_json::Map::new();
+    one.insert("pattern".to_string(), sub.get("pattern")?.clone());
+    let validator = jsonschema::validator_for(&Value::Object(one)).ok()?;
+    let candidate = json!("0x");
+    (!validator.is_valid(&candidate)).then_some(candidate)
+}
+
 /// Walk a fragment's `params` subtree and collect every non-numeric obligation under it.
 ///
 /// `in_branch` is the whole `oneOf` correction: a `required` reached through a `oneOf`/`anyOf` arm is
@@ -292,6 +312,10 @@ fn collect(
         let kw = kind.tag();
         if obj.contains_key(kw) {
             if let Some(bad) = illegal_value(&node, &kind) {
+                let empty = match kind {
+                    Kind::Pattern => empty_payload_value(&node).filter(|e| *e != bad),
+                    _ => None,
+                };
                 out.push(ShapeSite {
                     method: method.to_string(),
                     field: field_name(),
@@ -299,6 +323,15 @@ fn collect(
                     mutation: Mutation::Set(path.clone(), bad),
                     kind,
                 });
+                if let Some(e) = empty {
+                    out.push(ShapeSite {
+                        method: method.to_string(),
+                        field: field_name(),
+                        display: format!("{} = {e}", display_path(path)),
+                        mutation: Mutation::Set(path.clone(), e),
+                        kind: Kind::Pattern,
+                    });
+                }
             } else {
                 // Loud, not skipped: a keyword whose violation this file cannot construct is a hole, and
                 // it is reported as UNDERIVABLE by `every_declared_obligation_is_refused_by_name`.
@@ -716,6 +749,45 @@ const UNMEASURABLE: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// **Out-of-contract requests this server still ANSWERS — a known-gap list, each row owned by a lens row
+/// id pending its handler fix.** Not a pass, and not the same thing as [`UNMEASURABLE`].
+///
+/// This harness had no expected-failure form, and [`UNMEASURABLE`] cannot hold these rows: its anti-rot
+/// check requires the probe to stay refused *for something other than params*, while a site the server
+/// answers is the defect class itself. So this is a sibling registry with the same three properties: the
+/// suite stays green so a known, owned defect is not read as a regression; a row that stops being
+/// answered fails [`the_registered_answered_sites_are_still_answered`], which forces its deletion in the
+/// commit that lands the fix; and every row is printed on every run beside the refusal count. Keyed by the
+/// probe VALUE as well as the site, because one `pattern` site can carry two probes (see
+/// [`empty_payload_value`]) and only one of them may be answered.
+///
+/// Each row: method, field, kind tag, probe value, and the lens row id with its reason.
+const KNOWN_ANSWERED: &[(&str, &str, &str, &str, &str)] = &[(
+    "emulator/z80_write",
+    "bytes",
+    "pattern",
+    "0x",
+    "M25: the fragment's pattern `^0x([0-9A-Fa-f]{2})+$` rejects an empty payload, and the handler \
+     parses `\"0x\"` as an empty Ok and answers it — where `write_memory` and `write_vram` refuse the same \
+     payload by name. The handler fix is engine.rs's, owned by wave 2 (AETHER-HANDLERS); delete this row \
+     in the commit that lands it",
+)];
+
+fn registered_answered(site: &ShapeSite) -> Option<&'static str> {
+    let Mutation::Set(_, sent) = &site.mutation else {
+        return None;
+    };
+    KNOWN_ANSWERED
+        .iter()
+        .find(|(m, f, k, v, _)| {
+            *m == site.method
+                && *f == site.field
+                && *k == site.kind.tag()
+                && sent.as_str() == Some(*v)
+        })
+        .map(|(.., why)| *why)
+}
+
 fn registered_unmeasurable(site: &ShapeSite) -> Option<&'static str> {
     UNMEASURABLE
         .iter()
@@ -937,6 +1009,7 @@ fn every_declared_obligation_is_refused_by_name() {
     let mut passed = 0usize;
     let mut failures: Vec<String> = Vec::new();
     let mut unmeasured: Vec<String> = Vec::new();
+    let mut known_gaps: Vec<String> = Vec::new();
     let mut skipped = 0usize;
 
     for site in &sites {
@@ -981,12 +1054,19 @@ fn every_declared_obligation_is_refused_by_name() {
             &site.field,
         ) {
             Outcome::RefusedByName(_) => passed += 1,
-            Outcome::Answered => failures.push(format!(
-                "{} {} [{}]: ANSWERED an out-of-contract request. Sent: {params}",
-                site.method,
-                site.display,
-                site.kind.tag()
-            )),
+            Outcome::Answered => {
+                let row = format!(
+                    "{} {} [{}]: ANSWERED an out-of-contract request. Sent: {params}",
+                    site.method,
+                    site.display,
+                    site.kind.tag()
+                );
+                match registered_answered(site) {
+                    Some(why) => known_gaps.push(format!("{row}\n      registered: {why}")),
+                    // Answered and UNREGISTERED: the defect class, owned by nobody. Fails.
+                    None => failures.push(row),
+                }
+            }
             Outcome::RefusedUnnamed(msg) => failures.push(format!(
                 "{} {} [{}]: refused -32602 but the message never names `{}`: {msg:?}",
                 site.method,
@@ -1023,15 +1103,20 @@ fn every_declared_obligation_is_refused_by_name() {
     }
 
     println!(
-        "request shapes: {passed} refused by name, {} unmeasured (all registered), {} skipped as \
-         UNCOVERED, of {} declared obligations on advertised methods",
+        "request shapes: {passed} refused by name, {} unmeasured (all registered), {} ANSWERED but \
+         registered as known gaps, {} skipped as UNCOVERED, of {} declared obligations on advertised \
+         methods",
         unmeasured.len(),
+        known_gaps.len(),
         skipped,
         sites.len()
     );
     // Printed on every run, passing or not: a green suite must never be read as a fully-probed surface.
     for u in &unmeasured {
         println!("  UNMEASURED {u}");
+    }
+    for k in &known_gaps {
+        println!("  KNOWN GAP {k}");
     }
     assert!(
         failures.is_empty(),
@@ -1087,6 +1172,59 @@ fn the_registered_unmeasurable_sites_are_still_unmeasurable() {
         "the UNMEASURABLE registry has rotted:\n{}\n{}",
         retired.join("\n"),
         orphaned.join("\n")
+    );
+}
+
+/// **The known-gap list's anti-rot check.** Every row in [`KNOWN_ANSWERED`] must still be ANSWERED.
+///
+/// The day the handler is fixed, its probe comes back refused and this goes red, which is what forces the
+/// row's deletion in the fixing commit rather than leaving an allowance for a defect that no longer
+/// exists — an allowance that outlives its defect is where the next one hides. A row no probe sends any
+/// more is red too. An empty list is no claim, exactly as for `request_bounds.rs`'s `KNOWN_UNSERVEABLE`.
+#[test]
+fn the_registered_answered_sites_are_still_answered() {
+    let sites = declared_obligations();
+    let h = spawn_for_sweep("request-shapes-known-answered");
+    let (mut c, mut hs) = client(&h);
+    let mut rotted: Vec<String> = Vec::new();
+
+    for (method, field, kind, value, why) in KNOWN_ANSWERED {
+        let Some(site) = sites.iter().find(|s| {
+            &s.method == method
+                && &s.field == field
+                && s.kind.tag() == *kind
+                && matches!(&s.mutation, Mutation::Set(_, v) if v.as_str() == Some(*value))
+        }) else {
+            rotted.push(format!(
+                "{method} `{field}` [{kind}] = {value:?} is registered, but no probe sends it any more — \
+                 the schema or the walk moved. Registered as: {why}"
+            ));
+            continue;
+        };
+        let Some(mut params) = baseline(method, field, &hs) else {
+            rotted.push(format!(
+                "{method} `{field}`: a registered site with no baseline"
+            ));
+            continue;
+        };
+        if let Err(e) = apply(&mut params, &site.mutation) {
+            rotted.push(format!(
+                "{method} `{field}`: the baseline cannot carry the probe: {e}"
+            ));
+            continue;
+        }
+        let outcome = send_probe(&mut c, &mut hs, &h, method, params, field);
+        if !matches!(outcome, Outcome::Answered) {
+            rotted.push(format!(
+                "{method} `{field}` [{kind}] = {value:?} is registered as ANSWERED but now resolves to \
+                 {outcome:?}. The handler was fixed: DELETE the row. Registered as: {why}"
+            ));
+        }
+    }
+    assert!(
+        rotted.is_empty(),
+        "the KNOWN_ANSWERED list has rotted:\n{}",
+        rotted.join("\n")
     );
 }
 

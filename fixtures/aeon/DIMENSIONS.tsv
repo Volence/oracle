@@ -13,14 +13,16 @@
 # WHY THIS FILE EXISTS — the failure it makes visible
 # ---------------------------------------------------
 # A frozen listing drifts away from the build it was taken from, and the drift is exactly where new
-# faults live. Four sightings, all re-measured here rather than taken on report:
+# faults live. Every sighting below was re-measured here rather than taken on report:
 #
 #   * `ObjSub_` — the spring-subtype picker (crates/oracle-frontend/src/spawn.rs, reaching
-#     `equates_with_prefix` at crates/oracle-aether/src/engine.rs:6813) works ENTIRELY by reading the
+#     `equates_with_prefix` through `emulator/lookup_equate`, i.e. `Engine::lookup_equate` in
+#     crates/oracle-aether/src/engine.rs) works ENTIRELY by reading the
 #     `ObjSub_Spring__` namespace. The frozen listings publish ZERO equates under `ObjSub_`; aeon's
 #     build publishes eight. Every test of that picker is therefore synthetic, and nothing said so.
-#   * `ObjDef_` — the archetype namespace (`spawn::ARCHETYPE_PREFIX`, reaching `with_prefix` at
-#     engine.rs:6702). Frozen `s4.debug.lst` declares five archetypes; aeon's declares six. The missing
+#   * `ObjDef_` — the archetype namespace (`spawn::ARCHETYPE_PREFIX`, reaching `with_prefix` through
+#     `emulator/lookup_symbol`'s prefix branch, i.e. `Engine::lookup_symbol` in engine.rs). Frozen
+#     `s4.debug.lst` declares five archetypes; aeon's declares six. The missing
 #     one is `ObjDef_Spring` — the archetype the picker above is about.
 #   * `Phase Table` — absent from every frozen listing; aeon's `s4*.lst` carry `PHASE-COUNT 6` and
 #     `demo*.lst` carry `PHASE-COUNT 2`. A fault in phase parsing was invisible to the frozen path by

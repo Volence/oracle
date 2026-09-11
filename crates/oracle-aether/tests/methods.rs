@@ -633,8 +633,12 @@ fn no_symbols_and_symbol_not_found_are_distinct_codes() {
 ///
 /// * the **exact hit** answers `{name, value}` with `value` a JSON **number**, not a hex string (D9
 ///   category 2), and the number is the one the listing spells;
-/// * the **empty prefix** answers `matches: []` with `truncated: false` and **is not an error** — the
-///   distinction a client cannot make if an empty answer arrives as `-32013`;
+/// * the **empty result** — a prefix nothing starts with — answers `matches: []` with `truncated: false`
+///   and **is not an error**, the distinction a client cannot make if an empty answer arrives as
+///   `-32013`. (The ruling's words are "the empty prefix", and an empty ANSWER is what they mean. An
+///   empty PREFIX, `prefix: ""`, is the opposite case: §6 gives `prefix` `minLength: 1` and it is refused
+///   `-32602` by name since `3386902` — asserted here beside the empty result, because the old name of
+///   this test read as though `""` were served. Lens row M28.);
 /// * `-32012` (no listing) and `-32013` (this listing does not publish that name) are **different codes**
 ///   on the same method, so a client can tell "you forgot `load_symbols`" from "your build renamed the
 ///   constant". The `-32013` carries `data.missing`.
@@ -643,7 +647,7 @@ fn no_symbols_and_symbol_not_found_are_distinct_codes() {
 /// `lookup_equate` answers `512` for the name and `lookup_symbol` answers `EntryPoint` for the address,
 /// and neither door ever mentions the other's answer. That is option A on the wire.
 #[test]
-fn lookup_equate_serves_the_exact_hit_the_empty_prefix_and_the_two_refusals() {
+fn lookup_equate_serves_the_exact_hit_and_an_empty_result_but_refuses_an_empty_prefix() {
     let h = spawn("equ");
     let mut c = Client::connect(&h);
     c.handshake(false);
@@ -698,6 +702,20 @@ fn lookup_equate_serves_the_exact_hit_the_empty_prefix_and_the_two_refusals() {
         "an empty match list is a real answer, NOT an error (§11.36)"
     );
     assert_eq!(r["truncated"], json!(false));
+
+    // …and the empty PREFIX is the opposite case: out of contract (`minLength: 1`), refused by name. It
+    // used to reach `equates_with_prefix("")`, which matches every equate.
+    let e = c.err("emulator/lookup_equate", json!({"prefix": ""}));
+    assert_eq!(
+        e["code"],
+        json!(-32602),
+        "an empty prefix is a params fault"
+    );
+    assert!(
+        e["message"].as_str().unwrap_or("").contains("`prefix`"),
+        "the refusal names the offending key: {:?}",
+        e["message"]
+    );
 
     // 3. -32013 for an absent NAME, with `data.missing`, and it is not the -32012 above.
     let e = c.err("emulator/lookup_equate", json!({"name": "NOT_AN_EQUATE"}));

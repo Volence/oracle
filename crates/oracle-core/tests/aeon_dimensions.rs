@@ -3,8 +3,9 @@
 //! # The failure this exists for
 //!
 //! `fixtures/aeon/*.lst` are committed copies of another lane's build output. They drift from the build
-//! they were taken from, and *the drift is exactly where new faults live*. Three sightings, each
-//! re-measured here rather than taken on report:
+//! they were taken from, and *the drift is exactly where new faults live*. `DIMENSIONS.tsv`'s header
+//! carries every sighting; three of them are about namespaces and sections, each re-measured here rather
+//! than taken on report (the live-effects panel's is the next section's subject):
 //!
 //! * the frozen listings publish **zero** equates under `ObjSub_`; aeon's build publishes eight
 //!   (`ObjSub_Spring__{Up,Right,Down,Left}_{Red,Yellow}`). The spring-subtype picker
