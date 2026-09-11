@@ -2863,6 +2863,59 @@ mod tests {
         );
     }
 
+    /// ★ **The write-through window is all 80 slots in H40 and the first 64 in H32** (recon R5: `base+640`
+    /// / `base+512`), through BOTH of this file's copies of the window rule: the data port
+    /// (`write_vram_byte`) and [`Vdp::poke_vram`].
+    ///
+    /// Written because nothing tested the slots that tell the modes apart. Every other write-through test
+    /// here uses slot 0, which is inside both windows, so mutating [`SAT_SLOTS`] from 80 to 79 reddened
+    /// only `render.rs`'s decode-count test and left both `vdp.rs` sites unobserved (lens M62, measured
+    /// 2026-09-11). The slot numbers here are R5's own, typed as literals, never read through the
+    /// constant.
+    #[test]
+    fn the_sat_window_is_eighty_slots_in_h40_and_sixty_four_in_h32() {
+        // Slot 79's Y word: the LAST slot of the H40 window. Base $2000, 8 bytes per slot.
+        const SLOT_79: usize = 0x2000 + 79 * 8;
+        // Slot 64's Y word: the first slot past the H32 window.
+        const SLOT_64: usize = 0x2000 + 64 * 8;
+
+        let mut port = fresh();
+        port.regs[0x05] = 0x10; // SAT base $2000 (bit 0 clear, so H40's mask changes nothing)
+        port.regs[0x0C] = 0x81; // H40
+        port.code = 0x01; // VRAM write
+        port.addr = SLOT_79 as u16;
+        port.data_write(0x0142);
+        let mut poked = fresh();
+        poked.regs[0x05] = 0x10;
+        poked.regs[0x0C] = 0x81;
+        poked.poke_vram(SLOT_79, 0x01);
+        poked.poke_vram(SLOT_79 + 1, 0x42);
+        for (v, via) in [(&port, "the data port"), (&poked, "poke_vram")] {
+            assert_eq!(
+                &v.sat_cache[79 * 4..79 * 4 + 2],
+                &[0x01, 0x42],
+                "H40 must refresh slot 79, the last of its 80, through {via}"
+            );
+        }
+
+        let mut port = fresh();
+        port.regs[0x05] = 0x10;
+        port.code = 0x01; // H32: reg 12 left at 0
+        port.addr = SLOT_64 as u16;
+        port.data_write(0x0142);
+        let mut poked = fresh();
+        poked.regs[0x05] = 0x10;
+        poked.poke_vram(SLOT_64, 0x01);
+        poked.poke_vram(SLOT_64 + 1, 0x42);
+        for (v, via) in [(&port, "the data port"), (&poked, "poke_vram")] {
+            assert_eq!(
+                &v.sat_cache[64 * 4..64 * 4 + 2],
+                &[0x00, 0x00],
+                "H32's window is 64 slots, so slot 64 must NOT refresh through {via}"
+            );
+        }
+    }
+
     /// **The drift guard named in [`Vdp::poke_vram`]'s doc comment.** The poke duplicates the SAT-window
     /// arithmetic rather than sharing `write_vram_byte`'s, because that function is on the currency path;
     /// this is the test that stops the two copies from diverging. Two machines, the same four SAT bytes,
