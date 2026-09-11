@@ -74,6 +74,7 @@
 use oracle_aether::build_info::{
     SERVER_BUILD_DIRTY, SERVER_BUILD_DIRTY_SCOPE, SERVER_BUILD_ID, SERVER_BUILD_SOURCE,
 };
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
@@ -108,9 +109,48 @@ fn configuration() -> &'static str {
 /// use. While the answer is `false`, the hover carries the caveat; the day someone adds this crate to
 /// `build_input_paths`, the caveat stops being printed without anyone remembering to delete it.
 fn dirty_scope_covers_this_window() -> bool {
-    SERVER_BUILD_DIRTY_SCOPE
+    scope_covers(
+        SERVER_BUILD_DIRTY_SCOPE,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+    )
+}
+
+/// Whether any entry of `scope` is `window_src` or an ancestor of it — compared **component by
+/// component**, never as text.
+///
+/// The scope's entries are absolute paths, so each one carries the name of whatever directory the
+/// checkout sits in. A text match on `oracle-player` therefore answered "covered" for every entry of a
+/// checkout under `oracle-player-dev/` and deleted the caveat while the scope still excluded this crate
+/// (M15). `Path::starts_with` matches whole components, so a lookalike directory or a sibling crate
+/// named `oracle-player-extras` cannot satisfy it.
+///
+/// A single file inside `window_src` does not count: the caveat is about the window's code as a whole,
+/// and a scope that watched one file of it would still say nothing about the rest.
+fn scope_covers(scope: &[&str], window_src: &Path) -> bool {
+    let window = lexical(window_src);
+    scope
         .iter()
-        .any(|p| p.contains("oracle-player"))
+        .any(|entry| window.starts_with(lexical(Path::new(entry))))
+}
+
+/// `path` with `.` and `..` resolved **lexically**, without touching the filesystem.
+///
+/// Needed because `build.rs` spells most of the scope as `<oracle-aether>/../../crates/…`, which would
+/// never be a component-wise prefix of this crate's directory as written. Not `canonicalize`: an
+/// installed binary need not have its checkout beside it, and the question is about the paths the build
+/// recorded, not about what is on disk now.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// When the running executable file was written, read once.
@@ -366,6 +406,57 @@ mod tests {
             "`crates/oracle-player` has been added to `build_input_paths` — good, but the module doc and \
              this row's premise both describe the old scope and need rewriting with it"
         );
+    }
+
+    /// M15: **coverage is a question about paths, answered component by component.** The scope's entries
+    /// are absolute, so every one of them carries the checkout's own directory name — and a checkout
+    /// under `oracle-player-dev/` made every entry contain the text `oracle-player`. The caveat then
+    /// vanished from the hover while the scope still excluded this crate: the false reassurance this
+    /// module exists to prevent, produced by where somebody cloned the repo.
+    ///
+    /// The scope below is today's, spelled the way `build.rs` spells it (`<oracle-aether>/../../…`).
+    #[test]
+    fn scope_coverage_is_decided_by_path_components_never_by_substring() {
+        let window = Path::new("/home/u/oracle-player-dev/crates/oracle-player/src");
+        let aether = "/home/u/oracle-player-dev/crates/oracle-aether";
+        let today: Vec<String> = [
+            "/src",
+            "/Cargo.toml",
+            "/build.rs",
+            "/../../crates/oracle-core/src",
+            "/../../crates/oracle-core/Cargo.toml",
+            "/../../Cargo.toml",
+            "/../../Cargo.lock",
+        ]
+        .iter()
+        .map(|tail| format!("{aether}{tail}"))
+        .collect();
+        let today: Vec<&str> = today.iter().map(String::as_str).collect();
+        assert!(
+            today.iter().all(|p| p.contains("oracle-player")),
+            "the lookalike premise: every entry carries the checkout's name"
+        );
+        assert!(
+            !scope_covers(&today, window),
+            "a checkout named `oracle-player-dev` does not put this crate in the scope: {today:?}"
+        );
+
+        let yes = |p: String| scope_covers(&[p.as_str()], window);
+        // The real widening, spelled the way build.rs would spell it.
+        assert!(yes(format!("{aether}/../../crates/oracle-player/src")));
+        // An ancestor of the window's sources covers them.
+        assert!(yes(format!("{aether}/../..")));
+        assert!(yes(format!("{aether}/../../crates/oracle-player")));
+        // One file inside does not cover the window's code as a whole; the caveat must stay.
+        assert!(!yes(format!(
+            "{aether}/../../crates/oracle-player/src/identity.rs"
+        )));
+        // A sibling whose name merely starts with this crate's.
+        assert!(!yes(format!(
+            "{aether}/../../crates/oracle-player-extras/src"
+        )));
+        // Loud on unmeasurable: an empty scope covers nothing.
+        assert!(!scope_covers(&[], window));
     }
 
     /// The other limit, stated rather than implied. A window that showed a revision and said nothing else
