@@ -2285,7 +2285,7 @@
       }
     },
     "emulator/memory_hash": {
-      "$comment": "protocol.md §6 (memory), added 2026-08-18 by §11.13 (CR-23). Fingerprints a byte range without moving it — the gap state_hash leaves (its five hashes cover VDP state only). A pure read: a server MUST NOT refuse it on a free-running machine, and the sample is taken at a single coherent machine point. Two regions: work RAM ($E00000-$FFFFFF, mirror-masked) or cartridge ROM ($000000 up to romBytes); -32004 for a base in neither or a range crossing out of its region, refused never clipped. Distinct from §9's deferred frame_hash (a picture hash, served by state_hash includeFramebuffer). caveat is declared absent, not omitted by accident (the sprites precedent): no nameable weaker-answer condition.",
+      "$comment": "protocol.md §6 (memory), added 2026-08-18 by §11.13 (CR-23). Fingerprints a byte range without moving it — the gap state_hash leaves (its five hashes cover VDP state only). A pure read: a server MUST NOT refuse it on a free-running machine, and the sample is taken at a single coherent machine point. Regions as the machine decodes them now (§11.48): work RAM ($E00000-$FFFFFF, mirror-masked) or cartridge space ($000000-$3FFFFF) through any bank mapper and SRAM overlay; open bus (past the image under the current mapping, or $400000 and above) is in no region. The range must lie within one region; -32004 for a base in no region or a range crossing out of its region, refused never clipped. Distinct from §9's deferred frame_hash (a picture hash, served by state_hash includeFramebuffer). caveat is declared absent, not omitted by accident (the sprites precedent): no nameable weaker-answer condition.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
@@ -2349,7 +2349,7 @@
           },
           "region": {
             "type": "string",
-            "description": "Which of the two regions answered — read_memory.region's spellings ('work RAM', 'cartridge ROM')."
+            "description": "Which region answered, in read_memory.region's registered spellings (§11.48): 'work RAM', 'cartridge ROM', 'cartridge ROM bank N', 'cartridge SRAM'. Only exactly 'cartridge ROM' means the address is an image offset; compare for equality, never by prefix."
           },
           "fnv1a64": {
             "$ref": "#/$defs/hash64",
@@ -2357,7 +2357,7 @@
           },
           "crc32": {
             "$ref": "#/$defs/hash32",
-            "description": "IEEE/zlib CRC-32, so a cartridge-window hash equals CRC32 over the same slice of the ROM file."
+            "description": "IEEE/zlib CRC-32, so a hash whose region is exactly 'cartridge ROM' equals CRC32 over the same slice of the ROM file; under 'cartridge ROM bank N' the equal slice is at image offset N*$80000 + (addr & $7FFFF); a 'cartridge SRAM' hash has no file counterpart (§11.48)."
           }
         }
       }

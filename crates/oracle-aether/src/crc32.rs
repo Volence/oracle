@@ -1,6 +1,7 @@
-//! CRC-32, IEEE 802.3 polynomial (the zlib/`crc32` one) — so a cartridge-window
-//! `emulator/memory_hash` equals CRC32 over the same slice of the ROM file, which is what the
-//! Aeon side's gates compare against. Table-driven, dependency-free, built at compile time.
+//! CRC-32, IEEE 802.3 polynomial (the zlib/`crc32` one) — so an `emulator/memory_hash` whose
+//! `region` is exactly `"cartridge ROM"` equals CRC32 over the same slice of the ROM file (§11.48: a
+//! re-pointed window's region names its bank, and `"cartridge SRAM"` has no file counterpart), which is
+//! what the Aeon side's gates compare against. Table-driven, dependency-free, built at compile time.
 //!
 //! NOT in `oracle-core::state_hash`: that module is byte-compatible with Oracle's `OpStateHash`
 //! and carries a do-not-touch warning; this is a bus convenience with a different job.

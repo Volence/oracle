@@ -6,9 +6,18 @@ Landed on `parcel/debugread-banked`. It closes the row booked in `docs/2026-09-1
 `System::sram_map`), `crates/oracle-aether/src/engine.rs` (`debug_read`, `BusRegion`, and the
 `read` / `read_memory` / `memory_hash` handlers), `crates/oracle-player/src/memory.rs` (the Memory panel).
 
-**Contract status: this needs an amendment.** Two normative sentences in `emulator/memory_hash`'s paragraph
-are contradicted (§4 quotes them and drafts replacements). The branch merges only after the hub rules on
-that amendment. That is the lane's contract-first rule, and it is expected.
+**Contract status: ADOPTED WITH CHANGES as `protocol.md` §11.48, option (C), at empyrean
+`a186e4becc0348b0d3a8f61c2af417abe1adf92b`** (ruled by the hub 2026-09-11; its named reviewer is aeon's
+`evict_witness` whole-ROM CRC guard, unaffected: unbanked and under 1 MB). The hub's changes to the draft in
+§4: **M1** a client MUST compare `region` to `"cartridge ROM"` by exact equality, never prefix or substring
+(the banked spelling shares the first two words); **M2** a `"cartridge SRAM"` hash has no file counterpart,
+stated in the crc32 sentence; **M3** vectors 1-6 are normative and vector 7 (no caveat on an unbanked read) is
+informative, since caveat presence stays outside the contract under §2.4; **M4** §2.4's advisory example is
+rewritten as history. **S1** the typed bank key ships once, with F-BANKED-ADDR-AMBIGUITY; **S2** an
+address-free image fingerprint is its own CR when a consumer needs one. **The adopted wording is the hub's,
+not §4.3 below verbatim**: read `a186e4b`, not this draft. The schema was re-vendored from `a186e4b` in the
+same push as this merge. The original status line follows, kept because it was true when written: *this
+needs an amendment … the branch merges only after the hub rules on that amendment.*
 
 Contract read at empyrean `origin/main` = `68b9a2e129c07090e561895fc5c54ea010c5cb2d` (from `git rev-parse`),
 `contract/protocol.md`, via `git show`. The vendored schema is

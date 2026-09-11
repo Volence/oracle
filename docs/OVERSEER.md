@@ -165,8 +165,8 @@ urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 decisions, the two new F- rows, the owner's foreground check — is in
 `docs/2026-09-11-cart-mapper-design.md`; TRANSCRIBE it, do not re-derive it.** Live: `$A130F3-$A130FF`
 point seven 512 KiB windows, window 0 fixed, identity at reset → currency byte-identical by construction,
-snapshot-only, **no `export_state` bump**. `$A130F1` stays the SRAM latch. Open: **F-DEBUGREAD-BANKED**,
-**F-BANKED-ADDR-AMBIGUITY**. ⚑ **Method lesson: an assertion against the constant under test is CIRCULAR,
+snapshot-only, **no `export_state` bump**. `$A130F1` stays the SRAM latch. ~~F-DEBUGREAD-BANKED~~ closed 2026-09-11 (§11.48,
+`docs/2026-09-11-debugread-banked.md`). Open: **F-BANKED-ADDR-AMBIGUITY**. ⚑ **Method lesson: an assertion against the constant under test is CIRCULAR,
 and reads as strong until something mutates the constant** — the reset test compared `cart_banks()` to
 `CartBanks::IDENTITY` and stayed GREEN under `IDENTITY := [0; 8]`. (⚑ This block was drafted at 1,995 B
 against 1,531 B of headroom and broke `overseer_bound` at 100,464 B. Measure before you add here.)
