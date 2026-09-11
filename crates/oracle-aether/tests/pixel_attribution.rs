@@ -730,8 +730,10 @@ fn rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer() {
 /// measurement, and this is the measurement coming back negative.
 ///
 /// It is also what stops `caveat` becoming structural. §2.4's advisory names the failure precisely: a
-/// caveat present on every reply is documentation wearing signal's clothes, and `emulator/read_memory`'s
-/// constant string is the in-tree example. §11.27 raises it to a MUST NOT — an unconditional caveat is
+/// caveat present on every reply is documentation wearing signal's clothes. Its example was
+/// `emulator/read_memory`'s constant debug-read string, which is conditional since F-DEBUGREAD-BANKED
+/// (`docs/2026-09-11-debugread-banked.md` §3.4). `read_vram`'s and `state_hash`'s constant caveats are
+/// still in the tree (lens M18). §11.27 raises it to a MUST NOT — an unconditional caveat is
 /// non-conformant, not merely unhelpful — because both engines in this suite rebuild CRAM every vblank,
 /// which would make "a completed frame exists" fire on every reply after the first.
 ///
@@ -755,7 +757,7 @@ fn the_caveat_is_absent_when_nothing_wrote_the_entry_since_its_line_drew() {
         r.get("caveat").is_none(),
         "a completed frame exists and NOTHING wrote this entry since its line drew, so §11.27's rule \
          says absent. A caveat here is the unconditional shape the clause forbids in terms — the \
-         `read_memory` constant-string failure §2.4 names — and it would make every row below vacuous: \
+         constant-string failure §2.4's advisory names — and it would make every row below vacuous: \
          {r:#}"
     );
 }

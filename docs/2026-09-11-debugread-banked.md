@@ -184,6 +184,12 @@ Read at empyrean `68b9a2e129c07090e561895fc5c54ea010c5cb2d`.
    read_memory.region's spellings ('work RAM', 'cartridge ROM')"*), and
    `…result.properties.crc32.description` (*"so a cartridge-window hash equals CRC32 over the same slice of
    the ROM file"*).
+4. **Descriptive, not normative, but it goes false:** §2.4's advisory uses this row as its live example.
+   It says *"`emulator/read_memory` emits a constant debug-read string on **every** reply; a client sees it
+   on the first call, learns it means nothing, and thereafter ignores the field"*. After this change the
+   reference server emits `read_memory`'s caveat only on a banked or SRAM answer. The advisory's rule
+   (*"Servers **SHOULD prefer conditional caveats**"*) is what this change follows. Only its example is
+   stale. I found this in the paraphrase sweep (§6), not when I first read the contract.
 
 ### 4.2 Checked and NOT contradicted
 
@@ -271,6 +277,15 @@ Fixture: ten 512 KiB banks, byte at image offset `i` = `((i>>19) ^ 0x5A) ^ mix(i
   it alone because it is a bus-behaviour change with its own currency question.
 - The engine's `read_u16` carried an orphaned doc paragraph (a stale copy of the old `debug_read` rationale,
   claiming `read` carries a caveat, which it never did). I removed it.
+- **The paraphrases of the old caveat claim.** I swept the tree for every restatement of "`read_memory`
+  emits a constant caveat" (`in-tree example|constant caveat|bypassing the bus|…`) and found three
+  present-tense claims that this parcel made false. I fixed all three: `tests/pixel_attribution.rs`
+  (a doc paragraph, plus an assert message calling it *"the `read_memory` constant-string failure"*) and
+  `oracle-core/src/render.rs` (the §11.27 rationale, *"would … become `emulator/read_memory`'s constant
+  string"*). The dated design/ruling docs (`2026-08-15`, `-08-16`, `-08-19`, `-08-27`, `-08-30`) and
+  `OVERSEER-LOG.md` describe the server as it was when they were written, so I left them as written. The
+  contract's own example sentence is §4.1 item 4. I did not catch these when I first read the contract; I
+  found them only by asking where else the claim was spelled.
 - **`system::tests::no_ra_rom_maps_fallback_sram_after_a130f1_enable` cannot tell SRAM from open bus on
   its SRAM lane.** Found by M3b: with the shared decode's SRAM arm removed, the test stayed green. Its
   ROM is `0x4000` bytes, so `$200001` then resolves past the image into open bus. The `write8($200001,
