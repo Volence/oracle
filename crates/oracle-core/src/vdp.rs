@@ -3007,6 +3007,48 @@ mod tests {
         assert_eq!(v.fifo_len, 1, "one pending entry");
     }
 
+    /// ★ **The drain retires the OLDEST pending write** (recon R3), pinned at the one helper all three
+    /// retirement sites read (lens M43).
+    ///
+    /// Written because the gate the dedupe was briefed against could not see it. Mutating
+    /// [`Vdp::fifo_oldest`] to return `fifo[fifo_write]` (the next-available slot, i.e. the wrong entry)
+    /// left `oracle-core --lib` 918/0 and the FIFO conformance ROMs 3/0 GREEN, with the patch compiled.
+    /// Nothing in the suite queued entries whose drain costs differ in an order that exposes which one is
+    /// retired first. The expectations here are the words this test wrote, never a value read back
+    /// through the helper.
+    ///
+    /// Two shapes, because a ring hides an index error at exactly one fill level: with four pending, the
+    /// oldest slot and the next-available slot coincide, so a full FIFO cannot tell them apart.
+    #[test]
+    fn the_fifo_retires_its_oldest_pending_write_first() {
+        // Three pending of four: the oldest is the first word written.
+        let mut v = fresh();
+        vram_write_cmd(&mut v, 0x0100);
+        for w in [0x1111, 0x2222, 0x3333] {
+            v.data_write(w);
+        }
+        assert_eq!(v.fifo_len(), 3, "three writes are three pending entries");
+        assert_eq!(
+            v.fifo_oldest().data,
+            0x1111,
+            "the oldest pending entry is the first word written"
+        );
+
+        // Across the ring's wrap: six writes land in slots 0,1,2,3,0,1. As if the drain had retired four,
+        // two are pending, and the older of those two is the FIFTH write.
+        let mut v = fresh();
+        vram_write_cmd(&mut v, 0x0100);
+        for w in [0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666] {
+            v.data_write(w);
+        }
+        v.fifo_len = 2;
+        assert_eq!(
+            v.fifo_oldest().data,
+            0x5555,
+            "with two pending after a wrap, the oldest is the fifth write, not the slot about to be reused"
+        );
+    }
+
     #[test]
     fn fifo_and_dma_fields_survive_a_bincode_round_trip() {
         let mut v = fresh();
