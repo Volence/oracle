@@ -104,7 +104,7 @@
 //! in this one.
 
 use egui::Color32;
-use oracle_core::render::{Cell, Plane, PlaneScroll, VScroll, WindowSpan};
+use oracle_core::render::{tile_pixel, Cell, Plane, PlaneScroll, VScroll, WindowSpan};
 use oracle_core::state_hash::VRAM_SIZE;
 use oracle_core::vdp::Vdp;
 use oracle_frontend::pick::{tile_range, TILE_SPACE};
@@ -477,19 +477,15 @@ fn dot(
 
 /// The 4-bit pixel at (`tx`, `ty`) of `cell`'s tile, flips applied.
 ///
-/// 32 bytes per tile, 4 bytes per row, **high nibble first**: the left pixel of a byte pair is the top
-/// nibble. Getting that backwards mirrors every tile in the plane by one pixel pair and looks almost
-/// right, which is why it has a test of its own.
+/// The flips are this viewer's; the fetch is the renderer's own, [`tile_pixel`]: 32 bytes per tile,
+/// 4 bytes per row, **high nibble first**. Getting that backwards mirrors every tile in the plane by one
+/// pixel pair and looks almost right, which is why it has a test of its own here as well as there. This
+/// used to restate the address expression byte for byte (lens M63), so the viewer and the picture could
+/// have disagreed about a tile with nothing red to say so.
 fn nibble(vram: &[u8], cell: &Cell, tx: u8, ty: u8) -> u8 {
     let tx = if cell.hflip { 7 - tx } else { tx };
     let ty = if cell.vflip { 7 - ty } else { ty };
-    let at = (cell.tile as usize * 32 + ty as usize * 4 + (tx as usize >> 1)) & (VRAM_SIZE - 1);
-    let byte = vram[at];
-    if tx & 1 == 0 {
-        byte >> 4
-    } else {
-        byte & 0x0F
-    }
+    tile_pixel(vram, cell.tile, tx, ty)
 }
 
 /// **Which plane pixels the display is currently showing**, as a `pw` by `ph` mask.

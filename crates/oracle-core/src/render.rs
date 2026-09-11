@@ -919,6 +919,24 @@ pub fn decode_cell(word: u16) -> Cell {
     }
 }
 
+/// **The 4-bit colour index of pixel (`px`, `py`) of pattern `tile`**, read from `vram` (recon RR2): a tile
+/// is 32 bytes (8 rows × 4 bytes), each byte two pixels, **high nibble = left**. `px`/`py` are 0..=7 with
+/// any flips already applied by the caller; the address wraps into the 64 KiB region.
+///
+/// The one statement of the tile pixel fetch in the tree. The renderer (`Vdp::tile_nibble`, once per plane
+/// per dot) and the player's plane viewer (`oracle-player`'s `planes::nibble`) both call it; until lens
+/// M63 each carried the address expression byte for byte, so the viewer and the picture could disagree
+/// about a tile with nothing red to say so.
+#[inline]
+pub fn tile_pixel(vram: &[u8], tile: u16, px: u8, py: u8) -> u8 {
+    let byte = vram[(tile as usize * 32 + py as usize * 4 + (px as usize >> 1)) & (VRAM_SIZE - 1)];
+    if px & 1 == 0 {
+        byte >> 4
+    } else {
+        byte & 0x0F
+    }
+}
+
 /// Decode a plane's dimensions in **cells** from register $10 (recon RR3): horizontal size = bits 1–0,
 /// vertical size = bits 5–4, each `0→32 / 1→64 / 3→128`. The invalid code `2` (`0b10`) is not in any
 /// permitted source; it is clamped deterministically to 64 (flagged, plan decision 3 — confirm by the
@@ -1320,17 +1338,10 @@ impl Vdp {
         self.regs()[0x07] & 0x3F
     }
 
-    /// Fetch the 4-bit colour index of pixel (`px`, `py`) within tile `tile` (recon RR2): a tile is 32 bytes
-    /// (8 rows × 4 bytes), each byte two pixels, high nibble = left. `px`/`py` are 0..=7 (flips are applied
-    /// by the caller). Pure VRAM read.
+    /// Fetch the 4-bit colour index of pixel (`px`, `py`) within tile `tile`: [`tile_pixel`] against this
+    /// VDP's VRAM. `px`/`py` are 0..=7 (flips are applied by the caller). Pure VRAM read.
     fn tile_nibble(&self, tile: u16, px: u8, py: u8) -> u8 {
-        let byte = self.vram()
-            [(tile as usize * 32 + py as usize * 4 + (px as usize >> 1)) & (VRAM_SIZE - 1)];
-        if px & 1 == 0 {
-            byte >> 4
-        } else {
-            byte & 0x0F
-        }
+        tile_pixel(self.vram(), tile, px, py)
     }
 
     /// Read VSRAM word entry `idx` (recon RR6): big-endian, wrapped into the 80-byte region.
