@@ -1845,11 +1845,15 @@ mod tests {
         let l = s4();
         let mut f = Fake {
             equates: s4_values(),
+            // aeon's own spellings, typed here rather than taken from this module's `*_SYMBOL`
+            // constants. A listing built FROM the constants under test agrees with them whatever they
+            // say, so every row below passed with `RING_BUFFER_SYMBOL = "Ring_BufferX"` (measured
+            // 2026-09-11, lens M66). Spelled out, a renamed constant stops resolving here and fails.
             symbols: BTreeMap::from([
-                (RING_BUFFER_SYMBOL.to_string(), BUF),
-                (RING_COUNT_SYMBOL.to_string(), COUNT),
-                (RING_HIGH_WATER_SYMBOL.to_string(), HIGH),
-                (SCAN_STATE_SYMBOL.to_string(), SCAN),
+                ("Ring_Buffer".to_string(), BUF),
+                ("Ring_Count".to_string(), COUNT),
+                ("Ring_HighWater".to_string(), HIGH),
+                ("Entity_Scan_State".to_string(), SCAN),
                 ("Level_Width".to_string(), LW),
                 ("Level_Height".to_string(), LH),
             ]),
