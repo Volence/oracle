@@ -148,6 +148,8 @@ currency bytes); **look-call** (what a person sees — the owner decides the sha
 lands.** None of these rows touches `debug_read` or the read handlers; M18's `read_memory` site is
 deliberately kept out (wave 4).
 
+**Updated 2026-09-11 by the overseer.** The memory-read parcel LANDED (`F-DEBUGREAD-BANKED`, §11.48), so every ⚑ wait on it is released. **Wave 1A landed** (M12, L3, M15, M14 doc half, L6, M2, M6, M28 fixed; M25's gate half). Two items for this wave from it: **(1)** M25's handler fix here MUST delete `KNOWN_ANSWERED`'s `emulator/z80_write` row in `crates/oracle-aether/tests/request_shapes.rs` in the same commit, or that file's anti-rot test stays red. **(2) New finding, not from the sweep:** `Engine::lookup_symbol`'s demangled branch reports `ambiguous: true` and the caveat *"N different addresses answer…"* for a same-address alias group, which is false by `symbols.rs`'s own rule (same-address aliases are not ambiguous). Latent: no frozen listing has such a group. It rides with AETHER-HANDLERS.
+
 ### Wave 3 — file-disjoint from each other, after wave 2
 
 | rank | parcel | rows | files | kind | size |
