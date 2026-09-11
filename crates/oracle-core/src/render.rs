@@ -1196,6 +1196,14 @@ impl Vdp {
     }
 
     /// Read a big-endian word from VRAM at byte address `addr` (wrapped into the 64 KiB region).
+    ///
+    /// **The renderer's one VRAM word read.** The nametable fetch ([`Vdp::nametable_cell`]), the H-scroll
+    /// table fetch (`plane_hscroll`) and the SAT's VRAM half ([`Vdp::sprites_decoded`]) all come through
+    /// here. Until lens M75 the first two inlined their own copy with a different second-byte spelling,
+    /// `a | 1`, which re-reads the same byte at an odd address where this reads the next one. Every address
+    /// the renderer passes is even (a nametable base plus a doubled index, a scroll-table base plus a
+    /// multiple of 2, a SAT slot plus 0/4/6), so the two spellings agreed on every read that happens today;
+    /// this is one spelling so they cannot come apart on a read that happens tomorrow.
     fn vram_word(&self, addr: usize) -> u16 {
         let a = addr & (VRAM_SIZE - 1);
         ((self.vram()[a] as u16) << 8) | self.vram()[(a + 1) & (VRAM_SIZE - 1)] as u16
@@ -1205,10 +1213,7 @@ impl Vdp {
     /// (both in the plane's own units); the grid wraps modulo the plane dimensions the caller passes via
     /// `stride`/`rows`. Returns the decoded [`Cell`] (recon RR1).
     fn nametable_cell(&self, base: usize, stride: u16, col: u16, row: u16) -> Cell {
-        let addr = base + (row as usize * stride as usize + col as usize) * 2;
-        let a = addr & (VRAM_SIZE - 1);
-        let word = ((self.vram()[a] as u16) << 8) | self.vram()[a | 1] as u16;
-        decode_cell(word)
+        decode_cell(self.vram_word(base + (row as usize * stride as usize + col as usize) * 2))
     }
 
     /// **Where this plane's nametable is in VRAM**, as a byte address.
@@ -1388,8 +1393,7 @@ impl Vdp {
             _ => (line as usize) * 4,
         };
         let plane_off = if plane == Plane::B { 2 } else { 0 };
-        let a = (base + line_off + plane_off) & (VRAM_SIZE - 1);
-        (((self.vram()[a] as u16) << 8) | self.vram()[a | 1] as u16) & 0x03FF
+        self.vram_word(base + line_off + plane_off) & 0x03FF
     }
 
     /// The vertical scroll amount for `plane` at screen pixel `x` on `line` (recon RR6 + R8): full mode →
