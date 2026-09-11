@@ -143,8 +143,11 @@
 # always PRINTED rather than passed over in silence. Two things make that safe rather than merely
 # convenient:
 #
-#   1. Nothing compiled reads it. `git grep lane-status -- '*.rs' '*.py' '*.sh'` is empty, so its
-#      working-tree content cannot change what the suite measures.
+#   1. Nothing compiled reads it, and that is checked rather than remembered: the suite compiles
+#      only Rust, and `git grep -l lane-status -- '*.rs'` lists every Rust source that so much as
+#      names the file. An empty answer is the condition this carve-out rests on; a non-empty one
+#      means re-examine the carve-out before trusting it. (Scripts do name it — this one, to carve
+#      it out, and `tools/lane-check.py`, to validate it — but neither feeds the suite's measurement.)
 #   2. Because of (e) we push a COMMIT by name, so whatever the file says in the working tree is
 #      never what reaches the remote. The tested tree and the pushed tree are the same object.
 #
