@@ -36,7 +36,8 @@ use crate::objreq;
 use crate::outbound::Subscribers;
 use crate::rpc::{self, code, RpcError};
 use oracle_core::bus::{
-    BusEvent, BusEventSink, Fanout, Observe, StepRetire, StopWhen, Z80_RAM_SIZE,
+    BusEvent, BusEventSink, CartBanks, Fanout, Observe, SramMap, StepRetire, StopWhen,
+    CART_BANK_SIZE, CART_SPACE_END, Z80_RAM_SIZE,
 };
 use oracle_core::io::Pad;
 // The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
@@ -3592,15 +3593,6 @@ impl Engine {
         Ok(addr)
     }
 
-    /// A **debug** read straight out of the region, deliberately bypassing the bus.
-    ///
-    /// Bypassing is the right call for an inspection API (no side effects, no open-bus latch churn, no
-    /// FIFO), but it means the value can differ from what a CPU read at the same address would return —
-    /// so the read-shaped replies built on this (`read`, `read_memory`, `read_vram`) each carry a
-    /// `caveat` saying so. That is exactly the landmine the recon found in the sibling's `write_vram`,
-    /// which bypasses the VDP port path and *"nothing in its docstring says so"*. Not every caller wants
-    /// that caveat, though: `memory_hash` is also built on this and deliberately carries none — a
-    /// fingerprint's provenance note lives in its own contract row, not in the reply envelope.
     /// One big-endian 16-bit word through [`Engine::debug_read`], so a word read inherits that
     /// function's region checks rather than reaching around them.
     ///
@@ -3614,7 +3606,7 @@ impl Engine {
     /// The bus-space debug read, forwarded to the free [`debug_read`] so an **in-process panel and this
     /// handler run the same function over the same bytes** (the design's R1: one derivation, two
     /// consumers). See that function for why it is free rather than a method.
-    fn debug_read(&self, addr: u32, len: usize) -> Result<(Vec<u8>, &'static str), RpcError> {
+    fn debug_read(&self, addr: u32, len: usize) -> Result<(Vec<u8>, BusRegion), RpcError> {
         debug_read(&self.sys, addr, len)
     }
 
@@ -4461,10 +4453,16 @@ impl Engine {
             "addr": hex::addr(addr),
             "len": data.len(),
             "bytes": hex::bytes(&data),
-            "region": region,
-            "caveat": "debug read: taken straight from the region, bypassing the bus. No open-bus \
-                       latch, no VDP port path, no side effects. A CPU read at this address can differ.",
+            "region": region.label(),
         });
+        // **Conditional, and it used to be constant.** The constant one said a CPU read "can differ"; since
+        // `debug_read` resolves cartridge space through the bus's own decode, it cannot for any address this
+        // row serves, and §2.4's advisory named exactly this row's always-present caveat as the shape a
+        // server gets wrong. What remains is the case where the answer is right but easy to misread: a
+        // re-pointed window or a mapped-in SRAM, where the address is not an image offset.
+        if let Some(caveat) = region.caveat(addr) {
+            out["caveat"] = json!(caveat);
+        }
         if let Some((name, disp)) = self.symbol_at(addr) {
             out["symbol"] = json!(name);
             out["symbolDisp"] = json!(disp);
@@ -4609,7 +4607,12 @@ impl Engine {
         // `region`, `symbol` and `symbolDisp` appear **iff** the space is `bus` — enforced in the schema in
         // both directions, and here by construction.
         if let Some(region) = region {
-            out.insert("region".into(), json!(region));
+            out.insert("region".into(), json!(region.label()));
+            // Conditional (the row's own rule): only where the answer is the CPU's but is not the image's
+            // byte at this offset — `read_memory` carries the identical one, being its exact alias.
+            if let Some(caveat) = region.caveat(addr) {
+                out.insert("caveat".into(), json!(caveat));
+            }
             if let Some((name, disp)) = self.symbol_at(addr) {
                 out.insert("symbol".into(), json!(name));
                 out.insert("symbolDisp".into(), json!(disp));
@@ -5174,9 +5177,12 @@ impl Engine {
 
     /// `emulator/memory_hash` — fingerprint a byte range without moving it (§6 memory, CR-23 /
     /// §11.13). A pure read: no `require_paused`, answered at the engine thread's single coherent
-    /// point like every other handler. Routes via `debug_read` (the two-region rule the contract
-    /// spells out); the FNV is `state_hash`'s family with the contract's pinned parameters, the
-    /// CRC-32 is IEEE/zlib so a cart-window hash matches the ROM file.
+    /// point like every other handler. Routes via `debug_read`, so it hashes what `read` would return
+    /// for the same range — the CPU's view, bank mapper and SRAM overlay included — and reports the
+    /// same `region`; the FNV is `state_hash`'s family with the contract's pinned parameters, the
+    /// CRC-32 is IEEE/zlib so a hash whose `region` is `"cartridge ROM"` matches the same slice of the
+    /// ROM file (`docs/2026-09-11-debugread-banked.md` §4 drafts the contract sentence that says so).
+    /// No caveat: the fragment declares it absent, so a banked answer is disclosed by `region` alone.
     fn memory_hash(&mut self, params: &Value) -> Result<Value, RpcError> {
         let addr = self.resolve_exclusive_target(params)?;
         let Some(l) = params.get("len") else {
@@ -5189,7 +5195,7 @@ impl Engine {
         Ok(json!({
             "addr": hex::addr(addr),
             "len": data.len(),
-            "region": region,
+            "region": region.label(),
             "fnv1a64": oracle_core::state_hash::hex(oracle_core::state_hash::fnv1a_bytes(&data)),
             "crc32": format!("0x{:08X}", crate::crc32::crc32(&data)),
         }))
@@ -9671,22 +9677,135 @@ fn cram_entry(cram: &[u8], line: u8, index: u8) -> Value {
 // `$2000-$3FFF` fold. The handlers above call them; `oracle-player`'s Memory panel calls them; there is
 // no third implementation to drift.
 
-/// **The bus-space debug read** — straight out of the region, deliberately bypassing the bus.
+/// **Which region of the 68000 map a bus-space debug read was answered from** — the `region` that
+/// `emulator/read {space:"bus"}`, `emulator/read_memory` and `emulator/memory_hash` put on the wire and the
+/// Memory panel prints. Provenance, not decoration (protocol.md §6, §11.5): *"a client can derive it from
+/// `addr` only against a fixed map, and the moment a cartridge mapper or a bank register enters the catalog
+/// that derivation is wrong while looking right"* — the mapper has entered, and these are the answers it
+/// needs (`docs/2026-09-11-debugread-banked.md` §3).
 ///
-/// Bypassing is the right call for an inspection API (no side effects, no open-bus latch churn, no FIFO),
-/// but it means the value can differ from what a CPU read at the same address would return — so the
-/// read-shaped replies built on this (`read`, `read_memory`, `read_vram`) each carry a `caveat` saying
-/// so. Not every caller wants that caveat: `memory_hash` is also built on this and deliberately carries
-/// none — a fingerprint's provenance note lives in its own contract row, not in the reply envelope.
+/// A region is an address range governed by ONE decode rule, and a debug read never straddles two:
+/// crossing from one into another is `-32004`, refused rather than stitched, so the one label a reply
+/// carries is true of every byte in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusRegion {
+    /// `$E00000-$FFFFFF`, mirror-masked. Spelled `"work RAM"`.
+    WorkRam,
+    /// Cartridge ROM in a window that shows its OWN bank, so the bytes ARE the image's bytes at the same
+    /// offset — every unbanked cartridge, and every cartridge at reset. Spelled `"cartridge ROM"`; this is
+    /// the only cartridge spelling under which "the address is an image offset" holds, and the only one the
+    /// contract's CRC32-equals-the-file sentence can be about.
+    CartRom,
+    /// Cartridge ROM through a re-pointed mapper window: `window` shows `bank`, so the byte at `addr` is
+    /// the image's byte at `bank * $80000 + (addr & $7FFFF)`. Spelled `"cartridge ROM bank N"`.
+    CartRomBank { window: u8, bank: u8 },
+    /// The cartridge SRAM overlay's span `base..=end` while it is mapped in (`$A130F1` bit0): the chip's
+    /// byte lane reads the save RAM, the other lane falls through to ROM exactly as the bus decodes it.
+    /// Spelled `"cartridge SRAM"`.
+    CartSram { base: u32, end: u32 },
+}
+
+impl BusRegion {
+    /// The wire spelling. One function for the three rows and the panel, so none of them can spell a
+    /// region differently from the others.
+    pub fn label(self) -> String {
+        match self {
+            BusRegion::WorkRam => "work RAM".into(),
+            BusRegion::CartRom => "cartridge ROM".into(),
+            BusRegion::CartRomBank { bank, .. } => format!("cartridge ROM bank {bank}"),
+            BusRegion::CartSram { .. } => "cartridge SRAM".into(),
+        }
+    }
+
+    /// The **conditional** `caveat` the two read rows carry (§2.4): present exactly when the answer is the
+    /// CPU's but is not the image's byte at this offset, which is the one way these bytes are easy to
+    /// misread. `None` for work RAM and for an unbanked cartridge, where a debug read IS what the CPU sees.
+    pub fn caveat(self, addr: u32) -> Option<String> {
+        match self {
+            BusRegion::WorkRam | BusRegion::CartRom => None,
+            BusRegion::CartRomBank { window, bank } => {
+                let lo = u32::from(window) * CART_BANK_SIZE as u32;
+                let off = u32::from(bank) * CART_BANK_SIZE as u32 + (addr & (CART_BANK_SIZE as u32 - 1));
+                Some(format!(
+                    "mapper window {window} ({}-{}) currently shows ROM bank {bank}: these are the bytes \
+                     the CPU reads at this address now, taken from image offset {}, not the image's bytes \
+                     at offset {}. Re-pointing the window changes this answer without the address changing.",
+                    hex::addr(lo),
+                    hex::addr(lo + CART_BANK_SIZE as u32 - 1),
+                    hex::addr(off),
+                    hex::addr(addr),
+                ))
+            }
+            BusRegion::CartSram { base, end } => Some(format!(
+                "cartridge SRAM is mapped in over {}-{} ($A130F1 bit0 is set): the chip's byte lane reads \
+                 the save RAM and the other lane reads what the bus decodes there, so the ROM image's \
+                 bytes at this address are not what the CPU sees now.",
+                hex::addr(base),
+                hex::addr(end),
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for BusRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+/// The region a cartridge-space address (`<= $3FFFFF`) belongs to right now. The SRAM span is checked
+/// first because the bus checks the overlay first; otherwise the window's bank decides between the flat and
+/// the banked spelling. `banks` / `sram` are hoisted by the caller so a 4 MiB hash does not re-read them
+/// per byte.
+fn cart_region(banks: CartBanks, sram: Option<SramMap>, a: u32) -> BusRegion {
+    if let Some(m) = sram {
+        if (m.base..=m.end).contains(&a) {
+            return BusRegion::CartSram {
+                base: m.base,
+                end: m.end,
+            };
+        }
+    }
+    let window = (a as usize / CART_BANK_SIZE) as u8;
+    let bank = banks.bank(usize::from(window));
+    if bank == window {
+        BusRegion::CartRom
+    } else {
+        BusRegion::CartRomBank { window, bank }
+    }
+}
+
+/// **The bus-space debug read** — what the 68000 would read at `addr..addr+len` right now, with no side
+/// effects.
 ///
-/// Returns the bytes and the **region label** the reply reports (`"work RAM"` / `"cartridge ROM"`).
-/// Refused, never clipped: a clipped read reports bytes it never looked at.
-pub fn debug_read(
-    sys: &System,
-    addr: u32,
-    len: usize,
-) -> Result<(Vec<u8>, &'static str), RpcError> {
-    let end = (addr as u64) + (len as u64) - 1;
+/// Work RAM is read straight out of the array (RAM is RAM; mirror-masked). **Cartridge space is resolved
+/// through [`System::cart_peek`], which resolves through the bus's own cartridge decode**
+/// (`oracle_core::bus::cart_decode`) — the bank mapper table and the SRAM-before-ROM precedence — so this
+/// cannot show a different byte than a CPU fetch at the same address, yet latches no open-bus word, emits no
+/// event and touches no FIFO. Before this it indexed the ROM image flat, which under a re-pointed window
+/// served the image's bytes under the label `"cartridge ROM"` — a plausible wrong answer shared by every
+/// surface below, because they are all this one function (`docs/2026-09-11-debugread-banked.md`).
+///
+/// Its consumers: `emulator/read {space:"bus"}`, `emulator/read_memory`, `emulator/memory_hash`, the
+/// engine's own `read_u8`/`read_u16` helpers and decoder record reads, and `oracle-player`'s Memory and
+/// Objects panels. Questions about the ROM **file** (fingerprints, headers, listings) use `System::rom()`,
+/// never this.
+///
+/// Returns the bytes and the [`BusRegion`] that answered. Refused, never clipped (a clipped read reports
+/// bytes it never looked at), with `-32004` for: a base outside both regions, including `$400000+` however
+/// long the image is (the CPU reads open bus there); a range whose end leaves its region, including a
+/// range crossing from one cartridge region into another (one label per reply); and a byte that resolves
+/// to open bus (a short image's tail, or a window pointed at a bank the image does not have). `len == 0`
+/// is `-32602`: every served caller bounds it at 1 before reaching here, and this function no longer
+/// relies on that (lens finding L2 — `end` used to underflow).
+pub fn debug_read(sys: &System, addr: u32, len: usize) -> Result<(Vec<u8>, BusRegion), RpcError> {
+    if len == 0 {
+        return Err(RpcError::invalid_params(
+            "`len` is 0: a zero-length read has no bytes and no region to report, so it is refused \
+             rather than answered empty",
+        ));
+    }
+    let end = u64::from(addr) + len as u64 - 1;
     if (WORK_RAM_LO..=WORK_RAM_HI).contains(&addr) {
         if end > u64::from(WORK_RAM_HI) {
             return Err(out_of_range(
@@ -9698,25 +9817,62 @@ pub fn debug_read(
         let out = (0..len)
             .map(|i| ram[((addr as usize).wrapping_add(i)) & (RAM_SIZE - 1)])
             .collect();
-        return Ok((out, "work RAM"));
+        return Ok((out, BusRegion::WorkRam));
     }
-    let rom = sys.rom();
-    if (addr as usize) < rom.len() {
-        if end >= rom.len() as u64 {
+    if addr <= CART_SPACE_END {
+        if end > u64::from(CART_SPACE_END) {
             return Err(out_of_range(
                 addr,
-                "the read would run past the end of the ROM image",
+                "the read would run past the end of cartridge space ($3FFFFF); past it the CPU reads \
+                 open bus, however long the ROM image is",
             ));
         }
-        return Ok((
-            rom[addr as usize..addr as usize + len].to_vec(),
-            "cartridge ROM",
-        ));
+        let (banks, sram) = (sys.cart_banks(), sys.sram_window());
+        let region = cart_region(banks, sram, addr);
+        let mut out = Vec::with_capacity(len);
+        for i in 0..len as u32 {
+            let a = addr + i;
+            let here = cart_region(banks, sram, a);
+            if here != region {
+                return Err(out_of_range(
+                    addr,
+                    &format!(
+                        "the read would cross from {region} into {here} at {}: one region per read, \
+                         refused rather than stitched",
+                        hex::addr(a)
+                    ),
+                ));
+            }
+            match sys.cart_peek(a) {
+                Some((_, byte)) => out.push(byte),
+                None => return Err(out_of_range(addr, &open_bus_why(sys, region, a, i == 0))),
+            }
+        }
+        return Ok((out, region));
     }
     Err(out_of_range(
         addr,
-        "only cartridge ROM ($000000..rom_len) and work RAM ($E00000-$FFFFFF) are readable in this slice",
+        "only cartridge space ($000000-$3FFFFF, as the bank mapper currently shows it) and work RAM \
+         ($E00000-$FFFFFF) are readable in this slice",
     ))
+}
+
+/// Why a cartridge-space byte has no answer: it resolves past the end of the image, which the CPU reads as
+/// open bus. Worded per case so a refusal under a re-pointed window names the window and the bank.
+fn open_bus_why(sys: &System, region: BusRegion, a: u32, first: bool) -> String {
+    let len = sys.rom().len();
+    match region {
+        BusRegion::CartRomBank { window, bank } => format!(
+            "mapper window {window} shows ROM bank {bank}, and {} lies past the end of the {len}-byte image \
+             there: the CPU reads open bus",
+            hex::addr(a)
+        ),
+        _ if first => format!(
+            "{} lies past the end of the {len}-byte ROM image: the CPU reads open bus here",
+            hex::addr(a)
+        ),
+        _ => "the read would run past the end of the ROM image".to_string(),
+    }
 }
 
 /// **One of the VDP's three internal arrays, read** — `emulator/read`'s non-`bus` branch verbatim.

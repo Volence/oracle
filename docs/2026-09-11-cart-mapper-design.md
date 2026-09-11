@@ -186,7 +186,11 @@ foreground:
   "it boots", and it is the ROM's own verdict rather than ours.
 - **TAG-2 — confirm the upper banks are reached at all.** The image is exactly ten 512 KiB banks; before
   this parcel banks 8 and 9 were unreachable by construction.
-- **F-DEBUGREAD-BANKED (new, open).** `emulator/read_memory` → `engine.rs::debug_read` indexes
+- **F-DEBUGREAD-BANKED: built on `parcel/debugread-banked`; merge waits on a contract amendment.** See
+  `docs/2026-09-11-debugread-banked.md`. The debug read now answers the CPU's view through the bus's own
+  `cart_decode`, and `region` names the bank (`"cartridge ROM bank N"`) or the SRAM overlay. The paragraph
+  below is the row as it was booked.
+- *(as booked)* `emulator/read_memory` → `engine.rs::debug_read` indexes
   `sys.rom()[addr]` directly and carries the documented caveat *"taken straight from the region, bypassing
   the bus"*. That caveat was previously harmless in cart space, where flat and bus agreed; with a live
   mapper a debug read at `$080000` reports the **image's** bank 1 whatever window 1 currently shows, and it

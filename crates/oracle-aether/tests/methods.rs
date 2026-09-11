@@ -200,12 +200,19 @@ fn approximate_answers_carry_a_caveat() {
     let mut c = Client::connect(&h);
     c.handshake(false);
 
-    // A debug read bypasses the bus.
+    // A debug read of an UNBANKED cartridge is not an approximate answer: it resolves through the bus's
+    // own cartridge decode, so it is exactly what the CPU reads, and it carries no caveat. It used to carry
+    // a constant one ("bypassing the bus … can differ"), which §2.4's advisory names as the shape a server
+    // gets wrong; the case where a read caveat does fire — a re-pointed mapper window, a mapped-in SRAM —
+    // is pinned in `tests/debug_read_banked.rs` (docs/2026-09-11-debugread-banked.md).
     let r = c.ok(
         "emulator/read_memory",
         json!({"addr": "0x000000", "len": 4}),
     );
-    assert!(r["caveat"].as_str().unwrap().contains("bypassing the bus"));
+    assert!(
+        r.get("caveat").is_none(),
+        "an unbanked cartridge read is the CPU's answer; a constant caveat is one nobody reads: {r}"
+    );
 
     // A whole-frame render is not scanline-accurate.
     let png = std::env::temp_dir().join(format!("ae-shot-{}.png", std::process::id()));

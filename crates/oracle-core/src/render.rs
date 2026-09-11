@@ -994,8 +994,9 @@ pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
 /// its own index — so the precise rule costs one array slot and one store, and the coarse one would
 /// disclose on entries nobody touched. What is forbidden either way is the **unconditional** caveat, and
 /// that is not a stylistic point: both engines in this suite rebuild CRAM every vblank, so
-/// "whenever a completed frame exists" would fire on every reply after the first frame and become
-/// `emulator/read_memory`'s constant string — the failure §2.4's advisory names by name.
+/// "whenever a completed frame exists" would fire on every reply after the first frame and become a
+/// constant string — the failure §2.4's advisory names by name. (The advisory's example,
+/// `emulator/read_memory`'s debug-read caveat, is conditional since F-DEBUGREAD-BANKED.)
 ///
 /// # When line `y` of the last completed frame was drawn
 ///

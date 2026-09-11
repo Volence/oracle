@@ -11,7 +11,8 @@
 //! future tense — the first paragraph of the core's central module — until the lens sweep.)
 
 use crate::bus::{
-    BusEventSink, CartBanks, MegaDriveBus, SramMap, StepRetire, StopWhen, Z80_RAM_SIZE,
+    cart_decode, BusEventSink, CartBanks, CartByte, MegaDriveBus, SramMap, StepRetire, StopWhen,
+    CART_SPACE_END, Z80_RAM_SIZE,
 };
 use crate::m68000::microop::{Cpu68000, StepOutcome};
 use crate::m68000::registers::Registers;
@@ -683,6 +684,53 @@ impl System {
         self.cart_banks
     }
 
+    /// The cartridge SRAM map as the bus is handed it: `Some` whenever a map is provisioned (since S4, every
+    /// loaded ROM), whether or not the game has enabled it. One construction for every bus-building site and
+    /// for [`cart_peek`](Self::cart_peek), so the debug view and the CPU cannot be built over two maps.
+    fn sram_map(&self) -> Option<SramMap> {
+        self.sram_present.then_some(SramMap {
+            base: self.sram_base,
+            end: self.sram_end,
+            odd: self.sram_odd,
+        })
+    }
+
+    /// The SRAM overlay's span **while it is mapped in** — `Some(map)` iff a map is provisioned AND the game
+    /// has set `$A130F1` bit0 — else `None`. Inside `base..=end` the chip's byte lane reads the save RAM and
+    /// the other lane falls through to ROM (see [`crate::bus::cart_decode`]); a debug surface uses the span to
+    /// say that the ROM image's bytes there are not what the CPU sees. A harmless additive getter.
+    pub fn sram_window(&self) -> Option<SramMap> {
+        self.sram_map().filter(|_| self.sram_enabled)
+    }
+
+    /// **What the 68000 would read at cartridge address `a` right now**, with no side effects: the byte and
+    /// the claimant that answered it, or `None` when `a` is outside cartridge space (`> $3FFFFF`) or resolves
+    /// to open bus (a ROM offset past the image end — a short image, or a window pointed at a bank the image
+    /// does not have).
+    ///
+    /// Resolved through [`crate::bus::cart_decode`], **the same function the bus's cartridge read arm uses**,
+    /// so this cannot disagree with a CPU fetch on the bank table or on the SRAM-before-ROM precedence; and
+    /// read straight out of the image / SRAM buffer, so it latches no open-bus word, emits no event and
+    /// touches no FIFO. This is the seam `oracle-aether`'s `debug_read` serves cartridge space through
+    /// (`docs/2026-09-11-debugread-banked.md`). The image itself, flat, is [`rom`](Self::rom) — the right
+    /// accessor for questions about the FILE (fingerprints, headers, listings), never for questions about an
+    /// ADDRESS.
+    #[inline]
+    pub fn cart_peek(&self, a: u32) -> Option<(CartByte, u8)> {
+        if a > CART_SPACE_END {
+            return None;
+        }
+        let src = cart_decode(a, self.sram_map(), self.sram_enabled, &self.cart_banks);
+        // `get` rather than an index: the bus indexes the SRAM buffer directly because the buffer is sized
+        // from the same map (`sram_byte_len`), so an out-of-range SRAM index cannot arise; answering `None`
+        // there rather than panicking keeps an inspection read total.
+        let byte = match src {
+            CartByte::Sram(i) => *self.sram.get(i)?,
+            CartByte::Rom(i) => *self.rom.get(i)?,
+        };
+        Some((src, byte))
+    }
+
     /// Whether the game has enabled SRAM access via `$A130F1` bit0 (a harmless additive getter for probes).
     /// Powers on `false`; the driver sets it before touching the save window and clears it after.
     pub fn sram_enabled(&self) -> bool {
@@ -729,11 +777,7 @@ impl System {
         let now = self.scheduler.now();
         // Build the (Copy) SRAM map by value before the split-borrow, so the mutable buffer/dirty borrows
         // are the only ones the bus holds. `None` when no cart declared SRAM (every golden) → no overlay.
-        let sram_map = self.sram_present.then_some(SramMap {
-            base: self.sram_base,
-            end: self.sram_end,
-            odd: self.sram_odd,
-        });
+        let sram_map = self.sram_map();
         let System {
             rom,
             ram,
@@ -1401,11 +1445,7 @@ impl System {
     /// The bus is built fresh here for every step, so its accumulator starts at zero without being cleared.
     fn step_cpu_stalled<S: BusEventSink>(&mut self, sink: &mut S) -> (StepOutcome, u32) {
         let now = self.scheduler.now();
-        let sram_map = self.sram_present.then_some(SramMap {
-            base: self.sram_base,
-            end: self.sram_end,
-            odd: self.sram_odd,
-        });
+        let sram_map = self.sram_map();
         let System {
             cpu,
             rom,
@@ -2637,6 +2677,179 @@ mod tests {
             mapper_bank_label(1),
             "so window 1 shows bank 1 again"
         );
+    }
+
+    // --- `cart_peek`: the side-effect-free view of cartridge space the debug surfaces serve ----------------
+    // (`docs/2026-09-11-debugread-banked.md`). Every expectation below is DERIVED from the image and the
+    // mapper formula `bank * $80000 + (addr & $7FFFF)`, never read back through `rom_offset` or compared
+    // against `CartBanks::IDENTITY` — the thing under test must not also be the ruler.
+
+    /// A cartridge image whose byte at image offset `i` names BOTH its bank and its in-bank offset:
+    /// `label(bank) ^ mix(offset)`. Constant-per-bank fill (the mapper parcel's fixture) cannot see an
+    /// in-window offset error; this one can, and two banks at the same in-bank offset still always differ
+    /// (XOR with the same `mix` is a bijection on the label).
+    fn peek_rom(banks: usize) -> Vec<u8> {
+        let sz = crate::bus::CART_BANK_SIZE;
+        (0..banks * sz)
+            .map(|i| {
+                let o = i % sz;
+                mapper_bank_label(i / sz) ^ ((o ^ (o >> 8) ^ (o >> 16)) as u8)
+            })
+            .collect()
+    }
+
+    /// The image offset the mapper formula gives for `a` when its window shows `bank`. Written out here
+    /// rather than calling `CartBanks::rom_offset`, so a defect there cannot move both sides of an assertion.
+    fn derived_offset(bank: u8, a: u32) -> usize {
+        usize::from(bank) * 0x8_0000 + (a as usize & 0x7_FFFF)
+    }
+
+    /// Addresses sampled in window `k`: both ends, the second byte, and an interior point.
+    fn window_samples(k: usize) -> [u32; 4] {
+        let base = (k * crate::bus::CART_BANK_SIZE) as u32;
+        [base, base + 1, base + 0x1_2345, base + 0x7_FFFF]
+    }
+
+    #[test]
+    fn cart_peek_is_the_cpu_view_under_a_remapped_table() {
+        use crate::bus::{CartByte, CART_WINDOWS};
+        use crate::m68000::bus68k::Bus68k;
+        let image = peek_rom(10);
+        // FIRST, the fixture's own premise: if two banks read alike, identity and remapped reads are
+        // indistinguishable and everything below is vacuous.
+        let sz = crate::bus::CART_BANK_SIZE;
+        for b1 in 0..10 {
+            for b2 in (b1 + 1)..10 {
+                assert_ne!(
+                    image[b1 * sz + 0x1_2345],
+                    image[b2 * sz + 0x1_2345],
+                    "banks {b1} and {b2} read alike: the fixture cannot tell a remap from identity"
+                );
+            }
+        }
+        let mut s = System::new(0xCA27);
+        s.load_rom(image.clone());
+        // Every live window re-pointed at once, window k -> bank k+2 (3..=9, all distinct, none identity),
+        // through the REAL bus write path. Moving all seven together is what lets a window off-by-one show:
+        // window k reading window k±1's bank reads k+3 or k+1, never the expected k+2.
+        for k in 1..CART_WINDOWS {
+            s.mega_bus(&mut ())
+                .write8(0xA1_30F1 + 2 * k as u32, 5, (k + 2) as u8);
+        }
+        for k in 0..CART_WINDOWS {
+            let bank = if k == 0 { 0u8 } else { (k + 2) as u8 };
+            for a in window_samples(k) {
+                let off = derived_offset(bank, a);
+                let peek = s.cart_peek(a);
+                assert_eq!(
+                    peek,
+                    Some((CartByte::Rom(off), image[off])),
+                    "{a:#08X}: window {k} shows bank {bank}, so the peek is image[{off:#X}]"
+                );
+                if k != 0 {
+                    assert_ne!(
+                        image[off], image[a as usize],
+                        "{a:#08X}: the remapped byte equals the flat one, so this sample proves nothing"
+                    );
+                }
+                // The parity half: the CPU's own read at the same address agrees.
+                assert_eq!(
+                    s.mega_bus(&mut ()).read8(a, 6).0,
+                    image[off],
+                    "{a:#08X}: the peek and a CPU read disagree"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cart_peek_answers_sram_first_exactly_where_the_bus_does() {
+        use crate::bus::CartByte;
+        use crate::m68000::bus68k::Bus68k;
+        let image = peek_rom(10);
+        let mut s = System::new(0xCA28);
+        s.load_rom(image.clone());
+        let save: Vec<u8> = (0..64u8).map(|i| i.wrapping_mul(37) ^ 0xC3).collect();
+        s.load_sram(&save);
+        // Window 4 ($200000-$27FFFF) -> bank 9: the span SRAM maps into now has TWO live claimants.
+        s.mega_bus(&mut ()).write8(0xA1_30F9, 5, 9);
+        assert_eq!(
+            s.sram_window(),
+            None,
+            "SRAM is not mapped in until $A130F1 bit0"
+        );
+        assert_eq!(
+            s.cart_peek(0x20_0001),
+            Some((
+                CartByte::Rom(derived_offset(9, 0x20_0001)),
+                image[derived_offset(9, 0x20_0001)]
+            )),
+            "latch off: window 4's bank answers"
+        );
+
+        s.mega_bus(&mut ()).write8(0xA1_30F1, 5, 1); // SRAM enable
+        let w = s.sram_window().expect("latch on: the overlay is mapped in");
+        // The fixture has no "RA" header, so this is the fallback page: odd lane from $200001.
+        assert_eq!((w.base, w.odd), (0x20_0001, true), "the fixture moved");
+        for (a, want) in [
+            (0x20_0001u32, Some((CartByte::Sram(0), save[0]))),
+            (0x20_0003, Some((CartByte::Sram(1), save[1]))),
+            // The other lane inside the span falls through to ROM through window 4's bank.
+            (
+                0x20_0002,
+                Some((
+                    CartByte::Rom(derived_offset(9, 0x20_0002)),
+                    image[derived_offset(9, 0x20_0002)],
+                )),
+            ),
+            // Below the span: plain window 4.
+            (
+                0x20_0000,
+                Some((
+                    CartByte::Rom(derived_offset(9, 0x20_0000)),
+                    image[derived_offset(9, 0x20_0000)],
+                )),
+            ),
+        ] {
+            assert_eq!(s.cart_peek(a), want, "{a:#08X}");
+            assert_eq!(
+                s.mega_bus(&mut ()).read8(a, 6).0,
+                want.unwrap().1,
+                "{a:#08X}: the peek and a CPU read disagree"
+            );
+        }
+        assert_ne!(
+            save[0],
+            image[derived_offset(9, 0x20_0001)],
+            "the SRAM byte equals the ROM byte under it, so precedence is unobservable here"
+        );
+    }
+
+    #[test]
+    fn cart_peek_is_none_where_the_cpu_reads_open_bus() {
+        let image = peek_rom(10);
+        assert!(image.len() > 0x40_0000, "the image must reach past $3FFFFF");
+        let mut s = System::new(0xCA29);
+        s.load_rom(image);
+        // Past cartridge space: the image has bytes at offset $400000, the bus does not decode it as ROM.
+        assert_eq!(
+            s.cart_peek(0x40_0000),
+            None,
+            "$400000 is not cartridge space"
+        );
+        // A window pointed at a bank the image does not have.
+        use crate::m68000::bus68k::Bus68k;
+        s.mega_bus(&mut ()).write8(0xA1_30F7, 5, 20); // window 3 -> bank 20 (of 10)
+        assert_eq!(
+            s.cart_peek(0x18_0000),
+            None,
+            "bank 20 is past the image end"
+        );
+        // A short image, identity: past its end is open bus too.
+        let mut short = System::new(0xCA2A);
+        short.load_rom(vec![0xAB; 0x300]);
+        assert_eq!(short.cart_peek(0x2FF).map(|(_, b)| b), Some(0xAB));
+        assert_eq!(short.cart_peek(0x300), None);
     }
 
     #[test]
