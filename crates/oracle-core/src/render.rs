@@ -13,7 +13,7 @@
 //! (push 5), and DMA/FIFO (push 6) are out — see the plan `docs/plans/2026-07-16-vdp-planes.md`.
 
 use crate::state_hash::{CRAM_SIZE, VRAM_SIZE, VSRAM_SIZE};
-use crate::vdp::{DmaRecord, Vdp, MCLK_PER_FRAME, MCLK_PER_LINE};
+use crate::vdp::{DmaRecord, Vdp, ACTIVE_LINES, MCLK_PER_FRAME, MCLK_PER_LINE};
 
 /// One of the three plane-stage nametables (design §4 `plane_decoded`). Sprites are a separate push.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -969,16 +969,12 @@ pub fn plane_size(reg10: u8) -> (u16, u16) {
     (field(reg10 & 0x03), field((reg10 >> 4) & 0x03))
 }
 
-/// **How many slots the sprite attribute table has: 80** — the H40 table, and the most any mode parses
-/// (H32 parses the first 64; see [`Vdp::parsed_sprite_max`]).
-///
-/// The one name for it in `oracle-core` (lens M62). Read by [`sprite_limits`]' H40 parse cap,
-/// [`Vdp::sprites_decoded`]'s decode range, and the sprite walk's out-of-range-link test, which used to
-/// spell it as three bare `80`s. **Not** the `320` beside it in `sprite_limits`: that is the H40 per-line
-/// *pixel* budget, which happens to equal the H40 width and is neither this nor a width. `vdp.rs` still
-/// spells its own SAT-sized numbers bare (another parcel's file), and `oracle-aether`'s `SAT_SLOTS` is a
-/// second name for this that can now import it.
-pub const SAT_SLOTS: usize = 80;
+/// **How many slots the sprite attribute table has: 80.** Owned by [`crate::vdp::SAT_SLOTS`], because the
+/// SAT and its cache are the VDP's (lens M62), and re-exported here so `render::SAT_SLOTS`, the path wave
+/// 1B published and `oracle-aether`'s own `SAT_SLOTS` is booked to import, keeps meaning the same item.
+/// Read here by `sprite_limits`' H40 parse cap, [`Vdp::sprites_decoded`]'s decode range and the sprite
+/// walk's out-of-range-link test.
+pub use crate::vdp::SAT_SLOTS;
 
 /// Per-line sprite limits `(max_sprites, max_pixels, parse_cap)` for the mode (recon R10 / RR8): H40 =
 /// 20 / 320 / 80, H32 = 16 / 256 / 64.
@@ -1111,7 +1107,7 @@ pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
 ///
 /// # Which frame is "the last completed" one (lens M20)
 ///
-/// A frame completes when its active display does: at the start of line [`FRAME_END_LINE`], the instant
+/// A frame completes when its active display does: at the start of line [`ACTIVE_LINES`], the instant
 /// `System` announces the frame boundary, and not at the next line 0. This used to be
 /// `now_mclk / MCLK_PER_FRAME - 1`, which is right from line 0 to the boundary and one frame stale from
 /// the boundary to the end of the frame. In those blanking lines, where a debugger stopped in a vblank
@@ -1123,9 +1119,10 @@ pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
 /// `with_no_completed_frame_the_caveat_fires_whatever_the_write_stamp_says`, both of which take the
 /// boundary from a running machine rather than from this function.
 pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) -> Option<String> {
-    // Frame `f` ends at `f * MCLK_PER_FRAME + FRAME_END_LINE * MCLK_PER_LINE`. Before frame 0's end no
+    // Frame `f` ends at `f * MCLK_PER_FRAME + ACTIVE_LINES * MCLK_PER_LINE`. Before frame 0's end no
     // frame has completed; after it, the last completed frame is the count of whole frames since.
-    let Some(since_first_end) = now_mclk.checked_sub(FRAME_END_LINE * MCLK_PER_LINE) else {
+    let Some(since_first_end) = now_mclk.checked_sub(u64::from(ACTIVE_LINES) * MCLK_PER_LINE)
+    else {
         return Some(
             "no frame has finished drawing yet, so there is nothing on screen for this colour to \
              disagree with. The colour reported here is resolved from live VDP state, which is what \
@@ -1150,17 +1147,6 @@ pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) 
     })
 }
 
-/// The line whose start ends a frame: the instant `System`'s `Scanline` arm calls
-/// [`BusEventSink::on_frame_boundary`](crate::bus::BusEventSink::on_frame_boundary), i.e. the end of active
-/// display. Used by [`cram_divergence_caveat`] to decide which frame is the last completed one.
-///
-/// **A copy, and a tied one.** `system.rs` states this as the literal in its `line == 224` boundary arm and
-/// `vdp.rs` as its private `VBLANK_START_LINE`; neither is reachable from here without editing a file other
-/// parcels own. The tie is `render::tests::stop_at_frame_boundary`, which observes the line from a running
-/// machine: move this value either way and one of the two caveat rows built on it goes red. When the display
-/// height gets its one owner in `oracle-core` (lens M53/M67), this should become that.
-const FRAME_END_LINE: u64 = 224;
-
 impl Vdp {
     /// H40 (40-cell / 320 px) mode: reg $0C bits RS0 (bit 0) + RS1 (bit 7) both set (recon RR3, matching the
     /// timing FSM's `h40`). Recomputed from `regs()` so the renderer never reaches into private VDP state.
@@ -1178,9 +1164,9 @@ impl Vdp {
     /// Height is 224 unconditionally, which is a statement about this core rather than about the chip:
     /// the whole machine is NTSC V28 (`vdp::LINES_PER_FRAME`, the line-224 VBlank anchor, the scheduler's
     /// active-line chain), so reporting 240 off reg $01's M2 bit would name a geometry nothing here
-    /// renders. When V30 lands, it lands here.
+    /// renders. When V30 lands, it lands in [`ACTIVE_LINES`], which this reads.
     pub fn active_display(&self) -> (u16, u16) {
-        (if self.render_h40() { 320 } else { 256 }, 224)
+        (if self.render_h40() { 320 } else { 256 }, ACTIVE_LINES)
     }
 
     /// How many SAT slots the hardware actually parses in the current mode: **80** in H40, **64** in H32

@@ -17,6 +17,23 @@ use crate::state_hash::{CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
 pub const MCLK_PER_LINE: u64 = 3420;
 /// Scanlines per frame (NTSC V28): 224 active + 38 blanking.
 pub const LINES_PER_FRAME: u64 = 262;
+
+/// **The active display's height in lines: 224**, in V28, the only vertical mode this core models. The one
+/// owner of that number in `oracle-core` (lens M53/M67).
+///
+/// It is also the **index of the first blanking line**, and that is the same fact rather than a second
+/// number that happens to agree: lines count from the first active one, so the line after the last active
+/// line is line `ACTIVE_LINES`. That is where the VBlank status flag sets ([`Vdp::vblank`], the V
+/// counter's `0xDF`→`0xE0` step, recon R2), where the HINT counter stops decrementing
+/// ([`Vdp::hint_anchor_tick`]), where `System` announces the frame boundary, and so where the renderer's
+/// *last completed frame* ends ([`crate::render::cram_divergence_caveat`]). V30 (the 240-line mode, PAL
+/// only) would move every one of them together, which is why they share one name; it would also have to
+/// move [`LINES_PER_FRAME`], which this core fixes at NTSC's 262.
+///
+/// `u16`, the width of a line number wherever one is used, widened losslessly where it meets the `u64`
+/// master clock. Not every `224` in the tree is this: aeon's `SCREEN_HEIGHT` (the player-bound inset two
+/// test fixtures copy) happens to equal it and must not be folded in.
+pub const ACTIVE_LINES: u16 = 224;
 /// Master-clock ticks per NTSC frame (`MCLK_PER_LINE * LINES_PER_FRAME` = 896_040).
 pub const MCLK_PER_FRAME: u64 = MCLK_PER_LINE * LINES_PER_FRAME;
 /// Master-clock ticks the **active display** occupies inside a line — the same 2560 in both modes, because
@@ -67,13 +84,21 @@ pub(crate) fn subline_x(d_mclk: u64, h40: bool) -> usize {
     (d_mclk / mclk_per_pixel).min(width) as usize
 }
 
-/// The V-counter value at which the vertical-blank status flag sets — line 224 (the `0xDF`→`0xE0`
-/// transition, recon R2). Also the first non-active line.
-const VBLANK_START_LINE: u64 = 0xE0;
+/// **How many slots the sprite attribute table has: 80**, the H40 table, and the most any mode parses
+/// (H32 parses, and the cache refreshes, only the first 64; see [`Vdp::parsed_sprite_max`]).
+///
+/// The one name for it in `oracle-core` (lens M62). It lives here because the SAT is the VDP's: the SAT
+/// cache below is sized by it, and the cache write-through (`write_vram_byte`, [`Vdp::poke_vram`]) bounds
+/// its H40 window with it. `render.rs` re-exports it as `render::SAT_SLOTS`, the path wave 1B published,
+/// for `sprite_limits`' H40 parse cap, `sprites_decoded`'s decode range and the sprite walk's
+/// out-of-range-link test. **Not** the `320` in `sprite_limits`: that is the H40 per-line *pixel* budget,
+/// which happens to equal the H40 width and is neither this nor a width.
+pub const SAT_SLOTS: usize = 80;
 
-/// SAT-cache size: 80 sprite entries × the **cached 4 bytes** of each 8-byte entry — Y (word) + size/link
-/// (word); recon R5 / RR8. X + tile/attr (the other 4 bytes) are never cached.
-const SAT_CACHE_LEN: usize = 320;
+/// SAT-cache size: [`SAT_SLOTS`] entries × the **cached 4 bytes** of each 8-byte entry — Y (word) +
+/// size/link (word); recon R5 / RR8. X + tile/attr (the other 4 bytes) are never cached. It was the literal
+/// `320`, a third spelling of the slot count beside the two bare `80`s.
+const SAT_CACHE_LEN: usize = SAT_SLOTS * 4;
 
 /// The VDP's owned state. The four hashed regions are always allocated at their fixed hardware sizes
 /// ([`crate::state_hash`]); the `state_hash`/`export_state` currencies read straight through them, so their
@@ -518,10 +543,11 @@ impl Vdp {
         }
     }
 
-    /// VBlank status flag: set across the whole vertical-blank region — V counter ≥ `0xE0` (line ≥ 224, the
-    /// `0xDF`→`0xE0` transition; recon R2). Pure function of mclk, no stored flag.
+    /// VBlank status flag: set across the whole vertical-blank region — V counter ≥ `0xE0`, i.e. line ≥
+    /// [`ACTIVE_LINES`], the first line past the active display (the `0xDF`→`0xE0` transition; recon R2).
+    /// Pure function of mclk, no stored flag.
     pub fn vblank(&self, mclk: u64) -> bool {
-        (mclk % MCLK_PER_FRAME) / MCLK_PER_LINE >= VBLANK_START_LINE
+        (mclk % MCLK_PER_FRAME) / MCLK_PER_LINE >= u64::from(ACTIVE_LINES)
     }
 
     /// HBlank status flag: set across horizontal retrace, bounded by the pinned H anchors (recon R2): H32
@@ -768,11 +794,19 @@ impl Vdp {
         t - at
     }
 
+    /// The **oldest pending** FIFO entry, the next one a drain retires (recon R3): `fifo_len` writes behind
+    /// `fifo_write`, modulo the four slots. Meaningful only while `fifo_len > 0`, which each of its three
+    /// callers (the drain, a full FIFO's write stall, a read's wait) checks first. One expression, named
+    /// (lens M43): it used to be written out verbatim at all three.
+    fn fifo_oldest(&self) -> FifoEntry {
+        self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize]
+    }
+
     /// Advance the FIFO drain clock up to `now` (recon R3): pop each pending entry whose slot cost has elapsed.
     /// When the FIFO empties, the clock coasts forward to `now` (an idle FIFO does not bank drain credit).
     fn fifo_drain(&mut self, now: u64) {
         while self.fifo_len > 0 {
-            let oldest = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize];
+            let oldest = self.fifo_oldest();
             let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
             if self.fifo_slot_clock + cost > now {
                 break;
@@ -859,7 +893,7 @@ impl Vdp {
         );
         self.vram[a] = byte;
         let base = self.sat_base();
-        let entries = if self.h40() { 80 } else { 64 };
+        let entries = if self.h40() { SAT_SLOTS } else { 64 };
         let off = a.wrapping_sub(base);
         let entry = off / 8;
         let byte_in_entry = off % 8;
@@ -1371,7 +1405,7 @@ impl Vdp {
         self.fifo_drain(now);
         let mut wait_mclk = 0u64;
         if self.fifo_len == 4 {
-            let oldest = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize];
+            let oldest = self.fifo_oldest();
             let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
             let drain_at = self.fifo_slot_clock + cost;
             // C2: bill from where the CPU has ALREADY been held to, not from the caller's `now`. `now` is
@@ -1457,7 +1491,7 @@ impl Vdp {
         // Reads wait for the write FIFO to empty (recon R3): drain every pending entry, banking the elapsed
         // time as the read's stall.
         while self.fifo_len > 0 {
-            let oldest = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len) & 3) as usize];
+            let oldest = self.fifo_oldest();
             let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
             self.fifo_slot_clock += cost;
             self.fifo_len -= 1;
@@ -1556,11 +1590,16 @@ impl Vdp {
     /// the next reload"), which is exactly the S3K/aeon HInt-handler arm-chain idiom — the handler
     /// re-arms reg 10 mid-line and the reload at this line's anchor must pick it up.
     /// Returns `true` on HINT-counter underflow (the caller raises the HINT pending latch):
-    /// - vblank lines 225..=261 reload the counter from reg 10 (no decrement, no HINT);
-    /// - active lines 0..=224 decrement; on underflow the counter reloads from reg 10 and HINT fires
-    ///   (so reg10 = N → HINT on lines N, 2N+1, 3N+2, …; reg10 = 0 → every line 0..=224, incl. line 224).
+    /// - blanking lines after the first one, `ACTIVE_LINES + 1 .. LINES_PER_FRAME` (225..=261), reload the
+    ///   counter from reg 10 (no decrement, no HINT);
+    /// - lines `0..=ACTIVE_LINES` (0..=224: the active display plus the first blanking line) decrement; on
+    ///   underflow the counter reloads from reg 10 and HINT fires (so reg10 = N → HINT on lines N, 2N+1,
+    ///   3N+2, …; reg10 = 0 → every line 0..=224, incl. line 224).
+    ///
+    /// The reload range is [`ACTIVE_LINES`] restated (lens M53/M67), not a range of its own: it used to be
+    /// the literal `225..=261`, and it is the same set of lines for every `u16`.
     pub fn hint_anchor_tick(&mut self, line: u16) -> bool {
-        if (225..=261).contains(&line) {
+        if (u64::from(ACTIVE_LINES) + 1..LINES_PER_FRAME).contains(&u64::from(line)) {
             self.hint_counter = self.regs[0x0A];
             false
         } else if self.hint_counter == 0 {
@@ -1763,7 +1802,7 @@ impl Vdp {
         );
         self.vram[addr] = byte;
         let base = self.sat_base();
-        let entries = if self.h40() { 80 } else { 64 };
+        let entries = if self.h40() { SAT_SLOTS } else { 64 };
         let off = addr.wrapping_sub(base);
         let entry = off / 8;
         let byte_in_entry = off % 8;
