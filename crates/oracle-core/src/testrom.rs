@@ -1371,6 +1371,9 @@ mod tests {
             let mut sram_dirty = false;
             let mut sram_used = false;
             let mut fm = crate::ym2612::Ym2612::new();
+            // The Sega/SSF2 mapper table at its power-on identity mapping: window k -> bank k, i.e. the
+            // flat ROM decode this ROM assumes.
+            let mut cart_banks = crate::bus::CartBanks::IDENTITY;
             let mut bus = MegaDriveBus::new(
                 &rom,
                 ram,
@@ -1389,6 +1392,7 @@ mod tests {
                 &mut sram_dirty,
                 &mut sram_used,
                 None,
+                &mut cart_banks,
                 &mut fm,
                 &mut sink,
             );

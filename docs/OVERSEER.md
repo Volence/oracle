@@ -161,6 +161,16 @@ over-conservative bus-arb clamp, and ours was the tick-accurate side then too. U
 urgent, CR-28-era sweep candidate. plus the Tier-1 carry-forwards in
 `docs/2026-08-18-tier1-bus-methods.md`.
 
+**Registered 2026-09-11, cart mapper (`parcel/cart-bank-mapper`). Everything — window table, evidence,
+decisions, the two new F- rows, the owner's foreground check — is in
+`docs/2026-09-11-cart-mapper-design.md`; TRANSCRIBE it, do not re-derive it.** Live: `$A130F3-$A130FF`
+point seven 512 KiB windows, window 0 fixed, identity at reset → currency byte-identical by construction,
+snapshot-only, **no `export_state` bump**. `$A130F1` stays the SRAM latch. Open: **F-DEBUGREAD-BANKED**,
+**F-BANKED-ADDR-AMBIGUITY**. ⚑ **Method lesson: an assertion against the constant under test is CIRCULAR,
+and reads as strong until something mutates the constant** — the reset test compared `cart_banks()` to
+`CartBanks::IDENTITY` and stayed GREEN under `IDENTITY := [0; 8]`. (⚑ This block was drafted at 1,995 B
+against 1,531 B of headroom and broke `overseer_bound` at 100,464 B. Measure before you add here.)
+
 **Registered 2026-09-04, from reading the ADOPTED §11.33 text instead of the relay's summary of it:**
 
 - **▶ CLOSED 2026-09-04: `emulator/step` did not enforce either of `count`'s bounds while its own comment claimed it transcribed them; handler, comment and test were mutually consistent and all three wrong. Moved whole to `OVERSEER-LOG.md` 2026-09-05 (boot-read bound). The live rule it produced is the entry below.**

@@ -789,6 +789,80 @@ pub struct SramMap {
     pub odd: bool,
 }
 
+/// One Sega/SSF2 mapper window: 512 KiB of cartridge address space. `$000000-$3FFFFF` is eight of these.
+pub const CART_BANK_SIZE: usize = 0x8_0000;
+/// How many mapper windows tile `$000000-$3FFFFF` (8 × 512 KiB = 4 MiB).
+pub const CART_WINDOWS: usize = 8;
+
+/// The Sega ("SSF2-style") cartridge bank table: for each of the eight 512 KiB windows tiling
+/// `$000000-$3FFFFF`, which 512 KiB **bank** of the ROM image that window shows. A ROM byte is resolved as
+/// `bank * 0x80000 + (addr & 0x7FFFF)` ([`CartBanks::rom_offset`]).
+///
+/// **Register map** (pinned; design note `docs/2026-09-11-cart-mapper-design.md`): window `k` is controlled
+/// by the odd byte at `$A130F1 + 2k`, so `$A130F3` is window 1 (`$080000-$0FFFFF`) … `$A130FF` is window 7
+/// (`$380000-$3FFFFF`). **Window 0 (`$000000-$07FFFF`) is fixed** — it holds the vector table and the
+/// header, and `$A130F1` is NOT a bank register: it is the SRAM enable / write-protect latch this bus
+/// already implements (see the `$A130F1` arm of [`MegaDriveBus::store_byte`]). Evidence for that split is
+/// the acceptance ROM's own documentation of its contract, quoted in the design note.
+///
+/// **Power-on / reset = the identity mapping** ([`CartBanks::IDENTITY`], window `k` → bank `k`), which is
+/// exactly the flat `rom[addr]` decode this bus had before the mapper existed — so every golden stays
+/// byte-identical by construction, not by measurement.
+///
+/// A bank number wider than the ROM image resolves past its end and reads **open bus**, the same answer a
+/// short ROM already gives at `$3FFFFF` (see [`MegaDriveBus::mapped_byte`]); no masking is applied, because
+/// how many bank lines a real cart decodes is a per-cart wiring fact and open bus is the conservative answer.
+///
+/// `Copy` + bincode-serialized: it rides [`crate::system::System`]'s snapshot like the SRAM latches, and is
+/// in **neither** frozen currency (`export_state` / `state_hash`) — the same class as `sram_enabled`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub struct CartBanks {
+    /// `banks[k]` = the 512 KiB bank window `k` shows. `banks[0]` is **always 0** (window 0 is fixed): no
+    /// register write can reach it, because `$A130F1` is the SRAM latch rather than window 0's register.
+    banks: [u8; CART_WINDOWS],
+}
+
+impl CartBanks {
+    /// The power-on / reset mapping: window `k` shows bank `k`, i.e. a flat ROM image.
+    pub const IDENTITY: CartBanks = CartBanks {
+        banks: [0, 1, 2, 3, 4, 5, 6, 7],
+    };
+
+    /// The ROM-image byte offset a cartridge-space address resolves to through this table. `a` must already
+    /// be inside `$000000-$3FFFFF` (the caller's match arm guarantees it); the window is bits 21-19 and the
+    /// in-window offset is the low 19 bits.
+    pub fn rom_offset(&self, a: u32) -> usize {
+        let window = ((a as usize) / CART_BANK_SIZE) & (CART_WINDOWS - 1);
+        (self.banks[window] as usize) * CART_BANK_SIZE + ((a as usize) & (CART_BANK_SIZE - 1))
+    }
+
+    /// The bank window `k` currently shows (`k` in `0..8`).
+    pub fn bank(&self, window: usize) -> u8 {
+        self.banks[window]
+    }
+
+    /// The mapper window a `$A130xx` register address controls, or `None` when the address is not a bank
+    /// register. Only the **odd** bytes `$A130F3`, `$A130F5`, … `$A130FF` are bank registers (windows 1-7):
+    /// `$A130F1` is the SRAM latch, and the even bytes are the unused lane of their words (a word write
+    /// there lands its low byte on the odd address, which is how a `move.w` reaches the register — the same
+    /// mechanism the `$A130F1` arm relies on).
+    pub fn window_of_register(a: u32) -> Option<usize> {
+        if !(0xA1_30F3..=0xA1_30FF).contains(&a) || (a & 1) == 0 {
+            return None;
+        }
+        Some(((a - 0xA1_30F1) / 2) as usize)
+    }
+
+    /// Point window `k` at `bank`. Window 0 is fixed and a `0` here is a no-op by assertion — the only
+    /// caller derives `k` from [`CartBanks::window_of_register`], which never yields 0.
+    pub fn set(&mut self, window: usize, bank: u8) {
+        debug_assert!(window != 0, "window 0 is fixed and has no bank register");
+        if window != 0 {
+            self.banks[window] = bank;
+        }
+    }
+}
+
 /// Split-borrow adapter implementing the CPU-facing [`Bus68k`] over the `System`'s memory fields laid out per
 /// the real Mega Drive map, emitting a [`BusEvent`] (with the real function code) per access. The CPU core
 /// cannot tell it apart from the SST harness's `FlatBus` — the point of the unification. Every 24-bit address
@@ -797,13 +871,15 @@ pub struct SramMap {
 ///
 /// | Range | Behavior |
 /// |---|---|
-/// | `$000000–$3FFFFF` | ROM (read-only; past a short ROM's end → open bus) |
+/// | `$000000–$3FFFFF` | ROM (read-only; past a short ROM's end → open bus), resolved through the [`CartBanks`] mapper table — eight 512 KiB windows, window 0 fixed, identity at reset |
 /// | `$400000–$7FFFFF` | open bus, arbiter flavor (residue high byte, low byte `$00` — K4-1) |
 /// | `$A00000–$A0FFFF` | the Z80 window, masked to 15 bits (`$A08000+` behaves as `$A00000+`) and decoded per the Z80's own bus map (z80/bus.rs): `$0000-$3FFF` Z80 RAM, `$6000-$60FF` bank latch (write = serial tick of the shared register, read `$FF`), `$6100-$7EFF` `$FF`, `$7F00-$7FFF` VDP-port mirror (live status/HV via the shared K2 reader, PSG write tap at `$7F11`). Forwarded only while BUSREQ granted AND reset released (K4-3), else arbiter open bus / dropped writes. Word reads mirror the even byte into both halves; word WRITES land the high byte only (Q4) |
 /// | `$A04000–$A05FFF` | YM2612 FM (window offset `$4000-$5FFF`, ports = low 2 bits): read = live status (bit7 BUSY clear); writes drive the timer model — answering regardless of bus ownership (K4-3 pin) |
 /// | `$A10000–$A1001F` | I/O: `$A10001` = [`MD_VERSION`]; the 15 data/control/serial registers via [`Io`] |
 /// | `$A11100` | Z80 BUSREQ: bit0 read = 0 when 68000 is granted the bus (asserted), 1 when the Z80 owns it |
 /// | `$A11200` | Z80 RESET: bit0 = the reset-release latch (`z80_running`) — write 1 = release (Z80 runs), 0 = assert (held). The **asserting edge (1 -> 0) drives a real [`Z80::reset`] into the core** (PC/I/R/IFF/IM cleared, HALT lifted), not just the clock gate. WRITE-ONLY, reads are arbiter open bus (K4-1) |
+/// | `$A130F1` | Cartridge SRAM access latch (bit0 enable, bit1 write-protect). WRITE-ONLY. **Not** a bank register |
+/// | `$A130F3–$A130FF` | Sega/SSF2 mapper bank registers, odd bytes only: `$A130F1 + 2k` sets window `k` (1-7). WRITE-ONLY, reads are open bus |
 /// | `$C00000`/`$C00002` | VDP data port (read = pre-cache buffer, write = VRAM/CRAM/VSRAM; recon R1) |
 /// | `$C00004`/`$C00006` | VDP control port (read = status word, write = command; recon R1/R2) |
 /// | `$C00008–$C0000F` | VDP HV counter (even byte = V, odd byte = H; recon R2) |
@@ -882,6 +958,13 @@ pub struct MegaDriveBus<'a, S: BusEventSink> {
     /// neutral). When `Some`, SRAM overlays ROM only while `sram_enabled` and the address is in range with the
     /// matching parity (see [`MegaDriveBus::sram_index`]). `Copy`, passed by value each step.
     sram_map: Option<SramMap>,
+    /// The Sega/SSF2 cartridge bank table (see [`CartBanks`]): the eight 512 KiB windows tiling
+    /// `$000000-$3FFFFF`. Borrowed mutably because the `$A130F3-$A130FF` write arm re-points a window, and
+    /// that must outlive the step — one physical register file, threaded like `sram_enabled`. Identity at
+    /// power-on and after a reset, so the cartridge decode is byte-identical to the pre-mapper flat
+    /// `rom[addr]` until a game writes a bank register (no golden does). Snapshot-only: in neither
+    /// `export_state` nor `state_hash`. See `docs/2026-09-11-cart-mapper-design.md`.
+    cart_banks: &'a mut CartBanks,
     /// The YM2612 FM chip (its timers, this slice): a `$A04000-$A04003` read returns its status byte (Timer-A/B
     /// overflow flags live, bit7 BUSY clear), and a write drives the address-latch/data protocol into its timer
     /// model. Split-borrowed like `vdp`; rides the bincode snapshot but is NOT in `export_state`. See
@@ -932,6 +1015,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         sram_dirty: &'a mut bool,
         sram_used: &'a mut bool,
         sram_map: Option<SramMap>,
+        cart_banks: &'a mut CartBanks,
         fm: &'a mut Ym2612,
         sink: &'a mut S,
     ) -> Self {
@@ -953,6 +1037,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             sram_dirty,
             sram_used,
             sram_map,
+            cart_banks,
             fm,
             sink,
             stall_cycles: 0,
@@ -980,11 +1065,21 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // enabled it (`$A130F1` bit0) AND `a` is in range with the matching parity — otherwise this is
             // ROM exactly as before (open bus past a short ROM's end, no mirroring). `sram_index` is `None`
             // for every golden (no "RA" header, no `$A130F1` write) → byte-identical ROM decode.
+            //
+            // **The SRAM overlay is checked FIRST and that order is load-bearing**, not incidental: mapper
+            // window 4 (`$200000-$27FFFF`) covers exactly the span SRAM maps into, so "SRAM wins over the
+            // banked ROM byte" is a real adjudication between two live claimants. It is the same order the
+            // flat decode had (`docs/2026-09-11-cart-mapper-design.md` §4), and it is pinned by
+            // `sram_overlay_still_wins_over_a_banked_rom_read_in_window_4`.
+            //
+            // The ROM byte itself is resolved through the Sega/SSF2 bank table rather than by `a` directly
+            // (`CartBanks::rom_offset`). At reset the table is the identity mapping, where that offset IS
+            // `a` — so this is the pre-mapper decode byte-for-byte until a game writes `$A130F3+`.
             0x00_0000..=0x3F_FFFF => {
                 if let Some(i) = self.sram_index(a) {
                     Some(self.sram[i])
                 } else {
-                    let i = a as usize;
+                    let i = self.cart_banks.rom_offset(a);
                     (i < self.rom.len()).then(|| self.rom[i])
                 }
             }
@@ -1071,6 +1166,15 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             // flag for the frontend's persistence throttle. Every other write here — ROM, write-protected
             // SRAM, the unused parity, no-cart — is dropped exactly as ROM writes were before (currency-
             // neutral: `sram_index` is `None` for every golden). See the design recon (§A4, Fork 5).
+            //
+            // **The mapper deliberately does NOT appear here, and that is a decision rather than an
+            // omission** (`docs/2026-09-11-cart-mapper-design.md` §5). The read path resolves a ROM byte
+            // through `CartBanks::rom_offset` because there is a byte to fetch; the write path has no
+            // writable cartridge backing store other than SRAM, and SRAM's mapping is address-keyed (base /
+            // end / parity from the header), not bank-keyed — so a `rom_offset` call here would compute an
+            // index into a read-only image purely to throw it away. Re-pointing a window therefore cannot
+            // make a cart-space write land anywhere new, which is what
+            // `a_write_into_a_rebanked_window_still_does_not_touch_the_rom_image` asserts.
             0x00_0000..=0x3F_FFFF => {
                 if let Some(i) = self.sram_index(a) {
                     if !*self.sram_write_protect {
@@ -1158,6 +1262,28 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             0xA1_30F1 => {
                 *self.sram_enabled = (byte & 1) != 0;
                 *self.sram_write_protect = (byte & 2) != 0;
+            }
+            // Sega ("SSF2-style") cartridge mapper bank registers ($A130F3-$A130FF): the register at
+            // `$A130F1 + 2k` points 512 KiB window `k` (1-7) at the 512 KiB ROM bank whose number is written
+            // — the resolved offset is `bank * $80000 + (addr & $7FFFF)`, applied on the read side in
+            // `mapped_byte`/`CartBanks::rom_offset`. Window 0 ($000000-$07FFFF) has no register and is fixed.
+            //
+            // `$A130F1` is NOT window 0's register: it stays the SRAM enable/write-protect latch in the arm
+            // directly above. That split is pinned from the acceptance ROM's own in-ROM contract text at
+            // offset `$17D8` ("O registro #0 do mapeador deve ser usado para alternar entre a ROM/RAM após o
+            // endereço $200000", followed by literal `move.b #1,($A130F1) ; ativa SRAM`) — i.e. the ROM that
+            // exercises this mapper documents register #0 as the ROM/RAM switch, which is exactly the latch
+            // already implemented. Evidence + the full window table: `docs/2026-09-11-cart-mapper-design.md`.
+            //
+            // Conventions match the `$A130F1` arm exactly: these are the ODD bytes of their words, so a
+            // `move.b #bank,($A130F5)` lands here directly and a word write to the even neighbour
+            // ($A130F4) puts its low byte here the same way `write16` feeds $A130F1 from $A130F0. WRITE-ONLY
+            // — there is deliberately NO read arm, so a read stays open bus (pinned by
+            // `bank_registers_are_write_only_a_read_is_open_bus`).
+            0xA1_30F3..=0xA1_30FF => {
+                if let Some(window) = CartBanks::window_of_register(a) {
+                    self.cart_banks.set(window, byte);
+                }
             }
             // I/O register writes ($A10000–$A1001F): data/control latches + serial stubs (recon IO2/IO3).
             // The block does not decode A0 (K4-4, memtest row 6 `A0A0`), and that discard belongs to the
@@ -1660,6 +1786,7 @@ mod tests {
         sram_dirty: bool,
         sram_used: bool,
         sram_map: Option<SramMap>,
+        cart_banks: CartBanks,
         fm: Ym2612,
     }
     impl MdMem {
@@ -1687,6 +1814,7 @@ mod tests {
                 sram_dirty: false,
                 sram_used: false,
                 sram_map: None,
+                cart_banks: CartBanks::IDENTITY,
                 fm: Ym2612::new(),
             }
         }
@@ -1709,6 +1837,7 @@ mod tests {
                 &mut self.sram_dirty,
                 &mut self.sram_used,
                 self.sram_map,
+                &mut self.cart_banks,
                 &mut self.fm,
                 sink,
             )
@@ -4099,5 +4228,276 @@ mod tests {
         let wait = run_vram_copy(&mut bus, 0x0200, 64, 0x0100);
         assert_eq!(wait, 0, "copy: the 68k keeps running through it");
         assert_eq!(bus.stall_cycles(), 0, "copy: so it contributes no stall");
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Sega ("SSF2-style") cartridge bank mapper — $A130F3-$A130FF / `CartBanks`.
+    // Design + evidence: docs/2026-09-11-cart-mapper-design.md. Every test here is hermetic: the ROM images
+    // are built in-process, so nothing depends on a cart living outside this repo.
+    // -----------------------------------------------------------------------------------------------------
+
+    /// The label byte bank `b` of a synthetic mapper image is filled with. XOR is a bijection on `u8`, so
+    /// distinct banks always carry distinct labels — the expectation is DERIVED from the bank index rather
+    /// than copied from a table, and a read's VALUE therefore names the bank it resolved from.
+    fn bank_label(bank: usize) -> u8 {
+        (bank as u8) ^ 0x5A
+    }
+
+    /// A synthetic cartridge image of `banks` × 512 KiB, each bank filled end-to-end with its own
+    /// [`bank_label`]. Ten banks = 5 MiB, so banks 8 and 9 exist **only** beyond `$3FFFFF`: they are
+    /// unreachable except through a re-pointed window, which is the whole defect being fixed.
+    fn banked_rom(banks: usize) -> Vec<u8> {
+        let mut rom = vec![0u8; banks * CART_BANK_SIZE];
+        for b in 0..banks {
+            rom[b * CART_BANK_SIZE..(b + 1) * CART_BANK_SIZE].fill(bank_label(b));
+        }
+        rom
+    }
+
+    /// The bus address where mapper window `k` starts.
+    fn window_base(k: usize) -> u32 {
+        (k * CART_BANK_SIZE) as u32
+    }
+
+    /// The bank register controlling window `k`: `$A130F1 + 2k` (so window 1 is `$A130F3`).
+    fn bank_reg(k: usize) -> u32 {
+        0xA1_30F1 + 2 * k as u32
+    }
+
+    /// At reset the table is the identity mapping, so the cartridge decode is the flat `rom[addr]` this bus
+    /// had before the mapper existed — asserted against the image itself at both ends of every window, which
+    /// is what makes "every golden stays byte-identical" a property rather than a hope.
+    #[test]
+    fn identity_mapping_at_reset_is_the_flat_rom_decode() {
+        let flat = banked_rom(10);
+        let mut mem = MdMem::new(flat.clone());
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        for k in 0..CART_WINDOWS {
+            for a in [window_base(k), window_base(k) + 0x7_FFFF] {
+                assert_eq!(
+                    bus.read8(a, 6).0,
+                    flat[a as usize],
+                    "{a:#08X}: the identity table resolves to the flat ROM byte"
+                );
+                assert_eq!(
+                    bus.read8(a, 6).0,
+                    bank_label(k),
+                    "{a:#08X}: window {k} shows bank {k} at reset"
+                );
+            }
+        }
+    }
+
+    /// Writing bank `n` to window `k`'s register makes `$080000*k` read bank `n`'s data — for every one of
+    /// the seven live windows, with bank 9 (past `$3FFFFF`, unreachable before this slice) as the target so
+    /// the new answer cannot be confused with the identity one.
+    #[test]
+    fn writing_a_bank_register_repoints_exactly_that_window() {
+        for k in 1..CART_WINDOWS {
+            let mut mem = MdMem::new(banked_rom(10));
+            let mut sink = Vec::new();
+            let mut bus = mem.bus(&mut sink);
+            bus.write8(bank_reg(k), 5, 9);
+            for a in [window_base(k), window_base(k) + 0x7_FFFF] {
+                assert_eq!(
+                    bus.read8(a, 6).0,
+                    bank_label(9),
+                    "window {k} ({:#08X}) now shows bank 9 through {:#08X}",
+                    a,
+                    bank_reg(k)
+                );
+            }
+            // The remap is exactly 512 KiB wide: no neighbour moved with it.
+            for j in (0..CART_WINDOWS).filter(|j| *j != k) {
+                assert_eq!(
+                    bus.read8(window_base(j), 6).0,
+                    bank_label(j),
+                    "window {j} still shows bank {j} after writing window {k}"
+                );
+            }
+        }
+    }
+
+    /// Window 0 (`$000000-$07FFFF`, the vector table + header) is fixed: sweeping a bank value across the
+    /// whole `$A130F0-$A130FF` block cannot move it. The second half of the test is the control that keeps
+    /// the first half from being vacuous — the same sweep DID re-point windows 1-7, so the registers were
+    /// reached.
+    #[test]
+    fn window_zero_is_fixed_under_every_a130xx_write() {
+        let mut mem = MdMem::new(banked_rom(10));
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        for a in 0xA1_30F0..=0xA1_30FF {
+            bus.write8(a, 5, 9);
+        }
+        for a in [0x00_0000, 0x07_FFFF] {
+            assert_eq!(
+                bus.read8(a, 6).0,
+                bank_label(0),
+                "{a:#08X}: window 0 is never banked"
+            );
+        }
+        for k in 1..CART_WINDOWS {
+            assert_eq!(
+                bus.read8(window_base(k), 6).0,
+                bank_label(9),
+                "control: the same sweep did re-point window {k}"
+            );
+        }
+    }
+
+    /// The registers are the ODD bytes of their words, exactly like `$A130F1`: a word write to the even
+    /// neighbour lands its LOW byte in the register (that is how a `move.w` reaches it), and the high byte
+    /// — addressed to an even byte that is not decoded — lands nowhere.
+    #[test]
+    fn a_word_write_to_the_even_neighbour_reaches_the_bank_register() {
+        let mut mem = MdMem::new(banked_rom(10));
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write16(0xA1_30F2, 5, 0x0809); // high byte $08 -> $A130F2 (undecoded), low byte $09 -> $A130F3
+        assert_eq!(
+            bus.read8(window_base(1), 6).0,
+            bank_label(9),
+            "the low byte set window 1 to bank 9"
+        );
+        for k in 2..CART_WINDOWS {
+            assert_eq!(
+                bus.read8(window_base(k), 6).0,
+                bank_label(k),
+                "the discarded high byte reached no other window (checked {k})"
+            );
+        }
+    }
+
+    /// Write-only registers: there is no read arm, so a read at one is open bus (the full residue word, the
+    /// non-arbiter flavour — `$A130xx` is not in `open_word`'s arbiter list) and the mapping it would have
+    /// reported is untouched by the attempt.
+    #[test]
+    fn bank_registers_are_write_only_a_read_is_open_bus() {
+        let mut mem = MdMem::new(banked_rom(10));
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write8(bank_reg(1), 5, 9);
+        bus.write16(0xE0_0000, 5, 0xCAFE); // drive a known word onto the bus
+        assert_eq!(
+            bus.read16(0xA1_30F2, 6).0,
+            0xCAFE,
+            "a word read of the register pair is open bus, not the bank value"
+        );
+        assert_eq!(
+            bus.read8(bank_reg(1), 6).0,
+            0xFE,
+            "an odd byte read takes the LDS half of the residue, not bank 9"
+        );
+        assert_eq!(
+            bus.read8(window_base(1), 6).0,
+            bank_label(9),
+            "and the mapping the read could not report is still in force"
+        );
+    }
+
+    /// **The precedence that window 4 makes load-bearing.** Window 4 is `$200000-$27FFFF` — exactly the span
+    /// SRAM maps into — so an enabled SRAM overlay and a re-pointed ROM window are two live claimants on the
+    /// same address. SRAM wins, as it did over the flat decode. The even-parity byte next door falls through
+    /// to ROM and proves the window really is banked underneath the overlay.
+    #[test]
+    fn sram_overlay_still_wins_over_a_banked_rom_read_in_window_4() {
+        let mut mem = MdMem::new(banked_rom(10));
+        mem.sram_map = Some(SramMap {
+            base: 0x20_0001,
+            end: 0x20_FFFF,
+            odd: true,
+        });
+        mem.sram = vec![0u8; 0x8000];
+        mem.sram[0] = 0xE7; // the byte $200001 must answer with once SRAM is enabled
+        let mut sink = Vec::new();
+        let mut bus = mem.bus(&mut sink);
+        bus.write8(bank_reg(4), 5, 9); // point window 4 at bank 9
+        assert_eq!(
+            bus.read8(0x20_0001, 6).0,
+            bank_label(9),
+            "SRAM is not enabled yet, so the banked ROM byte answers"
+        );
+        bus.write8(0xA1_30F1, 5, 0x01); // $A130F1 bit0: enable SRAM
+        assert_eq!(
+            bus.read8(0x20_0001, 6).0,
+            0xE7,
+            "the SRAM overlay wins over the banked ROM byte"
+        );
+        assert_eq!(
+            bus.read8(0x20_0000, 6).0,
+            bank_label(9),
+            "the unused (even) parity still falls through to the BANKED ROM byte"
+        );
+    }
+
+    /// Re-pointing a window cannot make a cartridge-space write land anywhere: cart space is read-only ROM
+    /// plus the address-keyed SRAM overlay, which is why the write path resolves nothing through the table.
+    #[test]
+    fn a_write_into_a_rebanked_window_still_does_not_touch_the_rom_image() {
+        let mut mem = MdMem::new(banked_rom(10));
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write8(bank_reg(1), 5, 9);
+            bus.write16(0x08_0000, 5, 0xFFFF);
+            bus.write8(0x08_0002, 5, 0xFF);
+            assert_eq!(
+                bus.read8(0x08_0000, 6).0,
+                bank_label(9),
+                "the write was dropped; bank 9's data still reads back"
+            );
+        }
+        // And it was dropped rather than landed somewhere else in the image: bank 9's span is untouched.
+        let b9 = &mem.rom[9 * CART_BANK_SIZE..10 * CART_BANK_SIZE];
+        assert!(
+            b9.iter().all(|b| *b == bank_label(9)),
+            "no byte of bank 9 was modified by the cart-space writes"
+        );
+    }
+
+    /// `$A130F1` is NOT window 0's bank register — it keeps its existing meaning as the SRAM enable /
+    /// write-protect latch. This is the one claim the acceptance ROM documents in its own text, so it gets
+    /// its own test rather than riding on the window-0 sweep above.
+    #[test]
+    fn a130f1_stays_the_sram_latch_and_is_not_a_bank_register() {
+        let mut mem = MdMem::new(banked_rom(10));
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write8(0xA1_30F1, 5, 0x03); // bit0 enable + bit1 write-protect
+            for k in 0..CART_WINDOWS {
+                assert_eq!(
+                    bus.read8(window_base(k), 6).0,
+                    bank_label(k),
+                    "window {k} unmoved: $A130F1 is not a bank register"
+                );
+            }
+        }
+        assert!(
+            mem.sram_enabled && mem.sram_write_protect,
+            "$A130F1 still latches SRAM enable + write-protect"
+        );
+    }
+
+    /// The mapper covers the **DMA** master too, and by construction rather than by a second code path: a
+    /// 68k→VDP transfer sources its bytes through `mapped_byte`, so a source inside a re-pointed window
+    /// pulls the banked bank's bytes into VRAM.
+    #[test]
+    fn a_mem_dma_sources_through_the_bank_table() {
+        let mut mem = MdMem::new(banked_rom(10));
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank: the fast transfer rate
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            bus.write8(bank_reg(1), 5, 9);
+            run_mem_dma_to_vram(&mut bus, 0x08_0000, 4, 0x0000);
+        }
+        assert_eq!(
+            &mem.vdp.vram()[0..8],
+            &[bank_label(9); 8],
+            "the DMA read bank 9 through window 1, not the identity bank"
+        );
     }
 }
