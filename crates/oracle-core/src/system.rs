@@ -2773,10 +2773,17 @@ mod tests {
         s.load_sram(&save);
         // Window 4 ($200000-$27FFFF) -> bank 9: the span SRAM maps into now has TWO live claimants.
         s.mega_bus(&mut ()).write8(0xA1_30F9, 5, 9);
-        assert_eq!(s.sram_window(), None, "SRAM is not mapped in until $A130F1 bit0");
+        assert_eq!(
+            s.sram_window(),
+            None,
+            "SRAM is not mapped in until $A130F1 bit0"
+        );
         assert_eq!(
             s.cart_peek(0x20_0001),
-            Some((CartByte::Rom(derived_offset(9, 0x20_0001)), image[derived_offset(9, 0x20_0001)])),
+            Some((
+                CartByte::Rom(derived_offset(9, 0x20_0001)),
+                image[derived_offset(9, 0x20_0001)]
+            )),
             "latch off: window 4's bank answers"
         );
 
@@ -2790,12 +2797,18 @@ mod tests {
             // The other lane inside the span falls through to ROM through window 4's bank.
             (
                 0x20_0002,
-                Some((CartByte::Rom(derived_offset(9, 0x20_0002)), image[derived_offset(9, 0x20_0002)])),
+                Some((
+                    CartByte::Rom(derived_offset(9, 0x20_0002)),
+                    image[derived_offset(9, 0x20_0002)],
+                )),
             ),
             // Below the span: plain window 4.
             (
                 0x20_0000,
-                Some((CartByte::Rom(derived_offset(9, 0x20_0000)), image[derived_offset(9, 0x20_0000)])),
+                Some((
+                    CartByte::Rom(derived_offset(9, 0x20_0000)),
+                    image[derived_offset(9, 0x20_0000)],
+                )),
             ),
         ] {
             assert_eq!(s.cart_peek(a), want, "{a:#08X}");
@@ -2819,11 +2832,19 @@ mod tests {
         let mut s = System::new(0xCA29);
         s.load_rom(image);
         // Past cartridge space: the image has bytes at offset $400000, the bus does not decode it as ROM.
-        assert_eq!(s.cart_peek(0x40_0000), None, "$400000 is not cartridge space");
+        assert_eq!(
+            s.cart_peek(0x40_0000),
+            None,
+            "$400000 is not cartridge space"
+        );
         // A window pointed at a bank the image does not have.
         use crate::m68000::bus68k::Bus68k;
         s.mega_bus(&mut ()).write8(0xA1_30F7, 5, 20); // window 3 -> bank 20 (of 10)
-        assert_eq!(s.cart_peek(0x18_0000), None, "bank 20 is past the image end");
+        assert_eq!(
+            s.cart_peek(0x18_0000),
+            None,
+            "bank 20 is past the image end"
+        );
         // A short image, identity: past its end is open bus too.
         let mut short = System::new(0xCA2A);
         short.load_rom(vec![0xAB; 0x300]);

@@ -40,7 +40,7 @@
 //! into every space in both run states and asserts the gate predicted the outcome. If someone ever moves
 //! `require_paused` below the param parsing, the probe goes quiet and that test goes red.
 
-use oracle_aether::engine::{self, METHODS};
+use oracle_aether::engine::{self, BusRegion, METHODS};
 use oracle_aether::rpc::{code, RpcError};
 use oracle_core::system::System;
 use oracle_core::watchpoints::WatchSpace;
@@ -169,7 +169,7 @@ pub fn read(
     sys: &System,
     addr: u32,
     len: usize,
-) -> Result<(Vec<u8>, Option<&'static str>), RpcError> {
+) -> Result<(Vec<u8>, Option<BusRegion>), RpcError> {
     match space {
         Space::Bus => engine::debug_read(sys, addr, len).map(|(b, r)| (b, Some(r))),
         Space::Vram => {
@@ -218,7 +218,9 @@ impl HexRow {
 /// What the panel draws for one repaint: either a page of rows, or the read's own refusal.
 pub struct View {
     pub base: u32,
-    pub region: Option<&'static str>,
+    /// The bus space's region — the handler's own [`BusRegion`], printed through its one spelling
+    /// (`BusRegion::label`), so a remapped window shows `cartridge ROM bank N` here exactly as a tool is told.
+    pub region: Option<BusRegion>,
     pub rows: Vec<HexRow>,
     /// The refusal, verbatim, when the requested page does not exist. Never rendered as an empty grid: a
     /// blank hex view and a refused read look identical, and only one of them means "there is nothing
@@ -1030,13 +1032,71 @@ mod bus_parity {
                 &json!({"space": "bus", "addr": oracle_aether::hex::addr(addr), "len": 4}),
             ));
             let (_, region) = read(Space::Bus, &sys, addr, 4).expect("readable");
-            assert_eq!(region, Some(expect), "the fixture moved");
             assert_eq!(
-                region.map(str::to_string),
+                region.map(BusRegion::label).as_deref(),
+                Some(expect),
+                "the fixture moved"
+            );
+            assert_eq!(
+                region.map(BusRegion::label),
                 reply["region"].as_str().map(str::to_string),
                 "the panel's region label and the bus's have DRIFTED"
             );
         }
+    }
+
+    /// ★ **F-DEBUGREAD-BANKED, the panel's third of it.** With mapper window 1 re-pointed at bank 9 through
+    /// the real bus write path, the panel's `bus` space shows bank 9's bytes under `cartridge ROM bank 9` —
+    /// the answer `emulator/read` gives — AND that answer is the DERIVED one: a panel and a tool that share
+    /// one function agree with each other however wrong the function is, so their agreement alone would
+    /// have passed the flat read this parcel replaced (`docs/2026-09-11-debugread-banked.md`).
+    #[test]
+    fn the_panel_shows_the_bank_a_remapped_window_shows() {
+        use oracle_core::m68000::bus68k::Bus68k;
+        const BANK: usize = 0x8_0000;
+        // Each byte names its bank and its in-bank offset, so bank 1 and bank 9 differ at every offset.
+        let image: Vec<u8> = (0..10 * BANK)
+            .map(|i| ((i / BANK) as u8 ^ 0x5A) ^ ((i % BANK) as u8))
+            .collect();
+        let off = 9 * BANK + (0x08_0100 & (BANK - 1));
+        assert_ne!(
+            image[0x08_0100..0x08_0110],
+            image[off..off + 16],
+            "banks 1 and 9 read alike: the fixture cannot tell a remap from identity"
+        );
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(image.clone());
+        sys.reset();
+        sys.mega_bus(&mut ()).write8(0xA1_30F3, 5, 9); // window 1 -> bank 9
+
+        let (panel, region) = read(Space::Bus, &sys, 0x08_0100, 16).expect("readable");
+        let mut b = bus(&mut sys, false);
+        let reply = ok(b.call(
+            &mut sys,
+            "emulator/read",
+            &json!({"space": "bus", "addr": "0x00080100", "len": 16}),
+        ));
+        assert_eq!(
+            panel,
+            bytes_of(&reply),
+            "the panel and emulator/read have DRIFTED"
+        );
+        assert_eq!(
+            region.map(BusRegion::label),
+            reply["region"].as_str().map(str::to_string),
+            "the panel's region label and the tool's have DRIFTED"
+        );
+        assert_eq!(
+            panel,
+            image[off..off + 16],
+            "derived: bank 9 * $80000 + (addr & $7FFFF), not the image's bytes at $080100"
+        );
+        let v = view(Space::Bus, &sys, 0x08_0100, 1, 16);
+        assert_eq!(
+            v.region.map(|r| r.to_string()).as_deref(),
+            Some("cartridge ROM bank 9"),
+            "the panel's `region` line prints the bank"
+        );
     }
 
     /// ⚑ **The write gate against reality — the asymmetry, measured rather than asserted.**
@@ -1342,7 +1402,7 @@ mod bus_parity {
             "a full page, so `error: None` is a read that happened and not an empty grid"
         );
         assert_eq!(
-            v.region,
+            v.region.map(BusRegion::label).as_deref(),
             Some("work RAM"),
             "the panel opens in work RAM, which is where a person debugging a game is looking"
         );
