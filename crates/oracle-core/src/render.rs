@@ -1063,9 +1063,24 @@ pub fn sprite_tile_at(s: &SpriteDecoded, x: u16, y: u16) -> Option<u16> {
 /// and mentions `rgb` only as the wire's spelling of it. A shared sentence that named one consumer's
 /// result key would be a true sentence on the bus and a dangling reference in the window — the "purple
 /// boxes" failure with correct arithmetic under it.
+///
+/// # Which frame is "the last completed" one (lens M20)
+///
+/// A frame completes when its active display does: at the start of line [`FRAME_END_LINE`], the instant
+/// `System` announces the frame boundary, and not at the next line 0. This used to be
+/// `now_mclk / MCLK_PER_FRAME - 1`, which is right from line 0 to the boundary and one frame stale from
+/// the boundary to the end of the frame. In those blanking lines, where a debugger stopped in a vblank
+/// handler sits, it compared line `y` against the frame *before* the one that had just finished, so it
+/// disclosed a whole frame of writes the glass already showed; and before frame 0's end it said "no frame
+/// has finished" for 38 lines after one had. §11.27's words were always "the last completed frame"; this
+/// is that, measured where the machine measures it. Pinned by
+/// `in_the_blanking_lines_the_last_completed_frame_is_the_one_that_just_ended` and
+/// `with_no_completed_frame_the_caveat_fires_whatever_the_write_stamp_says`, both of which take the
+/// boundary from a running machine rather than from this function.
 pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) -> Option<String> {
-    let frames_elapsed = now_mclk / MCLK_PER_FRAME;
-    let Some(last_completed) = frames_elapsed.checked_sub(1) else {
+    // Frame `f` ends at `f * MCLK_PER_FRAME + FRAME_END_LINE * MCLK_PER_LINE`. Before frame 0's end no
+    // frame has completed; after it, the last completed frame is the count of whole frames since.
+    let Some(since_first_end) = now_mclk.checked_sub(FRAME_END_LINE * MCLK_PER_LINE) else {
         return Some(
             "no frame has finished drawing yet, so there is nothing on screen for this colour to \
              disagree with. The colour reported here is resolved from live VDP state, which is what \
@@ -1074,6 +1089,7 @@ pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) 
                 .into(),
         );
     };
+    let last_completed = since_first_end / MCLK_PER_FRAME;
     // `None` — never written since power-on — is silence, and it is a separate arm rather than a
     // comparison against 0 because line 0 of frame 0 genuinely drew at mclk 0: a zero sentinel would
     // make every untouched entry disclose at that one coordinate. See `Vdp::cram_written_mclk`.
@@ -1088,6 +1104,17 @@ pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) 
         )
     })
 }
+
+/// The line whose start ends a frame: the instant `System`'s `Scanline` arm calls
+/// [`BusEventSink::on_frame_boundary`](crate::bus::BusEventSink::on_frame_boundary), i.e. the end of active
+/// display. Used by [`cram_divergence_caveat`] to decide which frame is the last completed one.
+///
+/// **A copy, and a tied one.** `system.rs` states this as the literal in its `line == 224` boundary arm and
+/// `vdp.rs` as its private `VBLANK_START_LINE`; neither is reachable from here without editing a file other
+/// parcels own. The tie is `render::tests::stop_at_frame_boundary`, which observes the line from a running
+/// machine: move this value either way and one of the two caveat rows built on it goes red. When the display
+/// height gets its one owner in `oracle-core` (lens M53/M67), this should become that.
+const FRAME_END_LINE: u64 = 224;
 
 impl Vdp {
     /// H40 (40-cell / 320 px) mode: reg $0C bits RS0 (bit 0) + RS1 (bit 7) both set (recon RR3, matching the
@@ -2277,18 +2304,115 @@ mod tests {
     // the scheduler happened to land on. Stated here, the off-by-one has a witness — and it now has one
     // in the crate both consumers link, rather than in one of the two.
 
-    /// The instant line `y` of the last completed frame was drawn, per §11.27's own definition.
-    fn line_drew_at(frames_elapsed: u64, y: u16) -> u64 {
-        (frames_elapsed - 1) * MCLK_PER_FRAME + u64::from(y) * MCLK_PER_LINE
+    /// The instant line `y` of frame `frame` was drawn. The caller names which frame is the last completed
+    /// one; this helper no longer works that out, because the version that did (`frames_elapsed - 1`)
+    /// transcribed the implementation and so could only ever agree with it (lens M20).
+    fn line_drew_at(frame: u64, y: u16) -> u64 {
+        frame * MCLK_PER_FRAME + u64::from(y) * MCLK_PER_LINE
+    }
+
+    /// **Where the machine itself says a frame ends, observed rather than restated.** Runs `testrom` until
+    /// `System` announces frame `want`'s boundary, stops the run right there, and returns the announced
+    /// frame, the line whose start the announcement rode on, and the master clock the machine stopped at.
+    ///
+    /// This is the expectation's source for every row below that turns on *which* frame is the last
+    /// completed one. `system.rs` owns that fact: its `Scanline` arm calls `on_frame_boundary` at the start
+    /// of one particular line (*"this instant, and not line 0, is the boundary"*). The rows used to take it
+    /// from `cram_divergence_caveat`'s own arithmetic instead, which is how they locked the off-by-one in:
+    /// they called it at `MCLK_PER_FRAME - 1` and expected "no frame has completed", 38 lines after the
+    /// machine had announced one.
+    fn stop_at_frame_boundary(want: u64) -> (u64, u16, u64) {
+        struct Stop {
+            want: u64,
+            line: Option<u16>,
+            hit: Option<(u64, u16)>,
+        }
+        impl crate::bus::BusEventSink for Stop {
+            fn on_event(&mut self, _event: crate::bus::BusEvent) {}
+            fn on_line_start(&mut self, line: u16, _frame: u64) {
+                self.line = Some(line);
+            }
+            fn on_frame_boundary(&mut self, frame: u64) {
+                if frame == self.want && self.hit.is_none() {
+                    let line = self
+                        .line
+                        .expect("a line started before the frame could end");
+                    self.hit = Some((frame, line));
+                }
+            }
+            fn stop_requested(&self) -> bool {
+                self.hit.is_some()
+            }
+        }
+        let mut sys = crate::system::System::new(0x5EED);
+        sys.load_rom(crate::testrom::build());
+        sys.reset();
+        let mut sink = Stop {
+            want,
+            line: None,
+            hit: None,
+        };
+        sys.run_frames_with_sink(want + 2, &mut sink);
+        let (frame, line) = sink.hit.unwrap_or_else(|| {
+            panic!("ran past frame {want}'s end and the machine never announced it")
+        });
+        let now = sys.scheduler().now();
+        // The stop lands at the next instruction boundary, so it must still be inside the announced frame
+        // and on the line the announcement rode on. If not, `now` does not describe the boundary and every
+        // row built on it is measuring something else.
+        assert_eq!(
+            now / MCLK_PER_FRAME,
+            frame,
+            "stopped outside the announced frame"
+        );
+        assert_eq!(
+            (now % MCLK_PER_FRAME) / MCLK_PER_LINE,
+            u64::from(line),
+            "stopped off the boundary line"
+        );
+        assert!(
+            line > 0,
+            "a frame that ends at line 0 would make this whole fixture moot"
+        );
+        (frame, line, now)
+    }
+
+    /// **Lens M20: in the blanking lines, the last completed frame is the one that has just ended.**
+    ///
+    /// The machine stops at frame 2's boundary, which it announces at the start of a line past the active
+    /// display. From that instant frame 2 has completed, so "line `y` of the last completed frame" is line
+    /// `y` of frame 2. A write one mclk before that line drew is one the glass carries: silent. The
+    /// defect compared against frame 1 instead for every line from the boundary to the end of the frame,
+    /// so it disclosed a whole frame's worth of writes the screen already shows, in exactly the mid-frame
+    /// debugging stop (a vblank handler) the caveat exists for.
+    #[test]
+    fn in_the_blanking_lines_the_last_completed_frame_is_the_one_that_just_ended() {
+        let (frame, _line, now) = stop_at_frame_boundary(2);
+        assert_eq!(frame, 2);
+        let y = 100u16;
+        let drew = line_drew_at(frame, y);
+        assert!(
+            cram_divergence_caveat(Some(drew - 1), y, now).is_none(),
+            "stopped at frame {frame}'s announced end (mclk {now}); a write one mclk before line {y} of \
+             frame {frame} drew is on the glass, so nothing to disclose. A caveat here means the rule is \
+             comparing against frame {} instead",
+            frame - 1
+        );
+        assert!(
+            cram_divergence_caveat(Some(drew), y, now).is_some(),
+            "and at the instant line {y} of frame {frame} drew, the line did not carry the write"
+        );
     }
 
     /// **The boundary, from both sides.** `>=`, not `>`: a write landing *at* the instant the line drew
     /// is a write the line did not carry, so it discloses. One mclk earlier it does not.
     #[test]
     fn the_caveat_turns_on_exactly_at_the_instant_the_line_drew() {
-        let now = 3 * MCLK_PER_FRAME + 500; // three frames elapsed, so frame 2 is the last completed
+        // Line 0 of frame 3: frame 3 has not reached its boundary, frame 2 has, so frame 2 is the last
+        // completed one on any reading of where a frame ends.
+        let now = 3 * MCLK_PER_FRAME + 500;
         let y = 100u16;
-        let drew = line_drew_at(3, y);
+        let drew = line_drew_at(2, y);
 
         assert!(
             cram_divergence_caveat(Some(drew - 1), y, now).is_none(),
@@ -2314,7 +2438,7 @@ mod tests {
         let y = 10u16; // an early line, drawn long before vblank
         let now = 5 * MCLK_PER_FRAME + 100;
         let vblank_of_last_completed = 4 * MCLK_PER_FRAME + 230 * MCLK_PER_LINE;
-        assert!(vblank_of_last_completed > line_drew_at(5, y));
+        assert!(vblank_of_last_completed > line_drew_at(4, y));
         assert!(
             cram_divergence_caveat(Some(vblank_of_last_completed), y, now).is_some(),
             "no heuristic is consulted and none is needed"
@@ -2356,8 +2480,9 @@ mod tests {
     #[test]
     fn the_caveat_cites_nothing_at_the_reader_and_carries_no_dash() {
         let arms = [
-            // The pre-first-frame arm.
-            cram_divergence_caveat(Some(0), 0, MCLK_PER_FRAME - 1).expect("no frame has completed"),
+            // The pre-first-frame arm, at mclk 0: line 0 of frame 0, before any frame's boundary. (This
+            // used to pose `MCLK_PER_FRAME - 1`, which is after frame 0 ended; lens M20.)
+            cram_divergence_caveat(Some(0), 0, 0).expect("no frame has completed"),
             // The ordinary arm: a write at the instant line 0 of the last completed frame drew.
             cram_divergence_caveat(Some(MCLK_PER_FRAME), 0, 2 * MCLK_PER_FRAME)
                 .expect("the write lands on the drawn line"),
@@ -2390,10 +2515,17 @@ mod tests {
     /// **The pre-first-frame arm, and it is not the same sentence.** Both arms name
     /// `emulator/scanlines` (§11.27's second pinned property); they differ because the reasons differ,
     /// and §2.4 rule 2 says a client shows this text to a human verbatim.
+    ///
+    /// Both edges come from the machine: frame 0 completes when `System` announces it (at the start of the
+    /// line [`stop_at_frame_boundary`] observes), not at the next line 0. The old version of this row put
+    /// the edge at `MCLK_PER_FRAME`, the function's own arithmetic, and so pinned the defect (lens M20).
     #[test]
     fn with_no_completed_frame_the_caveat_fires_whatever_the_write_stamp_says() {
-        for written in [0, 1, MCLK_PER_FRAME - 1] {
-            let c = cram_divergence_caveat(Some(written), 0, MCLK_PER_FRAME - 1)
+        let (frame, line, stopped_at) = stop_at_frame_boundary(0);
+        assert_eq!(frame, 0);
+        let boundary = u64::from(line) * MCLK_PER_LINE; // frame 0's announced end
+        for written in [0, 1, boundary - 1] {
+            let c = cram_divergence_caveat(Some(written), 0, boundary - 1)
                 .expect("no frame has completed, so §11.27's second trigger applies");
             assert!(c.contains("emulator/scanlines"), "{c}");
             assert!(
@@ -2402,11 +2534,15 @@ mod tests {
                  drew: {c}"
             );
         }
-        // …and the instant the first frame completes, the ordinary rule takes over.
-        assert!(
-            cram_divergence_caveat(None, 0, MCLK_PER_FRAME).is_none(),
-            "one frame elapsed and entry never written since: silence"
-        );
+        // …and the instant the first frame completes, the ordinary rule takes over: at the boundary itself
+        // and at the instant the machine actually stopped on it.
+        for now in [boundary, stopped_at] {
+            assert!(
+                cram_divergence_caveat(None, 0, now).is_none(),
+                "mclk {now}: the machine has announced frame 0's end at line {line}, and the entry was \
+                 never written, so silence. A \"no frame has finished\" caveat here is 38 lines late"
+            );
+        }
     }
 
     /// **A never-written entry never fakes a qualifying write — and the last cell of this table is a
