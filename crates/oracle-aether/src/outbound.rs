@@ -33,6 +33,7 @@
 //! ```
 
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Default queue depth per connection. Deep enough that an ordinarily-busy client never loses an event,
@@ -57,13 +58,18 @@ pub struct Outbound {
 }
 
 impl Outbound {
-    pub fn new(capacity: usize) -> Self {
-        assert!(capacity > 0, "queue capacity must be positive");
+    /// A queue that holds at most `capacity` messages.
+    ///
+    /// **Non-zero by type** (lens M71). A zero-depth queue cannot carry a single reply, and this used to be
+    /// a runtime `assert!` — which fired on each *connection's* thread, so a zero in the configuration left
+    /// the socket bound and killed every client at its first byte. The value is now refused where it is
+    /// configured (`Server::bind`), and this signature cannot be handed one.
+    pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
             not_empty: Condvar::new(),
             not_full: Condvar::new(),
-            capacity,
+            capacity: capacity.get(),
         }
     }
 
@@ -222,9 +228,13 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    fn cap(n: usize) -> NonZeroUsize {
+        NonZeroUsize::new(n).expect("every depth these tests use is non-zero")
+    }
+
     #[test]
     fn push_event_never_blocks_and_drops_the_oldest() {
-        let q = Outbound::new(4);
+        let q = Outbound::new(cap(4));
         for i in 0..100 {
             assert!(q.push_event(format!("e{i}")));
         }
@@ -237,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_full_queue_does_not_stall_the_pusher() {
-        let q = Outbound::new(2);
+        let q = Outbound::new(cap(2));
         let start = Instant::now();
         for i in 0..200_000 {
             q.push_event(format!("{i}"));
@@ -251,7 +261,7 @@ mod tests {
 
     #[test]
     fn push_response_waits_for_space_then_proceeds() {
-        let q = Arc::new(Outbound::new(1));
+        let q = Arc::new(Outbound::new(cap(1)));
         q.push_event("filler".into());
         let q2 = Arc::clone(&q);
         let t = std::thread::spawn(move || q2.push_response("resp".into()));
@@ -264,7 +274,7 @@ mod tests {
 
     #[test]
     fn close_wakes_a_waiting_responder_and_a_waiting_writer() {
-        let q = Arc::new(Outbound::new(1));
+        let q = Arc::new(Outbound::new(cap(1)));
         q.push_event("filler".into());
         let q2 = Arc::clone(&q);
         let t = std::thread::spawn(move || q2.push_response("resp".into()));
