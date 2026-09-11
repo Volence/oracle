@@ -79,30 +79,14 @@ pub const ARCHETYPE_PREFIX: &str = "ObjDef_";
 pub const DISARMED_BY_LISTING_CHANGE: &str =
     "spawn mode disarmed: the symbol listing changed, so its archetypes may now name different addresses";
 
-/// The two derived RAM words that carry **the act's true pixel extent**, and the only two this crate will
-/// accept as the answer to "is this click inside the level".
-///
-/// aeon published them for exactly this join, and their own declaration states the box: *"the act's TRUE
-/// pixel extent — the valid world box is `[0, Level_Width) × [0, Level_Height)`"*
-/// (`games/sonic4/config/ram.emp`). They are written by `Player_BoundsInit` from the values it holds
-/// **before** it subtracts its margins, and they exist in both the release and the DEBUG shape.
-///
-/// ⚠ **`Player_Bound_Right` / `Player_Bound_Bottom` are NOT these**, and reading them as the extent is the
-/// dangerous mistake rather than the obvious one. They are the *player's* clamp edges, inset by
-/// `PBOUND_RIGHT_MARGIN` and `SCREEN_HEIGHT`; objects are deliberately unclamped, so **an object placed
-/// between `Player_Bound_Right` and `Level_Width` is legal and renders**. A window that refused there would
-/// reject real placements *and look right doing it*, because a refusal near an edge is half-expected — the
-/// failure shaped like correctness, which is precisely why aeon wrote these two words rather than pointing
-/// us at the ones a grep finds first. There is no `Player_Bound_Left`/`_Top` at all: the low edge of the
-/// box is a literal `0`.
-///
-/// ⚑ **Resolved by name, per call, never cached** — the same rule §11.26 was amended to impose on
-/// `Camera_X`. Measured on this box: `Level_Width` is `$FFFFBABE` in `s4.lst` and `$FFFFE95C` in
-/// `s4.debug.lst`, ~11 KB apart, so a cached address is silently wrong in the other shape and yields a
-/// number rather than a fault.
-pub const LEVEL_WIDTH_SYMBOL: &str = "Level_Width";
-/// See [`LEVEL_WIDTH_SYMBOL`].
-pub const LEVEL_HEIGHT_SYMBOL: &str = "Level_Height";
+// The two derived RAM words that carry **the act's true pixel extent**, and the only two this crate will
+// accept as the answer to "is this click inside the level". Owned by `oracle_core::symbols`, the one crate
+// this one and `oracle-aether` both link in every build: the edge to `oracle-aether` is optional (the
+// `aether` feature), and [`Bounds`]'s refusal sentences quote these names without it. aeon's measurement,
+// the `Player_Bound_*` trap (reading the clamp edges refuses legal placements *and looks right doing it*)
+// and the never-cache rule are stated at the owner once. `oracle_aether::objreq` re-exports the same two
+// (lens M66: they used to be two agreeing copies with nothing comparing them).
+pub use oracle_core::symbols::{LEVEL_HEIGHT_SYMBOL, LEVEL_WIDTH_SYMBOL};
 
 /// **The act's pixel extent, as read out of the machine just now.**
 ///

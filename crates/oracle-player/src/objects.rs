@@ -420,16 +420,18 @@ pub fn object_slot(
 // Rings — the question this tab kept provoking, answered where it is asked
 // ---------------------------------------------------------------------------------------------------
 
-/// The two symbols this derivation reads, named once each.
-///
-/// A **symbol name** is not a hardcoded address: it is the same kind of fact `AEON_SST.base_symbols`
-/// holds when it names `Object_RAM`. Every *number* below is measured from the listing at run time.
-const RING_BUFFER: &str = "Ring_Buffer";
-const RING_COUNT: &str = "Ring_Count";
-
-/// The equate the ceiling divides by. A **name**, read from the listing at run time — never a number
-/// typed in here, which would be a fact about one build wearing the clothes of a measurement.
-const RING_ENTRY_SIZE: &str = "RING_BUFFER_ENTRY_SIZE";
+// The two symbols this derivation reads, and the equate the ceiling divides by — **imported, not spelled**.
+// `oracle_frontend::rings` owns all three (ring *placement* reads the same names), and this crate links it
+// in every build, so a second spelling here was only ever a copy that could drift (lens M66's second pair).
+// The local aliases keep this file's sentences reading `Ring_Buffer`-shaped.
+//
+// A **symbol name** is not a hardcoded address: it is the same kind of fact `AEON_SST.base_symbols` holds
+// when it names `Object_RAM`. Every *number* below is measured from the listing at run time — the entry
+// size included, which is a **name** read at run time, never a number typed in here.
+use oracle_frontend::rings::{
+    RING_BUFFER_SYMBOL as RING_BUFFER, RING_COUNT_SYMBOL as RING_COUNT,
+    RING_ENTRY_SIZE_EQUATE as RING_ENTRY_SIZE,
+};
 
 /// **The sentence for the one listing that still cannot answer**, stated in full because an absent number
 /// invites the reader to supply one.

@@ -92,6 +92,14 @@ pub const RING_HIGH_WATER_SYMBOL: &str = "Ring_HighWater";
 /// `Entity_Scan_State` — `MAX_TRACKED_SECTIONS` records of `EntityScanState_len` bytes, one per section
 /// the camera window is currently tracking.
 pub const SCAN_STATE_SYMBOL: &str = "Entity_Scan_State";
+/// `RING_BUFFER_ENTRY_SIZE` — the **equate** (not a symbol: read through `emulator/lookup_equate` /
+/// `SymbolTable::equate_value`) giving the stride between ring records, and the length of one.
+///
+/// Named here because two consumers read it: this module's [`Layout`], and the player's Objects panel,
+/// which divides the ring buffer's measured span by it to get the ring ceiling. The panel imports this
+/// and [`RING_BUFFER_SYMBOL`]/[`RING_COUNT_SYMBOL`] rather than spelling them (lens M66's second pair;
+/// the player links this crate in every build, so importing was the whole fix).
+pub const RING_ENTRY_SIZE_EQUATE: &str = "RING_BUFFER_ENTRY_SIZE";
 
 /// Every equate [`Layout`] is built out of, in the listing's own spelling.
 ///
@@ -102,7 +110,7 @@ pub const EQUATES: &[&str] = &[
     "MAX_RING_BUFFER",
     "MAX_LIST_ENTRIES",
     "MAX_TRACKED_SECTIONS",
-    "RING_BUFFER_ENTRY_SIZE",
+    RING_ENTRY_SIZE_EQUATE,
     "RING_ENTRY_X_OFFSET",
     "RING_ENTRY_Y_OFFSET",
     "RING_ENTRY_SECTION_ID_OFFSET",
@@ -219,7 +227,7 @@ impl Layout {
             max_ring_buffer: g("MAX_RING_BUFFER"),
             max_list_entries: g("MAX_LIST_ENTRIES"),
             max_tracked_sections: g("MAX_TRACKED_SECTIONS"),
-            entry_size: g("RING_BUFFER_ENTRY_SIZE"),
+            entry_size: g(RING_ENTRY_SIZE_EQUATE),
             x_off: g("RING_ENTRY_X_OFFSET"),
             y_off: g("RING_ENTRY_Y_OFFSET"),
             section_id_off: g("RING_ENTRY_SECTION_ID_OFFSET"),
@@ -253,7 +261,7 @@ impl Layout {
     /// big-endian word, 1 for each byte. Nothing here is a literal record size.
     fn offsets(&self) -> [(&'static str, u64, u64, &'static str, u64); 9] {
         // (equate name, its value, the width read there, the stride's equate name, the stride)
-        const ENTRY: &str = "RING_BUFFER_ENTRY_SIZE";
+        const ENTRY: &str = RING_ENTRY_SIZE_EQUATE;
         const SCAN: &str = "EntityScanState_len";
         [
             ("RING_ENTRY_X_OFFSET", self.x_off, 2, ENTRY, self.entry_size),
