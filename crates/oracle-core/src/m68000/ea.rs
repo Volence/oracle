@@ -218,8 +218,15 @@ struct SrcSeq {
 /// The auto-(in/de)crement step magnitude (in bytes) for an `(An)+`/`-(An)` access of `size` on register
 /// `reg`. Word is 2; long is 4; byte is 1 — **except** `(A7)+`/`-(A7)` byte, which steps by 2 so the stack
 /// pointer stays even (the in-scope A7 byte rule).
+///
+/// **The one statement of that rule in the 68000 core.** `pub(super)` because `decode.rs` builds two
+/// auto-(in/de)crement recipes of its own outside the EA builders here: the `-(Ay),-(Ax)` predecrement of
+/// ADDX / SUBX / ABCD / SBCD and CMPM's `(Ay)+,(Ax)+`. Each used to carry a private copy of this body
+/// (`xarith_step`, `cmpm_step`), and the copies were independent in fact, not just in spelling: with this
+/// function's A7 arm broken, the SingleStepTests cases for those five instructions stayed green while
+/// ADD.b's went red (lens M72). Now they call this, and a change here reaches every consumer at once.
 #[inline]
-fn step_bytes(size: Size, reg: u8) -> i8 {
+pub(super) fn step_bytes(size: Size, reg: u8) -> i8 {
     match size {
         Size::Word => 2,
         Size::Long => 4,

@@ -67,10 +67,34 @@ const WAIT_MAX: u64 = 0xFFFF;
 /// Samples per NTSC frame at the 44100 Hz VGM timebase (`0x62`).
 const SAMPLES_PER_FRAME: u32 = 735;
 
-/// SN76489 clock (Hz) written to VGM header offset `0x0C`.
-const SN76489_CLOCK: u32 = 3_579_545;
-/// YM2612 clock (Hz) written to VGM header offset `0x2C`.
-const YM2612_CLOCK: u32 = 7_670_453;
+/// **The SN76489 (PSG) clock in Hz, the tree's one statement of it.** Written to the VGM header at offset
+/// `0x0C`, and consumed by the feature-gated synth (`synth::sn76489` re-exports it under this name).
+///
+/// It is the NTSC colour subcarrier, and the PSG shares the Z80's mclk/15 leg, so `PSG_CLOCK * 15` is
+/// 53 693 175 Hz *exactly*: the master clock. That is why the synth's `MCLK_HZ` is derived from this value
+/// rather than typed, and why the FM clock below is tied to it.
+///
+/// **Why the owner is here and not in `synth`:** `synth` is feature-gated (default OFF) and this module is
+/// not. The default build needs the number for the VGM header, so the owner must live in the default build
+/// and the synth imports it. Until lens M65 each clock was stated twice, here and in `synth`, under two
+/// names with nothing tying the copies.
+pub const PSG_CLOCK: u32 = 3_579_545;
+
+/// **The YM2612 (FM) clock in Hz, the tree's one statement of it.** Written to the VGM header at `0x2C`, and
+/// the source of the synth's native operator rate (`ym2612_synth` imports it).
+///
+/// It is mclk/7 (the 68000's leg) **rounded down**: 53 693 175 / 7 = 7 670 453.57, and 7 670 453 is the
+/// value VGM files carry. So it cannot be derived by multiplying back up (that lands 4 Hz low); the assert
+/// below ties it to the master clock instead.
+pub const YM2612_CLOCK: u32 = 7_670_453;
+
+// One master clock, two divisions of it: the FM clock must be exactly mclk/7 truncated, where mclk is the
+// PSG clock times the Z80 divider. Moving either value alone now fails the build. (This was a prose
+// cross-check in `synth::audio_sink`'s `MCLK_HZ` doc until lens M65.)
+const _: () = assert!(
+    YM2612_CLOCK as u64
+        == PSG_CLOCK as u64 * crate::system::MCLK_PER_Z80_CYCLE / crate::system::MCLK_PER_CPU_CYCLE
+);
 
 /// The `BusEventSink` that decodes + records FM/PSG register writes and renders canonical VGM.
 pub struct VgmLogger {
@@ -229,7 +253,7 @@ impl VgmLogger {
         // 0x08 version.
         write_le_u32(&mut out, 0x08, 0x0000_0150);
         // 0x0C SN76489 clock.
-        write_le_u32(&mut out, 0x0C, SN76489_CLOCK);
+        write_le_u32(&mut out, 0x0C, PSG_CLOCK);
         // 0x18 total samples (sum of all waits).
         write_le_u32(&mut out, 0x18, total_samples);
         // 0x2C YM2612 clock.
@@ -503,16 +527,11 @@ mod tests {
 
         let vgm = log.render_vgm();
         assert_eq!(&vgm[0x00..0x04], b"Vgm ", "VGM ident");
-        assert_eq!(
-            read_le_u32(&vgm, 0x0C),
-            SN76489_CLOCK,
-            "SN76489 clock at 0x0C"
-        );
-        assert_eq!(
-            read_le_u32(&vgm, 0x2C),
-            YM2612_CLOCK,
-            "YM2612 clock at 0x2C"
-        );
+        // Literals, not `PSG_CLOCK` / `YM2612_CLOCK`: the header is a wire artifact and these are the NTSC
+        // values VGM files carry. Compared against the constants that wrote them, this could not see either
+        // constant move, and since lens M65 those constants are also what the synth runs on.
+        assert_eq!(read_le_u32(&vgm, 0x0C), 3_579_545, "SN76489 clock at 0x0C");
+        assert_eq!(read_le_u32(&vgm, 0x2C), 7_670_453, "YM2612 clock at 0x2C");
         assert_eq!(read_le_u32(&vgm, 0x08), 0x0000_0150, "version 1.50");
         assert_eq!(read_le_u32(&vgm, 0x34), 0x0C, "data offset (0x40)");
         assert_eq!(

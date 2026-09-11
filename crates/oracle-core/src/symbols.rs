@@ -1802,6 +1802,78 @@ EQU zone_count = $0000000C
         SymbolTable::parse(FIXTURE).expect("fixture parses")
     }
 
+    /// **A preamble before the `Symbol Table` header is not damage**, and that is now a pinned property
+    /// rather than an accident of the fallback path.
+    ///
+    /// Sigil is putting a `DIGEST-` section (every line starts `DIGEST-`, then one blank line) at the top
+    /// of every listing it writes. That is safe only because of how the `Section::Body` arm treats a line
+    /// it cannot read: body lines are a fallback for a listing with no `Symbol Table`, a real listing's
+    /// body is mostly source text, so a non-match there is **not** counted in `skipped_lines`, and body
+    /// symbols are used only when the table section yields none. Until this row only real AS listings
+    /// exercised that, implicitly, and nothing would have gone red if the arm began counting.
+    ///
+    /// The subject is the frozen sigil listing (`fixtures/aeon/s4.lst`), not a miniature, so the claim is
+    /// about the file sigil actually emits: its body lines, its `Symbol Table`, its `Equate Table`.
+    #[test]
+    fn a_preamble_before_the_symbol_table_header_is_not_damage() {
+        const REAL: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/aeon/s4.lst"
+        ));
+        let preamble = "DIGEST-FORMAT 1\n\
+                        DIGEST-ROM-SHA256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\n\
+                        DIGEST-ROM-LEN 0x000A11F0\n\
+                        DIGEST-SOURCE engine/boot.emp 3c1e\n\
+                        \n";
+        let prefixed_text = format!("{preamble}{REAL}");
+
+        let plain = SymbolTable::parse(REAL).expect("the frozen listing parses");
+        let prefixed = SymbolTable::parse(&prefixed_text).expect("the prefixed listing parses");
+        let set = |t: &SymbolTable| {
+            t.symbols()
+                .iter()
+                .map(|s| (s.name.clone(), s.addr))
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+
+        assert!(
+            set(&plain).len() > 1000,
+            "control: the frozen listing must yield its real symbol set, or the equality below is \
+             vacuous (got {})",
+            set(&plain).len()
+        );
+        assert_eq!(
+            set(&prefixed),
+            set(&plain),
+            "a DIGEST- preamble changed which symbols the listing yields"
+        );
+        assert_eq!(
+            prefixed.skipped_lines(),
+            plain.skipped_lines(),
+            "a DIGEST- preamble was counted as damage: a line the Body arm cannot read is source text, \
+             not a malformed row"
+        );
+        assert!(plain.is_intact(), "control: the frozen listing is intact");
+        assert!(
+            prefixed.is_intact(),
+            "the same listing behind a DIGEST- preamble must still read as intact"
+        );
+        assert_eq!(plain.source(), TableSource::SymbolTable);
+        assert_eq!(prefixed.source(), TableSource::SymbolTable);
+
+        // The constraint handed to sigil, pinned beside the tolerance: the preamble is free text EXCEPT a
+        // line beginning `Equate Table`, because that header is matched from any section. Entering it first
+        // means the `Symbol Table` header (honoured only from `Section::Body`) is never entered, so the
+        // listing can no longer be read from its authoritative half.
+        let hostile = format!("Equate Table DIGEST\n\n{REAL}");
+        assert_ne!(
+            SymbolTable::parse(&hostile).map(|t| t.source()).ok(),
+            Some(TableSource::SymbolTable),
+            "a preamble line beginning `Equate Table` must change the parse; if this is now tolerated, \
+             the constraint handed to sigil can be relaxed and this half deleted"
+        );
+    }
+
     /// The `Equate Table` sigil started emitting on 2026-08-19 is a **known** section, not damage: its
     /// header, rule, rows and trailer are all consumed, so a healthy listing still reports zero skipped
     /// lines and stays [`SymbolTable::is_intact`]. Negative control for deleting the section recognition.

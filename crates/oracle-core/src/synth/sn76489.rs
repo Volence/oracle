@@ -20,15 +20,13 @@
 //! it is never part of `System`, `state_hash`, or `export_state` (see the module docs), so it carries no
 //! currency obligations, but staying integer keeps it reproducible anyway.
 
-/// SN76489 reference clock on the Genesis (Hz).
-///
-/// **`pub` because it is the tree's only exact statement of the master clock.** The PSG and the Z80 share
-/// the mclk/[`MCLK_PER_Z80_CYCLE`](crate::system::MCLK_PER_Z80_CYCLE) leg, and this value is the NTSC
-/// colour subcarrier — so `PSG_CLOCK · 15` is 53 693 175 Hz *exactly*, which is the master clock, and
-/// [`MCLK_HZ`](crate::synth::MCLK_HZ) is derived from it rather than typed. The FM leg cannot do the same
-/// job: `YM2612_CLOCK` is the rounded 7 670 453 the VGM header carries, and mclk/7 is 7 670 453.57, so
-/// multiplying it back up loses 4 Hz.
-pub const PSG_CLOCK: u32 = 3_579_545;
+// SN76489 reference clock on the Genesis (Hz): **owned by [`crate::vgm::PSG_CLOCK`]**, re-exported here
+// under the name the synth has always used. It is the tree's only exact statement of the master clock
+// (`PSG_CLOCK * 15` is 53 693 175 Hz exactly), which is why `MCLK_HZ` is derived from it; the FM leg cannot
+// do that job, because `vgm::YM2612_CLOCK` is mclk/7 rounded down. The owner cannot live in this module
+// because `synth` is feature-gated and the always-built VGM header needs the value too (lens M65: this
+// was a second, untied copy of `vgm.rs`'s number under a second name).
+pub use crate::vgm::PSG_CLOCK;
 
 /// 16-entry attenuation → linear-amplitude table, 2 dB per step (entry 15 = mute). Peak chosen so the
 /// four channels summed stay well inside `i16` (4 × 4000 = 16000 ≪ 32767). Precomputed (no float at

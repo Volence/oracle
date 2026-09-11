@@ -107,13 +107,21 @@ fn main() -> ExitCode {
     machine.rom_path = Some(rom_path);
     machine.symbols = table;
     machine.symbols_path = table_path;
-    let handle = server.spawn(machine);
+    let mut handle = server.spawn(machine);
 
-    // Park forever.
+    // Park until the emulator thread ends, which in normal operation is never.
     //
-    // **The socket file outlives this process, and that is a known limitation rather than an
-    // oversight.** `ServerHandle::drop` unlinks it, but nothing here ever unwinds: a `SIGINT` or
-    // `SIGTERM` kills the process outright, so the path is left behind and the next client to connect
+    // **This used to park forever, and that was lens M13.** A panic on the emulator thread killed the one
+    // thing that can answer a request, while the accept loop, the socket and this process all survived it:
+    // every client got a connection and then silence, and a restart's probe ([`Server::bind`] connects
+    // before it binds) was answered by the corpse and refused with `AddrInUse`. Now the server stops
+    // accepting and hangs up the moment that thread dies, `wait` hands back why, and this process exits
+    // non-zero with the reason on stderr, so whatever launched it sees a dead server as dead. Dropping
+    // `handle` on the way out removes the socket file (only if it is still the one this server bound).
+    //
+    // **The socket file still outlives a KILLED process, and that is a known limitation rather than an
+    // oversight.** `ServerHandle::drop` unlinks it, but a `SIGINT` or `SIGTERM` kills the process outright
+    // without unwinding, so the path is left behind and the next client to connect
     // gets `ECONNREFUSED` from a dead file rather than `ENOENT` from an absent one. That is confusing —
     // it reads as "the server is broken" rather than "the server is not running" — and it has been
     // reported from a real session.
@@ -126,10 +134,17 @@ fn main() -> ExitCode {
     // What *is* handled, and is what keeps a stale file from being fatal: [`Server::bind`] probes the
     // path before binding — it connects, refuses with `AddrInUse` if a live server answers, and unlinks
     // if nothing does. A stale socket therefore never blocks a restart, which is the half that matters
-    // for recovery. `tests/socket_lifecycle.rs` pins both directions.
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-        std::hint::black_box(&handle);
+    // for recovery. `tests/socket_lifecycle.rs` pins both directions, and `server.rs`'s
+    // `a_dead_emulator_thread_releases_the_socket_and_reports_why` pins the engine-death path.
+    match handle.wait() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => {
+            eprintln!(
+                "aether: the emulator thread died ({why}). The socket has stopped answering and is \
+                 removed as this process exits with a failure status."
+            );
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -165,7 +180,12 @@ fn load_symbols(path: &Path, rom: &[u8]) -> (Option<SymbolTable>, Option<String>
             );
             (None, None)
         }
-        binding => {
+        // The ACCEPT arm, and it names what it accepts (lens M51) rather than taking whatever the arms above
+        // did not refuse. That is `binding_note`'s lesson one decision further up: a wildcard here would load
+        // a listing under a `RomBinding` variant nobody has judged yet, where naming the variants makes the
+        // compiler put that decision in front of whoever adds one. The four sibling tables (player
+        // `symbols.rs`, frontend `symbol_file.rs`, replay `policy.rs`, `Engine::load_symbols`) already do.
+        binding @ (RomBinding::Match { .. } | RomBinding::Indeterminate(_)) => {
             println!(
                 "symbols: {} symbols from {} ({})",
                 table.len(),

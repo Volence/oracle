@@ -95,13 +95,16 @@
 
 use std::f64::consts::PI;
 
-/// YM2612 FM clock (Hz) — the master FM clock the phase generator's real-Hz frequency is derived from.
-const YM2612_CLOCK: f64 = 7_670_453.0;
+// The YM2612 FM clock (Hz), the one the phase generator's real-Hz frequency is derived from, is
+// `crate::vgm::YM2612_CLOCK`: the same number the VGM header carries, stated once (lens M65: this module
+// held a second, untied `f64` copy). The conversion below is exact; 7 670 453 is far inside f64's
+// integer range.
+use crate::vgm::YM2612_CLOCK;
 /// The FM operator sample-clock divisor: the chip advances an operator once per 144 master cycles.
 const FM_CLOCK_DIV: f64 = 144.0;
 /// The chip's native operator rate (Hz): `YM2612_CLOCK / 144 ≈ 53_267 Hz`. The phase/envelope tick runs
 /// here and the result is resampled to the sink's output rate.
-const NATIVE_RATE: f64 = YM2612_CLOCK / FM_CLOCK_DIV;
+const NATIVE_RATE: f64 = YM2612_CLOCK as f64 / FM_CLOCK_DIV;
 
 /// Envelope attenuation is a 10-bit value: 0 = full volume, [`MAX_ATT`] = silence.
 const MAX_ATT: i32 = 0x3ff;

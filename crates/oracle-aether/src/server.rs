@@ -31,7 +31,8 @@ use oracle_core::symbols::SymbolTable;
 use oracle_core::system::System;
 use serde_json::{json, Map, Value};
 use std::io::{BufReader, BufWriter, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::num::NonZeroUsize;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -103,11 +104,16 @@ impl Machine {
 pub struct Server {
     listener: UnixListener,
     config: ServerConfig,
+    /// The `(device, inode)` of the socket file this bind created. Carried into the handle so its unlink
+    /// can tell its own file from a restarted server's at the same path (lens M13).
+    bound: Option<(u64, u64)>,
 }
 
-/// A live server. Dropping it shuts everything down and unlinks the socket.
+/// A live server. Dropping it shuts everything down and unlinks the socket (its own, see
+/// [`shutdown`](ServerHandle::shutdown)).
 pub struct ServerHandle {
     socket_path: PathBuf,
+    bound: Option<(u64, u64)>,
     stop: Arc<AtomicBool>,
     accept_thread: Option<std::thread::JoinHandle<()>>,
     engine_thread: Option<std::thread::JoinHandle<()>>,
@@ -118,6 +124,20 @@ pub struct ServerHandle {
 impl ServerHandle {
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// **Block until the emulator thread ends, and say how it ended.** `Ok(())` when it was shut down;
+    /// `Err` with the panic message when it died.
+    ///
+    /// The standalone binary parks on this instead of sleeping forever, so a dead machine ends the process
+    /// with a non-zero status rather than leaving it parked behind a socket that answers nothing (lens M13).
+    /// Called at most once: a second call, like [`shutdown`](Self::shutdown) after this, finds the thread
+    /// already joined and answers `Ok(())`.
+    pub fn wait(&mut self) -> Result<(), String> {
+        match self.engine_thread.take() {
+            Some(t) => t.join().map_err(|payload| panic_message(payload.as_ref())),
+            None => Ok(()),
+        }
     }
 
     /// Stop accepting, close every live connection, stop the emulator thread, unlink the socket.
@@ -135,7 +155,42 @@ impl ServerHandle {
         if let Some(t) = self.engine_thread.take() {
             let _ = t.join();
         }
-        let _ = std::fs::remove_file(&self.socket_path);
+        // **Only the file this server bound** (lens M13). Once a dead emulator thread releases the socket,
+        // a restart can bind the same path while this handle still lives; an unconditional unlink here
+        // would then delete the restarted server's socket out from under it. Until the release existed
+        // that could not happen, because the old server kept answering and the restart refused.
+        if self.bound.is_some() && socket_identity(&self.socket_path) == self.bound {
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
+    }
+}
+
+/// The `(device, inode)` naming the file at `path` right now, or `None` when there is none. Not followed
+/// through a symlink: the question is which file sits at this path.
+fn socket_identity(path: &Path) -> Option<(u64, u64)> {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|m| (m.dev(), m.ino()))
+}
+
+/// **The emulator thread's last act when it dies by panicking** (lens M13): stop accepting and hang up on
+/// every connection.
+///
+/// That thread is the only thing that can answer a request, so a server whose engine is gone must stop
+/// looking alive. Before this, the accept loop and the socket outlived it: every new connection was
+/// accepted and then closed without a reply, and a restart's incumbent probe was answered by the corpse.
+/// With the accept thread stopped, the listener is dropped and a `connect` is refused, which is what a
+/// client and [`Server::bind`]'s probe both read as "nothing is serving here".
+///
+/// A drop guard rather than `catch_unwind` so the panic still ends the thread as a panic: the default hook
+/// prints it, and [`ServerHandle::wait`] receives the payload from `join`.
+struct HangUpIfPanicking(AcceptCtx);
+
+impl Drop for HangUpIfPanicking {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.close_all();
+        }
     }
 }
 
@@ -261,6 +316,13 @@ pub(crate) fn spawn_accept(
     ctx: &AcceptCtx,
     engine_tx: Sender<EngineMsg>,
 ) -> std::thread::JoinHandle<()> {
+    // The depth every connection's queue is built with (lens M71), checked once, here, on the caller's
+    // thread, before any client exists. Unreachable as a failure: both callers hold a listener that
+    // `Server::bind` produced, and bind refuses `event_queue_cap = 0` — the standalone server binds its own
+    // config, and `Host::serve` builds its `ServerConfig` from this same `ctx` value and binds that.
+    let queue_cap = NonZeroUsize::new(ctx.event_queue_cap).expect(
+        "Server::bind refuses event_queue_cap = 0, and every caller of spawn_accept has bound",
+    );
     let ctx = ctx.clone_handles();
     std::thread::Builder::new()
         .name("aether-accept".into())
@@ -301,7 +363,7 @@ pub(crate) fn spawn_accept(
                                     conn.subs.clone(),
                                     &conn.shared,
                                     &conn.stop,
-                                    conn.event_queue_cap,
+                                    queue_cap,
                                 );
                                 conn.live.fetch_sub(1, Ordering::SeqCst);
                                 if let Some(i) = slot {
@@ -331,6 +393,17 @@ pub(crate) fn spawn_accept(
 impl Server {
     /// Bind the socket, enforcing mode `0600` (D8) and refusing to squat on a live server's path.
     pub fn bind(config: ServerConfig) -> std::io::Result<Self> {
+        // Lens M71: a zero-depth outbound queue is a configuration error, refused here — before the
+        // filesystem is touched, so a bad value leaves no socket file — rather than discovered by every
+        // connection thread in turn while the socket stays bound. Both deployments pass through this bind
+        // (`Host::serve` included), which is why it is the one place the check needs to live.
+        if config.event_queue_cap == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "event_queue_cap is 0: every connection's outbound queue must hold at least one message, \
+                 or it cannot carry a single reply",
+            ));
+        }
         let path = &config.socket_path;
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -389,7 +462,12 @@ impl Server {
             )));
         }
         listener.set_nonblocking(true)?;
-        Ok(Self { listener, config })
+        let bound = socket_identity(path);
+        Ok(Self {
+            listener,
+            config,
+            bound,
+        })
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -407,24 +485,45 @@ impl Server {
     /// Start the emulator thread and the accept loop. Returns immediately; the returned handle owns the
     /// shutdown.
     pub fn spawn(self, machine: Machine) -> ServerHandle {
-        let Server { listener, config } = self;
-        let ctx = AcceptCtx::new(config.event_queue_cap);
-        let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
-
-        let mut engine = Engine::new(machine.system, config.engine.clone(), ctx.subs.clone());
+        let ctx = AcceptCtx::new(self.config.event_queue_cap);
+        let mut engine = Engine::new(machine.system, self.config.engine.clone(), ctx.subs.clone());
         engine.set_rom_path(machine.rom_path);
         engine.set_symbols(machine.symbols, machine.symbols_path);
+        self.serve(ctx, move |rx, shared| engine_loop(engine, rx, shared))
+    }
+
+    /// [`spawn`](Self::spawn) without the knowledge of what the emulator thread runs: start `engine_body`
+    /// on the emulator thread and the accept loop beside it.
+    ///
+    /// Split out so the server's behaviour when that thread **dies** can be measured (lens M13) with a body
+    /// that fails on purpose, instead of hunting for an input that makes the real engine panic. Every
+    /// production path goes through [`spawn`](Self::spawn), which passes [`engine_loop`].
+    fn serve<F>(self, ctx: AcceptCtx, engine_body: F) -> ServerHandle
+    where
+        F: FnOnce(mpsc::Receiver<EngineMsg>, &SharedStamp) + Send + 'static,
+    {
+        let Server {
+            listener,
+            config,
+            bound,
+        } = self;
+        let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
 
         let engine_shared = Arc::clone(&ctx.shared);
+        let on_death = ctx.clone_handles();
         let engine_thread = std::thread::Builder::new()
             .name("aether-engine".into())
-            .spawn(move || engine_loop(engine, engine_rx, &engine_shared))
+            .spawn(move || {
+                let _hang_up = HangUpIfPanicking(on_death);
+                engine_body(engine_rx, &engine_shared)
+            })
             .expect("spawn engine thread");
 
         let accept_thread = spawn_accept(listener, &ctx, engine_tx.clone());
 
         ServerHandle {
             socket_path: config.socket_path,
+            bound,
             stop: Arc::clone(&ctx.stop),
             accept_thread: Some(accept_thread),
             engine_thread: Some(engine_thread),
@@ -504,7 +603,7 @@ pub(crate) fn connection_loop(
     // `wait_for_stamp`, the only place a connection thread sleeps for longer than a socket read —
     // because a wait must not outlive the server it is waiting on.
     stop: &AtomicBool,
-    queue_cap: usize,
+    queue_cap: NonZeroUsize,
 ) {
     let Ok(write_half) = stream.try_clone() else {
         return;
@@ -1131,5 +1230,196 @@ mod wait_tests {
             "a wait must not outlive the server it is waiting on: {:?}",
             t.elapsed()
         );
+    }
+}
+
+/// The text of a panic payload, for a report that has to say why a thread died.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with a non-string payload".to_string())
+}
+
+// =====================================================================================================
+// What the server does when a thread it depends on cannot do its job — lens M13 and M71.
+//
+// Both findings have the same shape: a failure that kills the work while leaving the socket bound and
+// accepting, so a client sees a live server that answers nothing and a restart's incumbent probe
+// (`Server::bind` connects before it binds) is answered by it. Each row below measures the SOCKET's
+// observable state, which is the part a client and a supervisor can see.
+// =====================================================================================================
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::io::BufRead;
+
+    fn socket(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("ae-life-{tag}-{}.sock", std::process::id()))
+    }
+
+    fn config(path: &Path) -> ServerConfig {
+        ServerConfig {
+            socket_path: path.to_path_buf(),
+            engine: EngineConfig {
+                free_run_pace: None,
+                ..EngineConfig::default()
+            },
+            ..ServerConfig::default()
+        }
+    }
+
+    fn machine() -> Machine {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        Machine::new(sys)
+    }
+
+    /// Open a connection, send `initialize`, and report the first line back: `Some(line)`, or `None` when
+    /// the server ended the connection (or said nothing for five seconds) instead of answering.
+    fn first_reply(path: &Path) -> std::io::Result<Option<String>> {
+        let mut s = UnixStream::connect(path)?;
+        s.set_read_timeout(Some(Duration::from_secs(5)))?;
+        s.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n")?;
+        let mut line = String::new();
+        match std::io::BufReader::new(&s).read_line(&mut line) {
+            Ok(0) => Ok(None),
+            Ok(_) => Ok(Some(line)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether `connect` to `path` is refused within `limit`, polled every 10 ms.
+    fn stops_answering(path: &Path, limit: Duration) -> bool {
+        let t = Instant::now();
+        while t.elapsed() < limit {
+            if UnixStream::connect(path).is_err() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// **Lens M13: a dead emulator thread must not leave a live-looking socket behind.**
+    ///
+    /// The emulator thread here dies on the first message it receives — a stand-in for any panic in the
+    /// engine, injected through [`Server::serve`] so the row does not depend on finding one. Before the
+    /// fix, the accept loop and the socket outlived it: every connection was accepted and then ended
+    /// without a reply, `main` parked forever, and a restart's incumbent probe was answered, so the
+    /// restart refused with `AddrInUse`. What has to be true instead, all measured on the socket:
+    ///
+    /// 1. the request the thread died on gets the end of the connection, not a hang;
+    /// 2. the socket stops answering, promptly;
+    /// 3. a restart can bind the same path (its probe finds a corpse);
+    /// 4. [`ServerHandle::wait`] reports the death and its reason, which is what `main` exits on;
+    /// 5. the dead server's handle, dropped after the restart, does not unlink the socket the restarted
+    ///    server is serving on. That hazard is new with (3): before, nothing could rebind the path while
+    ///    the old handle lived, so an unconditional unlink on drop could only ever remove its own file.
+    #[test]
+    fn a_dead_emulator_thread_releases_the_socket_and_reports_why() {
+        let path = socket("dead-engine");
+        let _ = std::fs::remove_file(&path);
+        let server = Server::bind(config(&path)).expect("bind");
+        let ctx = AcceptCtx::new(server.config.event_queue_cap);
+        let mut dead = server.serve(ctx, |rx: mpsc::Receiver<EngineMsg>, _: &SharedStamp| {
+            let _ = rx.recv();
+            panic!("injected emulator-thread fault (lens M13 fixture)");
+        });
+
+        let reply = first_reply(&path).expect("the server accepts the first connection");
+        assert_eq!(
+            reply, None,
+            "the request the emulator thread died on cannot have been answered"
+        );
+
+        assert!(
+            stops_answering(&path, Duration::from_secs(5)),
+            "lens M13: the emulator thread is dead and {} still accepts connections, so a client sees \
+             a live server that answers nothing and a restart's probe calls it an incumbent",
+            path.display()
+        );
+
+        let restarted = Server::bind(config(&path)).expect(
+            "a restart must bind the dead server's path: its probe should find a corpse, not an incumbent",
+        );
+
+        let why = dead
+            .wait()
+            .expect_err("the emulator thread panicked, and wait() must say so");
+        assert!(
+            why.contains("injected emulator-thread fault"),
+            "wait() must carry the reason, not only the fact: {why}"
+        );
+
+        let live = restarted.spawn(machine());
+        drop(dead);
+        assert!(
+            UnixStream::connect(&path).is_ok(),
+            "dropping the dead server's handle unlinked the socket the restarted server is serving on"
+        );
+        drop(live);
+        assert!(
+            !path.exists(),
+            "and the live server still removes its own socket when it goes"
+        );
+    }
+
+    /// **Lens M71: a zero-depth outbound queue is refused when the server is configured, not when each
+    /// client connects.**
+    ///
+    /// `Outbound::new` asserted `capacity > 0`, and it runs on each connection's own thread
+    /// (`connection_loop`), so `event_queue_cap = 0` bound the socket fine and then killed every
+    /// connection at its first byte while the socket kept accepting: M13's shape again, from a
+    /// configuration value. The refusal belongs where the value enters, `Server::bind`, which both
+    /// deployments (the standalone server and `Host::serve`) pass through before any socket exists.
+    ///
+    /// On the old shape this row does not stop at "bind accepted it": it goes on to show what a client
+    /// then saw, so its red run is the reproduction.
+    #[test]
+    fn a_zero_event_queue_cap_is_refused_at_bind_not_at_each_connection() {
+        let path = socket("zero-cap");
+        let _ = std::fs::remove_file(&path);
+        let cfg = ServerConfig {
+            event_queue_cap: 0,
+            ..config(&path)
+        };
+        match Server::bind(cfg) {
+            Ok(server) => {
+                let h = server.spawn(machine());
+                let reply = first_reply(&path);
+                let still_accepting = UnixStream::connect(&path).is_ok();
+                drop(h);
+                panic!(
+                    "lens M71: bind accepted event_queue_cap = 0. A client's first request then got \
+                     {reply:?} (its connection thread died in Outbound::new) while the socket still \
+                     accepted connections: {still_accepting}"
+                );
+            }
+            Err(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{e}");
+                assert!(
+                    e.to_string().contains("event_queue_cap"),
+                    "the refusal must name the setting a person has to change: {e}"
+                );
+                assert!(
+                    !path.exists(),
+                    "refused before anything touched the filesystem, so a bad value leaves no socket \
+                     file behind"
+                );
+            }
+        }
     }
 }

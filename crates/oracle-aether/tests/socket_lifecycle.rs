@@ -11,11 +11,13 @@
 //! 1. **`Server::bind` probes before it binds.** It connects to the path; a live server answering means
 //!    `AddrInUse` (two emulators must never fight over one bus), and nothing answering means the file is
 //!    a corpse and is unlinked. So a stale socket never blocks a restart.
-//! 2. **`ServerHandle::drop` unlinks.** Any handle that goes out of scope cleans up after itself.
+//! 2. **`ServerHandle::drop` unlinks.** Any handle that goes out of scope cleans up after itself (its
+//!    own file only, since lens M13: see `src/server.rs`'s `a_dead_emulator_thread_releases_the_socket_and_reports_why`,
+//!    which also pins what happens when the emulator thread dies).
 //!
 //! What is **not** covered, deliberately and with the reasoning at the call site
-//! (`src/main.rs`'s park loop): the standalone binary parks forever, so `SIGINT`/`SIGTERM` kills it
-//! without unwinding and the file survives. Catching those needs `signal-hook` or `unsafe` `libc`, and
+//! (`src/main.rs`'s park on `ServerHandle::wait`): the standalone binary parks until its emulator thread
+//! ends, so `SIGINT`/`SIGTERM` kills it without unwinding and the file survives. Catching those needs `signal-hook` or `unsafe` `libc`, and
 //! this crate's runtime dependency set is documented as not growing while the library is
 //! `forbid(unsafe_code)`. The limitation is recorded rather than papered over.
 
