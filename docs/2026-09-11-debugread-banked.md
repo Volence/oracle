@@ -342,3 +342,28 @@ function cannot see a defect in that function. In all three runs, the parity ass
 before the derived one failed. Runners: `cargo test -p oracle-aether --test debug_read_banked`,
 `cargo test -p oracle-player memory`, `cargo test -p oracle-core --lib` (debug profile). Each run was
 checked for `Compiling oracle-…` before its result was read.
+
+
+## 9. The foreground check (the TAG), run 2026-09-11 by the overseer
+
+**PASSED.** The real acceptance ROM (*Sonic Delta Origins*, 5,242,880 bytes = ten 512 KiB banks), through a
+**fresh** `target/release/oracle-aether` (built by `tools/land.sh` for `134aa62`, binary mtime after that
+commit), over the real wire on a private socket (never the long-lived MCP server). Measured:
+
+- The game re-points windows **6 and 7 at banks 8 and 9 on its own** at the title screen (still identity at
+  frame 120; banked by frame ~1,545). `emulator/read` answered `region: "cartridge ROM bank 8"` / `"… bank 9"`
+  there, and `"cartridge ROM"` on windows 0-5.
+- **Every byte matched the file** at the offset the label names (`N × $80000 + (addr & $7FFFF)` for a banked
+  label, `addr` for `"cartridge ROM"`), all eight windows, at three separate points in the run.
+- The `caveat` was present on the two banked windows only.
+- `read {addr: $400000}` on the ten-bank image: `-32004`.
+- `memory_hash` over window 0: `region "cartridge ROM"`, `crc32` equal to CRC32 of the file's first 512 KiB.
+
+**One reading from the probe, recorded so nobody re-probes it: a `stopAfter` watch does NOT halt a
+free-running machine, by design.** Armed on `$A130F1` (written by the ROM at frame 0, mclk 308, from `$2588`),
+it recorded every hit and the machine ran on. §6 rules exactly this (*"a `stopAfter` watch on a free-running
+machine … is answered by attribution rather than by a gate"*), and `Engine::free_run_step` implements it
+deliberately: a watch's stop is a level (`matched >= n` stays true), so honouring it in free-run would freeze
+the machine forever. It ends the next run a client BOUNDS (`run_frames`, `run_to`, `step`); a breakpoint is the
+edge-triggered tool that halts free play. Also confirmed: a watch armed before `emulator/reset` survives it and
+records the boot writes.
