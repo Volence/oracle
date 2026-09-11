@@ -396,7 +396,8 @@ pub struct Resolution<'a> {
 
 impl Resolution<'_> {
     /// The symbol's **identifying** spelling, with no displacement suffix — the one a caller may hand
-    /// back to [`SymbolTable::address_of`] and get this symbol again.
+    /// back to [`SymbolTable::address_of`] and get this symbol's address again, with the one exception
+    /// stated at the end of this comment.
     ///
     /// This is [`Display`](fmt::Display)'s name half without its `+$hex` tail, and the two are
     /// deliberately different things. Display is for a human reading a disassembly line; this is for any
@@ -407,6 +408,16 @@ impl Resolution<'_> {
     /// Falls back to the raw mangled name when the readable one is
     /// [ambiguous](Symbol::demangled_ambiguous), for Display's reason: a name several addresses share
     /// does not identify one, and the raw name always does.
+    ///
+    /// **The exception to the round trip: same-address aliases.** When two symbols demangle to one
+    /// spelling at the *same* address (`$mod.a$Blk$top` and `$mod.b$Blk$top`, both `$300`), `build` does
+    /// not flag it ambiguous — the spelling names exactly one address — so this returns the shared
+    /// `Blk.top`. But [`SymbolTable::address_of`] declines every demangled spelling more than one symbol
+    /// carries, and answers `None` for it. A caller that must round-trip such a name has
+    /// [`SymbolTable::by_demangled`], whose every match is at this symbol's address, or the raw
+    /// [`Symbol::name`], which always round-trips. The round trip is not made unconditional here because
+    /// that changes what `address_of` answers, and the Aether bus's object mailbox and decoders resolve
+    /// through it. `a_same_address_alias_pair_names_its_address_but_does_not_round_trip` pins this.
     pub fn name(&self) -> &str {
         if self.symbol.demangled_ambiguous {
             &self.symbol.name
@@ -864,7 +875,8 @@ impl SymbolTable {
         }
         // A demangled spelling shared by two symbols at *different* addresses does not identify a location.
         // Marked per-symbol now that the whole table is known, so `Resolution`'s `Display` can fall back to
-        // the unique raw name. Aliases at the *same* address are not ambiguous — either name is correct.
+        // the unique raw name. Aliases at the *same* address are not ambiguous — either name is correct —
+        // though `address_of` still declines their shared spelling (see `Resolution::name`).
         for idx in by_demangled.values() {
             if idx.len() < 2 {
                 continue;
@@ -1228,9 +1240,11 @@ impl SymbolTable {
     }
 
     /// Name → address, trying the raw spelling first and then the demangled one. Returns the **24-bit**
-    /// bus address. Ambiguous demangled names yield `None` rather than an arbitrary pick — silently
-    /// choosing one of several `Parent.local` collisions is exactly the kind of confidently-wrong answer
-    /// this module exists to prevent.
+    /// bus address. A demangled name more than one symbol carries yields `None` rather than an arbitrary
+    /// pick — silently choosing one of several `Parent.local` collisions is exactly the kind of
+    /// confidently-wrong answer this module exists to prevent. That includes same-address aliases, which
+    /// [`Symbol::demangled_ambiguous`] does *not* flag; see [`Resolution::name`] for the round trip this
+    /// leaves open.
     pub fn address_of(&self, name: &str) -> Option<u32> {
         if let Some(s) = self.by_name(name) {
             return Some(s.addr);
@@ -1606,7 +1620,11 @@ fn parse_body_line(line: &str) -> Option<Symbol> {
         return None;
     }
     let (_idx, hex) = tok[1].split_once('/')?;
-    // `u64` for the same reason the table rows use it: an AS body line spells RAM sign-extended.
+    // `u64` for the same reason the table rows use it: an AS body line spells RAM sign-extended. The
+    // digits are checked first for the table twin's reason: `from_str_radix` would accept a leading `+`.
+    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let raw_addr = u64::from_str_radix(hex, 16).ok()?;
     let name = tok[3].strip_suffix(':')?;
     if name.is_empty() {
@@ -1992,6 +2010,41 @@ EQU zone_count = $0000000C
         }
     }
 
+    /// L3: `from_str_radix` accepts a leading `+`, so without an explicit digit check a body line
+    /// spelled `IDX/+HEX` would parse as the address `HEX`. The table twin, [`parse_table_entry`], has
+    /// always checked the digits and says why in its own comment; this is the same guard on the
+    /// fallback path, and the twin's refusal of the same input is asserted beside it so the two stay
+    /// one rule.
+    #[test]
+    fn a_body_line_whose_address_is_not_bare_hex_is_not_a_symbol() {
+        let listing = "\
+(0) 1/200 :        EntryPoint:
+(0) 2/+214 :        Signed:
+(0) 3/-214 :        Negative:
+(0) 4/ :        Empty:
+";
+        let t = SymbolTable::parse(listing).expect("the one well-formed line parses");
+        assert_eq!(t.source(), TableSource::BodyLines);
+        assert_eq!(
+            t.by_name("Signed").map(|s| s.addr),
+            None,
+            "`+214` is not bare hex digits, so it is not an address"
+        );
+        // Controls: `-` and an empty address were already refused by `from_str_radix` itself.
+        assert!(t.by_name("Negative").is_none());
+        assert!(t.by_name("Empty").is_none());
+        assert_eq!(
+            t.len(),
+            1,
+            "only `EntryPoint` is a symbol: {:?}",
+            t.symbols()
+        );
+        assert!(matches!(
+            parse_table_entry(" Signed : +214 C "),
+            TableEntry::Unrecognised
+        ));
+    }
+
     #[test]
     fn markers_are_read_from_the_type_and_unused_columns() {
         let t = table();
@@ -2099,6 +2152,57 @@ EQU zone_count = $0000000C
         assert!(at.iter().any(|s| s.demangled == "EntryPoint.wait_dma"));
         assert!(at.iter().any(|s| s.demangled == "EntryPoint.warm_boot"));
         assert!(t.symbols_at(0x216).is_empty());
+    }
+
+    /// M12: **the one spelling [`Resolution::name`] returns that [`SymbolTable::address_of`] declines**,
+    /// pinned so the documented exception cannot drift in either direction unnoticed.
+    ///
+    /// Two symbols in different modules can demangle to the same `Parent.local` at the SAME address.
+    /// `build` does not flag that spelling ambiguous — every symbol it names is at this one address, so
+    /// it is a correct answer to "where am I" — and `name()` therefore returns it. `address_of` refuses
+    /// any demangled spelling more than one symbol carries without asking whether their addresses agree,
+    /// so the round trip answers `None` here and only here. Making it answer the shared address instead
+    /// is a change to what `address_of` returns, and the Aether bus's object mailbox (`objreq`) and
+    /// decoders resolve through it, so that is a served change and has to come back through this test.
+    #[test]
+    fn a_same_address_alias_pair_names_its_address_but_does_not_round_trip() {
+        let listing = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ $mod.a$Blk$top : 300 C |
+ $mod.b$Blk$top : 300 C |
+ Other : 310 C |
+
+   3 symbols
+    0 unused symbols
+";
+        let t = SymbolTable::parse(listing).expect("parses");
+        let r = t.resolve(0x300).expect("an exact hit");
+        assert!(
+            !r.symbol.demangled_ambiguous,
+            "same-address aliases are not ambiguous by `build`'s rule"
+        );
+        assert_eq!(r.name(), "Blk.top", "so name() returns the shared spelling");
+        let peers = t.by_demangled("Blk.top");
+        assert_eq!(peers.len(), 2);
+        assert!(
+            peers.iter().all(|s| s.addr == 0x300),
+            "the spelling names ONE address: {peers:?}"
+        );
+        // The documented exception.
+        assert_eq!(
+            t.address_of(r.name()),
+            None,
+            "address_of declines a demangled spelling more than one symbol carries, even at one address"
+        );
+        // What a caller holding one of these can rely on instead: each raw name round-trips.
+        for s in &peers {
+            assert_eq!(t.address_of(&s.name), Some(0x300), "{}", s.name);
+        }
+        // And the promise holds everywhere the exception does not apply, in the same table.
+        let o = t.resolve(0x310).expect("an exact hit");
+        assert_eq!(t.address_of(o.name()), Some(o.symbol.addr));
     }
 
     #[test]
