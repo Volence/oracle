@@ -1,8 +1,9 @@
 # The Sega ("SSF2-style") cartridge bank mapper — design, evidence, and what it deliberately does not do
 
 Landed on `parcel/cart-bank-mapper`. Sites: `crates/oracle-core/src/bus.rs` (`CartBanks`, the
-`$A130F3-$A130FF` write arm, the `mapped_byte` indirection), `crates/oracle-core/src/system.rs`
-(`System::cart_banks` + the getter), `crates/oracle-core/src/testrom.rs` (one construction site).
+`$A130F3-$A130FF` write arm, the `mapped_byte` indirection), `crates/oracle-core/src/z80/bus.rs`
+(the Z80 bank window's cartridge read — §4b), `crates/oracle-core/src/system.rs` (`System::cart_banks`
++ the getter + both bus-construction sites), `crates/oracle-core/src/testrom.rs` (one construction site).
 
 **Read this before re-deriving any of it.** The map below was pinned from primary evidence; the point of
 this page is that the next session transcribes it instead of guessing it from how other emulators do it.
@@ -80,6 +81,24 @@ Flipping the order (mutation M4 below) turns exactly **one** test red — the ne
 SRAM test loads a ROM too short to cover `$200001`, so a ROM-first decode would still have fallen through
 to SRAM and answered correctly. It took a 5 MiB image to make both claimants real.
 
+## 4b. Cartridge space has TWO read paths, and both are banked
+
+The brief for this parcel named `MegaDriveBus::mapped_byte`. Asking *which other sites resolve a cartridge
+address* found a second one: **`Z80Bus::read_window`** — the Z80's `$8000-$FFFF` bank window into 68000
+space — which indexed `self.rom[a68k]` flat. That window reaches cartridge space *through the cartridge*,
+so the mapper applies to it as it does to a 68k fetch; left flat, a sound driver streaming SMPS data out of
+a re-pointed window reads the identity bank's bytes and **nothing says so** (it surfaces as garbage music,
+not as an error). Both paths now resolve through `CartBanks::rom_offset`.
+
+The 68k-side **DMA** master needed no change — it already sources every byte through `mapped_byte` — and
+`a_mem_dma_sources_through_the_bank_table` pins that rather than leaving it as an argument.
+
+`cart_banks` reaches `Z80Bus` **by value** (`Copy`), not as a `&mut`: the Z80 cannot write a mapper
+register this slice, because `Z80Bus::write_window` drops every 68k port/register region (a pre-existing,
+documented slice limitation that already covers `$A130F1` and the `$A11xxx` arbiter registers). So there is
+no state to thread back. If those window register writes ever land, this becomes a `&mut` borrow of the one
+shared table — said at the field, so the next author does not have to rediscover it.
+
 ## 5. Decisions recorded rather than left silent
 
 1. **The write path resolves nothing through the table.** Cartridge space has no writable backing store but
@@ -95,13 +114,20 @@ to SRAM and answered correctly. It took a 5 MiB image to make both claimants rea
    `sram_enabled` / `sram_write_protect` / `z80_bank` (cartridge and bus-control registers). Consequence:
    **no version bump**, because the frozen `export_state` layout is untouched. (Had it gone into the image,
    `docs/export-state-v1.md`'s layout-only rule would have applied.)
-4. **Window 0 is protected structurally, not by a runtime check.** `banks[0]` is `0` at construction and
+4. **No Aether / MCP / player-GUI surface in this parcel — a decision, not an omission.** The standing
+   three-surface directive says the gap must be decided out loud. The mapper state is reachable in-process
+   via `System::cart_banks()` and nowhere else: no `emulator/*` field, no window panel. Held because the
+   only surface worth adding is a contract change that wants its own parcel and adjudication — a
+   `cartBanks` array on `emulator/status` (or on `emulator/read_memory`'s reply when the address falls in a
+   banked window), which is the same seam as **F-DEBUGREAD-BANKED** in §8 and should ship with it rather
+   than twice. Until then, a debugger's view of `$080000+` is the image's, not the machine's.
+5. **Window 0 is protected structurally, not by a runtime check.** `banks[0]` is `0` at construction and
    the only writer derives its window from `CartBanks::window_of_register`, which never yields 0;
    `CartBanks::set` carries a `debug_assert!` for the case that can't arise.
 
 ## 6. Tests (hermetic) and the red-first proof
 
-13 tests, all building their ROM images in-process: each 512 KiB bank is filled with a label **derived**
+14 tests, all building their ROM images in-process: each 512 KiB bank is filled with a label **derived**
 from its bank index (`(bank as u8) ^ 0x5A` — XOR is a bijection, so distinct banks always read back
 distinctly), and the standard image is ten banks, so banks 8 and 9 exist **only** past `$3FFFFF` and are
 reachable solely through a re-pointed window. Nothing depends on a cart outside this repo.
@@ -113,6 +139,7 @@ In `bus::tests`: `identity_mapping_at_reset_is_the_flat_rom_decode`,
 `sram_overlay_still_wins_over_a_banked_rom_read_in_window_4`,
 `a_write_into_a_rebanked_window_still_does_not_touch_the_rom_image`,
 `a130f1_stays_the_sram_latch_and_is_not_a_bank_register`, `a_mem_dma_sources_through_the_bank_table`.
+In `z80::bus::tests`: `bank_window_reads_cartridge_rom_through_the_mapper_table` (§4b).
 In `system::tests`: `the_bank_table_powers_on_as_the_identity_mapping`,
 `the_cart_bank_table_survives_snapshot_and_restore`, `a_soft_reset_restores_the_identity_bank_mapping`,
 `loading_a_cartridge_reseeds_the_identity_bank_mapping`.
@@ -121,7 +148,7 @@ Runner: they are `oracle-core` lib tests, so `cargo test --workspace --release` 
 executes them; `cargo test -p oracle-core --lib` is the fast loop.
 
 Four mutations against the committed baseline, each applied and quoted back **from disk** before its red
-run (predictions made before each run; `cargo test -p oracle-core --lib`, 906 tests):
+run (predictions made before each run; `cargo test -p oracle-core --lib`, 906 tests at M1-M4, 907 at M5):
 
 | # | Mutation | Result |
 |---|---|---|
@@ -129,6 +156,7 @@ run (predictions made before each run; `cargo test -p oracle-core --lib`, 906 te
 | M2 | the `$A130F3-$A130FF` write arm made a no-op | 10 red — exactly the predicted set, by name |
 | M3 | `IDENTITY` mutated to `[0; 8]` | 8 red, and the membership disagreed with the prediction (see below) |
 | M4 | SRAM-vs-ROM precedence flipped | 1 red — see §4 |
+| M5 | `Z80Bus::read_window`'s indirection reverted to `let i = a68k as usize;` | 1 red, as predicted — §4b |
 
 **M3 is the one that paid.** `a_soft_reset_restores_the_identity_bank_mapping` stayed **green** under a
 mutated `IDENTITY`, because it asserted `s.cart_banks() == CartBanks::IDENTITY` — a comparison against the
