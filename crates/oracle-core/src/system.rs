@@ -10,7 +10,9 @@
 //! always allocated at their fixed hardware sizes by [`System::new`]. (This paragraph promised them in the
 //! future tense — the first paragraph of the core's central module — until the lens sweep.)
 
-use crate::bus::{BusEventSink, MegaDriveBus, SramMap, StepRetire, StopWhen, Z80_RAM_SIZE};
+use crate::bus::{
+    BusEventSink, CartBanks, MegaDriveBus, SramMap, StepRetire, StopWhen, Z80_RAM_SIZE,
+};
 use crate::m68000::microop::{Cpu68000, StepOutcome};
 use crate::m68000::registers::Registers;
 use crate::render::ScanlineScaffold;
@@ -265,6 +267,17 @@ pub struct System {
     /// determinism, **not** in `export_state`/`state_hash`. See `docs/2026-07-23-sram-design-recon.md` (S4).
     sram_used: bool,
     /// The 68000. Driven over a [`MegaDriveBus`] in [`System::step_cpu`]; `step()` returns CPU cycles.
+    /// The Sega ("SSF2-style") cartridge bank table: which 512 KiB ROM bank each of the eight 512 KiB
+    /// windows tiling `$000000-$3FFFFF` shows. Written by the guest at `$A130F3-$A130FF` (window `k` =
+    /// `$A130F1 + 2k`; window 0 is fixed, and `$A130F1` remains the SRAM latch), read on every
+    /// cartridge-space fetch through [`CartBanks::rom_offset`]. **Power-on and soft reset =
+    /// [`CartBanks::IDENTITY`]** (window `k` -> bank `k`), which resolves to the flat `rom[addr]` decode this
+    /// core had before the mapper existed, so every golden stays byte-identical by construction rather than
+    /// by measurement; [`load_rom`](System::load_rom) re-seeds it because a fresh cartridge powers on
+    /// unbanked. A cartridge bus-control register file exactly like `sram_enabled`/`z80_bank`: it rides this
+    /// bincode snapshot for determinism, and is **not** in `export_state` and **not** in `state_hash`.
+    /// Design + evidence: `docs/2026-09-11-cart-mapper-design.md`.
+    cart_banks: CartBanks,
     cpu: Cpu68000,
     /// The absolute mclk of the last frame boundary [`System::run_frames`] targeted. Frame deadlines are
     /// absolute (not `now + frame`), so a step that overshoots one frame's deadline by up to one
@@ -342,6 +355,7 @@ impl std::fmt::Debug for System {
             .field("sram", &format_args!("[{} bytes]", self.sram.len()))
             .field("sram_dirty", &self.sram_dirty)
             .field("sram_used", &self.sram_used)
+            .field("cart_banks", &self.cart_banks)
             .field("cpu", &self.cpu)
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field("z80", &self.z80)
@@ -461,6 +475,7 @@ impl System {
             sram: Vec::new(),
             sram_dirty: false,
             sram_used: false,
+            cart_banks: CartBanks::IDENTITY,
             cpu: Cpu68000::new(power_on_regs()),
             frame_boundary_mclk: 0,
             z80: Z80::new(),
@@ -622,6 +637,10 @@ impl System {
         self.sram = vec![0u8; sram_byte_len(m.base, m.end)];
         self.sram_dirty = false;
         self.sram_used = false;
+        // A fresh cartridge powers on unbanked: re-seed the Sega/SSF2 mapper table to the identity mapping,
+        // so a hot ROM swap cannot leave the previous cart's windows pointing into the new image. (A soft
+        // `reset` gets this for free -- it rebuilds through `Self::new`, which seeds IDENTITY.)
+        self.cart_banks = CartBanks::IDENTITY;
         self.rom = rom;
     }
 
@@ -653,6 +672,15 @@ impl System {
     /// across a soft [`reset`](Self::reset). Snapshot-only; out of `export_state`/`state_hash`.
     pub fn sram_used(&self) -> bool {
         self.sram_used
+    }
+
+    /// The live Sega ("SSF2-style") cartridge bank table — which 512 KiB ROM bank each of the eight 512 KiB
+    /// windows tiling `$000000-$3FFFFF` currently shows. A harmless additive getter (`CartBanks` is `Copy`)
+    /// for probes, the debug surfaces, and the tests; powers on and resets to [`CartBanks::IDENTITY`]. The
+    /// guest writes it at `$A130F3-$A130FF`; window 0 is fixed and `$A130F1` is the SRAM latch, not a bank
+    /// register. See `docs/2026-09-11-cart-mapper-design.md`.
+    pub fn cart_banks(&self) -> CartBanks {
+        self.cart_banks
     }
 
     /// Whether the game has enabled SRAM access via `$A130F1` bit0 (a harmless additive getter for probes).
@@ -722,6 +750,7 @@ impl System {
             sram,
             sram_dirty,
             sram_used,
+            cart_banks,
             fm,
             ..
         } = self;
@@ -743,6 +772,7 @@ impl System {
             sram_dirty,
             sram_used,
             sram_map,
+            cart_banks,
             fm,
             sink,
         )
@@ -1393,6 +1423,7 @@ impl System {
             sram,
             sram_dirty,
             sram_used,
+            cart_banks,
             fm,
             ..
         } = self;
@@ -1414,6 +1445,7 @@ impl System {
             sram_dirty,
             sram_used,
             sram_map,
+            cart_banks,
             fm,
             sink,
         );
@@ -2478,6 +2510,118 @@ mod tests {
         let back = System::restore(&s.snapshot()).expect("snapshot decodes");
         assert_eq!(s, back, "the SRAM control latch survives snapshot/restore");
         assert!(back.sram_enabled && back.sram_write_protect);
+    }
+
+    // ---- Sega ("SSF2-style") cartridge bank mapper: the machine-level half -------------------------------
+    // The bus-level behaviour (register decode, window arithmetic, SRAM precedence) is pinned in
+    // `bus::tests`; what belongs here is the STATE discipline — power-on, soft reset, cartridge swap, and
+    // the bincode snapshot. Design: `docs/2026-09-11-cart-mapper-design.md`.
+
+    /// The label byte bank `b` of the synthetic image below is filled with — derived from the index, and XOR
+    /// is a bijection on `u8`, so distinct banks always read back distinctly.
+    fn mapper_bank_label(bank: usize) -> u8 {
+        (bank as u8) ^ 0x5A
+    }
+
+    /// A synthetic cartridge of `banks` × 512 KiB, each bank filled with its own label. Ten banks = 5 MiB,
+    /// so banks 8 and 9 are reachable ONLY through a re-pointed window.
+    fn mapper_rom(banks: usize) -> Vec<u8> {
+        let sz = crate::bus::CART_BANK_SIZE;
+        let mut rom = vec![0u8; banks * sz];
+        for b in 0..banks {
+            rom[b * sz..(b + 1) * sz].fill(mapper_bank_label(b));
+        }
+        rom
+    }
+
+    #[test]
+    fn the_bank_table_powers_on_as_the_identity_mapping() {
+        let s = System::new(0x5E6A);
+        for k in 0..crate::bus::CART_WINDOWS {
+            assert_eq!(
+                s.cart_banks().bank(k),
+                k as u8,
+                "window {k} shows bank {k} at power-on (the flat decode)"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cart_bank_table_survives_snapshot_and_restore() {
+        // The table is a cartridge bus-control register file: it rides the bincode snapshot for determinism
+        // (like `sram_enabled`/`z80_bank`) while staying out of `export_state`/`state_hash`. Proven through
+        // the bus on both sides of the round trip, not just by comparing the field — a restored machine that
+        // carried the number but resolved reads flatly would pass the field check and fail this.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x5E6A);
+        s.load_rom(mapper_rom(10));
+        s.mega_bus(&mut ()).write8(0xA1_30F3, 5, 9); // window 1 -> bank 9
+        assert_eq!(
+            s.mega_bus(&mut ()).read8(0x08_0000, 6).0,
+            mapper_bank_label(9),
+            "the live machine reads bank 9 through window 1"
+        );
+
+        let mut back = System::restore(&s.snapshot()).expect("snapshot decodes");
+
+        assert_eq!(s, back, "the bank table survives snapshot/restore");
+        assert_eq!(
+            back.cart_banks().bank(1),
+            9,
+            "the restored table still points window 1 at bank 9"
+        );
+        assert_eq!(
+            back.mega_bus(&mut ()).read8(0x08_0000, 6).0,
+            mapper_bank_label(9),
+            "and the restored machine still RESOLVES reads through it"
+        );
+    }
+
+    #[test]
+    fn a_soft_reset_restores_the_identity_bank_mapping() {
+        // Real hardware asserts the cartridge's reset line too, so the mapper powers back up unbanked. The
+        // pre-reset assertion is what stops this passing on a machine that never banked in the first place.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x55);
+        s.load_rom(crate::testrom::build());
+        s.mega_bus(&mut ()).write8(0xA1_30FF, 5, 9); // window 7 -> bank 9
+        assert_eq!(s.cart_banks().bank(7), 9, "the window moved before reset");
+
+        s.reset();
+
+        assert_eq!(
+            s.cart_banks(),
+            crate::bus::CartBanks::IDENTITY,
+            "a soft reset restores the identity mapping"
+        );
+    }
+
+    #[test]
+    fn loading_a_cartridge_reseeds_the_identity_bank_mapping() {
+        // A hot ROM swap (the frontend's reload path) must not leave the previous cart's windows pointing
+        // into the new image.
+        use crate::m68000::bus68k::Bus68k;
+        let mut s = System::new(0x55);
+        s.load_rom(mapper_rom(10));
+        s.mega_bus(&mut ()).write8(0xA1_30F3, 5, 9);
+        assert_eq!(
+            s.cart_banks().bank(1),
+            9,
+            "the window moved before the swap"
+        );
+
+        s.load_rom(mapper_rom(10));
+
+        assert_eq!(
+            s.cart_banks(),
+            crate::bus::CartBanks::IDENTITY,
+            "a fresh cartridge powers on unbanked"
+        );
+        assert_eq!(
+            s.mega_bus(&mut ()).read8(0x08_0000, 6).0,
+            mapper_bank_label(1),
+            "so window 1 shows bank 1 again"
+        );
     }
 
     #[test]
