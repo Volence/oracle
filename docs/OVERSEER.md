@@ -170,6 +170,7 @@ snapshot-only, **no `export_state` bump**. `$A130F1` stays the SRAM latch. ~~F-D
 and reads as strong until something mutates the constant** — the reset test compared `cart_banks()` to
 `CartBanks::IDENTITY` and stayed GREEN under `IDENTITY := [0; 8]`. (⚑ This block was drafted at 1,995 B
 against 1,531 B of headroom and broke `overseer_bound` at 100,464 B. Measure before you add here.)
+**Registered 2026-09-11 (a commitment to sigil):** sigil's `.lst` gains a top `DIGEST-` section, relying on `SymbolTable::parse`'s `Section::Body` arm treating pre-header non-matches as non-damage. **Kept, and pinned by a named test** (LENS-WAVE1-B). Told sigil: no preamble line may begin `Symbol Table`/`Equate Table`/`Phase Table`.
 
 **Registered 2026-09-04, from reading the ADOPTED §11.33 text instead of the relay's summary of it:**
 
