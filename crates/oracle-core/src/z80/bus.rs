@@ -29,7 +29,7 @@
 //! | `$8000-$FFFF` | 68k bank window | **live** — `(bank << 15) \| (addr & 0x7FFF)` → ROM / work RAM / Z80 RAM |
 
 use super::Z80Io;
-use crate::bus::{BusEvent, BusEventSink, BusOp, Size, Z80_RAM_SIZE};
+use crate::bus::{BusEvent, BusEventSink, BusOp, CartBanks, Size, Z80_RAM_SIZE};
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
 use crate::ym2612::Ym2612;
@@ -84,6 +84,15 @@ pub(crate) fn vdp_mirror_read(vdp: &mut Vdp, zaddr: u16, now_mclk: u64) -> u8 {
 pub struct Z80Bus<'a, S: BusEventSink> {
     z80_ram: &'a mut [u8],
     rom: &'a [u8],
+    /// The Sega/SSF2 cartridge bank table, **by value**: the Z80's `$8000-$FFFF` window reaches cartridge
+    /// space through the cart's own mapper on real hardware, so a window read must resolve through the same
+    /// eight 512 KiB windows the 68k side uses ([`CartBanks::rom_offset`]) rather than indexing the image
+    /// flat. `Copy` and immutable here because the Z80 cannot WRITE a mapper register this slice —
+    /// [`Z80Bus::write_window`] drops every 68k port/register region — so there is no state to thread back;
+    /// if that window's register writes ever land, this becomes a `&mut` borrow of the one shared table.
+    /// Identity at reset, so this is the pre-mapper flat decode byte-for-byte until a game banks.
+    /// See `docs/2026-09-11-cart-mapper-design.md`.
+    cart_banks: CartBanks,
     ram: &'a mut [u8],
     /// The 9-bit bank register (`$6000`), serial-loaded LSB-first; selects the 32 KiB 68k page the
     /// `$8000-$FFFF` window maps to. Borrowed mutably so a `$6000` write persists into the `System`.
@@ -116,6 +125,7 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
     pub fn new(
         z80_ram: &'a mut [u8],
         rom: &'a [u8],
+        cart_banks: CartBanks,
         ram: &'a mut [u8],
         bank: &'a mut u16,
         fm: &'a mut Ym2612,
@@ -126,6 +136,7 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
         Self {
             z80_ram,
             rom,
+            cart_banks,
             ram,
             bank,
             fm,
@@ -147,9 +158,11 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
     /// borrows to the RT/interrupt slices.
     fn read_window(&self, a68k: u32) -> u8 {
         match a68k {
-            // Cartridge ROM ($000000-$3FFFFF); past a short ROM's end is open bus.
+            // Cartridge ROM ($000000-$3FFFFF), resolved through the cart's bank table exactly like the
+            // 68k side (`MegaDriveBus::mapped_byte`) — the window goes through the cartridge, so the mapper
+            // applies to it. Past the resolved image end is open bus. Identity at reset = the flat decode.
             0x00_0000..=0x3F_FFFF => {
-                let i = a68k as usize;
+                let i = self.cart_banks.rom_offset(a68k);
                 if i < self.rom.len() {
                     self.rom[i]
                 } else {
@@ -280,7 +293,7 @@ mod tests {
         vdp: &'a mut Vdp,
         sink: &'a mut (),
     ) -> Z80Bus<'a, ()> {
-        Z80Bus::new(ram, rom, work, bank, fm, vdp, 0, sink)
+        Z80Bus::new(ram, rom, CartBanks::IDENTITY, work, bank, fm, vdp, 0, sink)
     }
 
     #[test]
@@ -343,6 +356,59 @@ mod tests {
         assert_eq!(bank, 0x101, "9 LSB-first writes select the page");
     }
 
+    /// **The second cartridge read path, and it was flat until the mapper landed.** The Z80's
+    /// `$8000-$FFFF` window reaches cartridge space *through the cartridge*, so the Sega/SSF2 bank table
+    /// applies to it exactly as it does to a 68k fetch — a sound driver streaming SMPS data out of a
+    /// re-pointed window otherwise reads the identity bank's bytes and nothing says so.
+    /// `docs/2026-09-11-cart-mapper-design.md` §5.
+    #[test]
+    fn bank_window_reads_cartridge_rom_through_the_mapper_table() {
+        use crate::bus::CART_BANK_SIZE;
+        // Ten 512 KiB banks, each filled with a label derived from its index (XOR is a bijection on u8, so
+        // the VALUE a read returns names the bank it came from). Banks 8 and 9 lie past $3FFFFF.
+        let label = |b: usize| (b as u8) ^ 0x5A;
+        let mut rom = vec![0u8; 10 * CART_BANK_SIZE];
+        for b in 0..10 {
+            rom[b * CART_BANK_SIZE..(b + 1) * CART_BANK_SIZE].fill(label(b));
+        }
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let mut work = vec![0u8; RAM_SIZE];
+        // The 9-bit bank latch selects a 32 KiB page of 68k space: page $10 = $080000, i.e. mapper window 1.
+        let mut bank = 0x10u16;
+        let mut sink = ();
+        let mut fm = Ym2612::new();
+        let mut vdp = fresh_vdp();
+
+        // Identity table: the window reads window 1's own bank, i.e. the flat image byte.
+        {
+            let mut bus = bus_with(
+                &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, &mut sink,
+            );
+            assert_eq!(
+                bus.read(0x8000),
+                label(1),
+                "identity: the window sees bank 1 at $080000"
+            );
+        }
+
+        // Point window 1 at bank 9 (unreachable in cart space before the mapper) and read again.
+        let mut banked = CartBanks::IDENTITY;
+        banked.set(1, 9);
+        let mut bus = Z80Bus::new(
+            &mut ram, &rom, banked, &mut work, &mut bank, &mut fm, &mut vdp, 0, &mut sink,
+        );
+        assert_eq!(
+            bus.read(0x8000),
+            label(9),
+            "the Z80 window resolves through the bank table, not the flat image"
+        );
+        assert_eq!(
+            bus.read(0xFFFF),
+            label(9),
+            "...across the whole 32 KiB page, not just its first byte"
+        );
+    }
+
     #[test]
     fn bank_window_reads_rom() {
         let mut ram = vec![0u8; Z80_RAM_SIZE];
@@ -400,7 +466,15 @@ mod tests {
         let mut vdp = fresh_vdp();
         {
             let mut bus = Z80Bus::new(
-                &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, 0, &mut sink,
+                &mut ram,
+                &rom,
+                CartBanks::IDENTITY,
+                &mut work,
+                &mut bank,
+                &mut fm,
+                &mut vdp,
+                0,
+                &mut sink,
             );
             // FM address/data ports + the PSG port, each with a distinct value.
             bus.write(0x4000, 0x22);
@@ -449,7 +523,17 @@ mod tests {
         now_mclk: u64,
         sink: &'a mut (),
     ) -> Z80Bus<'a, ()> {
-        Z80Bus::new(ram, rom, work, bank, fm, vdp, now_mclk, sink)
+        Z80Bus::new(
+            ram,
+            rom,
+            CartBanks::IDENTITY,
+            work,
+            bank,
+            fm,
+            vdp,
+            now_mclk,
+            sink,
+        )
     }
 
     #[test]

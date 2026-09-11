@@ -1471,6 +1471,10 @@ impl System {
     fn catch_up_z80<S: BusEventSink>(&mut self, sink: &mut S) {
         let now = self.scheduler.now();
         if self.z80_running && !self.z80_busreq {
+            // Read the (Copy) bank table out before the split-borrow, like `sram_map` on the 68k side: the
+            // Z80's $8000-$FFFF window reaches cartridge space through the cart's mapper, so its ROM reads
+            // resolve through the same table the 68k side uses.
+            let cart_banks = self.cart_banks;
             let System {
                 z80,
                 z80_ram,
@@ -1489,6 +1493,7 @@ impl System {
                 let mut bus = Z80Bus::new(
                     z80_ram,
                     rom,
+                    cart_banks,
                     ram,
                     z80_bank,
                     fm,
