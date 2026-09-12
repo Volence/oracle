@@ -1069,7 +1069,7 @@ impl Bus {
     /// `emulator/hold`'s reply `held` array is built from. Three spellings of "which buttons are down" is
     /// what this shape exists to prevent.
     pub fn held_pads(&self) -> [Pad; 2] {
-        [self.host.held(0), self.host.held(1)]
+        oracle_core::io::PadPort::ALL.map(|port| self.host.held(port))
     }
 
     /// Whether the **bus** believes the machine is paused. Read this, never a `call` to
@@ -1777,11 +1777,11 @@ mod seam {
         // --- the control: nothing held, so the merge is the identity and the human drives alone ---
         machine.step(human, &mut bus);
         assert_eq!(
-            machine.system().pad(0),
+            machine.system().pad(oracle_core::io::PadPort::P1),
             human[0],
             "with nothing held the machine must see exactly the human's pad"
         );
-        assert_eq!(machine.system().pad(1), human[1], "and port 1 likewise");
+        assert_eq!(machine.system().pad(oracle_core::io::PadPort::P2), human[1], "and port 1 likewise");
 
         // --- the client holds, through the served surface ---
         let reply = ok(
@@ -1794,7 +1794,7 @@ mod seam {
 
         // (4) — before any further step. `apply_pads` inside the handler already merged the human's pad,
         // which it can only have because `Machine::step` published it.
-        let after_hold = machine.system().pad(0);
+        let after_hold = machine.system().pad(oracle_core::io::PadPort::P1);
         assert!(
             after_hold.right,
             "the human's own button vanished the moment a client held one — `set_live_pads` is not being \
@@ -1811,14 +1811,14 @@ mod seam {
 
         // --- the loop's own write, which is the half that was missing ---
         machine.step(human, &mut bus);
-        let p0 = machine.system().pad(0);
+        let p0 = machine.system().pad(oracle_core::io::PadPort::P1);
         assert!(
             p0.left,
             "a client's held button did not reach the pad the player writes — half 1 is not applied"
         );
         assert!(p0.right, "and it must not have replaced the human's own");
         assert!(
-            machine.system().pad(1).a,
+            machine.system().pad(oracle_core::io::PadPort::P2).a,
             "port 1's held set was dropped — `Machine::step` is still hardcoding `Pad::default()` there"
         );
 
@@ -1826,12 +1826,12 @@ mod seam {
         ok(&mut bus, &mut machine, "emulator/release_all", json!({}));
         machine.step(human, &mut bus);
         assert_eq!(
-            machine.system().pad(0),
+            machine.system().pad(oracle_core::io::PadPort::P1),
             human[0],
             "`emulator/release_all` did not clear the held set, so the row that tells a human to call it \
              is advertising a remedy that does not work"
         );
-        assert_eq!(machine.system().pad(1), human[1], "on both ports");
+        assert_eq!(machine.system().pad(oracle_core::io::PadPort::P2), human[1], "on both ports");
     }
 
     /// ★ **THE PARCEL** — a breakpoint armed over the bus halts the player's own loop, at the breakpoint.

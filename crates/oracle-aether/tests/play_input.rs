@@ -273,6 +273,68 @@ fn malformed_timelines_are_refused_and_never_silently_dropped() {
     }
 }
 
+/// **Lens M76, the wire half: a port without a pad is refused in the words it always was.**
+///
+/// Below the wire a port is a type (`oracle_core::io::PadPort`), so no number reaches the machine; the
+/// `port` param is the one place `2` (EXP, which has no pad) and `3` (no port at all) can still be spelled.
+/// Every method that takes `port` is driven with both, and the reply must be byte-identical to what the
+/// server sent before the type existed. The texts were captured from the baseline (`a6684fa`), and this
+/// test was run green there, with the M76 source changes stashed, before it was run against them.
+///
+/// The WHOLE message is compared, not a fragment, because a refusal for a different reason (a paused-state
+/// refusal from `press`, say) would also be `-32602`-shaped or worse, and a fragment could match both.
+/// Every refusal also carries the machine's position as `data` (the baseline measured that; this test
+/// first assumed there was none). It is compared whole too: that it still reads frame 0, mclk 0, paused,
+/// is what shows no refused `press` or `play_input` advanced the machine. Last, the machine is asked what
+/// it holds on both pad ports, so a refused port cannot have leaked a button onto a real one.
+#[test]
+fn a_port_without_a_pad_is_refused_in_the_words_it_always_was() {
+    let h = spawn_system("pi-port-words", machine(), 64);
+    let mut c = client(&h);
+    let unmoved = json!({"droppedEvents": 0, "frame": 0, "mclk": 0, "running": false});
+    for n in [2u64, 3] {
+        let out = format!("`port` = {n} is outside 0..=1");
+        let cases = [
+            (
+                "emulator/hold",
+                json!({"buttons": ["a"], "port": n}),
+                out.clone(),
+            ),
+            (
+                "emulator/press",
+                json!({"buttons": ["a"], "port": n}),
+                out.clone(),
+            ),
+            (
+                "emulator/play_input",
+                json!({"rows": [{"start": 0, "end": 1, "buttons": ["a"], "port": n}]}),
+                format!("rows[0]: {out}"),
+            ),
+        ];
+        for (method, params, want) in cases {
+            let e = c.err(method, params);
+            assert_eq!(e["code"], json!(-32602), "{method}, port {n}: {e}");
+            assert_eq!(
+                e["message"],
+                json!(want),
+                "{method}, port {n}: the refusal's words moved: {e}"
+            );
+            assert_eq!(
+                e["data"], unmoved,
+                "{method}, port {n}: the refusal's data moved, or the refused call advanced the machine: {e}"
+            );
+        }
+    }
+    for port in [0, 1] {
+        let r = c.ok("emulator/hold", json!({"buttons": [], "port": port}));
+        assert_eq!(
+            r["held"],
+            json!([]),
+            "port {port}: a refused port leaked a held button onto a real one"
+        );
+    }
+}
+
 /// **Lens M23 (the row-index half): a refusal from a row's `port` or `buttons` says WHICH row.** Every
 /// other per-row refusal already opened with `rows[i]:`. These two came from parsers shared with
 /// `hold`/`press`, which know nothing about rows, so an error on row 7 of 40 read exactly like one on

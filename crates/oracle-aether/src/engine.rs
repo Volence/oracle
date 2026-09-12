@@ -39,7 +39,7 @@ use oracle_core::bus::{
     BusEvent, BusEventSink, CartBanks, Fanout, Observe, SramMap, StepRetire, StopWhen,
     CART_BANK_SIZE, CART_SPACE_END, Z80_RAM_SIZE,
 };
-use oracle_core::io::Pad;
+use oracle_core::io::{Pad, PadPort};
 // The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
 // the CPU drives, so the hardware mirror masking and the region decode are the machine's, not ours.
 use oracle_core::m68000::bus68k::Bus68k;
@@ -2174,8 +2174,12 @@ impl Engine {
 
     /// The buttons a client is holding on `port` (`emulator/hold`). A host merges these with the human's
     /// live input before it writes the pad — see [`set_live_pads`](Engine::set_live_pads).
-    pub fn held(&self, port: usize) -> Pad {
-        self.held[port & 1]
+    ///
+    /// A [`PadPort`] since lens M76. It took a `usize` and answered `self.held[port & 1]`, so port 2 (EXP,
+    /// which has no pad) read Port 1's held set: a third behaviour beside `Io::pad`'s panic and
+    /// `Io::read_data`'s released pad. The wire (`parse_port`) is where a number becomes a port.
+    pub fn held(&self, port: PadPort) -> Pad {
+        self.held[port.index()]
     }
 
     /// Publish what the human is physically holding, so the engine's own pad writes (`hold`, `press`,
@@ -3134,9 +3138,9 @@ impl Engine {
     /// gamepad merge per button, so neither can suppress the other). In the standalone server `live` is
     /// all-released and this is byte-identical to writing `held` directly.
     fn apply_pads(&mut self) {
-        for port in 0..2 {
-            self.sys
-                .set_pad(port, merge_pads(self.live[port], self.held[port]));
+        for port in PadPort::ALL {
+            let i = port.index();
+            self.sys.set_pad(port, merge_pads(self.live[i], self.held[i]));
         }
     }
 
@@ -3404,12 +3408,12 @@ impl Engine {
         run: &Advanced,
         pc: u32,
         frames: u64,
-        input: Option<(&[String], usize)>,
+        input: Option<(&[String], PadPort)>,
     ) {
         let mut extra = Map::new();
         if let Some((buttons, port)) = input {
             extra.insert("buttons".into(), json!(buttons));
-            extra.insert("port".into(), json!(port));
+            extra.insert("port".into(), json!(port.index()));
         }
         if let Some(id) = run.broke_at {
             extra.insert("deadlineReached".into(), json!(false));
@@ -6987,7 +6991,7 @@ impl Engine {
             None => frame_cap.min(2),
             Some(v) => hex::parse_count("frames", v, 1, frame_cap)?,
         };
-        let mut pad = merge_pads(self.live[port], self.held[port]);
+        let mut pad = merge_pads(self.live[port.index()], self.held[port.index()]);
         for b in &buttons {
             set_button(&mut pad, b, true);
         }
@@ -7019,7 +7023,7 @@ impl Engine {
         Ok(json!({
             "buttons": buttons,
             "frames": frames,
-            "port": port,
+            "port": port.index(),
             "frameToken": self.frame(),
         }))
     }
@@ -7055,7 +7059,7 @@ impl Engine {
         let mut run: Option<Advanced> = None;
         let mut completed = 0u64;
         for frame in 0..total {
-            for port in 0..2 {
+            for port in PadPort::ALL {
                 // A port no row covers is fully released — `Pad::default()`, not whatever was held.
                 self.sys.set_pad(port, pad_at(&rows, port, frame));
             }
@@ -7102,14 +7106,14 @@ impl Engine {
             Some(_) => return Err(RpcError::invalid_params("`down` must be a boolean (D9)")),
         };
         for b in &buttons {
-            set_button(&mut self.held[port], b, down);
+            set_button(&mut self.held[port.index()], b, down);
         }
         self.apply_pads();
         Ok(json!({
             "buttons": buttons,
             "down": down,
-            "port": port,
-            "held": held_names(&self.held[port]),
+            "port": port.index(),
+            "held": held_names(&self.held[port.index()]),
         }))
     }
 
@@ -10255,7 +10259,7 @@ const BUTTONS_6: &[&str] = &["x", "y", "z", "mode"];
 struct InputRow {
     start: u64,
     end: u64,
-    port: usize,
+    port: PadPort,
     pad: Pad,
 }
 
@@ -10266,7 +10270,7 @@ struct InputRow {
 /// **order-independent**, so the pad depends on the row *set* and rows need not be sorted or disjoint.
 /// Later-row-wins would make row order load-bearing — a place two conformant servers would silently
 /// disagree — and would cost the two-row "hold right, tap A at 120" script that motivates the shape.
-fn pad_at(rows: &[InputRow], port: usize, frame: u64) -> Pad {
+fn pad_at(rows: &[InputRow], port: PadPort, frame: u64) -> Pad {
     let mut pad = Pad::default();
     for r in rows
         .iter()
@@ -10404,11 +10408,21 @@ fn parse_buttons(params: &Value) -> Result<Vec<String>, RpcError> {
     Ok(out)
 }
 
-fn parse_port(params: &Value) -> Result<usize, RpcError> {
-    match params.get("port") {
-        None => Ok(0),
-        Some(v) => Ok(hex::parse_count("port", v, 0, 1)? as usize),
-    }
+/// The wire's `port` param as a [`PadPort`], absent meaning Port 1: **the one place a number becomes a
+/// port** (lens M76). Below here every layer (`Engine`, `Host`, `System`, `Io`) takes the type, so EXP
+/// (which has no pad) and a fourth port cannot be named past this line; this refusal is the only answer a
+/// caller gets for either. The bound is the pad ports' own count, so the `0..=1` the refusal prints is
+/// derived rather than restated, and its words are the ones this function always sent
+/// (`tests/play_input.rs` pins them for ports 2 and 3 on every method that takes `port`).
+fn parse_port(params: &Value) -> Result<PadPort, RpcError> {
+    let Some(v) = params.get("port") else {
+        return Ok(PadPort::P1);
+    };
+    let n = hex::parse_count("port", v, 0, (PadPort::ALL.len() - 1) as u64)?;
+    Ok(usize::try_from(n)
+        .ok()
+        .and_then(PadPort::from_index)
+        .expect("parse_count bounded `port` to the pad ports' own indices"))
 }
 
 fn set_button(pad: &mut Pad, name: &str, down: bool) {

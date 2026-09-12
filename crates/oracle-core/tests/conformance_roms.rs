@@ -635,9 +635,9 @@ fn scrape_vdp_port_access(sys: &mut System) -> String {
         start: true,
         ..Default::default()
     };
-    sys.set_pad(0, pad);
+    sys.set_pad(oracle_core::io::PadPort::P1, pad);
     sys.run_frames(5);
-    sys.set_pad(0, Pad::default());
+    sys.set_pad(oracle_core::io::PadPort::P1, Pad::default());
     sys.run_frames(535);
     let page2 = results(sys);
 

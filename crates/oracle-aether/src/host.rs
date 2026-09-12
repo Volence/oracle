@@ -56,7 +56,7 @@ use crate::outbound::DEFAULT_CAPACITY;
 use crate::rpc::RpcError;
 use crate::server::{spawn_accept, AcceptCtx, EngineMsg, Server, ServerConfig};
 use oracle_core::bus::Observe;
-use oracle_core::io::Pad;
+use oracle_core::io::{Pad, PadPort};
 use oracle_core::scanline_capture::ScanlineCapture;
 use oracle_core::symbols::SymbolTable;
 use oracle_core::system::{System, MCLK_PER_FRAME};
@@ -351,7 +351,7 @@ impl Host {
     /// The buttons a client is holding on `port` (`emulator/hold`). A host ORs these into the pad it writes,
     /// so client-held buttons and live human input compose instead of erasing each other — see
     /// [`Engine::apply_pads`](crate::engine::Engine) for why OR and not a precedence rule.
-    pub fn held(&self, port: usize) -> Pad {
+    pub fn held(&self, port: PadPort) -> Pad {
         self.engine.held(port)
     }
 
@@ -385,10 +385,7 @@ impl Host {
     /// that it took effect when it did not, which is the silent-wrong-answer class this surface cannot
     /// afford.
     pub fn merge_held(&self, pads: [Pad; 2]) -> [Pad; 2] {
-        [
-            crate::engine::merge_pads(pads[0], self.held(0)),
-            crate::engine::merge_pads(pads[1], self.held(1)),
-        ]
+        PadPort::ALL.map(|port| crate::engine::merge_pads(pads[port.index()], self.held(port)))
     }
 
     // ---------------------------------------------------------------- the glass (§11.29, CR-H)
@@ -1322,14 +1319,14 @@ mod tests {
             .expect("hold");
         h.engine.swap_system(&mut sys);
 
-        assert!(h.held(0).a, "the bus reports only what the client holds");
-        assert!(!h.held(0).left, "and never the human's own buttons");
+        assert!(h.held(PadPort::P1).a, "the bus reports only what the client holds");
+        assert!(!h.held(PadPort::P1).left, "and never the human's own buttons");
         let merged = crate::engine::merge_pads(
             Pad {
                 left: true,
                 ..Pad::default()
             },
-            h.held(0),
+            h.held(PadPort::P1),
         );
         assert!(merged.a && merged.left, "the host writes both");
     }
@@ -1382,7 +1379,7 @@ mod tests {
             !h.is_serving(),
             "still unserved — no socket was bound by that"
         );
-        assert!(h.held(1).a, "the engine took the hold");
+        assert!(h.held(PadPort::P2).a, "the engine took the hold");
 
         let merged = h.merge_held(human);
         assert_ne!(

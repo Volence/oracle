@@ -41,11 +41,11 @@ fn main() {
                     2 => pad.down = true,
                     _ => pad.up = true,
                 }
-                sys.set_pad(0, pad);
+                sys.set_pad(oracle_core::io::PadPort::P1, pad);
                 sys.run_frames(1);
             }
         }
-        sys.set_pad(0, oracle_core::io::Pad::default());
+        sys.set_pad(oracle_core::io::PadPort::P1, oracle_core::io::Pad::default());
         sys.run_frames(10);
         let tag = std::path::Path::new(&path)
             .file_name()
@@ -78,11 +78,11 @@ fn main() {
         if up_frames > 0 && (up_start..up_end).contains(&i) {
             pad.up = true;
         }
-        sys.set_pad(0, pad);
-        sys.set_pad(1, oracle_core::io::Pad::default());
+        sys.set_pad(oracle_core::io::PadPort::P1, pad);
+        sys.set_pad(oracle_core::io::PadPort::P2, oracle_core::io::Pad::default());
         sys.run_frames(1);
     }
-    sys.set_pad(0, oracle_core::io::Pad::default());
+    sys.set_pad(oracle_core::io::PadPort::P1, oracle_core::io::Pad::default());
     probe(&mut sys, &format!("f{}", settle + 1));
 }
 

@@ -2371,7 +2371,7 @@ mod tests {
         // P1, configure TH as output ($40), and read both nibbles (recon IO4). The version byte still holds.
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         mem.io.set_pad(
-            0,
+            crate::io::PadPort::P1,
             crate::io::Pad {
                 start: true,
                 ..Default::default()

@@ -2548,7 +2548,7 @@ mod loop_tests {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
         machine
             .system_mut()
-            .set_pad(0, oracle_core::io::Pad::default());
+            .set_pad(oracle_core::io::PadPort::P1, oracle_core::io::Pad::default());
         // The governor is switched OFF, so every `iterate` owns its frame and this test never waits on a
         // wall clock. That is the same switch the pacing CONTROL uses.
         Loop::new(

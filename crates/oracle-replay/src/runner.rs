@@ -552,7 +552,10 @@ fn run_inner(
 
     // The pad stays at all-zero for the entire run, and is never touched again: `replay.emp:157-159` reads
     // live `Ctrl_1_Press` *before* the playback overwrite and sets `Replay_Exit_Request` on Start.
-    if sys.pad(0) != Pad::default() || sys.pad(1) != Pad::default() {
+    if oracle_core::io::PadPort::ALL
+        .iter()
+        .any(|&port| sys.pad(port) != Pad::default())
+    {
         return Err(
             "the machine powered on with a non-empty pad: pressing Start would set \
                     Replay_Exit_Request and end the replay early"

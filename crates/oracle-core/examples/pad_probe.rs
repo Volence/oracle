@@ -32,7 +32,7 @@ fn probe(path: &str, pad: Pad) -> std::io::Result<()> {
     let mut sys = System::new(0x5EED);
     sys.load_rom(oracle_core::testrom::build_pad_poll());
     sys.reset(); // reset re-powers-on; inject AFTER it (as a frontend would).
-    sys.set_pad(0, pad);
+    sys.set_pad(oracle_core::io::PadPort::P1, pad);
     sys.run_frames(3);
 
     let height = 224usize;
