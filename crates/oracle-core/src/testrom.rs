@@ -476,6 +476,32 @@ pub fn build_pad_poll() -> Vec<u8> {
     rom
 }
 
+/// **The V count of the first blanking line**: what the V counter reads on line
+/// [`ACTIVE_LINES`](crate::vdp::ACTIVE_LINES), where vblank starts (224 in the NTSC V28 mode every fixture
+/// here runs in, so `$E0`). The fixtures that pace themselves on the raster spin on it:
+/// [`build_cram_midframe`]'s two vblank waits and [`build_profiler`]'s once-per-frame gate.
+///
+/// **Derived, not restated** (lens M53/M67). In NTSC V28 the V counter reads the line number itself up to
+/// its `0xEA`→`0xE5` jump (recon R2; [`Vdp::v_counter`](crate::vdp::Vdp::v_counter)), so the first
+/// blanking line's V count is `ACTIVE_LINES` as a byte. The compile-time assertion is the condition that
+/// makes that true: a height past the jump fails the build rather than emitting a spin on a V count the
+/// counter never reads.
+///
+/// **One name for both families since wave-3 residue 3.** `build_cram_midframe` passed this value as two
+/// unnamed `0xE0`s and the profiler kept it as `PROF_VBLANK_LINE`. They are one fact, established from the
+/// builders rather than from the number. Both read the V counter's high byte and compare it with `cmpi.b`,
+/// and every register-1 value either writes keeps bit 3 clear, so every one of them runs V28:
+/// `build_cram_midframe` writes `$54`, the profiler skeleton `$44` or `$64`, its stall shapes `$14`. The
+/// ROMs are byte-identical after the rename; all seventeen (three `build_cram_midframe` lines, every
+/// `ProfilerShape`) were fingerprinted before and after.
+const VBLANK_V_COUNT: u8 = {
+    assert!(
+        crate::vdp::ACTIVE_LINES <= 0xEA,
+        "the first blanking line's V count equals its line number only below the V28 jump"
+    );
+    crate::vdp::ACTIVE_LINES as u8
+};
+
 /// The two backdrop colours [`build_cram_midframe`] alternates between — black and white, the widest
 /// contrast the 9-bit CRAM word offers, so a boundary row is unmistakable in a hex dump.
 #[doc(hidden)]
@@ -491,8 +517,9 @@ pub const CRAM_MIDFRAME_B: u16 = 0x0EEE;
 /// transparent and the whole screen is the backdrop (reg 7 = CRAM entry 1). What this one adds is timing.
 /// Every frame it
 ///
-/// 1. waits for vblank (V counter ≥ `$E0`) and sets CRAM entry 1 = [`CRAM_MIDFRAME_A`],
-/// 2. waits for active display to resume (V < `$E0`, i.e. line 0),
+/// 1. waits for vblank (V counter ≥ `VBLANK_V_COUNT`, the first blanking line's V count) and sets CRAM
+///    entry 1 = [`CRAM_MIDFRAME_A`],
+/// 2. waits for active display to resume (V < `VBLANK_V_COUNT`, i.e. line 0),
 /// 3. polls the HV counter at `$C00008` until the beam reaches `line` (V is the high byte), and
 /// 4. sets CRAM entry 1 = [`CRAM_MIDFRAME_B`], then loops.
 ///
@@ -615,9 +642,9 @@ pub fn build_cram_midframe(line: u8) -> Vec<u8> {
 
     // The raster loop. Re-arming in vblank is what makes every frame carry the split.
     let outer = rom.len() as u32;
-    wait_v(&mut rom, 0xE0, 0x6500); // spin while V < $E0  -> exits in vblank
+    wait_v(&mut rom, VBLANK_V_COUNT, 0x6500); // spin while V < VBLANK_V_COUNT  -> exits in vblank
     backdrop_write(&mut rom, CRAM_MIDFRAME_A);
-    wait_v(&mut rom, 0xE0, 0x6400); // spin while V >= $E0 -> exits on line 0
+    wait_v(&mut rom, VBLANK_V_COUNT, 0x6400); // spin while V >= VBLANK_V_COUNT -> exits on line 0
     wait_v(&mut rom, line, 0x6500); // spin while V < line -> exits on the target line
     backdrop_write(&mut rom, CRAM_MIDFRAME_B);
     let bra_at = rom.len() as u32;
@@ -776,22 +803,6 @@ pub enum StallKind {
     /// A VRAM copy — likewise.
     Copy,
 }
-
-/// The V-counter value at which vblank starts: that of the first blanking line, line
-/// [`ACTIVE_LINES`](crate::vdp::ACTIVE_LINES) (224 in the V28 mode these fixtures run in, so `$E0`).
-///
-/// **Derived, not restated** (lens M53/M67). In NTSC V28 the V counter reads the line number itself up to
-/// its `0xEA`→`0xE5` jump (recon R2; [`Vdp::v_counter`](crate::vdp::Vdp::v_counter)), so the first
-/// blanking line's V count is `ACTIVE_LINES` as a byte. The compile-time assertion is the condition that
-/// makes that true: a height past the jump fails the build rather than emitting a spin on a V count the
-/// counter never reads.
-const PROF_VBLANK_LINE: u8 = {
-    assert!(
-        crate::vdp::ACTIVE_LINES <= 0xEA,
-        "the first blanking line's V count equals its line number only below the V28 jump"
-    );
-    crate::vdp::ACTIVE_LINES as u8
-};
 
 /// Image size for [`build_profiler`]: enough for the vectors, the handler block and the routines —
 /// including the preemption witness's three, which sit above the block [`ProfilerShape::Stall`] fills.
@@ -1069,9 +1080,9 @@ pub fn build_profiler(shape: ProfilerShape) -> Vec<u8> {
     // --- outer: one pass per frame ---
     let outer = PROF_MAIN + code.len() as u32;
     // Into vblank, then out of it: the pass therefore begins at the top of a fresh frame and ends well
-    // before that frame's line-224 boundary, so the body lands wholly inside one counted frame.
-    prof_wait_v(&mut code, PROF_VBLANK_LINE, 0x6500); // spin while V < $E0  -> exits in vblank
-    prof_wait_v(&mut code, PROF_VBLANK_LINE, 0x6400); // spin while V >= $E0 -> exits on line 0
+    // before that frame's vblank line (`ACTIVE_LINES`), so the body lands wholly inside one counted frame.
+    prof_wait_v(&mut code, VBLANK_V_COUNT, 0x6500); // spin while V < VBLANK_V_COUNT  -> exits in vblank
+    prof_wait_v(&mut code, VBLANK_V_COUNT, 0x6400); // spin while V >= VBLANK_V_COUNT -> exits on line 0
     match shape {
         ProfilerShape::CallsLeaf { k } => {
             assert!(k >= 1, "a zero-call fixture proves nothing");
