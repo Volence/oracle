@@ -789,6 +789,12 @@ pub struct SramMap {
     pub odd: bool,
 }
 
+/// **A2 / DMA-SRC-128K.** Byte offset inside the 128 KiB page a 68k→VDP DMA source is confined to. Source
+/// registers 22:21 are a 16-bit **word** counter and register 23 never takes their carry, so a transfer that
+/// runs off the top of the page resumes at its bottom rather than entering the next one. See
+/// [`MegaDriveBus::run_mem_dma`] for the rule and its evidence.
+const DMA_SOURCE_PAGE_MASK: u32 = 0x1_FFFF;
+
 /// One Sega/SSF2 mapper window: 512 KiB of cartridge address space. `$000000-$3FFFFF` is eight of these.
 pub const CART_BANK_SIZE: usize = 0x8_0000;
 /// How many mapper windows tile `$000000-$3FFFFF` (8 × 512 KiB = 4 MiB).
@@ -1483,23 +1489,37 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
     /// FIFO to the current data-port target (SAT write-through fires for VRAM — R5), and hold the 68k bus for
     /// the whole transfer (the total halt window, returned as CPU wait cycles). Advances the source/length
     /// registers to their post-transfer state (recon R4).
+    ///
+    /// **A2 / DMA-SRC-128K — the source wraps inside its own 128 KB page.** Only source registers 21 and 22
+    /// step; register 23 never takes a carry (MegaDrive Wiki, *VDP / DMA Limitations*: "Every DMA cycle, only
+    /// the low and middle bytes of the DMA source registers are incremented"; Plutiedev, *DMA transfer*: "the
+    /// source address can't cross a 128KB boundary"). Registers 22:21 are a 16-bit **word** counter, so the
+    /// page they roam is `$20000` bytes wide and register 23 fixes byte bits 23-17. VDPFIFOTesting test 20
+    /// reads `89ab cdef ffff eeee` for 4 words from `$5FFFC`: the third word comes from `$40000`, the bottom
+    /// of that page. The register half of the same rule lives in [`Vdp::dma_complete`], which shares
+    /// [`Vdp::advance_dma_source_low16`] with fill and copy (A3).
     fn run_mem_dma(&mut self, source: u32, len: u16) -> u32 {
         let now = self.now_mclk;
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let dest = self.vdp.dma_dest();
         let target = self.vdp.dma_target();
-        let mut src = source;
+        // A2: register 23 is the page and never moves; registers 22:21 walk `off` and wrap at 16 bits.
+        // `source` is always even (`Vdp::arm_dma` shifts a word address left), so `off | 1` is the low byte
+        // of the same word and can never itself cross the boundary.
+        let page = source & !DMA_SOURCE_PAGE_MASK;
+        let mut off = source & DMA_SOURCE_PAGE_MASK;
         for _ in 0..count {
+            let src = page | off;
             let hi = self
                 .mapped_byte(src & ADDR_MASK)
                 .unwrap_or((*self.last_bus_word >> 8) as u8);
             let lo = self
-                .mapped_byte(src.wrapping_add(1) & ADDR_MASK)
+                .mapped_byte((src | 1) & ADDR_MASK)
                 .unwrap_or((*self.last_bus_word & 0xFF) as u8);
             // Every word carries the transfer's own `now` (decision C-6): `now_mclk` is frozen for the
             // instruction that triggered the DMA, so there is no finer clock to hand it here.
             self.vdp.dma_write_word(((hi as u16) << 8) | lo as u16, now);
-            src = src.wrapping_add(2);
+            off = (off + 2) & DMA_SOURCE_PAGE_MASK;
         }
         let slots_per_word = if target == VdpTarget::Vram { 2 } else { 1 };
         let cost = self.vdp.dma_cost(count as u64 * slots_per_word, now);
@@ -1510,7 +1530,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             len,
             target,
         };
-        self.vdp.dma_complete(record, src >> 1, now + cost);
+        self.vdp.dma_complete(record, now + cost);
         cost.div_ceil(MCLK_PER_CPU_CYCLE) as u32
     }
 }
@@ -2842,6 +2862,64 @@ mod tests {
             (r[0x17] & 0x7F, r[0x16], r[0x15]),
             (0x00, 0x02, 0x04),
             "source registers advanced to word address $000204"
+        );
+    }
+
+    /// **A2 / DMA-SRC-128K.** Only source registers 21 and 22 count up, so a 68k→VDP transfer wraps inside
+    /// its own 128 KB page instead of walking into the next one. MegaDrive Wiki, *VDP / DMA Limitations*:
+    /// "Every DMA cycle, only the low and middle bytes of the DMA source registers are incremented";
+    /// Plutiedev, *DMA transfer*: "the source address can't cross a 128KB boundary".
+    ///
+    /// The numbers are VDPFIFOTesting test 20's ("DMA Transfer Source Wrapping", ROM `$60EA`) own table,
+    /// read off the vendored ROM rather than copied from a neighbouring pin: 4 words from `$5FFFC`, where
+    /// the ROM holds `89ab cdef` at `$5FFFC`, `dead c0de` at `$60000` and `ffff eeee` at `$40000`. Hardware
+    /// reads `89ab cdef ffff eeee` — the third word comes from the **bottom of the source's own page**,
+    /// `$40000`, not from `$60000`. The register half is test 27's ("DMA Transfer Source Reg Update", ROM
+    /// `$A5D0`): its group 5 reloads registers 21 and 22 but deliberately never writes 23 (the `$9700`
+    /// command word is built into d2 at `$A964`-`$A96A` and then dropped on the floor), and the table it
+    /// then reads back sits at ROM `$401FC`, i.e. register 23 is still `$02`.
+    ///
+    /// Source `$5FFFC` is word address `$02FFFE`: register 23 = `$02`, 22 = `$FF`, 21 = `$FE`. Four words
+    /// later 22:21 = `($FFFE + 4) & $FFFF` = `$0002` and 23 is untouched.
+    ///
+    /// If this went green for a reason other than the rule holding, the reason would be that the DMA never
+    /// ran at all (four `$00` words would then sit in VRAM, or the old `$0000` fill would) — so the
+    /// assertion names the payload word for word, including the two pre-boundary words that both machines
+    /// agree on, and the length registers are checked to have been counted down.
+    #[test]
+    fn a_mem_dma_source_wraps_inside_its_own_128kb_page() {
+        let mut rom = vec![0u8; 0x8_0000];
+        rom[0x5_FFFC..0x6_0000].copy_from_slice(&[0x89, 0xAB, 0xCD, 0xEF]);
+        rom[0x6_0000..0x6_0004].copy_from_slice(&[0xDE, 0xAD, 0xC0, 0xDE]);
+        rom[0x4_0000..0x4_0004].copy_from_slice(&[0xFF, 0xFF, 0xEE, 0xEE]);
+        let mut mem = MdMem::new(rom);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE; // vblank line: blanked (fast) transfer
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            run_mem_dma_to_vram(&mut bus, 0x05_FFFC, 4, 0x0000);
+        }
+        assert_eq!(
+            &mem.vdp.vram()[0..8],
+            &[0x89, 0xAB, 0xCD, 0xEF, 0xFF, 0xFF, 0xEE, 0xEE],
+            "the source wrapped to $40000, the bottom of its own 128 KB page, not on to $60000 \
+             (VDPFIFOTesting test 20)"
+        );
+        let r = mem.vdp.regs();
+        assert_eq!(
+            (r[0x14], r[0x13]),
+            (0, 0),
+            "length registers counted down to 0"
+        );
+        assert_eq!(
+            r[0x17] & 0x7F,
+            0x02,
+            "register 23 never takes the carry (VDPFIFOTesting test 27 group 5)"
+        );
+        assert_eq!(
+            (r[0x16], r[0x15]),
+            (0x00, 0x02),
+            "registers 22:21 wrapped at 16 bits: $FFFE + 4 words = $0002"
         );
     }
 
