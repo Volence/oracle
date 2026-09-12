@@ -1361,14 +1361,14 @@ pub fn assert_masked_frame_parity(
                 .unwrap_or_else(|| {
                     panic!(
                         "fixture ({mode}): hiding {name} changes no dot of the reference picture, so \
-                         no comparison below could see a mask being ignored — COULD NOT MEASURE"
+                         no comparison below could see a mask being ignored: COULD NOT MEASURE"
                     )
                 });
             let (_, got) = consumer(&v, m);
             assert!(
                 got.get(at) != consumer_all.get(at),
-                "{who} ({mode}): hiding {name} must change dot ({}, {}) — the reference picture \
-                 changes there — but {who}'s did not: the mask never reached its picture",
+                "{who} ({mode}): hiding {name} must change dot ({}, {}), where the reference \
+                 picture changes, but {who}'s did not: the mask never reached its picture",
                 at % w,
                 at / w
             );
