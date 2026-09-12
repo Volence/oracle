@@ -687,8 +687,10 @@ impl Vdp {
         if self.fifo_len == 4 {
             s |= 1 << 8; // FIFO full (live: all 4 slots pending — the /DTACK-stall condition)
         }
-        if mclk < self.dma_busy_until {
-            s |= 1 << 1; // DMA busy (recon R4 / Eke): set across a fill/copy's coarse transfer window
+        if self.dma_busy(mclk) {
+            // DMA busy (recon R4 / Eke): a fill/copy's coarse transfer window, AND — since A4 — the whole
+            // time a fill sits armed and untriggered. One predicate, [`Vdp::dma_busy`].
+            s |= 1 << 1;
         }
         if self.vint_pending {
             s |= 1 << 7; // F: VINT-pending readback (conservative no-side-effect pin, recon R12)
@@ -939,10 +941,45 @@ impl Vdp {
         self.fifo[self.fifo_write as usize].data
     }
 
-    /// Whether the DMA-busy status bit reads set at `mclk` (recon R4): true while a fill/copy's coarse transfer
-    /// window is still open. Introspection companion to the status word's bit 1.
+    /// Whether a **DMA fill is armed and waiting for its data-port trigger** (cause A4). The same condition
+    /// that makes the next data-port write a fill trigger in [`Vdp::apply_data_write`]: CD5 latched in the
+    /// code register and register 23's mode bits naming Fill. Deliberately **derived from existing state**
+    /// rather than latched in a new field — the flag and the trigger then cannot disagree, and no snapshot
+    /// or `export_state` layout moves.
+    ///
+    /// Note CD5 only latches while DMA-enable (register 1 bit 4) is set, so a fill command written with DMA
+    /// disabled arms nothing and is not busy — VDPFIFOTesting test 38 group 1 (ROM `$C528`), where all four
+    /// status samples read clear on hardware and the trigger word lands as an ordinary VRAM write.
+    fn fill_armed(&self) -> bool {
+        self.code & 0x20 != 0 && self.regs[0x17] & 0xC0 == 0x80
+    }
+
+    /// Whether the DMA-busy status bit reads set at `mclk` (recon R4 / A4). Two ways it reads set:
+    ///
+    /// 1. **A fill is armed** ([`Vdp::fill_armed`]) — busy from the fill's *control* write, before the data
+    ///    port has been touched. Eke, *VDP Internals* p.4: "on DMA Fill, busy flag is actually immediately
+    ///    (?) set after the CTRL port write, not the DATA port write that starts the Fill operation."
+    ///    VDPFIFOTesting pins it: **test 36** (ROM `$B6F8`) samples status at `$B8A2`, between the command
+    ///    `$40020082` (`$B89C`) and the `$1234` trigger (`$B8BC`), and hardware reads `$0202`. **Test 38**
+    ///    group 2 (ROM `$C850`) samples it there too, and again after a register write `$8144` that clears
+    ///    DMA-enable and a half-command `$4002` (`$C870..$C878`) — still set both times.
+    /// 2. **A fill or copy's coarse transfer window is still open** (`mclk < dma_busy_until`), the part that
+    ///    was already here.
+    ///
+    /// **What ends an armed-but-never-triggered fill's busy flag is not something the ROM settles.** This
+    /// model answers it by construction: nothing ends it except the arming condition going away — the fill
+    /// running (`take_dma_request` clears CD5 when the request is consumed, and `run_fill` then opens the
+    /// window), a later command word clearing CD5 while DMA-enable is set, or register 23 leaving Fill mode.
+    /// Time does not end it, and neither does a frame boundary. Test 38 group 2 rules out the three cheap
+    /// alternatives — a register write, clearing DMA-enable, and a new first command word all leave it set.
+    /// A ROM that arms a fill, never triggers it, then writes a full non-DMA command word (or register 23)
+    /// and polls status would separate this model from a plain latch; one that polls across frames would
+    /// separate both from any timed window. See "What would settle the open points" in
+    /// `docs/2026-09-12-vdp-port-access-full-rom.md`.
+    ///
+    /// Introspection companion to the status word's bit 1, which reads it.
     pub fn dma_busy(&self, mclk: u64) -> bool {
-        mclk < self.dma_busy_until
+        self.fill_armed() || mclk < self.dma_busy_until
     }
 
     /// **The VSRAM address decode** (cause A1, `docs/2026-09-12-vdp-port-access-full-rom.md`): the byte
@@ -4636,6 +4673,161 @@ mod tests {
                 "the length counter still ends at 0"
             );
         }
+    }
+
+    // --- A4 / FILL-BUSY-ARM: the fill's CONTROL write sets DMA-busy -------------------------------------
+    //
+    // Eke, *VDP Internals* p.4: "on DMA Fill, busy flag is actually immediately (?) set after the CTRL port
+    // write, not the DATA port write that starts the Fill operation."
+    //
+    // Every expectation below is read off VDPFIFOTesting's own tables and its code, never off ours. Both
+    // busy tests sample the status port twice per probe (once with the next prefetch word `$0245`, once with
+    // `$4E71`) and mask with `$FF02`, so on hardware a set busy bit shows as the pair `0202 4e02` and a clear
+    // one as `0200 4e00`.
+    //
+    // * **Test 36** (ROM `$B6F8`), table `$B6B4`: `0200 4e00 | 0202 4e02 | 0202 4e02 | 0200 4e00`. Probe 1 is
+    //   at `$B81E`, before any command. Probe 2 is at `$B8A2` — after the fill command `$40020082` went out
+    //   at `$B89C` and **before** the `$1234` trigger at `$B8BC`. Probe 3 is mid-fill, probe 4 after a
+    //   `$7FFF` delay loop.
+    // * **Test 38** (ROM `$C34C`), table `$C2E8`, two groups of the same four probes.
+    //   - Group 1 (`$C4CC`) issues the command at `$C528` with **DMA-enable clear**, and hardware reads
+    //     `0200 4e00` at every probe — CD5 never latched, so nothing was ever armed, and the later `$1234`
+    //     lands as an ordinary VRAM write (`0000 1234 0000 0000` at `$8000`).
+    //   - Group 2 (`$C7EC`) sets register 1 = `$54` first, so the command at `$C850` latches CD5. Hardware
+    //     reads `0202 4e02` at probe 1, and **still** `0202 4e02` at probe 2 — which is taken after a
+    //     register write `$8144` that clears DMA-enable and a half-command word `$4002` (`$C870..$C878`).
+    //
+    // The model: busy = a fill is armed (CD5 + register 23 = Fill mode) OR the transfer window is open.
+    // See [`Vdp::dma_busy`] for what that decides about the case the ROM leaves open.
+
+    /// Arm a VRAM fill through the ports exactly as tests 36 and 38 group 2 do — register 1 = DMA-enable,
+    /// register 23 = Fill, then the two command words — and stop **before** the data-port trigger.
+    fn arm_vram_fill_without_triggering(v: &mut Vdp, dma_enable: bool, len: u16) {
+        // The ROM's own register-1 values: $54 (M5 + DMA-enable + display) and $44 (the same with DMA off).
+        // M5 matters — `write_register` discards writes above register 10 while it is clear.
+        v.regs[1] = if dma_enable { 0x54 } else { 0x44 };
+        v.regs[0x0F] = 1; // autoinc 1 (ROM: register $8F01)
+        v.regs[0x13] = (len & 0xFF) as u8;
+        v.regs[0x14] = (len >> 8) as u8;
+        v.regs[0x17] = 0x80; // fill mode (ROM: register $9780)
+        command(v, 0x21, 0x8002); // the ROM's $40020082: VRAM write + CD5 at $8002
+    }
+
+    #[test]
+    fn a_fill_reads_dma_busy_from_its_control_write_not_from_its_trigger() {
+        // Test 36 probe 2 / test 38 group 2 probe 1: busy between the command and the trigger.
+        let mut v = fresh();
+        arm_vram_fill_without_triggering(&mut v, true, 0x0100);
+        assert!(
+            v.dma_busy(0),
+            "test 36 (ROM $B8A2) reads $0202 after the fill command and before the $1234 trigger"
+        );
+        assert_eq!(
+            v.status_word(0) & 0x0002,
+            0x0002,
+            "…and it is status bit 1 that carries it"
+        );
+
+        // Test 38 group 2 probe 2: a register write that CLEARS DMA-enable, then a half-command word, and
+        // hardware still reads $0202. Neither is allowed to end the arm.
+        v.control_write(0x8144, 0); // register 1 = $44 — DMA-enable off (ROM $C870)
+        assert!(
+            v.dma_busy(0),
+            "test 38 group 2 (ROM $C880) still reads $0202 after register 1 = $44"
+        );
+        v.control_write(0x4002, 0); // a first-half-only command word (ROM $C878)
+        assert!(
+            v.dma_busy(0),
+            "…and after the half-command word $4002 (ROM $C888)"
+        );
+
+        // Probes 3 and 4: the trigger runs the fill, which clears CD5 and opens the timed window; the window
+        // then expires. This is the ROM's `0202 4e02 | 0200 4e00` tail, and it is also what keeps test 34
+        // group 3's `btst #1` poll loop (ROM $48F6) from spinning for ever. Note the ROM triggers with
+        // DMA-enable already cleared — the trigger does not re-check it.
+        v.data_write(0x1234); // ROM $C89A
+        let Some(DmaRequest::Fill { len, fill }) = v.take_dma_request() else {
+            panic!("the data-port write must arm a fill");
+        };
+        v.run_fill(len, fill, 0);
+        assert!(v.dma_busy(0), "mid-transfer the window is open (probe 3)");
+        assert!(
+            !v.dma_busy(v.dma_busy_until),
+            "the window closes and nothing keeps busy set (probe 4: hardware reads $0200)"
+        );
+    }
+
+    #[test]
+    fn a_fill_command_written_with_dma_disabled_arms_nothing_and_is_not_busy() {
+        // Test 38 group 1 (ROM $C528): the command goes out with DMA-enable clear, so CD5 never latches.
+        // Hardware reads $0200 at all four probes. This is the negative half of the rule — a busy flag armed
+        // by the control word alone, without the CD5 condition, would fail here.
+        let mut v = fresh();
+        arm_vram_fill_without_triggering(&mut v, false, 0x0100);
+        assert_eq!(
+            v.code & 0x20,
+            0,
+            "CD5 cannot latch while DMA-enable is clear"
+        );
+        assert!(
+            !v.dma_busy(0),
+            "test 38 group 1 (ROM $C52E) reads $0200 after the fill command"
+        );
+
+        // The ROM then enables DMA (register 1 = $54, $C548) and writes a half-command. Still not busy on
+        // hardware ($C558): enabling DMA later does not retroactively arm the fill that was refused.
+        v.control_write(0x8154, 0);
+        v.control_write(0x4002, 0);
+        assert!(
+            !v.dma_busy(0),
+            "test 38 group 1 (ROM $C55E) still reads $0200 once DMA-enable is turned on"
+        );
+
+        // And the $1234 at $C572 is an ordinary VRAM write, not a fill trigger: $8000..$8007 reads back
+        // `0000 1234 0000 0000`.
+        v.data_write(0x1234);
+        assert!(
+            v.take_dma_request().is_none(),
+            "no fill was armed, so the data write triggers nothing"
+        );
+        assert_eq!(
+            (v.vram[0x8002], v.vram[0x8003]),
+            (0x12, 0x34),
+            "the trigger word lands as a plain VRAM write at $8002 (test 38 group 1 readback)"
+        );
+        assert!(!v.dma_busy(0), "and busy is still clear (ROM $C5CE)");
+    }
+
+    #[test]
+    fn an_armed_fill_stops_reading_busy_once_its_arming_condition_is_gone() {
+        // The case the ROM does NOT settle, pinned as the model decides it (see `Vdp::dma_busy`): busy ends
+        // when the arm ends, and only then. Two ways for the arm to end without the fill ever running.
+        let mut v = fresh();
+        arm_vram_fill_without_triggering(&mut v, true, 0x0004);
+        assert!(v.dma_busy(0), "armed");
+        // A full non-DMA command word pair while DMA-enable is set clears CD5, so the next data write is no
+        // longer a fill trigger — and the flag follows the trigger, by construction.
+        command(&mut v, 0x01, 0x8000);
+        assert!(
+            !v.dma_busy(0),
+            "a command that clears CD5 also ends the busy flag"
+        );
+
+        let mut v = fresh();
+        arm_vram_fill_without_triggering(&mut v, true, 0x0004);
+        v.control_write(0x9700, 0); // register 23 = $00: Mem mode, no longer a fill
+        assert!(
+            !v.dma_busy(0),
+            "register 23 leaving Fill mode also ends the busy flag"
+        );
+
+        // Time does not end it: the same armed fill is still busy a whole frame later.
+        let mut v = fresh();
+        arm_vram_fill_without_triggering(&mut v, true, 0x0004);
+        assert!(
+            v.dma_busy(MCLK_PER_FRAME * 4),
+            "no timed window ends an armed fill's busy flag"
+        );
     }
 
     #[test]

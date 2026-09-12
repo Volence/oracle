@@ -241,8 +241,12 @@ const BASELINE: &[(&str, &str)] = &[
         // 22 pages 76/46 → **112/10**: tests 23, 74-95's eight VSRAM fills and the copy matrix 96-122 flip
         // to pass; test 20 still fails (6/12 words, its A2 half); pages 1 and 2 are unchanged.
         // A1 + A3 merged (2026-09-12), measured on the merged tree: **114/8/122**, failing 20 27 31-34 36 38.
+        // A4 (2026-09-12, FILL-BUSY-ARM): DMA-busy reads set from a fill's CONTROL write, not only from its
+        // trigger — `Vdp::dma_busy` is now "a fill is armed (CD5 + register 23 = Fill) OR the transfer window
+        // is open". Tests 36 and 38 flip; all 22 pages **114/8 → 116/6**, failing 20 27 31 32 33 34. Pages 1
+        // and 2 unchanged, and no other scorecard row moved.
         "vdp_port_access",
-        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=114/8/122",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=116/6/122",
     ),
     (
         // **`6=FAIL` is measured to be an artefact of this scraper, NOT an emulator inaccuracy (2026-08-15).**
@@ -1219,7 +1223,8 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 /// * **A3, fill and copy advance the DMA source registers 21/22 by their length.** Tests 28 and 29.
 ///   **Fixed 2026-09-12 (DMA-SRC-ADVANCE)**: both pass and are no longer listed.
 /// * **A4, DMA busy reads set from the fill command's control write**, not only once the fill is
-///   triggered. Tests 36 and 38.
+///   triggered. Tests 36 and 38. **Fixed 2026-09-12 (FILL-BUSY-ARM)**: `Vdp::dma_busy` is now "a fill is
+///   armed OR the transfer window is open"; both pass and are no longer listed.
 /// * **A5, a fill whose code names no write target writes nothing** (it closes follow-up F-FILLTGT). Test 34.
 /// * **M1, a fill that runs over time.** Ours completes inside its trigger write, so a data-port write made
 ///   during a running fill never changes the fill byte. Tests 31, 32 and 33.
@@ -1236,8 +1241,6 @@ const PORT_ACCESS_FAILING: &[(usize, &str, usize, usize)] = &[
     (32, "DP Writes During DMA Fill CRAM", 6, 48), // M1
     (33, "DP Writes During DMA Fill VSRAM", 6, 48), // M1
     (34, "DMA Fill Control Port Writes", 4, 80),   // A5
-    (36, "DMA Busy Flag DMA Fill", 2, 16),         // A4
-    (38, "DMA Busy Flag DMA Toggle Fill", 4, 32),  // A4
 ];
 
 /// **The whole of VDPFIFOTesting, pinned test by test from the ROM's own verdicts.** See

@@ -263,6 +263,44 @@ is the same, and on hardware busy stays set across a `$8144` register write and 
 busy. This is behaviour, not timing: the two samples fall between two port writes and depend on nothing
 the beam does. EXP=16 flips exactly 36 and 38.
 
+**Fixed 2026-09-12 (FILL-BUSY-ARM, branch `parcel/fill-busy-and-target`).** `Vdp::dma_busy` is now
+`self.fill_armed() || mclk < self.dma_busy_until`, and `status_word` reads bit 1 through it so there is one
+predicate. `fill_armed` is **exactly the condition that makes the next data-port write a fill trigger** —
+CD5 latched in the code register and register 23's mode bits naming Fill — so it is derived from existing
+state: no new field, no snapshot or `export_state` layout change, and the flag cannot disagree with the
+trigger. The DMA-disabled negative comes out for free: CD5 only latches while register 1 bit 4 is set, so
+test 38 group 1's command (issued at ROM `$C528` with DMA off) arms nothing and reads clear at all four
+probes, and its `$1234` lands as an ordinary VRAM write.
+
+*Two corrections to this section, from the run and the disassembly.* (i) The line numbers above are stale
+(they predate A1 and A3): status bit 1 is `vdp.rs:690`, `run_fill` ends at `:1513`, `run_copy` at `:1564`,
+`control_write`'s arm path is `:1160` and `arm_dma` `:1168`. (ii) "In group 1 … the arm is conditional on
+DMA being enabled" is right about the outcome but understates the mechanism: in group 1 CD5 is never
+latched at all, so no fill is armed and the later `$1234` is a plain data-port write — which is why the
+group's VRAM reads back `0000 1234 0000 0000`. The ROM also samples status **twice** per probe (the second
+read's undefined high bits carry the next prefetch word), so each probe is the pair `0202 4e02` when busy
+and `0200 4e00` when not; the "two samples" of the old text are one probe.
+
+**The open question, answered by construction.** What ends the busy flag of a fill that is armed but never
+triggered: **nothing but the arming condition going away** — the fill running (`take_dma_request` clears
+CD5 on consumption and `run_fill` then opens the timed window), a later command word clearing CD5 while
+DMA-enable is set, or register 23 leaving Fill mode. Not time, and not a frame boundary. Test 38 group 2
+rules out the three cheap alternatives itself: a register write (`$8144`, which also clears DMA-enable) and
+a new first command word (`$4002`) both leave it set. The alternative model is a latched `fill_armed` bool
+cleared only by `run_fill`; it agrees with every table in this ROM and differs on exactly two sequences —
+arm a fill, then write a full non-DMA command word (or set register 23 out of Fill mode), and poll status.
+This model says clear, the latch says set. A third, any timed window, is separated from both by polling an
+untriggered fill across frames. **These are the ROMs that would settle it**, and they are what the "What
+would settle the open points" entry below should now read. Pinned as shipped by
+`vdp::tests::a_fill_reads_dma_busy_from_its_control_write_not_from_its_trigger`,
+`a_fill_command_written_with_dma_disabled_arms_nothing_and_is_not_busy` and
+`an_armed_fill_stops_reading_busy_once_its_arming_condition_is_gone`.
+
+Measured: the ROM prints **116/6/122** (from 114/8/122), failing 20 27 31 32 33 34. Every one of the 122
+per-test records is byte-identical to the pre-fix run except 36 and 38, which go FAIL 2/16 and FAIL 4/32 →
+PASS 0/16 and PASS 0/32. Pages 1 and 2 are unchanged (9/0/9, 16/0/16), the other 16 scorecard rows are
+byte-identical, and so are `determinism_gate`, `export_state_v1`, `golden_frames` and `scanline_goldens`.
+
 ### A5: a fill whose code names no write target writes nothing (test 34, closes F-FILLTGT)
 
 **The rule, from the ROM's table.** **Test 34** (ROM `$45B2`) group 3 (`$4898..$4948`) arms a 4-byte fill
