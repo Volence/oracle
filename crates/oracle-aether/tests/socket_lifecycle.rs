@@ -24,11 +24,13 @@
 mod common;
 
 use common::{spawn_system, Client};
+use oracle_aether::host::{Host, HostConfig};
 use oracle_aether::server::{Server, ServerConfig};
 use oracle_core::system::System;
 use serde_json::json;
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 fn machine() -> System {
     let mut sys = System::new(0x5EED);
@@ -193,4 +195,129 @@ fn the_test_harness_cleans_up_after_itself() {
         p
     };
     assert!(!p.exists(), "the harness left a socket behind");
+}
+
+// ---------------------------------------------------------------- the hosted arrangement
+
+/// **A `Host` removes only the socket file it bound** (HOST-SHUTDOWN-UNLINK, the hosted half of lens M13).
+///
+/// The player window and `oracle-frontend` both run a [`Host`], and on the owner's machine several
+/// processes share socket paths. So the replacement below is what a restart or a second window does once
+/// the path is free: the host's file is removed and another socket is bound at the same path. The host's
+/// listener is still open at that moment and holds its inode, so the replacement's file has a different
+/// `(device, inode)` on every filesystem, tmpfs or ext4, and the row needs no inode reuse to bite.
+///
+/// The host's shutdown must then leave the replacement's socket where it is, still answering. A shutdown
+/// that unlinks its configured path whatever is there deletes it.
+#[test]
+fn a_host_never_unlinks_a_socket_it_did_not_bind() {
+    let path = socket_path("host-foreign");
+    let _ = std::fs::remove_file(&path);
+    let mut host = Host::new(HostConfig::default());
+    let served = host.serve(Some(path.clone())).expect("the host binds");
+    assert_eq!(served, path, "the host bound the path it was given");
+    assert!(
+        UnixStream::connect(&path).is_ok(),
+        "the host answers on its own socket before anything replaces it"
+    );
+
+    std::fs::remove_file(&path)
+        .expect("take the host's socket file away, as a restart would find it");
+    let replacement =
+        UnixListener::bind(&path).expect("bind a replacement socket at the host's path");
+    host.shutdown();
+
+    let file_survived = path.exists();
+    let still_answers = UnixStream::connect(&path).is_ok();
+    drop(replacement);
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        file_survived && still_answers,
+        "Host::shutdown removed {}, a socket another process bound there after the host's own file was \
+         gone (file present after shutdown: {file_survived}, connect after shutdown: {still_answers}). \
+         A hosted bus may remove only the file it bound itself.",
+        path.display()
+    );
+}
+
+/// **And it does remove its own**, on both ways a `Host` stops serving: an explicit [`Host::shutdown`]
+/// and a drop. The positive half of the row above, so the fix cannot pass it by never unlinking at all.
+#[test]
+fn a_host_removes_its_own_socket_on_shutdown_and_on_drop() {
+    let path = socket_path("host-own-shutdown");
+    let _ = std::fs::remove_file(&path);
+    let mut host = Host::new(HostConfig::default());
+    host.serve(Some(path.clone())).expect("the host binds");
+    assert!(
+        path.exists() && UnixStream::connect(&path).is_ok(),
+        "the socket exists and answers while the host serves"
+    );
+    host.shutdown();
+    assert!(
+        !path.exists(),
+        "Host::shutdown left its own socket file behind at {}",
+        path.display()
+    );
+    assert!(!host.is_serving() && host.socket_path().is_none());
+
+    let path = socket_path("host-own-drop");
+    let _ = std::fs::remove_file(&path);
+    {
+        let mut host = Host::new(HostConfig::default());
+        host.serve(Some(path.clone())).expect("the host binds");
+        assert!(path.exists(), "the socket exists while the host serves");
+    }
+    assert!(
+        !path.exists(),
+        "a dropped Host left its own socket file behind at {}",
+        path.display()
+    );
+}
+
+/// **A `Host` that was shut down serves again when asked.** [`Host::serve`] refuses only while a host is
+/// already serving, so a serve after [`Host::shutdown`] is a request the API accepts, and it must produce a
+/// bus a client can use, not an `Ok` naming a socket that answers nothing.
+///
+/// Measured with a real handshake and a real call, pumped by this thread the way a player's loop pumps,
+/// because a bare `connect` could win the race against an accept loop that has already given up.
+#[test]
+fn a_host_that_was_shut_down_serves_again() {
+    let path = socket_path("host-reserve");
+    let _ = std::fs::remove_file(&path);
+    let mut sys = machine();
+    let mut host = Host::new(HostConfig::default());
+    host.serve(Some(path.clone()))
+        .expect("the first serve binds");
+    host.shutdown();
+    assert!(!path.exists(), "the first serve's socket is gone");
+
+    let again = host
+        .serve(Some(path.clone()))
+        .expect("a host that was shut down binds again");
+    assert_eq!(again, path);
+
+    let client_path = path.clone();
+    let client = std::thread::spawn(move || {
+        let mut c = Client::connect_path(&client_path);
+        c.handshake(false);
+        c.ok("emulator/status", json!({}))
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !client.is_finished() && Instant::now() < deadline {
+        host.pump(&mut sys);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let finished = client.is_finished();
+    let status = if finished { client.join().ok() } else { None };
+    host.shutdown();
+    assert!(
+        status.is_some_and(|s| s["running"].is_boolean()),
+        "a host serving again after a shutdown did not answer a client on {} (client finished: {finished}). \
+         Host::serve returned Ok for a bus nobody can reach.",
+        path.display()
+    );
+    assert!(
+        !path.exists(),
+        "and the second serve's socket is removed too"
+    );
 }
