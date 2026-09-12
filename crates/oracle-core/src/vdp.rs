@@ -99,12 +99,13 @@ pub const SAT_SLOTS: usize = 80;
 /// SAT-cache size: [`SAT_SLOTS`] entries × the **cached 4 bytes** of each 8-byte entry — Y (word) +
 /// size/link (word); recon R5 / RR8. X + tile/attr (the other 4 bytes) are never cached. It was the literal
 /// `320`, a third spelling of the slot count beside the two bare `80`s.
-const SAT_CACHE_LEN: usize = SAT_SLOTS * 4;
+pub(crate) const SAT_CACHE_LEN: usize = SAT_SLOTS * 4;
 
-/// The VDP's owned state. The four hashed regions are always allocated at their fixed hardware sizes
-/// ([`crate::state_hash`]) and handed out as arrays of those sizes ([`Vdp::vram`] says where the stored
-/// `Vec` becomes one); the `state_hash`/`export_state` currencies read straight through them, so their
-/// byte layout is frozen.
+/// The VDP's owned state. The four hashed regions are always at their fixed hardware sizes
+/// ([`crate::state_hash`]): allocated so by [`Vdp::power_on`], and a restore refuses a snapshot that decodes
+/// one at any other size ([`crate::system::System::restore`]). They are handed out as arrays of those sizes
+/// ([`Vdp::vram`] says where the stored `Vec` becomes one); the `state_hash`/`export_state` currencies read
+/// straight through them, so their byte layout is frozen.
 /// One write-FIFO slot (recon R3): the data word plus a copy of the command code/address registers as they
 /// were when the write was enqueued. The physical slot **retains** its data after the entry drains (the pending
 /// count drops but the bytes stay) — that stale data is exactly what the read snoop quirk (CRAM read $08,
@@ -397,6 +398,19 @@ impl std::fmt::Debug for Vdp {
     }
 }
 
+/// The length-carrying fields of a [`Vdp`], borrowed mutably for snapshot-surgery tests
+/// ([`Vdp::regions_mut`]).
+#[cfg(test)]
+pub(crate) struct VdpRegionsMut<'a> {
+    pub vram: &'a mut Vec<u8>,
+    pub cram: &'a mut Vec<u8>,
+    pub vsram: &'a mut Vec<u8>,
+    pub sat_cache: &'a mut Vec<u8>,
+    pub write_captures: &'a mut Vec<VdpWrite>,
+    pub fifo_len: &'a mut u8,
+    pub fifo_write: &'a mut u8,
+}
+
 impl Vdp {
     /// Power on: allocate the four regions at their fixed sizes and seed VRAM with deterministic
     /// pseudo-random bytes drawn from the single seeded RNG (CRAM/VSRAM/registers start zeroed) — exactly
@@ -447,9 +461,12 @@ impl Vdp {
     /// and [`vsram`](Self::vsram). The fields stay `Vec`s because the bincode snapshot (save states,
     /// checkpoints) encodes a `Vec` with a length prefix and an array without one, so changing the field
     /// type would change every snapshot's bytes. [`power_on`](Self::power_on) allocates each region at its
-    /// size and nothing resizes one, so the conversion cannot fail on a machine this crate built; it can
-    /// only fail on a snapshot decoded with a wrong-length region, and there it panics naming the region
-    /// instead of hashing the wrong bytes.
+    /// size and nothing resizes one, so the conversion cannot fail on a machine this crate built; and
+    /// [`System::restore`](crate::system::System::restore) refuses a snapshot that decodes any of the three at
+    /// another size ([`SnapshotRegion`](crate::system::SnapshotRegion)), so it cannot fail on a restored one
+    /// either. Until that check existed, a snapshot decoded with a wrong-length region restored "fine" and
+    /// panicked here, at its first read. The `expect` stays as the statement of the invariant: reaching it
+    /// means a new way to build a `Vdp` has skipped both.
     pub fn vram(&self) -> &[u8; VRAM_SIZE] {
         self.vram
             .as_slice()
@@ -471,6 +488,46 @@ impl Vdp {
             .as_slice()
             .try_into()
             .expect("VSRAM is allocated at VSRAM_SIZE and never resized")
+    }
+
+    /// The VDP's share of [`System::restore`](crate::system::System::restore)'s door check: each field of
+    /// this struct whose size the code relies on, at that size
+    /// ([`SnapshotRegion`](crate::system::SnapshotRegion) lists them and says why each is there). It lives
+    /// here rather than in `system.rs` because the fields are private to this module.
+    pub(crate) fn check_regions(&self) -> Result<(), crate::system::MalformedSnapshot> {
+        use crate::system::{
+            check_region,
+            RegionBound::{AtMost, Exactly},
+            SnapshotRegion as R,
+        };
+        check_region(R::Vram, Exactly(VRAM_SIZE), self.vram.len())?;
+        check_region(R::Cram, Exactly(CRAM_SIZE), self.cram.len())?;
+        check_region(R::Vsram, Exactly(VSRAM_SIZE), self.vsram.len())?;
+        check_region(R::SatCache, Exactly(SAT_CACHE_LEN), self.sat_cache.len())?;
+        check_region(R::VdpWriteCaptures, Exactly(0), self.write_captures.len())?;
+        let ring = self.fifo.len();
+        check_region(R::VdpFifoPending, AtMost(ring), usize::from(self.fifo_len))?;
+        check_region(
+            R::VdpFifoCursor,
+            AtMost(ring - 1),
+            usize::from(self.fifo_write),
+        )
+    }
+
+    /// **Test-only surgery on the fields [`check_regions`](Self::check_regions) guards**, so a test can take
+    /// a real snapshot, bend one region, re-encode it (encoding checks nothing) and prove that
+    /// `System::restore` refuses it by name.
+    #[cfg(test)]
+    pub(crate) fn regions_mut(&mut self) -> VdpRegionsMut<'_> {
+        VdpRegionsMut {
+            vram: &mut self.vram,
+            cram: &mut self.cram,
+            vsram: &mut self.vsram,
+            sat_cache: &mut self.sat_cache,
+            write_captures: &mut self.write_captures,
+            fifo_len: &mut self.fifo_len,
+            fifo_write: &mut self.fifo_write,
+        }
     }
 
     /// Read-only access to the 24 VDP registers.

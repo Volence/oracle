@@ -32,19 +32,25 @@
 //!
 //! # What `restore` actually does on malformed input (measured, bincode 2.0.1, `config::standard()`)
 //!
-//! [`System::restore`] is a **static constructor**: it returns `Result<System, DecodeError>`, a brand-new
+//! [`System::restore`] is a **static constructor**: it returns `Result<System, RestoreError>`, a brand-new
 //! machine or nothing. It therefore *cannot* half-apply — the caller swaps whole `System` values, so a failed
 //! load structurally leaves the running machine untouched. Probing it with truncated, byte-flipped, and
 //! adversarial inputs found:
 //!
-//! * truncation at any offset → `Err(UnexpectedEnd)`; **no panic**;
-//! * random junk, including a maximal varint length prefix → `Err(InvalidIntegerType)`; **no panic, no
-//!   runaway allocation** (bincode bounds container reads by the remaining input);
+//! * truncation at any offset → `Err(Decode(UnexpectedEnd))`; **no panic**;
+//! * random junk, including a maximal varint length prefix → `Err(Decode(InvalidIntegerType))`; **no panic,
+//!   no runaway allocation** (bincode bounds container reads by the remaining input);
 //! * **trailing garbage after a complete payload is silently accepted** — so a *shrunk* `System` would decode
 //!   "fine" and leave bytes on the floor. Hence this module's explicit length field: the payload must be
 //!   exactly as long as the header claims, and the file exactly header + payload;
 //! * **a flipped byte inside a data region (RAM/VRAM/…) decodes OK, silently** — bincode has no integrity
-//!   check at all. Hence the payload checksum.
+//!   check at all. Hence the payload checksum;
+//! * **a region whose length prefix was edited along with its contents** (a CRAM one byte short, say)
+//!   decodes cleanly under bincode, and until `restore` checked region sizes it came back as a machine that
+//!   panicked at its first read. `restore` now refuses it by name ([`RestoreError::Malformed`], surfaced as
+//!   [`StateError::Malformed`]). Neither guard above catches that file: FNV-1a is no secret, so whoever
+//!   edits the payload can recompute the checksum, and the layout fingerprint is a property of this build,
+//!   not of the file.
 //!
 //! # Key map (mirrored in `main.rs`'s controls table and its startup printout)
 //!
@@ -60,7 +66,7 @@
 //! Named by the same rule as the `.srm` battery save (see [`crate::sram_file`]): next to the ROM, same stem,
 //! extension swapped — `…/foo.bin` slot 3 → `…/foo.state3`.
 
-use oracle_core::system::System;
+use oracle_core::system::{MalformedSnapshot, RestoreError, System};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -135,6 +141,10 @@ pub enum StateError {
     Checksum { found: u64, expected: u64 },
     /// bincode refused the payload (the layout guard did not catch this one).
     Decode(String),
+    /// bincode decoded the payload, but into a machine with a region at a size no machine has: a
+    /// hand-edited file whose checksum was recomputed, which none of the checks above can tell from a good
+    /// one. Carries the core's refusal, which names the region and both sizes.
+    Malformed(MalformedSnapshot),
 }
 
 impl std::fmt::Display for StateError {
@@ -167,6 +177,7 @@ impl std::fmt::Display for StateError {
                 "corrupt save state: payload checksum {found:#018x}, expected {expected:#018x}"
             ),
             StateError::Decode(e) => write!(f, "corrupt save state: {e}"),
+            StateError::Malformed(m) => write!(f, "corrupt save state: {m}"),
         }
     }
 }
@@ -240,7 +251,10 @@ pub fn decode(bytes: &[u8], rom_fp: u64) -> Result<System, StateError> {
             expected: checksum,
         });
     }
-    System::restore(payload).map_err(|e| StateError::Decode(e.to_string()))
+    System::restore(payload).map_err(|e| match e {
+        RestoreError::Decode(e) => StateError::Decode(e.to_string()),
+        RestoreError::Malformed(m) => StateError::Malformed(m),
+    })
 }
 
 /// A save-state load failure: either the file could not be read, or its contents were refused.
@@ -580,6 +594,121 @@ mod tests {
         forged.extend_from_slice(&fnv1a(&junk).to_le_bytes());
         forged.extend_from_slice(&junk);
         assert!(matches!(decode(&forged, fp), Err(StateError::Decode(_))));
+    }
+
+    /// Wrap `payload` in a header that passes every container check for `fp`: the right magic, version,
+    /// layout fingerprint and ROM fingerprint, the payload's exact length, and its checksum recomputed. What
+    /// a person who hand-edits a slot file and then fixes up its header ends up with.
+    fn with_passing_header(payload: &[u8], fp: u64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+        out.extend_from_slice(&MAGIC);
+        out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        out.extend_from_slice(&layout_fingerprint().to_le_bytes());
+        out.extend_from_slice(&fp.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        out.extend_from_slice(&fnv1a(payload).to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// Offset of CRAM's bincode length prefix inside a `System::snapshot()` payload, located by the shape
+    /// bincode 2's `config::standard()` gives the VDP's three memories, which sit back to back: VRAM's length
+    /// (65536 does not fit a u16, so the varint is tag 252 then the u32 little-endian), its 65536 bytes, then
+    /// CRAM's length (128 is at most 250, so one byte), its 128 bytes, then VSRAM's length (80, one byte).
+    /// Work RAM carries the same five-byte prefix as VRAM but is followed by Z80 RAM's three-byte prefix, so
+    /// the two cannot be confused. Exactly one candidate is required: none, or several, means the encoding
+    /// moved and the surgery below would be measuring nothing.
+    fn cram_prefix_offset(payload: &[u8]) -> usize {
+        use oracle_core::state_hash::{CRAM_SIZE, VRAM_SIZE, VSRAM_SIZE};
+        const U32_VARINT_TAG: u8 = 252;
+        let mut vram_prefix = vec![U32_VARINT_TAG];
+        vram_prefix.extend_from_slice(&(VRAM_SIZE as u32).to_le_bytes());
+        assert!(
+            VRAM_SIZE > u16::MAX as usize && CRAM_SIZE <= 250 && VSRAM_SIZE <= 250,
+            "the prefix shapes this search assumes no longer follow from the region sizes"
+        );
+        let cram_at = |i: usize| i + vram_prefix.len() + VRAM_SIZE;
+        let hits: Vec<usize> = (0..payload.len())
+            .filter(|&i| {
+                payload[i..].starts_with(&vram_prefix)
+                    && payload.get(cram_at(i)) == Some(&(CRAM_SIZE as u8))
+                    && payload.get(cram_at(i) + 1 + CRAM_SIZE) == Some(&(VSRAM_SIZE as u8))
+            })
+            .map(cram_at)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one VRAM-CRAM-VSRAM run in the snapshot, found {hits:?}: the bincode shape \
+             moved, so this surgery cannot locate CRAM"
+        );
+        hits[0]
+    }
+
+    /// **The untrusted door.** A slot file whose CRAM was cut one byte short, with its bincode length
+    /// prefix edited to match and every header field fixed up, passes every container check (magic,
+    /// version, layout, ROM, exact length, checksum) and still decodes under bincode, because everything
+    /// after CRAM sits where the decoder expects it. Before `restore` checked region sizes, `load` handed
+    /// that file back as a machine that panicked at its first `state_hash`. Now it is refused, naming CRAM
+    /// and both sizes, in a sentence the window can show.
+    #[test]
+    fn a_slot_file_with_a_short_cram_is_refused_by_name_and_does_not_panic() {
+        use oracle_core::state_hash::CRAM_SIZE;
+        use oracle_core::system::{RegionBound, SnapshotRegion};
+        let (mut sys, fp) = booted("m68k_memory_test.bin");
+        sys.run_frames(3);
+        let payload = sys.snapshot();
+        let at = cram_prefix_offset(&payload);
+
+        // The control: the same header wrapper over the untouched payload loads through the same file door,
+        // so a refusal below is the surgery's doing, not the wrapper's.
+        let good_path = unique_temp("slot-good");
+        std::fs::write(&good_path, with_passing_header(&payload, fp))
+            .expect("write the control slot");
+        let control = load(&good_path, fp);
+        let _ = std::fs::remove_file(&good_path);
+        assert!(
+            control.expect("the control slot must load") == sys,
+            "the control slot round-trips the whole machine"
+        );
+
+        // The surgery, on the bincode bytes: the prefix now says one byte fewer, and CRAM's last byte (the
+        // data runs at at+1 ..= at+CRAM_SIZE) is gone, so every field after CRAM still decodes in place.
+        let mut short = payload.clone();
+        short[at] = (CRAM_SIZE - 1) as u8;
+        short.remove(at + CRAM_SIZE);
+        let path = unique_temp("slot-short-cram");
+        std::fs::write(&path, with_passing_header(&short, fp)).expect("write the malformed slot");
+        let got = load(&path, fp);
+        let _ = std::fs::remove_file(&path);
+
+        let text = match &got {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("the short-CRAM slot loaded: restore's region check did not run"),
+        };
+        match got {
+            // WHICH refusal: Malformed is only built after bincode decoded the payload, so this arm also
+            // rules out bincode itself having refused the bent bytes.
+            Err(LoadError::State(StateError::Malformed(MalformedSnapshot::Region {
+                region,
+                expected,
+                found,
+            }))) => {
+                assert_eq!(region, SnapshotRegion::Cram, "the refusal names CRAM");
+                assert_eq!(expected, RegionBound::Exactly(CRAM_SIZE));
+                assert_eq!(found, CRAM_SIZE - 1);
+            }
+            other => panic!("expected a Malformed refusal naming CRAM, got {other:?}"),
+        }
+        assert_eq!(
+            text,
+            format!(
+                "corrupt save state: malformed snapshot: CRAM: found {} bytes, expected exactly {} bytes",
+                CRAM_SIZE - 1,
+                CRAM_SIZE
+            ),
+            "what the window shows names the region and both sizes"
+        );
     }
 
     /// **Empirical answer to "does a snapshot include SRAM?"** — build a cart whose reset vector runs three

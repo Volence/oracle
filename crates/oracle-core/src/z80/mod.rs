@@ -242,6 +242,13 @@ impl Z80 {
         self.fault
     }
 
+    /// Test-only: latch `fault` as though the core had refused an encoding, so a test can put a refusal the
+    /// live decoder never raises (every encoding is served today) into a snapshot.
+    #[cfg(test)]
+    pub(crate) fn latch_fault_for_test(&mut self, fault: Z80Fault) {
+        self.fault = Some(fault);
+    }
+
     /// Latch a refusal (see [`Z80Fault`]) for an encoding no handler serves.
     ///
     /// Called from the decode arms **before any bus write or register mutation**, so the only state the

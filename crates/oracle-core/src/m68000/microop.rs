@@ -3205,6 +3205,13 @@ impl Cpu68000 {
         self.state
     }
 
+    /// Whether an instruction is mid-execution on the micro-op driver ([`begin`](Self::begin) /
+    /// [`step_micro_op`](Self::step_micro_op)). Never true between the whole-instruction steps `System`
+    /// runs; `System::restore` refuses a snapshot in which it is.
+    pub(crate) fn instruction_in_flight(&self) -> bool {
+        self.inflight.is_some()
+    }
+
     /// Run a hand-built exception recipe (reset / trace / interrupt) to completion, applying its terminal
     /// state transition: a double bus fault detected while stacking a group-0 frame halts the processor
     /// (M68000UM §5.4.4). Shared by the `step` orchestrator arms so none can forget the transition.

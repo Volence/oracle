@@ -7,8 +7,10 @@
 //! The chips **are** fields here — the 68000 ([`Cpu68000`]), the Z80 ([`Z80`]), the VDP and the YM2612 —
 //! each driven through a `Bus` adapter that borrows the relevant fields per step (split-borrow):
 //! [`MegaDriveBus`] for the 68000, [`Z80Bus`] for the sound CPU. Memory regions are owned byte buffers,
-//! always allocated at their fixed hardware sizes by [`System::new`]. (This paragraph promised them in the
-//! future tense — the first paragraph of the core's central module — until the lens sweep.)
+//! always allocated at their fixed hardware sizes by [`System::new`], and [`System::restore`] refuses a
+//! snapshot that decodes one at any other size ([`SnapshotRegion`]), so no machine this crate hands out has
+//! one wrong. (This paragraph promised them in the future tense — the first paragraph of the core's central
+//! module — until the lens sweep.)
 
 use crate::bus::{
     cart_decode, BusEventSink, CartBanks, CartByte, MegaDriveBus, SramMap, StepRetire, StopWhen,
@@ -169,6 +171,220 @@ const EXPORT_PSG_PLACEHOLDER: usize = 0x10;
 /// the base/end/odd map stay bincode-only, and SRAM is deliberately excluded from `state_hash` (Oracle's
 /// `OpStateHash` hashes VDP-only). See `docs/export-state-v1.md` (§v2).
 const EXPORT_SRAM_LEN: usize = 0x1_0000;
+
+/// **A snapshot region whose size the machine relies on after a restore** — what [`System::restore`]
+/// checks before it hands a decoded machine back.
+///
+/// Each is a field the bincode snapshot carries with its own length (a `Vec`, or a count or cursor over a
+/// fixed ring) that code elsewhere reads without checking that length again: an `expect`, an index, a
+/// slice. A snapshot [`System::snapshot`] produced always has every one right, because [`System::new`]
+/// allocates them at their sizes and nothing resizes them. Bytes nobody in this process produced need not:
+/// a hand-edited save-state file whose checksum was recomputed decodes cleanly with a short VRAM, and until
+/// `restore` checked, the machine it decoded into panicked at its first `state_hash`. `restore` now refuses
+/// such a snapshot and names the first region that is wrong ([`MalformedSnapshot`]).
+///
+/// Not here, and why: the cartridge ROM (any length is a valid cartridge; every read of it is
+/// bounds-checked and a short image reads open bus), and every fixed-size array — the VDP register file,
+/// the FIFO slots, both CPUs' register files — because bincode encodes an array with no length prefix, so
+/// it cannot decode at any other size. The scheduler's event queue is a `BTreeMap` nothing indexes by
+/// position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SnapshotRegion {
+    /// 68000 work RAM, [`RAM_SIZE`] bytes. Both buses index it masked to that size, and
+    /// [`System::export_state`] copies it whole into a fixed-offset image.
+    WorkRam,
+    /// Z80 RAM, [`Z80_RAM_SIZE`] bytes. Both buses index it masked to that size; `export_state` copies it
+    /// whole.
+    Z80Ram,
+    /// VRAM, [`VRAM_SIZE`] bytes. [`Vdp::vram`] converts it to a fixed array with an `expect`.
+    Vram,
+    /// CRAM, [`CRAM_SIZE`] bytes. [`Vdp::cram`] converts it to a fixed array with an `expect`.
+    Cram,
+    /// VSRAM, [`VSRAM_SIZE`] bytes. [`Vdp::vsram`] converts it to a fixed array with an `expect`.
+    Vsram,
+    /// The VDP's sprite-attribute cache (80 slots × 4 bytes), indexed by slot on every SAT write-through
+    /// and by the sprite evaluation walk.
+    SatCache,
+    /// The cartridge SRAM buffer: exactly the size its map implies (`(end - base) / 2 + 1` bytes), because
+    /// the bus indexes it with an offset computed from that map; empty when no map is provisioned.
+    Sram,
+    /// The VDP write-capture buffer. The run loop drains it after every CPU step and disarms it on return,
+    /// so it is empty wherever a caller can take a snapshot; a non-empty one would reach the next armed
+    /// run's sink as writes that run never made. (`Vdp::set_write_capture` is public, so a caller that
+    /// armed it by hand outside a run and then wrote the data port would have its own snapshot refused.
+    /// Nothing in the workspace does.)
+    VdpWriteCaptures,
+    /// Pending entries in the VDP's 4-slot write FIFO: at most the ring's size. The status word reads
+    /// FIFO-full only at exactly that size, and the drain pops one entry per count.
+    VdpFifoPending,
+    /// The VDP write FIFO's next-slot cursor, an index into the 4-slot ring (`fifo[cursor]`).
+    VdpFifoCursor,
+    /// 68000 instructions in flight: none. `System` only ever runs whole instructions, so its CPU is between
+    /// instructions wherever a snapshot can be taken. A decoded in-flight micro-op program would carry its
+    /// own op count and cursor over a fixed op array, and operand indices into a fixed scratch file, and
+    /// nothing re-checks any of them.
+    M68kInFlight,
+    /// How many bytes of a latched Z80 refusal's 4-byte encoding buffer are meaningful: at most 4, because
+    /// its `Display` slices the buffer to that length.
+    Z80FaultLength,
+}
+
+impl SnapshotRegion {
+    /// The region's name as a person reads it in a refusal (`"VRAM"`, `"68000 work RAM"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            SnapshotRegion::WorkRam => "68000 work RAM",
+            SnapshotRegion::Z80Ram => "Z80 RAM",
+            SnapshotRegion::Vram => "VRAM",
+            SnapshotRegion::Cram => "CRAM",
+            SnapshotRegion::Vsram => "VSRAM",
+            SnapshotRegion::SatCache => "VDP sprite-attribute cache",
+            SnapshotRegion::Sram => "cartridge SRAM",
+            SnapshotRegion::VdpWriteCaptures => "VDP write-capture buffer",
+            SnapshotRegion::VdpFifoPending => "VDP write-FIFO pending count",
+            SnapshotRegion::VdpFifoCursor => "VDP write-FIFO cursor",
+            SnapshotRegion::M68kInFlight => "68000 instructions in flight",
+            SnapshotRegion::Z80FaultLength => "Z80 refusal's encoding length",
+        }
+    }
+
+    /// The unit the region's number is counted in, with its leading space (`" bytes"`), or empty where the
+    /// number is a count of things or an index rather than a size.
+    fn unit(self) -> &'static str {
+        match self {
+            SnapshotRegion::WorkRam
+            | SnapshotRegion::Z80Ram
+            | SnapshotRegion::Vram
+            | SnapshotRegion::Cram
+            | SnapshotRegion::Vsram
+            | SnapshotRegion::SatCache
+            | SnapshotRegion::Sram
+            | SnapshotRegion::Z80FaultLength => " bytes",
+            SnapshotRegion::VdpWriteCaptures | SnapshotRegion::VdpFifoPending => " entries",
+            SnapshotRegion::VdpFifoCursor | SnapshotRegion::M68kInFlight => "",
+        }
+    }
+}
+
+/// What a region's size must be for [`System::restore`] to accept it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionBound {
+    /// Exactly this many.
+    Exactly(usize),
+    /// This many or fewer.
+    AtMost(usize),
+}
+
+impl RegionBound {
+    fn admits(self, found: usize) -> bool {
+        match self {
+            RegionBound::Exactly(n) => found == n,
+            RegionBound::AtMost(n) => found <= n,
+        }
+    }
+}
+
+impl std::fmt::Display for RegionBound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegionBound::Exactly(n) => write!(f, "exactly {n}"),
+            RegionBound::AtMost(n) => write!(f, "at most {n}"),
+        }
+    }
+}
+
+/// **A snapshot that decoded, but into a machine nothing could have built**: why [`System::restore`]
+/// refused bytes bincode itself accepted. See [`SnapshotRegion`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MalformedSnapshot {
+    /// `region` decoded at `found`, which `expected` does not admit.
+    Region {
+        region: SnapshotRegion,
+        expected: RegionBound,
+        found: usize,
+    },
+    /// The cartridge SRAM map is inverted (`base` past `end`), so it implies no SRAM size to check the
+    /// buffer against. [`System::load_rom`] never records one.
+    SramMapInverted { base: u32, end: u32 },
+}
+
+impl std::fmt::Display for MalformedSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MalformedSnapshot::Region {
+                region,
+                expected,
+                found,
+            } => write!(
+                f,
+                "malformed snapshot: {}: found {found}{unit}, expected {expected}{unit}",
+                region.name(),
+                unit = region.unit()
+            ),
+            MalformedSnapshot::SramMapInverted { base, end } => write!(
+                f,
+                "malformed snapshot: the cartridge SRAM map is inverted (base ${base:06X} is past end \
+                 ${end:06X}), so it implies no SRAM size"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MalformedSnapshot {}
+
+/// Why [`System::restore`] refused a snapshot.
+#[derive(Debug)]
+pub enum RestoreError {
+    /// bincode could not decode the bytes as a `System` at all (truncated, or not a snapshot). Its
+    /// `Display` is bincode's own message verbatim, so every refusal that carried the bare `DecodeError`
+    /// before this type existed reads the same now.
+    Decode(bincode::error::DecodeError),
+    /// The bytes decoded, but into a machine with a region at a size no machine has. See
+    /// [`MalformedSnapshot`].
+    Malformed(MalformedSnapshot),
+}
+
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreError::Decode(e) => write!(f, "{e}"),
+            RestoreError::Malformed(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for RestoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RestoreError::Decode(e) => Some(e),
+            RestoreError::Malformed(m) => Some(m),
+        }
+    }
+}
+
+impl From<bincode::error::DecodeError> for RestoreError {
+    fn from(e: bincode::error::DecodeError) -> Self {
+        RestoreError::Decode(e)
+    }
+}
+
+/// Refuse `region` unless `expected` admits `found`: the one comparison every region check in
+/// [`System::restore`] goes through, the VDP's included.
+pub(crate) fn check_region(
+    region: SnapshotRegion,
+    expected: RegionBound,
+    found: usize,
+) -> Result<(), MalformedSnapshot> {
+    if expected.admits(found) {
+        Ok(())
+    } else {
+        Err(MalformedSnapshot::Region {
+            region,
+            expected,
+            found,
+        })
+    }
+}
 
 /// The whole machine. One owner of all state.
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -722,8 +938,9 @@ impl System {
         }
         let src = cart_decode(a, self.sram_map(), self.sram_enabled, &self.cart_banks);
         // `get` rather than an index: the bus indexes the SRAM buffer directly because the buffer is sized
-        // from the same map (`sram_byte_len`), so an out-of-range SRAM index cannot arise; answering `None`
-        // there rather than panicking keeps an inspection read total.
+        // from the same map (`sram_byte_len`: by `load_rom` for a loaded cart, and checked again by
+        // `restore` for a decoded one), so an out-of-range SRAM index cannot arise; answering `None` there
+        // rather than panicking keeps an inspection read total.
         let byte = match src {
             CartByte::Sram(i) => *self.sram.get(i)?,
             CartByte::Rom(i) => *self.rom.get(i)?,
@@ -838,11 +1055,63 @@ impl System {
 
     /// Restore a machine from a snapshot produced by [`System::snapshot`].
     ///
+    /// **Refused at the door, never at the first read.** Either `bytes` decode into a machine whose every
+    /// [`SnapshotRegion`] has the size the rest of the crate relies on, or this returns `Err` and constructs
+    /// nothing: [`RestoreError::Decode`] when bincode cannot decode them at all, and
+    /// [`RestoreError::Malformed`] naming the first wrong region and both sizes when it can. A snapshot this
+    /// crate produced always passes, so an in-process checkpoint can only meet the first; the second is for
+    /// bytes that crossed a trust boundary, such as a save-state file read off disk.
+    ///
+    /// Not checked: the *contents* of a region (a flipped VRAM byte decodes and restores; the frontend's
+    /// save-state container carries a checksum for that), and bytes left over after a complete snapshot,
+    /// which bincode ignores and so does this (the container carries an exact length for that).
+    ///
     /// The restored machine holds **no** deferred scanline row (the retained row round-trips as nothing —
     /// see [`snapshot`](Self::snapshot)), so restoring a mid-frame checkpoint costs the resumed run one row.
-    pub fn restore(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
-        let (system, _len) = bincode::decode_from_slice(bytes, bincode::config::standard())?;
+    pub fn restore(bytes: &[u8]) -> Result<Self, RestoreError> {
+        let (system, _len): (System, usize) =
+            bincode::decode_from_slice(bytes, bincode::config::standard())?;
+        system.check_regions().map_err(RestoreError::Malformed)?;
         Ok(system)
+    }
+
+    /// Every [`SnapshotRegion`] at the size the machine relies on, or the first that is not. Run by
+    /// [`restore`](Self::restore) on each decoded machine. The expectations come from the region constants,
+    /// and for SRAM from the decoded map, never from the sizes being checked.
+    fn check_regions(&self) -> Result<(), MalformedSnapshot> {
+        use RegionBound::{AtMost, Exactly};
+        use SnapshotRegion as R;
+        check_region(R::WorkRam, Exactly(RAM_SIZE), self.ram.len())?;
+        check_region(R::Z80Ram, Exactly(Z80_RAM_SIZE), self.z80_ram.len())?;
+        // The SRAM buffer's size follows from its map, exactly as `load_rom` sized it; with no map it is
+        // the empty buffer `new` starts with (and `export_state` would otherwise copy stray bytes into the
+        // SRAM region it documents as all-zero for a cart without SRAM).
+        let sram_len = if self.sram_present {
+            if self.sram_base > self.sram_end {
+                return Err(MalformedSnapshot::SramMapInverted {
+                    base: self.sram_base,
+                    end: self.sram_end,
+                });
+            }
+            sram_byte_len(self.sram_base, self.sram_end)
+        } else {
+            0
+        };
+        check_region(R::Sram, Exactly(sram_len), self.sram.len())?;
+        self.vdp.check_regions()?;
+        check_region(
+            R::M68kInFlight,
+            Exactly(0),
+            usize::from(self.cpu.instruction_in_flight()),
+        )?;
+        if let Some(fault) = self.z80.fault() {
+            check_region(
+                R::Z80FaultLength,
+                AtMost(fault.bytes.len()),
+                usize::from(fault.len),
+            )?;
+        }
+        Ok(())
     }
 
     /// The VDP `state_hash`, byte-compatible with Oracle. Note: 68000 RAM is **not** part of this hash
@@ -3588,5 +3857,314 @@ mod tests {
         // And the anchor is usable: a following run advances from there.
         s.run_frames(1);
         assert_eq!(s.frame_boundary_mclk, 5 * MCLK_PER_FRAME);
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // `restore` refuses a snapshot whose regions decoded at the wrong size (RESTORE-REGION-SIZES)
+    // -----------------------------------------------------------------------------------------------
+
+    /// **Snapshot surgery.** Take a real snapshot of `machine` (its untouched bytes are asserted to restore,
+    /// so the bend is the only difference), bend one field with `bend`, and re-encode: `snapshot` checks
+    /// nothing, so the bent bytes are what a hand-edited file would carry, length prefixes and all. Before
+    /// handing them to `restore` this asserts that **bincode alone still decodes them**, so a refusal can
+    /// only have come from the region check, never from bincode failing to read a shape.
+    fn restore_bent_from(
+        machine: System,
+        bend: impl FnOnce(&mut System),
+    ) -> Result<System, RestoreError> {
+        let mut bent =
+            System::restore(&machine.snapshot()).expect("control: the unbent snapshot restores");
+        bend(&mut bent);
+        let bytes = bent.snapshot();
+        let raw: Result<(System, usize), _> =
+            bincode::decode_from_slice(&bytes, bincode::config::standard());
+        assert!(
+            raw.is_ok(),
+            "bincode alone must decode the bent bytes, or a refusal proves nothing about the region \
+             check: {:?}",
+            raw.err()
+        );
+        System::restore(&bytes)
+    }
+
+    /// [`restore_bent_from`] over the test ROM, booted and run for two frames.
+    fn restore_bent(bend: impl FnOnce(&mut System)) -> Result<System, RestoreError> {
+        let mut s = booted(0x5EED);
+        s.run_frames(2);
+        restore_bent_from(s, bend)
+    }
+
+    /// `got` must be the refusal naming `region` with exactly these sizes. The two other outcomes get their
+    /// own messages because they mean different things: `Decode` means the surgery broke the encoding and
+    /// the check never ran; `Ok` means the check for `region` is missing.
+    #[track_caller]
+    fn assert_refused(
+        got: Result<System, RestoreError>,
+        region: SnapshotRegion,
+        expected: RegionBound,
+        found: usize,
+    ) {
+        match got {
+            Err(RestoreError::Malformed(m)) => assert_eq!(
+                m,
+                MalformedSnapshot::Region {
+                    region,
+                    expected,
+                    found
+                },
+                "the refusal names the wrong region or the wrong sizes"
+            ),
+            Err(RestoreError::Decode(e)) => panic!(
+                "{}: bincode refused the bent bytes ({e}), so the region check never ran",
+                region.name()
+            ),
+            Ok(_) => panic!(
+                "{} at {found} was accepted: restore has no {region:?} check",
+                region.name()
+            ),
+        }
+    }
+
+    /// A bend that leaves a real machine state must still restore (the boundary side of an `AtMost`).
+    #[track_caller]
+    fn assert_restores(got: Result<System, RestoreError>, what: &str) {
+        if let Err(e) = got {
+            panic!("{what} is a state a machine can be in and must restore, got: {e}");
+        }
+    }
+
+    /// The control for every refusal below: the surgery path with no bend restores, to the same machine.
+    #[test]
+    fn restore_accepts_an_unbent_snapshot_through_the_surgery_path() {
+        let mut s = booted(0x5EED);
+        s.run_frames(2);
+        let back = restore_bent_from(s.clone(), |_| {}).expect("an unbent snapshot restores");
+        assert_eq!(back, s, "and round-trips the whole machine");
+        assert_eq!(back.state_hash(), s.state_hash());
+        assert_eq!(back.export_state_hash(), s.export_state_hash());
+    }
+
+    #[test]
+    fn restore_refuses_work_ram_of_the_wrong_size() {
+        let want = RegionBound::Exactly(RAM_SIZE);
+        let short = restore_bent(|s| {
+            s.ram.pop();
+        });
+        assert_refused(short, SnapshotRegion::WorkRam, want, RAM_SIZE - 1);
+        let long = restore_bent(|s| s.ram.push(0));
+        assert_refused(long, SnapshotRegion::WorkRam, want, RAM_SIZE + 1);
+    }
+
+    #[test]
+    fn restore_refuses_z80_ram_of_the_wrong_size() {
+        let want = RegionBound::Exactly(Z80_RAM_SIZE);
+        let short = restore_bent(|s| {
+            s.z80_ram.pop();
+        });
+        assert_refused(short, SnapshotRegion::Z80Ram, want, Z80_RAM_SIZE - 1);
+        let long = restore_bent(|s| s.z80_ram.push(0));
+        assert_refused(long, SnapshotRegion::Z80Ram, want, Z80_RAM_SIZE + 1);
+    }
+
+    #[test]
+    fn restore_refuses_vram_of_the_wrong_size() {
+        let want = RegionBound::Exactly(VRAM_SIZE);
+        let short = restore_bent(|s| {
+            s.vdp.regions_mut().vram.pop();
+        });
+        assert_refused(short, SnapshotRegion::Vram, want, VRAM_SIZE - 1);
+        let long = restore_bent(|s| s.vdp.regions_mut().vram.push(0));
+        assert_refused(long, SnapshotRegion::Vram, want, VRAM_SIZE + 1);
+    }
+
+    #[test]
+    fn restore_refuses_cram_of_the_wrong_size() {
+        let want = RegionBound::Exactly(CRAM_SIZE);
+        let short = restore_bent(|s| {
+            s.vdp.regions_mut().cram.pop();
+        });
+        assert_refused(short, SnapshotRegion::Cram, want, CRAM_SIZE - 1);
+        let long = restore_bent(|s| s.vdp.regions_mut().cram.push(0));
+        assert_refused(long, SnapshotRegion::Cram, want, CRAM_SIZE + 1);
+    }
+
+    #[test]
+    fn restore_refuses_vsram_of_the_wrong_size() {
+        let want = RegionBound::Exactly(VSRAM_SIZE);
+        let short = restore_bent(|s| {
+            s.vdp.regions_mut().vsram.pop();
+        });
+        assert_refused(short, SnapshotRegion::Vsram, want, VSRAM_SIZE - 1);
+        let long = restore_bent(|s| s.vdp.regions_mut().vsram.push(0));
+        assert_refused(long, SnapshotRegion::Vsram, want, VSRAM_SIZE + 1);
+    }
+
+    #[test]
+    fn restore_refuses_a_sat_cache_of_the_wrong_size() {
+        use crate::vdp::SAT_CACHE_LEN;
+        let want = RegionBound::Exactly(SAT_CACHE_LEN);
+        let short = restore_bent(|s| {
+            s.vdp.regions_mut().sat_cache.pop();
+        });
+        assert_refused(short, SnapshotRegion::SatCache, want, SAT_CACHE_LEN - 1);
+        let long = restore_bent(|s| s.vdp.regions_mut().sat_cache.push(0));
+        assert_refused(long, SnapshotRegion::SatCache, want, SAT_CACHE_LEN + 1);
+    }
+
+    #[test]
+    fn restore_refuses_sram_that_disagrees_with_its_map() {
+        // The test ROM has no "RA" header, so `load_rom` provisioned the header-less fallback page. Its size
+        // is derived here from that page's bounds and the one-byte-lane wiring, not from `sram_byte_len`.
+        let fallback = ((SRAM_FALLBACK_END - SRAM_FALLBACK_BASE) / 2 + 1) as usize;
+        let s = booted(0x5EED);
+        assert!(
+            s.sram_present && s.sram.len() == fallback,
+            "non-vacuity: the fixture carries the fallback map"
+        );
+        let want = RegionBound::Exactly(fallback);
+        let short = restore_bent(|s| {
+            s.sram.pop();
+        });
+        assert_refused(short, SnapshotRegion::Sram, want, fallback - 1);
+        let long = restore_bent(|s| s.sram.push(0));
+        assert_refused(long, SnapshotRegion::Sram, want, fallback + 1);
+        // With no map (a machine no ROM was loaded into) the buffer is the empty one `new` starts with.
+        let unmapped = System::new(0x5EED);
+        assert!(!unmapped.sram_present && unmapped.sram.is_empty());
+        let stray = restore_bent_from(unmapped, |s| s.sram.extend_from_slice(&[0xA5; 16]));
+        assert_refused(stray, SnapshotRegion::Sram, RegionBound::Exactly(0), 16);
+    }
+
+    #[test]
+    fn restore_refuses_an_inverted_sram_map_instead_of_sizing_from_it() {
+        match restore_bent(|s| std::mem::swap(&mut s.sram_base, &mut s.sram_end)) {
+            Err(RestoreError::Malformed(MalformedSnapshot::SramMapInverted { base, end })) => {
+                assert_eq!((base, end), (SRAM_FALLBACK_END, SRAM_FALLBACK_BASE));
+            }
+            other => panic!("an inverted SRAM map must be refused as such, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restore_refuses_a_non_empty_vdp_write_capture_buffer() {
+        use crate::vdp::{VdpVia, VdpWrite};
+        let stray = VdpWrite {
+            target: VdpTarget::Cram,
+            addr: 0,
+            old: 0,
+            new: 0x0EEE,
+            size: 2,
+            via: VdpVia::Direct,
+            mclk: 0,
+        };
+        let got = restore_bent(|s| s.vdp.regions_mut().write_captures.push(stray));
+        assert_refused(
+            got,
+            SnapshotRegion::VdpWriteCaptures,
+            RegionBound::Exactly(0),
+            1,
+        );
+    }
+
+    /// The write FIFO's four physical slots (recon R3): the length of `Vdp::fifo`, spelled as the hardware
+    /// fact rather than read back from the struct under test.
+    const FIFO_SLOTS: usize = 4;
+
+    #[test]
+    fn restore_refuses_a_vdp_fifo_pending_count_past_the_ring() {
+        // A full FIFO is a real state, so the ring's own size restores; one past it does not.
+        let full = restore_bent(|s| *s.vdp.regions_mut().fifo_len = FIFO_SLOTS as u8);
+        assert_restores(full, "a full write FIFO");
+        let over = restore_bent(|s| *s.vdp.regions_mut().fifo_len = FIFO_SLOTS as u8 + 1);
+        assert_refused(
+            over,
+            SnapshotRegion::VdpFifoPending,
+            RegionBound::AtMost(FIFO_SLOTS),
+            FIFO_SLOTS + 1,
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_vdp_fifo_cursor_outside_the_ring() {
+        let last = restore_bent(|s| *s.vdp.regions_mut().fifo_write = FIFO_SLOTS as u8 - 1);
+        assert_restores(last, "the cursor on the ring's last slot");
+        let outside = restore_bent(|s| *s.vdp.regions_mut().fifo_write = FIFO_SLOTS as u8);
+        assert_refused(
+            outside,
+            SnapshotRegion::VdpFifoCursor,
+            RegionBound::AtMost(FIFO_SLOTS - 1),
+            FIFO_SLOTS,
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_snapshot_with_a_68000_instruction_in_flight() {
+        use crate::m68000::microop::{MicroOp, MicroState};
+        let got = restore_bent(|s| {
+            s.cpu
+                .begin(MicroState::from_ops(&[MicroOp::Internal { cycles: 4 }]))
+        });
+        assert_refused(
+            got,
+            SnapshotRegion::M68kInFlight,
+            RegionBound::Exactly(0),
+            1,
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_z80_refusal_longer_than_its_encoding_buffer() {
+        use crate::z80::Z80Fault;
+        let fault = |len: u8| Z80Fault {
+            pc: 0x0123,
+            bytes: [0xED, 0x77, 0x00, 0x00],
+            len,
+        };
+        let buf = fault(0).bytes.len();
+        let whole = restore_bent(|s| s.z80.latch_fault_for_test(fault(buf as u8)));
+        assert_restores(whole, "a refusal that uses its whole encoding buffer");
+        let past = restore_bent(|s| s.z80.latch_fault_for_test(fault(buf as u8 + 1)));
+        assert_refused(
+            past,
+            SnapshotRegion::Z80FaultLength,
+            RegionBound::AtMost(buf),
+            buf + 1,
+        );
+    }
+
+    /// What a person reads names the region and both sizes.
+    #[test]
+    fn a_region_refusal_reads_as_the_region_and_both_sizes() {
+        let err = restore_bent(|s| {
+            s.vdp.regions_mut().vram.pop();
+        })
+        .expect_err("a short VRAM is refused");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "malformed snapshot: VRAM: found {} bytes, expected exactly {} bytes",
+                VRAM_SIZE - 1,
+                VRAM_SIZE
+            )
+        );
+    }
+
+    /// A refusal bincode raises reads exactly as bincode's own error does, so every surface that carried the
+    /// bare `DecodeError` before `RestoreError` existed (the `emulator/restore` refusal text, the frontend's
+    /// `corrupt save state:` line) says the same words now.
+    #[test]
+    fn a_decode_refusal_reads_exactly_as_bincodes_own_error() {
+        let snap = booted(0x5EED).snapshot();
+        let cases: [&[u8]; 3] = [&[], &snap[..snap.len() / 2], &[0xFF; 64]];
+        for bytes in cases {
+            let ours = System::restore(bytes).expect_err("these bytes are not a snapshot");
+            assert!(
+                matches!(ours, RestoreError::Decode(_)),
+                "a bincode failure is a Decode refusal, got {ours:?}"
+            );
+            let raw = bincode::decode_from_slice::<System, _>(bytes, bincode::config::standard())
+                .expect_err("bincode refuses these bytes too");
+            assert_eq!(ours.to_string(), raw.to_string());
+        }
     }
 }
