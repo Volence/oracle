@@ -1330,7 +1330,21 @@ pub fn every_mask() -> Vec<crate::render::LayerMask> {
 /// **The independent expectation**: the masked picture built one line at a time from
 /// [`Vdp::render_line_masked`](crate::vdp::Vdp::render_line_masked), over lines `0..ACTIVE_LINES`, at the
 /// width the first line comes out at. It reads neither `active_display()` nor any frame-level function, so
-/// it can disagree with every one of them.
+/// it can disagree with every one of them about how a frame is COMPOSED.
+///
+/// **It cannot disagree with them about the WIDTH, and neither can any parity row built on it** (wave-3
+/// residue 4, measured). Its rows are `render_line_masked`'s, whose width is
+/// [`render::active_width`](crate::render::active_width), the same owner `active_display()` reads. With
+/// that owner's H40 width mutated to 319, all four parity rows stayed green (`oracle-core`'s
+/// `the_masked_frame_is_the_one_masked_picture`, `oracle-aether`'s
+/// `the_framebuffer_under_a_mask_is_the_one_masked_picture`, `oracle-player`'s
+/// `the_masked_window_picture_is_the_one_masked_picture`, `oracle-frontend`'s
+/// `the_blitted_masked_picture_is_the_one_masked_picture`), because both sides of each comparison moved
+/// together. A wrong width is caught by the rows anchored outside the renderer instead, which went red:
+/// `vdp::tests::subline_x_maps_the_active_window_onto_the_pixel_axis` (the dot clock's 320 and 256),
+/// `render::tests::render_line_width_tracks_the_mode`,
+/// `render::tests::report_two_cell_vscroll_has_per_column_values`, and the vendor-ROM
+/// `scanline_golden_scorecard`.
 pub fn frame_by_lines(v: &crate::vdp::Vdp, mask: crate::render::LayerMask) -> Frame {
     let rows: Vec<_> = (0..crate::vdp::ACTIVE_LINES)
         .map(|line| v.render_line_masked(line, mask))
