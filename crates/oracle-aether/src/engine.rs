@@ -54,10 +54,12 @@ use oracle_core::symbols::{BindingFault, Indeterminate, RomBinding, SymbolTable}
 use oracle_core::system::{
     StopRecord, System, TimingBasis, MCLK_PER_CPU_CYCLE, MCLK_PER_FRAME, RAM_SIZE,
 };
-// The frame's line count, for `emulator/run_to_scanline`'s unreachable-target caveat. Read from the VDP's
-// own constant rather than written down here: 262 is a property of the machine, and a second copy of it
-// would be a number that looks authoritative while the timing basis moved underneath it.
-use oracle_core::vdp::LINES_PER_FRAME;
+// The frame's line count, for `emulator/run_to_scanline`'s unreachable-target caveat, and the SAT's
+// slot count, for `emulator/sprites`' `limit`. Both are read from the VDP's own constants rather than
+// written down here: 262 lines and 80 slots are properties of the machine, and a second copy of either
+// is a number that looks authoritative while its owner moves underneath it (lens M62 for the slots).
+// The table is 80 slots in both modes; how many of them the hardware *parses* is `parsedMax` (§11.10).
+use oracle_core::vdp::{LINES_PER_FRAME, SAT_SLOTS};
 // `Vdp` is named explicitly at `read_vdp_registers`' binding rather than inferred: that the handler holds
 // a `&Vdp` and not a `&mut Vdp` is the mechanism §8 item 29 relies on, so it is written where a reader
 // and a compiler both see it. `REG_COUNT` is the frozen `state_hash` currency's own region length, which
@@ -6013,7 +6015,7 @@ impl Engine {
             // `$defs/hex`, whose pattern requires at least one digit — a request the contract PERMITTED
             // and for which no conformant reply existed. This server used to serve it, and answered
             // `"0x"`. Its read siblings (`read`, `read_vram`, `read_cram`) have always floored at 1.
-            Some(v) => hex::parse_count("len", v, 1, 0x2000)? as usize,
+            Some(v) => hex::parse_count("len", v, 1, Z80_RAM_SIZE as u64)? as usize,
             None => 1,
         };
         // Forwarded to the free [`z80_read_window`] for R1's reason (see [`debug_read`]) — and the
@@ -9174,10 +9176,6 @@ fn no_symbols() -> RpcError {
 
 /// House ceiling on one page of a bounded list — the same 4096 `read_memory` carries. A `limit` bounded on
 /// one list and unbounded on its twin is two policies wearing one name.
-/// Slots in the sprite attribute table. The table is this size in both modes; how many of them the
-/// hardware *parses* is `parsedMax` and is core's answer, not this crate's (§11.10).
-const SAT_SLOTS: usize = 80;
-
 const MAX_PAGE: u64 = 4096;
 /// `watchpoint_hits`' catalog default page size.
 const DEFAULT_HITS_PAGE: usize = 100;
@@ -10238,8 +10236,10 @@ fn describe_fault(f: BindingFault) -> String {
     }
 }
 
-/// Buttons the 3-button Mega Drive pad the core models actually has.
-const BUTTONS_3: &[&str] = &["up", "down", "left", "right", "a", "b", "c", "start"];
+/// Buttons the 3-button Mega Drive pad the core models actually has. Public so `oracle-player`'s
+/// `ui.rs` can import this list instead of keeping its own copy (lens M69; that import is its own
+/// parcel's).
+pub const BUTTONS_3: &[&str] = &["up", "down", "left", "right", "a", "b", "c", "start"];
 /// The 6-button additions listed in `protocol.md` §6. The core does not model a 6-button pad, so these
 /// are refused by name rather than silently ignored — a silently-ignored button is a test that "passes"
 /// while pressing nothing (the sibling's *"the `c` button never registers"*, recon §1c).
