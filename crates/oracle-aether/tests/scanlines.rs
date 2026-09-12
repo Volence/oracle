@@ -260,8 +260,13 @@ fn the_key_set_is_exact() {
     );
     assert_eq!(
         method_keys(&r),
-        set(&["startLine", "mode", "source", "rows"]),
+        set(&["startLine", "mode", "source", "rows", "displayMask"]),
         "exactly the schematized keys — and no `caveat` on a raster reply"
+    );
+    assert_eq!(
+        r["displayMask"],
+        json!([]),
+        "§11.49 item B (M4): always present, and empty with no mask set"
     );
     for row in rows_of(&r) {
         assert_eq!(

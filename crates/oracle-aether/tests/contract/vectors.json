@@ -4579,6 +4579,329 @@
         }
       },
       "why": "§11.42 M1, `targetFps` is required: a paced 60 and an unpaced 60 are different facts."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "raster",
+        "displayMask": []
+      },
+      "why": "[CR-V core] section 11.49 - includeFramebuffer, no mask set: displayMask is present and EMPTY, and no caveat. Empty is a measurement ('nothing was hidden'), which is why the key is present rather than absent here."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "raster",
+        "displayMask": [
+          "planeA",
+          "sprites"
+        ],
+        "caveat": "A display layer mask is hiding planeA, sprites, and `framebuffer` deliberately fingerprints the UNMASKED picture, so it does NOT match what emulator/screenshot and emulator/scanlines are currently showing you. Clear the mask to fingerprint the picture you are looking at."
+      },
+      "why": "[CR-V core] section 11.49 - the disclosing reply: a mask hides two layers, the typed key names them, and the optional human caveat rides beside it. framebuffer is the same digest as the unmasked reply above (the hash does not move); that sameness is a live conformance row, not something a schema can see."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796"
+      },
+      "why": "[CR-V core] CONTROL - no framebuffer requested: the five fingerprints alone, no displayMask, no caveat. This is the default reply after M18 retires the constant caveat. It proves the new dependentRequired does not demand displayMask where no picture was hashed; a fragment that made displayMask unconditionally required would turn this red."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "stateRender",
+        "displayMask": [
+          "window"
+        ]
+      },
+      "why": "[CR-V core] a masked reply WITHOUT the caveat is still a valid document: the caveat's presence is the reference server's behaviour (section 2.4 rule 3, section 11.48 M3), deliberately not tied to displayMask in the schema. The typed key is the contract; the sentence is courtesy."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "raster"
+      },
+      "why": "[CR-V core] RED - a framebuffer digest with no displayMask. This is TODAY's reply shape, so the reference server must change in the same window as the re-vendor (a server-side lockstep; no client is affected)."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "displayMask": [
+          "planeA"
+        ]
+      },
+      "why": "[CR-V core] RED - displayMask with no framebuffer. With nothing hashed there is no unmasked picture to disclaim, and a mask-dependent key on a reply the mask cannot affect would be the noise section 2.4's advisory warns about, in typed form."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "raster",
+        "displayMask": [
+          "backdrop"
+        ]
+      },
+      "why": "[CR-V core] RED - 'backdrop' is a pixel-attribution layer, not a mask target (section 11.22). The item enum is set_layer_enabled's, so the two vocabularies cannot drift."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "raster",
+        "displayMask": [
+          "planeA",
+          "planeA"
+        ]
+      },
+      "why": "[CR-V core] RED - a layer listed twice. The list is a set (uniqueItems); a duplicate is a server bug that a length-based client check ('two layers hidden') would misread."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "raster",
+        "displayMask": true
+      },
+      "why": "[CR-V core] RED - the rejected boolean shape. 'Something is hidden' without which layers is what a display consumer cannot print and a harness cannot compare against get_layer_states."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "framebufferSource": "raster",
+        "displayMask": "planeA, sprites"
+      },
+      "why": "[CR-V core] RED - the names as a sentence. A string here is a caveat under another key, which rule 3 already forbids a client to parse."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebufferSource": "raster"
+      },
+      "why": "[CR-V rider R1] RED under R1 only - framebufferSource with no framebuffer. Section 6 already says 'present if and only if framebuffer is' (protocol.md:2150), and nothing enforced it. Passes under the core alone."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/state_hash",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "vram": "0x9F3B60476F9B240C",
+        "cram": "0x22B10C2223B16749",
+        "vsram": "0xB5F357FC0D28F314",
+        "regs": "0x72065A81EA8200EA",
+        "combined": "0x5B0BDB191AC14796",
+        "framebuffer": "0x74B7ECFAAF258A11",
+        "displayMask": []
+      },
+      "why": "[CR-V rider R1] RED under R1 only - a digest with no provenance. The other half of the same section 6 sentence. Passes under the core alone."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/screenshot",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "path": "/tmp/oracle-frame-601.png",
+        "format": "png",
+        "width": 320,
+        "height": 224,
+        "bytes": 9012,
+        "source": "raster",
+        "displayMask": []
+      },
+      "why": "[CR-V item B] an unmasked capture: displayMask present and empty, source raster, no caveat."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/screenshot",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "path": "/tmp/oracle-frame-601.png",
+        "format": "png",
+        "width": 320,
+        "height": 224,
+        "bytes": 9012,
+        "source": "stateRender",
+        "displayMask": [
+          "planeA",
+          "sprites"
+        ],
+        "caveat": "a display layer mask is active (planeA, sprites), so this capture is composited from the VDP state as it stands right now rather than taken from a retained raster frame."
+      },
+      "why": "[CR-V item B] a masked capture: the typed key names what this picture hides; stateRender is the source because a retained frame is always unmasked. The mask->stateRender tie is deliberately NOT schema-enforced (it would outlaw a server that can mask a raster-timed frame)."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/screenshot",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "path": "/tmp/oracle-frame-601.png",
+        "format": "png",
+        "width": 320,
+        "height": 224,
+        "bytes": 9012,
+        "source": "raster"
+      },
+      "why": "[CR-V item B] RED under item B only - today's screenshot reply, with no displayMask. Server-side lockstep only."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/scanlines",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "startLine": 0,
+        "mode": "h40",
+        "source": "stateRender",
+        "rows": [
+          {
+            "line": 0,
+            "width": 320,
+            "rgb": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "displayMask": [
+          "planeA"
+        ],
+        "caveat": "a display layer mask is active (planeA, sprites), so this readback is composited from the VDP state as it stands right now rather than taken from a retained raster frame."
+      },
+      "why": "[CR-V item B] a masked readback, one H40 row (1920 hex digits, the fragment's if/then): the key names the hidden layer."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/scanlines",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "startLine": 0,
+        "mode": "h40",
+        "source": "raster",
+        "rows": [
+          {
+            "line": 0,
+            "width": 320,
+            "rgb": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "why": "[CR-V item B] RED under item B only - today's scanlines reply, with no displayMask."
+    },
+    {
+      "group": "methods",
+      "method": "emulator/scanlines",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "startLine": 0,
+        "mode": "h40",
+        "source": "raster",
+        "rows": [
+          {
+            "line": 0,
+            "width": 320,
+            "rgb": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "displayMask": [
+          "backdrop"
+        ]
+      },
+      "why": "[CR-V item B] RED under item B only - the shared $defs enum refuses a non-target on this method too."
     }
   ],
   "specExamples": [

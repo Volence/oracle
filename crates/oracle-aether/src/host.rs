@@ -571,7 +571,9 @@ impl Host {
     // ---------------------------------------------------------------- the picture (conflict 3)
 
     /// Hand the bus the frame the host's own run loop just drew, so `emulator/screenshot` and
-    /// `emulator/state_hash {includeFramebuffer}` answer with what is actually on the glass.
+    /// `emulator/state_hash {includeFramebuffer}` answer with what is actually on the glass. That is the
+    /// unmasked glass: under a display mask `screenshot` re-derives the masked picture instead, and
+    /// `state_hash`'s `framebuffer` never applies the mask (§11.49; its `displayMask` says so).
     ///
     /// Cheap to call unconditionally: it is skipped outright while nobody is connected, and it takes the
     /// caller's [`ScanlineCapture`] as-is rather than asking for a converted buffer.

@@ -42,6 +42,12 @@ impl StateHash {
     /// VRAM → CRAM → VSRAM → REGS. Each region has its own accumulator; `combined` is one continuous
     /// stream over the concatenation. `regs` is the 24 VDP registers as bytes (low 8 bits each).
     ///
+    /// **These four regions are the whole of what the fingerprints cover, and since §11.49 the contract
+    /// says so** (§6's coverage paragraph, and M2, which names the register bytes as exactly this: the
+    /// 24 registers, the low 8 bits of each). Nothing else enters: not the 68000 or work RAM, not the
+    /// Z80, SRAM or audio, and not the VDP state kept outside these four (the status word, the
+    /// control-port write-pending toggle, the sprite latches, the FIFO, DMA progress).
+    ///
     /// # The sizes and the order are the signature's (lens M70)
     ///
     /// Each region is an array of its own hardware size, and the four sizes all differ ([`VRAM_SIZE`],
