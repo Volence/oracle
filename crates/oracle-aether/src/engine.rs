@@ -8155,6 +8155,12 @@ impl Engine {
         // D13 rule 2: the ENTIRE machine — CPU, RAM, VDP, sound state and the ROM. A checkpoint taken
         // before an `emulator/reload_rom` therefore brings the previous cartridge back; that is defined
         // behaviour, not an error case.
+        //
+        // `restore` refuses two ways (`RestoreError`): bincode could not decode the bytes, or they decoded
+        // into a machine with a region at a size no machine has. A checkpoint's bytes are this process's
+        // own `snapshot()` of a live machine (`checkpoint`, above), so the second cannot arise here, and the
+        // first reaches the wire as bincode's own message, carried verbatim by `RestoreError`'s `Display`:
+        // the text this arm sent before that type existed.
         let sys = System::restore(&cp.snapshot).map_err(|e| {
             RpcError::new(
                 code::INTERNAL_ERROR,
