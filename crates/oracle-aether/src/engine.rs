@@ -6013,7 +6013,18 @@ impl Engine {
                     "`bytes` and `value` are two spellings of one payload: send one",
                 ))
             }
-            (Some(b), None) => hex::parse_bytes("bytes", b)?,
+            // An empty payload is refused by name, in the siblings' words (`write_memory`,
+            // `write_vram`): the fragment's pattern needs at least one byte, and an empty `Ok` here
+            // was a write of nothing reported as success (lens M25).
+            (Some(b), None) => {
+                let d = hex::parse_bytes("bytes", b)?;
+                if d.is_empty() {
+                    return Err(RpcError::invalid_params(
+                        "`bytes` is empty: nothing to write",
+                    ));
+                }
+                d
+            }
             // 0-255, refused outside rather than masked: a masked 0x1FF writing 0xFF is a wrong value
             // reported as success, which is the class §11.28 spends its first bullet on.
             (None, Some(v)) => vec![hex::parse_count("value", v, 0, 0xFF)? as u8],
