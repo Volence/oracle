@@ -11544,7 +11544,10 @@ mod tests {
                 );
                 (width, fb)
             },
-            oracle_core::testrom::frame_by_lines,
+            // Against the owner: this consumer's whole job is to hand its mask to it. The owner itself is
+            // pinned against the line-by-line expectation in oracle-core
+            // (`render::tests::the_masked_frame_is_the_one_masked_picture`).
+            |v, mask| v.render_frame_masked(mask),
         );
     }
 

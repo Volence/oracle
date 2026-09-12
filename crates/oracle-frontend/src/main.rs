@@ -3072,7 +3072,9 @@ mod tests {
                         .collect(),
                 )
             },
-            oracle_core::testrom::frame_by_lines,
+            // Against the owner, `Vdp::render_frame_masked`; the owner itself is pinned against the
+            // line-by-line expectation in oracle-core (`the_masked_frame_is_the_one_masked_picture`).
+            |v, mask| v.render_frame_masked(mask),
         );
     }
 
