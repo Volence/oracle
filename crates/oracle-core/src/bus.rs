@@ -2923,6 +2923,35 @@ mod tests {
         );
     }
 
+    /// **The width of the counter the test above wraps.** Found by mutation: narrowing
+    /// [`Vdp::advance_dma_source_low16`]'s mask from `$FFFF` to `$7FFF` left the whole workspace green,
+    /// because every case anyone had pinned — A3's fill and copy from `$00FA` and `$00FE`, and the wrap test
+    /// above — happens to give the same answer under both. `$FFFE + 4` is `$10002`, and `$10002 & $7FFF` is
+    /// still `$0002`. So "it wrapped" and "it wrapped at **16** bits" were not the same claim, and only the
+    /// first was guarded.
+    ///
+    /// This pins the second: a transfer that starts high in the page and does **not** wrap. Source `$50000`
+    /// is word address `$028000`, so register 23 = `$02` and 22:21 = `$8000`; four words later 22:21 =
+    /// `$8004`, with bit 15 of the counter still standing. A 15-bit mask gives `$0004` instead. The rule is
+    /// the MegaDrive Wiki's "the low and middle bytes" — two bytes, sixteen bits — and it is the same
+    /// counter A3's fill and copy advance, so this retroactively covers their mask width too.
+    #[test]
+    fn a_mem_dma_advance_keeps_all_16_bits_of_registers_22_21() {
+        let mut mem = MdMem::new(vec![0u8; 0x8_0000]);
+        mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
+        let mut sink = Vec::new();
+        {
+            let mut bus = mem.bus(&mut sink);
+            run_mem_dma_to_vram(&mut bus, 0x05_0000, 4, 0x0000); // word $028000, well short of the boundary
+        }
+        let r = mem.vdp.regs();
+        assert_eq!(
+            (r[0x17] & 0x7F, r[0x16], r[0x15]),
+            (0x02, 0x80, 0x04),
+            "registers 22:21 are a full 16-bit counter: $8000 + 4 words = $8004, register 23 untouched"
+        );
+    }
+
     // --- Shared VDP-port replay helpers (VDPFIFOTesting tests 3 and 16) -----------------------------
 
     /// Instruction costs in 68000 clock cycles for the three instructions these replays are built from.
