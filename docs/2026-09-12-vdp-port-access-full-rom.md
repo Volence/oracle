@@ -202,6 +202,23 @@ never touch 21/22.
 `$00FE`. **Test 29** (ROM `$AEC0`) is the same with a copy (`$97C0`, command `$000000C2`), and its tables
 match 28's word for word. EXP=8 flips exactly 28 and 29.
 
+**Fixed 2026-09-12 (DMA-SRC-ADVANCE, branch `parcel/dma-src-advance`).** `run_fill` and `run_copy` now end
+with `Vdp::advance_dma_source_low16`, which leaves registers 22:21 at `(start + steps) & $FFFF` and never
+touches register 23. The arithmetic comes from the tables. A 4-byte operation takes 4 steps, so `$00FA`
+becomes `$00FE` (group 2, the table word `1111` at ROM `$401FC`). Register 21 carries into 22, so `$00FE`
+becomes `$0102` (group 3, whose table `ffff eeee dddd cccc` sits at ROM `$403FC`: word `$0201FE`, so register
+22 is `$01`; this group's follow-up DMA writes 21 and 23 but not 22, at `$AE04..$AE08`). Two cases come from
+the rule rather than the ROM: no carry into register 23 (the ROM's follow-up DMA always rewrites 23), and a
+length of 0, which is 65,536 steps and one whole turn of the 16-bit counter. The copy advances from the source
+`arm_dma` read out of 21/22. The fill advances from the live 21/22, since it reads nothing. The only
+production path that completes a fill or a copy is `MegaDriveBus::run_pending_dma`. It runs after every
+68k data-port write (the fill trigger) and control-port write (the copy trigger), word and byte alike. The
+Z80's `$7F00` window drops VDP writes, and the untimed `Vdp::data_write` only arms a fill. Measured: the ROM
+prints **78/44/122** and fails the 46 minus 28 and 29, no count moved, and 25, 26 and 27 unchanged.
+`vdp::tests::a_fill_advances_source_registers_21_22_by_its_length_and_never_carries_into_23` and its copy
+twin pin the four cases. The other 16 scorecard rows, `determinism_gate`, `export_state_v1`, `golden_frames`
+and `scanline_goldens` are byte-identical.
+
 ### A4: DMA busy is set by the fill command itself (tests 36, 38)
 
 **The rule.** Eke, *VDP Internals* p.4: "on DMA Fill, busy flag is actually immediately (?) set after the
