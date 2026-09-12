@@ -1388,7 +1388,8 @@ impl Vdp {
     /// models the elapsed transfer time. Fill data source: the top byte of the trigger word for VRAM; the
     /// **next-available FIFO entry** ("4 writes ago") for CRAM/VSRAM — the documented hardware bug. Every write
     /// routes through the SAT write-through (R5 rider: fill steps hit the window compare like any VRAM write).
-    /// Length is in bytes (RD2); regs 19/20 → 0 after the transfer (recon R4).
+    /// Length is in bytes (RD2); regs 19/20 → 0 after the transfer (recon R4), and source regs 21/22 advance by
+    /// one per step even though a fill never reads its source ([`Vdp::advance_dma_source_low16`], A3).
     pub fn run_fill(&mut self, len: u16, fill: u16, now: u64) {
         self.now_mclk = now; // C-6: every step of the fill carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
@@ -1430,6 +1431,9 @@ impl Vdp {
         let cost = self.dma_cost(count as u64, now); // fill ≈ 1 slot/byte (recon R4(e))
         self.regs[0x13] = 0;
         self.regs[0x14] = 0;
+        // A3: the source counter steps with the fill although nothing is read from it (VDPFIFOTesting test 28).
+        let start = ((self.regs[0x16] as u16) << 8) | self.regs[0x15] as u16;
+        self.advance_dma_source_low16(start, count);
         self.last_dma = Some(DmaRecord {
             mode: DmaMode::Fill,
             source: 0,
@@ -1444,7 +1448,8 @@ impl Vdp {
     /// live address, **bypassing the FIFO**, at half the fill byte rate (one byte read + one byte write per
     /// step = 2 slots/byte). 68k keeps running (the bus returns no wait); the busy window models the elapsed
     /// time. Each write routes through the SAT write-through (R5 rider). Length is in bytes (RD2); regs 19/20
-    /// → 0 after the transfer (recon R4).
+    /// → 0 after the transfer (recon R4), and source regs 21/22 advance by one per step
+    /// ([`Vdp::advance_dma_source_low16`], A3).
     ///
     /// **Both byte accesses take the opposite byte lane (F-COPYXOR, lens M22).** Step `i` reads
     /// `vram[(source + i) ^ 1]` and writes that byte to `address ^ 1`; the address then advances by reg 15.
@@ -1477,6 +1482,9 @@ impl Vdp {
         let cost = self.dma_cost(count as u64 * 2, now); // half the fill byte rate (recon R4(c))
         self.regs[0x13] = 0;
         self.regs[0x14] = 0;
+        // A3: `source` is registers 21/22 as `arm_dma` read them, and the copy walked them one byte per step,
+        // so they end at the byte after the last one read (VDPFIFOTesting test 29).
+        self.advance_dma_source_low16(source, count);
         self.last_dma = Some(DmaRecord {
             mode: DmaMode::Copy,
             source: source as u32,
@@ -1485,6 +1493,30 @@ impl Vdp {
             target: VdpTarget::Vram,
         });
         self.dma_busy_until = now + cost;
+    }
+
+    /// **A3 / DMA-SRC-ADVANCE.** Leave source registers 21 (low) and 22 (middle) where a fill or copy of `steps`
+    /// steps that started from `start` leaves them. Nemesis, *VDP Internals* p.4: "Every DMA operation also
+    /// performs the exact same set of steps after it is advanced one step, which is to firstly add 1 to the
+    /// lower 2 DMA source address registers, then to subtract 1 from the DMA length counter register". Fill and
+    /// copy included, although a fill never reads its source.
+    ///
+    /// * **One step per length unit**, so the advance is the length in bytes. VDPFIFOTesting tests 28 (fill)
+    ///   and 29 (copy) pin it: a 4-byte operation from `$00FA` leaves register 21 at `$FE`.
+    /// * **21 carries into 22.** The same tests' third group runs from `$00FE` and reads its table from ROM
+    ///   `$403FC`, i.e. registers 22:21 = `$0102`.
+    /// * **Register 23 never takes the carry**, so the counter wraps at 16 bits and 23 keeps its mode bits.
+    ///   "The lower 2" in the quote, and the MegaDrive Wiki's "only the low and middle bytes of the DMA source
+    ///   registers are incremented". The ROM cannot reach this case for a fill or copy (its follow-up DMA
+    ///   rewrites 23); it is the rule, not a table.
+    /// * **A length of 0 is 65,536 steps** (RD2), one whole turn of the counter: 21/22 end where they started.
+    ///
+    /// Machine state: registers are in both currencies, so a ROM that fills or copies moves them. What that did
+    /// to the frozen goldens is recorded under A3 in `docs/2026-09-12-vdp-port-access-full-rom.md`.
+    fn advance_dma_source_low16(&mut self, start: u16, steps: u32) {
+        let end = ((start as u32 + steps) & 0xFFFF) as u16; // 16 bits: no carry into register 23
+        self.regs[0x15] = (end & 0xFF) as u8;
+        self.regs[0x16] = (end >> 8) as u8;
     }
 
     /// A bus-timed data-port write (recon R1/R3): drain the FIFO up to `now`, stall the 68k if the FIFO is
@@ -4261,6 +4293,123 @@ mod tests {
         let w2 = ((((cd >> 2) & 0x0F) as u16) << 4) | (addr >> 14);
         v.control_write(w1, 0);
         v.control_write(w2, 0);
+    }
+
+    // --- A3 / DMA-SRC-ADVANCE: a fill and a copy advance source registers 21/22 --------------------------
+    //
+    // Nemesis, *VDP Internals* p.4: "Every DMA operation also performs the exact same set of steps after it is
+    // advanced one step, which is to firstly add 1 to the lower 2 DMA source address registers, then to
+    // subtract 1 from the DMA length counter register". Fill and copy included; a fill never reads its source.
+    //
+    // The cases below are derived from VDPFIFOTesting's tables, not from our output. Tests 28 (fill, ROM
+    // `$AA16`) and 29 (copy, ROM `$AEC0`) run the operation for 4 bytes, then start a 68k DMA that rewrites two
+    // of the three source registers and leaves the third where the operation put it. Both tables are `$A9FE` /
+    // `$AEA8`, word for word the same:
+    //
+    // * Group 2 starts from `$00FA`, and the follow-up DMA writes 22 = `$00` and 23 = `$02` but not 21
+    //   (`$AC54..$AC58`). The hardware reads `1111 ffff eeee dddd`, which sits at ROM byte `$401FC` = word
+    //   `$0200FE`, so the operation left register 21 at `$FE`: 4 steps, `$FA + 4`.
+    // * Group 3 starts from `$00FE`, and the follow-up DMA writes 21 = `$FE` and 23 = `$02` but not 22
+    //   (`$AE04..$AE08`). The hardware reads `ffff eeee dddd cccc`, which sits at ROM byte `$403FC` = word
+    //   `$0201FE`, so the operation left register 22 at `$01`: `$FE + 4 = $102`, **21 carries into 22**.
+    //
+    // Two cases the ROM cannot reach, derived from the rule instead. Register 23 never takes the carry: only
+    // "the lower 2" registers count (the same quote, and A2's rule for the 68k DMA, MegaDrive Wiki "VDP", *DMA
+    // Limitations*: "only the low and middle bytes of the DMA source registers are incremented"), so `$FFFE + 4`
+    // leaves `$0002` and 23 keeps its mode bits. A length of 0 is 65,536 steps (RD2), one whole turn of a
+    // 16-bit counter, so 21/22 end where they started.
+
+    /// Registers 21 (low) and 22 (middle) as the one 16-bit counter they are.
+    fn source_low16(v: &Vdp) -> u16 {
+        ((v.regs[0x16] as u16) << 8) | v.regs[0x15] as u16
+    }
+
+    fn set_source_low16(v: &mut Vdp, source: u16) {
+        v.regs[0x15] = (source & 0xFF) as u8;
+        v.regs[0x16] = (source >> 8) as u8;
+    }
+
+    /// `(start, length, end, why)`: the four cases derived above, shared by the fill and the copy test.
+    const SOURCE_ADVANCE_CASES: [(u16, u16, u16, &str); 4] = [
+        (0x00FA, 4, 0x00FE, "tests 28/29 group 2: $FA + 4 steps"),
+        (
+            0x00FE,
+            4,
+            0x0102,
+            "tests 28/29 group 3: register 21 carries into 22",
+        ),
+        (
+            0xFFFE,
+            4,
+            0x0002,
+            "the 16-bit counter wraps, and register 23 takes no carry",
+        ),
+        (
+            0x1234,
+            0,
+            0x1234,
+            "a length of 0 is 65,536 steps, one whole turn of the counter",
+        ),
+    ];
+
+    #[test]
+    fn a_fill_advances_source_registers_21_22_by_its_length_and_never_carries_into_23() {
+        for (start, len, end, why) in SOURCE_ADVANCE_CASES {
+            let mut v = fresh();
+            set_source_low16(&mut v, start);
+            // Armed and triggered through the ports, as the ROM does: the helper writes register 23 = $80.
+            let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, len, 0x1234);
+            v.run_fill(len, fill, 0);
+            assert_eq!(
+                source_low16(&v),
+                end,
+                "fill from ${start:04X} for {len} bytes: registers 22:21 ({why})"
+            );
+            assert_eq!(
+                v.regs[0x17], 0x80,
+                "fill from ${start:04X}: register 23 keeps fill mode and takes no carry ({why})"
+            );
+            assert_eq!(
+                (v.regs[0x14], v.regs[0x13]),
+                (0, 0),
+                "the length counter still ends at 0"
+            );
+        }
+    }
+
+    #[test]
+    fn a_copy_advances_source_registers_21_22_by_its_length_and_never_carries_into_23() {
+        for (start, len, end, why) in SOURCE_ADVANCE_CASES {
+            let mut v = fresh();
+            set_source_low16(&mut v, start);
+            v.regs[1] |= 0x10; // M1 (DMA enable): CD5 only latches while it is set
+            v.regs[0x0F] = 1;
+            v.regs[0x13] = (len & 0xFF) as u8;
+            v.regs[0x14] = (len >> 8) as u8;
+            v.regs[0x17] = 0xC0; // copy mode
+                                 // Armed through the control port, as test 29 does (`$000000C2`: code $30, VRAM $8000), so the
+                                 // copy's source comes from registers 21/22 by the real arming path.
+            command(&mut v, 0x30, 0x8000);
+            let Some(DmaRequest::Copy { source, len }) = v.take_dma_request() else {
+                panic!("a code-$30 command in copy mode must arm a copy");
+            };
+            assert_eq!(source, start, "the copy armed from registers 21/22");
+            v.run_copy(source, len, 0);
+            assert_eq!(
+                source_low16(&v),
+                end,
+                "copy from ${start:04X} for {len} bytes: registers 22:21 ({why})"
+            );
+            assert_eq!(
+                v.regs[0x17], 0xC0,
+                "copy from ${start:04X}: register 23 keeps copy mode and takes no carry ({why})"
+            );
+            assert_eq!(
+                (v.regs[0x14], v.regs[0x13]),
+                (0, 0),
+                "the length counter still ends at 0"
+            );
+        }
     }
 
     #[test]

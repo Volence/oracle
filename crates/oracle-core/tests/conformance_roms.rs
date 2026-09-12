@@ -233,8 +233,11 @@ const BASELINE: &[(&str, &str)] = &[
         // under the new paging) and adds the last page. Which 46 tests fail, and why, is pinned per test by
         // `vdp_port_access_full_rom_verdicts` (`PORT_ACCESS_FAILING`) and written up in
         // docs/2026-09-12-vdp-port-access-full-rom.md.
+        //
+        // 2026-09-12 (DMA-SRC-ADVANCE, cause A3): a fill and a copy now advance source registers 21/22 by
+        // their length. Tests 28 and 29 flip; all 22 pages 76/46/122 → 78/44/122. Pages 1 and 2 unchanged.
         "vdp_port_access",
-        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=76/46/122",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=78/44/122",
     ),
     (
         // **`6=FAIL` is measured to be an artefact of this scraper, NOT an emulator inaccuracy (2026-08-15).**
@@ -1207,6 +1210,7 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 /// * **A2, the 68k-to-VDP DMA source wraps inside its 128 KB page** (register 23 never takes a carry). Tests
 ///   27 and the other half of 20.
 /// * **A3, fill and copy advance the DMA source registers 21/22 by their length.** Tests 28 and 29.
+///   **Fixed 2026-09-12 (DMA-SRC-ADVANCE)**: both pass and are no longer listed.
 /// * **A4, DMA busy reads set from the fill command's control write**, not only once the fill is
 ///   triggered. Tests 36 and 38.
 /// * **A5, a fill whose code names no write target writes nothing** (it closes follow-up F-FILLTGT). Test 34.
@@ -1220,8 +1224,6 @@ const PORT_ACCESS_FAILING: &[(usize, &str, usize, usize)] = &[
     (20, "DMA Transfer Source Wrapping", 8, 12), // A2 (VRAM/CRAM halves) + A1 (VSRAM half)
     (23, "DMA Transfer to VSRAM Wrapping", 12, 16), // A1
     (27, "DMA Transfer Source Reg Update", 4, 16), // A2
-    (28, "DMA Fill Source Reg Update", 8, 12),   // A3
-    (29, "DMA Copy Source Reg Update", 8, 12),   // A3
     (31, "DP Writes During DMA Fill VRAM", 6, 48), // M1
     (32, "DP Writes During DMA Fill CRAM", 6, 48), // M1
     (33, "DP Writes During DMA Fill VSRAM", 6, 48), // M1
