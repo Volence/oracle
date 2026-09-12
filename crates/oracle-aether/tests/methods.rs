@@ -222,9 +222,17 @@ fn approximate_answers_carry_a_caveat() {
     );
     assert!(r["caveat"].as_str().unwrap().contains("scanline-accurate"));
 
-    // state_hash covers VDP state only.
-    let r = c.ok("emulator/state_hash", json!({}));
-    assert!(r["caveat"].as_str().unwrap().contains("VDP state only"));
+    // state_hash is NOT an approximate answer, and since §11.49 (CR-V, lens M18) it carries no constant
+    // caveat: what its five fingerprints fold, and that two machines agreeing on them can still differ, is
+    // §6's coverage paragraph, stated once. Its one remaining caveat rides beside a non-empty
+    // `displayMask`, and that case is `tests/layers.rs`'s.
+    for params in [json!({}), json!({"includeFramebuffer": true})] {
+        let r = c.ok("emulator/state_hash", params);
+        assert!(
+            r.get("caveat").is_none(),
+            "state_hash carries no constant caveat (§11.49): {r}"
+        );
+    }
 
     // A run that ends on its bound says so, loudly.
     let r = c.ok(
@@ -425,6 +433,52 @@ fn state_hash_is_deterministic_and_optionally_covers_the_framebuffer() {
         c.err("emulator/state_hash", json!({"includeFramebuffer": "yes"}))["code"],
         json!(-32602),
         "a string where a boolean belongs is refused (D9)"
+    );
+}
+
+/// **CR5** (§11.49, CR-V, lens M18): `emulator/read_vram` carries no caveat, and its `bytes` are
+/// `emulator/read {space: "vram"}`'s for the same range, which is what §6's "exact alias" means for the
+/// part a client reads. The peek property the caveat used to carry on every reply is §6's prose now.
+///
+/// **What else could make this green?** Two reads of all-zero VRAM agree whatever either one does, so a
+/// known pattern is written first and found inside the compared range at the offset it was written to;
+/// and the ranges include both ends of VRAM, where an off-by-one in either spelling's bound would show.
+#[test]
+fn read_vram_carries_no_caveat_and_its_bytes_are_reads() {
+    let h = spawn("rvram-cr5");
+    let mut c = Client::connect(&h);
+    c.handshake(false);
+    c.ok(
+        "emulator/write_vram",
+        json!({"addr": "0x1230", "bytes": "0xDEADBEEF0102"}),
+    );
+    for (addr, len) in [("0x1220", 48u64), ("0x0000", 32), ("0xFFE0", 32)] {
+        let a = c.ok("emulator/read_vram", json!({"addr": addr, "len": len}));
+        let b = c.ok(
+            "emulator/read",
+            json!({"space": "vram", "addr": addr, "len": len}),
+        );
+        assert!(
+            a.get("caveat").is_none(),
+            "CR5: read_vram carries no caveat (§11.49): {a}"
+        );
+        assert_eq!(
+            a["len"],
+            json!(len),
+            "CR5: read_vram answered the length asked"
+        );
+        assert_eq!(
+            a["bytes"], b["bytes"],
+            "CR5: read_vram and read{{space:\"vram\"}} disagree at {addr}+{len}"
+        );
+    }
+    let a = c.ok("emulator/read_vram", json!({"addr": "0x1220", "len": 48}));
+    let hex = a["bytes"].as_str().expect("bytes is a hex string");
+    let at = 2 + (0x1230 - 0x1220) * 2;
+    assert_eq!(
+        &hex[at..at + 12],
+        "DEADBEEF0102",
+        "anti-vacuity: the compared range must hold the pattern written, where it was written: {hex}"
     );
 }
 

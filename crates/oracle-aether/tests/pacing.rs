@@ -654,10 +654,12 @@ fn a_governor_that_is_off_is_a_zero_target_and_not_an_absent_one() {
 ///
 /// Two observables are read before and after two `emulator/pacing` calls, because neither alone is
 /// enough: `frameToken` would miss a row that poked memory without advancing a frame, and
-/// `emulator/state_hash` **covers VDP state only** — its own reply says so in a caveat, in these words:
-/// *"they say nothing about the CPU, work RAM, the Z80, SRAM or audio"*. So this is a check over the
-/// VDP plus the frame position, stated at that scope rather than described as "the whole machine",
-/// which is what an earlier draft of this comment claimed and the reply's own caveat disproved.
+/// `emulator/state_hash` **folds exactly four regions**, VRAM, CRAM, VSRAM and the 24 register bytes,
+/// and §6's coverage paragraph (§11.49) says what it does not cover: *"not the 68000 or its work RAM,
+/// not the Z80, cartridge SRAM or audio"*, nor the VDP state outside those four regions. So this is a
+/// check over those four regions plus the frame position, stated at that scope rather than described as
+/// "the whole machine", which is what an earlier draft of this comment claimed. The reply's constant
+/// caveat disproved that draft; since §11.49 the reply carries no such caveat and §6 is the source.
 ///
 /// ⚑ This row is deliberately **not** covered by `handshake.rs`'s per-row frame-advance ceiling, which
 /// sweeps the names a server actually advertised — and on that headless server this one is not among

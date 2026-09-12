@@ -35,6 +35,7 @@
 mod common;
 
 use common::{spawn_system, Client};
+use oracle_aether::host::{Host, HostConfig};
 use oracle_core::render::LayerMask;
 use oracle_core::system::System;
 use oracle_core::vdp::Vdp;
@@ -256,6 +257,53 @@ fn the_mask_vocabulary_is_the_contract_fragments_own() {
         !served.contains("backdrop"),
         "the backdrop is a pixel-attribution layer, not a mask target — the fragment says so"
     );
+
+    // **CR6** (§11.49, CR-V). `displayMask` is spelled in the same four names, read from the schema's one
+    // `$defs` entry, and that enum equals the core's `LayerMask::targets()` in BOTH directions: a name the
+    // core can hide that the enum refuses is a reply the schema rejects, and an enum name the core never
+    // emits is a vocabulary nobody serves. One `BTreeSet` equality would say both, but not which one broke,
+    // so each direction is its own assertion.
+    let defs_enum: BTreeSet<String> = set_of(
+        doc["$defs"]["displayMask"]["items"]["enum"]
+            .as_array()
+            .expect("the schema declares $defs/displayMask with an items enum (§11.49)")
+            .iter()
+            .map(|v| v.as_str().expect("enum values are strings").to_string()),
+    );
+    let core: BTreeSet<String> =
+        set_of(LayerMask::targets().into_iter().map(|(n, _)| n.to_string()));
+    assert_eq!(
+        core.len(),
+        4,
+        "LayerMask::targets() should name four layers"
+    );
+    let core_not_enum: Vec<&String> = core.difference(&defs_enum).collect();
+    let enum_not_core: Vec<&String> = defs_enum.difference(&core).collect();
+    assert!(
+        core_not_enum.is_empty(),
+        "LayerMask::targets() names {core_not_enum:?}, which $defs/displayMask refuses"
+    );
+    assert!(
+        enum_not_core.is_empty(),
+        "$defs/displayMask admits {enum_not_core:?}, which LayerMask::targets() never names"
+    );
+    assert_eq!(
+        defs_enum, setter,
+        "§11.49: displayMask's enum is set_layer_enabled's `layer` enum"
+    );
+    // The three fragments that carry the key must point at this one entry, or the enum checked above is
+    // not the one their replies are judged by.
+    for method in [
+        "emulator/state_hash",
+        "emulator/screenshot",
+        "emulator/scanlines",
+    ] {
+        assert_eq!(
+            doc["methods"][method]["result"]["properties"]["displayMask"]["$ref"],
+            json!("#/$defs/displayMask"),
+            "{method}'s displayMask must be the one $defs entry this row checks, not a copied enum"
+        );
+    }
 }
 
 /// The four keys the *envelope* stamps on after the handler returns (§2.2 / D11, §2.3 / D17).
@@ -669,6 +717,11 @@ fn a_masked_read_declares_that_it_is_not_the_raster_frame() {
         shot.get("caveat").is_none(),
         "control: a raster capture carries no caveat: {shot}"
     );
+    assert_eq!(
+        shot["displayMask"],
+        json!([]),
+        "control: an unmasked capture hides nothing and says so in the typed key (§11.49 item B): {shot}"
+    );
     let _ = std::fs::remove_file(shot["path"].as_str().unwrap());
 
     c.ok(
@@ -684,6 +737,14 @@ fn a_masked_read_declares_that_it_is_not_the_raster_frame() {
             r["source"],
             json!("stateRender"),
             "{method}: a masked read is not the raster frame"
+        );
+        // The typed half (§11.49 item B), and since that ruling the half that is contract: the key names
+        // the one hidden layer. The caveat assertions below stay, as this server's informative behaviour
+        // (§2.4 rule 3); the key does not replace them, it is what a client may branch on.
+        assert_eq!(
+            r["displayMask"],
+            json!(["sprites"]),
+            "{method}: displayMask must name the hidden layer: {r}"
         );
         let caveat = r["caveat"].as_str().unwrap_or_else(|| {
             panic!("{method}: a masked read must carry a caveat: {r}");
@@ -711,6 +772,11 @@ fn a_masked_read_declares_that_it_is_not_the_raster_frame() {
         back["source"],
         json!("raster"),
         "clearing the mask restores the latched raster frame"
+    );
+    assert_eq!(
+        back["displayMask"],
+        json!([]),
+        "clearing the mask empties the key: {back}"
     );
     let _ = std::fs::remove_file(back["path"].as_str().unwrap());
 }
@@ -778,6 +844,17 @@ fn the_mask_is_not_machine_state() {
              fingerprint"
         );
     }
+    // §11.49: the digest did not move, and the same reply says the screen is hiding all four layers.
+    assert_eq!(
+        before["displayMask"],
+        json!([]),
+        "control: nothing was hidden when the first digest was taken: {before}"
+    );
+    assert_eq!(
+        names(&after["displayMask"], "state_hash under a four-layer mask"),
+        set_of(LayerMask::targets().into_iter().map(|(n, _)| n.to_string())),
+        "displayMask must name every hidden layer: {after}"
+    );
     assert_eq!(
         c.ok(
             "emulator/memory_hash",
@@ -788,177 +865,123 @@ fn the_mask_is_not_machine_state() {
     );
 }
 
-/// The `caveat` an unmasked `emulator/state_hash` returns. Read from the server **on a machine with no
-/// mask set**, and used as the control the three assertions below compare against.
-///
-/// It is a differential rather than a transcription of the literal in `engine.rs`, and that is deliberate:
-/// a copy of the sentence here would have to be re-typed every time the prose is reworded, and a stale copy
-/// fails for a reason that is not the rule. What the tests *do* pin about it is the property that makes the
-/// differential meaningful — it says nothing about masking (asserted at every call site below), so a
-/// caveat that grew unconditionally cannot hide inside the baseline.
-fn unmasked_state_hash_caveat(c: &mut Client, include_fb: bool) -> String {
-    let r = c.ok(
-        "emulator/state_hash",
-        if include_fb {
-            json!({"includeFramebuffer": true})
-        } else {
-            json!({})
-        },
-    );
-    let caveat = r["caveat"]
-        .as_str()
-        .expect("emulator/state_hash always carries a caveat")
-        .to_string();
-    assert!(
-        !caveat.to_lowercase().contains("mask"),
-        "baseline: an UNMASKED state_hash caveat must not mention masking — if it does, the \
-         extension is unconditional and every comparison below is measuring nothing: {caveat}"
-    );
-    caveat
-}
+// -------------------------------------------------------------------------------------------------
+// §11.49 (CR-V): `displayMask`, the typed key for "the screen is not the picture this digest is of"
+// -------------------------------------------------------------------------------------------------
 
-/// ⚑ **The other half of hashing at `LayerMask::ALL`.** The hash deliberately fingerprints the unmasked
-/// picture while `emulator/screenshot` returns the masked one, so a caller who hides plane A, screenshots,
-/// and then hashes the framebuffer to pin what they are looking at is holding the digest of a *different
-/// picture*. The fragment's own reason for `framebufferSource` — *"a fingerprint whose input provenance is
-/// unstated is worse than one that is simply wrong, because two machines can disagree on it for a reason
-/// that has nothing to do with either machine"* — is exactly this case, and a set mask is exactly such a
-/// reason. The divergence is intended; being silent about it is not.
-///
-/// **What else could make this row green with the caveat logic deleted?** Three things, each ruled out here
-/// rather than assumed:
-///
-/// * the baseline already naming the layers — [`unmasked_state_hash_caveat`] asserts it contains no mask
-///   language at all, so `contains("planeA")` cannot pass on the base text;
-/// * the assertion being satisfied by the caveat merely *existing* — `caveat` is unconditional on this row,
-///   so existence proves nothing, and what is asserted instead is that the masked text **strictly extends**
-///   the unmasked one (`strip_prefix` succeeds and leaves a non-empty remainder);
-/// * the hash having moved too, which would make a green caveat a fig leaf over a real leak — so
-///   `framebuffer` and `framebufferSource` are asserted **unchanged** in the same breath. A caveat that
-///   admitted a divergence that had stopped existing would be its own defect.
-#[test]
-fn a_framebuffer_hash_taken_under_a_mask_says_that_it_is_unmasked() {
-    let h = spawn_system("lay-hcav", layered_machine(), 1024);
-    let mut c = client(&h);
-    c.ok("emulator/run_frames", json!({"frames": 2}));
-
-    let base = unmasked_state_hash_caveat(&mut c, true);
-    let before = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
-    let fb_before = before["framebuffer"]
-        .as_str()
-        .expect("includeFramebuffer must produce a `framebuffer` digest")
-        .to_string();
-
-    c.ok(
-        "emulator/set_layer_enabled",
-        json!({"layer": "planeA", "enabled": false}),
-    );
-    c.ok(
-        "emulator/set_layer_enabled",
-        json!({"layer": "sprites", "enabled": false}),
-    );
-
-    // The mask really reached the picture — otherwise there is no divergence to disclaim and this whole
-    // row is describing a situation that is not happening.
-    let shot = c.ok("emulator/screenshot", json!({"path": shot_path("hcav")}));
-    assert_eq!(
-        shot["source"],
-        json!("stateRender"),
-        "precondition: the mask must be visible to the render surfaces"
-    );
-    let _ = std::fs::remove_file(shot["path"].as_str().unwrap());
-
-    let after = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
-    let caveat = after["caveat"]
-        .as_str()
-        .expect("emulator/state_hash always carries a caveat");
-
-    // 1. The hash did NOT move. The caveat is a disclosure, not a substitute for the invariant.
-    assert_eq!(
-        after["framebuffer"],
-        json!(fb_before),
-        "the framebuffer digest moved under a mask — the disclosure below would be papering over a leak"
-    );
-    assert_eq!(
-        after["framebufferSource"], before["framebufferSource"],
-        "the framebuffer's provenance moved under a mask"
-    );
-
-    // 2. The caveat STRICTLY EXTENDS the unmasked one — it is not a different sentence, and not the same one.
-    let extra = caveat.strip_prefix(base.as_str()).unwrap_or_else(|| {
-        panic!(
-            "the masked caveat must extend the unmasked one, keeping it intact.\n  base: {base}\n  got:  {caveat}"
+/// The five fingerprint keys `emulator/state_hash` always answers, and the keys a `framebuffer` brings
+/// with it, both **read from the vendored fragment**: `result.required`, and `framebuffer` plus
+/// `dependentRequired.framebuffer` (§11.49 D1 with R1). Loud if either is missing, so a schema that
+/// stopped declaring them cannot turn the key-set assertions below into comparisons against nothing.
+fn state_hash_key_sets() -> (BTreeSet<String>, BTreeSet<String>) {
+    let doc = schema();
+    let frag = &doc["methods"]["emulator/state_hash"]["result"];
+    let strings = |v: &Value, what: &str| -> BTreeSet<String> {
+        set_of(
+            v.as_array()
+                .unwrap_or_else(|| panic!("the state_hash fragment declares no {what}"))
+                .iter()
+                .map(|s| s.as_str().expect("key names are strings").to_string()),
         )
-    });
-    assert!(
-        !extra.trim().is_empty(),
-        "the masked caveat is byte-identical to the unmasked one — the divergence went unannounced"
+    };
+    let five = strings(&frag["required"], "result.required");
+    assert_eq!(
+        five.len(),
+        5,
+        "state_hash's required keys should be the five fingerprints: {five:?}"
     );
-
-    // 3. …and it names what is hidden, and what the hash is of. Derived from the two layers actually masked,
-    //    and asserted NOT to name the two that are not: a caveat listing every layer would pass a
-    //    `contains` sweep while telling the caller nothing true.
-    for hidden in ["planeA", "sprites"] {
-        assert!(
-            extra.contains(hidden),
-            "the caveat must name the hidden layer {hidden}: {extra}"
-        );
-    }
-    for shown in ["planeB", "window"] {
-        assert!(
-            !extra.contains(shown),
-            "the caveat named {shown}, which is NOT hidden — it is listing the vocabulary, not the mask: \
-             {extra}"
-        );
-    }
-    assert!(
-        extra.contains("UNMASKED"),
-        "the caveat must say which picture the hash is of: {extra}"
+    let mut with_fb = strings(
+        &frag["dependentRequired"]["framebuffer"],
+        "dependentRequired.framebuffer",
     );
+    with_fb.insert("framebuffer".to_string());
+    assert!(
+        with_fb.contains("displayMask") && with_fb.contains("framebufferSource"),
+        "§11.49 D1 and R1: displayMask and framebufferSource are demanded beside framebuffer: {with_fb:?}"
+    );
+    (five, with_fb)
 }
 
-/// The paired direction, and the one that protects every existing consumer: **with no mask set the reply is
-/// the reply this row has always returned**, and a mask alone is not enough to change it — only a mask
-/// *plus* a framebuffer in the reply, because only then is there an unmasked picture to disclaim.
+/// A reply's own keys, the envelope's four subtracted.
+fn method_keys(r: &Value) -> BTreeSet<String> {
+    set_of(
+        r.as_object()
+            .expect("an object")
+            .keys()
+            .filter(|k| !ENVELOPE_KEYS.contains(&k.as_str()))
+            .cloned(),
+    )
+}
+
+/// A `displayMask` as a set, **after** asserting it is an array of strings with no name twice (the
+/// fragment's `uniqueItems`, asserted here too so a set comparison cannot hide a duplicate).
+fn names(v: &Value, what: &str) -> BTreeSet<String> {
+    let arr = v
+        .as_array()
+        .unwrap_or_else(|| panic!("{what}: displayMask must be an array, got {v}"));
+    let set = set_of(arr.iter().map(|s| {
+        s.as_str()
+            .unwrap_or_else(|| panic!("{what}: displayMask names are strings: {v}"))
+            .to_string()
+    }));
+    assert_eq!(
+        set.len(),
+        arr.len(),
+        "{what}: displayMask lists a layer twice: {v}"
+    );
+    set
+}
+
+/// **CR1 and CR4** (§11.49, CR-V, D1 and D3). The unmasked framebuffer reply carries `displayMask: []`
+/// and no caveat; a reply with no framebuffer carries neither key, mask or no mask; and a set that
+/// changes nothing changes nothing.
 ///
-/// The third case is the one that catches an over-eager extension: a mask is set, but `includeFramebuffer`
-/// is omitted, so nothing was hashed and the caveat must not have grown. The fourth is a true byte-identity
-/// pin — a no-op `set_layer_enabled` on the same machine must leave the entire reply, digest included,
-/// unchanged.
+/// **What else could make this green?** A server that never emitted `displayMask` would pass both
+/// no-framebuffer halves, so the framebuffer half asserts the key as a present, EMPTY array rather than
+/// the absence of a non-empty one. A key set compared against a list typed here would pass against a
+/// stale list, so both sets come out of the vendored fragment ([`state_hash_key_sets`]). And the masked
+/// no-framebuffer reply would prove nothing if the mask were not in force when it was taken, so a
+/// framebuffer reply at the same point is asserted to name the hidden layer first.
 #[test]
-fn an_unmasked_state_hash_reply_is_the_one_it_has_always_been() {
+fn an_unmasked_framebuffer_hash_carries_an_empty_display_mask_and_no_constant_caveat() {
+    let (five, with_fb) = state_hash_key_sets();
+    let all: BTreeSet<String> = five.union(&with_fb).cloned().collect();
     let h = spawn_system("lay-hbase", layered_machine(), 1024);
     let mut c = client(&h);
     c.ok("emulator/run_frames", json!({"frames": 2}));
 
-    // 1 + 2: no mask, with and without the framebuffer. Both must be the plain caveat, and
-    // `unmasked_state_hash_caveat` asserts neither mentions masking.
-    let with_fb = unmasked_state_hash_caveat(&mut c, true);
-    let without_fb = unmasked_state_hash_caveat(&mut c, false);
+    // CR4, unmasked: the five fingerprints and nothing else. No caveat (M18), no displayMask.
+    let plain = c.ok("emulator/state_hash", json!({}));
     assert_eq!(
-        with_fb, without_fb,
-        "asking for the framebuffer must not by itself change the caveat"
+        method_keys(&plain),
+        five,
+        "CR4: state_hash {{}} is the five fingerprints and nothing else, no caveat and no displayMask: {plain}"
     );
 
-    // 4 (taken before the mask): a set that changes nothing must change nothing.
+    // CR1: a framebuffer brings exactly `framebufferSource` and `displayMask` with it, the list present
+    // and EMPTY, and no caveat.
     let a = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    assert_eq!(
+        method_keys(&a),
+        all,
+        "CR1: a framebuffer reply is the five plus exactly what the fragment demands beside framebuffer: {a}"
+    );
+    assert_eq!(
+        a["displayMask"],
+        json!([]),
+        "CR1: nothing is hidden, and the key says so rather than being absent: {a}"
+    );
+    assert!(a.get("caveat").is_none(), "CR1: no mask, no caveat: {a}");
+
+    // A set that changes nothing must change nothing, displayMask included.
     c.ok(
         "emulator/set_layer_enabled",
         json!({"layer": "planeA", "enabled": true}),
     );
     let b = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
-    for key in [
-        "vram",
-        "cram",
-        "vsram",
-        "regs",
-        "combined",
-        "framebuffer",
-        "framebufferSource",
-        "caveat",
-    ] {
+    for key in &all {
         assert!(
-            a[key].is_string(),
+            a.get(key).is_some(),
             "control: state_hash must actually report `{key}`, or the comparison below is vacuous"
         );
         assert_eq!(
@@ -967,22 +990,568 @@ fn an_unmasked_state_hash_reply_is_the_one_it_has_always_been() {
         );
     }
 
-    // 3: a mask IS set, but nothing was hashed — so there is no unmasked picture to disclaim.
+    // CR4, masked: a mask IS set, but nothing was hashed, so there is no unmasked picture to disclaim.
     c.ok(
         "emulator/set_layer_enabled",
         json!({"layer": "window", "enabled": false}),
     );
-    let masked_no_fb = c.ok("emulator/state_hash", json!({}));
+    let masked_fb = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    assert_eq!(
+        masked_fb["displayMask"],
+        json!(["window"]),
+        "precondition: the mask is in force at this point, or the reply below proves nothing: {masked_fb}"
+    );
+    let masked_plain = c.ok("emulator/state_hash", json!({}));
+    assert_eq!(
+        method_keys(&masked_plain),
+        five,
+        "CR4: with a mask set and no framebuffer, still the five and nothing else: {masked_plain}"
+    );
+}
+
+/// **CR2 and CR3** (§11.49, CR-V). Under a mask the digest does not move, and `displayMask` names exactly
+/// the hidden layers. The reference server also puts a caveat beside it (CR3), which §11.49 S2 keeps
+/// informative: it pins this server's behaviour, not the contract's.
+///
+/// **What else could make this green?** A digest that agreed only because the mask never reached any
+/// picture, so the mask is shown to reach both render surfaces first (the anti-vacuity precondition kept
+/// from the row this replaces). A list that names every layer, so the expectation is the two layers set
+/// here and the comparison is set EQUALITY, which also refuses the two left shown. And a key or caveat
+/// that stuck after the mask was cleared, so the mask is cleared and both are asserted gone.
+#[test]
+fn a_framebuffer_hash_taken_under_a_mask_names_the_hidden_layers_in_a_typed_key() {
+    let (five, _) = state_hash_key_sets();
+    let h = spawn_system("lay-hcav", layered_machine(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 2}));
+
+    let before = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    let rows_before = c.ok("emulator/scanlines", json!({}))["rows"].clone();
+    assert_eq!(
+        before["framebufferSource"],
+        json!("raster"),
+        "control: the digest must be of the raster frame, not of a fallback render"
+    );
     assert!(
-        masked_no_fb.get("framebuffer").is_none(),
-        "control: without includeFramebuffer there must be no digest, or case 3 is not the case it names"
+        before.get("caveat").is_none(),
+        "CR3 control: no mask, no caveat: {before}"
+    );
+
+    let hide = ["planeA", "sprites"];
+    for layer in hide {
+        c.ok(
+            "emulator/set_layer_enabled",
+            json!({"layer": layer, "enabled": false}),
+        );
+    }
+
+    // Anti-vacuity: the mask reached the picture on both render surfaces. Otherwise there is no
+    // divergence to name and this row describes a situation that is not happening.
+    let shot = c.ok("emulator/screenshot", json!({"path": shot_path("hcav")}));
+    assert_eq!(
+        shot["source"],
+        json!("stateRender"),
+        "precondition: the mask must be visible to the render surfaces"
+    );
+    let _ = std::fs::remove_file(shot["path"].as_str().unwrap());
+    let rows_after = c.ok("emulator/scanlines", json!({}))["rows"].clone();
+    assert_ne!(
+        rows_after, rows_before,
+        "precondition: the mask must change the rows emulator/scanlines serves"
+    );
+
+    let after = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+
+    // CR2 (1): nothing the digests cover moved. The key is a disclosure, not a substitute for the rule.
+    for key in five
+        .iter()
+        .map(String::as_str)
+        .chain(["framebuffer", "framebufferSource"])
+    {
+        assert!(
+            before[key].is_string(),
+            "control: state_hash must report `{key}`"
+        );
+        assert_eq!(
+            after[key], before[key],
+            "a display mask moved state_hash.{key}: the debugger's state has entered the machine's fingerprint"
+        );
+    }
+
+    // CR2 (2): displayMask names exactly the hidden layers.
+    assert_eq!(
+        names(&after["displayMask"], "masked state_hash"),
+        set_of(hide.iter().map(|s| s.to_string())),
+        "CR2: displayMask must name exactly the layers hidden, no more and no fewer: {after}"
+    );
+
+    // CR3, informative (§11.49 S2): the reference server's human twin of the key.
+    let caveat = after["caveat"].as_str().unwrap_or_else(|| {
+        panic!("CR3: the reference server emits a caveat beside a non-empty displayMask: {after}")
+    });
+    for layer in hide {
+        assert!(
+            caveat.contains(layer),
+            "CR3: the caveat must name the hidden layer {layer}: {caveat}"
+        );
+    }
+    for (shown, _) in LayerMask::targets()
+        .into_iter()
+        .filter(|(n, _)| !hide.contains(n))
+    {
+        assert!(
+            !caveat.contains(shown),
+            "CR3: the caveat named {shown}, which is NOT hidden: {caveat}"
+        );
+    }
+    assert!(
+        caveat.contains("UNMASKED"),
+        "CR3: the caveat must say which picture the hash is of: {caveat}"
+    );
+
+    // Cleared: the same digest, an empty key, and no caveat. Both follow the mask in both directions.
+    for layer in hide {
+        c.ok(
+            "emulator/set_layer_enabled",
+            json!({"layer": layer, "enabled": true}),
+        );
+    }
+    let cleared = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    assert_eq!(cleared["framebuffer"], before["framebuffer"]);
+    assert_eq!(
+        cleared["displayMask"],
+        json!([]),
+        "clearing the mask empties the key: {cleared}"
+    );
+    assert!(
+        cleared.get("caveat").is_none(),
+        "clearing the mask retires the caveat: {cleared}"
+    );
+}
+
+/// **§8 item 30**, the recipe the contract hands a client from outside the server (§11.49): hash with
+/// `includeFramebuffer`, hide one layer, hash again, restore, hash a third time. All three digests are
+/// equal and the second reply's `displayMask` is that one layer. Run here for **every** mask target, each
+/// with its own anti-vacuity: between the first two hashes `emulator/scanlines` must differ, or the
+/// fixture draws nothing on that layer and the row proves nothing about it.
+#[test]
+fn section_8_item_30_each_layer_hidden_alone_leaves_the_digest_where_it_was() {
+    assert_every_layer_is_visible_somewhere();
+    let h = spawn_system("lay-item30", layered_machine(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 2}));
+    let targets = LayerMask::targets();
+    assert_eq!(targets.len(), 4, "the sweep should cover four mask targets");
+    for (name, _) in targets {
+        let first = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+        let rows1 = c.ok("emulator/scanlines", json!({}))["rows"].clone();
+        c.ok(
+            "emulator/set_layer_enabled",
+            json!({"layer": name, "enabled": false}),
+        );
+        let second = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+        let rows2 = c.ok("emulator/scanlines", json!({}))["rows"].clone();
+        assert_ne!(
+            rows1, rows2,
+            "anti-vacuity: hiding {name} must change what emulator/scanlines serves"
+        );
+        c.ok(
+            "emulator/set_layer_enabled",
+            json!({"layer": name, "enabled": true}),
+        );
+        let third = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+        for key in ["framebuffer", "framebufferSource"] {
+            assert!(
+                first[key].is_string(),
+                "control: state_hash must report `{key}`"
+            );
+            assert_eq!(
+                second[key], first[key],
+                "hiding {name} moved state_hash.{key}"
+            );
+            assert_eq!(
+                third[key], first[key],
+                "restoring {name} moved state_hash.{key}"
+            );
+        }
+        assert_eq!(
+            first["displayMask"],
+            json!([]),
+            "{name}: before hiding: {first}"
+        );
+        assert_eq!(
+            second["displayMask"],
+            json!([name]),
+            "{name}: the second reply's displayMask is that one layer: {second}"
+        );
+        assert_eq!(
+            third["displayMask"],
+            json!([]),
+            "{name}: after restoring: {third}"
+        );
+    }
+}
+
+/// **CR7, player parity** (§11.49, CR-V). The player's palette hides a layer through `Host::set_layer`,
+/// a one-line forward to `Engine::set_layer` (the same field `emulator/set_layer_enabled` moves), and
+/// draws its standing badge from `LayerMask::hidden()`. The wire's `displayMask` on all three methods must
+/// be that list, as served, over every one of the sixteen masks: one derivation, asserted so it stays one.
+///
+/// **What else could make this green?** Agreement only because both lists were empty, so all sixteen
+/// masks are swept and fifteen are counted non-empty. A second hand-written list holding the same names
+/// in another order, which is set-equal and still two derivations, so the comparison is on the list as
+/// served, order included. And a wire list equal to a `hidden()` that itself disagreed with what was
+/// asked, so `hidden()` is first held set-equal to the layers this loop switched off.
+#[test]
+fn cr7_a_mask_set_from_the_palette_is_the_wire_display_mask_on_every_surface() {
+    let mut host = Host::new(HostConfig::default());
+    let mut sys = layered_machine();
+    let targets = LayerMask::targets();
+    assert_eq!(targets.len(), 4, "the sweep should cover four mask targets");
+    let path = shot_path("cr7");
+    let mut nonempty = 0;
+    for bits in 0u32..(1 << targets.len()) {
+        let mut want = BTreeSet::new();
+        for (i, (name, layer)) in targets.iter().enumerate() {
+            let hide = bits & (1 << i) != 0;
+            assert!(host.set_layer(*layer, !hide), "{name} is a mask target");
+            if hide {
+                want.insert(name.to_string());
+            }
+        }
+        let badge = host.layers().hidden();
+        assert_eq!(
+            set_of(badge.iter().map(|s| s.to_string())),
+            want,
+            "the palette route hid {want:?} and the badge's source reads {badge:?}"
+        );
+        if !badge.is_empty() {
+            nonempty += 1;
+        }
+        for (method, params) in [
+            ("emulator/state_hash", json!({"includeFramebuffer": true})),
+            ("emulator/screenshot", json!({"path": path})),
+            ("emulator/scanlines", json!({"startLine": 0, "count": 1})),
+        ] {
+            let (res, _stamp) = host.call(&mut sys, method, &params);
+            let r = res.unwrap_or_else(|e| panic!("{method} under mask {want:?}: {e:?}"));
+            assert_eq!(
+                r["displayMask"],
+                json!(badge),
+                "{method}: the wire's displayMask is not LayerMask::hidden() under {want:?}, so the \
+                 two are not one derivation"
+            );
+        }
+    }
+    assert_eq!(nonempty, 15, "the sweep must exercise every non-empty mask");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// [`layered_machine`] in H32 (reg 12 = `$00`): the same stack, 256 pixels wide, for CR8's second width
+/// (§11.49 M1). Nothing else changes, and CR8 re-measures its own precondition on this machine (the mask
+/// must hide drawn content) rather than inheriting H40's.
+fn layered_machine_h32() -> System {
+    let mut sys = layered_machine();
+    set_reg(sys.vdp_mut(), 0x0C, 0x00);
+    sys
+}
+
+/// `oracle_core::testrom::build_cram_midframe(100)` booted: an H32 frame whose backdrop is repainted at
+/// line 100, so its raster differs from any post-hoc render of the end-of-frame state.
+fn midframe_machine() -> System {
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(oracle_core::testrom::build_cram_midframe(100));
+    sys.reset();
+    sys
+}
+
+/// FNV-1a 64-bit with the parameters `emulator/memory_hash` states (§6), written out here rather than
+/// borrowed from `oracle_core::state_hash`: the fold under test is the server's, and a test that reused its
+/// function would agree with it by construction. The published `"foobar"` vector pins the algorithm.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xCBF2_9CE4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3)
+    })
+}
+
+fn hash_hex(v: u64) -> String {
+    format!("0x{v:016X}")
+}
+
+/// `emulator/scanlines`' active-display rows, decoded and concatenated: the input §11.49 R2 says
+/// `framebuffer` folds (M1). The range is the one `scanlines` serves for `{}` ("through line 223", and
+/// whatever an amendment raising that bound makes it), checked against the core constant `scanlines` is
+/// bounded by and never against a typed `224`. Each row's width is checked against the reply's own
+/// `mode`, which is the width after `scanlines`' normalization.
+fn active_display_bytes(r: &Value, what: &str) -> (Vec<u8>, usize) {
+    let lines = usize::from(oracle_core::vdp::ACTIVE_LINES);
+    let rows = r["rows"].as_array().expect("rows is an array");
+    assert_eq!(
+        r["startLine"],
+        json!(0),
+        "{what}: scanlines {{}} must start at line 0"
     );
     assert_eq!(
-        masked_no_fb["caveat"],
-        json!(with_fb),
-        "a mask changed the caveat on a reply that hashed no framebuffer — the extension is not scoped \
-         to the divergence it announces"
+        rows.len(),
+        lines,
+        "{what}: scanlines {{}} must serve the whole active display (oracle_core::vdp::ACTIVE_LINES = \
+         {lines}); the fold cannot be measured over a stripe"
     );
+    let width = match r["mode"].as_str() {
+        Some("h40") => usize::from(oracle_core::render::active_width(true)),
+        Some("h32") => usize::from(oracle_core::render::active_width(false)),
+        m => panic!("{what}: mode must be h40 or h32, got {m:?}"),
+    };
+    let mut out = Vec::with_capacity(lines * width * 3);
+    for (i, row) in rows.iter().enumerate() {
+        assert_eq!(row["line"], json!(i), "{what}: rows are contiguous from 0");
+        assert_eq!(
+            row["width"],
+            json!(width),
+            "{what}: row {i} is not at the reply's mode width"
+        );
+        let hex = row["rgb"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("0x"))
+            .expect("rgb is 0x-prefixed hex");
+        assert_eq!(
+            hex.len(),
+            width * 6,
+            "{what}: row {i} is not width x 3 bytes"
+        );
+        for k in (0..hex.len()).step_by(2) {
+            out.push(u8::from_str_radix(&hex[k..k + 2], 16).expect("hex digits"));
+        }
+    }
+    (out, width)
+}
+
+/// The core's own render of `sys` under `mask`, flattened to `r,g,b` bytes: what an identical machine
+/// draws, computed without the server.
+fn core_frame_bytes(sys: &System, mask: LayerMask) -> Vec<u8> {
+    let (_, height) = sys.vdp().active_display();
+    (0..height)
+        .flat_map(|line| sys.vdp().render_line_masked(line, mask))
+        .flat_map(|(r, g, b)| [r, g, b])
+        .collect()
+}
+
+fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| x != y)
+        .or(if a.len() == b.len() {
+            None
+        } else {
+            Some(a.len().min(b.len()))
+        })
+}
+
+/// CR8's anti-vacuity half: a constructor for a fresh machine identical to the one served, and the layers
+/// to hide on it.
+type MaskedHalf<'a> = (fn() -> System, &'a [&'a str]);
+
+/// **CR8, the row that decides whether §11.49 R2 is true** (M1). With no mask and both sources `raster`,
+/// FNV-1a-64 over `scanlines`' active-display rows, decoded and concatenated, equals `framebuffer`. With
+/// `masked = Some((fresh, hide))`, the same fold over the rows served under a mask that hides drawn
+/// content differs from `framebuffer` (the anti-vacuity half), and equals the fold of the core's own
+/// masked render of `fresh()`, so the difference is the mask and nothing else. Returns the unmasked
+/// `scanlines` reply for a caller with a further claim about the frame.
+///
+/// If this fails, R2 is withdrawn by a delta ruling (§11.49 M1). The message carries what differs.
+fn cr8(
+    tag: &str,
+    sys: System,
+    frames: u64,
+    want_mode: &str,
+    masked: Option<MaskedHalf<'_>>,
+) -> Value {
+    assert_eq!(
+        fnv1a64(b"foobar"),
+        0x8594_4171_F739_67E8,
+        "the test's own FNV-1a-64 is the published algorithm"
+    );
+    let h = spawn_system(tag, sys, 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": frames}));
+    let hash = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    let s = c.ok("emulator/scanlines", json!({}));
+    assert_eq!(
+        hash["framebufferSource"],
+        json!("raster"),
+        "{tag}: CR8 is stated for raster sources"
+    );
+    assert_eq!(
+        s["source"],
+        json!("raster"),
+        "{tag}: CR8 is stated for raster sources"
+    );
+    assert_eq!(
+        s["displayMask"],
+        json!([]),
+        "{tag}: the unmasked half has no mask"
+    );
+    assert_eq!(
+        s["mode"],
+        json!(want_mode),
+        "{tag}: the fixture must be the width this row claims to measure"
+    );
+    let (bytes, width) = active_display_bytes(&s, tag);
+    let fold = hash_hex(fnv1a64(&bytes));
+    assert_eq!(
+        json!(fold),
+        hash["framebuffer"],
+        "{tag}: §11.49 R2 does not hold. FNV-1a-64 over scanlines' {} rows at the {want_mode} width {width} \
+         ({} bytes) is {fold}, and framebuffer is {}",
+        s["rows"].as_array().map_or(0, Vec::len),
+        bytes.len(),
+        hash["framebuffer"]
+    );
+
+    let Some((fresh, hide)) = masked else {
+        return s;
+    };
+    let mut mask = LayerMask::ALL;
+    for name in hide {
+        let (_, layer) = LayerMask::targets()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} is not a mask target"));
+        mask.set(layer, false);
+    }
+    let core_masked = core_frame_bytes(&fresh(), mask);
+    assert_ne!(
+        hash_hex(fnv1a64(&core_masked)),
+        hash_hex(fnv1a64(&core_frame_bytes(&fresh(), LayerMask::ALL))),
+        "{tag}: precondition: hiding {hide:?} must hide drawn content on this fixture"
+    );
+    for name in hide {
+        c.ok(
+            "emulator/set_layer_enabled",
+            json!({"layer": name, "enabled": false}),
+        );
+    }
+    let s2 = c.ok("emulator/scanlines", json!({}));
+    assert_eq!(
+        names(&s2["displayMask"], tag),
+        set_of(hide.iter().map(|n| n.to_string())),
+        "{tag}: the masked rows must say which layers they hide"
+    );
+    let (masked_bytes, _) = active_display_bytes(&s2, tag);
+    let masked_fold = hash_hex(fnv1a64(&masked_bytes));
+    assert_ne!(
+        json!(masked_fold),
+        hash["framebuffer"],
+        "{tag}: anti-vacuity: the fold over rows served under a mask hiding {hide:?} equals framebuffer, so \
+         the equality above cannot tell the masked picture from the unmasked one"
+    );
+    assert!(
+        masked_bytes == core_masked,
+        "{tag}: the masked rows are not the core's masked render (first difference at byte {:?} of {} vs {}), \
+         so the difference above may be something other than the mask",
+        first_difference(&masked_bytes, &core_masked),
+        masked_bytes.len(),
+        core_masked.len()
+    );
+    let hash2 = c.ok("emulator/state_hash", json!({"includeFramebuffer": true}));
+    assert_eq!(
+        hash2["framebuffer"], hash["framebuffer"],
+        "{tag}: the digest moved under the mask"
+    );
+    s
+}
+
+#[test]
+fn cr8_the_framebuffer_digest_is_the_fold_of_the_scanlines_rows_at_h40() {
+    cr8(
+        "lay-cr8-h40",
+        layered_machine(),
+        2,
+        "h40",
+        Some((layered_machine, &["planeA", "sprites"])),
+    );
+}
+
+#[test]
+fn cr8_the_framebuffer_digest_is_the_fold_of_the_scanlines_rows_at_h32() {
+    cr8(
+        "lay-cr8-h32",
+        layered_machine_h32(),
+        2,
+        "h32",
+        Some((layered_machine_h32, &["planeA"])),
+    );
+}
+
+/// CR8's equality half on a frame no post-hoc render could have drawn: an H32 raster whose backdrop was
+/// repainted part-way down. Without this, the equality could hold only because both sides happened to be
+/// the same whole-frame render of a static scene.
+#[test]
+fn cr8_holds_on_a_mid_frame_h32_raster() {
+    let s = cr8("lay-cr8-mid", midframe_machine(), 6, "h32", None);
+    let rows = s["rows"].as_array().expect("rows");
+    assert_ne!(
+        rows[40]["rgb"], rows[160]["rgb"],
+        "precondition: the frame must carry its mid-frame backdrop change (line 100), or this row is the \
+         static case again"
+    );
+}
+
+/// **CR9** (§11.49 item B, M4). `screenshot`, `scanlines` and `state_hash` report one `displayMask` at one
+/// machine point, `[]` when nothing is hidden. The first two applied it to their picture and the third
+/// did not; the key means the same thing on all three (the debugger's mask at reply time).
+#[test]
+fn cr9_screenshot_scanlines_and_state_hash_report_one_display_mask() {
+    let h = spawn_system("lay-cr9", layered_machine(), 1024);
+    let mut c = client(&h);
+    c.ok("emulator/run_frames", json!({"frames": 2}));
+    let path = shot_path("cr9");
+    let read = |c: &mut Client| -> Vec<(&'static str, Value)> {
+        vec![
+            (
+                "emulator/state_hash",
+                c.ok("emulator/state_hash", json!({"includeFramebuffer": true})),
+            ),
+            (
+                "emulator/screenshot",
+                c.ok("emulator/screenshot", json!({"path": path})),
+            ),
+            (
+                "emulator/scanlines",
+                c.ok("emulator/scanlines", json!({"startLine": 0, "count": 1})),
+            ),
+        ]
+    };
+    for (method, r) in read(&mut c) {
+        assert_eq!(
+            r["displayMask"],
+            json!([]),
+            "{method}: unmasked, the key is present and empty: {r}"
+        );
+    }
+    let hide = ["planeB", "window"];
+    for layer in hide {
+        c.ok(
+            "emulator/set_layer_enabled",
+            json!({"layer": layer, "enabled": false}),
+        );
+    }
+    let replies = read(&mut c);
+    for (method, r) in &replies {
+        assert_eq!(
+            names(&r["displayMask"], method),
+            set_of(hide.iter().map(|s| s.to_string())),
+            "{method}: displayMask must name exactly the hidden layers: {r}"
+        );
+    }
+    for pair in replies.windows(2) {
+        assert_eq!(
+            pair[0].1["displayMask"], pair[1].1["displayMask"],
+            "{} and {} report different lists at one machine point",
+            pair[0].0, pair[1].0
+        );
+    }
+    let _ = std::fs::remove_file(&path);
 }
 
 /// The other direction: the three calls that replace the machine must **not** take the debugger's masks

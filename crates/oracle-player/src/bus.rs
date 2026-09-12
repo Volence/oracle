@@ -1012,6 +1012,10 @@ impl Bus {
     /// re-render of the VDP state — which, taken in V-Blank after the game has rewritten CRAM for the next
     /// frame, cannot show a single mid-frame palette effect.
     ///
+    /// With a layer hidden from the palette the glass is masked and neither answers with it:
+    /// `emulator/screenshot` re-derives the masked picture post-hoc, and `state_hash`'s `framebuffer` stays
+    /// the unmasked frame, which the reply's `displayMask` announces (§11.49).
+    ///
     /// # ⚑ `has_clients()` is no longer permanently false, and this is the call that notices
     ///
     /// [`Host::publish_capture`] is gated on `has_clients()` internally. Before `PLAYER-SERVE` that gate

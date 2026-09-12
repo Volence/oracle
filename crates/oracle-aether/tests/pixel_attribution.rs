@@ -732,10 +732,11 @@ fn rgb_resolves_against_live_state_and_the_row_must_not_read_a_framebuffer() {
 /// It is also what stops `caveat` becoming structural. §2.4's advisory names the failure precisely: a
 /// caveat present on every reply is documentation wearing signal's clothes. Its example was
 /// `emulator/read_memory`'s constant debug-read string, which is conditional since F-DEBUGREAD-BANKED
-/// (`docs/2026-09-11-debugread-banked.md` §3.4). `read_vram`'s and `state_hash`'s constant caveats are
-/// still in the tree (lens M18). §11.27 raises it to a MUST NOT — an unconditional caveat is
-/// non-conformant, not merely unhelpful — because both engines in this suite rebuild CRAM every vblank,
-/// which would make "a completed frame exists" fire on every reply after the first.
+/// (`docs/2026-09-11-debugread-banked.md` §3.4). `read_vram`'s and `state_hash`'s constant caveats went
+/// the same way under §11.49 (CR-V, lens M18), their permanent facts moved into §6; for those rows that
+/// was §2.4's SHOULD. For **this** method's caveat §11.27 goes further and makes an unconditional one a
+/// MUST NOT (non-conformant, not merely unhelpful), because both engines in this suite rebuild CRAM
+/// every vblank, which would make "a completed frame exists" fire on every reply after the first.
 ///
 /// **The fixture's silence is measured, not assumed.** `machine_with_plane_cell` poses VRAM and the
 /// registers by hand and writes **no CRAM at all** — the winning colour is an untouched entry — and

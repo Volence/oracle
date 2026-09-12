@@ -674,6 +674,19 @@
         "approximate"
       ],
       "description": "The relationship between a reported stop `pc` and the condition that halted the machine (protocol.md §2.1, §11.31). Totally ordered, strongest first: `exact` (the instruction at pc has not executed and, where the stop had a triggering address, pc IS it) > `afterCommit` (the instruction immediately before pc caused the stop and has fully committed; read state as post-trigger) > `approximate` (the server promises nothing about which side of the trigger pc is on, or by how much). One $def referenced from the handshake map and the stopped event, because a copied enum is a drift source."
+    },
+    "displayMask": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "planeA",
+          "planeB",
+          "window",
+          "sprites"
+        ]
+      },
+      "uniqueItems": true,
+      "description": "The layers the debugger's display mask (emulator/set_layer_enabled) was hiding when this reply was taken: emulator/get_layer_states' key spellings, one entry per hidden layer, [] when none, order not significant. A fact about the DEBUGGER at reply time, not about any picture: each method that carries it says whether its picture applied the mask (protocol.md §6, §11.49, CR-V). A server with no mask surface emits []."
     }
   },
   "anyMessage": {
@@ -1656,7 +1669,7 @@
       }
     },
     "emulator/read_vram": {
-      "$comment": "protocol.md §6 (VRAM / CRAM / layers). The row is unchanged by this pass: its only surplus was a `caveat`, which §2.4 now defines once for the whole bus and which §2.4 clause 4 says a row need not enumerate. The fragment declares it anyway, because §8 item 20 closes results at test time and an undeclared caveat would fail that check.",
+      "$comment": "protocol.md §6 (VRAM / CRAM / layers). The row is unchanged by this pass: its only surplus was a `caveat`, which §2.4 now defines once for the whole bus and which §2.4 clause 4 says a row need not enumerate. The fragment declares it anyway, because §8 item 20 closes results at test time and an undeclared caveat would fail that check. Since §11.49 (CR-V) the reference server emits no caveat here: the peek property is stated once in emulator/read's §6 prose, of which this method is an exact alias. The declaration stays (over-declaring is harmless, §11.20), so a genuinely conditional caveat needs no amendment.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
@@ -1837,7 +1850,8 @@
           "width",
           "height",
           "bytes",
-          "source"
+          "source",
+          "displayMask"
         ],
         "properties": {
           "path": {
@@ -1867,7 +1881,11 @@
               "raster",
               "stateRender"
             ],
-            "description": "WHICH PICTURE WAS SERVED. `raster` = the frame the scanline path actually drew. `stateRender` = re-derived from VDP state as it stands now, the honest fallback before any whole frame has been drawn. Provenance, and the register case rather than a nicety: §6's pixel_attribution prose already spends a paragraph on why the two legitimately differ and why pausing does NOT reconcile them (measured over 17 test ROMs). A stateRender picture silently labelled as the frame is the silent wrong answer D11 exists to prevent."
+            "description": "WHICH PICTURE WAS SERVED. `raster` = the frame the scanline path actually drew. `stateRender` = re-derived from VDP state as it stands now, the honest fallback before any whole frame has been drawn. Provenance, and the register case rather than a nicety: §6's pixel_attribution prose already spends a paragraph on why the two legitimately differ and why pausing does NOT reconcile them (measured over 17 test ROMs). A stateRender picture silently labelled as the frame is the silent wrong answer D11 exists to prevent. A non-empty `displayMask` is a second reason for stateRender: the reference server's retained frame is drawn unmasked, so under a mask it re-derives the masked picture from current VDP state. A server able to mask a raster-timed frame MAY answer raster under a mask; 'masked implies stateRender' is not a rule (§11.49)."
+          },
+          "displayMask": {
+            "$ref": "#/$defs/displayMask",
+            "description": "The layers hidden from THIS picture, [] when none (§11.49 item B, required for §2.3's reason: absence must not mean both 'nothing hidden' and 'this server predates the key')."
           },
           "caveat": {
             "type": "string",
@@ -1877,7 +1895,7 @@
       }
     },
     "emulator/state_hash": {
-      "$comment": "protocol.md §6 (status / misc). The five fingerprints cover VDP state only.",
+      "$comment": "protocol.md §6 (status / misc). The five fingerprints fold exactly VRAM, CRAM, VSRAM and the 24 register bytes; §6's coverage paragraph (§11.49) names the VDP state they do NOT cover, so 'VDP state only', which this comment said until §11.49, was an overclaim.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
@@ -1920,7 +1938,7 @@
           },
           "framebuffer": {
             "$ref": "#/$defs/hash64",
-            "$comment": "Present if and only if the includeFramebuffer param was true."
+            "$comment": "Present if and only if the includeFramebuffer param was true. ALWAYS the unmasked picture: a server MUST NOT apply the display mask to it (§6, §11.49). displayMask says whether the picture on screen differs from it for that reason."
           },
           "framebufferSource": {
             "enum": [
@@ -1929,10 +1947,26 @@
             ],
             "description": "Which picture was hashed — the same enum and the same meaning as emulator/screenshot's `source`, registered in the same pass (§11.5) and for a sharper version of the same reason: a fingerprint whose input provenance is unstated is worse than one that is simply wrong, because two machines can disagree on it for a reason that has nothing to do with either machine. Present if and only if `framebuffer` is."
           },
+          "displayMask": {
+            "$ref": "#/$defs/displayMask",
+            "description": "The display mask in force when `framebuffer` was taken, which `framebuffer` did NOT apply. Non-empty means emulator/screenshot and emulator/scanlines are showing a different picture from the one fingerprinted here. Present if and only if `framebuffer` is (§11.49)."
+          },
           "caveat": {
             "type": "string",
-            "description": "protocol.md §2.4."
+            "description": "§2.4. Conditional: the reference server emits it only beside a non-empty `displayMask`, as that key's human-readable twin. Presence and wording are not contract (§2.4 rule 3); the permanent coverage property is in §6, not here (§11.49)."
           }
+        },
+        "dependentRequired": {
+          "framebuffer": [
+            "framebufferSource",
+            "displayMask"
+          ],
+          "framebufferSource": [
+            "framebuffer"
+          ],
+          "displayMask": [
+            "framebuffer"
+          ]
         }
       }
     },
@@ -2279,7 +2313,7 @@
           },
           "caveat": {
             "type": "string",
-            "description": "§2.4. Emitted CONDITIONALLY, never on every reply — a caveat every reply carries is one nobody reads. The debug-read property of these reads lives in the row's prose instead."
+            "description": "§2.4. Emitted CONDITIONALLY, never on every reply — a caveat every reply carries is one nobody reads. The debug-read property of these reads lives in the row's prose instead (§6, the peek bullet added by §11.49)."
           }
         }
       }
@@ -3782,7 +3816,8 @@
           "startLine",
           "mode",
           "source",
-          "rows"
+          "rows",
+          "displayMask"
         ],
         "properties": {
           "startLine": {
@@ -3803,7 +3838,7 @@
               "raster",
               "stateRender"
             ],
-            "description": "Which instrument answered — screenshot's spellings. raster: the retained live per-line capture (the normative content). stateRender: the fallback when no completed frame is retained — before the first frame, or after reset/reload_rom/restore dropped it — rendered from current VDP state; structurally blind to mid-frame effects, so liveness gates MUST check for raster."
+            "description": "Which instrument answered — screenshot's spellings. raster: the retained live per-line capture (the normative content). stateRender: the fallback when no completed frame is retained — before the first frame, or after reset/reload_rom/restore dropped it — rendered from current VDP state; structurally blind to mid-frame effects, so liveness gates MUST check for raster. A non-empty `displayMask` is a second reason for stateRender: the reference server's retained frame is drawn unmasked, so under a mask it re-derives the masked picture from current VDP state. A server able to mask a raster-timed frame MAY answer raster under a mask; 'masked implies stateRender' is not a rule (§11.49)."
           },
           "rows": {
             "type": "array",
@@ -3839,6 +3874,10 @@
               }
             },
             "description": "The requested rows, line-ascending, contiguous from startLine."
+          },
+          "displayMask": {
+            "$ref": "#/$defs/displayMask",
+            "description": "The layers hidden from THIS picture, [] when none (§11.49 item B, required for §2.3's reason: absence must not mean both 'nothing hidden' and 'this server predates the key')."
           },
           "caveat": {
             "type": "string",

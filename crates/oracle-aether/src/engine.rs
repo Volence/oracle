@@ -2603,6 +2603,9 @@ impl Engine {
 
     /// Hand the engine a frame drawn by somebody else's run loop, so `emulator/screenshot` and
     /// `emulator/state_hash {includeFramebuffer}` answer with the picture that is actually on the glass.
+    /// That picture is the unmasked one: under a display mask `screenshot` re-derives the masked picture
+    /// post-hoc instead, and `state_hash`'s `framebuffer` never applies the mask at all (§11.49; its
+    /// `displayMask` names what the screen is hiding).
     ///
     /// Takes the [`ScanlineCapture`] rather than a packed buffer on purpose: it is the same input
     /// [`latch_screen`](Engine::latch_screen) consumes, run through the same reader, so a published frame and
@@ -3640,7 +3643,10 @@ impl Engine {
     /// determinism fingerprint of what the machine drew, and a digest that moved because a human toggled a
     /// debug layer would make two identical machines disagree for a reason that has nothing to do with
     /// either machine. Passing [`LayerMask::ALL`] explicitly at that call site is what states which of the
-    /// two it is; there is deliberately no zero-argument version to fall into by accident.
+    /// two it is; there is deliberately no zero-argument version to fall into by accident. Since §11.49
+    /// (CR-V) that is the contract's rule and not only this server's choice: §6 says a server MUST NOT
+    /// apply the display mask to `framebuffer`, and the same reply's `displayMask` names the layers whose
+    /// absence makes the screen differ from the picture hashed.
     ///
     /// # A masked read cannot use the latched frame
     ///
@@ -3666,12 +3672,17 @@ impl Engine {
         (width, fb, false)
     }
 
-    /// The masked layers' wire names, in [`Layer::ALL`] order, for a caveat that has to say *which* layers
-    /// are hidden. Empty when nothing is masked.
+    /// The masked layers' wire names, in [`Layer::ALL`] order. Empty when nothing is masked.
+    ///
+    /// **This is `displayMask`** (§11.49, CR-V, `$defs/displayMask`): `emulator/state_hash` (beside a
+    /// `framebuffer`), `emulator/screenshot` and `emulator/scanlines` (always) put exactly this list on the
+    /// wire, and the caveats that name the hidden layers read it too. There is no second list anywhere.
     ///
     /// [`LayerMask::hidden`] is the whole body: the player's standing on-screen badge asks the identical
     /// question of the identical mask, and two functions answering it would be free to disagree about which
-    /// layers a mask hides — in a caveat whose only job is to name them.
+    /// layers a mask hides, in a key whose only job is to name them. `tests/layers.rs` holds the wire's list
+    /// equal to `LayerMask::hidden()` over every mask (CR7) and the vocabulary equal to the schema's
+    /// `$defs/displayMask` enum (CR6).
     fn masked_layer_names(&self) -> Vec<&'static str> {
         self.layers.hidden()
     }
@@ -3696,17 +3707,23 @@ impl Engine {
         self.layers.set(layer, enabled)
     }
 
-    /// The sentence `emulator/state_hash` owes when it hashed a framebuffer while a display mask was set —
-    /// or `None` when no mask is set, which is what keeps the unmasked reply byte-identical to the one this
-    /// row has always returned.
+    /// The `caveat` `emulator/state_hash` emits beside a **non-empty** `displayMask`, and nowhere else —
+    /// `None` for an empty one. §11.49 (CR-V) D3: the row carries no constant caveat any more, so with no
+    /// mask, or with no framebuffer in the reply, there is no caveat at all. This sentence stands alone.
+    ///
+    /// It is the human twin of the typed key, not its carrier. The key is the contract; whether this
+    /// sentence is present, and its wording, are not (§2.4 rule 3, §11.48 M3, and §11.49 S2 keeps the row
+    /// that checks it informative). It exists because §2.4 rule 2 says clients SHOULD surface caveats to a
+    /// person, and a person reading a harness log should see which layers are hidden without decoding a
+    /// list. It takes the list the key was built from rather than reading the mask again, so the sentence
+    /// and the key cannot describe two different masks.
     ///
     /// Its subject is the opposite of [`mask_caveat`](Engine::mask_caveat)'s. That one tells a caller their
     /// *picture* is masked; this one tells them their *hash* is not — the two halves of the deliberate
     /// divergence between what `emulator/screenshot` shows and what this row fingerprints. Both read
     /// [`masked_layer_names`](Engine::masked_layer_names), so neither can name a layer the mask does not
     /// actually hide.
-    fn masked_hash_caveat(&self) -> Option<String> {
-        let masked = self.masked_layer_names();
+    fn masked_hash_caveat(masked: &[&str]) -> Option<String> {
         if masked.is_empty() {
             return None;
         }
@@ -4846,6 +4863,15 @@ impl Engine {
         }))
     }
 
+    /// `emulator/read_vram`, the deprecated exact alias of `emulator/read {space: "vram"}` (§6).
+    ///
+    /// **No caveat since §11.49** (CR-V, lens M18). It used to say, on every reply, that the bytes come
+    /// straight from the VRAM array and bypass the port path, autoincrement, the FIFO and DMA. That is
+    /// permanent, so it is now §6's peek bullet on `emulator/read` and is not repeated per reply: a caveat
+    /// every reply carries is one nobody reads (§2.4). It also left the two spellings disagreeing about
+    /// disclosure for the same bytes, since `read {space: "vram"}` never carried it. The fragment still
+    /// declares `caveat`, so a genuinely conditional one needs no amendment. `tests/methods.rs` holds these
+    /// `bytes` equal to `read {space: "vram"}`'s for the same range (CR5).
     fn read_vram(&mut self, params: &Value) -> Result<Value, RpcError> {
         let vram = self.sys.vram();
         let addr = match params.get("addr") {
@@ -4867,8 +4893,6 @@ impl Engine {
             "addr": hex::addr(addr),
             "len": len,
             "bytes": hex::bytes(&vram[addr as usize..end as usize]),
-            "caveat": "debug read: taken straight from the VRAM array, bypassing the VDP port path, \
-                       autoincrement, the FIFO and DMA.",
         }))
     }
 
@@ -5134,15 +5158,17 @@ impl Engine {
         };
         let h = self.sys.state_hash();
         let hex_of = oracle_core::state_hash::hex;
+        // **No constant caveat** (§11.49, CR-V, lens M18). What the five fold, exactly four regions, and
+        // that two machines agreeing on all five can still differ, is §6's coverage paragraph now, stated
+        // once rather than on every reply. The sentence that stood here said "VDP state only", which §8
+        // item 29 had already shown to be an overclaim: the status word, the write-pending toggle and the
+        // sprite latches are VDP state that no fingerprint covers.
         let mut out = json!({
             "vram": hex_of(h.vram),
             "cram": hex_of(h.cram),
             "vsram": hex_of(h.vsram),
             "regs": hex_of(h.regs),
             "combined": hex_of(h.combined),
-            "caveat": "these fingerprints cover VDP state only (VRAM, CRAM, VSRAM, VDP registers): \
-                       they say nothing about the CPU, work RAM, the Z80, SRAM or audio. Two machines \
-                       agreeing here can still differ.",
         });
         if include_fb {
             // `LayerMask::ALL`, explicitly and always: this is a determinism fingerprint of what the
@@ -5159,25 +5185,26 @@ impl Engine {
             // fingerprint whose provenance is ambiguous is a fingerprint two machines can disagree on for a
             // reason that has nothing to do with either machine.
             out["framebufferSource"] = json!(if from_raster { "raster" } else { "stateRender" });
-            // **The other half of hashing at `LayerMask::ALL`.** A set mask is precisely one of the reasons
-            // `framebufferSource` exists to rule out — the fragment's own words for that field are that *"a
-            // fingerprint whose input provenance is unstated is worse than one that is simply wrong, because
-            // two machines can disagree on it for a reason that has nothing to do with either machine"* —
-            // and a mask is exactly such a reason. Left unsaid, a caller who hides plane A, screenshots, and
-            // then hashes the framebuffer to pin what they are looking at gets the digest of a DIFFERENT
-            // picture with nothing on the wire admitting it. The divergence is deliberate, so it is
-            // announced; the hash itself does not move.
+            // **The other half of hashing at `LayerMask::ALL`, in a typed key** (§11.49, CR-V, D1). A set
+            // mask is precisely one of the reasons `framebufferSource` exists to rule out: a caller who hides
+            // plane A, screenshots, and then hashes the framebuffer to pin what they are looking at holds
+            // the digest of a DIFFERENT picture. The divergence is deliberate, so it is announced; the hash
+            // itself does not move. It used to be announced only as prose appended to a caveat, which §2.4
+            // rule 3 forbids a client to parse, so `displayMask` now says it: the layers hidden when the
+            // digest was taken, `[]` when none.
             //
-            // Scoped to `include_fb` on purpose: with no framebuffer in the reply there is no unmasked
-            // picture to disclaim, and a caveat that grew whenever a mask was set would change a reply that
-            // has nothing to do with the mask.
-            if let Some(extra) = self.masked_hash_caveat() {
-                let base = out["caveat"]
-                    .as_str()
-                    .expect("state_hash always carries its own caveat")
-                    .to_string();
-                out["caveat"] = json!(format!("{base} {extra}"));
+            // Written here and only here, so it is present if and only if `framebuffer` is (the fragment's
+            // `dependentRequired`). With no framebuffer in the reply there is no unmasked picture to
+            // disclaim, and a key that appeared whenever a mask was set would change a reply the mask
+            // cannot affect.
+            //
+            // The caveat rides beside a non-empty list only, built from the same list, so the sentence and
+            // the key cannot name two different masks.
+            let masked = self.masked_layer_names();
+            if let Some(caveat) = Self::masked_hash_caveat(&masked) {
+                out["caveat"] = json!(caveat);
             }
+            out["displayMask"] = json!(masked);
         }
         Ok(out)
     }
@@ -5802,6 +5829,11 @@ impl Engine {
             "mode": mode,
             "source": if from_raster { "raster" } else { "stateRender" },
             "rows": rows,
+            // §11.49 item B (M4): always present, `[]` when nothing is hidden, because absence must not mean
+            // both "nothing hidden" and "this server predates the key". These rows DID apply the mask, which
+            // is what makes a non-empty list here the second reason for `stateRender`. The same list
+            // `state_hash` reports, from the same function.
+            "displayMask": self.masked_layer_names(),
         });
         if !from_raster {
             // Declared, not omitted by accident, and only on the fallback — `screenshot`'s precedent. The
@@ -6951,6 +6983,9 @@ impl Engine {
             "height": ACTIVE_LINES,
             "bytes": bytes.len(),
             "source": if from_raster { "raster" } else { "stateRender" },
+            // §11.49 item B (M4): the layers hidden from THIS picture, always present, `[]` when none. The
+            // same list `emulator/scanlines` and `emulator/state_hash` report, from the same function.
+            "displayMask": self.masked_layer_names(),
         });
         if !from_raster {
             // The honest caveat is now only true of the fallback — see [`Engine::framebuffer`]. Emitting it
