@@ -762,16 +762,7 @@ const UNMEASURABLE: &[(&str, &str, &str, &str)] = &[
 /// [`empty_payload_value`]) and only one of them may be answered.
 ///
 /// Each row: method, field, kind tag, probe value, and the lens row id with its reason.
-const KNOWN_ANSWERED: &[(&str, &str, &str, &str, &str)] = &[(
-    "emulator/z80_write",
-    "bytes",
-    "pattern",
-    "0x",
-    "M25: the fragment's pattern `^0x([0-9A-Fa-f]{2})+$` rejects an empty payload, and the handler \
-     parses `\"0x\"` as an empty Ok and answers it — where `write_memory` and `write_vram` refuse the same \
-     payload by name. The handler fix is engine.rs's, owned by wave 2 (AETHER-HANDLERS); delete this row \
-     in the commit that lands it",
-)];
+const KNOWN_ANSWERED: &[(&str, &str, &str, &str, &str)] = &[];
 
 fn registered_answered(site: &ShapeSite) -> Option<&'static str> {
     let Mutation::Set(_, sent) = &site.mutation else {

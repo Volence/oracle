@@ -192,6 +192,55 @@ fn bytes_and_value_together_are_refused_rather_than_one_winning() {
     assert_eq!(e["code"], -32602, "{e}");
 }
 
+/// **An empty `bytes` payload is refused by name, exactly as `write_memory` and `write_vram` refuse it**
+/// (lens M25). It used to parse as an empty `Ok`, pass a zero-length window check, and reply `{"len":0}`:
+/// a write that wrote nothing, reported as success.
+///
+/// The premise is read off the vendored contract rather than assumed: the fragment's `params` must reject
+/// `bytes: "0x"`, or this row has no out-of-contract request to test. The siblings are the control, so a
+/// matcher that any refusal satisfies cannot pass it: all three must be `-32602` AND name `bytes`, and a
+/// sibling that stopped naming it reddens here beside the row under test.
+#[test]
+fn an_empty_bytes_payload_is_refused_by_name_like_its_siblings() {
+    let fragment = &common::schema::schema_root()["methods"]["emulator/z80_write"]["params"];
+    assert!(
+        fragment.is_object(),
+        "UNMEASURABLE: the vendored schema has no emulator/z80_write params fragment"
+    );
+    let params = common::schema::compile_fragment(fragment, "z80_write params", false);
+    let empty = json!({"addr": "0x00000600", "bytes": "0x"});
+    assert!(
+        !params.is_valid(&empty),
+        "the premise: the contract must reject an empty `bytes` payload, or there is nothing to refuse"
+    );
+
+    let h = spawn_system("z80-empty", machine(), 64);
+    let mut c = paused(&h);
+    c.ok(
+        "emulator/z80_write",
+        json!({"addr": "0x00000600", "value": 0x5C}),
+    );
+    for (method, addr) in [
+        ("emulator/write_memory", "0x00FF0000"),
+        ("emulator/write_vram", "0x00000000"),
+        ("emulator/z80_write", "0x00000600"),
+    ] {
+        let e = c.err(method, json!({"addr": addr, "bytes": "0x"}));
+        assert_eq!(
+            e["code"], -32602,
+            "{method}: an empty payload is a params refusal: {e}"
+        );
+        let msg = e["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("`bytes`"),
+            "{method}: the refusal must name the field it is about, not merely be one: {e}"
+        );
+    }
+    // And nothing landed: the byte put there beforehand is still the byte there.
+    let after = c.ok("emulator/z80_read", json!({"addr": "0x00000600"}));
+    assert_eq!(after["bytes"], "0x5C", "{after}");
+}
+
 /// `z80_write` is a paused-machine write; the read is not.
 #[test]
 fn the_write_needs_a_paused_machine_and_the_read_does_not() {

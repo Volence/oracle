@@ -363,6 +363,56 @@ fn names_token(haystack: &str, token: &str) -> bool {
     })
 }
 
+/// **A summary must not describe one byte for a row whose `len` reads more** (lens M27).
+///
+/// `emulator/read` advertised "one byte read across the bus/vram/cram/vsram spaces" while its `len` takes
+/// up to 4096, and that string ships to every client in `initialize.methodSummaries` and is what the
+/// player's palette shows. The rows are chosen from the vendored schema, not from a list: every method
+/// whose `params.len` is an integer allowed above 1. The phrases are a heuristic list, like
+/// `IMAGE_FORMATS` above, and are the one part of this test a new wording could slip past. They are
+/// claims of exactly one byte: a bare "a byte" is left out on purpose, because `memory_hash`'s "a byte
+/// range" is true and matched it on the first run.
+#[test]
+fn a_summary_does_not_describe_one_byte_for_a_row_that_reads_more() {
+    const ONE_BYTE: &[&str] = &["one byte", "a single byte", "single byte", "1 byte"];
+    let methods = common::schema::schema_root()["methods"]
+        .as_object()
+        .expect("UNMEASURABLE: the vendored schema has no `methods` object");
+    let multi_byte: Vec<&str> = methods
+        .iter()
+        .filter(|(_, m)| {
+            let len = &m["params"]["properties"]["len"];
+            len["type"] == json!("integer") && len["maximum"].as_u64().is_none_or(|max| max > 1)
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        multi_byte.contains(&"emulator/read"),
+        "UNMEASURABLE: the schema no longer lets emulator/read's `len` exceed 1, so the row this test \
+         was written for is not among {multi_byte:?}"
+    );
+
+    let h = spawn("summary-len");
+    let mut c = Client::connect(&h);
+    let init = c.handshake(false);
+    let mut wrong = Vec::new();
+    for method in &multi_byte {
+        // A schema row this server does not serve has no summary to check; `methods` is the warranty.
+        let Some(summary) = init["methodSummaries"][method].as_str() else {
+            continue;
+        };
+        let lower = summary.to_ascii_lowercase();
+        if let Some(p) = ONE_BYTE.iter().find(|p| names_token(&lower, p)) {
+            wrong.push(format!("{method}: says {p:?} in {summary:?}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a summary describes one byte for a row whose `len` reads more:\n{}",
+        wrong.join("\n")
+    );
+}
+
 #[test]
 fn an_unknown_method_is_method_not_found() {
     let h = spawn("unknown");
