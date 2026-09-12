@@ -834,3 +834,220 @@ fn vendor_data_present_when_running_in_ci() {
         ROMS.len()
     );
 }
+
+// ---------------------------------------------------------------------------------------------------
+// VDPFIFOTesting's own DMA-copy tables (F-COPYXOR, lens M22) — GATING, unlike the scorecard above
+// ---------------------------------------------------------------------------------------------------
+
+/// One result record the ROM writes to work RAM for each of its tests.
+struct PortAccessRecord {
+    title: String,
+    expected: Vec<u16>,
+    actual: Vec<u16>,
+}
+
+/// Walk the result records `vdp_port_access` keeps from `$FF0000`. Layout read from the ROM itself: every
+/// test starts its record the same way (e.g. `$9B44..$9B74` for "DMA Copy Length Reg Update",
+/// `$E81E..$E85A` for the copy matrix) — word `n`, word `title_len`, word `data_len`, the title bytes, word
+/// `has_expected`, then `data_len` bytes of expected values copied from the ROM's own table (when
+/// `has_expected` is non-zero) and `data_len` bytes of what the VDP answered. The display routine at
+/// `$0D8A` walks the same list and treats `$0000` as the end, `$8000` as a page break and `$FFFF` as a
+/// one-word skip. The verdict the ROM counts is `expected == actual`
+/// ([`vdp_port_access_copy_dma_matches_the_roms_own_tables`] checks that against the ROM's own count).
+fn port_access_records(sys: &System) -> Vec<PortAccessRecord> {
+    let ram = sys.ram();
+    let word = |o: usize| u16::from_be_bytes([ram[o], ram[o + 1]]);
+    let words = |b: &[u8]| {
+        b.chunks(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect::<Vec<_>>()
+    };
+    let mut out = Vec::new();
+    let mut o = 0usize;
+    while o + 6 <= ram.len() {
+        match word(o) {
+            0x0000 => break,
+            0x8000 => o += 2,
+            0xFFFF => o += 4,
+            _ => {
+                let title_len = word(o + 2) as usize;
+                let data_len = word(o + 4) as usize;
+                let title = String::from_utf8_lossy(&ram[o + 6..o + 6 + title_len])
+                    .trim_end()
+                    .to_string();
+                let p = o + 6 + title_len;
+                let has_expected = word(p) != 0;
+                let body = p + 2;
+                let (expected, actual) = if has_expected {
+                    (
+                        words(&ram[body..body + data_len]),
+                        words(&ram[body + data_len..body + 2 * data_len]),
+                    )
+                } else {
+                    (Vec::new(), words(&ram[body..body + data_len]))
+                };
+                out.push(PortAccessRecord {
+                    title,
+                    expected,
+                    actual,
+                });
+                o = body + if has_expected { 2 * data_len } else { data_len };
+            }
+        }
+    }
+    out
+}
+
+/// **VRAM copy DMA reads AND writes the opposite byte lane — pinned by the ROM's own hardware tables.**
+///
+/// `vdp_port_access` (VDPFIFOTesting) has **122** tests over 22 pages; the scorecard above stops after
+/// page 2 (16 tests), so it never reached the 28 that read back a VRAM copy's destination image. This
+/// test lets the ROM run them
+/// (it pages itself with `Start`) and compares, record by record, what the ROM's expected-value tables say
+/// against what the VDP answered:
+///
+/// * **Test 26, "DMA Copy Length Reg Update"** (table at ROM `$9B24`): four copies from `$9000` to `$8000`
+///   with autoinc 1, of `$0201`, `$0003`, `$0201` and `$0200` bytes, with the destination's tails read
+///   back. Source bytes repeat `01 23 45 67 89 AB CD EF`. The 3-byte copy must read back `0123 0067`,
+///   i.e. `$8002` untouched and `$8003 = $67`: step 2 read `$9003` and wrote `$8003`. The 513-byte copies
+///   end `… 0023 0000`: step 512 read `$9201` and wrote `$8201`. All four records are asserted whole.
+/// * **Tests 96-122, the copy matrix** (titles at ROM `$E0F2`, tables at ROM `$E4BE` + 32 × case): odd
+///   and even sources and destinations, lengths 9 and 10, autoincrements 0/1/2/4, overlapping copies, and
+///   every CD3-CD0 value. Each record is 16 words; the LAST EIGHT are the destination read back after the
+///   copy (ROM `$EB82..$EBD0`), and those are asserted. The FIRST EIGHT are data-port reads of `$0010` and
+///   `$0020` interleaved with CRAM writes AFTER the copy (ROM `$EA2C..$EB6E`): a post-copy read-path
+///   behaviour this parcel does not model. They differ from hardware under every copy model, so they
+///   are deliberately not asserted here (open residual, `docs/2026-07-25-testrom-conformance.md`,
+///   F-COPYXOR).
+///
+/// What would make this green for a reason other than the rule holding: (1) records not found (a paging
+/// or layout change) — guarded by the exact title set and the count of 27; (2) an `expected` that is
+/// really the `actual` read twice — guarded because the decoder's `expected == actual` count must equal
+/// the pass count the ROM prints itself; (3) the aligned controls (tests 100 and 107) pass under every
+/// model — which is why the odd cases are asserted too, and they fail with the read half or the write half
+/// removed (mutation record in the F-COPYXOR entry).
+#[test]
+fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
+    let Some(mut sys) = boot("vdp_port_access") else {
+        return; // SKIP printed by `boot`; under CI `vendor_data_present_when_running_in_ci` fails instead
+    };
+    let results = |sys: &System| -> Option<(u32, u32, u32)> {
+        let row = text_rows(sys, 0x000)
+            .iter()
+            .map(|r| squeeze(r))
+            .find(|r| r.starts_with("Results:"))?;
+        let nums: Vec<u32> = row
+            .trim_start_matches("Results:")
+            .trim()
+            .trim_matches(['(', ')'])
+            .split('/')
+            .map(|t| t.trim().parse().ok())
+            .collect::<Option<Vec<_>>>()?;
+        (nums.len() == 3).then(|| (nums[0], nums[1], nums[2]))
+    };
+    // Page 1 runs by itself; every later page runs on `Start`. Press it whenever the tally has been still
+    // for 120 frames, until the ROM reports all 122 tests. A tally that never reaches 122 is a loud fail,
+    // never a silent partial check.
+    let (mut frames, mut still, mut last) = (0u64, 0u64, None);
+    let (passed, _failed, total) = loop {
+        sys.run_frames(30);
+        frames += 30;
+        let now = results(&sys);
+        if let Some((p, f, 122)) = now {
+            break (p, f, 122);
+        }
+        still = if now == last { still + 30 } else { 0 };
+        last = now;
+        if still >= 120 {
+            sys.set_pad(
+                oracle_core::io::PadPort::P1,
+                Pad {
+                    start: true,
+                    ..Default::default()
+                },
+            );
+            sys.run_frames(5);
+            sys.set_pad(oracle_core::io::PadPort::P1, Pad::default());
+            frames += 5;
+            still = 0;
+        }
+        assert!(
+            frames < 20_000,
+            "vdp_port_access never reported 122 tests (last tally {last:?} after {frames} frames): the \
+             paging model no longer describes this ROM, so nothing below would be measured"
+        );
+    };
+    let recs = port_access_records(&sys);
+    assert_eq!(recs.len(), total as usize, "one result record per test");
+    let agree = recs
+        .iter()
+        .filter(|r| !r.expected.is_empty() && r.expected == r.actual)
+        .count();
+    assert_eq!(
+        agree, passed as usize,
+        "the record decoder must count the same passes the ROM prints, or it is reading the wrong bytes"
+    );
+
+    let hex = |w: &[u16]| {
+        w.iter()
+            .map(|x| format!("{x:04x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // Every mismatch is collected first and reported together, so one red shows test 26 AND the matrix.
+    let mut wrong: Vec<String> = Vec::new();
+
+    let len_reg = recs
+        .iter()
+        .find(|r| r.title == "DMA Copy Length Reg Update")
+        .expect("test 26 'DMA Copy Length Reg Update' record");
+    assert_eq!(
+        len_reg.expected.len(),
+        16,
+        "test 26 carries a 16-word table"
+    );
+    if len_reg.actual != len_reg.expected {
+        // Words 0-3: $81FC..$8203 after the $201-byte copy (words 2-3 are $8200..$8203, where the last
+        // step lands). Words 4-7: $8000..$8007 after the 3-byte copy. Words 8-15: the same two probes after
+        // the second $201-byte copy and the $200-byte copy.
+        wrong.push(format!(
+            "test 26 'DMA Copy Length Reg Update' (ROM table $9B24): want {} got {}",
+            hex(&len_reg.expected),
+            hex(&len_reg.actual)
+        ));
+    }
+
+    let matrix: Vec<&PortAccessRecord> = recs
+        .iter()
+        .filter(|r| {
+            [
+                "DMA Copy 9000 to 8",
+                "DMA Copy 9001 to 8",
+                "DMA Copy 8000 to 8",
+                "DMA Copy 8001 to 8",
+            ]
+            .iter()
+            .any(|p| r.title.starts_with(p))
+        })
+        .collect();
+    assert_eq!(matrix.len(), 27, "the copy matrix is tests 96-122");
+    for r in &matrix {
+        assert_eq!(r.expected.len(), 16, "{}: a 16-word table", r.title);
+        if r.actual[8..] != r.expected[8..] {
+            wrong.push(format!(
+                "{} (destination image, ROM $E4BE table): want {} got {}",
+                r.title,
+                hex(&r.expected[8..]),
+                hex(&r.actual[8..])
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{} VRAM-copy image(s) differ from VDPFIFOTesting's hardware tables. The rule they pin: step i reads \
+         the source at `(source + i) ^ 1` and writes the destination at `(dest + i*inc) ^ 1`.\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}

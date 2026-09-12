@@ -368,6 +368,8 @@ ROM does not cover it — see **Q3**.
 > is wrong and the ROM does not cover the case, so which one is unpinned. Registered as follow-up
 > **F-FILLTGT** in `docs/2026-07-25-testrom-conformance.md` → *Named follow-ups*. Q2 (VRAM copy and
 > `^ 1`) is registered there as **F-COPYXOR**.
+> *2026-09-12:* F-COPYXOR is closed. Both halves of the copy take `^ 1`, pinned by VDPFIFOTesting's tests
+> 26 and 96-122 (see Q2 below).
 
 ### 3.5 Change 4 — the fill engine writes to `addr ^ 1` (`vdp.rs:817-824`)
 
@@ -613,6 +615,12 @@ regenerated constant ships in the same commit alongside the ledger amendment.
   or an instrument, not from this citation alone. (Also unresolved there: whether the copy's *source*
   byte read is likewise `^ 1`.) **Registered 2026-08-03 as follow-up `F-COPYXOR`** in
   `docs/2026-07-25-testrom-conformance.md` -> *Named follow-ups*.
+  **Resolved 2026-09-12 (COPY-DMA-XOR, lens M22).** Yes, and the source read is `^ 1` too. This slice's
+  own ROM exercises copy after all, just not in tests 3 or 4. VDPFIFOTesting's tests 26 and 96-122
+  (pages 4 and 19-22, beyond the two the scorecard reaches) carry hardware tables that only the
+  both-halves model matches. `run_copy` changed accordingly, and no frozen currency moved: every copy the
+  committed corpus performs is even-aligned with autoincrement 1. Detail and measurement: F-COPYXOR in
+  `docs/2026-07-25-testrom-conformance.md`.
 * **Q3 — the priming write for CRAM/VSRAM fill targets.** Nemesis's "completed as normal" is
   generic, so §3.4 applies it to all targets. The ROM only covers VRAM. Low risk (a CRAM/VSRAM fill
   is already a documented hardware-bug path nothing sane uses) but genuinely unverified.
@@ -625,7 +633,8 @@ regenerated constant ships in the same commit alongside the ledger amendment.
   mean *adding* a special case that has no evidence either, and inventing an exception is a bigger
   unevidenced step than applying a pinned rule consistently. This is deliberately a **different call from
   Q2**: there the evidence points at changing `run_copy` and we declined for want of a ROM that exercises
-  it; here the evidence pins a general rule and only its reach is open. Registered as follow-up
+  it (2026-09-12: the same ROM does, in tests 26 and 96-122, and Q2 is resolved); here the evidence pins a
+  general rule and only its reach is open. Registered as follow-up
   `F-FILLPRIME` in `docs/2026-07-25-testrom-conformance.md` with the experiment that would settle it, and
   pinned as-shipped by `vdp::tests::fill_trigger_primes_a_cram_fill_target` (§5.2 item 7).
 * **Q4 — the priming write's MSB is unobservable in test 4.** With autoinc 1 the fill's first step

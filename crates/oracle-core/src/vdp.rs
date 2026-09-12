@@ -1409,8 +1409,9 @@ impl Vdp {
                     // get unexpected results depending on start address, DMA length and increment
                     // alignments." With an odd autoincrement this produces the characteristic interleave —
                     // a skipped byte at the tail and one byte written past the naive end — that
-                    // VDPFIFOTesting test 4 checks (expected table ROM $DC54). `run_copy` is deliberately
-                    // NOT changed here: no test in the vendored suite covers it (open question Q2).
+                    // VDPFIFOTesting test 4 checks (expected table ROM $DC54). `run_copy` takes the same lane
+                    // swap on its read AND its write (F-COPYXOR, closed 2026-09-12 by the same ROM's tests 26
+                    // and 96-122; see `Vdp::run_copy`).
                     self.write_vram_byte((self.addr ^ 1) as usize & (VRAM_SIZE - 1), byte);
                     self.autoinc();
                 }
@@ -1444,6 +1445,20 @@ impl Vdp {
     /// step = 2 slots/byte). 68k keeps running (the bus returns no wait); the busy window models the elapsed
     /// time. Each write routes through the SAT write-through (R5 rider). Length is in bytes (RD2); regs 19/20
     /// → 0 after the transfer (recon R4).
+    ///
+    /// **Both byte accesses take the opposite byte lane (F-COPYXOR, lens M22).** Step `i` reads
+    /// `vram[(source + i) ^ 1]` and writes that byte to `address ^ 1`; the address then advances by reg 15.
+    /// Pinned by VDPFIFOTesting's own hardware tables (`vendor/TestRoms/vdp_port_access.bin`): test 26 "DMA
+    /// Copy Length Reg Update" (table ROM `$9B24`) and the destination images of the copy matrix, tests
+    /// 96-122 (tables from ROM `$E4BE`) — `conformance_roms::vdp_port_access_copy_dma_matches_the_roms_own_tables`.
+    /// Only this model matches them: the read half alone, the write half alone, and neither all fail. The
+    /// hardware prose agrees: Eke, SpritesMind *VDP Internals* (t=1291, p=21334), "on VRAM copy, VRAM source
+    /// and destination address are actually adjacent address ( address ^ 1) to internal address registers
+    /// value"; Kabuto's hardware notes (Plutiedev mirror), "the internal byte order of the VDP is the
+    /// opposite of what the 68K sees". Because each two-step pair swaps lanes on both sides, an even-aligned
+    /// copy (even source, even destination, even length, autoincrement 1) leaves exactly the image a plain
+    /// byte copy would; the models part only at an odd source, destination or length, or an autoincrement
+    /// other than 1 (2 included). The fill engine's write takes the same lane swap (`run_fill`, VRAM arm).
     pub fn run_copy(&mut self, source: u16, len: u16, now: u64) {
         self.now_mclk = now; // C-6: every step of the copy carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
@@ -1451,8 +1466,10 @@ impl Vdp {
         let mut src = source as usize;
         self.in_dma = true; // watchpoints v2: copy writes attribute to the triggering DMA
         for _ in 0..count {
-            let byte = self.vram[src & (VRAM_SIZE - 1)];
-            self.write_vram_byte(self.addr as usize & (VRAM_SIZE - 1), byte);
+            // F-COPYXOR: the READ half — the source byte comes from the opposite lane of `src`.
+            let byte = self.vram[(src ^ 1) & (VRAM_SIZE - 1)];
+            // F-COPYXOR: the WRITE half — the byte lands in the opposite lane of the live address.
+            self.write_vram_byte((self.addr ^ 1) as usize & (VRAM_SIZE - 1), byte);
             src = src.wrapping_add(1);
             self.autoinc();
         }
@@ -1919,7 +1936,8 @@ pub enum DmaRequest {
     Mem { source: u32, len: u16 },
     /// VRAM fill: `len` byte writes of `fill`'s data to the current target, 68k keeps running (recon R4(b)).
     Fill { len: u16, fill: u16 },
-    /// VRAM copy: `len` byte read+write steps within VRAM from `source`, FIFO-bypass, 68k runs (recon R4(c)).
+    /// VRAM copy: `len` byte read+write steps within VRAM from `source`, FIFO-bypass, 68k runs (recon R4(c));
+    /// each read and each write takes the opposite byte lane (`^ 1`, F-COPYXOR — see [`Vdp::run_copy`]).
     Copy { source: u16, len: u16 },
 }
 
@@ -3785,6 +3803,190 @@ mod tests {
             v.data_read(0xABCD),
             0x1234,
             "VRAM read fully defined — no snoop"
+        );
+    }
+
+    // --- F-COPYXOR / lens M22: VRAM copy reads AND writes the opposite byte lane --------------------------
+    //
+    // The rule under test (see `Vdp::run_copy`): copy step `i` reads `vram[(source + i) ^ 1]` and writes it to
+    // `(dest + i * reg15) ^ 1`. Every expected image below is derived BY HAND from that rule, step by step in
+    // the comment, never read back from the implementation. Each case also carries the three images the
+    // wrong models produce (read half dropped, write half dropped, both dropped = the pre-fix code), also
+    // derived by hand, so a red names the missing half instead of printing two anonymous byte strings. All
+    // four images differ in every odd case; that is what makes a case able to tell the halves apart.
+
+    /// Run one copy of `len` bytes from `source` to `dest` with autoincrement `inc`, on a VDP whose VRAM is
+    /// zero except the bytes `src` placed at `preset_at`; return `window` of VRAM afterwards.
+    fn copy_image_at(
+        preset_at: u16,
+        src: &[u8],
+        source: u16,
+        dest: u16,
+        len: u16,
+        inc: u8,
+        window: std::ops::Range<usize>,
+    ) -> Vec<u8> {
+        let mut v = fresh();
+        v.vram.iter_mut().for_each(|b| *b = 0); // power-on VRAM is seeded: zero it so images are exact
+        v.vram[preset_at as usize..preset_at as usize + src.len()].copy_from_slice(src);
+        v.regs[0x0F] = inc;
+        v.addr = dest;
+        v.run_copy(source, len, 0);
+        v.vram[window].to_vec()
+    }
+
+    /// [`copy_image_at`] with the source bytes placed at the copy's own `source`.
+    fn copy_image(
+        source: u16,
+        src: &[u8],
+        dest: u16,
+        len: u16,
+        inc: u8,
+        window: std::ops::Range<usize>,
+    ) -> Vec<u8> {
+        copy_image_at(source, src, source, dest, len, inc, window)
+    }
+
+    /// Assert the rule's image, naming the missing half when the result is one of the wrong models' images.
+    fn assert_copy_image(
+        case: &str,
+        got: &[u8],
+        rule: &[u8],
+        no_read: &[u8],
+        no_write: &[u8],
+        neither: &[u8],
+    ) {
+        let why = if got == no_read {
+            "the READ half is missing: the source byte came from `source + i`, not `(source + i) ^ 1`"
+        } else if got == no_write {
+            "the WRITE half is missing: the byte landed at `dest + i*inc`, not `(dest + i*inc) ^ 1`"
+        } else if got == neither {
+            "BOTH halves are missing (the pre-F-COPYXOR copy: plain source, plain destination)"
+        } else {
+            "the image matches none of the four hand-derived models"
+        };
+        assert_eq!(got, rule, "{case}: {why}");
+    }
+
+    #[test]
+    fn vram_copy_from_an_odd_source_reads_and_writes_the_opposite_byte_lane() {
+        // source $0101 (odd), dest $0200, len 4, autoinc 1; VRAM $0100.. = A0 A1 A2 A3 A4 A5 A6 A7.
+        // Rule: i=0 reads $0101^1=$0100 (A0) → writes $0200^1=$0201; i=1 reads $0102^1=$0103 (A3) → $0200;
+        //       i=2 reads $0103^1=$0102 (A2) → $0203; i=3 reads $0104^1=$0105 (A5) → $0202.
+        //       $0200..$0204 = A3 A0 A5 A2.
+        // No read ^1: reads A1 A2 A3 A4 → $0201 $0200 $0203 $0202 = A2 A1 A4 A3.
+        // No write ^1: reads A0 A3 A2 A5 → $0200..$0203 = A0 A3 A2 A5.   Neither: A1 A2 A3 A4.
+        let src = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7];
+        let got = copy_image_at(0x0100, &src, 0x0101, 0x0200, 4, 1, 0x0200..0x0204);
+        assert_copy_image(
+            "odd source $0101",
+            &got,
+            &[0xA3, 0xA0, 0xA5, 0xA2],
+            &[0xA2, 0xA1, 0xA4, 0xA3],
+            &[0xA0, 0xA3, 0xA2, 0xA5],
+            &[0xA1, 0xA2, 0xA3, 0xA4],
+        );
+    }
+
+    #[test]
+    fn vram_copy_of_an_odd_length_leaves_the_last_pairs_even_byte_untouched() {
+        // source $0100, dest $0200, len 3 (odd), autoinc 1; VRAM $0100.. = B0 B1 B2 B3.
+        // Rule: i=0 reads $0101 (B1) → $0201; i=1 reads $0100 (B0) → $0200; i=2 reads $0103 (B3) → $0203.
+        //       $0202 is never written: $0200..$0204 = B0 B1 00 B3.
+        // No read ^1: reads B0 B1 B2 → $0201 $0200 $0203 = B1 B0 00 B2.
+        // No write ^1: reads B1 B0 B3 → $0200..$0202 = B1 B0 B3 00.   Neither: B0 B1 B2 00.
+        let got = copy_image(
+            0x0100,
+            &[0xB0, 0xB1, 0xB2, 0xB3],
+            0x0200,
+            3,
+            1,
+            0x0200..0x0204,
+        );
+        assert_copy_image(
+            "odd length 3",
+            &got,
+            &[0xB0, 0xB1, 0x00, 0xB3],
+            &[0xB1, 0xB0, 0x00, 0xB2],
+            &[0xB1, 0xB0, 0xB3, 0x00],
+            &[0xB0, 0xB1, 0xB2, 0x00],
+        );
+    }
+
+    #[test]
+    fn vram_copy_with_an_odd_autoincrement_writes_the_opposite_lane_of_each_step() {
+        // source $0100, dest $0200, len 4, autoinc 3 (odd); VRAM $0100.. = C0 C1 C2 C3.
+        // Destinations dest + 3i = $0200 $0203 $0206 $0209, each ^1 → $0201 $0202 $0207 $0208.
+        // Reads (source + i) ^ 1 = $0101 $0100 $0103 $0102 = C1 C0 C3 C2.
+        // Rule: $0201=C1 $0202=C0 $0207=C3 $0208=C2; $0200..$020A = 00 C1 C0 00 00 00 00 C3 C2 00.
+        // No read ^1: C0 C1 C2 C3 → $0201 $0202 $0207 $0208 = 00 C0 C1 00 00 00 00 C2 C3 00.
+        // No write ^1: C1 C0 C3 C2 → $0200 $0203 $0206 $0209 = C1 00 00 C0 00 00 C3 00 00 C2.
+        // Neither: C0 C1 C2 C3 → $0200 $0203 $0206 $0209 = C0 00 00 C1 00 00 C2 00 00 C3.
+        let got = copy_image(
+            0x0100,
+            &[0xC0, 0xC1, 0xC2, 0xC3],
+            0x0200,
+            4,
+            3,
+            0x0200..0x020A,
+        );
+        assert_copy_image(
+            "odd autoincrement 3",
+            &got,
+            &[0x00, 0xC1, 0xC0, 0x00, 0x00, 0x00, 0x00, 0xC3, 0xC2, 0x00],
+            &[0x00, 0xC0, 0xC1, 0x00, 0x00, 0x00, 0x00, 0xC2, 0xC3, 0x00],
+            &[0xC1, 0x00, 0x00, 0xC0, 0x00, 0x00, 0xC3, 0x00, 0x00, 0xC2],
+            &[0xC0, 0x00, 0x00, 0xC1, 0x00, 0x00, 0xC2, 0x00, 0x00, 0xC3],
+        );
+    }
+
+    #[test]
+    fn vram_copy_with_autoincrement_two_also_separates_the_models() {
+        // An EVEN autoincrement other than 1 is not a safe case either (the brief's premise said only odd
+        // starts, lengths and increments differ). source $0100, dest $0200, len 3, autoinc 2;
+        // VRAM $0100.. = D0 D1 D2 D3. Destinations $0200 $0202 $0204, each ^1 → $0201 $0203 $0205.
+        // Rule: reads $0101 $0100 $0103 = D1 D0 D3 → $0200..$0206 = 00 D1 00 D0 00 D3.
+        // No read ^1: D0 D1 D2 → $0201 $0203 $0205 = 00 D0 00 D1 00 D2.
+        // No write ^1: D1 D0 D3 → $0200 $0202 $0204 = D1 00 D0 00 D3 00.   Neither: D0 00 D1 00 D2 00.
+        // (VDPFIFOTesting test 98, "DMA Copy 9000 to 8000 inc=2", pins the same shape from hardware.)
+        let got = copy_image(
+            0x0100,
+            &[0xD0, 0xD1, 0xD2, 0xD3],
+            0x0200,
+            3,
+            2,
+            0x0200..0x0206,
+        );
+        assert_copy_image(
+            "autoincrement 2",
+            &got,
+            &[0x00, 0xD1, 0x00, 0xD0, 0x00, 0xD3],
+            &[0x00, 0xD0, 0x00, 0xD1, 0x00, 0xD2],
+            &[0xD1, 0x00, 0xD0, 0x00, 0xD3, 0x00],
+            &[0xD0, 0x00, 0xD1, 0x00, 0xD2, 0x00],
+        );
+    }
+
+    #[test]
+    fn an_aligned_even_vram_copy_keeps_the_pre_fix_image() {
+        // CONTROL. source $0100 (even), dest $0200 (even), len 4 (even), autoinc 1; VRAM $0100.. = E0 E1 E2 E3.
+        // Rule: reads $0101 $0100 $0103 $0102 = E1 E0 E3 E2 → writes $0201 $0200 $0203 $0202, so
+        // $0200..$0204 = E0 E1 E2 E3 — the same image as the pre-fix code, because each read/write pair
+        // swaps lanes on BOTH sides. This case passes under all four models, so it proves nothing about
+        // either half; what it pins is that the fix is invisible to every aligned copy (which is every copy
+        // the committed corpus performs — docs/2026-07-25-testrom-conformance.md, F-COPYXOR).
+        let got = copy_image(
+            0x0100,
+            &[0xE0, 0xE1, 0xE2, 0xE3],
+            0x0200,
+            4,
+            1,
+            0x0200..0x0204,
+        );
+        assert_eq!(
+            got,
+            [0xE0, 0xE1, 0xE2, 0xE3],
+            "aligned-even copy image unchanged"
         );
     }
 
