@@ -6646,10 +6646,12 @@ mod bus_parity {
         );
 
         // --- the third assertion the pair owes ---
-        const ALL: [&str; 8] = ["up", "down", "left", "right", "a", "b", "c", "start"];
+        // "Every button there is" is the engine's own table, imported rather than copied (lens M69). A copy
+        // here stayed at eight names whatever the pad the engine models grew or lost, so when the table
+        // moved this control degraded instead of reddening.
         assert_ne!(
             shown,
-            ALL.join(", "),
+            oracle_aether::engine::BUTTONS_3.join(", "),
             "both sides named every button there is, so the agreement above is a derivation that ignores \
              its argument"
         );
