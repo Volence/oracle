@@ -11,9 +11,12 @@
 //! 1. **`Server::bind` probes before it binds.** It connects to the path; a live server answering means
 //!    `AddrInUse` (two emulators must never fight over one bus), and nothing answering means the file is
 //!    a corpse and is unlinked. So a stale socket never blocks a restart.
-//! 2. **`ServerHandle::drop` unlinks.** Any handle that goes out of scope cleans up after itself (its
-//!    own file only, since lens M13: see `src/server.rs`'s `a_dead_emulator_thread_releases_the_socket_and_reports_why`,
-//!    which also pins what happens when the emulator thread dies).
+//! 2. **The accept thread removes the file its bind created, as it stops.** It owns the listener together
+//!    with the bind's claim on the file (`src/server.rs`'s `Listening`), so dropping a `ServerHandle`, and
+//!    shutting down or dropping a hosted `Host`, cleans up after itself, and only its own file: lens M13
+//!    for the standalone server, HOST-SHUTDOWN-UNLINK for the hosted one (the rows at the bottom). See
+//!    `src/server.rs`'s `a_dead_emulator_thread_releases_the_socket_and_reports_why`, which also pins what
+//!    happens when the emulator thread dies.
 //!
 //! What is **not** covered, deliberately and with the reasoning at the call site
 //! (`src/main.rs`'s park on `ServerHandle::wait`): the standalone binary parks until its emulator thread

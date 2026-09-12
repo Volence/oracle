@@ -175,8 +175,8 @@ fn socket_identity(path: &Path) -> Option<(u64, u64)> {
 }
 
 /// **A listening socket, together with the claim to remove the file it is bound at** (lens M13). The
-/// accept thread owns it, so the claim ends exactly when accepting ends: on [`ServerHandle::shutdown`] and
-/// on the emulator thread's death ([`HangUpIfPanicking`]) alike.
+/// accept thread owns it, so the claim ends exactly when accepting ends: on [`ServerHandle::shutdown`], on
+/// the emulator thread's death ([`HangUpIfPanicking`]), and on [`crate::host::Host::shutdown`] alike.
 ///
 /// # Why the unlink lives here and not in the handle
 ///
@@ -208,20 +208,15 @@ fn socket_identity(path: &Path) -> Option<(u64, u64)> {
 /// an unlink that names an inode rather than a path, and POSIX has none.
 pub(crate) struct Listening {
     listener: UnixListener,
-    /// The path and the `(device, inode)` of the file this value removes when it drops. `None` when
-    /// someone else owns the unlink ([`crate::host::Host::shutdown`] does its own), or when the bind could
-    /// not stat the file it had just created. Then nothing is unlinked here.
+    /// The path and the `(device, inode)` of the file this value removes when it drops. `None` only when
+    /// the bind could not stat the file it had just created. Then nothing is unlinked here, and the file
+    /// outlives the server as a corpse that the next [`Server::bind`] clears.
+    ///
+    /// Every `Listening` is made by [`Server::listening`], so the standalone accept loop and the hosted
+    /// one ([`crate::host::Host::serve`]) both carry their bind's claim, and nothing else in the crate
+    /// unlinks a served socket (HOST-SHUTDOWN-UNLINK). There is deliberately no way to wrap a bare
+    /// `UnixListener`: that door is how the hosted path came to unlink by path alone.
     claim: Option<(PathBuf, (u64, u64))>,
-}
-
-/// A listener with no claim: whoever handed it over keeps the unlink.
-impl From<UnixListener> for Listening {
-    fn from(listener: UnixListener) -> Self {
-        Self {
-            listener,
-            claim: None,
-        }
-    }
 }
 
 impl Drop for Listening {
@@ -377,11 +372,12 @@ impl AcceptCtx {
 /// `System`: every connection reaches the engine through `engine_tx` and nothing else, which is exactly why
 /// the same loop serves both arrangements.
 ///
-/// It does own the listener, and with it, for the standalone server, the claim to remove the socket file
-/// when accepting stops ([`Listening`]). `Host::serve` hands over a bare `UnixListener`, which carries no
-/// claim, and does its own unlink.
+/// It does own the listener, and with it the claim to remove the socket file when accepting stops
+/// ([`Listening`]), for both arrangements: [`Server::serve`] and [`crate::host::Host::serve`] each hand
+/// over what [`Server::listening`] made of their bind. Joining this thread is therefore the unlink on both
+/// paths, and neither [`ServerHandle`] nor [`crate::host::Host`] unlinks anything itself.
 pub(crate) fn spawn_accept(
-    listener: impl Into<Listening>,
+    listening: Listening,
     ctx: &AcceptCtx,
     engine_tx: Sender<EngineMsg>,
 ) -> std::thread::JoinHandle<()> {
@@ -392,7 +388,6 @@ pub(crate) fn spawn_accept(
     let queue_cap = NonZeroUsize::new(ctx.event_queue_cap).expect(
         "Server::bind refuses event_queue_cap = 0, and every caller of spawn_accept has bound",
     );
-    let listening: Listening = listener.into();
     let ctx = ctx.clone_handles();
     std::thread::Builder::new()
         .name("aether-accept".into())
@@ -547,14 +542,27 @@ impl Server {
         &self.config.socket_path
     }
 
-    /// Take the bound listener apart, for a caller that runs its own accept wiring
-    /// ([`crate::host::Host::serve`]). Crate-private: binding is the only part of [`Server`] that is
-    /// reusable, and exposing the listener publicly would let a caller serve on a socket whose 0600 check
-    /// [`Server::bind`] performed and then bypass everything that check protects.
+    /// **The bound listener with its claim on the socket file, ready for [`spawn_accept`]**, and the
+    /// config it was bound under. The one way a [`Listening`] is made, used by the standalone server
+    /// ([`Server::serve`]) and the hosted one ([`crate::host::Host::serve`]) alike, so both carry the
+    /// `(device, inode)` this bind recorded and both unlink only their own file (lens M13;
+    /// HOST-SHUTDOWN-UNLINK for the hosted half).
     ///
-    /// The caller takes over the unlink as well: a bare listener carries no [`Listening`] claim.
-    pub(crate) fn into_parts(self) -> (UnixListener, ServerConfig) {
-        (self.listener, self.config)
+    /// Crate-private: binding is the only part of [`Server`] that is reusable, and exposing the listener
+    /// publicly would let a caller serve on a socket whose 0600 check [`Server::bind`] performed and then
+    /// bypass everything that check protects. It replaces `into_parts`, which returned the bare
+    /// `UnixListener` and so dropped the claim: the hosted path then unlinked by path alone.
+    pub(crate) fn listening(self) -> (Listening, ServerConfig) {
+        let Server {
+            listener,
+            config,
+            bound,
+        } = self;
+        let listening = Listening {
+            listener,
+            claim: bound.map(|id| (config.socket_path.clone(), id)),
+        };
+        (listening, config)
     }
 
     /// Start the emulator thread and the accept loop. Returns immediately; the returned handle owns the
@@ -577,11 +585,8 @@ impl Server {
     where
         F: FnOnce(mpsc::Receiver<EngineMsg>, &SharedStamp) + Send + 'static,
     {
-        let Server {
-            listener,
-            config,
-            bound,
-        } = self;
+        // The claim on the socket file travels with the listener it belongs to (lens M13, see `Listening`).
+        let (listening, config) = self.listening();
         let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
 
         let engine_shared = Arc::clone(&ctx.shared);
@@ -594,11 +599,6 @@ impl Server {
             })
             .expect("spawn engine thread");
 
-        // The claim on the socket file travels with the listener it belongs to (lens M13, see `Listening`).
-        let listening = Listening {
-            listener,
-            claim: bound.map(|id| (config.socket_path.clone(), id)),
-        };
         let accept_thread = spawn_accept(listening, &ctx, engine_tx.clone());
 
         ServerHandle {

@@ -116,11 +116,14 @@ fn main() -> ExitCode {
     // every client got a connection and then silence, and a restart's probe ([`Server::bind`] connects
     // before it binds) was answered by the corpse and refused with `AddrInUse`. Now the server stops
     // accepting and hangs up the moment that thread dies, `wait` hands back why, and this process exits
-    // non-zero with the reason on stderr, so whatever launched it sees a dead server as dead. Dropping
-    // `handle` on the way out removes the socket file (only if it is still the one this server bound).
+    // non-zero with the reason on stderr, so whatever launched it sees a dead server as dead. The socket
+    // file is removed by the accept thread as it stops accepting, and only if it is still the file this
+    // server bound (`server.rs`'s `Listening`). On the death path that happens as the thread dies, not
+    // here. Dropping `handle` on the way out joins that thread, so either way the file is gone before
+    // this process exits.
     //
     // **The socket file still outlives a KILLED process, and that is a known limitation rather than an
-    // oversight.** `ServerHandle::drop` unlinks it, but a `SIGINT` or `SIGTERM` kills the process outright
+    // oversight.** Dropping `handle` removes it, but a `SIGINT` or `SIGTERM` kills the process outright
     // without unwinding, so the path is left behind and the next client to connect
     // gets `ECONNREFUSED` from a dead file rather than `ENOENT` from an absent one. That is confusing —
     // it reads as "the server is broken" rather than "the server is not running" — and it has been

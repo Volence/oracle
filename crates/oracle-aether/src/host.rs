@@ -267,6 +267,10 @@ impl Host {
     /// Bind the socket and start accepting. `None` resolves the path exactly as `protocol.md` §7.1 specifies
     /// (`$ORACLE_SOCKET` → `$EXODUS_SOCKET` → `$XDG_RUNTIME_DIR/oracle.sock` → `/tmp/oracle.sock`), and the
     /// 0600 enforcement and the live-server check are [`Server::bind`]'s, unchanged.
+    ///
+    /// The socket file's removal is the standalone server's too. The accept thread started here owns the
+    /// listener together with the bind's claim on the file ([`Server::listening`]), and removes that file,
+    /// and only that file, when accepting stops. See [`shutdown`](Host::shutdown).
     pub fn serve(&mut self, socket_path: Option<PathBuf>) -> std::io::Result<PathBuf> {
         if self.accept.is_some() {
             return Err(std::io::Error::new(
@@ -279,8 +283,10 @@ impl Host {
             engine: self.engine.config().clone(),
             event_queue_cap: self.ctx.event_queue_cap,
         };
-        let (listener, config) = Server::bind(config)?.into_parts();
-        self.accept = Some(spawn_accept(listener, &self.ctx, self.tx.clone()));
+        // The listener travels with the bind's claim on its file, exactly as the standalone server's does
+        // (HOST-SHUTDOWN-UNLINK). A bare listener here is what let `shutdown` unlink by path alone.
+        let (listening, config) = Server::bind(config)?.listening();
+        self.accept = Some(spawn_accept(listening, &self.ctx, self.tx.clone()));
         self.socket_path = Some(config.socket_path.clone());
         Ok(config.socket_path)
     }
@@ -942,7 +948,20 @@ impl Host {
             .store(self.engine.mclk(), self.engine.is_running());
     }
 
-    /// Stop accepting, hang up on every client, and unlink the socket. Idempotent; also runs on drop.
+    /// Stop accepting, hang up on every client, and remove this host's socket file. Idempotent; also runs
+    /// on drop.
+    ///
+    /// The removal is the accept thread's, not this method's, exactly as for
+    /// [`ServerHandle::shutdown`](crate::server::ServerHandle::shutdown). That thread owns the listener
+    /// together with the claim [`Server::bind`] took on the file, and as it stops it removes the file only
+    /// if the `(device, inode)` at the path is still the one it bound, while its listener is still open
+    /// (lens M13). Joining it below is what makes "the file is gone when this returns" true.
+    ///
+    /// This method used to `remove_file` the path itself, after the join: by path alone, with the listener
+    /// already closed. The player window and `oracle-frontend` both run a `Host`, so a window closing after
+    /// a restarted server or a second window had bound the same path deleted that socket out from under it
+    /// (HOST-SHUTDOWN-UNLINK). `tests/socket_lifecycle.rs`'s `a_host_never_unlinks_a_socket_it_did_not_bind`
+    /// is the row.
     pub fn shutdown(&mut self) {
         if self.accept.is_none() {
             return;
@@ -951,9 +970,8 @@ impl Host {
         if let Some(t) = self.accept.take() {
             let _ = t.join();
         }
-        if let Some(p) = self.socket_path.take() {
-            let _ = std::fs::remove_file(p);
-        }
+        // No unlink here: the accept thread joined above did it, or found the file was not its own.
+        self.socket_path = None;
     }
 }
 
