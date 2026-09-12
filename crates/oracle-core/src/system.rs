@@ -4133,12 +4133,19 @@ mod tests {
     }
 
     /// What a person reads names the region and both sizes.
+    ///
+    /// Matched rather than `expect_err`ed on purpose: `expect_err` Debug-formats an `Ok` value, `System`'s
+    /// `Debug` computes `state_hash`, and on a machine with a short VRAM that panics inside the panic. The
+    /// process then aborts and takes every other test in the binary down with it (measured, with the VRAM
+    /// check deleted). A missing check has to cost one named failure, not the whole run.
     #[test]
     fn a_region_refusal_reads_as_the_region_and_both_sizes() {
-        let err = restore_bent(|s| {
+        let err = match restore_bent(|s| {
             s.vdp.regions_mut().vram.pop();
-        })
-        .expect_err("a short VRAM is refused");
+        }) {
+            Err(e) => e,
+            Ok(_) => panic!("a short VRAM restored: restore has no VRAM check"),
+        };
         assert_eq!(
             err.to_string(),
             format!(
