@@ -5775,8 +5775,14 @@ impl Engine {
         // `mode` is derived from the answering frame's own width rather than from a VDP register read: the
         // frame readers normalize a mid-frame width switch to the width the frame ended on, and a `mode`
         // taken from the register could name a width the rows do not have. The fragment ties
-        // mode <-> width <-> rgb length with an if/then, so a disagreement here is a rejected reply.
-        let mode = if width == 320 { "h40" } else { "h32" };
+        // mode <-> width <-> rgb length with an if/then, so a disagreement here is a rejected reply. The H40
+        // width is the core's own rule (`render::active_width`), not a `320` of this handler's (wave-3
+        // residue 4 found this inverse copy of it).
+        let mode = if width == usize::from(oracle_core::render::active_width(true)) {
+            "h40"
+        } else {
+            "h32"
+        };
         let rows: Vec<Value> = (start..start + count)
             .map(|line| {
                 let off = line as usize * width;

@@ -77,9 +77,10 @@ pub const MCLK_PER_ACTIVE: u64 = 2560;
 /// are located to the start of the driving instruction (see the [`now_mclk`](Vdp#structfield.now_mclk) field;
 /// follow-up F-SUBLINE-ACCESSMCLK).
 pub(crate) fn subline_x(d_mclk: u64, h40: bool) -> usize {
-    // The renderer's own active widths — held to `Vdp::active_display` by the test below, so the two cannot
-    // drift into disagreeing about how wide the row they are describing is.
-    let width: u64 = if h40 { 320 } else { 256 };
+    // The renderer's own width rule, `render::active_width`, which `Vdp::active_display` reads too (wave-3
+    // residue 4; this was a copy of it). The literals 320/256 the test below checks are the independent
+    // anchor: the dot clock's 8 and 10 mclk per pixel over one active span.
+    let width = u64::from(crate::render::active_width(h40));
     let mclk_per_pixel = MCLK_PER_ACTIVE / width; // 8 (H40) / 10 (H32)
     (d_mclk / mclk_per_pixel).min(width) as usize
 }
