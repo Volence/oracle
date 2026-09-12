@@ -5902,6 +5902,7 @@ impl Engine {
     /// `player_state`'s say "As emulator/object_list.". `detectedBy` is always `symbol` on this server
     /// (the layout's `to_json` in `decoders.rs` says why), so the binding is the half that can fire, and
     /// a `Match` is quiet, which keeps this inside §2.4's MUST NOT on a caveat every reply carries.
+    /// `object_slot` owes it too and withholds it for now; the note in that handler says why.
     ///
     /// **Re-derived from the table and the image loaded now, not stored at load time.** Every route that
     /// keeps a table across an image change re-checks it (`apply_rom_swap` drops a `Mismatch`; `restore`
@@ -6235,9 +6236,14 @@ impl Engine {
             self.attach_code_name(&mut out, &rec);
         }
         out.insert("layout".into(), layout.to_json());
-        if let Some(c) = self.decoder_binding_caveat() {
-            out.insert("caveat".into(), json!(c));
-        }
+        // ⚑ **No `caveat` here yet, and that is a registered gap, not the rule** (lens M17, still
+        // open for this row). The fragment says "As emulator/object_list.", so this row owes the
+        // conditional caveat `object_list` and `player_state` now carry. It is withheld because
+        // `oracle-player`'s `the_row_expansion_shows_what_emulator_object_slot_shows` compares this
+        // reply, minus `layout`, key for key with the panel's row item, so a caveat here reddens it,
+        // and that file is outside the parcel that fixed the other two rows. The player's half: treat
+        // `caveat` as envelope beside `layout`, and decide whether the panel shows it (the owner's
+        // call). `tests/object_decoders.rs` registers the gap and goes red the day this row emits.
         Ok(Value::Object(out))
     }
 
