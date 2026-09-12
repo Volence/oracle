@@ -167,6 +167,34 @@ vertical-scroll fetch. The latch is not the port's own pre-cache: reading word 3
 word 0" reproduces every table, but it is not the documented mechanism. See "What would settle the open
 points".
 
+> **Fixed 2026-09-12 (VSRAM-DECODE, branch `parcel/vsram-decode`).** Both halves go through one decode,
+> `Vdp::vsram_byte` (`addr & $7E`, `None` at `$50` and above), used by `read_target` and `write_target`,
+> and so by the port write, the 68k-to-VSRAM DMA word, the fill body and the port read-ahead. A read of
+> `$50-$7F` returns a new `Vdp` field, `vsram_read_latch`. It rides the snapshot and is in neither
+> `state_hash` nor `export_state`. **The open point, settled for this core, not for the chip.** The latch is
+> fed by the committed render only (`commit_scanline_vscroll`, called from `render_scanline` and
+> `advance_scanline`). A display-enabled line leaves the last VSRAM word its background fetch reads:
+> word 1 in full-screen mode, and the last column's plane-B word in 2-cell mode. A scratch probe measured
+> where the ROM's reads land. All 16 reads past `$4E` fall on active lines 93 and 105, with the display
+> on, full-screen vertical scroll and H40, and each `$50` read-ahead falls on the same line as the `$4E`
+> read before it. So a latch fed by port reads would answer `$0560` (word 39) where the table says `$0123`.
+> This core renders a line at its start, so the hardware's interleaving of render fetches between port
+> slots cannot be expressed here, and the render-only feed is its line-granular form. The ROM still cannot
+> tell word 0 from word 1 (both `$0123`). The unit test `a_vsram_read_of_50_7f_returns_the_read_latch`
+> separates all three candidates. The "What would settle" item below still stands for the chip. Result:
+> **76/46/122 → 112/10/122**, failing exactly 20 27 28 29 31 32 33 34 36 38, the EXP=3 prediction. Test 20
+> goes from 8/12 to 6/12 words off: the two A1 words of its VSRAM half now match, and the remaining six
+> are A2's source wrap, two per half.
+>
+> Mutation record (release, each applied to the committed file, run, and restored from `HEAD` with `cmp`):
+> the write half reverted gives 75/47/122, which adds test 13, and three unit tests go red. The read half
+> reverted gives 103/19/122, which adds 13 and the eight fills, and two unit tests go red. Port reads feeding
+> the latch give 104/18/122 (the eight fills fail), and `a_vsram_read_of_50_7f_returns_the_read_latch` goes
+> red. `advance_scanline` not feeding it gives 104/18/122, because the ROM runs on that path, and the
+> both-paths unit test goes red. Three mutations leave the ROM at 112/10/122 and each turns a unit test red:
+> "return word 0", "a display-off line feeds it" and "full-screen's last fetch is word 0". For those three
+> the unit tests are the only guard.
+
 ### A2: the 68k-to-VDP DMA source wraps inside its 128 KB page (test 27, and half of test 20)
 
 **The rule.** Only source registers 21 and 22 count. Register 23 never takes a carry, so the source wraps
