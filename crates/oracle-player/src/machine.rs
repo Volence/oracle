@@ -15,8 +15,10 @@ use std::time::{Duration, Instant};
 
 use crate::device::Device;
 
-/// Active display height, matching `crates/oracle-frontend/src/main.rs`.
-pub const HEIGHT: usize = 224;
+/// Active display height: [`oracle_core::vdp::ACTIVE_LINES`], the core's one owner of that number (lens
+/// M53/M67), as a `usize` for sizing images. Derived rather than restated, so this window, the frontend and
+/// the engine cannot disagree about how tall a frame is.
+pub const HEIGHT: usize = oracle_core::vdp::ACTIVE_LINES as usize;
 
 /// The ceiling on the capture's per-delivery line log (~215 KB per emulated second, unbounded by design),
 /// for runs that keep ending mid-frame. Same value as `oracle-frontend/src/main.rs`'s, same reason.
@@ -285,9 +287,10 @@ impl Machine {
     /// nothing to present — and there the retained image stays up exactly as it does for an iteration that
     /// emulated nothing.
     ///
-    /// The height is taken from the data (`rgb.len() / width`) rather than assumed to be [`HEIGHT`]: the
-    /// engine builds this frame with its own `ACTIVE_LINES`, and a mismatched constant here would be a
-    /// silently sheared picture rather than a failure.
+    /// The height is taken from the data (`rgb.len() / width`) rather than assumed to be [`HEIGHT`]. The
+    /// engine builds this frame at `oracle_core::vdp::ACTIVE_LINES`, which [`HEIGHT`] now derives from too,
+    /// so today the two cannot disagree; reading it off the data keeps that true of whatever frame the bus
+    /// hands over, where a mismatched constant would be a silently sheared picture rather than a failure.
     pub fn adopt_frame(&mut self, width: usize, rgb: &[oracle_aether::engine::Rgb]) -> bool {
         if width == 0 || rgb.is_empty() || !rgb.len().is_multiple_of(width) {
             return false;
@@ -309,8 +312,17 @@ impl Machine {
         true
     }
 
-    /// ⚑ **Re-derive the picture under a display mask** — S2a, and the player's equivalent of
-    /// `oracle-frontend`'s `blit_masked`. Returns whether a picture came out.
+    /// ⚑ **Re-derive the picture under a display mask** — S2a. The picture is
+    /// [`Vdp::render_frame_masked`](oracle_core::vdp::Vdp::render_frame_masked), the one masked picture
+    /// `emulator/screenshot` and `oracle-frontend`'s `blit_masked` also show (lens M11). What is this
+    /// window's own is the `egui::Color32` conversion and recording the mask beside the picture.
+    ///
+    /// **It always produces a picture.** ⚑ It used to return whether one "came out", behind a `width == 0`
+    /// guard described as loud-on-unmeasurable's floor (lens M42). That guard could not fire: the width is
+    /// [`Vdp::active_display`](oracle_core::vdp::Vdp::active_display)'s, which is 256 or 320 and nothing
+    /// else, and it was 256 or 320 by the same register read when it was measured off line 0. A guard for
+    /// a failure that cannot happen is a claim about one, and two docs (`bus::Drained::masked_picture`,
+    /// the Screen tab's refusal) had come to cite it as a live case, so it is removed rather than kept.
     ///
     /// # Why a masked picture cannot be made out of the captured one
     ///
@@ -334,9 +346,8 @@ impl Machine {
     /// What the capture leaves behind is decoded colours with the losing layers **already discarded**, so
     /// "mask" applied to those bytes could only mean "paint over" — and painting the backdrop over dots
     /// plane B was visible at is the believable-wrong-answer this whole surface exists to avoid. So a masked
-    /// picture is re-derived from VDP state through
-    /// [`render_line_masked`](oracle_core::vdp::Vdp::render_line_masked), exactly as `emulator/screenshot`
-    /// does under a mask and exactly as the minifb window does.
+    /// picture is re-derived from VDP state, through the same function `emulator/screenshot` and the minifb
+    /// window call under a mask.
     ///
     /// # What it costs, stated because it is visible on the glass
     ///
@@ -345,35 +356,21 @@ impl Machine {
     /// water renders in the above-water palette. That is the same trade the bus makes and announces as
     /// `source: "stateRender"`, and it is the second reason the window must **say** a mask is on rather than
     /// let it be inferred — the picture changes in a way the toggle did not ask for. Clearing the mask puts
-    /// the captured frame back on the next completed frame; nothing is discarded.
-    pub fn render_masked(&mut self, mask: LayerMask) -> bool {
-        let vdp = self.sys.vdp();
-        // Line 0 is rendered twice rather than held: `render_line_masked` is `&self` and pure, the cost is
-        // one line out of 224, and threading the first row through as a special case is how an off-by-one
-        // between the width probe and the render gets written. `oracle-frontend`'s `blit_masked` makes the
-        // same call for the same reason.
-        let width = vdp.render_line_masked(0, mask).len();
-        if width == 0 {
-            // Loud-on-unmeasurable's floor: no picture rather than a black rectangle presented as one. The
-            // retained image and its mask are both left alone, so the caller can see that the glass and the
-            // bus disagree instead of being handed a fabricated agreement.
-            return false;
-        }
-        let mut pixels = Vec::with_capacity(width * HEIGHT);
-        for line in 0..HEIGHT as u16 {
-            let row = vdp.render_line_masked(line, mask);
-            for x in 0..width {
-                let (r, g, b) = row.get(x).copied().unwrap_or((0, 0, 0));
-                pixels.push(egui::Color32::from_rgb(r, g, b));
-            }
-        }
+    /// the captured frame back on the next completed frame; nothing is discarded. The CPU cost (every
+    /// active line composited twice a frame while masked) is stated, with why it is paid, on
+    /// [`Vdp::render_frame_masked`](oracle_core::vdp::Vdp::render_frame_masked) (lens M31).
+    pub fn render_masked(&mut self, mask: LayerMask) {
+        let (width, rgb) = self.sys.vdp().render_frame_masked(mask);
+        let height = rgb.len() / width;
         self.image = Some(egui::ColorImage {
-            size: [width, HEIGHT],
-            source_size: egui::vec2(width as f32, HEIGHT as f32),
-            pixels,
+            size: [width, height],
+            source_size: egui::vec2(width as f32, height as f32),
+            pixels: rgb
+                .iter()
+                .map(|&(r, g, b)| egui::Color32::from_rgb(r, g, b))
+                .collect(),
         });
         self.image_mask = Some(mask);
-        true
     }
 
     /// The last completed picture, or `None` before the first frame finishes.
@@ -534,6 +531,31 @@ mod tests {
         assert!(
             capture_to_image(&torn).is_none(),
             "a run that ended mid-frame must not be stitched out of two geometries"
+        );
+    }
+
+    /// **Lens M11: the picture this window shows under a mask is the one masked picture**, over H32 and
+    /// H40 and every mask, with the control [`oracle_core::testrom::assert_masked_frame_parity`] runs first.
+    /// The window's `egui` pixels are read back as `(r, g, b)`, so its own conversion edge is inside the
+    /// measurement.
+    #[test]
+    fn the_masked_window_picture_is_the_one_masked_picture() {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        oracle_core::testrom::assert_masked_frame_parity(
+            "Machine::render_masked",
+            |v, mask| {
+                *machine.system_mut().vdp_mut() = v.clone();
+                machine.render_masked(mask);
+                let img = machine.image().expect("a picture");
+                assert_eq!(machine.image_mask(), Some(mask));
+                (
+                    img.size[0],
+                    img.pixels.iter().map(|c| (c.r(), c.g(), c.b())).collect(),
+                )
+            },
+            // Against the owner, `Vdp::render_frame_masked`; the owner itself is pinned against the
+            // line-by-line expectation in oracle-core (`the_masked_frame_is_the_one_masked_picture`).
+            |v, mask| v.render_frame_masked(mask),
         );
     }
 }

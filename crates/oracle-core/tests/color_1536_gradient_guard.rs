@@ -79,12 +79,12 @@
 
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
+use oracle_core::vdp::ACTIVE_LINES;
 use std::collections::HashSet;
 use std::io::Write;
 
 const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/TestRoms");
 const SEED: u64 = 0x1234_5678;
-const ACTIVE_LINES: u16 = 224;
 const FRAMES: u64 = 120;
 
 /// The minimum number of distinct colours the live capture must hold for the picture to still *be* the

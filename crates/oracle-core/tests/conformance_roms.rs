@@ -34,6 +34,7 @@ use oracle_core::bus::{BusEvent, BusEventSink, BusOp};
 use oracle_core::io::Pad;
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
+use oracle_core::vdp::ACTIVE_LINES;
 use std::path::Path;
 
 const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/TestRoms");
@@ -41,8 +42,6 @@ const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/Test
 /// Power-on RNG seed. Fixed so the whole scorecard is reproducible (seeded power-on RAM is a
 /// non-negotiable of the core; a different seed is a different — still deterministic — machine).
 const SEED: u64 = 0x1234_5678;
-
-const ACTIVE_LINES: u16 = 224;
 
 /// Every ROM `tools/fetch-testroms.sh` vendors. Keep in sync with that script: the count guard below
 /// asserts the pinned baseline covers exactly this list, so a ROM can never be quietly dropped.

@@ -6646,10 +6646,12 @@ mod bus_parity {
         );
 
         // --- the third assertion the pair owes ---
-        const ALL: [&str; 8] = ["up", "down", "left", "right", "a", "b", "c", "start"];
+        // "Every button there is" is the engine's own table, imported rather than copied (lens M69). A copy
+        // here stayed at eight names whatever the pad the engine models grew or lost, so when the table
+        // moved this control degraded instead of reddening.
         assert_ne!(
             shown,
-            ALL.join(", "),
+            oracle_aether::engine::BUTTONS_3.join(", "),
             "both sides named every button there is, so the agreement above is a derivation that ignores \
              its argument"
         );
@@ -7464,8 +7466,9 @@ mod overlay_layout_tests {
 ///
 /// [`Panels::screen`] used to read [`screen_pick::fit`] straight and `return` on a zero result: no
 /// picture, no sentence, and the standing readout of the last click gone with it. The pane was then
-/// indistinguishable from a broken one, which is the failure `plane_picture` records one tab over and the
-/// same rule `machine.rs` states as *no picture rather than a black rectangle presented as one*.
+/// indistinguishable from a broken one, which is the failure `plane_picture` records one tab over, and the
+/// loud-on-unmeasurable rule: *no picture rather than a black rectangle presented as one*. (⚑ This cited
+/// `machine.rs` as stating that rule until lens M42 removed the unreachable guard it was stated on.)
 ///
 /// **What is asserted here and what is not.** [`screen_room`] and [`no_picture`] are the decision and the
 /// drawing, and both are checkable on a headless `egui::Context` the way `overlay_layout_tests` already

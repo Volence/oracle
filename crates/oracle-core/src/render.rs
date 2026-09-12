@@ -1783,6 +1783,59 @@ impl Vdp {
         self.pixels_rgb(&self.resolve_line_masked(line, mask).pixels)
     }
 
+    /// ⚑ **The masked picture: the whole active display under a display [`LayerMask`]**, as its width and
+    /// its pixels line-major — **the one implementation of it** (lens M11, `F-THREE-MASKED-RENDERERS`).
+    ///
+    /// Three callers show a masked picture: `oracle-aether`'s `Engine::framebuffer` (what
+    /// `emulator/screenshot` and `emulator/scanlines` serve under a mask), `oracle-player`'s
+    /// `Machine::render_masked` and `oracle-frontend`'s `blit_masked` (what the two windows put on the glass
+    /// while a layer is hidden). Each used to write this loop itself, agreeing with the other two because
+    /// nothing asserted they must. They now call this and keep only their own pixel type (`egui::Color32`,
+    /// packed `u32`), the part that genuinely differs. It is the answer the tree already gave
+    /// [`sprite_tile_at`] and `ScanlineCapture::completed_frame`: the derivation lives here, once.
+    ///
+    /// **The geometry is [`Vdp::active_display`]'s** (lens M42): the width is not learned by rendering a
+    /// line to measure it, and the height is [`ACTIVE_LINES`] through that same accessor, so V30 moves this
+    /// picture with the rest of the frame. The width cannot disagree with the rows: both read `render_h40`
+    /// inside this one `&self` borrow, and `testrom::assert_masked_frame_parity` (run by
+    /// `the_masked_frame_is_the_one_masked_picture` below and by each of the three callers) pins the result
+    /// against a picture built line by line from [`render_line_masked`](Self::render_line_masked).
+    ///
+    /// **`&self`, and the mask is a parameter.** So this cannot compile a call to
+    /// [`Vdp::commit_scanline_sprites`] (see [`Vdp::render_scanline`]'s doc for which half of the invariant
+    /// that is), and `masked_renders_leave_the_committed_sprite_latches_untouched` drives it anyway.
+    ///
+    /// # What it costs, and why it is paid (lens M31)
+    ///
+    /// Under a mask the two windows composite every active line **twice a frame**: once during the run by
+    /// [`Vdp::render_scanline`] (their scanline capture is always armed), and again here. That is deliberate,
+    /// and neither half can be dropped inside the rules this module keeps:
+    ///
+    /// * **This render cannot be made from the first one.** The captured rows are decoded colours, and a
+    ///   [`LineReport`]'s `pixels` carry only each dot's winner; the losing layers a mask would reveal are
+    ///   already gone, so "masking" those rows could only mean painting over them, the wrong answer
+    ///   [`LayerMask`] exists to avoid.
+    /// * **The first one cannot be made masked.** That is a masked stateful render, the forbidden shape, or
+    ///   a mask carried into the run, which makes it a field.
+    /// * **The first one cannot be skipped while masked.** A run without the capture takes
+    ///   [`Vdp::advance_scanline`] and composites nothing, and no masked path would commit state. But the
+    ///   captured frame is the unmasked, raster-timed picture both windows publish to their bus, and
+    ///   `emulator/state_hash {includeFramebuffer}` hashes exactly that frame, reporting its source as
+    ///   `raster`. Dropping it while a mask is set would change that reply under a mask, a contract change
+    ///   rather than an optimisation.
+    ///
+    /// So the cost is paid only while a layer is hidden (both windows gate on [`LayerMask::is_all`]) and
+    /// only in the windows. The engine's own masked read is a per-request cost.
+    pub fn render_frame_masked(&self, mask: LayerMask) -> (usize, Vec<(u8, u8, u8)>) {
+        let (width, height) = self.active_display();
+        let width = usize::from(width);
+        let mut frame = Vec::with_capacity(width * usize::from(height));
+        for line in 0..height {
+            frame.extend_from_slice(&self.render_line_masked(line, mask));
+        }
+        (width, frame)
+    }
+
     /// The one CRAM decode map from resolved pixels to RGB (winning index at the resolved shadow/highlight
     /// state) — shared by [`Vdp::render_line`] and [`Vdp::report_rgb`] so the two cannot drift.
     fn pixels_rgb(&self, pixels: &[PixelResolution]) -> Vec<(u8, u8, u8)> {
@@ -2246,7 +2299,8 @@ impl Vdp {
     /// picture. It is the case the wording above was written to admit, and it is why the wording is what it
     /// is: "exactly one stateful render" would have gone false here, "no masked render is stateful" did not.
     /// Every mask-taking render is `&self`: the `resolve_line_masked`
-    /// they all share, [`Vdp::render_line_masked`], [`Vdp::render_line_report_masked`],
+    /// they all share, [`Vdp::render_line_masked`], [`Vdp::render_frame_masked`] (the whole masked picture
+    /// the aether bus and both windows show), [`Vdp::render_line_report_masked`],
     /// [`Vdp::pixel_attribution_masked`]. [`Vdp::commit_scanline_sprites`], the write that seeds the R10
     /// carry and ORs the sprite-overflow / collision latches, takes `&mut self`. So a masked render
     /// **cannot compile a call to the commit**: the borrow it holds is the wrong one, and the crate is
@@ -4677,6 +4731,7 @@ mod tests {
             let mut m = LayerMask::ALL;
             m.set(l, false);
             let _ = poked.render_line_masked(0, m);
+            let _ = poked.render_frame_masked(m);
             let _ = poked.render_line_report_masked(0, m);
             let _ = poked.pixel_attribution_masked(0, 0, m);
         }
@@ -5202,6 +5257,56 @@ mod tests {
                 v.pixel_attribution_masked(0, 0, LayerMask::ALL),
                 v.pixel_attribution(0, 0),
                 "an all-on mask changed the attribution"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Lens M11 / M42: the one masked picture, and the geometry it is drawn at
+    // ---------------------------------------------------------------------------------------------
+
+    /// **The owner against the independent expectation**: [`Vdp::render_frame_masked`] must equal the
+    /// picture built one line at a time from `render_line_masked`, over H32 and H40 and every mask, after
+    /// the control `testrom::assert_masked_frame_parity` runs first. The three callers are each pinned
+    /// against this owner in their own crates; this row is what makes the owner itself answerable.
+    #[test]
+    fn the_masked_frame_is_the_one_masked_picture() {
+        crate::testrom::assert_masked_frame_parity(
+            "Vdp::render_frame_masked",
+            |v, mask| v.render_frame_masked(mask),
+            crate::testrom::frame_by_lines,
+        );
+    }
+
+    /// **`active_display()`'s height is the line VBlank starts on**, where the V counter reads `0xE0`
+    /// (recon R2: `0xDF` on the last active line, `0xE0` on the first blanking one, in NTSC V28).
+    ///
+    /// Booked after wave 1C: no `oracle-core` test observed this height at all, so a wrong one reached
+    /// every picture sized by it (the masked frame, the bus's bounds refusals) without a red here. Both
+    /// anchors are independent of the accessor under test: the first line [`Vdp::vblank`] reports is found
+    /// by scanning the frame, and `0xE0`/`0xDF` are the hardware's V-counter values.
+    #[test]
+    fn the_active_display_height_is_the_line_vblank_starts_on() {
+        for h40 in [false, true] {
+            let v = crate::testrom::masked_frame_fixture(h40);
+            let (_, height) = v.active_display();
+            let first_blank = (0..crate::vdp::LINES_PER_FRAME)
+                .find(|&line| v.vblank(line * MCLK_PER_LINE))
+                .expect("a frame has a vertical blank");
+            assert_eq!(
+                u64::from(height),
+                first_blank,
+                "h40={h40}: active_display() says {height} lines, but VBlank starts on line {first_blank}"
+            );
+            assert_eq!(
+                v.v_counter(u64::from(height) * MCLK_PER_LINE),
+                0xE0,
+                "h40={h40}: the line after the active display must read V = $E0 (recon R2)"
+            );
+            assert_eq!(
+                v.v_counter(u64::from(height - 1) * MCLK_PER_LINE),
+                0xDF,
+                "h40={h40}: the last active line must read V = $DF (recon R2)"
             );
         }
     }

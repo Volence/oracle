@@ -29,7 +29,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-const ACTIVE_LINES: usize = 224;
+/// The core's active display height (`oracle_core::vdp::ACTIVE_LINES`, lens M53/M67), as a row count.
+const ACTIVE_LINES: usize = oracle_core::vdp::ACTIVE_LINES as usize;
 
 /// The vendored conformance corpus, addressed the way `crates/oracle-core/tests/scanline_goldens.rs`
 /// addresses it — same constant, so the two files cannot drift apart on where the ROMs live.

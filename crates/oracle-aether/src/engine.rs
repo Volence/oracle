@@ -54,12 +54,14 @@ use oracle_core::symbols::{BindingFault, Indeterminate, RomBinding, SymbolTable}
 use oracle_core::system::{
     StopRecord, System, TimingBasis, MCLK_PER_CPU_CYCLE, MCLK_PER_FRAME, RAM_SIZE,
 };
-// The frame's line count, for `emulator/run_to_scanline`'s unreachable-target caveat, and the SAT's
-// slot count, for `emulator/sprites`' `limit`. Both are read from the VDP's own constants rather than
-// written down here: 262 lines and 80 slots are properties of the machine, and a second copy of either
-// is a number that looks authoritative while its owner moves underneath it (lens M62 for the slots).
+// The frame's line count, for `emulator/run_to_scanline`'s unreachable-target caveat; the active display's
+// height, for every picture this bus serves and the line range `emulator/scanlines` refuses past; and the
+// SAT's slot count, for `emulator/sprites`' `limit`. All three are read from the VDP's own constants rather
+// than written down here: 262 lines, 224 active lines and 80 slots are properties of the machine, and a
+// second copy of any of them is a number that looks authoritative while its owner moves underneath it
+// (lens M62 for the slots, M53/M67 for the height).
 // The table is 80 slots in both modes; how many of them the hardware *parses* is `parsedMax` (§11.10).
-use oracle_core::vdp::{LINES_PER_FRAME, SAT_SLOTS};
+use oracle_core::vdp::{ACTIVE_LINES, LINES_PER_FRAME, SAT_SLOTS};
 // `Vdp` is named explicitly at `read_vdp_registers`' binding rather than inferred: that the handler holds
 // a `&Vdp` and not a `&mut Vdp` is the mechanism §8 item 29 relies on, so it is written where a reader
 // and a compiler both see it. `REG_COUNT` is the frozen `state_hash` currency's own region length, which
@@ -84,8 +86,6 @@ const WORK_RAM_HI: u32 = 0x00FF_FFFF;
 const BUS_ADDR_MAX: u32 = 0x00FF_FFFF;
 /// Function code for the debug poke path: supervisor data, matching what the replay runner arms with.
 const FC_SUPERVISOR_DATA: u8 = 5;
-/// Active display height in lines (the region `render_line` covers).
-const ACTIVE_LINES: u16 = 224;
 /// The largest `line` `emulator/run_to_scanline` accepts — **the contract's number, not this core's**.
 ///
 /// §6's row spells the span `0-511`, deliberately wider than `emulator/scanlines`' 0-223 because a raster
@@ -3646,6 +3646,9 @@ impl Engine {
     /// is not an option and not a shortcut missed: the retained rows are decoded colours with the losing
     /// layers already discarded, so "mask" applied there could only mean "paint over", which is the wrong
     /// answer this whole surface is built to avoid.
+    ///
+    /// The post-hoc picture is [`Vdp::render_frame_masked`], the one masked picture both windows also put
+    /// on the glass (lens M11); the choice between it and the latched frame is all this function owns.
     fn framebuffer(&self, mask: LayerMask) -> (usize, Vec<Rgb>, bool) {
         if mask.is_all() {
             if let Some(f) = &self.last_frame {
@@ -3654,11 +3657,7 @@ impl Engine {
                 }
             }
         }
-        let width = self.sys.vdp().render_line_masked(0, mask).len();
-        let mut fb = Vec::with_capacity(width * ACTIVE_LINES as usize);
-        for line in 0..ACTIVE_LINES {
-            fb.extend_from_slice(&self.sys.vdp().render_line_masked(line, mask));
-        }
+        let (width, fb) = self.sys.vdp().render_frame_masked(mask);
         (width, fb, false)
     }
 
@@ -11523,6 +11522,34 @@ mod tests {
     // pinned there; what these two rows assert is that THIS consumer reads it and honours the two rules
     // that reach the wire — the width the frame ended on, and the untouched slot.
     // -----------------------------------------------------------------------------------------------
+
+    /// **Lens M11: the masked picture `emulator/screenshot` and `emulator/scanlines` serve is the one
+    /// masked picture**, over H32 and H40 and every mask, with the control
+    /// [`oracle_core::testrom::assert_masked_frame_parity`] runs first. No frame has been latched, so every
+    /// mask — `ALL` included — takes the post-hoc path this row is about, and says so.
+    #[test]
+    fn the_framebuffer_under_a_mask_is_the_one_masked_picture() {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+        oracle_core::testrom::assert_masked_frame_parity(
+            "Engine::framebuffer",
+            |v, mask| {
+                *e.sys.vdp_mut() = v.clone();
+                let (width, fb, from_raster) = e.framebuffer(mask);
+                assert!(
+                    !from_raster,
+                    "no frame is latched, so this is the post-hoc render"
+                );
+                (width, fb)
+            },
+            // Against the owner: this consumer's whole job is to hand its mask to it. The owner itself is
+            // pinned against the line-by-line expectation in oracle-core
+            // (`render::tests::the_masked_frame_is_the_one_masked_picture`).
+            |v, mask| v.render_frame_masked(mask),
+        );
+    }
 
     /// A ragged frame — S3K's post-reset shape, two H32 lines then H40 — must reach the slot at the width
     /// it **ended** on, with the short lines padded rather than the frame rejected.

@@ -336,9 +336,10 @@ use oracle_core::watchpoints::{WatchOp, WatchSpace, WatchVia, Watchpoints};
 use overlay::{Overlay, Status, ACCENT, ERROR, INFO};
 use present::Aspect;
 
-/// Active display height in scanlines (Genesis NTSC active area). Width is queried from the VDP *every frame*
-/// (H32=256 / H40=320) — the game reprograms it after boot, so it is not fixed at reset.
-const HEIGHT: usize = 224;
+/// Active display height in scanlines: [`oracle_core::vdp::ACTIVE_LINES`], the core's one owner of it (lens
+/// M53/M67), as a `usize`. Width is queried from the VDP *every frame* (H32=256 / H40=320) — the game
+/// reprograms it after boot, so it is not fixed at reset.
+const HEIGHT: usize = oracle_core::vdp::ACTIVE_LINES as usize;
 
 /// Widest display mode (H40). The window is sized for this so an H40 scene fills it exactly at the requested
 /// integer scale; H32 content is pillarboxed by [`ScaleMode::AspectRatioStretch`].
@@ -716,8 +717,9 @@ fn blit_capture(cap: &ScanlineCapture, buf: &mut Vec<u32>) -> Option<usize> {
 /// leaves behind is decoded colours with the losing layers *already discarded*, so "mask" applied to those
 /// bytes could only mean "paint over", and painting the backdrop over dots plane B was visible at is the
 /// believable-wrong-answer this whole surface is built to avoid. So a masked picture is re-derived from VDP
-/// state, exactly as `emulator/screenshot` does under a mask, through the same
-/// [`render_line_masked`](oracle_core::vdp::Vdp::render_line_masked).
+/// state by [`Vdp::render_frame_masked`](oracle_core::vdp::Vdp::render_frame_masked), the one masked
+/// picture `emulator/screenshot` serves under a mask and the player window shows (lens M11). What is this
+/// window's own is packing it into `u32`s.
 ///
 /// **What that costs, stated because it is visible on screen.** This is a post-hoc read of whatever CRAM
 /// holds right now, so every mid-frame palette effect that [`blit_capture`] exists to preserve (S3K's
@@ -725,22 +727,15 @@ fn blit_capture(cap: &ScanlineCapture, buf: &mut Vec<u32>) -> Option<usize> {
 /// above-water palette. That is the same trade the bus makes and announces as `source: "stateRender"`, and
 /// it is one more reason the window has to say a mask is on rather than let it be inferred — the picture
 /// changes in a second way the toggle did not ask for. Clearing the mask puts the captured frame straight
-/// back on the next completed frame; nothing is discarded.
+/// back on the next completed frame; nothing is discarded. The CPU cost (every active line composited twice
+/// a frame while masked) is stated, with why it is paid, on `render_frame_masked` (lens M31).
 fn blit_masked(vdp: &oracle_core::vdp::Vdp, mask: LayerMask, buf: &mut Vec<u32>) -> usize {
-    let first = vdp.render_line_masked(0, mask);
-    let width = first.len();
+    let (width, rgb) = vdp.render_frame_masked(mask);
     buf.clear();
-    buf.reserve(width * HEIGHT);
-    for line in 0..HEIGHT as u16 {
-        // Line 0 is rendered twice rather than held: `render_line_masked` is `&self` and pure, the cost is
-        // one line out of 224, and threading the first row through as a special case is how an off-by-one
-        // between the width probe and the blit gets written.
-        let row = vdp.render_line_masked(line, mask);
-        for x in 0..width {
-            let (r, g, b) = row.get(x).copied().unwrap_or((0, 0, 0));
-            buf.push((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b));
-        }
-    }
+    buf.extend(
+        rgb.iter()
+            .map(|&(r, g, b)| (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)),
+    );
     width
 }
 
@@ -3057,6 +3052,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **Lens M11: the masked picture this window blits is the one masked picture**, over H32 and H40
+    /// and every mask, with the control [`oracle_core::testrom::assert_masked_frame_parity`] runs first.
+    /// The window's packed `u32`s are unpacked back to `(r, g, b)`, so its own packing edge is inside the
+    /// measurement.
+    #[test]
+    fn the_blitted_masked_picture_is_the_one_masked_picture() {
+        let mut buf = Vec::new();
+        oracle_core::testrom::assert_masked_frame_parity(
+            "blit_masked",
+            |v, mask| {
+                let width = blit_masked(v, mask, &mut buf);
+                (
+                    width,
+                    buf.iter()
+                        .map(|&p| ((p >> 16) as u8, (p >> 8) as u8, p as u8))
+                        .collect(),
+                )
+            },
+            // Against the owner, `Vdp::render_frame_masked`; the owner itself is pinned against the
+            // line-by-line expectation in oracle-core (`the_masked_frame_is_the_one_masked_picture`).
+            |v, mask| v.render_frame_masked(mask),
+        );
     }
 
     /// The command line parses as documented, and a bad value is refused rather than silently ignored.

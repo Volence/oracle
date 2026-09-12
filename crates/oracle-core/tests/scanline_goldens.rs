@@ -69,6 +69,7 @@
 
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
+use oracle_core::vdp::ACTIVE_LINES;
 use std::path::Path;
 
 const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/TestRoms");
@@ -76,8 +77,6 @@ const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/Test
 /// Power-on RNG seed — the same fixed seed `conformance_roms.rs` uses, so a row here and a row there describe
 /// the same machine.
 const SEED: u64 = 0x1234_5678;
-
-const ACTIVE_LINES: u16 = 224;
 
 /// One settle budget for every ROM. This instrument is **not** a mirror of the conformance scorecard — it asks
 /// a single question ("does the live picture differ from the post-hoc one?") and does not need each ROM's
