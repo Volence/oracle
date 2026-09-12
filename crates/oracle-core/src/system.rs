@@ -1506,6 +1506,17 @@ impl System {
                     // loud debug assert rather than a silently wrong picture, and no corpus ROM writes CRAM
                     // from the Z80 today; a C-7 slice must either drain again after the catch-up or file
                     // late landings by their own stamped line.
+                    //
+                    // The same ordering has a second consequence, and it forces the first of those two
+                    // choices. `System::restore` refuses a snapshot whose VDP write-capture buffer is not
+                    // empty (`Vdp::check_regions`, `SnapshotRegion::VdpWriteCaptures`). A write the Z80
+                    // left in the buffer after this drain survives into the next iteration, which can
+                    // `break` on `stop_requested` before stepping, and `set_write_capture(false)` does not
+                    // clear the buffer. A checkpoint or save state taken at that stop would then be
+                    // refused on restore: an `emulator/restore` refusal of a well-formed checkpoint, and a
+                    // save file that no longer loads. So a C-7 slice MUST drain again after the catch-up,
+                    // which also fixes the journal hazard above. The engine's claim that a checkpoint
+                    // cannot reach `restore`'s malformed arm (its `restore` handler) rests on this.
                     if wants_rows && w.target == VdpTarget::Cram {
                         self.scanline_scaffold
                             .journal_cram(w.mclk, w.addr as usize, w.new as u16);

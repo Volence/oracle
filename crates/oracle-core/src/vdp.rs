@@ -504,6 +504,9 @@ impl Vdp {
         check_region(R::Cram, Exactly(CRAM_SIZE), self.cram.len())?;
         check_region(R::Vsram, Exactly(VSRAM_SIZE), self.vsram.len())?;
         check_region(R::SatCache, Exactly(SAT_CACHE_LEN), self.sat_cache.len())?;
+        // Empty is the rule because the run loop drains this buffer at every instruction boundary and the
+        // Z80 cannot write the VDP until decision C-7 lands. C-7 must drain again after the Z80 catch-up:
+        // see the ORDERING HAZARD comment in `System::run_until_with_sink`'s drain.
         check_region(R::VdpWriteCaptures, Exactly(0), self.write_captures.len())?;
         let ring = self.fifo.len();
         check_region(R::VdpFifoPending, AtMost(ring), usize::from(self.fifo_len))?;
