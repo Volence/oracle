@@ -213,6 +213,41 @@ boundary. Group 5 then rewrites registers 21 and 22 but not 23 (`$A96A..$A96C`).
 still `$02`, so the DMA reads `$401FC` and gets `1111 ffff eeee dddd`. Ours took the carry to `$03` and reads
 `$601FC`, which gives `dead c0de dead c0de`. EXP=4 flips 27; 20 also needs A1 (EXP=5 and EXP=7).
 
+**Fixed 2026-09-12 (DMA-SRC-128K, branch `parcel/dma-src-128k`).** Both halves of the rule, from the ROM.
+Source registers 22:21 are a 16-bit **word** counter and register 23 supplies word-address bits 22-16, i.e.
+byte-address bits 23-17 — so the page is `$20000` bytes wide, its base is `source & !$1FFFF`, and the step is
+`(off + 2) & $1FFFF`. `MegaDriveBus::run_mem_dma` now walks `page | off` instead of `src.wrapping_add(2)`
+(the low byte is read at `src | 1`: `Vdp::arm_dma` shifts a word address left, so the start is always even
+and the odd half can never itself cross), and `Vdp::dma_complete` **stops writing register 23 at all**,
+delegating 21/22 to A3's `Vdp::advance_dma_source_low16`. Sharing rather than duplicating was the call: the
+68k mode's "no carry into 23" and a fill's "wraps at 16 bits" are one counter seen from two sides. That let
+`dma_complete`'s `end_source_words` parameter go — it now derives the start from `record.source >> 1` (so
+caller and record cannot disagree) and the step count from `record.len` with **no** "0 means 65,536" (RD2)
+special case, because one whole turn of a 16-bit counter lands exactly where zero steps land.
+
+The three derivable cases the brief asked for. A transfer that **starts exactly on a boundary** (22:21 =
+`$0000`) does nothing special: it runs forward from the page base. **Crossing more than once is
+unreachable** — the longest transfer is a length of 0, which is 65,536 words, exactly one turn. And 22:21's
+own **wrapped value** for this mode is the one case no test reaches, because test 27's group 5 reloads both
+registers before it looks; it is pinned from the rule by
+`bus::tests::a_mem_dma_source_wraps_inside_its_own_128kb_page`. (The register-23 evidence in test 27 is
+firmer than "group 5 skips 23": the `$9700` command word *is* built, into d2 at `$A964`-`$A96A`, and then
+simply never written to `$C00004` — the next instruction at `$A96C` is `move.l #$40000082,(a0)`.)
+
+Measured: the ROM prints **116/6/122** and fails exactly **31 32 33 34 36 38**; 24, 25, 26, 21 and 42-71 did
+not move, and no surviving failure's wrong-word count moved. Test 27 flipped on A2 alone. **Test 20 is a
+joint flip**: 8/12 words off → 6/12 once A1 landed → 0/12 now, so it took both fixes. The other 16 scorecard
+rows, `determinism_gate`, `export_state_v1`, `golden_frames` and `scanline_goldens` are byte-identical, which
+is the predicted outcome — the old write was `(reg23 & $80) | (end >> 16)`, and for any transfer that stays
+inside its page that puts back the value register 23 already held.
+
+**A gap this parcel found and closed, which A3 shared.** Narrowing `advance_dma_source_low16`'s mask from
+`$FFFF` to `$7FFF` left the whole workspace green: A3's fill/copy cases run from `$00FA` and `$00FE`, far
+below bit 15, and `$FFFE + 4` masked to 15 bits is still `$0002`. "It wrapped" and "it wrapped at sixteen
+bits" were two claims with one guard. `bus::tests::a_mem_dma_advance_keeps_all_16_bits_of_registers_22_21`
+(a transfer from `$50000`, i.e. 22:21 = `$8000`, that never approaches the boundary) now pins the width, for
+fill and copy as much as for the 68k mode, since all three share the helper.
+
 ### A3: fill and copy advance the DMA source registers (tests 28, 29)
 
 **The rule.** Nemesis, *VDP Internals* p.4: "Every DMA operation also performs the exact same set of steps
