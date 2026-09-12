@@ -5352,12 +5352,12 @@ impl Engine {
             None => self.config.max_profiler_frames,
             Some(v) => {
                 if !self.profiler.per_frame_armed() {
-                    return Err(RpcError::new(
-                        code::INVALID_STATE,
+                    return Err(RpcError::invalid_state(
+                        "perFrameNotArmed",
                         "`frames` bounds the per-frame list, and this sample was not armed with \
                          set_profiler{perFrame:true}. Arm it and re-run, or drop the param",
-                    )
-                    .with_data(json!({"reason": "perFrameNotArmed"})));
+                        Value::Null,
+                    ));
                 }
                 hex::parse_count("frames", v, 1, self.config.max_profiler_frames as u64)? as usize
             }
@@ -5370,12 +5370,12 @@ impl Engine {
             None => self.config.max_profiler_callers,
             Some(v) => {
                 if !self.profiler.callers_armed() {
-                    return Err(RpcError::new(
-                        code::INVALID_STATE,
+                    return Err(RpcError::invalid_state(
+                        "callersNotArmed",
                         "`topCallers` bounds each routine row's caller list, and this sample was not \
                          armed with set_profiler{callers:true}. Arm it and re-run, or drop the param",
-                    )
-                    .with_data(json!({"reason": "callersNotArmed"})));
+                        Value::Null,
+                    ));
                 }
                 hex::parse_count("topCallers", v, 1, self.config.max_profiler_callers as u64)?
                     as usize
@@ -10564,6 +10564,76 @@ fn profiler_edge_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Lens M73: every `-32005` this crate builds goes through [`RpcError::invalid_state`].**
+    ///
+    /// The helper merges `data.reason` in so that it "can never be forgotten", and §5 makes `reason`
+    /// REQUIRED on a `-32005`. Two sites in `get_profiler_frames` built theirs by hand with
+    /// `RpcError::new` and wrote `reason` into `data` themselves: right on the day, and one edit away from
+    /// a `-32005` with no discriminant. A type cannot forbid that, since `RpcError::new` takes a bare
+    /// `i64` and other crates call it, so this reads the crate's own source and fails on a hand-built one.
+    /// Whitespace is stripped first, so a call split across lines is still one call. The one construction
+    /// allowed is the helper's own, in `rpc.rs`. What it cannot see: the code smuggled in through a local
+    /// alias or a variable, which would be an evasion rather than a slip.
+    #[test]
+    fn every_invalid_state_error_is_built_by_the_helper() {
+        // Assembled at run time, so this test's own source does not contain what it looks for.
+        let mut spellings = Vec::new();
+        for head in ["new(", "code:"] {
+            for code in [
+                "code::INVALID_STATE",
+                "rpc::code::INVALID_STATE",
+                "crate::rpc::code::INVALID_STATE",
+                "-32005",
+            ] {
+                spellings.push(format!("{head}{code}"));
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let (mut hits, mut files, mut stack) = (Vec::new(), 0usize, vec![root.clone()]);
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("the crate's source tree is readable") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                files += 1;
+                let text = std::fs::read_to_string(&path).expect("a source file is readable");
+                let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+                let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+                // No spelling can occur inside another: each is its head followed directly by the
+                // code's first character, so `new(crate::rpc::…` contains neither `new(code::…` nor
+                // `new(rpc::…`. Every match is therefore a distinct construction.
+                for s in &spellings {
+                    for _ in flat.matches(s.as_str()) {
+                        hits.push(format!("{rel}: {s}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            files > 10,
+            "UNMEASURABLE: read only {files} source file(s) under {}",
+            root.display()
+        );
+        let helper = format!("rpc.rs: new({}", "code::INVALID_STATE");
+        let pos = hits.iter().position(|h| *h == helper).unwrap_or_else(|| {
+            panic!(
+                "UNMEASURABLE: the helper's own construction was not found, so the scan is not \
+                 seeing the source it scans; hits: {hits:?}"
+            )
+        });
+        hits.remove(pos);
+        assert!(
+            hits.is_empty(),
+            "a -32005 built by hand instead of by RpcError::invalid_state (§5 makes data.reason \
+             REQUIRED, and only the helper guarantees it): {hits:?}"
+        );
+    }
 
     // -----------------------------------------------------------------------------------------------
     // ⚑ The symbol-freshness short-circuit (§11.34 / CR-K), measured rather than asserted.
