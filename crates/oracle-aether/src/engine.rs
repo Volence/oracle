@@ -39,7 +39,7 @@ use oracle_core::bus::{
     BusEvent, BusEventSink, CartBanks, Fanout, Observe, SramMap, StepRetire, StopWhen,
     CART_BANK_SIZE, CART_SPACE_END, Z80_RAM_SIZE,
 };
-use oracle_core::io::Pad;
+use oracle_core::io::{Pad, PadPort};
 // The 68000's own bus trait, brought in for `emulator/write_memory`: a poke travels the same `write8`
 // the CPU drives, so the hardware mirror masking and the region decode are the machine's, not ours.
 use oracle_core::m68000::bus68k::Bus68k;
@@ -2174,8 +2174,12 @@ impl Engine {
 
     /// The buttons a client is holding on `port` (`emulator/hold`). A host merges these with the human's
     /// live input before it writes the pad — see [`set_live_pads`](Engine::set_live_pads).
-    pub fn held(&self, port: usize) -> Pad {
-        self.held[port & 1]
+    ///
+    /// A [`PadPort`] since lens M76. It took a `usize` and answered `self.held[port & 1]`, so port 2 (EXP,
+    /// which has no pad) read Port 1's held set: a third behaviour beside `Io::pad`'s panic and
+    /// `Io::read_data`'s released pad. The wire (`parse_port`) is where a number becomes a port.
+    pub fn held(&self, port: PadPort) -> Pad {
+        self.held[port.index()]
     }
 
     /// Publish what the human is physically holding, so the engine's own pad writes (`hold`, `press`,
@@ -3134,9 +3138,10 @@ impl Engine {
     /// gamepad merge per button, so neither can suppress the other). In the standalone server `live` is
     /// all-released and this is byte-identical to writing `held` directly.
     fn apply_pads(&mut self) {
-        for port in 0..2 {
+        for port in PadPort::ALL {
+            let i = port.index();
             self.sys
-                .set_pad(port, merge_pads(self.live[port], self.held[port]));
+                .set_pad(port, merge_pads(self.live[i], self.held[i]));
         }
     }
 
@@ -3404,12 +3409,12 @@ impl Engine {
         run: &Advanced,
         pc: u32,
         frames: u64,
-        input: Option<(&[String], usize)>,
+        input: Option<(&[String], PadPort)>,
     ) {
         let mut extra = Map::new();
         if let Some((buttons, port)) = input {
             extra.insert("buttons".into(), json!(buttons));
-            extra.insert("port".into(), json!(port));
+            extra.insert("port".into(), json!(port.index()));
         }
         if let Some(id) = run.broke_at {
             extra.insert("deadlineReached".into(), json!(false));
@@ -5771,8 +5776,14 @@ impl Engine {
         // `mode` is derived from the answering frame's own width rather than from a VDP register read: the
         // frame readers normalize a mid-frame width switch to the width the frame ended on, and a `mode`
         // taken from the register could name a width the rows do not have. The fragment ties
-        // mode <-> width <-> rgb length with an if/then, so a disagreement here is a rejected reply.
-        let mode = if width == 320 { "h40" } else { "h32" };
+        // mode <-> width <-> rgb length with an if/then, so a disagreement here is a rejected reply. The H40
+        // width is the core's own rule (`render::active_width`), not a `320` of this handler's (wave-3
+        // residue 4 found this inverse copy of it).
+        let mode = if width == usize::from(oracle_core::render::active_width(true)) {
+            "h40"
+        } else {
+            "h32"
+        };
         let rows: Vec<Value> = (start..start + count)
             .map(|line| {
                 let off = line as usize * width;
@@ -6987,7 +6998,7 @@ impl Engine {
             None => frame_cap.min(2),
             Some(v) => hex::parse_count("frames", v, 1, frame_cap)?,
         };
-        let mut pad = merge_pads(self.live[port], self.held[port]);
+        let mut pad = merge_pads(self.live[port.index()], self.held[port.index()]);
         for b in &buttons {
             set_button(&mut pad, b, true);
         }
@@ -7019,7 +7030,7 @@ impl Engine {
         Ok(json!({
             "buttons": buttons,
             "frames": frames,
-            "port": port,
+            "port": port.index(),
             "frameToken": self.frame(),
         }))
     }
@@ -7055,7 +7066,7 @@ impl Engine {
         let mut run: Option<Advanced> = None;
         let mut completed = 0u64;
         for frame in 0..total {
-            for port in 0..2 {
+            for port in PadPort::ALL {
                 // A port no row covers is fully released — `Pad::default()`, not whatever was held.
                 self.sys.set_pad(port, pad_at(&rows, port, frame));
             }
@@ -7102,14 +7113,14 @@ impl Engine {
             Some(_) => return Err(RpcError::invalid_params("`down` must be a boolean (D9)")),
         };
         for b in &buttons {
-            set_button(&mut self.held[port], b, down);
+            set_button(&mut self.held[port.index()], b, down);
         }
         self.apply_pads();
         Ok(json!({
             "buttons": buttons,
             "down": down,
-            "port": port,
-            "held": held_names(&self.held[port]),
+            "port": port.index(),
+            "held": held_names(&self.held[port.index()]),
         }))
     }
 
@@ -10255,7 +10266,7 @@ const BUTTONS_6: &[&str] = &["x", "y", "z", "mode"];
 struct InputRow {
     start: u64,
     end: u64,
-    port: usize,
+    port: PadPort,
     pad: Pad,
 }
 
@@ -10266,7 +10277,7 @@ struct InputRow {
 /// **order-independent**, so the pad depends on the row *set* and rows need not be sorted or disjoint.
 /// Later-row-wins would make row order load-bearing — a place two conformant servers would silently
 /// disagree — and would cost the two-row "hold right, tap A at 120" script that motivates the shape.
-fn pad_at(rows: &[InputRow], port: usize, frame: u64) -> Pad {
+fn pad_at(rows: &[InputRow], port: PadPort, frame: u64) -> Pad {
     let mut pad = Pad::default();
     for r in rows
         .iter()
@@ -10404,24 +10415,43 @@ fn parse_buttons(params: &Value) -> Result<Vec<String>, RpcError> {
     Ok(out)
 }
 
-fn parse_port(params: &Value) -> Result<usize, RpcError> {
-    match params.get("port") {
-        None => Ok(0),
-        Some(v) => Ok(hex::parse_count("port", v, 0, 1)? as usize),
-    }
+/// The wire's `port` param as a [`PadPort`], absent meaning Port 1: **the one place a number becomes a
+/// port** (lens M76). Below here every layer (`Engine`, `Host`, `System`, `Io`) takes the type, so EXP
+/// (which has no pad) and a fourth port cannot be named past this line; this refusal is the only answer a
+/// caller gets for either. The bound is the pad ports' own count, so the `0..=1` the refusal prints is
+/// derived rather than restated, and its words are the ones this function always sent
+/// (`tests/play_input.rs` pins them for ports 2 and 3 on every method that takes `port`).
+fn parse_port(params: &Value) -> Result<PadPort, RpcError> {
+    let Some(v) = params.get("port") else {
+        return Ok(PadPort::P1);
+    };
+    let n = hex::parse_count("port", v, 0, (PadPort::ALL.len() - 1) as u64)?;
+    Ok(usize::try_from(n)
+        .ok()
+        .and_then(PadPort::from_index)
+        .expect("parse_count bounded `port` to the pad ports' own indices"))
 }
 
 fn set_button(pad: &mut Pad, name: &str, down: bool) {
+    *button(pad, name) = down;
+}
+
+/// The field of `pad` a wire button name means. **The one name-to-field map**: [`set_button`] writes
+/// through it and [`held_names`] reads through it, over [`BUTTONS_3`], so the names a reply's `held`
+/// array spells and the names a request is parsed against are one table (wave-3 residue 1).
+fn button<'p>(pad: &'p mut Pad, name: &str) -> &'p mut bool {
     match name {
-        "up" => pad.up = down,
-        "down" => pad.down = down,
-        "left" => pad.left = down,
-        "right" => pad.right = down,
-        "a" => pad.a = down,
-        "b" => pad.b = down,
-        "c" => pad.c = down,
-        "start" => pad.start = down,
-        _ => unreachable!("parse_buttons rejects everything else"),
+        "up" => &mut pad.up,
+        "down" => &mut pad.down,
+        "left" => &mut pad.left,
+        "right" => &mut pad.right,
+        "a" => &mut pad.a,
+        "b" => &mut pad.b,
+        "c" => &mut pad.c,
+        "start" => &mut pad.start,
+        _ => unreachable!(
+            "parse_buttons accepts only BUTTONS_3's names, and held_names reads only those"
+        ),
     }
 }
 
@@ -10478,23 +10508,20 @@ fn store_from_capture(slot: &mut Option<CapturedFrame>, cap: &ScanlineCapture) -
 /// are: the player's status strip has to tell a human which buttons a client is holding, and a panel that
 /// spelled the eight names for itself would be a second vocabulary that agrees with the handler's until
 /// somebody adds a ninth button to one of them.
+///
+/// **It reads [`BUTTONS_3`], in its order, and keeps no list of its own** (wave-3 residue 1). Until
+/// then it wrote the eight names out again, a second copy of the owner: reordering or renaming
+/// `BUTTONS_3` moved what `parse_buttons` accepts and the `supported` list a refusal carries, while
+/// this went on naming the old table. Measured before this fold: with `a` and `b` swapped in
+/// `BUTTONS_3`, the aether lib, every wire suite that sends `buttons` and the player's held rows all
+/// stayed green. `held_names_is_the_contracts_button_table_read_off_a_pad` is the row that now reddens.
 pub fn held_names(pad: &Pad) -> Vec<&'static str> {
-    let mut v = Vec::new();
-    for (name, on) in [
-        ("up", pad.up),
-        ("down", pad.down),
-        ("left", pad.left),
-        ("right", pad.right),
-        ("a", pad.a),
-        ("b", pad.b),
-        ("c", pad.c),
-        ("start", pad.start),
-    ] {
-        if on {
-            v.push(name);
-        }
-    }
-    v
+    let mut read = *pad;
+    BUTTONS_3
+        .iter()
+        .copied()
+        .filter(|name| *button(&mut read, name))
+        .collect()
 }
 
 /// The `caveat` `emulator/get_profiler_frames` carries when the accountant lost the thread of the
@@ -10583,6 +10610,80 @@ fn profiler_edge_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **`held_names` is the contract's button table, read off a pad** (wave-3 residue 1).
+    ///
+    /// Three anchors, none of them `held_names` itself:
+    /// - the vendored contract. Every `buttons` enum in `bus-protocol.schema.json` (hold's and press's
+    ///   params, play_input's rows, the stopped event) must be exactly `BUTTONS_3` then `BUTTONS_6`, in
+    ///   order, so the table the server speaks is the contract's and not a copy that agrees today. Loud if
+    ///   the schema has no such enum, since then this compares nothing;
+    /// - `Pad`'s own fields. `all` is an exhaustive struct literal, which the compiler refuses the day
+    ///   `Pad` gains or loses a button, and it must name the whole table in order;
+    /// - `set_button`'s map. Each name alone must come back as itself, and the all-down pad rebuilt from
+    ///   its names must be the pad, so a table that dropped a button cannot pass.
+    #[test]
+    fn held_names_is_the_contracts_button_table_read_off_a_pad() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../tests/contract/bus-protocol.schema.json"))
+                .expect("the vendored schema parses");
+        fn enums<'v>(v: &'v Value, out: &mut Vec<&'v Value>) {
+            match v {
+                Value::Object(m) => {
+                    if let Some(e) = m
+                        .get("buttons")
+                        .and_then(|b| b.get("items"))
+                        .and_then(|i| i.get("enum"))
+                    {
+                        out.push(e);
+                    }
+                    m.values().for_each(|c| enums(c, out));
+                }
+                Value::Array(a) => a.iter().for_each(|c| enums(c, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        enums(&schema, &mut found);
+        assert!(
+            !found.is_empty(),
+            "UNMEASURABLE: the vendored schema declares no `buttons` enum, so nothing anchors the table"
+        );
+        let table: Vec<&str> = BUTTONS_3.iter().chain(BUTTONS_6).copied().collect();
+        for e in &found {
+            assert_eq!(
+                **e,
+                json!(table),
+                "the contract's `buttons` vocabulary and the server's BUTTONS_3 + BUTTONS_6 differ"
+            );
+        }
+
+        let all = Pad {
+            up: true,
+            down: true,
+            left: true,
+            right: true,
+            a: true,
+            b: true,
+            c: true,
+            start: true,
+        };
+        assert_eq!(
+            held_names(&all),
+            BUTTONS_3,
+            "a pad with every button down must name the whole table, in its order"
+        );
+        for name in BUTTONS_3 {
+            let mut one = Pad::default();
+            set_button(&mut one, name, true);
+            assert_eq!(held_names(&one), [*name], "{name} alone");
+        }
+        let mut rebuilt = Pad::default();
+        for name in held_names(&all) {
+            set_button(&mut rebuilt, name, true);
+        }
+        assert_eq!(rebuilt, all, "the table names every button a Pad has");
+    }
 
     /// **Lens M73: every `-32005` this crate builds goes through [`RpcError::invalid_state`].**
     ///

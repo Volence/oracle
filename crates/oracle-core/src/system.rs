@@ -759,15 +759,17 @@ impl System {
         self.sram_dirty = false;
     }
 
-    /// Inject 3-button pad state (Player 1 = port 0, Player 2 = port 1). Deterministic injected state — the
-    /// core has no host-input path; tests, the future frontend, and the title-screen run all drive input
-    /// through here. The next Data-register read the guest performs reflects it (recon IO4).
-    pub fn set_pad(&mut self, port: usize, pad: crate::io::Pad) {
+    /// Inject 3-button pad state on a pad port ([`PadPort::P1`](crate::io::PadPort::P1) = Player 1,
+    /// [`PadPort::P2`](crate::io::PadPort::P2) = Player 2; EXP has no pad and the type cannot name it).
+    /// Deterministic injected state — the core has no host-input path; tests, the future frontend, and the
+    /// title-screen run all drive input through here. The next Data-register read the guest performs
+    /// reflects it (recon IO4).
+    pub fn set_pad(&mut self, port: crate::io::PadPort, pad: crate::io::Pad) {
         self.io.set_pad(port, pad);
     }
 
-    /// The injected pad state for a port (0 = P1, 1 = P2).
-    pub fn pad(&self, port: usize) -> crate::io::Pad {
+    /// The injected pad state for a pad port.
+    pub fn pad(&self, port: crate::io::PadPort) -> crate::io::Pad {
         self.io.pad(port)
     }
 
@@ -1638,7 +1640,7 @@ mod tests {
         use crate::io::Pad;
         let mut sys = System::new(1);
         sys.set_pad(
-            0,
+            crate::io::PadPort::P1,
             Pad {
                 start: true,
                 up: true,
@@ -1646,7 +1648,7 @@ mod tests {
             },
         );
         sys.set_pad(
-            1,
+            crate::io::PadPort::P2,
             Pad {
                 a: true,
                 ..Default::default()
@@ -1654,7 +1656,7 @@ mod tests {
         );
         let restored = System::restore(&sys.snapshot()).unwrap();
         assert_eq!(
-            restored.pad(0),
+            restored.pad(crate::io::PadPort::P1),
             Pad {
                 start: true,
                 up: true,
@@ -1662,7 +1664,7 @@ mod tests {
             }
         );
         assert_eq!(
-            restored.pad(1),
+            restored.pad(crate::io::PadPort::P2),
             Pad {
                 a: true,
                 ..Default::default()

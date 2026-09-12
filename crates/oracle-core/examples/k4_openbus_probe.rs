@@ -254,7 +254,7 @@ fn probe(rom: Vec<u8>, frames: u64, press_start_at: Option<u64>) -> (K4Probe, u6
     for f in 0..frames {
         if press_start_at.is_some_and(|at| f == at) {
             sys.set_pad(
-                0,
+                oracle_core::io::PadPort::P1,
                 Pad {
                     start: true,
                     ..Default::default()
@@ -262,7 +262,7 @@ fn probe(rom: Vec<u8>, frames: u64, press_start_at: Option<u64>) -> (K4Probe, u6
             );
         }
         if press_start_at.is_some_and(|at| f == at + 5) {
-            sys.set_pad(0, Pad::default());
+            sys.set_pad(oracle_core::io::PadPort::P1, Pad::default());
         }
         let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sys.run_frames_with_sink(1, &mut sink)

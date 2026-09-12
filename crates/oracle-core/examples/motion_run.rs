@@ -43,7 +43,7 @@
 //! 120 121 A
 //! ```
 
-use oracle_core::io::Pad;
+use oracle_core::io::{Pad, PadPort};
 use oracle_core::system::System;
 use std::io::Write;
 
@@ -51,7 +51,7 @@ use std::io::Write;
 struct HoldRow {
     start: u64,
     end: u64,
-    port: usize,
+    port: PadPort,
     pad: Pad,
 }
 
@@ -101,12 +101,14 @@ fn parse_script(text: &str) -> Result<Vec<HoldRow>, String> {
             .ok_or_else(|| format!("line {lineno}: expected BUTTONS, got `{line}`"))?;
         let pad = parse_buttons(buttons)
             .map_err(|c| format!("line {lineno}: unknown button `{c}` in `{buttons}`"))?;
+        // The script's number becomes a port through the core's one conversion (lens M76), not a
+        // `p < 2` of its own; the refusal below keeps its words.
         let port = match fields.next() {
-            None => 0,
+            None => PadPort::P1,
             Some(p) => p
                 .parse::<usize>()
                 .ok()
-                .filter(|&p| p < 2)
+                .and_then(PadPort::from_index)
                 .ok_or_else(|| format!("line {lineno}: PORT must be 0 or 1, got `{p}`"))?,
         };
         if end <= start {
@@ -125,7 +127,7 @@ fn parse_script(text: &str) -> Result<Vec<HoldRow>, String> {
 }
 
 /// Union of every row covering `frame` on `port` — the pad state to inject before running that frame.
-fn pad_for(rows: &[HoldRow], port: usize, frame: u64) -> Pad {
+fn pad_for(rows: &[HoldRow], port: PadPort, frame: u64) -> Pad {
     let mut pad = Pad::default();
     for row in rows
         .iter()
@@ -263,8 +265,9 @@ fn main() {
     // `i + 1` (frames elapsed) is a requested dump frame. set_pad is the sole input path — deterministic and
     // host-decoupled — so this run is reproducible bit-for-bit.
     for i in 0..total {
-        sys.set_pad(0, pad_for(&rows, 0, i));
-        sys.set_pad(1, pad_for(&rows, 1, i));
+        for port in PadPort::ALL {
+            sys.set_pad(port, pad_for(&rows, port, i));
+        }
         sys.run_frames(1);
         let elapsed = i + 1;
         if dumps.binary_search(&elapsed).is_ok() {
@@ -310,9 +313,15 @@ mod tests {
         let rows =
             parse_script("# lead comment\n\n60 360 R   # hold right\n120 121 A 1\n").unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!((rows[0].start, rows[0].end, rows[0].port), (60, 360, 0));
+        assert_eq!(
+            (rows[0].start, rows[0].end, rows[0].port),
+            (60, 360, PadPort::P1)
+        );
         assert!(rows[0].pad.right);
-        assert_eq!((rows[1].start, rows[1].end, rows[1].port), (120, 121, 1));
+        assert_eq!(
+            (rows[1].start, rows[1].end, rows[1].port),
+            (120, 121, PadPort::P2)
+        );
         assert!(rows[1].pad.a);
     }
 
@@ -328,14 +337,14 @@ mod tests {
     fn pad_for_unions_overlapping_rows_per_port() {
         let rows = parse_script("0 100 R\n50 60 A\n0 100 S 1\n").unwrap();
         // frame 55, port 0: Right (whole span) + A (the tap) union.
-        let p0 = pad_for(&rows, 0, 55);
+        let p0 = pad_for(&rows, PadPort::P1, 55);
         assert!(p0.right && p0.a && !p0.start);
         // frame 55, port 1: only the Start row on that port.
-        let p1 = pad_for(&rows, 1, 55);
+        let p1 = pad_for(&rows, PadPort::P2, 55);
         assert!(p1.start && !p1.right);
         // outside every span: released.
-        assert_eq!(pad_for(&rows, 0, 200), Pad::default());
+        assert_eq!(pad_for(&rows, PadPort::P1, 200), Pad::default());
         // end is exclusive.
-        assert!(!pad_for(&rows, 0, 100).right);
+        assert!(!pad_for(&rows, PadPort::P1, 100).right);
     }
 }

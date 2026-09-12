@@ -2262,8 +2262,9 @@ fn main() {
         // keyboard happened to be doing. Both calls are no-ops while nothing is being served.
         bus.set_live_pads(player);
         let pads = bus.merge_held(player);
-        sys.set_pad(0, pads[0]);
-        sys.set_pad(1, pads[1]);
+        for port in oracle_core::io::PadPort::ALL {
+            sys.set_pad(port, pads[port.index()]);
+        }
 
         // How many emulated frames this iteration runs. Normally one; while paused, none unless `.` asked for
         // a single step. With audio live it is whatever the ring's occupancy asks for — 0, 1 or 2 — which is

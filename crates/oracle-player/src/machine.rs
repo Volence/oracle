@@ -95,13 +95,14 @@ impl Machine {
     /// compose with them instead of erasing them. Neither side can suppress the other; that is the OR.
     ///
     /// **It is here rather than in `Loop::iterate`, where `oracle-frontend` does it, for two reasons.**
-    /// These two lines are the *only* place this crate writes a pad into the `System`, so no path can grow
+    /// The loop below is the *only* place this crate writes a pad into the `System`, so no path can grow
     /// that bypasses the merge — and `iterate` needs a window, so a merge placed there is a merge no test
     /// in this crate could ever execute. A seam that can only be exercised behind a GUI is a seam that is
     /// asserted rather than shown.
     ///
-    /// Port 1 is no longer hardcoded to [`Pad::default`] for the same reason: `Host::held(1)` is real, and
-    /// a merge that dropped it would show a held set in the status strip that never reached the machine.
+    /// Port 2 is no longer hardcoded to [`Pad::default`] for the same reason: `Host::held(PadPort::P2)` is
+    /// real, and a merge that dropped it would show a held set in the status strip that never reached the
+    /// machine. The loop runs over `PadPort::ALL` (lens M76), so it cannot write a pad onto EXP.
     ///
     /// # ⚑ The bus rides every emulated frame (parcel 3)
     ///
@@ -124,8 +125,9 @@ impl Machine {
     pub fn step(&mut self, human: [Pad; 2], bus: &mut crate::bus::Bus) -> StepCost {
         bus.set_live_pads(human);
         let pads = bus.merge_held(human);
-        self.sys.set_pad(0, pads[0]);
-        self.sys.set_pad(1, pads[1]);
+        for port in oracle_core::io::PadPort::ALL {
+            self.sys.set_pad(port, pads[port.index()]);
+        }
 
         let n = match self.device.as_ref() {
             Some(d) => crate::pacing::frames_to_run_for(d.prod(), d.frame_samples(), self.skips),

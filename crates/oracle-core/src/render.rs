@@ -605,12 +605,12 @@ impl ScanlineScaffold {
     /// Hold `report` back for emission at the next line's event, alongside the CRAM image live right now
     /// (this row's line start) and an empty journal.
     ///
-    /// Panics if `cram` is not a whole [`CRAM_SIZE`] image — the only caller passes `Vdp::cram()`, which is
-    /// that by construction.
-    pub(crate) fn stash(&mut self, report: LineReport, cram: &[u8]) {
+    /// `cram` is a whole [`CRAM_SIZE`] image by type. Until lens M70 it was a slice and this panicked on a
+    /// wrong length; `Vdp::cram()` now returns the array, so the conversion and its panic are gone.
+    pub(crate) fn stash(&mut self, report: LineReport, cram: &[u8; CRAM_SIZE]) {
         self.pending = Some(RetainedRow {
             report,
-            cram: cram.try_into().expect("CRAM is a whole CRAM_SIZE image"),
+            cram: *cram,
             journal: Vec::new(),
         });
     }
@@ -866,15 +866,14 @@ fn cram_rgb_state_from(cram: &[u8], index: u8, state: PixelState) -> (u8, u8, u8
 /// the resolve stage is index-domain and never reads CRAM, so decoding the retained pixels against the CRAM
 /// that was live at the row's own line start reproduces `report_rgb`'s answer byte for byte
 /// (`docs/2026-08-19-subline-recon.md` §0, §A(ii)).
-pub(crate) fn report_rgb_with_cram(cram: &[u8], report: &LineReport) -> Vec<(u8, u8, u8)> {
-    // A short-but-nonempty CRAM would decode low indices silently and only panic on a high one, so the
-    // whole-image contract is asserted rather than left to the index bounds. `RetainedRow.cram` is a
-    // `[u8; CRAM_SIZE]` and so cannot violate it; this covers the `&[u8]` seam itself.
-    debug_assert_eq!(
-        cram.len(),
-        CRAM_SIZE,
-        "the decode reads a whole CRAM image, not a fragment"
-    );
+///
+/// `cram` is a whole [`CRAM_SIZE`] image by type. A short-but-nonempty CRAM would decode low indices
+/// silently and only panic on a high one; a `debug_assert_eq!` on the length guarded that while this took a
+/// slice, and went with the slice (lens M70), because every caller now hands over an array.
+pub(crate) fn report_rgb_with_cram(
+    cram: &[u8; CRAM_SIZE],
+    report: &LineReport,
+) -> Vec<(u8, u8, u8)> {
     report
         .pixels
         .iter()
@@ -1147,6 +1146,26 @@ pub fn cram_divergence_caveat(written_mclk: Option<u64>, y: u16, now_mclk: u64) 
     })
 }
 
+/// **The active display width in pixels for a mode: 320 in H40, 256 in H32** (recon RR3). The one
+/// spelling of that rule (wave-3 residue 4). [`Vdp::active_display`] reads it for the live mode, and every
+/// path that resolves a line reads it for the mode that line is drawn in: `resolve_line_masked`,
+/// [`Vdp::pixel_attribution_masked`], `line_report_from`, [`Vdp::advance_scanline`], and `vdp::subline_x`
+/// for a retained row's own mode. It takes the mode bit rather than `&self` because two callers hold a
+/// mode that is not the live register's: a resolved row's `h40`, and `oracle-aether`'s scanlines reply,
+/// which names a frame's mode from the width it was drawn at.
+///
+/// Safe for every render to share, masked or not: it reads no chip state and commits none. That is what
+/// the masked-render invariant (`docs/2026-08-26-layer-mask.md`: no render taking a `LayerMask` takes
+/// `&mut self`) needs of a helper that the `&self` masked renders and the `&mut self` `advance_scanline`
+/// both call. No signature changed to fold the copies into it.
+pub const fn active_width(h40: bool) -> u16 {
+    if h40 {
+        320
+    } else {
+        256
+    }
+}
+
 impl Vdp {
     /// H40 (40-cell / 320 px) mode: reg $0C bits RS0 (bit 0) + RS1 (bit 7) both set (recon RR3, matching the
     /// timing FSM's `h40`). Recomputed from `regs()` so the renderer never reaches into private VDP state.
@@ -1159,14 +1178,15 @@ impl Vdp {
     ///
     /// Exported so a caller that has to *bound* a coordinate — a bus method refusing a dot outside the
     /// display — gets the same answer the renderer resolves against, instead of re-deriving `render_h40`
-    /// on its own. Width is the length [`Vdp::render_line`] returns; the two cannot drift.
+    /// on its own. Width is the length [`Vdp::render_line`] returns, and both are [`active_width`]'s, so
+    /// the two cannot drift.
     ///
     /// Height is 224 unconditionally, which is a statement about this core rather than about the chip:
     /// the whole machine is NTSC V28 (`vdp::LINES_PER_FRAME`, the line-224 VBlank anchor, the scheduler's
     /// active-line chain), so reporting 240 off reg $01's M2 bit would name a geometry nothing here
     /// renders. When V30 lands, it lands in [`ACTIVE_LINES`], which this reads.
     pub fn active_display(&self) -> (u16, u16) {
-        (if self.render_h40() { 320 } else { 256 }, ACTIVE_LINES)
+        (active_width(self.render_h40()), ACTIVE_LINES)
     }
 
     /// How many SAT slots the hardware actually parses in the current mode: **80** in H40, **64** in H32
@@ -1723,7 +1743,7 @@ impl Vdp {
     /// would make the machine behave differently under the instrument watching it.
     fn resolve_line_masked(&self, line: u16, mask: LayerMask) -> ResolvedLine {
         let h40 = self.render_h40();
-        let width = if h40 { 320 } else { 256 };
+        let width = usize::from(active_width(h40));
         let backdrop = self.backdrop_index();
         // Sprite evaluation is display-independent (a debugger asks "which sprites on line N" regardless of
         // display enable), so the walk always runs for the report; only compositing is gated on display.
@@ -2170,7 +2190,7 @@ impl Vdp {
     /// pixel-attribution surface exists to rule out.
     pub fn pixel_attribution_masked(&self, x: u16, y: u16, mask: LayerMask) -> PixelAttribution {
         let h40 = self.render_h40();
-        let width = if h40 { 320 } else { 256 };
+        let width = usize::from(active_width(h40));
         let xi = x as usize;
         let backdrop = self.backdrop_index();
         let resolved = self.resolve_line_masked(y, mask);
@@ -2231,7 +2251,7 @@ impl Vdp {
     /// `render_scanline` so both derive from the same `resolve_line` — attribution is the render, design §1).
     fn line_report_from(&self, line: u16, resolved: ResolvedLine) -> LineReport {
         let h40 = self.render_h40();
-        let width = if h40 { 320 } else { 256 };
+        let width = usize::from(active_width(h40));
         LineReport {
             line,
             h40,
@@ -2363,7 +2383,7 @@ impl Vdp {
     /// stated there — a display filter must not be able to move a status bit the ROM polls.
     pub fn advance_scanline(&mut self, line: u16) {
         let h40 = self.render_h40();
-        let width = if h40 { 320 } else { 256 };
+        let width = usize::from(active_width(h40));
         let sprite = self.sprite_line(line, h40, width);
         self.commit_scanline_sprites(sprite.dot_overflow, sprite.overflow, sprite.collision);
     }
@@ -2855,7 +2875,7 @@ mod tests {
         put_cell(&mut v, 0xE000, 0x0002);
         let report = v.render_line_report(0);
         let live = v.report_rgb(&report);
-        let snapshot = v.cram().to_vec();
+        let snapshot = *v.cram();
         assert_eq!(
             report_rgb_with_cram(&snapshot, &report),
             live,

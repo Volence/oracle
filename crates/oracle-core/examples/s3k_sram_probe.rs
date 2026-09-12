@@ -20,7 +20,7 @@ fn run_and_watch(
     frames: u64,
     pad: Pad,
 ) -> (Option<u64>, Option<u64>) {
-    sys.set_pad(0, pad);
+    sys.set_pad(oracle_core::io::PadPort::P1, pad);
     let mut first_enabled = None;
     let mut first_write = None;
     for i in 0..frames {

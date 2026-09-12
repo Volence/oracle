@@ -15,7 +15,7 @@ fn backdrop_pixel_with(pad: Pad) -> (u8, u8, u8) {
     let mut sys = System::new(0x5EED);
     sys.load_rom(build_pad_poll());
     sys.reset(); // reset re-powers-on (clears Io) — inject AFTER it, as a frontend would.
-    sys.set_pad(0, pad);
+    sys.set_pad(oracle_core::io::PadPort::P1, pad);
     sys.run_frames(3);
     // Every pixel is the backdrop (VRAM is zeroed → all planes/sprites transparent); sample the centre.
     let line = sys.vdp().render_line(112);

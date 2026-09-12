@@ -6016,8 +6016,14 @@ mod bus_parity {
             machine.step([oracle_core::io::Pad::default(); 2], &mut idle);
         }
         let mut sys = booted();
-        sys.set_pad(0, oracle_core::io::Pad::default());
-        sys.set_pad(1, oracle_core::io::Pad::default());
+        sys.set_pad(
+            oracle_core::io::PadPort::P1,
+            oracle_core::io::Pad::default(),
+        );
+        sys.set_pad(
+            oracle_core::io::PadPort::P2,
+            oracle_core::io::Pad::default(),
+        );
         sys.run_frames(FRAMES);
 
         // Without this the two sides could be two different machines agreeing by luck, and every
@@ -6133,8 +6139,14 @@ mod bus_parity {
             machine.step([oracle_core::io::Pad::default(); 2], &mut idle);
         }
         let mut sys = booted();
-        sys.set_pad(0, oracle_core::io::Pad::default());
-        sys.set_pad(1, oracle_core::io::Pad::default());
+        sys.set_pad(
+            oracle_core::io::PadPort::P1,
+            oracle_core::io::Pad::default(),
+        );
+        sys.set_pad(
+            oracle_core::io::PadPort::P2,
+            oracle_core::io::Pad::default(),
+        );
         sys.run_frames(5);
         assert_eq!(
             machine.system().state_hash().combined,

@@ -41,12 +41,66 @@ impl StateHash {
     /// Compute the fingerprints from the four hashed regions, in Oracle's exact byte order:
     /// VRAM → CRAM → VSRAM → REGS. Each region has its own accumulator; `combined` is one continuous
     /// stream over the concatenation. `regs` is the 24 VDP registers as bytes (low 8 bits each).
-    pub fn compute(vram: &[u8], cram: &[u8], vsram: &[u8], regs: &[u8]) -> Self {
-        debug_assert_eq!(vram.len(), VRAM_SIZE, "vram region size");
-        debug_assert_eq!(cram.len(), CRAM_SIZE, "cram region size");
-        debug_assert_eq!(vsram.len(), VSRAM_SIZE, "vsram region size");
-        debug_assert_eq!(regs.len(), REG_COUNT, "vdp register count");
-
+    ///
+    /// # The sizes and the order are the signature's (lens M70)
+    ///
+    /// Each region is an array of its own hardware size, and the four sizes all differ ([`VRAM_SIZE`],
+    /// [`CRAM_SIZE`], [`VSRAM_SIZE`], [`REG_COUNT`]), so a region of the wrong length **and** two regions
+    /// passed in each other's place are compile errors, not a wrong fingerprint in a release build. The
+    /// call in Oracle's order compiles, and is the all-zero golden the tests below pin:
+    ///
+    /// ```
+    /// use oracle_core::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
+    /// let (vram, cram, vsram, regs) =
+    ///     ([0u8; VRAM_SIZE], [0u8; CRAM_SIZE], [0u8; VSRAM_SIZE], [0u8; REG_COUNT]);
+    /// let h = StateHash::compute(&vram, &cram, &vsram, &regs);
+    /// assert_eq!(h.combined, 0xF160_1314_F59D_6B45);
+    /// ```
+    ///
+    /// The same call with VRAM and CRAM swapped does not:
+    ///
+    /// ```compile_fail,E0308
+    /// use oracle_core::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
+    /// let (vram, cram, vsram, regs) =
+    ///     ([0u8; VRAM_SIZE], [0u8; CRAM_SIZE], [0u8; VSRAM_SIZE], [0u8; REG_COUNT]);
+    /// let h = StateHash::compute(&cram, &vram, &vsram, &regs);
+    /// assert_eq!(h.combined, 0xF160_1314_F59D_6B45);
+    /// ```
+    ///
+    /// Nor with a region one byte short:
+    ///
+    /// ```compile_fail,E0308
+    /// use oracle_core::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
+    /// let (vram, cram, vsram, regs) =
+    ///     ([0u8; VRAM_SIZE], [0u8; CRAM_SIZE - 1], [0u8; VSRAM_SIZE], [0u8; REG_COUNT]);
+    /// let h = StateHash::compute(&vram, &cram, &vsram, &regs);
+    /// assert_eq!(h.combined, 0xF160_1314_F59D_6B45);
+    /// ```
+    ///
+    /// Nor with a slice, whose length only a run can know (what this signature took until M70):
+    ///
+    /// ```compile_fail,E0308
+    /// use oracle_core::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
+    /// let (vram, cram, vsram, regs) =
+    ///     (vec![0u8; VRAM_SIZE], [0u8; CRAM_SIZE], [0u8; VSRAM_SIZE], [0u8; REG_COUNT]);
+    /// let h = StateHash::compute(&vram[..], &cram, &vsram, &regs);
+    /// assert_eq!(h.combined, 0xF160_1314_F59D_6B45);
+    /// ```
+    ///
+    /// **What makes those three blocks mean anything is the control above them.** Stable rustdoc does not
+    /// check a `compile_fail` block's error code (measured: a block marked `E0599` whose real error is
+    /// E0308 passed), so each block passes on *any* compile error, a typo included. The control is the same
+    /// program with the arguments right, and it compiles and asserts the golden. Run as plain doctests, the
+    /// three fail with E0308 at exactly the argument the sentence above each names.
+    ///
+    /// The four `debug_assert_eq!` length checks this body opened with until M70 are gone rather than
+    /// kept: a region's length is its type now, so none of them could fire.
+    pub fn compute(
+        vram: &[u8; VRAM_SIZE],
+        cram: &[u8; CRAM_SIZE],
+        vsram: &[u8; VSRAM_SIZE],
+        regs: &[u8; REG_COUNT],
+    ) -> Self {
         let mut hv = FNV_BASIS;
         let mut hc = FNV_BASIS;
         let mut hs = FNV_BASIS;
@@ -87,10 +141,10 @@ pub fn hex(value: u64) -> String {
 mod tests {
     use super::*;
 
-    fn patt(n: usize, salt: usize) -> Vec<u8> {
-        (0..n)
-            .map(|i| ((i * 131 + 7 + salt) & 0xFF) as u8)
-            .collect()
+    /// The same bytes this helper built as a `Vec` before lens M70, now as the array the signature takes;
+    /// the region's size is the const parameter, inferred from the argument slot it fills.
+    fn patt<const N: usize>(salt: usize) -> [u8; N] {
+        std::array::from_fn(|i| ((i * 131 + 7 + salt) & 0xFF) as u8)
     }
 
     #[test]
@@ -122,12 +176,7 @@ mod tests {
     #[test]
     fn distinct_per_region_pattern_pins_order_and_concatenation() {
         // Different bytes per region so a region-order or concatenation bug in `combined` is caught.
-        let h = StateHash::compute(
-            &patt(VRAM_SIZE, 1),
-            &patt(CRAM_SIZE, 2),
-            &patt(VSRAM_SIZE, 3),
-            &patt(REG_COUNT, 4),
-        );
+        let h = StateHash::compute(&patt(1), &patt(2), &patt(3), &patt(4));
         assert_eq!(h.vram, 0x7534_957F_70F1_2325, "vram");
         assert_eq!(h.cram, 0x9202_07A8_F1CE_8E25, "cram");
         assert_eq!(h.vsram, 0x277E_5A98_6DA7_0B35, "vsram");

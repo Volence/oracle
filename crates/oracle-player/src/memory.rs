@@ -410,31 +410,46 @@ pub fn probe_all_gates(bus: &mut Bus, sys: &mut System) -> [Gate; 5] {
 ///
 /// Errors are the panel's own only where the *panel's* input is malformed; everything the server can
 /// judge is left to the server.
+///
+/// # The payload's rule is the server's parser's (lens M77)
+///
+/// What a person may type is decided by [`oracle_aether::hex::parse_bytes`], the function the write
+/// handlers themselves use: exactly one leading `0x`, `0X` or `$`, then whole hex bytes. The panel adds
+/// two conveniences a text box owes a person, and neither is a spelling of its own: spaces between bytes
+/// are dropped, and a payload typed with no prefix is given the `0x` D9 requires (the box's hint teaches
+/// `4E71`). So the panel tries the text as typed, then with that `0x` in front, and takes the parser's
+/// verdict. This used to be `trim_start_matches("0x")`, which strips *repeatedly*: `0x0x41` was sent as
+/// `0x41`, a byte the parser refuses as typed, while `0X41` and `$41`, which it accepts, were refused
+/// here.
 pub fn write_params(space: Space, addr: u32, payload: &str) -> Result<Value, String> {
-    let clean = payload.trim().trim_start_matches("0x").replace(' ', "");
-    if clean.is_empty() {
-        return Err("nothing to write: type hex bytes".into());
-    }
-    if !clean.len().is_multiple_of(2) || !clean.chars().all(|c| c.is_ascii_hexdigit()) {
+    let typed = payload.trim().replace(' ', "");
+    let parse = |s: &str| oracle_aether::hex::parse_bytes("bytes", &Value::from(s)).ok();
+    let Some(bytes) = parse(&typed).or_else(|| parse(&format!("0x{typed}"))) else {
         return Err(format!(
-            "{payload:?} is not a whole number of hex bytes (two digits each)"
+            "{payload:?} is not a whole number of hex bytes: type two hex digits per byte, with or \
+             without one 0x or $ in front"
         ));
+    };
+    if bytes.is_empty() {
+        return Err("nothing to write: type hex bytes".into());
     }
     match space {
         // The `0x` is not decoration: D9 category 1 makes it required, and `hex::parse_bytes` refuses a
         // bare `"AA"` with *"`bytes` must start with \"0x\" or \"$\""*. A panel that sent the digits
         // alone would show a human a `-32602` about their own perfectly good input.
+        // The payload goes out through the server's own formatter, so what is sent is spelled the way
+        // every reply spells bytes (`0x` and upper-case digits), not re-spelled here.
         Space::Bus | Space::Vram | Space::Z80 => Ok(json!({
             "addr": oracle_aether::hex::addr(addr),
-            "bytes": format!("0x{}", clean.to_uppercase()),
+            "bytes": oracle_aether::hex::bytes(&bytes),
         })),
         Space::Cram => {
-            if clean.len() != 4 {
+            let [hi, lo] = bytes[..] else {
                 return Err(format!(
                     "a CRAM entry is one 9-bit word: give exactly two bytes (four hex digits), not {}",
-                    clean.len() / 2
+                    bytes.len()
                 ));
-            }
+            };
             if !addr.is_multiple_of(2) {
                 return Err(format!(
                     "{} is an odd byte address and a CRAM entry is two bytes wide, refused rather \
@@ -442,7 +457,7 @@ pub fn write_params(space: Space, addr: u32, payload: &str) -> Result<Value, Str
                     oracle_aether::hex::addr(addr)
                 ));
             }
-            let raw = u16::from_str_radix(&clean, 16).map_err(|e| e.to_string())?;
+            let raw = u16::from_be_bytes([hi, lo]);
             // **All three are JSON numbers, not hex strings.** D9 splits the vocabulary: an *address or
             // payload* is a `"0x…"` string (category 1), a *count, index or bounded value* is a number
             // (category 2), and `line`/`index`/`raw` are all category 2 — `parse_cram_line` refuses a
@@ -1097,6 +1112,107 @@ mod bus_parity {
             Some("cartridge ROM bank 9"),
             "the panel's `region` line prints the bank"
         );
+    }
+
+    /// **Lens M77: the payload box accepts exactly what the server's own parser accepts, plus the `0x` it
+    /// adds to a bare payload, and refuses the rest.**
+    ///
+    /// The rule is `oracle_aether::hex::parse_bytes`'s, read from its source (`hex.rs`, `parse_bytes` and
+    /// its private `strip_prefix`): exactly ONE leading `0x`, `0X` or `$`, stripped once, then an even
+    /// number of ASCII hex digits of either case. The panel adds two conveniences a person at a text box
+    /// expects, and nothing else: spaces between bytes are dropped, and a payload typed with no prefix is
+    /// given the `0x` D9 requires (the box's hint teaches `4E71`).
+    ///
+    /// Every prefixed spelling is judged twice, by the panel and by the SERVER, which is sent it exactly
+    /// as typed. The verdicts must agree, and an accepted payload must carry the typed bytes. The
+    /// spellings the packet named are then pinned by name, because a panel and a server that agreed only
+    /// by both refusing everything would pass the comparison.
+    #[test]
+    fn the_payload_box_accepts_exactly_what_the_servers_parser_accepts() {
+        let mut sys = booted();
+        let mut b = bus(&mut sys, true);
+        let at = 0x00FF_0000u32;
+        let method = Space::Bus
+            .write_method()
+            .expect("the bus space is writable");
+        let blessed = |s: &str| oracle_aether::hex::parse_bytes("bytes", &json!(s));
+        let prefixed = [
+            // one prefix, then whole bytes: the parser accepts
+            "0x41", "0X41", "$41", "0x4e71", "0X4E71", "$4E71",
+            // two prefixes: the parser strips only one and refuses the rest
+            "0x0x41", "0X0X41", "$$41", "0x$41", "$0x41",
+            // an odd count, or a non-hex digit
+            "0x4", "$ABC", "0xZZ", "0x4G",
+        ];
+        let mut accepted = 0;
+        for typed in prefixed {
+            let panel = write_params(Space::Bus, at, typed);
+            let server = b.call(
+                &mut sys,
+                method,
+                &json!({"addr": oracle_aether::hex::addr(at), "bytes": typed}),
+            );
+            match (&panel, &server) {
+                (Ok(params), Answer::Ok(_)) => {
+                    accepted += 1;
+                    assert_eq!(
+                        blessed(params["bytes"].as_str().expect("a hex string")).ok(),
+                        blessed(typed).ok(),
+                        "{typed:?}: the panel would send different bytes from the ones typed: {params}"
+                    );
+                    let sent = b.call(&mut sys, method, params);
+                    assert!(
+                        matches!(sent, Answer::Ok(_)),
+                        "{typed:?}: the server refused the panel's own params {params}"
+                    );
+                }
+                (Err(_), Answer::Err(_)) => {}
+                (Ok(params), Answer::Err(e)) => panic!(
+                    "{typed:?}: the panel accepted it (sending {params}) but the server refuses it as typed: {} {}",
+                    e.code, e.message
+                ),
+                (Err(why), Answer::Ok(_)) => {
+                    panic!("{typed:?}: the server accepts it as typed but the panel refused it: {why}")
+                }
+            }
+        }
+        assert_eq!(
+            accepted, 6,
+            "the six single-prefix spellings are the ones both sides accept"
+        );
+
+        // The packet's three, by name, and the panel's own completion of a bare payload.
+        for (typed, want) in [
+            ("0X41", "0x41"),
+            ("$41", "0x41"),
+            ("41", "0x41"),
+            ("4e 71", "0x4E71"),
+            ("0x 4E 71", "0x4E71"),
+        ] {
+            let params = write_params(Space::Bus, at, typed)
+                .unwrap_or_else(|e| panic!("{typed:?} must be accepted, got: {e}"));
+            assert_eq!(params["bytes"], json!(want), "{typed:?}");
+        }
+        // A person reads the refusal, so the whole sentence is pinned: it says what to type.
+        assert_eq!(
+            write_params(Space::Bus, at, "0x0x41"),
+            Err(
+                "\"0x0x41\" is not a whole number of hex bytes: type two hex digits per byte, with \
+                 or without one 0x or $ in front"
+                    .to_string()
+            ),
+            "`0x0x41` is two prefixes, which the server refuses, so the panel must refuse it too"
+        );
+        for typed in ["", "0x", "$", "0X"] {
+            assert_eq!(
+                write_params(Space::Bus, at, typed),
+                Err("nothing to write: type hex bytes".to_string()),
+                "{typed:?} is a prefix with no bytes after it"
+            );
+        }
+        // CRAM takes the same spellings: its word is two of the same bytes.
+        let cram = write_params(Space::Cram, 0x20, "$0EEE").expect("`$0EEE` is one CRAM word");
+        assert_eq!(cram["raw"], json!(0x0EEE), "{cram}");
     }
 
     /// ⚑ **The write gate against reality — the asymmetry, measured rather than asserted.**

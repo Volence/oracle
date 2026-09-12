@@ -77,9 +77,10 @@ pub const MCLK_PER_ACTIVE: u64 = 2560;
 /// are located to the start of the driving instruction (see the [`now_mclk`](Vdp#structfield.now_mclk) field;
 /// follow-up F-SUBLINE-ACCESSMCLK).
 pub(crate) fn subline_x(d_mclk: u64, h40: bool) -> usize {
-    // The renderer's own active widths — held to `Vdp::active_display` by the test below, so the two cannot
-    // drift into disagreeing about how wide the row they are describing is.
-    let width: u64 = if h40 { 320 } else { 256 };
+    // The renderer's own width rule, `render::active_width`, which `Vdp::active_display` reads too (wave-3
+    // residue 4; this was a copy of it). The literals 320/256 the test below checks are the independent
+    // anchor: the dot clock's 8 and 10 mclk per pixel over one active span.
+    let width = u64::from(crate::render::active_width(h40));
     let mclk_per_pixel = MCLK_PER_ACTIVE / width; // 8 (H40) / 10 (H32)
     (d_mclk / mclk_per_pixel).min(width) as usize
 }
@@ -101,7 +102,8 @@ pub const SAT_SLOTS: usize = 80;
 const SAT_CACHE_LEN: usize = SAT_SLOTS * 4;
 
 /// The VDP's owned state. The four hashed regions are always allocated at their fixed hardware sizes
-/// ([`crate::state_hash`]); the `state_hash`/`export_state` currencies read straight through them, so their
+/// ([`crate::state_hash`]) and handed out as arrays of those sizes ([`Vdp::vram`] says where the stored
+/// `Vec` becomes one); the `state_hash`/`export_state` currencies read straight through them, so their
 /// byte layout is frozen.
 /// One write-FIFO slot (recon R3): the data word plus a copy of the command code/address registers as they
 /// were when the write was enqueued. The physical slot **retains** its data after the entry drains (the pending
@@ -438,19 +440,37 @@ impl Vdp {
         }
     }
 
-    /// Read-only access to VRAM (for the `state_hash`/`export_state` currencies and introspection).
-    pub fn vram(&self) -> &[u8] {
-        &self.vram
+    /// Read-only access to VRAM (for the `state_hash`/`export_state` currencies and introspection), as the
+    /// fixed-size region [`StateHash::compute`](crate::state_hash::StateHash::compute) takes.
+    ///
+    /// **The one place the stored `Vec` becomes an array** (lens M70), and likewise for [`cram`](Self::cram)
+    /// and [`vsram`](Self::vsram). The fields stay `Vec`s because the bincode snapshot (save states,
+    /// checkpoints) encodes a `Vec` with a length prefix and an array without one, so changing the field
+    /// type would change every snapshot's bytes. [`power_on`](Self::power_on) allocates each region at its
+    /// size and nothing resizes one, so the conversion cannot fail on a machine this crate built; it can
+    /// only fail on a snapshot decoded with a wrong-length region, and there it panics naming the region
+    /// instead of hashing the wrong bytes.
+    pub fn vram(&self) -> &[u8; VRAM_SIZE] {
+        self.vram
+            .as_slice()
+            .try_into()
+            .expect("VRAM is allocated at VRAM_SIZE and never resized")
     }
 
-    /// Read-only access to CRAM (Oracle byte layout).
-    pub fn cram(&self) -> &[u8] {
-        &self.cram
+    /// Read-only access to CRAM (Oracle byte layout), as a fixed-size region. See [`vram`](Self::vram).
+    pub fn cram(&self) -> &[u8; CRAM_SIZE] {
+        self.cram
+            .as_slice()
+            .try_into()
+            .expect("CRAM is allocated at CRAM_SIZE and never resized")
     }
 
-    /// Read-only access to VSRAM.
-    pub fn vsram(&self) -> &[u8] {
-        &self.vsram
+    /// Read-only access to VSRAM, as a fixed-size region. See [`vram`](Self::vram).
+    pub fn vsram(&self) -> &[u8; VSRAM_SIZE] {
+        self.vsram
+            .as_slice()
+            .try_into()
+            .expect("VSRAM is allocated at VSRAM_SIZE and never resized")
     }
 
     /// Read-only access to the 24 VDP registers.
@@ -1868,14 +1888,19 @@ pub struct DmaRecord {
 mod tests {
     use super::*;
 
+    /// Power-on allocates every hashed region at its hardware size. **The check is the accessor calls**,
+    /// not an assertion on their lengths: since lens M70 each accessor returns an array, so a `.len()`
+    /// comparison is true by type and could not fail, while the accessor's own `Vec`→array conversion
+    /// panics, naming the region, on a wrong allocation. A lengths-only version of this row is what was
+    /// here before M70, and it would now be a test that cannot go red.
     #[test]
     fn power_on_allocates_fixed_region_sizes() {
         let mut rng = SplitMix64::new(1);
         let vdp = Vdp::power_on(&mut rng);
-        assert_eq!(vdp.vram().len(), VRAM_SIZE);
-        assert_eq!(vdp.cram().len(), CRAM_SIZE);
-        assert_eq!(vdp.vsram().len(), VSRAM_SIZE);
-        assert_eq!(vdp.regs().len(), REG_COUNT);
+        let _: &[u8; VRAM_SIZE] = vdp.vram();
+        let _: &[u8; CRAM_SIZE] = vdp.cram();
+        let _: &[u8; VSRAM_SIZE] = vdp.vsram();
+        let _: &[u8; REG_COUNT] = vdp.regs();
     }
 
     #[test]
