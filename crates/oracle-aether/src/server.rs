@@ -104,8 +104,9 @@ impl Machine {
 pub struct Server {
     listener: UnixListener,
     config: ServerConfig,
-    /// The `(device, inode)` of the socket file this bind created. Carried into the handle so its unlink
-    /// can tell its own file from a restarted server's at the same path (lens M13).
+    /// The `(device, inode)` of the socket file this bind created, taken while the listener is open. It
+    /// becomes the accept thread's [`Listening`] claim, which removes that file, and only that file, when
+    /// accepting stops (lens M13).
     bound: Option<(u64, u64)>,
 }
 
@@ -113,7 +114,6 @@ pub struct Server {
 /// [`shutdown`](ServerHandle::shutdown)).
 pub struct ServerHandle {
     socket_path: PathBuf,
-    bound: Option<(u64, u64)>,
     stop: Arc<AtomicBool>,
     accept_thread: Option<std::thread::JoinHandle<()>>,
     engine_thread: Option<std::thread::JoinHandle<()>>,
@@ -141,6 +141,10 @@ impl ServerHandle {
     }
 
     /// Stop accepting, close every live connection, stop the emulator thread, unlink the socket.
+    ///
+    /// The unlink is the accept thread's, not this method's. That thread owns the [`Listening`] socket and
+    /// removes this server's file as it stops, while the listener is still open (lens M13). Joining it
+    /// below is what makes "the socket file is gone when this returns" true.
     pub fn shutdown(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.engine_tx.send(EngineMsg::Shutdown);
@@ -155,13 +159,10 @@ impl ServerHandle {
         if let Some(t) = self.engine_thread.take() {
             let _ = t.join();
         }
-        // **Only the file this server bound** (lens M13). Once a dead emulator thread releases the socket,
-        // a restart can bind the same path while this handle still lives; an unconditional unlink here
-        // would then delete the restarted server's socket out from under it. Until the release existed
-        // that could not happen, because the old server kept answering and the restart refused.
-        if self.bound.is_some() && socket_identity(&self.socket_path) == self.bound {
-            let _ = std::fs::remove_file(&self.socket_path);
-        }
+        // No unlink here (lens M13). The accept thread joined above removed this server's file while its
+        // listener was still open. A `(device, inode)` check made now, with the listener closed, can match
+        // a restarted server's socket that the filesystem gave the same inode number, and delete it: CI
+        // red on `adcf239` and `85c1599`, see [`Listening`].
     }
 }
 
@@ -173,14 +174,78 @@ fn socket_identity(path: &Path) -> Option<(u64, u64)> {
         .map(|m| (m.dev(), m.ino()))
 }
 
+/// **A listening socket, together with the claim to remove the file it is bound at** (lens M13). The
+/// accept thread owns it, so the claim ends exactly when accepting ends: on [`ServerHandle::shutdown`] and
+/// on the emulator thread's death ([`HangUpIfPanicking`]) alike.
+///
+/// # Why the unlink lives here and not in the handle
+///
+/// The claim is released in this value's `Drop`, and Rust runs `Drop::drop` *before* it drops the fields,
+/// so the file is removed while `listener` is still open. That ordering is the point. On Linux a bound
+/// socket keeps a reference to its file for as long as it is open, so until the listener closes no other
+/// file can be given that inode's number, and the `(device, inode)` comparison below is exact. Once the
+/// listener closes the number is free, and ext4 hands it to the next file created: a restart's socket at
+/// the same path. A comparison made after that point can take the restarted server's socket for this
+/// one. That is what CI caught on `adcf239` and `85c1599`: [`ServerHandle::shutdown`] used to make this
+/// comparison after the accept thread, and with it the listener, had gone.
+///
+/// Measured on a workstation's ext4: a socket file unlinked after its listener closed gave its inode
+/// number to the next socket bound at the same path 20 times in 20, and one unlinked while its listener
+/// was still open, 0 in 20. tmpfs mounted `inode64` never reuses a number, which is why the same test
+/// passed locally with the old rule.
+///
+/// What the ordering buys, on both ways a server stops:
+///
+/// * **Before the unlink** the listener is open, so a `connect` still succeeds (it queues in the
+///   backlog) and [`Server::bind`]'s probe refuses a restart with `AddrInUse`. No restart can have bound
+///   the path yet.
+/// * **After it** there is no file, so a restart binds without probing, and nothing of this server is
+///   left that could touch the new file. A dead server's handle, dropped later, has nothing to unlink.
+///
+/// **One window remains**, between the comparison and the `remove_file`. Only something that removes a
+/// live server's file and binds its own socket inside that interval could lose it, and [`Server::bind`]
+/// cannot be that something, because its probe is answered by the live listener. Closing it would need
+/// an unlink that names an inode rather than a path, and POSIX has none.
+pub(crate) struct Listening {
+    listener: UnixListener,
+    /// The path and the `(device, inode)` of the file this value removes when it drops. `None` when
+    /// someone else owns the unlink ([`crate::host::Host::shutdown`] does its own), or when the bind could
+    /// not stat the file it had just created. Then nothing is unlinked here.
+    claim: Option<(PathBuf, (u64, u64))>,
+}
+
+/// A listener with no claim: whoever handed it over keeps the unlink.
+impl From<UnixListener> for Listening {
+    fn from(listener: UnixListener) -> Self {
+        Self {
+            listener,
+            claim: None,
+        }
+    }
+}
+
+impl Drop for Listening {
+    fn drop(&mut self) {
+        // `self.listener` is still open here, so its inode number cannot have been given to another file.
+        if let Some((path, bound)) = &self.claim {
+            if socket_identity(path) == Some(*bound) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
 /// **The emulator thread's last act when it dies by panicking** (lens M13): stop accepting and hang up on
 /// every connection.
 ///
 /// That thread is the only thing that can answer a request, so a server whose engine is gone must stop
 /// looking alive. Before this, the accept loop and the socket outlived it: every new connection was
 /// accepted and then closed without a reply, and a restart's incumbent probe was answered by the corpse.
-/// With the accept thread stopped, the listener is dropped and a `connect` is refused, which is what a
-/// client and [`Server::bind`]'s probe both read as "nothing is serving here".
+/// Once the accept thread stops, it removes this server's socket file and only then closes the listener
+/// ([`Listening`]), so a `connect` finds nothing at the path, which is what a client and
+/// [`Server::bind`]'s probe both read as "nothing is serving here". The path is released at the last
+/// moment it is provably this server's, so no restart can bind it before the release, and the dead
+/// server's handle holds no claim afterwards that a restarted server's socket could be mistaken for.
 ///
 /// A drop guard rather than `catch_unwind` so the panic still ends the thread as a panic: the default hook
 /// prints it, and [`ServerHandle::wait`] receives the payload from `join`.
@@ -311,8 +376,12 @@ impl AcceptCtx {
 /// The accept loop, shared by the standalone server and the hosted one. It knows nothing about who owns the
 /// `System`: every connection reaches the engine through `engine_tx` and nothing else, which is exactly why
 /// the same loop serves both arrangements.
+///
+/// It does own the listener, and with it, for the standalone server, the claim to remove the socket file
+/// when accepting stops ([`Listening`]). `Host::serve` hands over a bare `UnixListener`, which carries no
+/// claim, and does its own unlink.
 pub(crate) fn spawn_accept(
-    listener: UnixListener,
+    listener: impl Into<Listening>,
     ctx: &AcceptCtx,
     engine_tx: Sender<EngineMsg>,
 ) -> std::thread::JoinHandle<()> {
@@ -323,12 +392,13 @@ pub(crate) fn spawn_accept(
     let queue_cap = NonZeroUsize::new(ctx.event_queue_cap).expect(
         "Server::bind refuses event_queue_cap = 0, and every caller of spawn_accept has bound",
     );
+    let listening: Listening = listener.into();
     let ctx = ctx.clone_handles();
     std::thread::Builder::new()
         .name("aether-accept".into())
         .spawn(move || {
             while !ctx.stop.load(Ordering::SeqCst) {
-                match listener.accept() {
+                match listening.listener.accept() {
                     Ok((stream, _)) => {
                         let _ = stream.set_nonblocking(false);
                         // Park a clone in a slot so a shutdown can unblock this connection's reader. The
@@ -386,6 +456,9 @@ pub(crate) fn spawn_accept(
                     Err(_) => std::thread::sleep(ACCEPT_POLL),
                 }
             }
+            // Accepting has stopped. Dropping `listening` removes this server's socket file, when it holds
+            // the claim, and only then closes the listener. That order is lens M13's fix: see `Listening`.
+            drop(listening);
         })
         .expect("spawn accept thread")
 }
@@ -478,6 +551,8 @@ impl Server {
     /// ([`crate::host::Host::serve`]). Crate-private: binding is the only part of [`Server`] that is
     /// reusable, and exposing the listener publicly would let a caller serve on a socket whose 0600 check
     /// [`Server::bind`] performed and then bypass everything that check protects.
+    ///
+    /// The caller takes over the unlink as well: a bare listener carries no [`Listening`] claim.
     pub(crate) fn into_parts(self) -> (UnixListener, ServerConfig) {
         (self.listener, self.config)
     }
@@ -519,11 +594,15 @@ impl Server {
             })
             .expect("spawn engine thread");
 
-        let accept_thread = spawn_accept(listener, &ctx, engine_tx.clone());
+        // The claim on the socket file travels with the listener it belongs to (lens M13, see `Listening`).
+        let listening = Listening {
+            listener,
+            claim: bound.map(|id| (config.socket_path.clone(), id)),
+        };
+        let accept_thread = spawn_accept(listening, &ctx, engine_tx.clone());
 
         ServerHandle {
             socket_path: config.socket_path,
-            bound,
             stop: Arc::clone(&ctx.stop),
             accept_thread: Some(accept_thread),
             engine_thread: Some(engine_thread),
@@ -1374,6 +1453,105 @@ mod lifecycle_tests {
         assert!(
             !path.exists(),
             "and the live server still removes its own socket when it goes"
+        );
+    }
+
+    /// **Lens M13, the half CI found: a dead server gives up its path at the moment it stops answering.**
+    ///
+    /// The row above checks step 5 (the dead handle's drop spares the restarted server's socket) by
+    /// letting it happen. That check only bites where the restart's new socket gets the same inode number
+    /// as the dead server's, because the old rule was "unlink at drop if the file's `(device, inode)` is the
+    /// one this bind recorded". ext4 hands a freed inode number to the next file created in the directory,
+    /// so on the CI runner the restart's socket *was* given the dead server's number, the check matched, and
+    /// the drop deleted the live socket (CI red on `adcf239` and `85c1599`). tmpfs mounted `inode64` never
+    /// reuses a number, so the same row passed on a workstation for the wrong reason.
+    ///
+    /// This row does not need the filesystem to reuse anything. It measures the claim directly: once the
+    /// dead server has stopped answering, **there is no file at its path**. The first `connect` that fails
+    /// finds nothing (`NotFound`), not a corpse that refuses (`ConnectionRefused`). A corpse is a file a
+    /// restart has to replace while the dead server still claims the path, and that leftover claim is what
+    /// an inode number reused by the filesystem turns against the live server.
+    #[test]
+    fn a_dead_server_gives_up_its_path_when_it_stops_answering() {
+        let path = socket("dead-disowns");
+        let _ = std::fs::remove_file(&path);
+        let server = Server::bind(config(&path)).expect("bind");
+        let ctx = AcceptCtx::new(server.config.event_queue_cap);
+        let dead = server.serve(ctx, |rx: mpsc::Receiver<EngineMsg>, _: &SharedStamp| {
+            let _ = rx.recv();
+            panic!("injected emulator-thread fault (lens M13 disown fixture)");
+        });
+        assert_eq!(
+            first_reply(&path).expect("the server accepts the first connection"),
+            None,
+            "the request the emulator thread died on cannot have been answered"
+        );
+
+        // The first connect that fails, and how it fails.
+        let t = Instant::now();
+        let refusal = loop {
+            match UnixStream::connect(&path) {
+                Ok(_) if t.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(_) => panic!(
+                    "lens M13: the emulator thread is dead and {} still accepts connections after 5 s",
+                    path.display()
+                ),
+                Err(e) => break e,
+            }
+        };
+        assert!(
+            refusal.kind() == std::io::ErrorKind::NotFound && !path.exists(),
+            "the dead server stopped answering but left its socket file at {} (connect: {refusal}, {:?}). \
+             A server that no longer answers must no longer claim the path: a restart replaces the corpse, \
+             and a claim still held on it is matched by (device, inode), which a filesystem that reuses \
+             inode numbers (ext4, the CI runner's /tmp) gives to the restart's new socket. The claim then \
+             deletes a live server's file (CI red on adcf239 and 85c1599).",
+            path.display(),
+            refusal.kind()
+        );
+
+        // No file at the path, so the restart's bind skips the incumbent probe and binds.
+        let live = Server::bind(config(&path))
+            .expect("a restart binds a path with no file at it")
+            .spawn(machine());
+        drop(dead);
+        assert!(
+            UnixStream::connect(&path).is_ok(),
+            "dropping the dead server's handle touched the socket the restarted server is serving on"
+        );
+        drop(live);
+        assert!(
+            !path.exists(),
+            "and the live server removes its own socket when it goes"
+        );
+    }
+
+    /// **A server removes only the file it bound, on every filesystem.** Someone removes a live server's
+    /// socket file and binds their own socket at the path. The server's listener is still open at that
+    /// point and holds its inode, so the newcomer's file cannot be given the same inode number on any
+    /// filesystem. The server's shutdown must then leave the newcomer's socket alone.
+    ///
+    /// This is the guard on the identity comparison itself. Replacing it with an unconditional unlink would
+    /// pass every other row in this module.
+    #[test]
+    fn a_server_never_unlinks_a_socket_it_did_not_bind() {
+        let path = socket("foreign");
+        let _ = std::fs::remove_file(&path);
+        let h = Server::bind(config(&path)).expect("bind").spawn(machine());
+        std::fs::remove_file(&path).expect("take the live server's socket file away");
+        let foreign =
+            UnixListener::bind(&path).expect("bind a socket the server did not bind at its path");
+        drop(h);
+        let survived = path.exists() && UnixStream::connect(&path).is_ok();
+        drop(foreign);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            survived,
+            "the server's shutdown unlinked {}, a socket bound there by someone else after the server's \
+             own file was removed",
+            path.display()
         );
     }
 
