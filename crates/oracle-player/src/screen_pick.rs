@@ -884,6 +884,15 @@ impl Panel {
     /// bus does not have — the same derivation `pick::resolve`'s own mask clause and the frontend's layer
     /// badge read. `None` for the glass is the honest *"there is no picture yet"* case rather than a fourth
     /// spelling of "unmasked".
+    ///
+    /// **What reaches it, and so what its last sentence may promise** (wave-3 residue 2). A click gets
+    /// here only while `glass != Some(bus.layers())`, and three things put the two apart: the mask moved
+    /// during the `build_ui` that drew this picture (the palette's own `emulator/set_layer_enabled`, or
+    /// this window's checkboxes); every layer was shown again, by anyone, while the glass holds a masked
+    /// picture; or nothing has been uploaded yet. How it clears is `bus::drain`'s rule, stated once in
+    /// [`when_it_clears`], which the standing [`glass_alarm`] ends with too. The sentence used to end "if
+    /// it does not, the masked re-render is failing": `render_masked` cannot fail since lens M42, and that
+    /// blamed the one innocent case that does persist, a paused machine after every layer is shown again.
     fn glass_disagrees(glass: Option<LayerMask>, bus_mask: LayerMask) -> String {
         let drawn = match glass {
             Some(m) => format!("the picture on screen was drawn with {}", describe_mask(m)),
@@ -891,10 +900,9 @@ impl Panel {
         };
         format!(
             "{drawn}, but the machine's mask is now {}, so nothing on this glass is the picture that \
-             answer would be about. Nothing was armed. This clears itself on the next frame; if it does \
-             not, the masked re-render is failing and the picture you are looking at is not the one the \
-             bus is describing.",
-            describe_mask(bus_mask)
+             answer would be about. Nothing was armed. {}",
+            describe_mask(bus_mask),
+            when_it_clears(bus_mask)
         )
     }
 
@@ -1497,10 +1505,31 @@ pub fn glass_alarm(glass: Option<LayerMask>, bus_mask: LayerMask) -> Option<Stri
     }
     Some(format!(
         "THE PICTURE BELOW IS NOT THE MACHINE'S PICTURE. It was drawn with {}, and the machine's mask \
-         is now {}. Nothing here can be read as the machine's view until the next frame.",
+         is now {}. Nothing here can be read as the machine's view until it clears. {}",
         describe_mask(drawn),
-        describe_mask(bus_mask)
+        describe_mask(bus_mask),
+        when_it_clears(bus_mask)
     ))
+}
+
+/// **When a glass/machine mask disagreement clears**, as one sentence for both surfaces that announce
+/// one: [`glass_alarm`] above the picture and the click refusal (`Panel::glass_disagrees`). It is
+/// `bus::drain`'s rule restated, keyed on the machine's mask alone. With a layer hidden the drain
+/// re-renders under that mask on every pass, paused or not. With nothing hidden it re-renders nothing
+/// (its `is_all()` gate), so a masked picture stays up until the machine completes a frame.
+///
+/// The alarm said "until the next frame" and the refusal said "on the next frame; if it does not, the
+/// masked re-render is failing" until wave-3 residue 2. The first is wrong in one direction (a hidden
+/// layer is redrawn on the window's next pass, with no frame emulated) and the second in the other (a
+/// paused machine after every layer is shown again does not clear on any pass, and nothing is failing).
+fn when_it_clears(bus_mask: LayerMask) -> &'static str {
+    if bus_mask.is_all() {
+        "It clears at the machine's next completed frame, which a paused machine completes only when \
+         something runs it."
+    } else {
+        "It clears on the window's next pass, which redraws the picture under that mask whether or not \
+         the machine is running."
+    }
 }
 
 /// A mask in one short phrase, for a sentence that has to name two of them without a reader having to
@@ -2348,6 +2377,90 @@ mod tests {
         assert_ne!(
             unmasked, masked,
             "the mask did not change what the click resolved to"
+        );
+    }
+
+    /// **The refusal's sentence, whole, in each case that reaches it** (wave-3 residue 2).
+    ///
+    /// It used to end *"This clears itself on the next frame; if it does not, the masked re-render is
+    /// failing"*. Since lens M42 `render_masked` cannot fail, and "if it does not" had a real, innocent
+    /// cause: with every layer shown again, `bus::drain` re-renders nothing (the `is_all()` gate, pinned
+    /// by `bus::masked_picture`'s "nothing is hidden, so nothing re-renders"), so a masked picture stays
+    /// on a paused glass until a completed frame replaces it. The clause now follows the drain's rule,
+    /// keyed on the machine's mask alone: something hidden, the next pass redraws under it (paused or not,
+    /// because the drain runs every pass and re-renders whenever a layer is hidden); nothing hidden, the
+    /// next completed frame. The four cases are the glass unmasked, masked or not yet drawn, against a
+    /// machine mask that hides something or nothing. A person reads this, so each is compared WHOLE.
+    #[test]
+    fn the_mask_refusal_says_what_clears_it_and_nothing_that_cannot_happen() {
+        let plane_a = LayerMask::targets()
+            .iter()
+            .find(|t| t.0 == "planeA")
+            .map(|t| t.1)
+            .expect("planeA is a mask target");
+        let mut hidden = LayerMask::ALL;
+        assert!(hidden.set(plane_a, false));
+        let head = "so nothing on this glass is the picture that answer would be about. Nothing was armed.";
+        let next_pass = "It clears on the window's next pass, which redraws the picture under that mask \
+                         whether or not the machine is running.";
+        let next_frame = "It clears at the machine's next completed frame, which a paused machine completes \
+                          only when something runs it.";
+        for (glass, bus, want) in [
+            (
+                Some(LayerMask::ALL),
+                hidden,
+                format!(
+                    "the picture on screen was drawn with every layer shown, but the machine's mask is now \
+                     planeA hidden, {head} {next_pass}"
+                ),
+            ),
+            (
+                Some(hidden),
+                LayerMask::ALL,
+                format!(
+                    "the picture on screen was drawn with planeA hidden, but the machine's mask is now \
+                     every layer shown, {head} {next_frame}"
+                ),
+            ),
+            (
+                None,
+                hidden,
+                format!(
+                    "there is no picture on screen yet, but the machine's mask is now planeA hidden, \
+                     {head} {next_pass}"
+                ),
+            ),
+            (
+                None,
+                LayerMask::ALL,
+                format!(
+                    "there is no picture on screen yet, but the machine's mask is now every layer \
+                     shown, {head} {next_frame}"
+                ),
+            ),
+        ] {
+            assert_eq!(
+                Panel::glass_disagrees(glass, bus),
+                want,
+                "glass {glass:?}, machine {bus:?}"
+            );
+        }
+        // The standing alarm above the picture ends with the same clause, so the two surfaces that
+        // announce one disagreement cannot promise it clears in two different ways. It said "until the
+        // next frame" before, which is wrong for a hidden layer (redrawn on the next pass, no frame run).
+        let alarm = "THE PICTURE BELOW IS NOT THE MACHINE'S PICTURE. It was drawn with";
+        let until = "Nothing here can be read as the machine's view until it clears.";
+        assert_eq!(
+            glass_alarm(Some(LayerMask::ALL), hidden),
+            Some(format!(
+                "{alarm} every layer shown, and the machine's mask is now planeA hidden. {until} {next_pass}"
+            ))
+        );
+        assert_eq!(
+            glass_alarm(Some(hidden), LayerMask::ALL),
+            Some(format!(
+                "{alarm} planeA hidden, and the machine's mask is now every layer shown. {until} {next_frame}"
+            ))
         );
     }
 
