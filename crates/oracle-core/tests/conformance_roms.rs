@@ -233,8 +233,12 @@ const BASELINE: &[(&str, &str)] = &[
         // under the new paging) and adds the last page. Which 46 tests fail, and why, is pinned per test by
         // `vdp_port_access_full_rom_verdicts` (`PORT_ACCESS_FAILING`) and written up in
         // docs/2026-09-12-vdp-port-access-full-rom.md.
+        // A1 (2026-09-12, VSRAM-DECODE): the VSRAM address is 7 bits (wraps at $80), writes to $50-$7F are
+        // discarded, and reads there return the VSRAM read latch, which the committed render feeds. All
+        // 22 pages 76/46 → **112/10**: tests 23, 74-95's eight VSRAM fills and the copy matrix 96-122 flip
+        // to pass; test 20 still fails (6/12 words, its A2 half); pages 1 and 2 are unchanged.
         "vdp_port_access",
-        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=76/46/122",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=112/10/122",
     ),
     (
         // **`6=FAIL` is measured to be an artefact of this scraper, NOT an emulator inaccuracy (2026-08-15).**
@@ -1115,7 +1119,8 @@ fn hex_words(w: &[u16]) -> String {
 ///   behaviour. They differ only in the VSRAM halves, because the test's own 64-word VSRAM load (`$E87C`)
 ///   hits our 80-byte VSRAM wrap and overwrites word 0. That is cause A1 in
 ///   `docs/2026-09-12-vdp-port-access-full-rom.md`, and [`vdp_port_access_full_rom_verdicts`] pins it, so it
-///   is not asserted here.
+///   is not asserted here. **Fixed 2026-09-12 (VSRAM-DECODE):** with the 7-bit decode the load no longer
+///   reaches word 0, and all 27 records now pass whole under the ROM's own verdict (the pin above).
 ///
 /// What would make this green for a reason other than the rule holding: (1) records not found (a paging
 /// or layout change) — guarded by the exact title set and the count of 27; (2) an `expected` that is
@@ -1201,9 +1206,10 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 /// causes, and each of those is a queue row to fix. The sixth is one unmodelled mechanism (M):
 ///
 /// * **A1, VSRAM address decode.** The address is 7 bits (it wraps at `$80`), writes to `$50-$7F` are
-///   discarded, and reads from `$50-$7F` return the VSRAM read latch. We wrap at 80 bytes instead
-///   (`% VSRAM_SIZE`), so a 64-word VSRAM load overwrites words 0-23. Tests 23, 74-95 (the eight VSRAM
-///   fills), 96-122 (the copy matrix's first eight words are VSRAM reads of word 0), and half of 20.
+///   discarded, and reads from `$50-$7F` return the VSRAM read latch. We wrapped at 80 bytes instead
+///   (`% VSRAM_SIZE`), so a 64-word VSRAM load overwrote words 0-23. Tests 23, 74-95 (the eight VSRAM
+///   fills), 96-122 (the copy matrix's first eight words are VSRAM reads of word 0), and two words of 20.
+///   **Fixed 2026-09-12 (VSRAM-DECODE)**: `Vdp::vsram_byte` and the VSRAM read latch; 76/46 → 112/10.
 /// * **A2, the 68k-to-VDP DMA source wraps inside its 128 KB page** (register 23 never takes a carry). Tests
 ///   27 and the other half of 20.
 /// * **A3, fill and copy advance the DMA source registers 21/22 by their length.** Tests 28 and 29.
@@ -1217,52 +1223,18 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 /// count moves, which is how a partial fix or a partial regression shows. Update this list only together
 /// with that document and `docs/2026-07-25-testrom-conformance.md`.
 const PORT_ACCESS_FAILING: &[(usize, &str, usize, usize)] = &[
-    (20, "DMA Transfer Source Wrapping", 8, 12), // A2 (VRAM/CRAM halves) + A1 (VSRAM half)
-    (23, "DMA Transfer to VSRAM Wrapping", 12, 16), // A1
+    // A2 only since A1 landed: 8/12 → 6/12. Two words per half (VRAM, CRAM, VSRAM) are the source bytes past
+    // the 128 KB boundary; the VSRAM half's other two words were A1's and now match.
+    (20, "DMA Transfer Source Wrapping", 6, 12),
     (27, "DMA Transfer Source Reg Update", 4, 16), // A2
-    (28, "DMA Fill Source Reg Update", 8, 12),   // A3
-    (29, "DMA Copy Source Reg Update", 8, 12),   // A3
+    (28, "DMA Fill Source Reg Update", 8, 12),     // A3
+    (29, "DMA Copy Source Reg Update", 8, 12),     // A3
     (31, "DP Writes During DMA Fill VRAM", 6, 48), // M1
     (32, "DP Writes During DMA Fill CRAM", 6, 48), // M1
     (33, "DP Writes During DMA Fill VSRAM", 6, 48), // M1
-    (34, "DMA Fill Control Port Writes", 4, 80), // A5
-    (36, "DMA Busy Flag DMA Fill", 2, 16),       // A4
-    (38, "DMA Busy Flag DMA Toggle Fill", 4, 32), // A4
-    (74, "DMA Fill to VSRAM inc=0", 94, 128),    // A1
-    (77, "DMA Fill to VSRAM inc=1", 85, 128),    // A1
-    (80, "DMA Fill to VSRAM inc=2", 80, 128),    // A1
-    (83, "DMA Fill to VSRAM inc=4", 88, 128),    // A1
-    (86, "DMA Fill to VSRAM CD4=1 inc=0", 94, 128), // A1
-    (89, "DMA Fill to VSRAM CD4=1 inc=1", 85, 128), // A1
-    (92, "DMA Fill to VSRAM CD4=1 inc=2", 80, 128), // A1
-    (95, "DMA Fill to VSRAM CD4=1 inc=4", 88, 128), // A1
-    (96, "DMA Copy 9000 to 8000 inc=0", 4, 16),  // A1 (words 0/2/4/6: VSRAM word 0)
-    (97, "DMA Copy 9000 to 8000 inc=1", 4, 16),  // A1
-    (98, "DMA Copy 9000 to 8000 inc=2", 4, 16),  // A1
-    (99, "DMA Copy 9000 to 8000 inc=4", 4, 16),  // A1
-    (100, "DMA Copy 8000 to 8002 for 0A", 4, 16), // A1
-    (101, "DMA Copy 8000 to 8001 for 0A", 4, 16), // A1
-    (102, "DMA Copy 8001 to 8003 for 0A", 4, 16), // A1
-    (103, "DMA Copy 9000 to 8000 for 09", 4, 16), // A1
-    (104, "DMA Copy 9000 to 8001 for 09", 4, 16), // A1
-    (105, "DMA Copy 9001 to 8000 for 09", 4, 16), // A1
-    (106, "DMA Copy 9001 to 8001 for 09", 4, 16), // A1
-    (107, "DMA Copy 9000 to 8000 for 0A", 4, 16), // A1
-    (108, "DMA Copy 9000 to 8001 for 0A", 4, 16), // A1
-    (109, "DMA Copy 9001 to 8000 for 0A", 4, 16), // A1
-    (110, "DMA Copy 9001 to 8001 for 0A", 4, 16), // A1
-    (111, "DMA Copy 9000 to 8000 CD0-3=0000", 4, 16), // A1
-    (112, "DMA Copy 9000 to 8000 CD0-3=0001", 4, 16), // A1
-    (113, "DMA Copy 9000 to 8000 CD0-3=0011", 4, 16), // A1
-    (114, "DMA Copy 9000 to 8000 CD0-3=0100", 4, 16), // A1
-    (115, "DMA Copy 9000 to 8000 CD0-3=0101", 4, 16), // A1
-    (116, "DMA Copy 9000 to 8000 CD0-3=0111", 4, 16), // A1
-    (117, "DMA Copy 9000 to 8000 CD0-3=1000", 4, 16), // A1
-    (118, "DMA Copy 9000 to 8000 CD0-3=1001", 4, 16), // A1
-    (119, "DMA Copy 9000 to 8000 CD0-3=1011", 4, 16), // A1
-    (120, "DMA Copy 9000 to 8000 CD0-3=1100", 4, 16), // A1
-    (121, "DMA Copy 9000 to 8000 CD0-3=1101", 4, 16), // A1
-    (122, "DMA Copy 9000 to 8000 CD0-3=1111", 4, 16), // A1
+    (34, "DMA Fill Control Port Writes", 4, 80),   // A5
+    (36, "DMA Busy Flag DMA Fill", 2, 16),         // A4
+    (38, "DMA Busy Flag DMA Toggle Fill", 4, 32),  // A4
 ];
 
 /// **The whole of VDPFIFOTesting, pinned test by test from the ROM's own verdicts.** See

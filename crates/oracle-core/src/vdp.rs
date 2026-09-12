@@ -377,6 +377,36 @@ pub struct Vdp {
     /// `export_state` read only VRAM/CRAM/VSRAM/regs — and written unconditionally on the CRAM store
     /// path, so it cannot make an instrumented machine differ from a plain one. Power-on = all `None`.
     cram_written_mclk: [Option<u64>; CRAM_ENTRIES],
+    /// **The VSRAM read latch** (cause A1, `docs/2026-09-12-vdp-port-access-full-rom.md`): the internal
+    /// register VSRAM read data passes through, and what a data-port read of VSRAM `$50-$7F` returns
+    /// ([`Vdp::vsram_byte`] is the decode). Nemesis, SpritesMind *VDP Internals* p.4: "When you read beyond
+    /// the end of VSRAM, you don't get the first VSRAM entry, what actually happens is that the read
+    /// doesn't latch any data at all, and what gets returned is actually the current state of the
+    /// internal register that latches the VSRAM read data."
+    ///
+    /// **Fed by the renderer's committed vertical-scroll fetch, and only by it**
+    /// ([`Vdp::latch_vsram_fetch`], called from `render_scanline` and `advance_scanline`, the two
+    /// committed per-line paths; the masked renders take `&self` and cannot reach it). On a line whose
+    /// display is enabled it takes the last VSRAM word that line's background fetch reads (see
+    /// `render.rs`'s `last_vscroll_fetch`); a display-disabled line fetches nothing and leaves it alone.
+    ///
+    /// **The port's own reads are not modelled as feeding it**, although on hardware they very likely
+    /// pass through the same register. The reason is granularity, and the ROM shows it. On hardware the
+    /// renderer reads VSRAM before each 2-cell column's tilemap fetch, so during active display a render
+    /// fetch lands between two external access slots and overwrites whatever a port read left there. This
+    /// core renders a line at its start, so that interleaving cannot be expressed. A port read feeding the
+    /// latch here would leave its own word for the very next read-ahead, and VDPFIFOTesting's tables
+    /// contradict that: its VSRAM fill tests read words 0-39 and then `$50`, and hardware answers `$0123`
+    /// (word 1, the renderer's fetch in full-screen mode), not `$0560` (word 39, the port's preceding
+    /// read). What would overturn this: a capture showing a `$50` read in vblank, or with the display
+    /// disabled, returning the port's previous word.
+    ///
+    /// Real state, serialized (a restore is exact). In **neither** frozen currency: `state_hash` and
+    /// `export_state` read only VRAM/CRAM/VSRAM/regs, the same rule that already keeps the read
+    /// pre-cache, the FIFO and the SAT cache out of them. Its effect is still observable to both, because
+    /// a latch divergence reaches 68000 RAM through the reads that return it. Power-on = 0 (hardware's
+    /// power-on value is unknown).
+    vsram_read_latch: u16,
 }
 
 /// Palette entries in CRAM: 64 nine-bit colours, two bytes each ([`CRAM_SIZE`] = 128).
@@ -451,6 +481,7 @@ impl Vdp {
             in_dma: false,
             now_mclk: 0,
             cram_written_mclk: [None; CRAM_ENTRIES],
+            vsram_read_latch: 0,
         }
     }
 
@@ -914,6 +945,39 @@ impl Vdp {
         mclk < self.dma_busy_until
     }
 
+    /// **The VSRAM address decode** (cause A1, `docs/2026-09-12-vdp-port-access-full-rom.md`): the byte
+    /// index a data-port VSRAM access at `addr` reaches, or `None` for the unbacked `$50-$7F`.
+    ///
+    /// The VSRAM address is **7 bits**, so it wraps at `$80` (`addr & $7F`, word-aligned), and the 80
+    /// bytes of storage cover only `$00-$4F`. Nemesis, SpritesMind "Scaling hardware?" p.5: "Writes to
+    /// CRAM and VSRAM wrap at an 0x80 byte boundary. Writes to the upper portion of VSRAM in this region
+    /// (0x50-0x80) are discarded." A read there returns [`Vdp::vsram_read_latch`] (see that field).
+    /// VDPFIFOTesting pins it: test 23 (a `$80`-word DMA wraps at `$80`), the eight VSRAM fills (74-95,
+    /// reads of `$50-$7E`), the copy matrix's VSRAM words (96-122) and test 20's VSRAM half (`$8020`
+    /// reaches word 16). It used to be `addr % 80`, which put a write to `$50` on word 0.
+    ///
+    /// Every data-port path that touches VSRAM storage decodes through here: the port write and the DMA
+    /// word (`write_target`), the fill body (`run_fill`, through `write_target`) and the port read-ahead
+    /// (`read_target`). The renderer and the debug surfaces index storage directly and never see a port
+    /// address.
+    fn vsram_byte(addr: u16) -> Option<usize> {
+        let b = usize::from(addr & 0x7E);
+        (b < VSRAM_SIZE).then_some(b)
+    }
+
+    /// The VSRAM read latch (see the [`vsram_read_latch`](Vdp#structfield.vsram_read_latch) field): what
+    /// a data-port read of VSRAM `$50-$7F` returns in its eleven defined bits.
+    pub fn vsram_read_latch(&self) -> u16 {
+        self.vsram_read_latch
+    }
+
+    /// Latch one committed vertical-scroll fetch — the renderer's half of the VSRAM read latch. Called
+    /// only from the committed per-line paths (`render_scanline`, `advance_scanline`), never from a
+    /// masked render, which takes `&self`.
+    pub(crate) fn latch_vsram_fetch(&mut self, word: u16) {
+        self.vsram_read_latch = word;
+    }
+
     /// Read the current-address word from the data-port target (recon R1/R3). VRAM/CRAM/VSRAM are stored
     /// big-endian (high byte first) — the `state_hash` currency's byte layout.
     fn read_target(&self) -> u16 {
@@ -946,10 +1010,11 @@ impl Vdp {
                 let b = (self.addr as usize) & 0x7E;
                 ((self.cram[b] as u16) << 8) | self.cram[b | 1] as u16
             }
-            VdpTarget::Vsram => {
-                let b = ((self.addr & 0xFFFE) as usize) % VSRAM_SIZE;
-                ((self.vsram[b] as u16) << 8) | self.vsram[b | 1] as u16
-            }
+            // A1: 7-bit address; `$50-$7F` latches nothing and returns the VSRAM read latch.
+            VdpTarget::Vsram => match Self::vsram_byte(self.addr) {
+                Some(b) => ((self.vsram[b] as u16) << 8) | self.vsram[b | 1] as u16,
+                None => self.vsram_read_latch,
+            },
         }
     }
 
@@ -1010,8 +1075,12 @@ impl Vdp {
                 self.cram_written_mclk[b >> 1] = Some(self.now_mclk);
             }
             VdpTarget::Vsram => {
+                // A1: 7-bit address; a write to `$50-$7F` is discarded, so there is nothing to store and
+                // nothing for a watch to capture.
                 let masked = w & 0x07FF; // 11-bit vertical scroll
-                let b = ((self.addr & 0xFFFE) as usize) % VSRAM_SIZE;
+                let Some(b) = Self::vsram_byte(self.addr) else {
+                    return;
+                };
                 // Watchpoints v2: the VSRAM choke — capture the word write (old read before the store).
                 let old = ((self.vsram[b] as u32) << 8) | self.vsram[b | 1] as u32;
                 self.capture(VdpTarget::Vsram, b as u32, old, masked as u32, 2);
@@ -2069,7 +2138,7 @@ mod tests {
             "ROM $22FA words 8-9: VRAM is untouched — the retained target was VSRAM"
         );
         ctrl(&mut v, &[0x0000, 0x0012]); // VSRAM read @ $8000
-        let b = ((0x8000u16 & 0xFFFE) as usize) % VSRAM_SIZE;
+        let b = usize::from(0x8000u16 & 0x7F); // the 7-bit VSRAM address (A1): $8000 is byte 0
         assert_eq!(
             [
                 u16::from_be_bytes([v.vsram[b], v.vsram[b + 1]]),
@@ -2403,6 +2472,163 @@ mod tests {
         v.data_write(0xFFFF);
         assert_eq!(v.cram[0], 0x0E, "high byte of 0x0EEE (0xFFFF & 0x0EEE)");
         assert_eq!(v.cram[1], 0xEE, "low byte");
+    }
+
+    // --- A1: the VSRAM address decode and the VSRAM read latch (docs/2026-09-12-vdp-port-access-full-rom.md) --
+
+    /// One data-port VSRAM write at `addr`, driven the way the ROM drives it: a full command (code `000101`),
+    /// then the word.
+    fn vsram_write_at(v: &mut Vdp, addr: u16, w: u16) {
+        ctrl(v, &[0x4000 | (addr & 0x3FFF), 0x0010 | (addr >> 14)]);
+        v.data_write(w);
+    }
+
+    /// The VSRAM word at storage word `i`, straight from the array (not through the port).
+    fn vsram_word_at(v: &Vdp, i: usize) -> u16 {
+        u16::from_be_bytes([v.vsram[i * 2], v.vsram[i * 2 + 1]])
+    }
+
+    /// **Writes to `$50-$7F` are discarded** (Nemesis, "Scaling hardware?" p.5). Every word address in the
+    /// unbacked range is written, and storage must not move. Under the old `% 80` decode, `$50` landed on word
+    /// 0, `$52` on word 1, and so on. The `$4E` control proves the port path is live, and that the last
+    /// backed word is still reached.
+    #[test]
+    fn a_vsram_write_to_50_7f_is_discarded() {
+        let mut v = fresh();
+        vsram_write_at(&mut v, 0x004E, 0x0456);
+        assert_eq!(
+            vsram_word_at(&v, 39),
+            0x0456,
+            "control: $4E is word 39, the last backed word"
+        );
+        let before = v.vsram.clone();
+        for a in (0x50u16..0x80).step_by(2) {
+            vsram_write_at(&mut v, a, 0x0100 | a);
+        }
+        assert_eq!(
+            v.vsram, before,
+            "a write to $50-$7F must land nowhere (the old decode put $50 on word 0)"
+        );
+    }
+
+    /// **The VSRAM address is 7 bits, so it wraps at `$80`: an address at or above `$80` maps by `& $7F`.**
+    /// The three addresses are chosen so the old `% 80` decode puts each somewhere else: `$8002 % 80` is
+    /// byte 50 (word 25) rather than word 1, `$00A4 % 80` is byte 4 rather than word 18, and `$FFD0 % 80` is
+    /// byte 48 (word 24), where `& $7F` gives `$50`, which is discarded. The read-back goes through the port,
+    /// at wrapped addresses too, so the read half shares the decode.
+    #[test]
+    fn the_vsram_address_is_seven_bits_so_it_wraps_at_80() {
+        let mut v = fresh();
+        vsram_write_at(&mut v, 0x8002, 0x0111); // $8002 & $7F = $02: word 1
+        vsram_write_at(&mut v, 0x00A4, 0x0222); // $A4 & $7F = $24: word 18
+        vsram_write_at(&mut v, 0xFFD0, 0x0333); // $D0 & $7F = $50: unbacked, discarded
+        let stored: Vec<(usize, u16)> = (0..VSRAM_SIZE / 2)
+            .map(|i| (i, vsram_word_at(&v, i)))
+            .filter(|&(_, w)| w != 0)
+            .collect();
+        assert_eq!(
+            stored,
+            [(1, 0x0111), (18, 0x0222)],
+            "exactly words 1 and 18 hold data: $8002 and $00A4 wrap by & $7F, and $FFD0 is discarded"
+        );
+        ctrl(&mut v, &[0x0002, 0x0012]); // VSRAM read @ $8002
+        assert_eq!(v.data_read(0), 0x0111, "a read at $8002 reaches word 1");
+        ctrl(&mut v, &[0x00A4, 0x0010]); // VSRAM read @ $00A4
+        assert_eq!(v.data_read(0), 0x0222, "a read at $00A4 reaches word 18");
+    }
+
+    /// **A read of `$50-$7F` returns the VSRAM read latch, which the committed render feeds.** This is the
+    /// ROM's own shape (VDPFIFOTesting's VSRAM fills, ROM `$13D16`): read word 39 with autoincrement 2, and
+    /// the read-ahead steps onto `$50`. Each of the three wrong models gives a different answer, and all
+    /// three differ from the right one. Word 0 is `$0111` (the scratch shortcut, and the old `% 80` decode).
+    /// The port's previous read, word 39, is `$0333` (a latch fed by port reads). Zero means the committed
+    /// render never fed the latch.
+    #[test]
+    fn a_vsram_read_of_50_7f_returns_the_read_latch() {
+        let mut v = fresh();
+        ctrl(&mut v, &[0x8144]); // display on; reg 11 = 0, so vertical scroll is full-screen
+        vsram_write_at(&mut v, 0x0000, 0x0111); // word 0, plane A
+        vsram_write_at(&mut v, 0x0002, 0x0222); // word 1, plane B: a full-screen line's last fetch
+        vsram_write_at(&mut v, 0x004E, 0x0333); // word 39
+        v.render_scanline(0);
+        assert_eq!(
+            v.vsram_read_latch(),
+            0x0222,
+            "the committed line latched its last vertical-scroll fetch, word 1"
+        );
+        ctrl(&mut v, &[0x8F02]); // autoincrement 2
+        ctrl(&mut v, &[0x004E, 0x0010]); // VSRAM read @ $4E
+        assert_eq!(v.data_read(0), 0x0333, "control: $4E is word 39");
+        assert_eq!(
+            v.data_read(0),
+            0x0222,
+            "$50 returns the read latch: not word 0 ($0111), not the port's previous word ($0333)"
+        );
+        assert_eq!(v.data_read(0), 0x0222, "$52 latches nothing either");
+    }
+
+    /// **Both committed per-line paths feed the latch the same way, and a display-disabled line feeds it
+    /// nothing.** `render_scanline` (a run that wants rows) and `advance_scanline` (every other run,
+    /// `oracle-replay` included) must leave the same latch, or two runs of one input diverge on a `$50`
+    /// read. The words are non-zero and distinct per mode, so a path that skipped the feed, or read the wrong
+    /// word, would differ. The mode steps are the ones `last_vscroll_fetch` states: full-screen word 1, and
+    /// in 2-cell mode the last column's plane-B word (31 in H32, 39 in H40).
+    #[test]
+    fn both_committed_scanline_paths_feed_the_vsram_read_latch_alike() {
+        let mut full = fresh(); // reg 1 = $04: display DISABLED
+        for (i, w) in [(1usize, 0x0222u16), (31, 0x0444), (39, 0x0555)] {
+            vsram_write_at(&mut full, (i * 2) as u16, w);
+        }
+        let mut cheap = full.clone();
+        let mut line = 0u16;
+        let mut step = |full: &mut Vdp, cheap: &mut Vdp, regs: &[u16], want: u16, why: &str| {
+            ctrl(full, regs);
+            ctrl(cheap, regs);
+            full.render_scanline(line);
+            cheap.advance_scanline(line);
+            line += 1;
+            assert_eq!(full.vsram_read_latch(), want, "render_scanline: {why}");
+            assert_eq!(cheap.vsram_read_latch(), want, "advance_scanline: {why}");
+            assert!(
+                *full == *cheap,
+                "{why}: the two committed paths left different machines"
+            );
+        };
+        step(
+            &mut full,
+            &mut cheap,
+            &[],
+            0,
+            "display disabled: no fetch, the power-on 0 stays",
+        );
+        step(
+            &mut full,
+            &mut cheap,
+            &[0x8144],
+            0x0222,
+            "full-screen: word 1",
+        );
+        step(
+            &mut full,
+            &mut cheap,
+            &[0x8B04],
+            0x0444,
+            "2-cell, H32: word 31",
+        );
+        step(
+            &mut full,
+            &mut cheap,
+            &[0x8C81],
+            0x0555,
+            "2-cell, H40: word 39",
+        );
+        step(
+            &mut full,
+            &mut cheap,
+            &[0x8104],
+            0x0555,
+            "display disabled again: the latch keeps word 39",
+        );
     }
 
     #[test]
