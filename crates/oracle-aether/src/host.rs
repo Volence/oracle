@@ -286,6 +286,16 @@ impl Host {
         // The listener travels with the bind's claim on its file, exactly as the standalone server's does
         // (HOST-SHUTDOWN-UNLINK). A bare listener here is what let `shutdown` unlink by path alone.
         let (listening, config) = Server::bind(config)?.listening();
+        // **A serve after a `shutdown` must serve.** `shutdown`'s `close_all` leaves `stop` set, and an
+        // accept loop started under it exits before its first accept, and its claim then removes the file
+        // just bound: an `Ok` naming a socket that is not there. Cleared here, after the bind succeeded
+        // (a failed bind leaves the host as it was) and while no accept thread exists (`shutdown` joined
+        // the last one; `accept.is_none()` was checked above). The previous session's connection threads
+        // were hung up by `close_all` and end on their next read whatever this flag says. `stop` is
+        // otherwise read only by `wait_for_stamp`, so the one thing it can prolong is a `wait_for_break`
+        // from that session which had not yet polled it: that thread waits out its own budget on a socket
+        // already shut down, then exits.
+        self.ctx.stop.store(false, Ordering::SeqCst);
         self.accept = Some(spawn_accept(listening, &self.ctx, self.tx.clone()));
         self.socket_path = Some(config.socket_path.clone());
         Ok(config.socket_path)
