@@ -503,6 +503,21 @@ fn the_row_a_mid_line_cram_write_lands_on_is_the_row_that_splits() {
         row(LINE + 1)[0],
         "which are two different colours"
     );
+
+    // …and the WHOLE picture the fixture documents, not only the split's neighbours: `..LINE` uniform A,
+    // `LINE+1..` uniform B, down to the last active row. The rows read above are all within one line of
+    // LINE, so a vblank wait that fired inside the active display repainted the bottom of every frame
+    // back to A with this and every other test green. Measured in LENS-WAVE4 (wave-3 residue 3): with
+    // `testrom`'s `VBLANK_V_COUNT` moved to line 192, rows 192..=223 were A and nothing reddened.
+    let (a, b) = (row(LINE - 1)[0], row(LINE + 1)[0]);
+    for n in (0..usize::from(oracle_core::vdp::ACTIVE_LINES)).filter(|&n| n != LINE) {
+        let (want, name) = if n < LINE { (a, "A") } else { (b, "B") };
+        assert!(
+            row(n).iter().all(|&p| p == want),
+            "row {n} must be wholly colour {name}: the fixture paints `..{LINE}` in A and `{LINE}+1..` in B \
+             every completed frame, and re-arms A only in vblank"
+        );
+    }
 }
 
 /// Documented sharp edge 2: the frame index is `mclk / MCLK_PER_FRAME`, and `System::reset` zeroes mclk, so
