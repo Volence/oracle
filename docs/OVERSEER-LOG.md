@@ -3471,3 +3471,91 @@ reads and four writes through one expression) moved whole to `OVERSEER-LOG.md` 2
 
 ⚑ **The live residual is a COVERAGE fact, not a hardware one: the covering test at `bus.rs:2069` writes the
 ODD address and reads the even one, so it exercises the read mirror and can never reach the write mirror.**
+
+## Moved from OVERSEER.md 2026-09-11 — closed blocks, verbatim (boot-read bound, 99,657 → 89,880 B)
+
+*Five closed blocks, byte-identical. Each is closed by its own text or by a landing verified at
+`85c1599`, named in its sub-heading.* *Proved lossless by `tools/prove_doc_split.py`: exit 0, PROVED, 981/981 non-blank lines accounted, PROOF 3 seams introduced heading-aware 0 AND heading-blind 0 (17 derived cut points, all OK); control run green on the untouched tree first, since declaring this whole file as an `--output` is vacuously red here.*
+
+### Queue item 8: the closed FOREGROUND pointer and the STALE AEON OBLIGATION (orig lines 105-133) — `wait_for_break` and the breakpoint trio are all served (`engine.rs` method table)
+
+   **FOREGROUND runtime follow-ups: ALL FOUR CLOSED 2026-09-04** (three stale, one never ours), together with
+   `step`'s frame-budget shortfall. The measurement, and the 2026-08-22 runtime attempt correctly ABANDONED
+   rather than deferred, are in `OVERSEER-LOG.md`; the two live rules they produced are in the register below.
+   **AEON OBLIGATION: SCOPE WAS WRONG, and the correction makes it bigger.** Item 7 recorded it
+   as a dated heads-up before serving `emulator/wait_for_break`, because their gates send
+   `timeout_ms`. **The survey found it covers THREE methods, not one, and I verified it firsthand
+   at `origin/master` (not their working tree):** ⚠ **STALE AS OF 2026-09-04 AND IT COST A MIS-RANKING.
+   RE-MEASURED AT THEIR `origin/master`: `raster_source_gate.py` has ZERO `wait_for_break` hits, and
+   `snapshot_poison_gate.py`'s single hit is a COMMENT saying `emulator/run_to` replaced the arm/resume/wait
+   triple.** The live call sites are `tools/evict_witness.py`, `tools/parallax_hscroll_probe.py`,
+   `tools/raster_frame_epoch_probe.py` and the `aether_instance.py` client seam, none in the effects-gate
+   lane. The original text below was true when written and is kept because a session that cites it must see
+   that a verified-firsthand booking about a peer's tree still expired: ~~both scripts run an **arm → wait →
+   clear** flow: `raster_source_gate.py:161/168/173` and `snapshot_poison_gate.py:62/64/68` call~~
+   `emulator/breakpoint_add {addr}` → `emulator/wait_for_break {timeout_ms}` →
+   `emulator/breakpoint_clear {all:true}`.
+   **Consequence, and it is the load-bearing one: the migration CANNOT be piecemeal.** Serving
+   `wait_for_break` alone would leave their flow with nothing to arm, so `wait_for_break` and the
+   breakpoint trio ship as ONE parcel or the notice is worthless. The `timeout_ms` spelling was
+   never the whole exposure; it was the part visible from a param grep.
+   **This also gives the obligation a live reader BEFORE any date exists.** Their call sites bet on
+   a specific breakpoint shape (`{addr: "0x…"}` to arm, `{all: true}` to clear, i.e. **address-
+   keyed, no handles**), and **CR-A (D-13) is about to decide exactly that handle discipline.**
+   Their input window is *now, before adjudication*, not when we ship. Note also
+   `raster_source_gate.py:33`: under `deterministic=True` the legacy server answers `breakpoint_add`
+   with a "det-mode stop" behaviour, a documented interaction our fragments say nothing about.
+   The **date** still waits on the survey's pricing of that parcel; the **design consultation**
+   does not, and holding it until a date existed would have consulted them after the ruling.
+   If this session ends first, **the next one owes both**.
+
+### The 2026-09-04 §11.33 registration group (orig lines 175-187) — its error-surface gate LANDED (`crates/oracle-aether/tests/request_bounds.rs`, merge `2ef154b`), and that file's module doc carries this instance
+
+**Registered 2026-09-04, from reading the ADOPTED §11.33 text instead of the relay's summary of it:**
+
+- **▶ CLOSED 2026-09-04: `emulator/step` did not enforce either of `count`'s bounds while its own comment claimed it transcribed them; handler, comment and test were mutually consistent and all three wrong. Moved whole to `OVERSEER-LOG.md` 2026-09-05 (boot-read bound). The live rule it produced is the entry below.**
+- **⚑ AND IT IS THE FIRST DEMONSTRATED INSTANCE OF A BLINDNESS THIS FILE HAD ONLY PROPOSED.** The
+  acceptance section carries *"a proposed **error-surface gate**: since no fragment declares error
+  conditions, a suite validating only replies is blind to every error obligation."* **This is that, with a
+  measurement attached.** A params fragment describes what a conformant CLIENT sends; **a server's duty to
+  REFUSE what falls outside it is behaviour a document schema structurally cannot see.** Our conformance
+  suite is green, the fragment is correctly vendored, the bound is correctly written, and the server has
+  ignored it for ten days: **every artifact healthy, the obligation unmet.**
+  **The gate is no longer a proposal looking for a justification; it has a demonstrated defect it would have
+  caught.** Price it against this instance when it is picked up, and do not let it be re-argued from first
+  principles: the argument is now an observation.
+
+### F-TMP-RESIDUE: the boot file's one-line residue of its 2026-09-06 move (orig line 328)
+
+- **F-TMP-RESIDUE: DID NOT REPRODUCE** — 9,675 `/tmp/oracle_config_save_load_*` dirs relayed, **four** measured here minutes later, the name attributable to nothing in the suite, and nothing available could distinguish a wrong count from a reap between the two reads. Recorded as a caught relay rather than a finding, and not passed to the hub as a shared-machine hazard. Moved whole to `OVERSEER-LOG.md` 2026-09-06.
+
+### LAYER-MASK: the C5/H26 discharge (2026-09-10) and the superseded sequencing hold (orig lines 752-775)
+
+⚑ **DISCHARGED 2026-09-10: BOTH LANDED, IN ORDER, AND THE SEQUENCING PAID OUT.** H26 at merge `f759d76`,
+then C5 at merge `282aa93` (fix `470091d`) — `Vdp::advance_scanline`, the cheap unmasked stateful twin, is
+now in the tree beside `render_scanline` and the invariant is intact **because H26 was written to admit it**.
+The replay is **2.58×/2.59× faster by median** (2548→989 ms and 2556→987 ms over 1176 frames, two interleaved
+sessions); the discarded raster was **~61 % of the replay's whole wall clock**. `d-44` discharged: split
+delivered *and* the number he asked for. Guarded by `the_cheap_scanline_advance_leaves_the_same_machine`
+(whole-`Vdp` `PartialEq` after each line, 14 fixtures). Zero currency movement.
+⚑ **Four lessons this pairing produced — the paraphrase sweep, the floor-is-a-prior counter-instance,
+the profile-with-every-baseline ops defect against this seat, and the two-paths-wrong-the-same-way guard
+case — are in `docs/OVERSEER-REFERENCE.md`, because each is read BEFORE DISPATCHING, REVIEWING or
+LANDING and none of them at boot.**
+
+⚑ *(Superseded, kept because a session citing the hold must see it was correct when made.)* ~~**RULED
+2026-09-10, SEQUENCING: C5 AND H26 TOUCH THIS ONE FUNCTION FROM OPPOSITE ENDS AND MUST NOT RUN
+CONCURRENTLY. H26 first, C5 after it lands.**~~ H26 (`d-47` answered `structural`) is deciding whether this
+very claim gets a real mechanism — plausibly by making the no-mask signature structurally locked. C5
+(`d-44` answered `split`) splits that same call so the cheap path stops building a full attributed report
+to obtain three status bits, i.e. **it proposes exactly the "twin" the claim above says does not exist.**
+Neither is wrong; designed in parallel they would each be correct against a tree the other is changing,
+and the merge would resolve cleanly while the safety property quietly stopped being true — the failure
+this section exists to prevent, arriving through the fix rather than through an edit. **The C5 brief must
+carry H26's outcome**: a cheap twin that renders no picture is not a mask parameter, but whether it may
+exist at all is H26's ruling to make first. *(Held while the hub had already said "take C5"; the hazard is
+visible from the source and was not visible from the board.)*
+
+### HERMETIC GATE ruling: the "also carried" residue of its 2026-09-06 move (orig line 820)
+
+**Also carried in that same message and both banked; moved whole to `OVERSEER-LOG.md` 2026-09-06:** our landing recorded upstream with correct attribution (their number cited as *ours*, not re-derived), and **F-RESUME-STOP-RACE relayed to aurora** as the suite's outbound client, which is the right destination — no reply was requested and none is owed. With them, the content-addressed check that verified our vendored `bus-protocol.schema.json` against empyrean's blob id **in both trees, neither read from a working file**, which is why a relayed claim about our own tree was safe to accept.

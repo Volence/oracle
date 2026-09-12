@@ -1049,3 +1049,42 @@ not a coverage assertion about the MECHANISM.** The repair is the reusable half:
 the sweep (this pair collides at 320 and is clipped at 256), with the band coordinate **derived** from where
 width can reach state at all rather than picked. The agent treated the green as a guard defect rather than a
 pass, which is the behaviour bar 8(c) exists to produce.
+
+## Moved from OVERSEER.md 2026-09-11 (boot-read cut, 99,657 → 89,880 B) — read at a moment, not at boot
+
+*Two blocks whose subject is discharged but which carry rules with no other copy in this file (grepped:
+"self-removing" and `fixedAt` had zero hits here), so they belong here and not in the log. Read the
+first* **before choosing a row to dispatch** *and* **before writing into `OVERSEER.md` at a landing**;
+*the second* **before writing any brief that asks for a ledger row to be marked fixed.** *Proved lossless by `tools/prove_doc_split.py`: exit 0, PROVED, 981/981 non-blank lines accounted, PROOF 3 seams introduced heading-aware 0 AND heading-blind 0 (17 derived cut points, all OK); control run green on the untouched tree first, since declaring this whole file as an `--output` is vacuously red here.*
+
+### From queue item 8 (THE ACCEPTANCE CONTRACT): the discharged NEXT block (orig lines 83-104)
+
+   **NEXT (not yet dispatched):** ⚑ **DISCHARGED, AND THIS BLOCK OUTLIVED IT BY NINETEEN DAYS.** It called
+   the `run_to_scanline` parcel *in-flight* and said *"remove from here once that lands"*; it landed
+   **2026-08-22** (`4f93583`), and both folded residuals are resolved in source (checked, not assumed —
+   a fold is a reference and closing its target orphans it). ⚑ **A self-removing instruction is nobody's
+   job by construction**: no owner, no trigger anyone watches, so it reads as live prose forever. Book the
+   removal or write a condition a boot read can test. Still open
+   from the survey is a proposed
+   **error-surface gate**: since no fragment declares error conditions, a suite validating only
+   replies is blind to every error obligation. ⚠ **NO LONGER A PROPOSAL — `crates/oracle-aether/tests/request_bounds.rs`
+   LANDED 2026-09-09 (`84e14f6`, `5f6a670`, `c4eeae5`) and covers all 97 numeric bound obligations, fragment-derived at
+   runtime. The non-numeric half landed on `parcel/error-surface-gate` the same night. This paragraph went on calling it
+   a proposal for the whole day, and a dispatch was written from it — the EIGHTH row this week whose justification aged
+   while the row sat still.** ⚑ **And it is the sharpest of the eight because the rule that would have caught it was
+   already written and already being enforced — ON AGENTS. Every fix brief that night carried *"check whether the WORK
+   landed, not whether the ROW is open"*, and this seat did not run it on its own row selection. A rule encoded as an
+   instruction to others is not a rule you are following.** ~~The gate is still a proposal; the defect that
+   demonstrated it is not.** The unenforced `count` bounds named in the 2026-09-04 §11.33 registration
+   (the `emulator/step` row in the follow-up register) were fixed by the CR-STEP-SHORTFALL
+   parcel (`step.rs`'s two refusal rows now assert them from the wire), so the standing argument for
+   the gate must be carried on its own merits again: **one method's refusals being covered by hand
+   is not the gate**, and nothing systematic yet reads a `params` fragment and asks the server to
+   refuse what falls outside it.
+
+### From the LAYER-MASK section: the `fixedAt` brief correction (orig lines 747-750)
+
+⚑ **PROCESS CORRECTION, from the agent, against my own brief: `fixedAt` is a commit SHA and CANNOT exist inside
+its own commit.** I have been asking agents to "mark the ledger row fixed in the same commit as the fix", which
+is unachievable and contradicts every existing fixed row (M47/M48/M49 all append the row afterwards). **Stop
+writing that instruction into briefs**; ask for the fix commit, then the ledger append naming it.
