@@ -8231,9 +8231,15 @@ impl Engine {
             None => 0,
             Some(v) => parse_cursor(v, highest_issued)?,
         };
+        // **A page size, clamped to the cap and never refused above it** (lens M29). The params fragment
+        // declares `limit` with `minimum: 1` and no maximum, so every positive integer is a legal
+        // request, and the result fragment says what the echo then is: "the page ceiling actually
+        // applied ... a server clamps this to its checkpoint cap". This is the row where the contract
+        // rules clamp over refuse, and it can afford to: the echoed `limit` beside `total` and
+        // `truncated` tells the caller exactly which page it got, so nothing is short-changed silently.
         let limit = match params.get("limit") {
             None => cap,
-            Some(v) => hex::parse_count("limit", v, 1, cap as u64)? as usize,
+            Some(v) => hex::parse_count("limit", v, 1, u64::MAX)?.min(cap as u64) as usize,
         };
         // The continuation token below is "the last id on this page", which is only the right place to
         // resume if the slots are id-ascending. They are, by construction — `checkpoint` pushes ids from

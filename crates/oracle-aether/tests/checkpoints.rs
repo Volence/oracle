@@ -568,6 +568,65 @@ fn checkpoint_list_is_bounded_cursored_and_flags_truncation() {
     );
 }
 
+/// **Lens M29: `limit` is a page size, and a page larger than the store is not an error.** The params
+/// fragment declares `limit` with `minimum: 1` and NO maximum, so every positive integer is a legal
+/// request. The handler used to refuse anything above the checkpoint cap, a ceiling the contract
+/// declares nowhere (and so one `request_bounds.rs` could never probe). The result fragment says what to
+/// do instead, in so many words: the echoed `limit` is "the page ceiling actually applied ... a server
+/// clamps this to its checkpoint cap". Every expectation here is read off the schema or the handshake.
+#[test]
+fn a_limit_above_the_cap_is_a_legal_page_size_and_is_clamped_to_it() {
+    let frag = &common::schema::schema_root()["methods"]["emulator/checkpoint_list"];
+    let limit = &frag["params"]["properties"]["limit"];
+    assert_eq!(
+        limit["minimum"],
+        json!(1),
+        "UNMEASURABLE: the params fragment's floor on `limit` moved: {limit}"
+    );
+    assert!(
+        limit.get("maximum").is_none() && limit.get("exclusiveMaximum").is_none(),
+        "the premise: the fragment declares no ceiling on `limit`. If one was added, a refusal above \
+         it is the contract's and this test must be re-derived: {limit}"
+    );
+    let echo = frag["result"]["properties"]["limit"]["description"]
+        .as_str()
+        .expect("UNMEASURABLE: the result fragment does not describe the echoed `limit`");
+    assert!(
+        echo.contains("clamps this to its checkpoint cap"),
+        "UNMEASURABLE: the result fragment no longer says the echo is clamped to the cap: {echo}"
+    );
+
+    let h = spawn("cplist-bigpage");
+    let mut c = Client::connect(&h);
+    let init = c.handshake(false);
+    let cap = cap(&init);
+    let ids: Vec<String> = (0..3)
+        .map(|i| take(&mut c, Some(&format!("b{i}"))))
+        .collect();
+
+    for asked in [cap + 1, 100, u64::from(u32::MAX), u64::MAX] {
+        let page = c.ok("emulator/checkpoint_list", json!({ "limit": asked }));
+        assert_eq!(
+            page["limit"],
+            json!(cap),
+            "limit {asked}: the echo is the ceiling actually applied, the cap: {page}"
+        );
+        assert_eq!(
+            page_ids(&page),
+            ids,
+            "limit {asked}: every live checkpoint, in id order: {page}"
+        );
+        assert_eq!(page["truncated"], json!(false), "limit {asked}: {page}");
+    }
+    // The floor is still the fragment's, and still refused by name.
+    let e = c.err("emulator/checkpoint_list", json!({"limit": 0}));
+    assert_eq!(e["code"], json!(-32602), "{e}");
+    assert!(
+        e["message"].as_str().unwrap_or_default().contains("`limit`"),
+        "the refusal must name the field it is about: {e}"
+    );
+}
+
 #[test]
 fn the_cursor_is_emitted_as_a_string_and_accepted_as_either_shape() {
     // The contract schema types `cursor` as a JSON **string** on both the params and the result of
