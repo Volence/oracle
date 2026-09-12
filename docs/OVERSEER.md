@@ -42,7 +42,7 @@ tense, in the one section whose job is to warn about exactly that. Cuts so far: 
 87,2xx B with its repair pass), 2026-09-09 morning (99,578 → 93,149 B, three closed blocks) and
 2026-09-09 evening (98,275 B / 1,142 lines; 8 closed blocks to the
 log, 7 ops lessons to the reference) and **2026-09-09 second evening cut (98,469 B / 1,147 lines →
-90,463 B / 1,052 lines; 5 sections, 2 to the log and 3 to the reference)**. ⚑ **The BYTE bound is met
+90,463 B / 1,052 lines; 5 sections, 2 to the log and 3 to the reference)** and 2026-09-11 (99,657 B / 1,142 lines → 89,880 B / 1,043 lines; 7 blocks, 5 to the log and 2 to the reference). ⚑ **The BYTE bound is met
 with real room; the LINE half is not, and that is reported rather than closed.** What is left over
 ~1,050 lines is live rulings and live follow-up-register bookings, and the protocol's own
 measure-then-move rule 3 says the residual goes to the owner rather than into a trim.
@@ -79,59 +79,6 @@ moved with them.)*
    enforced source is `SCHEMATIZED_NOT_ADVERTISED` in `crates/oracle-aether/tests/schema_conformance.rs`,
    asserted as a whole sorted set, so it cannot drift silently. Board row `ACCEPT-16`. The arc's closed
    history (survey, CR-A, trio, CR-B) is in the log.
-
-   **NEXT (not yet dispatched):** ⚑ **DISCHARGED, AND THIS BLOCK OUTLIVED IT BY NINETEEN DAYS.** It called
-   the `run_to_scanline` parcel *in-flight* and said *"remove from here once that lands"*; it landed
-   **2026-08-22** (`4f93583`), and both folded residuals are resolved in source (checked, not assumed —
-   a fold is a reference and closing its target orphans it). ⚑ **A self-removing instruction is nobody's
-   job by construction**: no owner, no trigger anyone watches, so it reads as live prose forever. Book the
-   removal or write a condition a boot read can test. Still open
-   from the survey is a proposed
-   **error-surface gate**: since no fragment declares error conditions, a suite validating only
-   replies is blind to every error obligation. ⚠ **NO LONGER A PROPOSAL — `crates/oracle-aether/tests/request_bounds.rs`
-   LANDED 2026-09-09 (`84e14f6`, `5f6a670`, `c4eeae5`) and covers all 97 numeric bound obligations, fragment-derived at
-   runtime. The non-numeric half landed on `parcel/error-surface-gate` the same night. This paragraph went on calling it
-   a proposal for the whole day, and a dispatch was written from it — the EIGHTH row this week whose justification aged
-   while the row sat still.** ⚑ **And it is the sharpest of the eight because the rule that would have caught it was
-   already written and already being enforced — ON AGENTS. Every fix brief that night carried *"check whether the WORK
-   landed, not whether the ROW is open"*, and this seat did not run it on its own row selection. A rule encoded as an
-   instruction to others is not a rule you are following.** ~~The gate is still a proposal; the defect that
-   demonstrated it is not.** The unenforced `count` bounds named in the 2026-09-04 §11.33 registration
-   (the `emulator/step` row in the follow-up register) were fixed by the CR-STEP-SHORTFALL
-   parcel (`step.rs`'s two refusal rows now assert them from the wire), so the standing argument for
-   the gate must be carried on its own merits again: **one method's refusals being covered by hand
-   is not the gate**, and nothing systematic yet reads a `params` fragment and asks the server to
-   refuse what falls outside it.
-   **FOREGROUND runtime follow-ups: ALL FOUR CLOSED 2026-09-04** (three stale, one never ours), together with
-   `step`'s frame-budget shortfall. The measurement, and the 2026-08-22 runtime attempt correctly ABANDONED
-   rather than deferred, are in `OVERSEER-LOG.md`; the two live rules they produced are in the register below.
-   **AEON OBLIGATION: SCOPE WAS WRONG, and the correction makes it bigger.** Item 7 recorded it
-   as a dated heads-up before serving `emulator/wait_for_break`, because their gates send
-   `timeout_ms`. **The survey found it covers THREE methods, not one, and I verified it firsthand
-   at `origin/master` (not their working tree):** ⚠ **STALE AS OF 2026-09-04 AND IT COST A MIS-RANKING.
-   RE-MEASURED AT THEIR `origin/master`: `raster_source_gate.py` has ZERO `wait_for_break` hits, and
-   `snapshot_poison_gate.py`'s single hit is a COMMENT saying `emulator/run_to` replaced the arm/resume/wait
-   triple.** The live call sites are `tools/evict_witness.py`, `tools/parallax_hscroll_probe.py`,
-   `tools/raster_frame_epoch_probe.py` and the `aether_instance.py` client seam, none in the effects-gate
-   lane. The original text below was true when written and is kept because a session that cites it must see
-   that a verified-firsthand booking about a peer's tree still expired: ~~both scripts run an **arm → wait →
-   clear** flow: `raster_source_gate.py:161/168/173` and `snapshot_poison_gate.py:62/64/68` call~~
-   `emulator/breakpoint_add {addr}` → `emulator/wait_for_break {timeout_ms}` →
-   `emulator/breakpoint_clear {all:true}`.
-   **Consequence, and it is the load-bearing one: the migration CANNOT be piecemeal.** Serving
-   `wait_for_break` alone would leave their flow with nothing to arm, so `wait_for_break` and the
-   breakpoint trio ship as ONE parcel or the notice is worthless. The `timeout_ms` spelling was
-   never the whole exposure; it was the part visible from a param grep.
-   **This also gives the obligation a live reader BEFORE any date exists.** Their call sites bet on
-   a specific breakpoint shape (`{addr: "0x…"}` to arm, `{all: true}` to clear, i.e. **address-
-   keyed, no handles**), and **CR-A (D-13) is about to decide exactly that handle discipline.**
-   Their input window is *now, before adjudication*, not when we ship. Note also
-   `raster_source_gate.py:33`: under `deterministic=True` the legacy server answers `breakpoint_add`
-   with a "det-mode stop" behaviour, a documented interaction our fragments say nothing about.
-   The **date** still waits on the survey's pricing of that parcel; the **design consultation**
-   does not, and holding it until a date existed would have consulted them after the ruling.
-   If this session ends first, **the next one owes both**.
-
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates,
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
@@ -171,20 +118,6 @@ and reads as strong until something mutates the constant** — the reset test co
 `CartBanks::IDENTITY` and stayed GREEN under `IDENTITY := [0; 8]`. (⚑ This block was drafted at 1,995 B
 against 1,531 B of headroom and broke `overseer_bound` at 100,464 B. Measure before you add here.)
 **Registered 2026-09-11 (a commitment to sigil):** sigil's `.lst` gains a top `DIGEST-` section, relying on `SymbolTable::parse`'s `Section::Body` arm treating pre-header non-matches as non-damage. **Kept, and pinned by a named test** (LENS-WAVE1-B). Told sigil: no preamble line may begin `Symbol Table`/`Equate Table`/`Phase Table`.
-
-**Registered 2026-09-04, from reading the ADOPTED §11.33 text instead of the relay's summary of it:**
-
-- **▶ CLOSED 2026-09-04: `emulator/step` did not enforce either of `count`'s bounds while its own comment claimed it transcribed them; handler, comment and test were mutually consistent and all three wrong. Moved whole to `OVERSEER-LOG.md` 2026-09-05 (boot-read bound). The live rule it produced is the entry below.**
-- **⚑ AND IT IS THE FIRST DEMONSTRATED INSTANCE OF A BLINDNESS THIS FILE HAD ONLY PROPOSED.** The
-  acceptance section carries *"a proposed **error-surface gate**: since no fragment declares error
-  conditions, a suite validating only replies is blind to every error obligation."* **This is that, with a
-  measurement attached.** A params fragment describes what a conformant CLIENT sends; **a server's duty to
-  REFUSE what falls outside it is behaviour a document schema structurally cannot see.** Our conformance
-  suite is green, the fragment is correctly vendored, the bound is correctly written, and the server has
-  ignored it for ten days: **every artifact healthy, the obligation unmet.**
-  **The gate is no longer a proposal looking for a justification; it has a demonstrated defect it would have
-  caught.** Price it against this instance when it is picked up, and do not let it be re-argued from first
-  principles: the argument is now an observation.
 
 **Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed:**
 
@@ -324,8 +257,6 @@ closed; its narrative is in `OVERSEER-LOG.md` and the brief lesson it produced i
   load-sensitive row as a flake and been wrong: the wait_for_break row was tagged a flake on 2026-09-03 and
   again on 2026-09-04 before it was root-caused. **A row that only fails under load is a defect with a
   narrow window, not a flake, until something says otherwise.**
-
-- **F-TMP-RESIDUE: DID NOT REPRODUCE** — 9,675 `/tmp/oracle_config_save_load_*` dirs relayed, **four** measured here minutes later, the name attributable to nothing in the suite, and nothing available could distinguish a wrong count from a reap between the two reads. Recorded as a caught relay rather than a finding, and not passed to the hub as a shared-machine hazard. Moved whole to `OVERSEER-LOG.md` 2026-09-06.
 
 - **F-SPAWN-PICKER-PANEL-SURFACE: CLOSED.** The parcel landed on `oracle-frontend` (merge `531894e`); the
   owner question it carried was retired unasked by the d-25 swap-toolkit ruling, which makes the two windows
@@ -744,35 +675,7 @@ mid-flight — had it finished twenty minutes earlier the doc would have said "e
 C5 would have falsified it on landing. **C5's brief must carry this sentence.** `docs/2026-08-26-layer-mask.md`
 is the artifact of record.
 
-⚑ **PROCESS CORRECTION, from the agent, against my own brief: `fixedAt` is a commit SHA and CANNOT exist inside
-its own commit.** I have been asking agents to "mark the ledger row fixed in the same commit as the fix", which
-is unachievable and contradicts every existing fixed row (M47/M48/M49 all append the row afterwards). **Stop
-writing that instruction into briefs**; ask for the fix commit, then the ledger append naming it.
-
-⚑ **DISCHARGED 2026-09-10: BOTH LANDED, IN ORDER, AND THE SEQUENCING PAID OUT.** H26 at merge `f759d76`,
-then C5 at merge `282aa93` (fix `470091d`) — `Vdp::advance_scanline`, the cheap unmasked stateful twin, is
-now in the tree beside `render_scanline` and the invariant is intact **because H26 was written to admit it**.
-The replay is **2.58×/2.59× faster by median** (2548→989 ms and 2556→987 ms over 1176 frames, two interleaved
-sessions); the discarded raster was **~61 % of the replay's whole wall clock**. `d-44` discharged: split
-delivered *and* the number he asked for. Guarded by `the_cheap_scanline_advance_leaves_the_same_machine`
-(whole-`Vdp` `PartialEq` after each line, 14 fixtures). Zero currency movement.
-⚑ **Four lessons this pairing produced — the paraphrase sweep, the floor-is-a-prior counter-instance,
-the profile-with-every-baseline ops defect against this seat, and the two-paths-wrong-the-same-way guard
-case — are in `docs/OVERSEER-REFERENCE.md`, because each is read BEFORE DISPATCHING, REVIEWING or
-LANDING and none of them at boot.**
-
-⚑ *(Superseded, kept because a session citing the hold must see it was correct when made.)* ~~**RULED
-2026-09-10, SEQUENCING: C5 AND H26 TOUCH THIS ONE FUNCTION FROM OPPOSITE ENDS AND MUST NOT RUN
-CONCURRENTLY. H26 first, C5 after it lands.**~~ H26 (`d-47` answered `structural`) is deciding whether this
-very claim gets a real mechanism — plausibly by making the no-mask signature structurally locked. C5
-(`d-44` answered `split`) splits that same call so the cheap path stops building a full attributed report
-to obtain three status bits, i.e. **it proposes exactly the "twin" the claim above says does not exist.**
-Neither is wrong; designed in parallel they would each be correct against a tree the other is changing,
-and the merge would resolve cleanly while the safety property quietly stopped being true — the failure
-this section exists to prevent, arriving through the fix rather than through an edit. **The C5 brief must
-carry H26's outcome**: a cheap twin that renders no picture is not a mask parameter, but whether it may
-exist at all is H26's ruling to make first. *(Held while the hub had already said "take C5"; the hazard is
-visible from the source and was not visible from the board.)*
+*(Moved 2026-09-11: the superseded C5/H26 sequencing hold and its 2026-09-10 discharge to `OVERSEER-LOG.md`, the `fixedAt` brief correction to `docs/OVERSEER-REFERENCE.md`, each under **Moved from OVERSEER.md 2026-09-11**; the pairing's four lessons stay in the reference under **FROM THE C5/H26 PAIRING, 2026-09-10**.)*
 
 ## ⚑ HUB RULING, 2026-09-02: HERMETIC GATE IS THE RATIFIED SHAPE; DRIFT IS A NIGHTLY, AND IT GETS **NO SECOND OWNER CARD**
 
@@ -816,8 +719,6 @@ rule 7 (a title states the state; the history lives here and the row points at i
 reporting *"contract advanced past pinned blob"*. Note it needs **no new capability**: the hermetic
 gate already grew exactly that env-var path as step 2 (`schema_conformance.rs`), so the nightly is a
 caller of a road already built, not a build.
-
-**Also carried in that same message and both banked; moved whole to `OVERSEER-LOG.md` 2026-09-06:** our landing recorded upstream with correct attribution (their number cited as *ours*, not re-derived), and **F-RESUME-STOP-RACE relayed to aurora** as the suite's outbound client, which is the right destination — no reply was requested and none is owed. With them, the content-addressed check that verified our vendored `bus-protocol.schema.json` against empyrean's blob id **in both trees, neither read from a working file**, which is why a relayed claim about our own tree was safe to accept.
 
 **Board row id: `F-FROZEN-FIXTURE-DRIFTS`** — landed 2026-09-06. Its detail (the four drifted dimensions,
 the `DIMENSIONS.tsv`/`aeon_dimensions.rs` shape, and why no second owner card was filed) is in
