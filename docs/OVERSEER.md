@@ -117,6 +117,20 @@ snapshot-only, **no `export_state` bump**. `$A130F1` stays the SRAM latch. ~~F-D
 and reads as strong until something mutates the constant** — the reset test compared `cart_banks()` to
 `CartBanks::IDENTITY` and stayed GREEN under `IDENTITY := [0; 8]`. (⚑ This block was drafted at 1,995 B
 against 1,531 B of headroom and broke `overseer_bound` at 100,464 B. Measure before you add here.)
+**Registered 2026-09-12 (a commitment to the HUB, and it is an obligation ON US that nothing in the tree would
+otherwise carry).** Asked whether a `contract/` landing would move a gate here, this lane enumerated what oracle
+actually consumes: **exactly two paths, as literals, never a tree walk** — `contract/schema/bus-protocol.schema.json`
+and `contract/schema/tests/vectors.json` (literals at `tools/contract_drift_report.py:117,122`; the first pinned by
+git-blob hash out of `crates/oracle-aether/tests/contract/PROVENANCE.md` by `schema_conformance.rs`). On the strength
+of that the hub **narrowed its contract-landing notices to those two paths** (banked theirs at empyrean
+`origin/main` `3a6b17b`). ⚑ **So the day this repo vendors a THIRD fragment, we owe the hub a message, or we
+silently stop being told when it moves** — the notice would not fail, it would simply never arrive, which is the
+absence class with a peer's practice behind it. The reader who needs this is whoever edits the vendored set, so it is
+also noted in `PROVENANCE.md` beside the adoption steps. *(Their side of the exchange corrected itself too: their
+notice said the commit "touches exactly one file" and `--stat` showed two. They banked a mechanism rather than more
+care — run `git show --stat` in the same tool call that composes any notice naming what moved — which is protocol
+bar 23 arriving in mail instead of a commit message.)*
+
 **Registered 2026-09-11 (a commitment to sigil):** sigil's `.lst` gains a top `DIGEST-` section, relying on `SymbolTable::parse`'s `Section::Body` arm treating pre-header non-matches as non-damage. **Kept, and pinned by a named test** (LENS-WAVE1-B). Told sigil: no preamble line may begin `Symbol Table`/`Equate Table`/`Phase Table`.
 
 **Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed:**

@@ -423,6 +423,14 @@ without moving the parsed document. The report labels it **semantically null** r
 hiding it (our pin is on bytes, so hiding it would be a *miss*) or sending a reader hunting for a shape
 change — and that label is what stands between this instrument and crying wolf.
 
+⚑ **ADDING A THIRD PATH? TELL THE HUB FIRST — we owe them that, and the failure is silent.** On 2026-09-12 this
+lane enumerated for the hub what oracle actually consumes (these **two** paths, as literals, never a tree walk), and
+on the strength of that they **narrowed their contract-landing notices to exactly these two** (banked theirs at
+empyrean `origin/main` `3a6b17b`; ours in `docs/OVERSEER.md`'s follow-up register, same date). So a third vendored
+fragment does not merely go unwatched — **the notice that a peer would otherwise have sent simply never arrives, and
+nothing here goes red to say so.** Widening the set is one message to the hub, and it belongs in the same change that
+adds the path, not after.
+
 **To re-vendor** (the whole recipe, and it never touches the working tree):
 
 ```sh
