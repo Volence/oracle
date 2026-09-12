@@ -42,7 +42,7 @@ tense, in the one section whose job is to warn about exactly that. Cuts so far: 
 87,2xx B with its repair pass), 2026-09-09 morning (99,578 → 93,149 B, three closed blocks) and
 2026-09-09 evening (98,275 B / 1,142 lines; 8 closed blocks to the
 log, 7 ops lessons to the reference) and **2026-09-09 second evening cut (98,469 B / 1,147 lines →
-90,463 B / 1,052 lines; 5 sections, 2 to the log and 3 to the reference)**. ⚑ **The BYTE bound is met
+90,463 B / 1,052 lines; 5 sections, 2 to the log and 3 to the reference)** and 2026-09-11 (99,657 B / 1,142 lines → 89,880 B / 1,043 lines; 7 blocks, 5 to the log and 2 to the reference). ⚑ **The BYTE bound is met
 with real room; the LINE half is not, and that is reported rather than closed.** What is left over
 ~1,050 lines is live rulings and live follow-up-register bookings, and the protocol's own
 measure-then-move rule 3 says the residual goes to the owner rather than into a trim.

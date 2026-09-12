@@ -3477,6 +3477,8 @@ ODD address and reads the even one, so it exercises the read mirror and can neve
 *Five closed blocks, byte-identical. Each is closed by its own text or by a landing verified at
 `85c1599`, named in its sub-heading.* *Proved lossless by `tools/prove_doc_split.py`: exit 0, PROVED, 981/981 non-blank lines accounted, PROOF 3 seams introduced heading-aware 0 AND heading-blind 0 (17 derived cut points, all OK); control run green on the untouched tree first, since declaring this whole file as an `--output` is vacuously red here.*
 
+*Referents, because the cut commit left the moved text as written: in the FOREGROUND pointer, "the register below" is `OVERSEER.md`'s **Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed**; in the §11.33 group, "the acceptance section" is the NEXT block, now in `docs/OVERSEER-REFERENCE.md` under **Moved from OVERSEER.md 2026-09-11 (boot-read cut, 99,657 → 89,880 B)**; in the superseded hold, "the claim above" and "this section" are `OVERSEER.md`'s **LAYER-MASK: LANDED** section; "that same message" is `OVERSEER.md`'s **HUB RULING, 2026-09-02: HERMETIC GATE IS THE RATIFIED SHAPE**.*
+
 ### Queue item 8: the closed FOREGROUND pointer and the STALE AEON OBLIGATION (orig lines 105-133) — `wait_for_break` and the breakpoint trio are all served (`engine.rs` method table)
 
    **FOREGROUND runtime follow-ups: ALL FOUR CLOSED 2026-09-04** (three stale, one never ours), together with

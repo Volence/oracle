@@ -1003,7 +1003,7 @@ the four-pane table and the baseline caveat moved whole to `OVERSEER-LOG.md` 202
 
 ## ⚑ FROM THE C5/H26 PAIRING, 2026-09-10 — read before DISPATCHING, REVIEWING and LANDING
 
-*(Both landed in order: H26 `f759d76`, C5 `282aa93`. The discharge and the numbers are in `docs/OVERSEER.md`; these four are the transferable half.)*
+*(Both landed in order: H26 `f759d76`, C5 `282aa93`. The discharge and the numbers are in `OVERSEER-LOG.md` under **Moved from OVERSEER.md 2026-09-11 — closed blocks, verbatim**; these four are the transferable half.)*
 
 ⚑ **THE LESSON THE PAIRING ACTUALLY TAUGHT, and it is not the one the rule below predicted. The canonical
 site was SAFE; its PARAPHRASES were not.** The C5 brief ordered the agent to repair `render_scanline`'s doc
@@ -1056,6 +1056,8 @@ pass, which is the behaviour bar 8(c) exists to produce.
 "self-removing" and `fixedAt` had zero hits here), so they belong here and not in the log. Read the
 first* **before choosing a row to dispatch** *and* **before writing into `OVERSEER.md` at a landing**;
 *the second* **before writing any brief that asks for a ledger row to be marked fixed.** *Proved lossless by `tools/prove_doc_split.py`: exit 0, PROVED, 981/981 non-blank lines accounted, PROOF 3 seams introduced heading-aware 0 AND heading-blind 0 (17 derived cut points, all OK); control run green on the untouched tree first, since declaring this whole file as an `--output` is vacuously red here.*
+
+*Referent, because the cut commit left the moved text as written: in the NEXT block, "the `emulator/step` row in the follow-up register" moved to `OVERSEER-LOG.md` in the same cut, under **Moved from OVERSEER.md 2026-09-11 — closed blocks, verbatim**.*
 
 ### From queue item 8 (THE ACCEPTANCE CONTRACT): the discharged NEXT block (orig lines 83-104)
 
