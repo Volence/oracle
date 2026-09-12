@@ -605,12 +605,12 @@ impl ScanlineScaffold {
     /// Hold `report` back for emission at the next line's event, alongside the CRAM image live right now
     /// (this row's line start) and an empty journal.
     ///
-    /// Panics if `cram` is not a whole [`CRAM_SIZE`] image — the only caller passes `Vdp::cram()`, which is
-    /// that by construction.
-    pub(crate) fn stash(&mut self, report: LineReport, cram: &[u8]) {
+    /// `cram` is a whole [`CRAM_SIZE`] image by type. Until lens M70 it was a slice and this panicked on a
+    /// wrong length; `Vdp::cram()` now returns the array, so the conversion and its panic are gone.
+    pub(crate) fn stash(&mut self, report: LineReport, cram: &[u8; CRAM_SIZE]) {
         self.pending = Some(RetainedRow {
             report,
-            cram: cram.try_into().expect("CRAM is a whole CRAM_SIZE image"),
+            cram: *cram,
             journal: Vec::new(),
         });
     }
@@ -866,15 +866,11 @@ fn cram_rgb_state_from(cram: &[u8], index: u8, state: PixelState) -> (u8, u8, u8
 /// the resolve stage is index-domain and never reads CRAM, so decoding the retained pixels against the CRAM
 /// that was live at the row's own line start reproduces `report_rgb`'s answer byte for byte
 /// (`docs/2026-08-19-subline-recon.md` §0, §A(ii)).
-pub(crate) fn report_rgb_with_cram(cram: &[u8], report: &LineReport) -> Vec<(u8, u8, u8)> {
-    // A short-but-nonempty CRAM would decode low indices silently and only panic on a high one, so the
-    // whole-image contract is asserted rather than left to the index bounds. `RetainedRow.cram` is a
-    // `[u8; CRAM_SIZE]` and so cannot violate it; this covers the `&[u8]` seam itself.
-    debug_assert_eq!(
-        cram.len(),
-        CRAM_SIZE,
-        "the decode reads a whole CRAM image, not a fragment"
-    );
+///
+/// `cram` is a whole [`CRAM_SIZE`] image by type. A short-but-nonempty CRAM would decode low indices
+/// silently and only panic on a high one; a `debug_assert_eq!` on the length guarded that while this took a
+/// slice, and went with the slice (lens M70), because every caller now hands over an array.
+pub(crate) fn report_rgb_with_cram(cram: &[u8; CRAM_SIZE], report: &LineReport) -> Vec<(u8, u8, u8)> {
     report
         .pixels
         .iter()
@@ -2855,7 +2851,7 @@ mod tests {
         put_cell(&mut v, 0xE000, 0x0002);
         let report = v.render_line_report(0);
         let live = v.report_rgb(&report);
-        let snapshot = v.cram().to_vec();
+        let snapshot = *v.cram();
         assert_eq!(
             report_rgb_with_cram(&snapshot, &report),
             live,
