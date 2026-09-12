@@ -431,6 +431,9 @@ guard that the trigger change did not leak into the CRAM/VSRAM fill data source.
 though Eke's quote covers copy too — no test in the vendored suite exercises it, and an unevidenced change
 there could move visual baselines with nothing to justify it. Registered as follow-up **F-COPYXOR** in
 *Named follow-ups* below.
+*Resolved 2026-09-12 (F-COPYXOR, lens M22):* a vendored test did exercise copy: VDPFIFOTesting's tests 26
+and 96-122, on pages the scorecard never reaches. Their tables pin `^ 1` on the copy's read AND its write,
+and `run_copy` now does both. See F-COPYXOR below.
 
 **Invalid-target guard, and the asymmetry it exposes.** Design §3.4 shows the trigger write unconditional;
 it shipped guarded by `matches!(code & 0x0F, 0x1 | 0x3 | 0x5)`, the same invalid-target rule the non-DMA
@@ -927,6 +930,56 @@ unamended — see F-POSTHOC-STALE-CARRY.
   move. Also unresolved in the same breath: whether the copy's *source* byte read is likewise `^ 1`.
   Needs a ROM or a BlastEm instrument before it lands, not a forum quote. Currency-relevant (it touches
   the VRAM write path used by every copy-using game).
+  **CLOSED 2026-09-12 (parcel COPY-DMA-XOR, lens M22): both halves take `^ 1`, pinned by a ROM that was
+  vendored all along.** *Evidence.* The "no ROM exercises DMA copy" premise above was wrong.
+  `vendor/TestRoms/vdp_port_access.bin` (VDPFIFOTesting) has **122** tests over 22 pages. 32 of them name
+  a VRAM copy, and 28 of those read back a copy's destination image (test 26 and tests 96-122). The
+  scorecard stops after page 2 (16 tests), so none of them had ever been run. Test 26 "DMA
+  Copy Length Reg Update" has an expected table at ROM `$9B24`. The copy matrix, tests 96-122, has titles
+  at ROM `$E0F2` and tables at ROM `$E4BE` + 32 × case. It covers odd and even sources and destinations,
+  lengths 9 and 10, autoincrements 0/1/2/4, overlapping copies, and every CD3-CD0 value. Those tables
+  hold hardware-captured destination images. They match exactly one model: copy step `i` reads
+  `vram[(source + i) ^ 1]` and writes it to `(dest + i × inc) ^ 1`. On the pre-fix code, test 26 read
+  back `0100` and `4500` where its table says `0023` and `0067`, and 25 of the 27 matrix images differed.
+  The two that matched, tests 100 and 107, are the even-aligned controls, which pass under every model.
+  With both halves, all 28 images match. The hardware prose agrees. Eke, SpritesMind *VDP Internals*
+  (t=1291, p=21334): "on VRAM copy, VRAM source and destination address are actually adjacent address
+  ( address ^ 1) to internal address registers value … can be verified when doing a single byte copy".
+  Nemesis, same thread (p=21016): a copy step reads "a byte from the current target address in VRAM
+  based on the DMA source address register" and writes it "using the current incremented command address
+  register". Kabuto's hardware notes (Plutiedev mirror): "the internal byte order of the VDP is the
+  opposite of what the 68K sees … why bytes written by copy commands are in opposite order". No emulator
+  source was consulted, and the BlastEm route suggested above was not needed.
+  *Measurement.* A temporary logging patch in `run_copy` (never committed) was run over the full
+  `cargo test --workspace --release` with `CI=1`: 89 legs, 2867 passed / 0 failed / 3 ignored, the landing
+  baseline. It logged **8** copy DMAs, all from unit tests. Six are even-aligned (`bus::tests` ×4 and the
+  profiler ×2), and their images are byte-identical under both models. Two are odd:
+  `vdp::tests::copy_runs_at_half_the_fill_byte_rate` (inc 0) and
+  `vdp::tests::every_timed_entry_point_stamps_the_vdps_now` (inc 2), whose assertions read only timing.
+  No ROM the suite runs fires a copy (neither the scorecard's pages 1-2 nor the aeon fixtures), so no
+  frozen currency moves.
+  *Decision.* Rule 3's first branch applies, because a ROM table pins the rule. `Vdp::run_copy` now takes
+  `^ 1` on its read and its write. It is pinned by
+  `conformance_roms::vdp_port_access_copy_dma_matches_the_roms_own_tables`, which gates, and by five
+  hand-derived `vdp::tests`: odd source, odd length, odd autoincrement, autoincrement 2, and the aligned
+  control. *Residual, not fixed here:* each matrix record's first eight words still differ from hardware
+  under every copy model. Those are data-port reads of `$0010`/`$0020` interleaved with CRAM writes after
+  the copy (ROM `$EA2C..$EB6E`), a post-copy read-path behaviour. So in the ROM's own tally tests
+  96-122 stay red, and only test 26 flips: whole ROM 75/47/122 before, 76/46/122 after. The other copy
+  rows do not read a destination image and are unchanged. Test 29 "DMA Copy Source Reg Update" (the
+  source register after a copy) stays red; the busy-flag copy tests 37, 39 and 41 pass before and after.
+  *Mutations* (release profile). Each was applied to `run_copy` alone, since the fill arm has an identical
+  write line, and each was restored from the fix commit.
+  - Both `^ 1` dropped (the pre-fix code): the four odd unit tests fail, each saying "BOTH halves are
+    missing". The ROM test reports 26 images off the table: test 26 and 25 matrix cases, everything but
+    the two aligned controls.
+  - Only the read `^ 1` dropped: the four odd cases fail naming "the READ half", and the ROM test reports
+    all 28 images wrong.
+  - Only the write `^ 1` dropped: the four odd cases fail naming "the WRITE half", and the ROM test again
+    reports all 28.
+  Either half alone also byte-swaps every aligned word. That fails the aligned control and two existing
+  tests, `bus::tests::vram_copy_moves_bytes_within_vram` and `copy_updates_the_sat_cache_on_window_hits`:
+  one half without the other is the worst model.
 * **F-FILLTGT — the fill path's two target decodes disagree on an invalid code.** (Registered 2026-08-03
   by slice A3b; pre-existing asymmetry that A3b's guard made visible, deliberately NOT fixed there.)
   **Code anchor: `Vdp::code_names_a_write_target` in `crates/oracle-core/src/vdp.rs`** — grep that name to
@@ -952,6 +1005,8 @@ unamended — see F-POSTHOC-STALE-CARRY.
   with no evidence of its own, which is a larger unevidenced step than applying a pinned rule consistently.
   (Deliberately a different call from **F-COPYXOR**: there the evidence points *at* a change we declined
   for want of a ROM that exercises it; here the evidence pins a general rule and only its reach is open.)
+  (2026-09-12: a vendored ROM does exercise copy, VDPFIFOTesting tests 26 and 96-122, and F-COPYXOR is
+  closed. That changes nothing here: those tests arm no CRAM/VSRAM fill.)
   *What would settle it:* a ROM or BlastEm instrument that arms a CRAM or VSRAM fill and reads the armed
   entry back — if the entry holds the trigger word, the current behaviour is right; if it is untouched, the
   priming write is VRAM-only and the guard needs a `Target::Vram` clause. Low practical risk (a CRAM/VSRAM
