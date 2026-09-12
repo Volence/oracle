@@ -55,8 +55,8 @@ use std::time::{Duration, Instant};
 
 use stats::Series;
 
-/// Active display height, matching `crates/oracle-frontend/src/main.rs`.
-const HEIGHT: usize = 224;
+/// Active display height: [`oracle_core::vdp::ACTIVE_LINES`], the core's one owner of it (lens M53/M67).
+const HEIGHT: usize = oracle_core::vdp::ACTIVE_LINES as usize;
 /// One 60 Hz frame period.
 const FRAME_PERIOD: Duration = Duration::from_nanos(16_666_667);
 /// Device callbacks treated as warm-up (the pre-roll reservoir filling), excluded from the steady-state

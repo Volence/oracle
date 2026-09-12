@@ -777,8 +777,21 @@ pub enum StallKind {
     Copy,
 }
 
-/// The V-counter value at which vblank starts (line 224 in the 224-line mode these fixtures run in).
-const PROF_VBLANK_LINE: u8 = 0xE0;
+/// The V-counter value at which vblank starts: that of the first blanking line, line
+/// [`ACTIVE_LINES`](crate::vdp::ACTIVE_LINES) (224 in the V28 mode these fixtures run in, so `$E0`).
+///
+/// **Derived, not restated** (lens M53/M67). In NTSC V28 the V counter reads the line number itself up to
+/// its `0xEA`→`0xE5` jump (recon R2; [`Vdp::v_counter`](crate::vdp::Vdp::v_counter)), so the first
+/// blanking line's V count is `ACTIVE_LINES` as a byte. The compile-time assertion is the condition that
+/// makes that true: a height past the jump fails the build rather than emitting a spin on a V count the
+/// counter never reads.
+const PROF_VBLANK_LINE: u8 = {
+    assert!(
+        crate::vdp::ACTIVE_LINES <= 0xEA,
+        "the first blanking line's V count equals its line number only below the V28 jump"
+    );
+    crate::vdp::ACTIVE_LINES as u8
+};
 
 /// Image size for [`build_profiler`]: enough for the vectors, the handler block and the routines —
 /// including the preemption witness's three, which sit above the block [`ProfilerShape::Stall`] fills.

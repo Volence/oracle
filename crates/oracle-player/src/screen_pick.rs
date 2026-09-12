@@ -25,9 +25,11 @@
 //!
 //! "The mask the glass was drawn with" and "the mask the bus holds" are two different facts, and they can
 //! separate: the mask can move *after* the picture was made — the palette can call
-//! `emulator/set_layer_enabled` during the same `build_ui` that draws the picture — or a masked re-render
-//! can fail to produce a picture at all. In that window the glass is one picture and the bus is describing
-//! another, and there is no honest answer to give about a dot.
+//! `emulator/set_layer_enabled` during the same `build_ui` that draws the picture. In that window the glass
+//! is one picture and the bus is describing another, and there is no honest answer to give about a dot.
+//! (⚑ This also said "or a masked re-render can fail to produce a picture at all" until lens M42: the only
+//! failure it could mean was a `width == 0` guard in `Machine::render_masked` that could not fire, and is
+//! gone.)
 //!
 //! So the gate is now **narrow and exact**: a click is refused only while [`Panel::pick`]'s `glass`
 //! argument disagrees with `bus.layers()`, and the refusal says which is which. That is
@@ -1607,7 +1609,7 @@ mod tests {
     use oracle_core::state_hash::fnv1a_bytes;
 
     const W: usize = 320;
-    const H: usize = 224;
+    const H: usize = crate::machine::HEIGHT;
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> ERect {
         ERect::from_min_size(Pos2::new(x, y), Vec2::new(w, h))
@@ -2281,7 +2283,7 @@ mod tests {
         let mut panel = Panel::default();
 
         // The control: unmasked, (2,2) is plane A and the click arms its pattern in VRAM.
-        assert!(machine.render_masked(LayerMask::ALL));
+        machine.render_masked(LayerMask::ALL);
         let glass = machine.image_mask();
         panel.click(&mut machine, &mut bus, glass, (2, 2));
         let unmasked = armed_on_the_machine(&mut machine, &mut bus);
@@ -2307,7 +2309,7 @@ mod tests {
             }
         }
         let mask = bus.layers();
-        assert!(machine.render_masked(mask), "the masked picture must exist");
+        machine.render_masked(mask);
         assert_eq!(
             machine.image_mask(),
             Some(mask),
@@ -2352,7 +2354,8 @@ mod tests {
     /// **The one thing still refused: the glass and the machine holding different masks.**
     ///
     /// Narrow, and reachable — the palette can call `emulator/set_layer_enabled` during the same
-    /// `build_ui` that drew the picture, and a masked re-render can fail outright. In that window there is
+    /// `build_ui` that drew the picture (a masked re-render failing outright was the other case named here
+    /// until lens M42 showed it could not happen). In that window there is
     /// no honest answer about a dot, so the panel says so rather than describing a picture that is not
     /// there, and it leaves the previously armed watch exactly where it was: the gate is read before
     /// anything is resolved *or retired*.
@@ -2360,7 +2363,7 @@ mod tests {
     fn a_click_is_refused_while_the_glass_and_the_machine_disagree_about_the_mask() {
         let (mut machine, mut bus) = rig();
         let mut panel = Panel::default();
-        assert!(machine.render_masked(LayerMask::ALL));
+        machine.render_masked(LayerMask::ALL);
         let glass = machine.image_mask();
         panel.click(&mut machine, &mut bus, glass, (2, 2));
         let before = armed_on_the_machine(&mut machine, &mut bus);
@@ -2409,7 +2412,7 @@ mod tests {
         );
 
         // …and once the picture catches up, the same click answers. The gate is a gate, not a wall.
-        assert!(machine.render_masked(bus.layers()));
+        machine.render_masked(bus.layers());
         let glass = machine.image_mask();
         panel.click(&mut machine, &mut bus, glass, (200, 100));
         assert!(
@@ -2536,7 +2539,7 @@ mod tests {
         let mut panel = Panel::default();
         // S2a: a click is answered against *the picture on the glass*, so there has to be one. Nothing is
         // masked here, so this is the ordinary frame every other assertion in this row is about.
-        assert!(machine.render_masked(LayerMask::ALL));
+        machine.render_masked(LayerMask::ALL);
 
         // Nothing is armed before the first click — the control, taken while it is still unambiguous.
         assert_eq!(

@@ -24,6 +24,9 @@
 //! (defaults: the frozen `s4.debug.bin`, 120 frames, 200 timing reps, no dump).
 
 use oracle_core::system::System;
+// Active display height in lines — the core's own `ACTIVE_LINES`, the same one `tests/golden_frames.rs` and
+// `tests/conformance_roms.rs` hash over, so a digest here is directly comparable with theirs in shape.
+use oracle_core::vdp::ACTIVE_LINES;
 use std::hint::black_box;
 use std::io::Write;
 use std::process::ExitCode;
@@ -34,10 +37,6 @@ mod rom_source;
 
 const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// Active display height in lines — the same 224 `tests/golden_frames.rs` and `tests/conformance_roms.rs`
-/// hash over, so a digest here is directly comparable with theirs in shape.
-const ACTIVE_LINES: u16 = 224;
 
 /// Render every active line of the current settled state, appending the RGB bytes to `out` (when the caller
 /// wants them) and folding them into the running FNV-1a digest. One function so the hashed bytes and the

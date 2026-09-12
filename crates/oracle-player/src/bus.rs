@@ -1213,9 +1213,10 @@ pub struct Drained {
     pub picture: bool,
     /// **The picture was re-derived under a display mask** (S2a) — see
     /// [`Machine::render_masked`](crate::machine::Machine::render_masked). `false` on every iteration with
-    /// nothing hidden, which is the overwhelming majority, and `false` too when the masked render could not
-    /// produce a picture at all (a display so configured that a line has no dots in it) — in which case the
-    /// glass keeps the unmasked picture it had and the Screen tab says so rather than describing it.
+    /// nothing hidden, which is the overwhelming majority, and `true` on every iteration with something
+    /// hidden. ⚑ This also said it was `false` "when the masked render could not produce a picture at all
+    /// (a display so configured that a line has no dots in it)" until lens M42: no display is so configured
+    /// (the width is `Vdp::active_display`'s, 256 or 320), and the guard that case described is gone.
     pub masked_picture: bool,
     /// The symbol cache was re-derived from the engine's own listing.
     ///
@@ -1500,7 +1501,8 @@ pub fn drain(
     // picture is byte-for-byte the captured frame this loop has always shown.
     let layers = bus.layers();
     if !layers.is_all() {
-        out.masked_picture = machine.render_masked(layers);
+        machine.render_masked(layers);
+        out.masked_picture = true;
     }
     out
 }
@@ -2195,10 +2197,7 @@ mod masked_picture {
         let (mut machine, mut bus) = rig();
 
         // The unmasked picture, and the fixture's own precondition.
-        assert!(
-            machine.render_masked(LayerMask::ALL),
-            "the fixture must produce a picture at all"
-        );
+        machine.render_masked(LayerMask::ALL);
         let plane_dot = dot(&machine, 2, 2);
         let backdrop_dot = dot(&machine, 200, 100);
         assert_ne!(
@@ -2254,10 +2253,8 @@ mod masked_picture {
             !d.masked_picture,
             "nothing is hidden, so nothing re-renders"
         );
-        assert!(
-            machine.render_masked(LayerMask::ALL),
-            "and the next completed frame paints plane A again"
-        );
+        // …and the next completed frame paints plane A again.
+        machine.render_masked(LayerMask::ALL);
         assert_eq!(dot(&machine, 2, 2), plane_dot);
     }
 
@@ -2272,7 +2269,7 @@ mod masked_picture {
     fn every_layer_the_bus_offers_reaches_the_picture() {
         for (name, layer) in LayerMask::targets() {
             let (mut machine, mut bus) = rig();
-            assert!(machine.render_masked(LayerMask::ALL));
+            machine.render_masked(LayerMask::ALL);
             hide(&mut machine, &mut bus, name, false);
             let d = drained(&mut machine, &mut bus);
             assert!(
@@ -2306,7 +2303,7 @@ mod masked_picture {
     #[test]
     fn an_unmasked_picture_on_the_glass_is_masked_by_the_next_drain() {
         let (mut machine, mut bus) = rig();
-        assert!(machine.render_masked(LayerMask::ALL));
+        machine.render_masked(LayerMask::ALL);
         let plane_dot = dot(&machine, 2, 2);
         hide(&mut machine, &mut bus, "planeA", false);
 

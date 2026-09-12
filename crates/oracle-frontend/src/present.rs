@@ -304,7 +304,7 @@ pub fn initial_window_size(
 mod tests {
     use super::*;
 
-    const H: usize = 224;
+    const H: usize = oracle_core::vdp::ACTIVE_LINES as usize;
 
     /// 4:3 is 4:3 in **both** display modes — that is the whole point of `Tv`. A real console puts H32's 256
     /// dots and H40's 320 dots across the same television width, so the presented rectangle must be identical

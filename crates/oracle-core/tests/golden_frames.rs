@@ -12,9 +12,7 @@
 //! regen. The `golden_frame_hash_discriminates` test proves the harness actually depends on the pixels.
 
 use oracle_core::rng::SplitMix64;
-use oracle_core::vdp::Vdp;
-
-const ACTIVE_LINES: u16 = 224;
+use oracle_core::vdp::{Vdp, ACTIVE_LINES};
 
 /// A powered-on VDP with cleared VRAM, **in Mode 5**. Every scene below programs Mode-5-only state
 /// (autoincrement, plane/window bases, H40, two-cell scroll), and in Mode 4 — reg 1 bit 2 clear, which is

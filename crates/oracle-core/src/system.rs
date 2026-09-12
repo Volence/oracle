@@ -19,7 +19,7 @@ use crate::m68000::registers::Registers;
 use crate::render::ScanlineScaffold;
 use crate::scheduler::{EventKind, Scheduler};
 use crate::state_hash::{StateHash, CRAM_SIZE, REG_COUNT, VRAM_SIZE, VSRAM_SIZE};
-use crate::vdp::{Vdp, VdpTarget, LINES_PER_FRAME, MCLK_PER_LINE};
+use crate::vdp::{Vdp, VdpTarget, ACTIVE_LINES, LINES_PER_FRAME, MCLK_PER_LINE};
 use crate::ym2612::Ym2612;
 use crate::z80::{Z80Bus, Z80};
 
@@ -1375,7 +1375,7 @@ impl System {
                 // armed flag on purpose — one source of truth, nothing to keep in sync. A hoist would buy one
                 // inlined `bool` call per line against re-introducing that second source, which is not a
                 // trade worth making for a branch the optimiser already sees through.
-                if line < 224 {
+                if line < u64::from(ACTIVE_LINES) {
                     if sink.wants_scanlines() {
                         // Retain the resolved row + a 128-byte CRAM snapshot instead of decoding it now
                         // (conformance Limitation L1); the run loop decodes it at the next line's event.
@@ -1385,7 +1385,7 @@ impl System {
                         self.vdp.advance_scanline(line as u16);
                     }
                 }
-                if line == 224 {
+                if line == u64::from(ACTIVE_LINES) {
                     // The frame-structure hook (`F-SCANLINE-CAPTURE`). Active display has just ended, so a
                     // frame-accumulating sink's buffer holds exactly one complete frame right here — see
                     // [`BusEventSink::on_frame_boundary`] for why this instant, and not line 0, is the

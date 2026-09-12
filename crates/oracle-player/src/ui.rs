@@ -7464,8 +7464,9 @@ mod overlay_layout_tests {
 ///
 /// [`Panels::screen`] used to read [`screen_pick::fit`] straight and `return` on a zero result: no
 /// picture, no sentence, and the standing readout of the last click gone with it. The pane was then
-/// indistinguishable from a broken one, which is the failure `plane_picture` records one tab over and the
-/// same rule `machine.rs` states as *no picture rather than a black rectangle presented as one*.
+/// indistinguishable from a broken one, which is the failure `plane_picture` records one tab over, and the
+/// loud-on-unmeasurable rule: *no picture rather than a black rectangle presented as one*. (⚑ This cited
+/// `machine.rs` as stating that rule until lens M42 removed the unreachable guard it was stated on.)
 ///
 /// **What is asserted here and what is not.** [`screen_room`] and [`no_picture`] are the decision and the
 /// drawing, and both are checkable on a headless `egui::Context` the way `overlay_layout_tests` already
