@@ -622,7 +622,10 @@ fn a_limit_above_the_cap_is_a_legal_page_size_and_is_clamped_to_it() {
     let e = c.err("emulator/checkpoint_list", json!({"limit": 0}));
     assert_eq!(e["code"], json!(-32602), "{e}");
     assert!(
-        e["message"].as_str().unwrap_or_default().contains("`limit`"),
+        e["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("`limit`"),
         "the refusal must name the field it is about: {e}"
     );
 }

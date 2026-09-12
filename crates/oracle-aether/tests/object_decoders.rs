@@ -1102,7 +1102,9 @@ fn the_caveat_condition_is_still_the_fragments() {
     for row in ["emulator/object_slot", "emulator/player_state"] {
         let text = methods[row]["result"]["properties"]["caveat"]["description"]
             .as_str()
-            .unwrap_or_else(|| panic!("UNMEASURABLE: {row}'s fragment declares no caveat description"));
+            .unwrap_or_else(|| {
+                panic!("UNMEASURABLE: {row}'s fragment declares no caveat description")
+            });
         assert_eq!(
             text, "As emulator/object_list.",
             "{row}'s caveat rule moved away from object_list's: {text}"

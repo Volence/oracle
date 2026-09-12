@@ -10618,7 +10618,11 @@ mod tests {
                 files += 1;
                 let text = std::fs::read_to_string(&path).expect("a source file is readable");
                 let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-                let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
                 // No spelling can occur inside another: each is its head followed directly by the
                 // code's first character, so `new(crate::rpc::…` contains neither `new(code::…` nor
                 // `new(rpc::…`. Every match is therefore a distinct construction.
@@ -10656,7 +10660,10 @@ mod tests {
         sys.load_rom(oracle_core::testrom::build());
         sys.reset();
         let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
-        e.set_symbols(Some(SymbolTable::parse(text).expect("fixture parses")), None);
+        e.set_symbols(
+            Some(SymbolTable::parse(text).expect("fixture parses")),
+            None,
+        );
         e
     }
 
@@ -10801,9 +10808,9 @@ mod tests {
                 .lookup_symbol(&json!({ "name": name }))
                 .expect("an exact demangled hit");
             assert_eq!(out["ambiguous"], json!(true), "{name}: {out}");
-            let caveat = out["caveat"].as_str().unwrap_or_else(|| {
-                panic!("{name}: an ambiguous answer keeps its caveat: {out}")
-            });
+            let caveat = out["caveat"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name}: an ambiguous answer keeps its caveat: {out}"));
             assert!(
                 caveat.starts_with(&format!("{addrs} different addresses")),
                 "{name}: the caveat must count ADDRESSES ({addrs}), not symbols: {caveat}"

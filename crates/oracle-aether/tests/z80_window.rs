@@ -226,7 +226,10 @@ fn an_empty_bytes_payload_is_refused_by_name_like_its_siblings() {
         ("emulator/z80_write", "0x00000600"),
     ] {
         let e = c.err(method, json!({"addr": addr, "bytes": "0x"}));
-        assert_eq!(e["code"], -32602, "{method}: an empty payload is a params refusal: {e}");
+        assert_eq!(
+            e["code"], -32602,
+            "{method}: an empty payload is a params refusal: {e}"
+        );
         let msg = e["message"].as_str().unwrap_or_default();
         assert!(
             msg.contains("`bytes`"),
