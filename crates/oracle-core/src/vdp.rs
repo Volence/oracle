@@ -755,12 +755,14 @@ impl Vdp {
     /// VDPFIFOTesting test 10 (ROM `$FCAA` word 7) pins the case CD0 alone cannot catch: a first-half-only
     /// word over a CRAM *read* command leaves code `001001`, which looks like a write but has no target.
     ///
-    /// Shared by BOTH data-port write paths — the ordinary write and the A3b fill-trigger write — so the
-    /// valid-code set can only ever be changed in one place. Note [`Vdp::target_of`] does **not** agree with
-    /// this predicate: it falls back `_ => Vram` for an unrecognised nibble, which is why a fill armed on a
-    /// no-write-target code has its trigger suppressed here yet its body still writes VRAM in
-    /// [`Vdp::run_fill`]. That asymmetry is unpinned and tracked as follow-up **F-FILLTGT** in
-    /// `docs/2026-07-25-testrom-conformance.md`.
+    /// Shared by **all three** write paths — the ordinary data-port write, the A3b fill-trigger write, and
+    /// (since A5) the fill *body* in [`Vdp::run_fill`] — so the valid-code set can only ever be changed in
+    /// one place. [`Vdp::target_of`] still does not agree with this predicate: it falls back `_ => Vram` for
+    /// an unrecognised nibble, because it answers "which region does this code name", which is a different
+    /// question from "may this code write". Nothing now writes on the strength of `target_of` alone. That
+    /// asymmetry used to reach memory — a fill armed on a no-write-target code had its trigger suppressed
+    /// here and its body wrote VRAM anyway — and was tracked as follow-up **F-FILLTGT**, **retired
+    /// 2026-09-12**: VDPFIFOTesting test 34 group 3 does cover the case, and it says the body writes nothing.
     fn code_names_a_write_target(code: u8) -> bool {
         matches!(code & 0x0F, 0x1 | 0x3 | 0x5)
     }
@@ -1464,9 +1466,9 @@ impl Vdp {
                 // Same invalid-target guard as the non-DMA path below (one shared predicate, so the
                 // valid-code set can only be changed in one place): a code whose low nibble names no write
                 // target accepts the word into the FIFO and steps the address, but the *trigger* reaches no
-                // memory. The fill *body* is not so guarded — `run_fill` resolves through `target_of`'s
-                // `_ => Vram` fallback and still writes VRAM. That inconsistency is unpinned; follow-up
-                // **F-FILLTGT** in `docs/2026-07-25-testrom-conformance.md`.
+                // memory. Since A5 the fill *body* takes the same guard (`run_fill`), so a no-write-target
+                // fill runs and writes nowhere — follow-up **F-FILLTGT** retired 2026-09-12 by
+                // VDPFIFOTesting test 34 group 3.
                 //
                 // The guard admits all three write targets, so a CRAM/VSRAM fill (code `$23`/`$25`) is
                 // primed too. That is EXTRAPOLATED: the ROM's pin is VRAM-only, and Nemesis's "completed as
@@ -1496,10 +1498,32 @@ impl Vdp {
     /// routes through the SAT write-through (R5 rider: fill steps hit the window compare like any VRAM write).
     /// Length is in bytes (RD2); regs 19/20 → 0 after the transfer (recon R4), and source regs 21/22 advance by
     /// one per step even though a fill never reads its source ([`Vdp::advance_dma_source_low16`], A3).
+    ///
+    /// **A5 / FILL-TGT: the body shares the data-port write decode.** If the live code's low nibble names no
+    /// write target ([`Vdp::code_names_a_write_target`]) the fill **still runs** — it walks its address, counts
+    /// its length down to 0, advances source registers 21/22 and opens its busy window — but no byte reaches
+    /// memory. This closes the asymmetry booked as follow-up **F-FILLTGT**, where the trigger write was
+    /// guarded and the body was not (the body resolved through [`Vdp::target_of`]'s `_ => Vram` fallback and
+    /// wrote VRAM anyway).
+    ///
+    /// VDPFIFOTesting **test 34** "DMA Fill Control Port Writes" (ROM `$45B2`) group 3 (`$4898..$4948`) is the
+    /// table. It arms a 4-byte fill with `$40020082` (code `$21`, VRAM `$8002`), then writes register `$8F02`
+    /// — and a register write replaces CD1-CD0 with `10` (genvdp.txt 1.5f; VDPFIFOTesting test 13), leaving
+    /// code `$22`, which names no write target. Then comes the `$68AC` trigger at `$48EE`. On hardware
+    /// `$8000-$800F` reads back **completely unchanged** (`1122 3344 5566 7788 99aa bbcc ddee ff00`); before
+    /// this fix we wrote `5568 7768 9968 bb68` into it, the four `$68` bytes of a fill that ran to VRAM.
+    ///
+    /// **Not an early return.** The hardware fill ran: group 4 (`$4954`) sets no length and fills well past
+    /// 16 bytes, which is only possible if group 3 left the length counter at 0 — i.e. it counted 4 steps down
+    /// and then group 4's 0 meant 65,536. So the length, the source-register advance (A3, tests 28 and 29) and
+    /// the busy window all still happen; only the write is dropped. Group 3 also *depends* on the busy window:
+    /// its `btst #1` poll at `$48F6` spins until the fill reports done.
     pub fn run_fill(&mut self, len: u16, fill: u16, now: u64) {
         self.now_mclk = now; // C-6: every step of the fill carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
         let target = self.target();
+        // A5 / F-FILLTGT: one shared decode with the port write. False → the engine runs and writes nowhere.
+        let writes = Self::code_names_a_write_target(self.code);
         // The address register the fill engine starts from. Since A3b this is the *post-trigger* value
         // (the trigger's autoincrement has already run), i.e. one step past the armed command address —
         // which is what the engine actually walks. Introspection only (`last_dma`); in neither currency.
@@ -1519,7 +1543,9 @@ impl Vdp {
                     // VDPFIFOTesting test 4 checks (expected table ROM $DC54). `run_copy` takes the same lane
                     // swap on its read AND its write (F-COPYXOR, closed 2026-09-12 by the same ROM's tests 26
                     // and 96-122; see `Vdp::run_copy`).
-                    self.write_vram_byte((self.addr ^ 1) as usize & (VRAM_SIZE - 1), byte);
+                    if writes {
+                        self.write_vram_byte((self.addr ^ 1) as usize & (VRAM_SIZE - 1), byte);
+                    }
                     self.autoinc();
                 }
             }
@@ -1528,7 +1554,9 @@ impl Vdp {
                 // (recon R4(b), "4 writes ago" — a documented hardware bug).
                 let src = self.fifo_snoop_word();
                 for _ in 0..count {
-                    self.write_target(src);
+                    if writes {
+                        self.write_target(src);
+                    }
                     self.autoinc();
                 }
             }
@@ -4439,6 +4467,123 @@ mod tests {
             v.last_dma().expect("the fill recorded a DmaRecord").dest,
             0x8001,
             "a fill armed at $8000 with autoinc 1 reports dest = $8001 (post-trigger address)"
+        );
+    }
+
+    #[test]
+    fn a_fill_whose_code_names_no_write_target_writes_nothing_but_still_runs() {
+        // A5 / FILL-TGT, and the retirement of follow-up F-FILLTGT.
+        //
+        // VDPFIFOTesting **test 34** "DMA Fill Control Port Writes" (ROM $45B2) group 3, disassembled at
+        // $4898..$4948, is replayed here step for step:
+        //
+        //   $489C  reg $8F01   autoinc 1
+        //   $48A4  reg $8154   M5 + DMA-enable + display
+        //   $48B2  reg $9304   length low  = 4      ($48C0: reg $9400, length high = 0)
+        //   $48C6  reg $9780   register 23 = fill mode
+        //   $48DC  $40020082   the fill command: code $21 (VRAM write + CD5), address $8002
+        //   $48E6  reg $8F02   autoinc 2 — AND a register write replaces CD1-CD0 with `10`, so the code
+        //                      becomes $22, which names NO write target (test 13 pins that rule)
+        //   $48EE  $68AC       the trigger
+        //   $48F6  btst #1     poll until DMA-busy clears
+        //   $4914  $00000002   VRAM read at $8000, then eight words
+        //
+        // Hardware reads back `1122 3344 5566 7788 99aa bbcc ddee ff00` — the initial pattern, COMPLETELY
+        // unchanged. Before this fix we wrote `1122 3344 5568 7768 9968 bb68 ddee ff00`: the trigger was
+        // suppressed (word 1 is right) but the body's four $68 bytes landed at $8005/$8007/$8009/$800B.
+        //
+        // And the fill still RAN. Group 4 ($4954) programs no length and fills well past the 16 bytes the
+        // group reads, which is only possible if group 3 left the length counter at 0 — so it counted its
+        // 4 steps. That is why this is a suppressed write, not an early return.
+        let mut v = fresh();
+        let pattern: [u8; 16] = [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+            0xFF, 0x00,
+        ];
+        v.vram[0x8000..0x8010].copy_from_slice(&pattern);
+        v.regs[1] = 0x54; // ROM $48A4
+        v.regs[0x0F] = 1; // ROM $489C
+        v.regs[0x13] = 4; // ROM $48B2 / $48C0: a 4-byte fill
+        v.regs[0x14] = 0;
+        v.regs[0x17] = 0x80; // ROM $48C6
+        set_source_low16(&mut v, 0x00FA); // A3's group-2 start, so 21/22 are observable here too
+        command(&mut v, 0x21, 0x8002); // ROM $48DC
+        v.control_write(0x8F02, 0); // ROM $48E6 — autoinc 2, and the code becomes $22
+        assert_eq!(v.code, 0x22, "a register write replaces CD1-CD0 with `10`");
+        assert!(
+            !Vdp::code_names_a_write_target(v.code),
+            "code $22 names no write target (the premise of test 34 group 3)"
+        );
+        v.data_write(0x68AC); // ROM $48EE
+        let Some(DmaRequest::Fill { len, fill }) = v.take_dma_request() else {
+            panic!("the trigger must still arm the fill — the fill runs, it just writes nowhere");
+        };
+        assert_eq!((len, fill), (4, 0x68AC), "a 4-byte fill of $68");
+        v.run_fill(len, fill, 0);
+
+        assert_eq!(
+            v.vram[0x8000..0x8010],
+            pattern,
+            "test 34 group 3: $8000-$800F reads back unchanged on hardware"
+        );
+        // The three things the fill must still do — the half that a `return` would silently break.
+        assert_eq!(
+            (v.regs[0x14], v.regs[0x13]),
+            (0, 0),
+            "the fill consumed its length (group 4 depends on the counter reaching 0)"
+        );
+        assert_eq!(
+            source_low16(&v),
+            0x00FE,
+            "A3: source registers 21/22 still advance by the length (tests 28/29)"
+        );
+        assert!(
+            v.dma_busy(0),
+            "the busy window still opens — group 3's `btst #1` poll at ROM $48F6 waits on it"
+        );
+        assert_eq!(
+            v.addr, 0x800C,
+            "the engine still walked its address: $8002 + 2 for the suppressed trigger + 2 × 4 steps"
+        );
+    }
+
+    #[test]
+    fn a_fill_that_does_name_a_write_target_is_untouched_by_the_write_decode() {
+        // CONTROL for the test above: the same group with the register write REMOVED, so the code stays $21.
+        // Everything else identical. The four $68 bytes must land exactly where they did before A5 —
+        // $8005/$8007/$8009/$800B under autoinc 2 — which is what test 34's groups 5-8 read
+        // (`1122 68ac 5568 7768 9968 bb68 ddee ff00`, where the trigger DID land as well).
+        let mut v = fresh();
+        let pattern: [u8; 16] = [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+            0xFF, 0x00,
+        ];
+        v.vram[0x8000..0x8010].copy_from_slice(&pattern);
+        v.regs[1] = 0x54;
+        v.regs[0x0F] = 2; // autoinc 2, as $8F02 leaves it
+        v.regs[0x13] = 4;
+        v.regs[0x14] = 0;
+        v.regs[0x17] = 0x80;
+        command(&mut v, 0x21, 0x8002);
+        v.data_write(0x68AC);
+        let Some(DmaRequest::Fill { len, fill }) = v.take_dma_request() else {
+            panic!("the trigger must arm the fill");
+        };
+        v.run_fill(len, fill, 0);
+        assert_eq!(
+            (v.vram[0x8002], v.vram[0x8003]),
+            (0x68, 0xAC),
+            "code $21 names a write target, so the trigger word lands"
+        );
+        assert_eq!(
+            [
+                v.vram[0x8005],
+                v.vram[0x8007],
+                v.vram[0x8009],
+                v.vram[0x800B]
+            ],
+            [0x68, 0x68, 0x68, 0x68],
+            "…and so do the fill's four $68 bytes (test 34 groups 5-8)"
         );
     }
 
