@@ -155,6 +155,13 @@ absolute-deadline + bounded-overshoot pattern** the 68000 frame loop already use
 (`frame_boundary_mclk`, `run_frames_n_equals_n_times_one`, `overshoot_never_accumulates`), reused verbatim for
 the Z80's frontier. There is no separate Z80 event loop, no min-heap of two CPUs, no run-ahead beyond `now`.
 
+> **2026-09-12 (lens finding M21): the gated-off line of the pseudo-code above is right for reset only.**
+> `z80_frontier_mclk = now` refunded, at every bus grant, the tail of the instruction the grant cut: up to one
+> free instruction per grant, 93 over 200 grants in the reproduction. Bus-granted, the frontier now moves with
+> `now` and keeps that tail (`now + (frontier - step_start)`); held in reset it is still `now`. The ruling, its
+> Zilog UM0080 evidence and why `max(frontier, now)` is not enough are in ZC5's dated line below and in
+> `System::catch_up_z80`'s doc.
+
 **Confidence**: high. **Classification**: architecture (determinism). **Open remainder**: exact sub-cycle
 contention ordering (deferred timing, ZC12).
 
@@ -180,6 +187,19 @@ The model precludes each known failure mode by construction:
   When a game later releases reset, the Z80 resumes from the current `now` with **zero** accumulated backlog —
   it does not suddenly replay millions of skipped instructions. This is both correct (a reset Z80 executes
   nothing and has no notion of "catching up") and essential to keeping run time bounded.
+
+  > **2026-09-12 (lens finding M21):** "advanced to `now`" is now the **held-in-reset** rule only. A bus grant
+  > is not a reset. Zilog UM0080 (UM008011-0816): BUSREQ "is always recognized at the end of the current
+  > machine cycle", and "The maximum time for the CPU to respond to a bus request is the length of a machine
+  > cycle", so the Z80 lets go of the bus mid-instruction and finishes that instruction after the release.
+  > This core runs instructions whole, so while bus-granted the frontier moves with `now` and **keeps the tail**
+  > of the instruction the grant cut; it still never falls behind `now`, so there is still no backlog.
+  > `max(frontier, now)` keeps the tail only while the grant is shorter than the tail (under 345 mclk), so it
+  > still refunds a real grant; measured by mutation, it refunds the same 93 instructions over 200 grants as
+  > the old line. Reset is different: UM0080's RESET pin "clears the Program Counter", the cut instruction is
+  > abandoned, and the frontier is `now` exactly as written above. A reset asserted under a grant cancels the
+  > tail the grant was carrying. Code and tests: `System::catch_up_z80`, and the four M21 tests beside
+  > `a_reset_pulse_revives_a_z80_halted_with_interrupts_disabled` in `system.rs`.
 
 **Confidence**: high. **Classification**: architecture (determinism). **Open remainder**: none.
 
@@ -466,6 +486,8 @@ Z80-RAM store.
   (byte & 1) != 0`); `$A11200` read reports the latch. `$A11100` `z80_busreq` is already real (DR-1a).
 - **`run_until`:** the ZC4 catch-up block (Z80 chases `now` when gated on; advances the frontier to `now` when
   gated off). Since nothing releases reset in any fixture, the catch-up loop body runs **zero** times.
+  *(2026-09-12, lens M21: bus-granted, the frontier keeps the cut instruction's tail instead of dropping to
+  `now`; only held-in-reset advances it to `now`. See ZC5's dated line.)*
 - **`export_state`:** region 4 (Z80 regs, `0x40`) **stays all-zero** this slice — do **not** flip live yet.
 
 **Why it is currency-neutral (S8, by construction):** every committed fixture leaves the Z80 in reset
@@ -507,7 +529,8 @@ point (how much opcode work rides the first commit) is the overseer's slice-size
    ×15 site), in a **fixed total order** (events → 68000 step → Z80 catch-up-to-`now` → IPL) — the same
    absolute-deadline + bounded-overshoot pattern the 68000 frame loop already uses. Gated on
    `z80_running && !z80_busreq`; while gated off the frontier tracks `now` so reset-release carries **zero**
-   backlog. All four failure modes (non-deterministic run-ahead, floating cycle debt, host-stack mid-instruction
+   backlog *(2026-09-12, lens M21: held in reset it tracks `now`; bus-granted it moves with `now` but keeps the
+   cut instruction's tail, see ZC5)*. All four failure modes (non-deterministic run-ahead, floating cycle debt, host-stack mid-instruction
    state, backlog explosion) are precluded by construction (ZC5). Shared state (68000↔Z80 RAM, Z80↔68k window)
    resolves unambiguously because the order is a pure function of state (ZC7); sub-cycle contention timing is
    the one named deferral.

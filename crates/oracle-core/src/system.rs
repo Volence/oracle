@@ -514,10 +514,13 @@ pub struct System {
     /// module's own `z80_executes_in_the_run_loop_when_released` proves it by doing exactly that.
     z80: Z80,
     /// The absolute mclk up to which the Z80 has been simulated (its next-instruction boundary) — the Z80
-    /// frontier the catch-up in [`System::run_until`] chases the 68000's clock with (ZC4). When the Z80 is
-    /// gated off (held in reset / bus-granted) it is advanced to `now` each iteration so a later reset-release
-    /// carries **zero** backlog (ZC5). Absolute + bincode-serialized (like `frame_boundary_mclk`) so the chase
-    /// resumes exactly across snapshot/restore; **not** in `export_state` (a timing scalar). Power-on 0.
+    /// frontier the catch-up in [`System::run_until`] chases the 68000's clock with (ZC4). Between run-loop
+    /// iterations it stands at or up to one instruction past `now`. Held in reset it is set to `now` each
+    /// iteration, so a later reset-release carries **zero** backlog (ZC5); bus-granted it moves with `now`
+    /// but keeps the tail of the instruction the grant cut, which the Z80 still owes after the release
+    /// (M21) — see [`catch_up_z80`](System::catch_up_z80). Absolute + bincode-serialized (like
+    /// `frame_boundary_mclk`) so the chase resumes exactly across snapshot/restore; **not** in `export_state`
+    /// or `state_hash` (a timing scalar). Power-on 0.
     z80_frontier_mclk: u64,
     /// The Z80's 9-bit bank-address register (`$6000`), serial-loaded LSB-first, selecting the 32 KiB 68000
     /// page the Z80's `$8000-$FFFF` window maps to (Plutiedev "Z80 banking"). A bus-arbitration-class scalar
@@ -1528,11 +1531,13 @@ impl System {
             }
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
             // Catch the Z80 up to the 68000's new `now` (ZC4): the fixed total order is events → 68000 step
-            // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`. No committed ROM fixture releases
-            // the Z80, so on the corpus this only tracks `now` — but the gate is live and a released Z80
-            // executes here (H16: this said "held in reset this slice, so the catch-up runs zero
-            // instructions", at the top of the production run loop, long after that stopped being the rule).
-            self.catch_up_z80(sink);
+            // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`. The gate is live and a released
+            // Z80 executes here, in the suite as well as in games: the committed aeon replay fixtures and the
+            // vendored test ROMs release it (measured for M21; this said "no committed ROM fixture releases
+            // the Z80" until then, and H16 before that found "held in reset this slice, so the catch-up runs
+            // zero instructions" at the top of the production run loop). `now` is this iteration's clock
+            // before the step: a bus grant carries the Z80's tail from it (M21).
+            self.catch_up_z80(now, sink);
             // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
             // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit
             // register write mid-step is picked up here too (recon R12).
@@ -1776,21 +1781,55 @@ impl System {
     }
 
     /// Chase the Z80 frontier up to the 68000's current `now` (ZC4/ZC5) — the parallel of the 68000's clock
-    /// site, and the **one and only** Z80-cycle → mclk conversion (`t × MCLK_PER_Z80_CYCLE`).
+    /// site, and the **one and only** Z80-cycle → mclk conversion (`t × MCLK_PER_Z80_CYCLE`). `step_start`
+    /// is the clock the previous call left the frontier against: the run loop's clock before the 68000
+    /// step that just ran.
     ///
-    /// When the Z80 is gated on (`z80_running && !z80_busreq`) it runs whole instructions until its absolute
-    /// frontier reaches or passes `now`, carrying the bounded overshoot forward — the identical
-    /// absolute-deadline pattern the 68000 frame loop uses. When gated off (held in reset or bus-granted to
-    /// the 68000) the frontier is advanced to `now`, so it runs nothing but never falls behind: a later
-    /// reset-release resumes from `now` with **zero** backlog (ZC5).
+    /// **The invariant, on every return: `now <= frontier < now + one instruction`.** The frontier is the
+    /// Z80's next instruction boundary, and the gap above `now` (the *tail*) is the part of the last
+    /// instruction the Z80 ran that lies past the 68000's clock. Which of three cases holds decides what
+    /// happens to it:
     ///
-    /// **On the committed ROM corpus only the gated-off branch is taken**, because no fixture releases the
-    /// Z80 (`z80_running == false` in every one) — which is what keeps every frozen currency byte-identical.
-    /// That is a statement about the fixtures, not about this function: the gated-on branch is live, and
-    /// `z80_executes_in_the_run_loop_when_released` drives real instructions through it. This said
-    /// "[`Z80::step`] is never reached" until the lens sweep (finding H16) — the absolute overstating the
-    /// fixture-scoped fact that sat in the same sentence.
-    fn catch_up_z80<S: BusEventSink>(&mut self, sink: &mut S) {
+    /// - **Gated on** (`z80_running && !z80_busreq`): the Z80 runs whole instructions until its absolute
+    ///   frontier reaches or passes `now`, carrying the tail forward — the identical absolute-deadline
+    ///   pattern the 68000 frame loop uses.
+    /// - **Bus granted** (`z80_busreq`, reset released): the Z80 runs nothing, and the tail is **kept**:
+    ///   the frontier moves with the clock, `now + (frontier - step_start)`. The Z80 lets go of the bus
+    ///   between machine cycles, mid-instruction (Zilog UM0080: BUSREQ "is always recognized at the end of
+    ///   the current machine cycle"), and runs the rest of that instruction after the release. This core
+    ///   runs instructions whole, so the instruction a grant cuts has already spent all its T-states; the
+    ///   tail is time the hardware spends *after* the release, and the next instruction starts that late.
+    ///   Setting the frontier to `now` here (what this arm did until lens finding M21) refunded the tail at
+    ///   every grant: up to one free instruction per grant, 93 extra `LD A,(IX+0)` over 200 grants in
+    ///   `a_bus_grant_does_not_refund_the_z80_the_tail_of_the_instruction_it_cut`. `max(frontier, now)`
+    ///   is not the fix either: it keeps the tail only while the grant is shorter than the tail itself,
+    ///   and a real grant (a 68000 upload into Z80 RAM) is far longer.
+    /// - **Held in reset** (`!z80_running`, whatever BUSREQ says): the frontier is `now`, so a later
+    ///   reset-release resumes from the release instant with **zero** backlog (ZC5) and **nothing owed**.
+    ///   Reset clears the program counter (UM0080's RESET pin) and the Z80 starts over with a fetch at
+    ///   `$0000`, so the instruction it cut is abandoned, not finished; a tail a grant was carrying is
+    ///   cancelled the moment reset is asserted under it. The bus keeps `!z80_running` equivalent to "the
+    ///   core is in its reset state" (`MegaDriveBus::store_byte`'s `$A11200` arm), which is what lets this
+    ///   function read the cause off the latches rather than keep a record of its own.
+    ///
+    /// Both gated-off arms see a gate change at 68000-instruction granularity, the granularity the guest's
+    /// `$A11100`/`$A11200` write has, and neither is in `export_state`/`state_hash`. `saturating_sub`
+    /// keeps a frontier that something else left behind the clock (a caller that advances the scheduler
+    /// without running, `scheduler_mut().advance`) from turning into a backlog: it resumes at `now`.
+    ///
+    /// **The suite's ROM corpus takes all three arms.** This said "only the gated-off branch is taken,
+    /// because no fixture releases the Z80" until lens finding M21 measured it with a per-arm instrument
+    /// over the whole release suite: the committed aeon replay fixtures (`fixtures/aeon/s4.debug.bin`,
+    /// whose `Sound_Init` waits for its Z80 driver) and the vendored test ROMs behind the scanline and
+    /// conformance scorecards release the Z80 and take the bus from it, and 25 tests reach the bus-granted
+    /// arm with a tail, the one place M21 changed behaviour. Every frozen currency stayed put under the
+    /// fix, and not by luck: adding 27,360 mclk per grant moved none of them, so **no currency in the suite
+    /// observes grant timing** (stopping the Z80 outright does fail the replay fixtures, which see whether it
+    /// runs, not when). The in-tree `testrom::build` fixture behind the `export_state` and determinism
+    /// goldens does hold the Z80 in reset. `z80_executes_in_the_run_loop_when_released` and the M21 tests
+    /// drive real instructions through the gated-on branch. Before H16 this also said "[`Z80::step`] is
+    /// never reached" — the absolute overstating a fixture-scoped claim that was itself untrue.
+    fn catch_up_z80<S: BusEventSink>(&mut self, step_start: u64, sink: &mut S) {
         let now = self.scheduler.now();
         if self.z80_running && !self.z80_busreq {
             // Read the (Copy) bank table out before the split-borrow, like `sram_map` on the 68k side: the
@@ -1826,8 +1865,14 @@ impl System {
                 let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }
+        } else if self.z80_running {
+            // Bus granted: run nothing, and keep the tail of the instruction the grant cut owed — it is
+            // time the Z80 spends after the release (see the doc above).
+            let tail = self.z80_frontier_mclk.saturating_sub(step_start);
+            self.z80_frontier_mclk = now + tail;
         } else {
-            // Held in reset / bus-granted: run nothing, but track `now` so reset-release carries no backlog.
+            // Held in reset: run nothing and owe nothing. The cut instruction is abandoned, so the Z80
+            // starts at the release instant with no backlog and no tail.
             self.z80_frontier_mclk = now;
         }
     }
@@ -3372,13 +3417,17 @@ mod tests {
         // even though they are not in export_state. A booted, run machine round-trips them byte-for-byte.
         let mut s = booted(0x5A5A);
         s.run_frames(2);
-        // The frontier tracked `now` while the Z80 sat in reset (gated off), so it is non-trivial to carry.
+        // The frontier tracked `now` while the Z80 sat in reset, so it is non-trivial to carry. (Held in
+        // reset it is exactly `now`; bus-granted it would keep a tail, M21.)
         assert_eq!(
             s.z80_frontier_mclk,
             s.scheduler().now(),
-            "the gated-off frontier tracks now (zero backlog on a future reset-release)"
+            "the held-in-reset frontier tracks now (zero backlog on a future reset-release)"
         );
-        assert!(!s.z80_running, "no fixture releases the Z80 from reset");
+        assert!(
+            !s.z80_running,
+            "the in-tree test ROM never releases the Z80 from reset"
+        );
         let back = System::restore(&s.snapshot()).expect("snapshot decodes");
         assert_eq!(
             s, back,
@@ -3612,6 +3661,328 @@ mod tests {
         assert_eq!(
             s.z80_ram[0x1500], 0x77,
             "the reset un-halted the Z80 and restarted it at PC = 0: the new driver ran"
+        );
+    }
+
+    // ---- M21: what the Z80 frontier owes when its gate closes (lens sweep 2026-09-06, CPU-B) ------------
+    //
+    // The four tests below drive the arbiter lines through the real bus between `run_until` calls, so a
+    // gate change lands on a 68000 instruction boundary exactly as a guest `move.w` to `$A11100`/`$A11200`
+    // does, and the gated-on time the Z80 was given is read off the 68000's clock. What the Z80 did with
+    // that time is read off its architectural PC over a program whose every instruction costs the same.
+    // No expectation is read back from `catch_up_z80`.
+
+    /// Zilog UM0080 (UM008011-0816), "LD r, (IX+d)": 5 M cycles, **19 T states** (4, 4, 3, 5, 3). The
+    /// M21 tests fill Z80 RAM with `DD 7E 00` = `LD A,(IX+0)`: it only reads, so the program never rewrites
+    /// itself, and every instruction costs the same, so the Z80 time a run executed is the instruction
+    /// count times this, and the count is the PC over 3. The figure comes from the manual, not the core.
+    const LD_A_IXD_T_STATES: u64 = 19;
+    const LD_A_IXD: [u8; 3] = [0xDD, 0x7E, 0x00];
+
+    /// The mclk one `LD A,(IX+0)` occupies on the shared timeline: 19 × 15 = 285.
+    fn uniform_instruction_mclk() -> u64 {
+        LD_A_IXD_T_STATES * MCLK_PER_Z80_CYCLE
+    }
+
+    /// A booted machine whose Z80 RAM holds `LD A,(IX+0)` in every whole 3-byte slot from `$0000`. The
+    /// Z80 is still held in reset (power-on), so nothing has run yet.
+    fn uniform_z80(seed: u64) -> System {
+        let mut s = booted(seed);
+        let (slots, _tail) = s.z80_ram.as_chunks_mut::<3>();
+        for slot in slots {
+            *slot = LD_A_IXD;
+        }
+        s
+    }
+
+    /// How many `LD A,(IX+0)` the Z80 has executed since it last left reset, read off its PC. Loud whenever
+    /// the PC can no longer mean that: off a slot boundary or past the filled program (it ran into the
+    /// zero tail, where each byte is a 4-T-state NOP), halted, faulted, or with interrupts enabled (an
+    /// accepted `/INT` would add a response the count cannot see; reset leaves `IFF1 = 0` and this program
+    /// never runs `EI`).
+    fn uniform_executed(s: &System) -> u64 {
+        let r = s.z80.regs();
+        let pc = u64::from(r.pc);
+        let slot = LD_A_IXD.len() as u64;
+        let filled = (Z80_RAM_SIZE as u64 / slot) * slot;
+        assert!(
+            pc % slot == 0 && pc < filled,
+            "unmeasurable: PC {pc:#06X} is not an LD A,(IX+0) slot inside the filled program"
+        );
+        assert!(!r.halted, "unmeasurable: the Z80 halted");
+        assert!(!r.iff1, "unmeasurable: the Z80 has interrupts enabled");
+        assert!(
+            s.z80.fault().is_none(),
+            "unmeasurable: the Z80 latched a refusal"
+        );
+        pc / slot
+    }
+
+    /// Drive `$A11100` (BUSREQ) through the 68000 bus, and check it latched.
+    fn set_busreq(s: &mut System, requested: bool) {
+        use crate::m68000::bus68k::Bus68k;
+        s.mega_bus(&mut ())
+            .write8(0xA1_1100, 5, u8::from(requested));
+        assert_eq!(s.z80_busreq(), requested, "the BUSREQ write latched");
+    }
+
+    /// Drive `$A11200` (RESET, bit0 = 1 releases) through the 68000 bus, so the asserting edge resets the
+    /// core exactly as a guest write does, and check it latched.
+    fn set_reset_released(s: &mut System, released: bool) {
+        use crate::m68000::bus68k::Bus68k;
+        s.mega_bus(&mut ()).write8(0xA1_1200, 5, u8::from(released));
+        assert_eq!(s.z80_running(), released, "the RESET write latched");
+    }
+
+    /// Run at least `mclk` of machine time and return the time actually covered: the run ends on the first
+    /// 68000 instruction boundary at or past the deadline, so `run_for(s, 1)` is exactly one instruction.
+    /// Also checks the guest's own 68000 program did not move the arbiter lines under the test.
+    fn run_for(s: &mut System, mclk: u64) -> u64 {
+        let (busreq, running) = (s.z80_busreq(), s.z80_running());
+        let start = s.scheduler().now();
+        s.run_until(start + mclk);
+        assert_eq!(
+            (s.z80_busreq(), s.z80_running()),
+            (busreq, running),
+            "the guest's 68000 program moved the Z80 arbiter lines under the test"
+        );
+        s.scheduler().now() - start
+    }
+
+    /// How far the Z80's next instruction boundary stands ahead of the 68000's clock (negative = behind).
+    fn z80_lead(s: &System) -> i128 {
+        i128::from(s.z80_frontier_mclk) - i128::from(s.scheduler().now())
+    }
+
+    /// **M21, the reproduction.** A Z80 whose bus the 68000 takes and gives back 200 times must have
+    /// executed the gated-on time that elapsed plus at most the tail of **one** instruction, in total, not
+    /// per grant. Its own time is the concatenation of its gated-on intervals, so after `G` mclk of it the
+    /// core has run exactly `ceil(G / 285)` instructions; a catch-up that refunds the tail of the
+    /// instruction each grant cut hands it up to one extra instruction per grant.
+    ///
+    /// Every grant here outlasts any tail (a tail is under 285 mclk and each grant is at least 400), so a
+    /// rule that only stops the frontier moving backwards, `max(frontier, now)`, refunds every one of them
+    /// too: only carrying the tail across the grant passes.
+    #[test]
+    fn a_bus_grant_does_not_refund_the_z80_the_tail_of_the_instruction_it_cut() {
+        let instr = uniform_instruction_mclk();
+        let mut s = uniform_z80(0x0021);
+        // The SMPS boot order: take the bus, then release reset under it. Nothing runs while it is held.
+        set_busreq(&mut s, true);
+        set_reset_released(&mut s, true);
+        run_for(&mut s, 2_000);
+        assert_eq!(
+            uniform_executed(&s),
+            0,
+            "control: a bus-granted Z80 executes nothing"
+        );
+
+        let (mut gated_on, mut grants, mut cut) = (0u64, 0u64, 0u64);
+        for i in 0..200u64 {
+            set_busreq(&mut s, false);
+            gated_on += run_for(&mut s, 400 + (i * 131) % 800);
+            // Whether this grant cuts an instruction, derived: the Z80's own clock stands at `gated_on`
+            // and its last instruction ends on the first multiple of 285 at or past it.
+            cut += u64::from(gated_on % instr != 0);
+            set_busreq(&mut s, true);
+            grants += 1;
+            run_for(&mut s, 400 + (i * 197) % 1_000);
+        }
+        assert!(
+            cut * 2 > grants,
+            "precondition: most grants must cut an instruction, or there is no tail to refund \
+             ({cut} of {grants} did)"
+        );
+        let expected = gated_on.div_ceil(instr);
+        let executed = uniform_executed(&s);
+        assert!(expected > 0, "precondition: the Z80 was given time to run");
+        assert_eq!(
+            executed,
+            expected,
+            "over {grants} bus grants the Z80 was gated on for {gated_on} mclk, room for {expected} \
+             instructions of {instr} mclk; it executed {executed}: {} mclk refunded ({} extra \
+             instructions over {cut} cut instructions)",
+            (i128::from(executed) - i128::from(expected)) * i128::from(instr),
+            i128::from(executed) - i128::from(expected),
+        );
+    }
+
+    /// **M21 ruling, bus grant: the tail stays owed across the grant.** Zilog UM0080 (UM008011-0816),
+    /// the BUSREQ pin: "Bus Request contains a higher priority than NMI and is always recognized at the
+    /// end of the current machine cycle"; and the Bus Request/Acknowledge Cycle: "The maximum time for the
+    /// CPU to respond to a bus request is the length of a machine cycle". The Z80 gives up the bus between
+    /// machine cycles, in the middle of an instruction, and runs that instruction's remaining machine
+    /// cycles once the bus comes back. This core runs instructions whole, so the instruction a grant cuts
+    /// has already spent all its T-states; the part past the grant instant is time the hardware spends
+    /// after the release. So during a grant the Z80 runs nothing and its next instruction boundary stays
+    /// exactly that tail ahead of the clock, whether the grant is shorter than the tail or far longer.
+    #[test]
+    fn a_bus_grant_keeps_the_tail_of_the_cut_instruction_owed_until_the_release() {
+        let instr = uniform_instruction_mclk();
+        let mut s = uniform_z80(0x6A27);
+        set_busreq(&mut s, true);
+        set_reset_released(&mut s, true);
+        run_for(&mut s, 1_000);
+
+        let (mut gated_on, mut tails, mut short_grants) = (0u64, 0u64, 0u64);
+        for i in 0..40u64 {
+            set_busreq(&mut s, false);
+            gated_on += run_for(&mut s, 300 + (i * 89) % 900);
+            let at_close = uniform_executed(&s);
+            assert_eq!(
+                at_close,
+                gated_on.div_ceil(instr),
+                "grant {i}: {gated_on} mclk of gated-on time hold that many instructions"
+            );
+            let tail = at_close * instr - gated_on;
+            tails += u64::from(tail != 0);
+            set_busreq(&mut s, true);
+            // Every fifth grant is a single 68000 instruction, often shorter than the tail; the rest run
+            // well past any tail. The tail must survive both.
+            let held = run_for(
+                &mut s,
+                if i % 5 == 0 {
+                    1
+                } else {
+                    500 + (i * 211) % 3_000
+                },
+            );
+            short_grants += u64::from(held < tail);
+            assert_eq!(
+                uniform_executed(&s),
+                at_close,
+                "grant {i}: the Z80 executed while the 68000 held its bus"
+            );
+            assert_eq!(
+                z80_lead(&s),
+                i128::from(tail),
+                "grant {i}: {held} mclk into the grant, the Z80's next instruction must still start \
+                 {tail} mclk out: the unspent tail of the instruction the grant cut"
+            );
+        }
+        assert!(
+            tails > 20,
+            "precondition: grants cut instructions ({tails} of 40)"
+        );
+        assert!(
+            short_grants > 0,
+            "precondition: some grant was shorter than its tail, the case `max(frontier, now)` gets right"
+        );
+    }
+
+    /// **M21 ruling, reset: the tail is abandoned and the Z80 starts at the release instant.** Zilog UM0080
+    /// (UM008011-0816), the RESET pin: "RESET initializes the CPU as follows: it resets the interrupt enable
+    /// flip-flop, clears the Program Counter and registers I and R, and sets the interrupt status to Mode 0.
+    /// During reset time, the address and data bus enter a high-impedance state, and all control output
+    /// signals enter an inactive state." An instruction in flight when reset asserts is never finished: the
+    /// program counter it would continue from is cleared, and after the release the Z80 starts over with
+    /// an opcode fetch at `$0000`. There is nothing left to owe, so the Z80 starts at the release instant,
+    /// however far past it the cut instruction's frontier stood. (UM0080 also requires reset to be held
+    /// "a minimum of three full clock cycles"; that 45-mclk floor is not modeled, and is shorter than any
+    /// hold a guest can make, since the releasing write is itself a 68000 store of at least 8 CPU cycles,
+    /// 56 mclk.)
+    #[test]
+    fn a_reset_abandons_the_tail_and_the_z80_restarts_at_the_release_instant() {
+        let instr = uniform_instruction_mclk();
+        let mut s = uniform_z80(0x0A12);
+        set_reset_released(&mut s, true);
+
+        let (mut prev_tail, mut tails, mut distinguishing) = (0u64, 0u64, 0u64);
+        for i in 0..40u64 {
+            let g = run_for(&mut s, 300 + (i * 89) % 900);
+            let fresh = g.div_ceil(instr);
+            // What a rule that carried the abandoned tail into the next run would allow instead.
+            let carried = g.saturating_sub(prev_tail).div_ceil(instr);
+            distinguishing += u64::from(fresh != carried);
+            assert_eq!(
+                uniform_executed(&s),
+                fresh,
+                "run {i}: started from PC 0 at the release instant, {g} mclk hold {fresh} \
+                 instructions (carrying the previous run's {prev_tail}-mclk tail would allow {carried})"
+            );
+            prev_tail = fresh * instr - g;
+            tails += u64::from(prev_tail != 0);
+            set_reset_released(&mut s, false);
+            run_for(
+                &mut s,
+                if i % 5 == 0 {
+                    1
+                } else {
+                    500 + (i * 211) % 3_000
+                },
+            );
+            assert_eq!(
+                s.z80.regs().pc,
+                0,
+                "run {i}: held in reset, the core is in its reset state"
+            );
+            assert_eq!(
+                z80_lead(&s),
+                0,
+                "run {i}: held in reset, the Z80 owes nothing: the {prev_tail}-mclk tail of the \
+                 abandoned instruction is not carried to the release"
+            );
+            set_reset_released(&mut s, true);
+        }
+        assert!(
+            tails > 20,
+            "precondition: resets cut instructions ({tails} of 40)"
+        );
+        assert!(
+            distinguishing > 0,
+            "precondition: some run's count must tell a fresh start from a carried tail"
+        );
+    }
+
+    /// **M21 ruling, both causes at once: a reset asserted while the bus is granted cancels the tail the
+    /// grant was carrying.** This is the order the SMPS boot and a driver reload use: take the bus, assert
+    /// reset, upload, release reset, give the bus back. Reset abandons the instruction the grant had only
+    /// paused, so when the bus comes back the Z80 starts from `$0000` at that instant with nothing owed.
+    #[test]
+    fn a_reset_under_a_bus_grant_cancels_the_tail_the_grant_was_carrying() {
+        let instr = uniform_instruction_mclk();
+        let mut s = uniform_z80(0x5A11);
+        set_reset_released(&mut s, true);
+        let g = run_for(&mut s, 1_000);
+        let tail = g.div_ceil(instr) * instr - g;
+        assert_ne!(
+            tail, 0,
+            "precondition: the grant cuts an instruction ({g} mclk ran)"
+        );
+
+        set_busreq(&mut s, true);
+        run_for(&mut s, 1);
+        assert_eq!(
+            z80_lead(&s),
+            i128::from(tail),
+            "control: the grant alone carries the {tail}-mclk tail (the bus-grant ruling)"
+        );
+        set_reset_released(&mut s, false);
+        run_for(&mut s, 700);
+        assert_eq!(
+            z80_lead(&s),
+            0,
+            "reset under the grant: the paused instruction is abandoned, its {tail}-mclk tail with it"
+        );
+        set_reset_released(&mut s, true);
+        run_for(&mut s, 700);
+        assert_eq!(
+            z80_lead(&s),
+            0,
+            "reset released under the grant: still nothing owed"
+        );
+        assert_eq!(
+            uniform_executed(&s),
+            0,
+            "nothing ran while the bus was held"
+        );
+
+        set_busreq(&mut s, false);
+        let g2 = run_for(&mut s, 1_000);
+        assert_eq!(
+            uniform_executed(&s),
+            g2.div_ceil(instr),
+            "given the bus back, the Z80 ran from PC 0 at that instant: {g2} mclk hold that many"
         );
     }
 
