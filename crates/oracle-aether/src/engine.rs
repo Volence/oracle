@@ -7220,19 +7220,29 @@ impl Engine {
             // identifies a location, and that is `ambiguous`'s job, not `exact`'s. `query` is carried
             // because the reply's `name` is the mangled spelling — not the one that was asked for — so
             // without it the reply does not record the request (§4's own reason for the field).
+            // **`ambiguous` is the core's flag, not a count of matches.** The fragment's rule is
+            // "several DIFFERENT addresses share this symbol's demangled spelling", and
+            // `SymbolTable::build` sets `demangled_ambiguous` on exactly that. A same-address alias group
+            // is one location with two names, so `total > 1` answered it `ambiguous: true` with "2
+            // different addresses" about one address. The caveat counts ADDRESSES for the same reason:
+            // `by_demangled` is address-sorted, so deduplicating the addresses counts them.
+            let ambiguous = first.demangled_ambiguous;
             let mut out = json!({
                 "query": name,
                 "name": first.name,
                 "demangled": first.demangled,
                 "addr": hex::addr(first.addr),
                 "otherMatches": rpc::bounded_array(items, total, 0, limit),
-                "ambiguous": total > 1,
+                "ambiguous": ambiguous,
                 "exact": true,
             });
-            if total > 1 {
+            if ambiguous {
+                let mut addrs: Vec<u32> = exact_demangled.iter().map(|s| s.addr).collect();
+                addrs.dedup();
                 out["caveat"] = json!(format!(
-                    "{total} different addresses answer to this readable name; `addr` is only the \
-                     first. Use the unique `name` from `otherMatches`."
+                    "{} different addresses answer to this readable name; `addr` is only the \
+                     first. Use the unique `name` from `otherMatches`.",
+                    addrs.len()
                 ));
             }
             return Ok(out);
@@ -7241,7 +7251,11 @@ impl Engine {
         let by_demangled = table.with_demangled_prefix(name);
         let mut all: Vec<&oracle_core::symbols::Symbol> =
             prefixed.into_iter().chain(by_demangled).collect();
-        all.sort_by_key(|s| (s.addr, s.name.clone()));
+        // Address, then raw name: `SymbolTable::build`'s own order, compared in place (lens M41). The key
+        // form used to clone the name into a `String` for every comparison. The sort also does a second
+        // job: `dedup_by` removes only NEIGHBOURS, so a symbol both halves found is removed only because
+        // this puts its two copies side by side.
+        all.sort_by(|a, b| a.addr.cmp(&b.addr).then_with(|| a.name.cmp(&b.name)));
         all.dedup_by(|a, b| a.name == b.name && a.addr == b.addr);
         if all.is_empty() {
             // **The site the field report landed on** (§11.34 / CR-K's step 3): this is the exact
@@ -10633,6 +10647,168 @@ mod tests {
             "a -32005 built by hand instead of by RpcError::invalid_state (§5 makes data.reason \
              REQUIRED, and only the helper guarantees it): {hits:?}"
         );
+    }
+
+    /// An engine on the fixture ROM holding a listing parsed from `text`, with no path behind it (so no
+    /// freshness clause can join a reply).
+    fn engine_with_listing_text(text: &str) -> Engine {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+        e.set_symbols(Some(SymbolTable::parse(text).expect("fixture parses")), None);
+        e
+    }
+
+    /// `otherMatches`' items, in the order the server put them. Loud if the key is missing or not a list.
+    fn other_match_names(out: &Value) -> Vec<String> {
+        let om = &out["otherMatches"];
+        om.get("items")
+            .unwrap_or(om)
+            .as_array()
+            .unwrap_or_else(|| panic!("UNMEASURABLE: no otherMatches list in {out}"))
+            .iter()
+            .map(|m| m["name"].as_str().expect("a match has a name").to_string())
+            .collect()
+    }
+
+    /// Three symbols at `$300` and one past it, arranged so the two halves of the prefix search
+    /// disagree. `Blk_z` matches the RAW prefix `Blk`; the two `$mod.…$Blk$top` rows match only the
+    /// DEMANGLED one (`Blk.top`). The raw names sort `$mod.a…` < `$mod.b…` < `Blk_z`.
+    const PREFIX_TIES: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ $mod.a$Blk$top : 300 C |
+ $mod.b$Blk$top : 300 C |
+ Blk_z : 300 C |
+ Other : 310 C |
+
+    4 symbols
+    0 unused symbols
+";
+
+    /// **Lens M41: the prefix branch's order is the table's own (address, then raw name), and the
+    /// non-allocating sort keeps it exactly.**
+    ///
+    /// The fixture is built so the order is not an accident of either input. The raw-prefix half
+    /// yields `[Blk_z]` and the demangled half `[$mod.a…, $mod.b…, Blk_z]`, so their concatenation
+    /// puts `Blk_z` FIRST and twice. A sort on the address alone keeps that order, and then `dedup_by`
+    /// (which only removes neighbours) leaves the duplicate. A reversed tie-break puts `Blk_z` first.
+    /// Both are caught. The expected order is not written here: it is `SymbolTable::symbols_at`'s,
+    /// the core's own address-then-name order (`SymbolTable::build`).
+    #[test]
+    fn the_prefix_branch_orders_ties_by_raw_name_and_lists_each_symbol_once() {
+        let table = SymbolTable::parse(PREFIX_TIES).expect("fixture parses");
+        let expected: Vec<String> = table
+            .symbols_at(0x300)
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        assert_eq!(
+            expected.len(),
+            3,
+            "the premise: three symbols share $300 in the core's own order: {expected:?}"
+        );
+        let mut e = engine_with_listing_text(PREFIX_TIES);
+        let out = e
+            .lookup_symbol(&json!({ "name": "Blk" }))
+            .expect("a prefix search answers");
+        assert_eq!(
+            out["exact"],
+            json!(false),
+            "the premise: this is the prefix branch: {out}"
+        );
+        assert_eq!(
+            other_match_names(&out),
+            expected,
+            "the prefix branch must list each symbol once, in the table's (address, raw name) order"
+        );
+    }
+
+    /// Two same-address alias groups and two groups that are not: `Blk.top` twice at `$300`;
+    /// `Two.x` at `$400` and `$404`; `Mix.y` twice at `$500` and once at `$508`.
+    const ALIAS_GROUPS: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ $mod.a$Blk$top : 300 C |
+ $mod.b$Blk$top : 300 C |
+ Other : 310 C |
+ $mod.c$Two$x : 400 C |
+ $mod.d$Two$x : 404 C |
+ $mod.e$Mix$y : 500 C |
+ $mod.f$Mix$y : 500 C |
+ $mod.g$Mix$y : 508 C |
+
+    8 symbols
+    0 unused symbols
+";
+
+    /// **The demangled branch's `ambiguous` and its caveat follow the contract's rule, which is the
+    /// core's** (a finding booked onto wave 2; it has no ledger row).
+    ///
+    /// The fragment's `ambiguous` is "Several DIFFERENT addresses share this symbol's demangled
+    /// spelling" (read out of the vendored schema below, loud if it moved), and `SymbolTable::build`
+    /// flags exactly that. Same-address aliases are deliberately not ambiguous (`Resolution::name`'s
+    /// doc). This branch used `total > 1` instead, so a same-address alias pair answered
+    /// `ambiguous: true` and "2 different addresses answer to this readable name" about one address.
+    /// A mixed group is checked too, because the caveat counted SYMBOLS and so said 3 where there are
+    /// 2 addresses. No frozen listing has either shape, so each is built here.
+    #[test]
+    fn a_same_address_alias_group_answers_unambiguously_on_the_demangled_branch() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../tests/contract/bus-protocol.schema.json"))
+                .expect("the vendored schema parses");
+        let rule = schema["methods"]["emulator/lookup_symbol"]["result"]["properties"]["ambiguous"]
+            ["description"]
+            .as_str()
+            .expect("UNMEASURABLE: lookup_symbol's fragment does not describe `ambiguous`");
+        assert!(
+            rule.contains("DIFFERENT addresses"),
+            "UNMEASURABLE: the fragment's rule for `ambiguous` moved: {rule}"
+        );
+
+        let table = SymbolTable::parse(ALIAS_GROUPS).expect("fixture parses");
+        for (name, addrs) in [("Blk.top", 1usize), ("Two.x", 2), ("Mix.y", 2)] {
+            let group = table.by_demangled(name);
+            let mut distinct: Vec<u32> = group.iter().map(|s| s.addr).collect();
+            distinct.dedup();
+            assert_eq!(
+                distinct.len(),
+                addrs,
+                "the premise: {name}'s addresses in the fixture: {distinct:?}"
+            );
+        }
+
+        let mut e = engine_with_listing_text(ALIAS_GROUPS);
+        let alias = e
+            .lookup_symbol(&json!({ "name": "Blk.top" }))
+            .expect("an exact demangled hit");
+        assert_eq!(
+            alias["ambiguous"],
+            json!(false),
+            "one address answers to Blk.top, so it identifies a location: {alias}"
+        );
+        assert!(
+            alias.get("caveat").is_none(),
+            "no caveat about several addresses when there is one: {alias}"
+        );
+        assert_eq!(alias["addr"], json!(hex::addr(0x300)), "{alias}");
+
+        for (name, addrs) in [("Two.x", 2), ("Mix.y", 2)] {
+            let out = e
+                .lookup_symbol(&json!({ "name": name }))
+                .expect("an exact demangled hit");
+            assert_eq!(out["ambiguous"], json!(true), "{name}: {out}");
+            let caveat = out["caveat"].as_str().unwrap_or_else(|| {
+                panic!("{name}: an ambiguous answer keeps its caveat: {out}")
+            });
+            assert!(
+                caveat.starts_with(&format!("{addrs} different addresses")),
+                "{name}: the caveat must count ADDRESSES ({addrs}), not symbols: {caveat}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------------------------------
