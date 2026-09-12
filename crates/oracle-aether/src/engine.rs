@@ -10310,8 +10310,15 @@ fn parse_input_rows(params: &Value, cap: usize) -> Result<Vec<InputRow>, RpcErro
                  [start, end), so an empty one is a row that says nothing"
             ))));
         }
-        let port = parse_port(row)?;
-        let names = parse_buttons(row)?;
+        // **Both named with the row they came from** (lens M23). `parse_port` and `parse_buttons` also
+        // serve the row-less single-pad methods, so their refusals know nothing about a row; the index is
+        // added here, in the `rows[i]:` spelling every refusal above uses, and `data` is kept as it was.
+        let in_row = |e: RpcError| RpcError {
+            message: at(&e.message),
+            ..e
+        };
+        let port = parse_port(row).map_err(in_row)?;
+        let names = parse_buttons(row).map_err(in_row)?;
         let mut pad = Pad::default();
         for b in &names {
             set_button(&mut pad, b, true);

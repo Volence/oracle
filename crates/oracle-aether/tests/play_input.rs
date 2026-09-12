@@ -273,6 +273,41 @@ fn malformed_timelines_are_refused_and_never_silently_dropped() {
     }
 }
 
+/// **Lens M23 (the row-index half): a refusal from a row's `port` or `buttons` says WHICH row.** Every
+/// other per-row refusal already opened with `rows[i]:`. These two came from parsers shared with
+/// `hold`/`press`, which know nothing about rows, so an error on row 7 of 40 read exactly like one on
+/// row 0. The bad row goes LAST, behind good ones, so an index of 0 or none cannot pass, and each refusal
+/// must still name the field it is about.
+#[test]
+fn a_bad_port_or_button_names_the_row_it_is_on() {
+    let h = spawn_system("pi-rowidx", machine(), 64);
+    let mut c = client(&h);
+    let good = json!({"start": 0, "end": 1, "buttons": ["a"]});
+    let cases = [
+        (
+            "`port`",
+            json!({"start": 0, "end": 1, "buttons": ["a"], "port": 2}),
+        ),
+        ("`buttons`", json!({"start": 0, "end": 1, "buttons": ["x"]})),
+        ("`buttons`", json!({"start": 0, "end": 1, "buttons": ["q"]})),
+        ("`buttons`", json!({"start": 0, "end": 1})),
+    ];
+    for (field, bad) in cases {
+        let rows = json!([good.clone(), good.clone(), bad.clone()]);
+        let e = c.err("emulator/play_input", json!({ "rows": rows }));
+        assert_eq!(e["code"], json!(-32602), "{bad}: {e}");
+        let msg = e["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("rows[2]"),
+            "{bad}: the refusal must say which row: {msg}"
+        );
+        assert!(
+            msg.contains(field),
+            "{bad}: and still name the field it is about: {msg}"
+        );
+    }
+}
+
 /// It is run control: refused on a free-running machine rather than pausing implicitly (§5).
 #[test]
 fn it_is_refused_while_the_machine_is_free_running() {
