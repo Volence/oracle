@@ -1531,12 +1531,12 @@ impl System {
             }
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
             // Catch the Z80 up to the 68000's new `now` (ZC4): the fixed total order is events → 68000 step
-            // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`. No committed ROM fixture releases
-            // the Z80, so on the corpus the Z80 sits in reset and its frontier only follows `now` — but the
-            // gate is live and a released Z80 executes here (H16: this said "held in reset this slice, so
-            // the catch-up runs zero instructions", at the top of the production run loop, long after that
-            // stopped being the rule). `now` is this iteration's clock before the step: a bus grant carries
-            // the Z80's tail from it (M21).
+            // → Z80 catch-up → IPL. Gated on `z80_running && !z80_busreq`. The gate is live and a released
+            // Z80 executes here, in the suite as well as in games: the committed aeon replay fixtures and the
+            // vendored test ROMs release it (measured for M21; this said "no committed ROM fixture releases
+            // the Z80" until then, and H16 before that found "held in reset this slice, so the catch-up runs
+            // zero instructions" at the top of the production run loop). `now` is this iteration's clock
+            // before the step: a bus grant carries the Z80's tail from it (M21).
             self.catch_up_z80(now, sink);
             // Re-derive the IPL latch after the step: a taken interrupt's fc=7 /INTAK cleared the VDP's
             // pending latch mid-step (so a delivered VInt does NOT re-fire after RTE), and any enable-bit
@@ -1817,14 +1817,18 @@ impl System {
     /// keeps a frontier that something else left behind the clock (a caller that advances the scheduler
     /// without running, `scheduler_mut().advance`) from turning into a backlog: it resumes at `now`.
     ///
-    /// **On the committed ROM corpus only the held-in-reset arm is taken**, because no fixture releases the
-    /// Z80 (`z80_running == false` in every one) — which is what keeps every frozen currency byte-identical.
-    /// That is a statement about the fixtures, not about this function (M21 measured it with an
-    /// instrument over the whole suite; see its line in `docs/lens-findings.jsonl`): the gated-on branch is
-    /// live, and
-    /// `z80_executes_in_the_run_loop_when_released` drives real instructions through it. This said
-    /// "[`Z80::step`] is never reached" until the lens sweep (finding H16) — the absolute overstating the
-    /// fixture-scoped fact that sat in the same sentence.
+    /// **The suite's ROM corpus takes all three arms.** This said "only the gated-off branch is taken,
+    /// because no fixture releases the Z80" until lens finding M21 measured it with a per-arm instrument
+    /// over the whole release suite: the committed aeon replay fixtures (`fixtures/aeon/s4.debug.bin`,
+    /// whose `Sound_Init` waits for its Z80 driver) and the vendored test ROMs behind the scanline and
+    /// conformance scorecards release the Z80 and take the bus from it, and 25 tests reach the bus-granted
+    /// arm with a tail, the one place M21 changed behaviour. Every frozen currency stayed put under the
+    /// fix, and not by luck: adding 27,360 mclk per grant moved none of them, so **no currency in the suite
+    /// observes grant timing** (stopping the Z80 outright does fail the replay fixtures, which see whether it
+    /// runs, not when). The in-tree `testrom::build` fixture behind the `export_state` and determinism
+    /// goldens does hold the Z80 in reset. `z80_executes_in_the_run_loop_when_released` and the M21 tests
+    /// drive real instructions through the gated-on branch. Before H16 this also said "[`Z80::step`] is
+    /// never reached" — the absolute overstating a fixture-scoped claim that was itself untrue.
     fn catch_up_z80<S: BusEventSink>(&mut self, step_start: u64, sink: &mut S) {
         let now = self.scheduler.now();
         if self.z80_running && !self.z80_busreq {
@@ -3413,13 +3417,17 @@ mod tests {
         // even though they are not in export_state. A booted, run machine round-trips them byte-for-byte.
         let mut s = booted(0x5A5A);
         s.run_frames(2);
-        // The frontier tracked `now` while the Z80 sat in reset (gated off), so it is non-trivial to carry.
+        // The frontier tracked `now` while the Z80 sat in reset, so it is non-trivial to carry. (Held in
+        // reset it is exactly `now`; bus-granted it would keep a tail, M21.)
         assert_eq!(
             s.z80_frontier_mclk,
             s.scheduler().now(),
-            "the gated-off frontier tracks now (zero backlog on a future reset-release)"
+            "the held-in-reset frontier tracks now (zero backlog on a future reset-release)"
         );
-        assert!(!s.z80_running, "no fixture releases the Z80 from reset");
+        assert!(
+            !s.z80_running,
+            "the in-tree test ROM never releases the Z80 from reset"
+        );
         let back = System::restore(&s.snapshot()).expect("snapshot decodes");
         assert_eq!(
             s, back,
@@ -3680,8 +3688,9 @@ mod tests {
     /// Z80 is still held in reset (power-on), so nothing has run yet.
     fn uniform_z80(seed: u64) -> System {
         let mut s = booted(seed);
-        for slot in s.z80_ram.chunks_exact_mut(LD_A_IXD.len()) {
-            slot.copy_from_slice(&LD_A_IXD);
+        let (slots, _tail) = s.z80_ram.as_chunks_mut::<3>();
+        for slot in slots {
+            *slot = LD_A_IXD;
         }
         s
     }
