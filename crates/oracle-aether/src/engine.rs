@@ -470,7 +470,7 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/read",
         handler: Engine::read,
-        summary: "one byte read across the bus/vram/cram/vsram spaces: the read half of the watch surface",
+        summary: "read `len` bytes (default 1) from the bus, vram, cram or vsram space: the read half of the watch surface",
         params: &["addr", "len", "space", "symbol"],
     },
     MethodSpec {
@@ -4554,7 +4554,8 @@ impl Engine {
         Ok(json!({ "addr": hex::addr(addr), "len": data.len() }))
     }
 
-    /// `emulator/read` — one byte read across the four address spaces (§6 memory, added by §11.12 / CR-20).
+    /// `emulator/read` — `len` bytes (default 1) from any of the four address spaces (§6 memory, added by
+    /// §11.12 / CR-20).
     ///
     /// **This is the read half of the watch surface.** A `cram`/`vsram` watch hit reports `space` *and*
     /// `addr`, and before this row nothing on the bus accepted that pair back — the client held a
