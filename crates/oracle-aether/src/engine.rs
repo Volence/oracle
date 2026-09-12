@@ -5887,7 +5887,35 @@ impl Engine {
         out.insert("limit".into(), bounded["limit"].clone());
         out.insert("truncated".into(), bounded["truncated"].clone());
         out.insert("layout".into(), layout.to_json());
+        if let Some(c) = self.decoder_binding_caveat() {
+            out.insert("caveat".into(), json!(c));
+        }
         Ok(Value::Object(out))
+    }
+
+    /// **The `caveat` the three ⚙ decoder rows owe**, or `None` (lens M17). `object_list`'s fragment:
+    /// "emitted CONDITIONALLY - when layout.detectedBy is 'fallback', or when the symbol table that
+    /// produced the layout was accepted with binding:'indeterminate' (§4)"; `object_slot`'s and
+    /// `player_state`'s say "As emulator/object_list.". `detectedBy` is always `symbol` on this server
+    /// (the layout's `to_json` in `decoders.rs` says why), so the binding is the half that can fire, and
+    /// a `Match` is quiet, which keeps this inside §2.4's MUST NOT on a caveat every reply carries.
+    ///
+    /// **Re-derived from the table and the image loaded now, not stored at load time.** Every route that
+    /// keeps a table across an image change re-checks it (`apply_rom_swap` drops a `Mismatch`; `restore`
+    /// brings the image and the table back from one slot), so the verdict now is the one the table was
+    /// accepted under, and a table an embedder hands to [`Engine::set_symbols`] gets the verdict
+    /// `load_symbols` would have reached rather than none. The probe is one map lookup and a two-byte
+    /// compare. A `Mismatch` table can arrive only by that embedder route (`load_symbols` refuses one) and
+    /// the fragment names no caveat for it, so none is invented here.
+    fn decoder_binding_caveat(&self) -> Option<&'static str> {
+        let table = self.symbols.as_deref()?;
+        match table.validate_against_rom(self.sys.rom()) {
+            RomBinding::Indeterminate(_) => Some(
+                "the symbol table this layout came from was accepted with binding \"indeterminate\": \
+                 it could not be checked against the loaded ROM, so the layout is unverified.",
+            ),
+            RomBinding::Match { .. } | RomBinding::Mismatch(_) => None,
+        }
     }
 
     /// `emulator/player_state` — the player pool, slot by slot (§6 ⚙, §11.25 D3).
@@ -5942,6 +5970,9 @@ impl Engine {
         let mut out = Map::new();
         out.insert("players".into(), Value::Array(players));
         out.insert("layout".into(), layout.to_json());
+        if let Some(c) = self.decoder_binding_caveat() {
+            out.insert("caveat".into(), json!(c));
+        }
         Ok(Value::Object(out))
     }
 
@@ -6201,6 +6232,9 @@ impl Engine {
             self.attach_code_name(&mut out, &rec);
         }
         out.insert("layout".into(), layout.to_json());
+        if let Some(c) = self.decoder_binding_caveat() {
+            out.insert("caveat".into(), json!(c));
+        }
         Ok(Value::Object(out))
     }
 

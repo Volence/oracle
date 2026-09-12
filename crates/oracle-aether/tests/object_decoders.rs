@@ -1069,3 +1069,135 @@ fn the_decoder_rows_answer_while_the_machine_is_running() {
     }
     c.ok("emulator/pause", json!({}));
 }
+
+// ---------------------------------------------------------------------------------------------------
+// 10. The conditional caveat (lens M17)
+// ---------------------------------------------------------------------------------------------------
+
+/// `testrom::build()` with a real `de b2` appendix bolted on at the image's end, and that offset. The same
+/// construction as `tests/damaged_listing.rs`, so a listing whose `EndOfRom` names the offset BINDS.
+fn rom_with_appendix() -> (Vec<u8>, usize) {
+    let mut rom = oracle_core::testrom::build();
+    let end = rom.len();
+    rom.extend(std::iter::repeat_n(0u8, oracle_core::symbols::DEB2_MIN_LEN));
+    rom[end..end + 2].copy_from_slice(&oracle_core::symbols::DEB2_MAGIC);
+    (rom, end)
+}
+
+/// The fragment's condition for `caveat`, quoted out of the vendored schema so the expectation below is
+/// the contract's and not the handler's. `object_slot`'s and `player_state`'s fragments defer to
+/// `object_list`'s in so many words, which is checked too, so the three rows cannot be held to different
+/// rules. (`player_state` is the one the triage did not name: its caveat says "As emulator/object_list."
+/// exactly as `object_slot`'s does.)
+fn the_caveat_condition_is_still_the_fragments() {
+    let methods = &common::schema::schema_root()["methods"];
+    let list = methods["emulator/object_list"]["result"]["properties"]["caveat"]["description"]
+        .as_str()
+        .expect("UNMEASURABLE: object_list's fragment declares no caveat description");
+    assert!(
+        list.contains("layout.detectedBy is 'fallback'")
+            && list.contains("accepted with binding:'indeterminate'"),
+        "UNMEASURABLE: object_list's caveat condition is no longer the one this test encodes: {list}"
+    );
+    for row in ["emulator/object_slot", "emulator/player_state"] {
+        let text = methods[row]["result"]["properties"]["caveat"]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("UNMEASURABLE: {row}'s fragment declares no caveat description"));
+        assert_eq!(
+            text, "As emulator/object_list.",
+            "{row}'s caveat rule moved away from object_list's: {text}"
+        );
+    }
+}
+
+/// Boot `rom`, load the full pool layout plus `extra` rows, and check that `object_list`, `object_slot`
+/// and `player_state` each carry a `caveat` exactly when the fragment says: `detectedBy` is `fallback`, or
+/// `load_symbols` reported `binding: "indeterminate"`. Both inputs to that condition are read off the
+/// wire, from replies other than the one under test. Returns the binding, so each caller can assert it
+/// built the fixture it meant to build.
+fn the_caveat_follows_the_binding(tag: &str, rom: Vec<u8>, extra: &[(String, u32)]) -> String {
+    the_caveat_condition_is_still_the_fragments();
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(rom);
+    sys.reset();
+    let h = spawn_system(tag, sys, 64);
+    let mut c = client(&h);
+
+    let mut rows = pool_rows(BASE, SST);
+    rows.extend_from_slice(extra);
+    let dir = std::env::temp_dir().join(format!("oracle-objdec-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{tag}.lst"));
+    std::fs::write(&path, listing(&rows)).unwrap();
+    let loaded = c.ok(
+        "emulator/load_symbols",
+        json!({"path": path.to_str().unwrap()}),
+    );
+    let binding = loaded["binding"]
+        .as_str()
+        .expect("load_symbols reports `binding`")
+        .to_string();
+
+    let list = c.ok("emulator/object_list", json!({}));
+    let slot = c.ok("emulator/object_slot", json!({"slot": 0}));
+    let players = c.ok("emulator/player_state", json!({}));
+    for (row, reply) in [
+        ("object_list", list),
+        ("object_slot", slot),
+        ("player_state", players),
+    ] {
+        let fallback = reply["layout"]["detectedBy"] == json!("fallback");
+        let owed = fallback || binding == "indeterminate";
+        match reply.get("caveat").and_then(Value::as_str) {
+            Some(text) => {
+                assert!(
+                    owed,
+                    "{row}: a caveat the fragment does not call for (binding {binding:?}, \
+                     detectedBy {}), and an unconditional caveat is a §2.4 MUST NOT: {reply}",
+                    reply["layout"]["detectedBy"]
+                );
+                assert!(
+                    fallback || text.contains("indeterminate"),
+                    "{row}: the caveat must name the binding it is about: {text}"
+                );
+            }
+            None => assert!(
+                !owed,
+                "{row}: the fragment calls for a caveat when the table was accepted with binding \
+                 {binding:?}, and none was emitted: {reply}"
+            ),
+        }
+    }
+    binding
+}
+
+/// **Lens M17: a listing accepted UNVERIFIED is disclosed by both rows.** Both Indeterminate shapes are
+/// driven (no `EndOfRom` at all, and `EndOfRom` at exactly the image's end), because the fragment's
+/// condition is the binding, not which of its two reasons produced it.
+#[test]
+fn an_unverified_listing_is_disclosed_by_object_list_and_object_slot() {
+    let rom = oracle_core::testrom::build();
+    let end = rom.len() as u32;
+    assert_eq!(
+        the_caveat_follows_the_binding("objdec-cav-noend", rom.clone(), &[]),
+        "indeterminate",
+        "the fixture: a listing with no EndOfRom cannot be checked"
+    );
+    assert_eq!(
+        the_caveat_follows_the_binding("objdec-cav-imgend", rom, &[("EndOfRom".into(), end)]),
+        "indeterminate",
+        "the fixture: EndOfRom at exactly the image's end is the no-appendix shape"
+    );
+}
+
+/// The control: a listing that BINDS draws no caveat from either row. Without it, a caveat emitted on
+/// every reply would pass the test above.
+#[test]
+fn a_listing_that_binds_draws_no_object_caveat() {
+    let (rom, end) = rom_with_appendix();
+    assert_eq!(
+        the_caveat_follows_the_binding("objdec-cav-match", rom, &[("EndOfRom".into(), end as u32)]),
+        "match",
+        "the fixture: EndOfRom on a real appendix binds"
+    );
+}
