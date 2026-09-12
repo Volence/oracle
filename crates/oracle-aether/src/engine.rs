@@ -10426,16 +10426,23 @@ fn parse_port(params: &Value) -> Result<PadPort, RpcError> {
 }
 
 fn set_button(pad: &mut Pad, name: &str, down: bool) {
+    *button(pad, name) = down;
+}
+
+/// The field of `pad` a wire button name means. **The one name-to-field map**: [`set_button`] writes
+/// through it and [`held_names`] reads through it, over [`BUTTONS_3`], so the names a reply's `held`
+/// array spells and the names a request is parsed against are one table (wave-3 residue 1).
+fn button<'p>(pad: &'p mut Pad, name: &str) -> &'p mut bool {
     match name {
-        "up" => pad.up = down,
-        "down" => pad.down = down,
-        "left" => pad.left = down,
-        "right" => pad.right = down,
-        "a" => pad.a = down,
-        "b" => pad.b = down,
-        "c" => pad.c = down,
-        "start" => pad.start = down,
-        _ => unreachable!("parse_buttons rejects everything else"),
+        "up" => &mut pad.up,
+        "down" => &mut pad.down,
+        "left" => &mut pad.left,
+        "right" => &mut pad.right,
+        "a" => &mut pad.a,
+        "b" => &mut pad.b,
+        "c" => &mut pad.c,
+        "start" => &mut pad.start,
+        _ => unreachable!("parse_buttons accepts only BUTTONS_3's names, and held_names reads only those"),
     }
 }
 
@@ -10492,23 +10499,20 @@ fn store_from_capture(slot: &mut Option<CapturedFrame>, cap: &ScanlineCapture) -
 /// are: the player's status strip has to tell a human which buttons a client is holding, and a panel that
 /// spelled the eight names for itself would be a second vocabulary that agrees with the handler's until
 /// somebody adds a ninth button to one of them.
+///
+/// **It reads [`BUTTONS_3`], in its order, and keeps no list of its own** (wave-3 residue 1). Until
+/// then it wrote the eight names out again, a second copy of the owner: reordering or renaming
+/// `BUTTONS_3` moved what `parse_buttons` accepts and the `supported` list a refusal carries, while
+/// this went on naming the old table. Measured before this fold: with `a` and `b` swapped in
+/// `BUTTONS_3`, the aether lib, every wire suite that sends `buttons` and the player's held rows all
+/// stayed green. `held_names_is_the_contracts_button_table_read_off_a_pad` is the row that now reddens.
 pub fn held_names(pad: &Pad) -> Vec<&'static str> {
-    let mut v = Vec::new();
-    for (name, on) in [
-        ("up", pad.up),
-        ("down", pad.down),
-        ("left", pad.left),
-        ("right", pad.right),
-        ("a", pad.a),
-        ("b", pad.b),
-        ("c", pad.c),
-        ("start", pad.start),
-    ] {
-        if on {
-            v.push(name);
-        }
-    }
-    v
+    let mut read = *pad;
+    BUTTONS_3
+        .iter()
+        .copied()
+        .filter(|name| *button(&mut read, name))
+        .collect()
 }
 
 /// The `caveat` `emulator/get_profiler_frames` carries when the accountant lost the thread of the
@@ -10597,6 +10601,76 @@ fn profiler_edge_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **`held_names` is the contract's button table, read off a pad** (wave-3 residue 1).
+    ///
+    /// Three anchors, none of them `held_names` itself:
+    /// - the vendored contract. Every `buttons` enum in `bus-protocol.schema.json` (hold's and press's
+    ///   params, play_input's rows, the stopped event) must be exactly `BUTTONS_3` then `BUTTONS_6`, in
+    ///   order, so the table the server speaks is the contract's and not a copy that agrees today. Loud if
+    ///   the schema has no such enum, since then this compares nothing;
+    /// - `Pad`'s own fields. `all` is an exhaustive struct literal, which the compiler refuses the day
+    ///   `Pad` gains or loses a button, and it must name the whole table in order;
+    /// - `set_button`'s map. Each name alone must come back as itself, and the all-down pad rebuilt from
+    ///   its names must be the pad, so a table that dropped a button cannot pass.
+    #[test]
+    fn held_names_is_the_contracts_button_table_read_off_a_pad() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../tests/contract/bus-protocol.schema.json"))
+                .expect("the vendored schema parses");
+        fn enums<'v>(v: &'v Value, out: &mut Vec<&'v Value>) {
+            match v {
+                Value::Object(m) => {
+                    if let Some(e) = m.get("buttons").and_then(|b| b.get("items")).and_then(|i| i.get("enum")) {
+                        out.push(e);
+                    }
+                    m.values().for_each(|c| enums(c, out));
+                }
+                Value::Array(a) => a.iter().for_each(|c| enums(c, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        enums(&schema, &mut found);
+        assert!(
+            !found.is_empty(),
+            "UNMEASURABLE: the vendored schema declares no `buttons` enum, so nothing anchors the table"
+        );
+        let table: Vec<&str> = BUTTONS_3.iter().chain(BUTTONS_6).copied().collect();
+        for e in &found {
+            assert_eq!(
+                **e,
+                json!(table),
+                "the contract's `buttons` vocabulary and the server's BUTTONS_3 + BUTTONS_6 differ"
+            );
+        }
+
+        let all = Pad {
+            up: true,
+            down: true,
+            left: true,
+            right: true,
+            a: true,
+            b: true,
+            c: true,
+            start: true,
+        };
+        assert_eq!(
+            held_names(&all),
+            BUTTONS_3,
+            "a pad with every button down must name the whole table, in its order"
+        );
+        for name in BUTTONS_3 {
+            let mut one = Pad::default();
+            set_button(&mut one, name, true);
+            assert_eq!(held_names(&one), [*name], "{name} alone");
+        }
+        let mut rebuilt = Pad::default();
+        for name in held_names(&all) {
+            set_button(&mut rebuilt, name, true);
+        }
+        assert_eq!(rebuilt, all, "the table names every button a Pad has");
+    }
 
     /// **Lens M73: every `-32005` this crate builds goes through [`RpcError::invalid_state`].**
     ///
