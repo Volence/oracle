@@ -3059,6 +3059,28 @@ mod tests {
         }
     }
 
+    /// **Lens M11: the masked picture this window blits is the one masked picture**, over H32 and H40
+    /// and every mask, with the control [`oracle_core::testrom::assert_masked_frame_parity`] runs first.
+    /// The window's packed `u32`s are unpacked back to `(r, g, b)`, so its own packing edge is inside the
+    /// measurement.
+    #[test]
+    fn the_blitted_masked_picture_is_the_one_masked_picture() {
+        let mut buf = Vec::new();
+        oracle_core::testrom::assert_masked_frame_parity(
+            "blit_masked",
+            |v, mask| {
+                let width = blit_masked(v, mask, &mut buf);
+                (
+                    width,
+                    buf.iter()
+                        .map(|&p| ((p >> 16) as u8, (p >> 8) as u8, p as u8))
+                        .collect(),
+                )
+            },
+            oracle_core::testrom::frame_by_lines,
+        );
+    }
+
     /// The command line parses as documented, and a bad value is refused rather than silently ignored.
     #[test]
     fn the_command_line_parses_scale_and_aspect() {

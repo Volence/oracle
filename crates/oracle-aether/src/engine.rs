@@ -11524,6 +11524,31 @@ mod tests {
     // that reach the wire — the width the frame ended on, and the untouched slot.
     // -----------------------------------------------------------------------------------------------
 
+    /// **Lens M11: the masked picture `emulator/screenshot` and `emulator/scanlines` serve is the one
+    /// masked picture**, over H32 and H40 and every mask, with the control
+    /// [`oracle_core::testrom::assert_masked_frame_parity`] runs first. No frame has been latched, so every
+    /// mask — `ALL` included — takes the post-hoc path this row is about, and says so.
+    #[test]
+    fn the_framebuffer_under_a_mask_is_the_one_masked_picture() {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+        oracle_core::testrom::assert_masked_frame_parity(
+            "Engine::framebuffer",
+            |v, mask| {
+                *e.sys.vdp_mut() = v.clone();
+                let (width, fb, from_raster) = e.framebuffer(mask);
+                assert!(
+                    !from_raster,
+                    "no frame is latched, so this is the post-hoc render"
+                );
+                (width, fb)
+            },
+            oracle_core::testrom::frame_by_lines,
+        );
+    }
+
     /// A ragged frame — S3K's post-reset shape, two H32 lines then H40 — must reach the slot at the width
     /// it **ended** on, with the short lines padded rather than the frame rejected.
     #[test]

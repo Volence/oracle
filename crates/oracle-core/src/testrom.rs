@@ -1218,6 +1218,170 @@ pub fn build_stop_precision() -> Vec<u8> {
     rom
 }
 
+// -------------------------------------------------------------------------------------------------
+// The masked-frame parity fixture (lens M11): one scene, one control, one sweep, four callers
+// -------------------------------------------------------------------------------------------------
+
+/// A whole active-display picture: its width, and its pixels line-major (`width * height` of them).
+pub type Frame = (usize, Vec<(u8, u8, u8)>);
+
+/// **A VDP posed so that each of the four maskable layers is the visible winner somewhere**, in H32
+/// (`h40 == false`) or H40, built through the chip's own ports only.
+///
+/// Why it lives here rather than in each caller's tests: the masked picture is drawn in four crates
+/// (`oracle-core` owns it; `oracle-aether`'s `Engine::framebuffer`, `oracle-player`'s
+/// `Machine::render_masked` and `oracle-frontend`'s `blit_masked` consume it), and a parity row per crate
+/// with its own hand-posed scene is four fixtures free to drift into four scenes where different layers
+/// happen to be invisible. One scene is what makes the four rows the same measurement.
+///
+/// The scene, cell row 0 (lines 0-7), all low priority so RR9 order is sprite > A > B > backdrop:
+/// a sprite over plane A over plane B at x 0-7; plane A alone at x 64-79; plane B alone at x 96-111; a
+/// right window from x 128 with opaque cells at x 128-143. Plus one plane-B cell on the **last** cell
+/// row (lines 216-223), so a picture that drops or shifts the final line differs from one that does not.
+/// Every layer and the backdrop have distinct colours, so "hidden" can never be confused with "black".
+pub fn masked_frame_fixture(h40: bool) -> crate::vdp::Vdp {
+    let mut rng = crate::rng::SplitMix64::new(0x5EED);
+    let mut v = crate::vdp::Vdp::power_on(&mut rng);
+    v.vram_mut().fill(0);
+    let reg = |v: &mut crate::vdp::Vdp, r: u8, val: u8| {
+        v.control_write(0x8000 | (u16::from(r) << 8) | u16::from(val), 0);
+    };
+    reg(&mut v, 0x01, 0x44); // display on + mode 5 — before $0C, which the mode-4 register mask drops
+    reg(&mut v, 0x0C, if h40 { 0x81 } else { 0x00 });
+    reg(&mut v, 0x00, 0x04); // no leftmost-column blank
+    reg(&mut v, 0x02, 0x30); // plane A nametable @ $C000
+    reg(&mut v, 0x03, 0x28); // window nametable  @ $A000
+    reg(&mut v, 0x04, 0x07); // plane B nametable @ $E000
+    reg(&mut v, 0x05, 0x58); // SAT               @ $B000
+    reg(&mut v, 0x07, 0x05); // backdrop = CRAM 5
+    reg(&mut v, 0x0B, 0x00); // full h + full v scroll
+    reg(&mut v, 0x0D, 0x20); // h-scroll table    @ $8000 (clear of the tiles)
+    reg(&mut v, 0x0F, 0x02); // autoincrement 2
+    reg(&mut v, 0x10, 0x00); // 32x32 planes
+    reg(&mut v, 0x11, 0x88); // right window from x = 8 * 16 = 128
+    reg(&mut v, 0x12, 0x00);
+    // Through the data port, so the SAT-cache write-through runs for the sprite entry.
+    let write = |v: &mut crate::vdp::Vdp, code: u8, addr: u16, words: &[u16]| {
+        v.control_write((u16::from(code) & 0x03) << 14 | (addr & 0x3FFF), 0);
+        v.control_write((u16::from(code) >> 2) << 4 | (addr >> 14), 0);
+        for w in words {
+            v.data_write(*w);
+        }
+    };
+    for tile in 1..=4u16 {
+        let nibble = tile * 0x1111; // solid colour index `tile`
+        write(&mut v, 0x01, tile * 32, &[nibble; 16]);
+    }
+    let cell = |base: u16, row: u16, col: u16| base + (row * 32 + col) * 2;
+    write(&mut v, 0x01, cell(0xE000, 0, 0), &[0x0001]); // B under the stack
+    write(&mut v, 0x01, cell(0xE000, 0, 12), &[0x0001, 0x0001]); // B alone, x 96-111
+    write(&mut v, 0x01, cell(0xE000, 27, 1), &[0x0001]); // B on the last cell row
+    write(&mut v, 0x01, cell(0xC000, 0, 0), &[0x0002]); // A in the stack
+    write(&mut v, 0x01, cell(0xC000, 0, 8), &[0x0002, 0x0002]); // A alone, x 64-79
+    write(&mut v, 0x01, cell(0xA000, 0, 16), &[0x0004, 0x0004]); // window, x 128-143
+    write(&mut v, 0x01, 0xB000, &[0x0080, 0x0000, 0x0003, 0x0080]); // sprite 0: 1x1 at (0,0), tile 3
+                                                                    // CRAM entries 1..=5, one word each: B red, A blue, sprite green, window yellow, backdrop grey.
+    write(&mut v, 0x03, 2, &[0x000E, 0x0E00, 0x00E0, 0x00EE, 0x0444]);
+    v
+}
+
+/// **Every display mask**: all `2^n` subsets of [`LayerMask::targets`](crate::render::LayerMask::targets)
+/// — all hidden, each alone, every pair and triple, and all shown. Derived from the core's own target list,
+/// so a fifth target is swept on the day it lands.
+pub fn every_mask() -> Vec<crate::render::LayerMask> {
+    let targets = crate::render::LayerMask::targets();
+    (0..1u32 << targets.len())
+        .map(|bits| {
+            let mut m = crate::render::LayerMask::ALL;
+            for (i, (_, layer)) in targets.iter().enumerate() {
+                if bits & (1 << i) == 0 {
+                    assert!(m.set(*layer, false), "{layer:?} is a mask target");
+                }
+            }
+            m
+        })
+        .collect()
+}
+
+/// **The independent expectation**: the masked picture built one line at a time from
+/// [`Vdp::render_line_masked`](crate::vdp::Vdp::render_line_masked), over lines `0..ACTIVE_LINES`, at the
+/// width the first line comes out at. It reads neither `active_display()` nor any frame-level function, so
+/// it can disagree with every one of them.
+pub fn frame_by_lines(v: &crate::vdp::Vdp, mask: crate::render::LayerMask) -> Frame {
+    let rows: Vec<_> = (0..crate::vdp::ACTIVE_LINES)
+        .map(|line| v.render_line_masked(line, mask))
+        .collect();
+    let width = rows[0].len();
+    (width, rows.concat())
+}
+
+/// **The masked-frame parity row, once**: `consumer`'s masked picture must equal `expected`'s over H32
+/// and H40 and over [`every_mask`], and before that sweep it must pass a control the sweep cannot.
+///
+/// **The control, and why it comes first.** A sweep comparing two paths stays green when both ignore the
+/// mask. So for each layer alone, the dot where hiding it changes the picture is **derived** from
+/// [`frame_by_lines`] (never picked), the row refuses if there is none (the scene could not measure
+/// anything), and `consumer` must change at that dot too. The control reads [`frame_by_lines`] rather than
+/// `expected`, so it stays independent when `expected` is the owner a consumer delegates to.
+///
+/// `who` names the consumer in every failure message, so a red names which of the four it was.
+pub fn assert_masked_frame_parity(
+    who: &str,
+    mut consumer: impl FnMut(&crate::vdp::Vdp, crate::render::LayerMask) -> Frame,
+    expected: impl Fn(&crate::vdp::Vdp, crate::render::LayerMask) -> Frame,
+) {
+    use crate::render::LayerMask;
+    let height = usize::from(crate::vdp::ACTIVE_LINES);
+    for h40 in [false, true] {
+        let mode = if h40 { "H40" } else { "H32" };
+        let v = masked_frame_fixture(h40);
+        let (_, reference_all) = frame_by_lines(&v, LayerMask::ALL);
+        let (_, consumer_all) = consumer(&v, LayerMask::ALL);
+        for (name, layer) in LayerMask::targets() {
+            let mut m = LayerMask::ALL;
+            assert!(m.set(layer, false));
+            let (w, reference) = frame_by_lines(&v, m);
+            let at = reference
+                .iter()
+                .zip(&reference_all)
+                .position(|(a, b)| a != b)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fixture ({mode}): hiding {name} changes no dot of the reference picture, so \
+                         no comparison below could see a mask being ignored — COULD NOT MEASURE"
+                    )
+                });
+            let (_, got) = consumer(&v, m);
+            assert!(
+                got.get(at) != consumer_all.get(at),
+                "{who} ({mode}): hiding {name} must change dot ({}, {}) — the reference picture \
+                 changes there — but {who}'s did not: the mask never reached its picture",
+                at % w,
+                at / w
+            );
+        }
+        for m in every_mask() {
+            let (w, got) = consumer(&v, m);
+            let (want_w, want) = expected(&v, m);
+            assert_eq!(w, want_w, "{who} ({mode}, {m:?}): width");
+            assert_eq!(
+                got.len(),
+                want_w * height,
+                "{who} ({mode}, {m:?}): not a {want_w} x {height} picture"
+            );
+            if let Some(at) = got.iter().zip(&want).position(|(a, b)| a != b) {
+                panic!(
+                    "{who} ({mode}, {m:?}): dot ({}, {}) is {:?}, expected {:?}",
+                    at % want_w,
+                    at / want_w,
+                    got[at],
+                    want[at]
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

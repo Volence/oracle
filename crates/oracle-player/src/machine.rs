@@ -536,4 +536,27 @@ mod tests {
             "a run that ended mid-frame must not be stitched out of two geometries"
         );
     }
+
+    /// **Lens M11: the picture this window shows under a mask is the one masked picture**, over H32 and
+    /// H40 and every mask, with the control [`oracle_core::testrom::assert_masked_frame_parity`] runs first.
+    /// The window's `egui` pixels are read back as `(r, g, b)`, so its own conversion edge is inside the
+    /// measurement.
+    #[test]
+    fn the_masked_window_picture_is_the_one_masked_picture() {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        oracle_core::testrom::assert_masked_frame_parity(
+            "Machine::render_masked",
+            |v, mask| {
+                *machine.system_mut().vdp_mut() = v.clone();
+                assert!(machine.render_masked(mask));
+                let img = machine.image().expect("a picture");
+                assert_eq!(machine.image_mask(), Some(mask));
+                (
+                    img.size[0],
+                    img.pixels.iter().map(|c| (c.r(), c.g(), c.b())).collect(),
+                )
+            },
+            oracle_core::testrom::frame_by_lines,
+        );
+    }
 }
