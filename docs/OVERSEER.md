@@ -188,11 +188,8 @@ closed; its narrative is in `OVERSEER-LOG.md` and the brief lesson it produced i
 
 - **✔ F-PARITY-BLIND-TO-SAT-STRIDE: CLOSED 2026-09-05, and verified by this seat re-running its OWN mutation** — `SAT_ENTRY_BYTES` 8→16 now fails naming the quantity, and `index * SAT_ENTRY_BYTES` → `0 * …` fails naming a non-zero index. The fixture cannot move with the constant under test. Closure narrative moved whole to `OVERSEER-LOG.md` 2026-09-06 for the boot-read bound.
 
-- **▶ F-THREE-MASKED-RENDERERS, the agent's finding and worth a row.** `Engine::framebuffer`,
-  `Machine::render_masked` and `oracle-frontend::blit_masked` are **three implementations of one masked
-  picture across three crates**, agreeing today with **nothing asserting they must**. Same class as
-  `sprite_tile_at` before it moved into `oracle-core`, and the same answer applies. Not urgent; it becomes
-  urgent the moment one of them is edited.
+- **✔ F-THREE-MASKED-RENDERERS: CLOSED 2026-09-12 (LENS-WAVE3, lens M11).** `Vdp::render_frame_masked` (`&self`)
+  is the one masked picture; the three sites are thin consumers, each pinned against it by a parity row.
 
 - **⚑ MY BRIEF WAS WRONG ABOUT THE REFUSAL, AND THE CORRECTION IS A DESIGN FACT WORTH KEEPING.** I wrote
   that S2a *"deletes that gate and its test"*, quoting the S0-S2 doc. **It deletes the BLANKET gate and
