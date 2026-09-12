@@ -1109,11 +1109,13 @@ fn hex_words(w: &[u16]) -> String {
 /// * **Tests 96-122, the copy matrix** (titles at ROM `$E0F2`, tables at ROM `$E4BE` + 32 × case): odd
 ///   and even sources and destinations, lengths 9 and 10, autoincrements 0/1/2/4, overlapping copies, and
 ///   every CD3-CD0 value. Each record is 16 words; the LAST EIGHT are the destination read back after the
-///   copy (ROM `$EB82..$EBD0`), and those are asserted. The FIRST EIGHT are data-port reads of `$0010` and
-///   `$0020` interleaved with CRAM writes AFTER the copy (ROM `$EA2C..$EB6E`): a post-copy read-path
-///   behaviour this parcel does not model. They differ from hardware under every copy model, so they
-///   are deliberately not asserted here (open residual, `docs/2026-07-25-testrom-conformance.md`,
-///   F-COPYXOR; sorted in `docs/2026-09-12-vdp-port-access-full-rom.md`).
+///   copy (ROM `$EB82..$EBD0`), and those are asserted. The FIRST EIGHT are not about the copy. They are
+///   VSRAM word 0 and CRAM word 0 read alternately (commands `$00000010` and `$00000020`), with CRAM writes
+///   between the pairs (ROM `$EA2C..$EB6E`). **Corrected 2026-09-12:** M22 called them a post-copy read-path
+///   behaviour. They differ only in the VSRAM halves, because the test's own 64-word VSRAM load (`$E87C`)
+///   hits our 80-byte VSRAM wrap and overwrites word 0. That is cause A1 in
+///   `docs/2026-09-12-vdp-port-access-full-rom.md`, and [`vdp_port_access_full_rom_verdicts`] pins it, so it
+///   is not asserted here.
 ///
 /// What would make this green for a reason other than the rule holding: (1) records not found (a paging
 /// or layout change) — guarded by the exact title set and the count of 27; (2) an `expected` that is
