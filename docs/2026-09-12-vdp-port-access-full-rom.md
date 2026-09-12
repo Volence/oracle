@@ -298,6 +298,44 @@ is the same, and on hardware busy stays set across a `$8144` register write and 
 busy. This is behaviour, not timing: the two samples fall between two port writes and depend on nothing
 the beam does. EXP=16 flips exactly 36 and 38.
 
+**Fixed 2026-09-12 (FILL-BUSY-ARM, branch `parcel/fill-busy-and-target`).** `Vdp::dma_busy` is now
+`self.fill_armed() || mclk < self.dma_busy_until`, and `status_word` reads bit 1 through it so there is one
+predicate. `fill_armed` is **exactly the condition that makes the next data-port write a fill trigger** —
+CD5 latched in the code register and register 23's mode bits naming Fill — so it is derived from existing
+state: no new field, no snapshot or `export_state` layout change, and the flag cannot disagree with the
+trigger. The DMA-disabled negative comes out for free: CD5 only latches while register 1 bit 4 is set, so
+test 38 group 1's command (issued at ROM `$C528` with DMA off) arms nothing and reads clear at all four
+probes, and its `$1234` lands as an ordinary VRAM write.
+
+*Two corrections to this section, from the run and the disassembly.* (i) The line numbers above are stale
+(they predate A1 and A3): status bit 1 is `vdp.rs:690`, `run_fill` ends at `:1513`, `run_copy` at `:1564`,
+`control_write`'s arm path is `:1160` and `arm_dma` `:1168`. (ii) "In group 1 … the arm is conditional on
+DMA being enabled" is right about the outcome but understates the mechanism: in group 1 CD5 is never
+latched at all, so no fill is armed and the later `$1234` is a plain data-port write — which is why the
+group's VRAM reads back `0000 1234 0000 0000`. The ROM also samples status **twice** per probe (the second
+read's undefined high bits carry the next prefetch word), so each probe is the pair `0202 4e02` when busy
+and `0200 4e00` when not; the "two samples" of the old text are one probe.
+
+**The open question, answered by construction.** What ends the busy flag of a fill that is armed but never
+triggered: **nothing but the arming condition going away** — the fill running (`take_dma_request` clears
+CD5 on consumption and `run_fill` then opens the timed window), a later command word clearing CD5 while
+DMA-enable is set, or register 23 leaving Fill mode. Not time, and not a frame boundary. Test 38 group 2
+rules out the three cheap alternatives itself: a register write (`$8144`, which also clears DMA-enable) and
+a new first command word (`$4002`) both leave it set. The alternative model is a latched `fill_armed` bool
+cleared only by `run_fill`; it agrees with every table in this ROM and differs on exactly two sequences —
+arm a fill, then write a full non-DMA command word (or set register 23 out of Fill mode), and poll status.
+This model says clear, the latch says set. A third, any timed window, is separated from both by polling an
+untriggered fill across frames. **These are the ROMs that would settle it**, and they are what the "What
+would settle the open points" entry below should now read. Pinned as shipped by
+`vdp::tests::a_fill_reads_dma_busy_from_its_control_write_not_from_its_trigger`,
+`a_fill_command_written_with_dma_disabled_arms_nothing_and_is_not_busy` and
+`an_armed_fill_stops_reading_busy_once_its_arming_condition_is_gone`.
+
+Measured: the ROM prints **116/6/122** (from 114/8/122), failing 20 27 31 32 33 34. Every one of the 122
+per-test records is byte-identical to the pre-fix run except 36 and 38, which go FAIL 2/16 and FAIL 4/32 →
+PASS 0/16 and PASS 0/32. Pages 1 and 2 are unchanged (9/0/9, 16/0/16), the other 16 scorecard rows are
+byte-identical, and so are `determinism_gate`, `export_state_v1`, `golden_frames` and `scanline_goldens`.
+
 ### A5: a fill whose code names no write target writes nothing (test 34, closes F-FILLTGT)
 
 **The rule, from the ROM's table.** **Test 34** (ROM `$45B2`) group 3 (`$4898..$4948`) arms a 4-byte fill
@@ -310,6 +348,49 @@ writes no length, and it fills well past 16 bytes, so group 3 had counted its le
 The body therefore consumes its length and writes nowhere. That is exactly the question F-FILLTGT left
 open ("one of the two decodes is wrong; the ROM does not cover the case"). The fill body must share the
 write decode. EXP=32 flips exactly 34.
+
+**Fixed 2026-09-12 (FILL-TGT, branch `parcel/fill-busy-and-target`). F-FILLTGT retired.** `Vdp::run_fill`
+takes `Self::code_names_a_write_target(self.code)` once, before its loop, and skips the memory write when it
+is false. Nothing else in the function changes: the address still steps by register 15 on every step, the
+length still counts to 0 (registers 19/20 zeroed), `advance_dma_source_low16` still advances registers 21/22
+by the step count (A3), `last_dma` is still recorded and `dma_busy_until` still opens. **That is the whole
+point of the fix, and an early return would have been wrong**: group 4 (`$4954`) programs no length and
+fills well past the 16 bytes it reads, which is only possible if group 3 counted its own length down to 0;
+and group 3's `btst #1` poll at `$48F6` spins until the busy window reports done, so a fill that never
+opened one would hang the ROM. Verified: **tests 28 "DMA Fill Source Reg Update" and 29 "DMA Copy Source Reg
+Update" still pass, 0/12 words off**, and so do test 4 "DMA Fill FIFO Usage" and the 72-95 range.
+
+`target_of` keeps its `_ => Vram` fallback. It answers "which region does this code name", which is a
+different question from "may this code write", and every write path now asks the second one — so the two
+decodes no longer disagree about anything that reaches memory. The doc comments on
+`code_names_a_write_target` and on the fill-trigger branch of `apply_data_write` both record the retirement.
+
+Measured: the ROM prints **117/5/122** (from 116/6/122), failing 20 27 31 32 33 — A2's two and M1's three,
+exactly the "all but A2" row of the scratch matrix. All 122 per-test records are byte-identical to the
+post-A4 run except 34, which goes FAIL 4/80 → PASS 0/80. Pages 1 and 2 stay 9/0/9 and 16/0/16, the other 16
+scorecard rows are byte-identical, and so are `determinism_gate`, `export_state_v1`, `golden_frames` and
+`scanline_goldens`. Pinned by `vdp::tests::a_fill_whose_code_names_no_write_target_writes_nothing_but_still_runs`
+(which asserts the length, the source registers, the busy window and the walked address alongside the
+unchanged VRAM) and its control `a_fill_that_does_name_a_write_target_is_untouched_by_the_write_decode`.
+
+*Measured, the early return is worse than the brief for this row expected, and the ROM catches it alone.*
+The dispatch said a `return` from `run_fill` "would pass test 34 and silently regress 28 and 29". Applied as
+a mutation, it does neither. Test 34 goes from 4/80 to **7/80** words off: group 3's own words come out
+right, and then group 4 (words 24-31) reads `1122 3344 68ac 6868 9968 bbcc ddee ff00` against the hardware's
+eight `6868` words, because group 3 left the length counter at 4 instead of 0 and group 4's no-length fill
+ran 4 bytes instead of 65,536. Tests 28 and 29 stay green under it, because their fills are armed on code
+`$21`, which names a write target, so the early return is unreachable for them. The guards that actually
+catch it are **test 34's own group 4** and the unit test's four non-write assertions.
+
+*A correction to this section:* `vdp.rs:714` / `vdp.rs:1395` are stale line numbers — `target_of` is at
+`:741` and the fill body's `self.target()` call at `:1502` before this change. The table's expected words
+for group 3 are the ROM's untouched pattern `1122 3344 5566 7788 99aa bbcc ddee ff00`, and ours differed in
+four of them (`5568 7768 9968 bb68`), which is the 4/80 the pin recorded.
+
+**All five A causes are now on `main` (2026-09-12).** Re-derived from one run on the tree that merges A2
+with A4 and A5: the ROM prints **119/3/122** and fails exactly **31 32 33** — the EXP=63 row of the scratch
+matrix above, reached test for test. Page 1 is 9/0/9 and pages 1+2 are 16/0/16. What is left is one
+unmodelled mechanism, M1, not five behaviour bugs; `PORT_ACCESS_FAILING` now holds only its three tests.
 
 ### M1: a DMA fill that runs over time (tests 31, 32, 33)
 
