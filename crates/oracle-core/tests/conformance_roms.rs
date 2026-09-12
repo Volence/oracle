@@ -241,17 +241,24 @@ const BASELINE: &[(&str, &str)] = &[
         // 22 pages 76/46 → **112/10**: tests 23, 74-95's eight VSRAM fills and the copy matrix 96-122 flip
         // to pass; test 20 still fails (6/12 words, its A2 half); pages 1 and 2 are unchanged.
         // A1 + A3 merged (2026-09-12), measured on the merged tree: **114/8/122**, failing 20 27 31-34 36 38.
+        // 2026-09-12 (DMA-SRC-128K, cause A2): a 68k→VDP transfer's source wraps inside its own 128 KB page,
+        // and register 23 never takes the carry. Tests 27 and 20 flip; all 22 pages 114/8/122 → **116/6/122**,
+        // failing 31 32 33 34 36 38. Test 20 is a JOINT flip: all six of its remaining wrong words were A2's,
+        // but two more had already gone with A1 (8/12 → 6/12 → 0/12), so it took both. Pages 1 and 2 unchanged.
         // A4 (2026-09-12, FILL-BUSY-ARM): DMA-busy reads set from a fill's CONTROL write, not only from its
         // trigger — `Vdp::dma_busy` is now "a fill is armed (CD5 + register 23 = Fill) OR the transfer window
-        // is open". Tests 36 and 38 flip; all 22 pages **114/8 → 116/6**, failing 20 27 31 32 33 34. Pages 1
-        // and 2 unchanged, and no other scorecard row moved.
+        // is open". Tests 36 and 38 flip; on the pre-A2 branch all 22 pages went **114/8 → 116/6**, failing
+        // 20 27 31 32 33 34. Pages 1 and 2 unchanged, and no other scorecard row moved.
         // A5 (2026-09-12, FILL-TGT): `Vdp::run_fill`'s body now shares `code_names_a_write_target` with the
         // two data-port write paths, so a fill armed on a code that names no write target runs — address,
-        // length, source registers 21/22, busy window — and writes nowhere. Test 34 flips; all 22 pages
-        // **116/6 → 117/5**, failing 20 27 31 32 33. Pages 1 and 2 unchanged; tests 4, 28, 29 and 72-95
+        // length, source registers 21/22, busy window — and writes nowhere. Test 34 flips; on the pre-A2
+        // branch all 22 pages went **116/6 → 117/5**, failing 20 27 31 32 33. Tests 4, 28, 29 and 72-95
         // unmoved. Follow-up F-FILLTGT retired.
+        // A2 + A4 + A5 merged (2026-09-12), measured on the merged tree: **119/3/122**, failing 31 32 33 —
+        // M1 (FILL-OVER-TIME) alone, the size-L design item that is deliberately out of scope. Pages 1 and 2
+        // stay 9/0/9 and 16/0/16.
         "vdp_port_access",
-        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=117/5/122",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=119/3/122",
     ),
     (
         // **`6=FAIL` is measured to be an artefact of this scraper, NOT an emulator inaccuracy (2026-08-15).**
@@ -1224,7 +1231,8 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 ///   fills), 96-122 (the copy matrix's first eight words are VSRAM reads of word 0), and two words of 20.
 ///   **Fixed 2026-09-12 (VSRAM-DECODE)**: `Vdp::vsram_byte` and the VSRAM read latch; 76/46 → 112/10.
 /// * **A2, the 68k-to-VDP DMA source wraps inside its 128 KB page** (register 23 never takes a carry). Tests
-///   27 and the other half of 20.
+///   27 and the other half of 20. **Fixed 2026-09-12 (DMA-SRC-128K)**: both pass and are no longer listed;
+///   20 is a joint flip, since its other two words per half needed A1.
 /// * **A3, fill and copy advance the DMA source registers 21/22 by their length.** Tests 28 and 29.
 ///   **Fixed 2026-09-12 (DMA-SRC-ADVANCE)**: both pass and are no longer listed.
 /// * **A4, DMA busy reads set from the fill command's control write**, not only once the fill is
@@ -1241,12 +1249,8 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 /// count moves, which is how a partial fix or a partial regression shows. Update this list only together
 /// with that document and `docs/2026-07-25-testrom-conformance.md`.
 const PORT_ACCESS_FAILING: &[(usize, &str, usize, usize)] = &[
-    // A2 only since A1 landed: 8/12 → 6/12. Two words per half (VRAM, CRAM, VSRAM) are the source bytes past
-    // the 128 KB boundary; the VSRAM half's other two words were A1's and now match.
-    (20, "DMA Transfer Source Wrapping", 6, 12),
-    (27, "DMA Transfer Source Reg Update", 4, 16), // A2
-    (31, "DP Writes During DMA Fill VRAM", 6, 48), // M1
-    (32, "DP Writes During DMA Fill CRAM", 6, 48), // M1
+    (31, "DP Writes During DMA Fill VRAM", 6, 48),  // M1
+    (32, "DP Writes During DMA Fill CRAM", 6, 48),  // M1
     (33, "DP Writes During DMA Fill VSRAM", 6, 48), // M1
 ];
 

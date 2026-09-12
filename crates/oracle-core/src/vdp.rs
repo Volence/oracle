@@ -1358,8 +1358,8 @@ impl Vdp {
     }
 
     /// Record a completed DMA + advance the length/source registers to their post-transfer state (recon R4:
-    /// regs 19–23 mutate during a transfer — length → 0, source advanced; visible in both currencies) and
-    /// open the DMA-busy window to `busy_until`.
+    /// regs 19–22 mutate during a transfer — length → 0, source advanced; visible in both currencies) and
+    /// open the DMA-busy window to `busy_until`. Register **23 is not one of them** (A2, below).
     ///
     /// **T16/S2** — it also anchors the FIFO drain clock at `busy_until` while entries are still pending.
     /// Our Mem DMA runs synchronously inside the triggering bus access, so without this the entries
@@ -1385,7 +1385,7 @@ impl Vdp {
     /// are now also accounted as pending — physically the DMA unit should release the bus about four slots
     /// earlier. The ROM cannot see the difference (it measures FIFO state, not transfer duration) and
     /// shortening the halt would change DMA timing for every ROM; registered as follow-up **F-DMAHALT**.
-    pub fn dma_complete(&mut self, record: DmaRecord, end_source_words: u32, busy_until: u64) {
+    pub fn dma_complete(&mut self, record: DmaRecord, busy_until: u64) {
         if self.fifo_len > 0 {
             // The drain clock is monotonic. It holds for every bus-driven caller (see above); the `max` is
             // what makes it hold unconditionally, and the assert is what would make a violation loud in a
@@ -1400,10 +1400,13 @@ impl Vdp {
         }
         self.regs[0x13] = 0;
         self.regs[0x14] = 0;
-        // Advance the source registers (Mem: the 68k word address; the low 23 bits, reg 23 keeps its mode bit).
-        self.regs[0x15] = (end_source_words & 0xFF) as u8;
-        self.regs[0x16] = ((end_source_words >> 8) & 0xFF) as u8;
-        self.regs[0x17] = (self.regs[0x17] & 0x80) | ((end_source_words >> 16) & 0x7F) as u8;
+        // **A2 / DMA-SRC-128K.** A 68k→VDP transfer advances only registers 21 and 22, exactly as a fill or
+        // a copy does, so it shares their helper and register 23 is never written. `record.source` is the
+        // 68k byte address the transfer started from (a word address << 1), so its low 16 word bits are
+        // registers 22:21 at the start. `record.len` doubles as the step count without the usual "0 means
+        // 65,536" (RD2) special case: one whole turn of a 16-bit counter lands exactly where zero steps land,
+        // which is the identity `advance_dma_source_low16` already masks for.
+        self.advance_dma_source_low16((record.source >> 1) as u16, record.len as u32);
         self.last_dma = Some(record);
         self.dma_busy_until = busy_until;
     }
@@ -1629,8 +1632,11 @@ impl Vdp {
         self.dma_busy_until = now + cost;
     }
 
-    /// **A3 / DMA-SRC-ADVANCE.** Leave source registers 21 (low) and 22 (middle) where a fill or copy of `steps`
-    /// steps that started from `start` leaves them. Nemesis, *VDP Internals* p.4: "Every DMA operation also
+    /// **A3 / DMA-SRC-ADVANCE, and A2 / DMA-SRC-128K.** Leave source registers 21 (low) and 22 (middle) where
+    /// a DMA of `steps` steps that started from `start` leaves them. **All three modes share it** — fill and
+    /// copy from [`Vdp::run_fill`] / [`Vdp::run_copy`] (A3), and the 68k→VDP transfer from
+    /// [`Vdp::dma_complete`] (A2, where register 23 not taking the carry is the same 16-bit wrap seen from
+    /// the other side: the source is confined to one 128 KB page). Nemesis, *VDP Internals* p.4: "Every DMA operation also
     /// performs the exact same set of steps after it is advanced one step, which is to firstly add 1 to the
     /// lower 2 DMA source address registers, then to subtract 1 from the DMA length counter register". Fill and
     /// copy included, although a fill never reads its source.
@@ -1642,7 +1648,9 @@ impl Vdp {
     /// * **Register 23 never takes the carry**, so the counter wraps at 16 bits and 23 keeps its mode bits.
     ///   "The lower 2" in the quote, and the MegaDrive Wiki's "only the low and middle bytes of the DMA source
     ///   registers are incremented". The ROM cannot reach this case for a fill or copy (its follow-up DMA
-    ///   rewrites 23); it is the rule, not a table.
+    ///   rewrites 23). For the 68k→VDP mode the ROM *does* reach it, from the read side: test 20's transfer
+    ///   from `$5FFFC` reads its third word at `$40000`. What no test reaches for that mode is 22:21's own
+    ///   wrapped value, because test 27's group 5 reloads both before it looks.
     /// * **A length of 0 is 65,536 steps** (RD2), one whole turn of the counter: 21/22 end where they started.
     ///
     /// Machine state: registers are in both currencies, so a ROM that fills or copies moves them. What that did
@@ -4413,7 +4421,6 @@ mod tests {
                 len: 4,
                 target: VdpTarget::Vram,
             },
-            0,
             end,
         );
         // Immediately after the transfer nothing has drained: the clock starts at `end`, not at `start`.
