@@ -3140,7 +3140,8 @@ impl Engine {
     fn apply_pads(&mut self) {
         for port in PadPort::ALL {
             let i = port.index();
-            self.sys.set_pad(port, merge_pads(self.live[i], self.held[i]));
+            self.sys
+                .set_pad(port, merge_pads(self.live[i], self.held[i]));
         }
     }
 
@@ -10448,7 +10449,9 @@ fn button<'p>(pad: &'p mut Pad, name: &str) -> &'p mut bool {
         "b" => &mut pad.b,
         "c" => &mut pad.c,
         "start" => &mut pad.start,
-        _ => unreachable!("parse_buttons accepts only BUTTONS_3's names, and held_names reads only those"),
+        _ => unreachable!(
+            "parse_buttons accepts only BUTTONS_3's names, and held_names reads only those"
+        ),
     }
 }
 
@@ -10627,7 +10630,11 @@ mod tests {
         fn enums<'v>(v: &'v Value, out: &mut Vec<&'v Value>) {
             match v {
                 Value::Object(m) => {
-                    if let Some(e) = m.get("buttons").and_then(|b| b.get("items")).and_then(|i| i.get("enum")) {
+                    if let Some(e) = m
+                        .get("buttons")
+                        .and_then(|b| b.get("items"))
+                        .and_then(|i| i.get("enum"))
+                    {
                         out.push(e);
                     }
                     m.values().for_each(|c| enums(c, out));

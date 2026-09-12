@@ -1319,8 +1319,14 @@ mod tests {
             .expect("hold");
         h.engine.swap_system(&mut sys);
 
-        assert!(h.held(PadPort::P1).a, "the bus reports only what the client holds");
-        assert!(!h.held(PadPort::P1).left, "and never the human's own buttons");
+        assert!(
+            h.held(PadPort::P1).a,
+            "the bus reports only what the client holds"
+        );
+        assert!(
+            !h.held(PadPort::P1).left,
+            "and never the human's own buttons"
+        );
         let merged = crate::engine::merge_pads(
             Pad {
                 left: true,

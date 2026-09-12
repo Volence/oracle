@@ -49,7 +49,10 @@ fn main() {
         sys.run_frames(at);
         sys.set_pad(oracle_core::io::PadPort::P1, pad);
         sys.run_frames(len);
-        sys.set_pad(oracle_core::io::PadPort::P1, oracle_core::io::Pad::default());
+        sys.set_pad(
+            oracle_core::io::PadPort::P1,
+            oracle_core::io::Pad::default(),
+        );
         sys.run_frames(frames - at - len);
     } else {
         sys.run_frames(frames);

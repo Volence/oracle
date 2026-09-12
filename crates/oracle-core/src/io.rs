@@ -375,8 +375,16 @@ mod tests {
         assert_eq!(with_pad, PadPort::ALL, "the pad ports, in port order");
         assert_eq!(Port::Exp.pad_port(), None, "EXP has no pad (recon IO1)");
         for p in PadPort::ALL {
-            assert_eq!(p.port().pad_port(), Some(p), "{p:?} round-trips through its port");
-            assert_eq!(p.index(), p.port().index(), "{p:?}'s pad slot is its port's slot");
+            assert_eq!(
+                p.port().pad_port(),
+                Some(p),
+                "{p:?} round-trips through its port"
+            );
+            assert_eq!(
+                p.index(),
+                p.port().index(),
+                "{p:?}'s pad slot is its port's slot"
+            );
             assert_eq!(
                 PadPort::from_index(p.index()),
                 Some(p),

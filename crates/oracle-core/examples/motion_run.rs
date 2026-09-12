@@ -313,9 +313,15 @@ mod tests {
         let rows =
             parse_script("# lead comment\n\n60 360 R   # hold right\n120 121 A 1\n").unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!((rows[0].start, rows[0].end, rows[0].port), (60, 360, PadPort::P1));
+        assert_eq!(
+            (rows[0].start, rows[0].end, rows[0].port),
+            (60, 360, PadPort::P1)
+        );
         assert!(rows[0].pad.right);
-        assert_eq!((rows[1].start, rows[1].end, rows[1].port), (120, 121, PadPort::P2));
+        assert_eq!(
+            (rows[1].start, rows[1].end, rows[1].port),
+            (120, 121, PadPort::P2)
+        );
         assert!(rows[1].pad.a);
     }
 

@@ -2401,9 +2401,11 @@ mod tests {
         let mut hidden = LayerMask::ALL;
         assert!(hidden.set(plane_a, false));
         let head = "so nothing on this glass is the picture that answer would be about. Nothing was armed.";
-        let next_pass = "It clears on the window's next pass, which redraws the picture under that mask \
+        let next_pass =
+            "It clears on the window's next pass, which redraws the picture under that mask \
                          whether or not the machine is running.";
-        let next_frame = "It clears at the machine's next completed frame, which a paused machine completes \
+        let next_frame =
+            "It clears at the machine's next completed frame, which a paused machine completes \
                           only when something runs it.";
         for (glass, bus, want) in [
             (

@@ -870,7 +870,10 @@ fn cram_rgb_state_from(cram: &[u8], index: u8, state: PixelState) -> (u8, u8, u8
 /// `cram` is a whole [`CRAM_SIZE`] image by type. A short-but-nonempty CRAM would decode low indices
 /// silently and only panic on a high one; a `debug_assert_eq!` on the length guarded that while this took a
 /// slice, and went with the slice (lens M70), because every caller now hands over an array.
-pub(crate) fn report_rgb_with_cram(cram: &[u8; CRAM_SIZE], report: &LineReport) -> Vec<(u8, u8, u8)> {
+pub(crate) fn report_rgb_with_cram(
+    cram: &[u8; CRAM_SIZE],
+    report: &LineReport,
+) -> Vec<(u8, u8, u8)> {
     report
         .pixels
         .iter()

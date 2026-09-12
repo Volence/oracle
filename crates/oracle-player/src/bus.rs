@@ -1781,7 +1781,11 @@ mod seam {
             human[0],
             "with nothing held the machine must see exactly the human's pad"
         );
-        assert_eq!(machine.system().pad(oracle_core::io::PadPort::P2), human[1], "and port 1 likewise");
+        assert_eq!(
+            machine.system().pad(oracle_core::io::PadPort::P2),
+            human[1],
+            "and port 1 likewise"
+        );
 
         // --- the client holds, through the served surface ---
         let reply = ok(
@@ -1831,7 +1835,11 @@ mod seam {
             "`emulator/release_all` did not clear the held set, so the row that tells a human to call it \
              is advertising a remedy that does not work"
         );
-        assert_eq!(machine.system().pad(oracle_core::io::PadPort::P2), human[1], "on both ports");
+        assert_eq!(
+            machine.system().pad(oracle_core::io::PadPort::P2),
+            human[1],
+            "on both ports"
+        );
     }
 
     /// ★ **THE PARCEL** — a breakpoint armed over the bus halts the player's own loop, at the breakpoint.

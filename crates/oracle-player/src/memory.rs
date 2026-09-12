@@ -1132,7 +1132,9 @@ mod bus_parity {
         let mut sys = booted();
         let mut b = bus(&mut sys, true);
         let at = 0x00FF_0000u32;
-        let method = Space::Bus.write_method().expect("the bus space is writable");
+        let method = Space::Bus
+            .write_method()
+            .expect("the bus space is writable");
         let blessed = |s: &str| oracle_aether::hex::parse_bytes("bytes", &json!(s));
         let prefixed = [
             // one prefix, then whole bytes: the parser accepts
@@ -1145,7 +1147,11 @@ mod bus_parity {
         let mut accepted = 0;
         for typed in prefixed {
             let panel = write_params(Space::Bus, at, typed);
-            let server = b.call(&mut sys, method, &json!({"addr": oracle_aether::hex::addr(at), "bytes": typed}));
+            let server = b.call(
+                &mut sys,
+                method,
+                &json!({"addr": oracle_aether::hex::addr(at), "bytes": typed}),
+            );
             match (&panel, &server) {
                 (Ok(params), Answer::Ok(_)) => {
                     accepted += 1;
@@ -1170,7 +1176,10 @@ mod bus_parity {
                 }
             }
         }
-        assert_eq!(accepted, 6, "the six single-prefix spellings are the ones both sides accept");
+        assert_eq!(
+            accepted, 6,
+            "the six single-prefix spellings are the ones both sides accept"
+        );
 
         // The packet's three, by name, and the panel's own completion of a bare payload.
         for (typed, want) in [
