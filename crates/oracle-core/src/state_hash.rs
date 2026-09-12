@@ -87,6 +87,12 @@ impl StateHash {
     /// assert_eq!(h.combined, 0xF160_1314_F59D_6B45);
     /// ```
     ///
+    /// **What makes those three blocks mean anything is the control above them.** Stable rustdoc does not
+    /// check a `compile_fail` block's error code (measured: a block marked `E0599` whose real error is
+    /// E0308 passed), so each block passes on *any* compile error, a typo included. The control is the same
+    /// program with the arguments right, and it compiles and asserts the golden. Run as plain doctests, the
+    /// three fail with E0308 at exactly the argument the sentence above each names.
+    ///
     /// The four `debug_assert_eq!` length checks this body opened with until M70 are gone rather than
     /// kept: a region's length is its type now, so none of them could fire.
     pub fn compute(
