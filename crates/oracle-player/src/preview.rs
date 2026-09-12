@@ -57,7 +57,7 @@
 //! means the extra object pushed something off the table, and a picture taken then would be missing part
 //! of itself while looking complete.
 //!
-//! The lists are the **link walk**, not all 80 slots ([`walk`]). Slots past the walk hold whatever the last
+//! The lists are the **link walk**, not every one of the table's [`SAT_SLOTS`] slots ([`walk`]). Slots past the walk hold whatever the last
 //! game that used them left behind; they are not drawn, and they do not cancel, because the probe's longer
 //! list overwrites leftovers the control still has.
 //!
@@ -118,7 +118,7 @@
 
 use oracle_core::render::SpriteDecoded;
 use oracle_core::state_hash::fnv1a_bytes;
-use oracle_core::vdp::Vdp;
+use oracle_core::vdp::{Vdp, SAT_SLOTS};
 
 /// How many frames past the spawn's own handshake the probe runs before reading the sprite table.
 ///
@@ -319,7 +319,7 @@ impl Outcome {
 /// **The sprites the video chip would actually walk**, in link order, from a decoded table.
 ///
 /// Slots past the walk are not drawn: they hold whatever was last written there, and they are the reason a
-/// diff over all 80 entries reports a perturbation that never happened. The probe's list is longer than the
+/// diff over every one of the table's [`SAT_SLOTS`] entries reports a perturbation that never happened. The probe's list is longer than the
 /// control's, so it overwrites leftovers the control still carries, and those leftovers then look like
 /// sprites that vanished.
 ///
@@ -333,7 +333,10 @@ impl Outcome {
 /// by `the_walk_ends_the_way_the_chip_ends_it`, which pins the four terminations against the same rules the
 /// core's walk states.
 pub fn walk(sprites: &[SpriteDecoded], max: u8) -> Vec<SpriteDecoded> {
-    let mut seen = [false; 80];
+    // One flag per slot of the table the core decodes (`Vdp::sprites_decoded` returns `SAT_SLOTS` entries),
+    // named from the VDP's own constant rather than written as 80 (lens M62): a literal here would stay 80
+    // whatever the table became, and index past its end on the first walk that reached the new slots.
+    let mut seen = [false; SAT_SLOTS];
     let mut out = Vec::new();
     let mut idx = 0usize;
     for _ in 0..usize::from(max).min(sprites.len()) {
@@ -580,6 +583,14 @@ mod tests {
     use super::*;
     use oracle_core::render::sprite_tile_at;
 
+    /// H40's parse cap, which is the whole sprite attribute table: [`SAT_SLOTS`], "the most any mode
+    /// parses" by that constant's own doc (lens M62). A `u8` because [`walk`]'s cap and the SAT's link
+    /// field are; the assertion is the condition that makes the conversion lossless.
+    const H40_CAP: u8 = {
+        assert!(SAT_SLOTS <= u8::MAX as usize);
+        SAT_SLOTS as u8
+    };
+
     fn sprite(index: u8, x: i16, y: i16, w: u8, h: u8, tile: u16, link: u8) -> SpriteDecoded {
         SpriteDecoded {
             index,
@@ -633,7 +644,10 @@ mod tests {
             sprite(2, 16, 0, 1, 1, 0, 0),
         ];
         assert_eq!(
-            walk(&t, 80).iter().map(|s| s.index).collect::<Vec<_>>(),
+            walk(&t, H40_CAP)
+                .iter()
+                .map(|s| s.index)
+                .collect::<Vec<_>>(),
             [0, 1],
             "the walk stops at the zero link and never reaches slot 2"
         );
@@ -647,24 +661,37 @@ mod tests {
         // An out-of-range link ends it.
         let oor = vec![sprite(0, 0, 0, 1, 1, 0, 60), sprite(1, 0, 0, 1, 1, 0, 0)];
         assert_eq!(
-            walk(&oor, 80).len(),
+            walk(&oor, H40_CAP).len(),
             1,
             "a link past the table ends the list"
         );
 
         // A loop ends it, and this is the one that would hang without the visited set.
         let loopy = vec![sprite(0, 0, 0, 1, 1, 0, 1), sprite(1, 0, 0, 1, 1, 0, 1)];
-        assert_eq!(walk(&loopy, 80).len(), 2, "a self link terminates the walk");
+        assert_eq!(
+            walk(&loopy, H40_CAP).len(),
+            2,
+            "a self link terminates the walk"
+        );
     }
 
-    /// **The cap is the chip's, so an H32 machine walks fewer slots than an H40 one.**
+    /// **The cap is the chip's, so an H32 machine walks fewer slots than an H40 one.** The H40 chain is
+    /// the whole table, [`SAT_SLOTS`] long, so the walk's visited set must cover every slot the core can
+    /// decode (lens M62).
     #[test]
     fn the_cap_is_the_machines_and_not_a_constant() {
-        let chain: Vec<SpriteDecoded> = (0..80)
-            .map(|i| sprite(i, 0, 0, 1, 1, 0, ((i as u16 + 1) % 80) as u8))
+        let chain: Vec<SpriteDecoded> = (0..H40_CAP)
+            .map(|i| {
+                let link = (u16::from(i) + 1) % u16::from(H40_CAP);
+                sprite(i, 0, 0, 1, 1, 0, link as u8)
+            })
             .collect();
         assert_eq!(walk(&chain, 64).len(), 64, "H32 parses 64");
-        assert_eq!(walk(&chain, 80).len(), 80, "H40 parses 80");
+        assert_eq!(
+            walk(&chain, H40_CAP).len(),
+            SAT_SLOTS,
+            "H40 parses the whole table"
+        );
     }
 
     // ------------------------------------------------------------------------------------------
