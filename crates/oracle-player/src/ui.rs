@@ -257,9 +257,9 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Screen => {
                 // Controls first, then the picture with whatever is left — the order is the layout, and
                 // `screen` allocates all of the remainder. ⚑ The strip is drawn through
-                // [`screen_strip`], which bounds it, because "all of the remainder" was reachably
+                // [`bounded_control_area`], which bounds it, because "all of the remainder" was reachably
                 // NOTHING: see that function for why the tab's own scroll area cannot fix that.
-                screen_strip(ui, |ui| self.screen_controls(ui));
+                bounded_control_area(ui, "screen_controls", |ui| self.screen_controls(ui));
                 self.screen(ui);
             }
             Tab::Planes => self.planes(ui),
@@ -281,11 +281,13 @@ impl egui_dock::TabViewer for Panels<'_> {
 /// **One sentence for both tabs, because one sentence is true on both.** It gives advice about *size*
 /// rather than width, because the width is never what runs out: [`fit_or_say`] records why a narrow pane
 /// still gets a picture. What runs out is the **height**, taken by whatever sits above the picture in the
-/// same vertical stack. On the Planes tab that is the row of plane choices above [`plane_split`], which
-/// wraps in a narrow pane, so a wider pane and a taller one both give the picture its room back. On the
-/// Screen tab it was the control strip, which [`screen_strip`] has bounded since
-/// `F-SCREEN-TAB-STRIP-UNBOUNDED`, and `no_room_tests` records that the window's own layout no longer
-/// collapses that tab at all. The Planes tab used to say *"widen the pane"*
+/// same vertical stack — on the Screen tab the control strip, on the Planes tab the row of plane choices
+/// above [`plane_split`], which wraps in a narrow pane so a wider pane and a taller one both give the
+/// picture its room back. **Both are now under [`bounded_control_area`]** (`F-SCREEN-TAB-STRIP-UNBOUNDED`,
+/// then `F-PLANES-CHOICE-ROW-UNBOUNDED`), and `no_room_tests` records that the window's own layout no
+/// longer collapses either tab. The sentence stays, because the bound is a bound on what the *controls*
+/// take and not a floor under the picture's own fit: a pane small enough refuses one level down in
+/// [`fit_or_say`] with no control area involved at all. The Planes tab used to say *"widen the pane"*
 /// (`F-TWO-SPELLINGS-OF-ONE-GIVEUP`), which named one of its two cures and read as if the width were the
 /// problem.
 const NO_ROOM_FOR_PICTURE: &str = "no room to draw the picture here; make this pane larger";
@@ -399,66 +401,98 @@ fn screen_image(
     Some((size, image_rect, hit))
 }
 
-/// **The most of the Screen pane the control strip may ever take**, as a share of the pane's height.
+/// **The most of a picture tab's pane its controls may ever take**, as a share of the pane's height.
 ///
 /// ⚑ **Not a tuned number, and the reason it is one half rather than a fraction someone liked the look
-/// of.** The rule it expresses is *the strip may not take more of the pane than it leaves for the
+/// of.** The rule it expresses is *the controls may not take more of the pane than they leave for the
 /// picture*, and one half is the only value that states which of the two siblings is the larger. Every
 /// other share is a preference with a knob on it.
 ///
-/// The consequence is the property [`screen_strip_cap`]'s gate asserts and is what makes this safe to
-/// apply unconditionally: the bound **bites only where the picture was already the minority**. A strip
-/// whose natural height is under half the pane is not touched at all, so nothing about the tab changes at
-/// any ordinary size; a strip over half the pane is exactly the case in which today's build hands the
-/// picture less than half — and, past `avail`, hands it nothing.
-const SCREEN_STRIP_MAX_SHARE: f32 = 0.5;
+/// The consequence is the property [`control_area_cap`]'s gate asserts and is what makes this safe to
+/// apply unconditionally: the bound **bites only where the picture was already the minority**. A control
+/// area whose natural height is under half the pane is not touched at all, so nothing about the tab
+/// changes at any ordinary size; one over half the pane is exactly the case in which today's build hands
+/// the picture less than half — and, past `avail`, hands it nothing.
+///
+/// ⚑ **One constant under two consumers, and that is the point rather than a convenience.** It was
+/// `SCREEN_STRIP_MAX_SHARE` until `F-PLANES-CHOICE-ROW-UNBOUNDED` found the same defect one tab over,
+/// and a second Planes-side copy of "the controls may not take more of the pane than they leave for the
+/// picture" would have been the sibling of `F-TWO-SPELLINGS-OF-ONE-GIVEUP` — a rule that is true on both
+/// tabs only for as long as nobody edits one of them. The two tabs cannot drift because there is nothing
+/// for them to drift apart *from*; the same argument `Host::watchpoints_mut` makes for one instrument
+/// under two readers (`oracle-aether/src/host.rs`).
+const CONTROL_AREA_MAX_SHARE: f32 = 0.5;
 
-/// The strip's height budget in a pane of `available_height` points. See [`SCREEN_STRIP_MAX_SHARE`].
+/// The control area's height budget in a pane of `available_height` points. See
+/// [`CONTROL_AREA_MAX_SHARE`].
 ///
 /// ⚑ **Unmeasurable is unbounded, never zero.** A pane whose height is not a finite positive number is
-/// not a short pane, it is a broken one, and a cap of `0` there would erase the strip — the mask
-/// statement, the effects statement and the spawn badge with it — with nothing on screen to say why. So
-/// the bound stands down and the pane is left to [`fit_or_say`], which refuses a non-finite `avail`
-/// outright and paints [`NO_ROOM_FOR_PICTURE`]. Loud on unmeasurable, in the one direction that says so.
-fn screen_strip_cap(available_height: f32) -> f32 {
+/// not a short pane, it is a broken one, and a cap of `0` there would erase the controls — the Screen
+/// tab's mask statement, the effects statement and the spawn badge; the Planes tab's whole plane
+/// selector — with nothing on screen to say why. So the bound stands down and the pane is left to
+/// [`fit_or_say`], which refuses a non-finite `avail` outright and paints [`NO_ROOM_FOR_PICTURE`]. Loud
+/// on unmeasurable, in the one direction that says so.
+fn control_area_cap(available_height: f32) -> f32 {
     if !available_height.is_finite() || available_height <= 0.0 {
         return f32::INFINITY;
     }
-    available_height * SCREEN_STRIP_MAX_SHARE
+    available_height * CONTROL_AREA_MAX_SHARE
 }
 
-/// What [`screen_strip`] did, for the gate. The tab ignores it.
+/// What [`bounded_control_area`] did, for the gate. The tab ignores it.
 ///
-/// The fields are read only by `screen_strip_tests`, and that is the point rather than an oversight: the
-/// alternative is a gate that re-derives the budget and the occupancy from egui's own internals, which
-/// is a second implementation of the thing under test. `screen_strip` reports what it did; nothing has to
-/// guess.
+/// The fields are read only by `screen_strip_tests` and `plane_choice_row_tests`, and that is the point
+/// rather than an oversight: the alternative is a gate that re-derives the budget and the occupancy from
+/// egui's own internals, which is a second implementation of the thing under test.
+/// `bounded_control_area` reports what it did; nothing has to guess.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(test), allow(dead_code))]
-struct StripRoom {
-    /// The budget [`screen_strip_cap`] set from the pane's height, before anything was drawn.
+struct ControlRoom {
+    /// The budget [`control_area_cap`] set from the pane's height, before anything was drawn.
     cap: f32,
-    /// The height the strip actually occupied, which is what the picture does not get.
+    /// The height the control area actually occupied, which is what the picture does not get.
     ///
     /// ⚑ Measured off **the caller's cursor**, not off `ScrollAreaOutput::inner_rect`. That field is read
     /// before the area shrinks to its content (`egui-0.36.1/src/containers/scroll_area.rs:1038` takes it
     /// from `prepared`, and the shrink happens in `end` at `:1184`), so it reports the *budget* on a
-    /// strip that fits — a first draft of this read it and had a two-row strip occupying half an
+    /// control area that fits — a first draft of this read it and had a two-row strip occupying half an
     /// 800-point pane.
     shown: f32,
-    /// The height the strip's content wanted. Greater than `shown` means it is scrolling.
+    /// The height the control area's content wanted. Greater than `shown` means it is scrolling.
     wanted: f32,
 }
 
-/// **The Screen tab's vertical split**: the control strip under a height bound, then the rule, then
-/// whatever is left for the picture — which the caller draws.
+/// **A picture tab's controls under a height bound, then the rule, then whatever is left for the
+/// picture** — which the caller draws. `salt` is the caller's own scroll position (P7).
 ///
-/// ⚑ **The defect** (`F-SCREEN-TAB-STRIP-UNBOUNDED`). `Tab::Screen` used to call
-/// [`Panels::screen_controls`] straight, and the strip is a column of up to nine rows, six of them
-/// conditional (`docs/2026-09-09-palette-shape-and-the-strip.md` §2.1). Nothing bounded it, and
+/// Two consumers, deliberately: `Tab::Screen` wraps [`Panels::screen_controls`] in it, and
+/// [`plane_choice_row`] wraps the Planes tab's row of plane choices. See [`CONTROL_AREA_MAX_SHARE`] for
+/// why that is one function rather than two.
+///
+/// ⚑ **The defect** (`F-SCREEN-TAB-STRIP-UNBOUNDED`, then `F-PLANES-CHOICE-ROW-UNBOUNDED`). `Tab::Screen`
+/// used to call [`Panels::screen_controls`] straight, and the strip is a column of up to nine rows, six
+/// of them conditional (`docs/2026-09-09-palette-shape-and-the-strip.md` §2.1). Nothing bounded it, and
 /// [`Panels::screen`] takes `ui.available_size()` — so the strip took its natural height and **the
 /// picture absorbed the whole deficit**, down to zero and past it. The owner's symptom was a Screen tab
 /// with no picture in it.
+///
+/// ⚑ **The same defect on the Planes tab, and what is different about it.** The Planes choice row is one
+/// `horizontal_wrapped` line at any comfortable width, so its height is a function of the pane's
+/// **width**: measured headless at 1, 1.25 and 2 points per pixel (2026-09-12) it takes 37 points at 520
+/// wide and above, 91 at 200, 145 at 120 and 179 at 80. Below `PLANE_SIDE_BY_SIDE_MIN` [`plane_split`]
+/// stacks the picture directly under it, so that height comes straight out of the picture, and the
+/// picture collapsed to nothing at 200x90, 120x90, 80x160 and 80x90. (Above that width the side-by-side
+/// branch is immune for a reason of its own: the side column stretches `horizontal_top` to its own
+/// height, so the picture was left about 280 points in a 90-point pane and the tab scrolls.)
+///
+/// # Why the bound fits a row of controls and not only a column of prose
+///
+/// A scrolled-away control is worse than a scrolled-away sentence — this file's own rule at
+/// [`plane_choice_row`] is *a control that vanishes teaches nothing* — so the trade has to be stated
+/// rather than inherited. It is: **in the regime where the bound bites, today's build has no picture at
+/// all**, and the tab is the picture. Bounding the row costs the person a scroll to reach the last of
+/// five controls in a pane 80 points wide; not bounding it costs them the plane. Nothing about the row
+/// changes at any width where it already fits on one line, which is every pane above 200 points wide.
 ///
 /// # Why this is not "make the tab scroll", which is what the row asked for
 ///
@@ -473,7 +507,7 @@ struct StripRoom {
 /// at every offset.
 ///
 /// So the cure is not a scroll area over the whole tab. It is **a floor under the picture**, and the only
-/// way to give the picture a floor is to give the strip a ceiling — [`screen_strip_cap`].
+/// way to give the picture a floor is to give the strip a ceiling — [`control_area_cap`].
 ///
 /// # Why the strip and not the tab gets the scrollbar
 ///
@@ -484,45 +518,53 @@ struct StripRoom {
 /// strip keeps the picture on screen at every size and puts the scrollbar on the column of text, which is
 /// the half a person scrolls through by nature.
 ///
-/// **Nothing here changes what the strip looks like.** The owner has a parked look call on this exact
+/// **Nothing here changes what the controls look like.** The owner has a parked look call on the Screen
 /// strip (`docs/2026-09-09-palette-shape-and-the-strip.md` §2, *"the box above screen kind of looks bad
-/// too imo"*) and it is his: no row is added, removed, reordered or restyled. `max_height` is a cap and
-/// not a reservation, so a strip shorter than the cap is laid out exactly as it is today, and a scroll
+/// too imo"*) and it is his; `F-PLANES-CHOICE-ROW-UNBOUNDED` drew the same boundary around the Planes
+/// row. No row is added, removed, reordered or restyled on either tab. `max_height` is a cap and not a
+/// reservation, so a control area shorter than the cap is laid out exactly as it is today, and a scroll
 /// area with nothing to scroll draws no bar at all. The only pane in which anything looks different is
 /// the one where the picture is currently gone.
 ///
 /// ⚠ **What does change there, stated rather than discovered later.** `crate::theme` sets
-/// `scroll.floating = false` with a 6-point bar (CHROME_SPEC), so on the frames the strip *is* scrolling
-/// the bar takes 6 points of width from the strip's rows. That is the theme's own bar at the theme's own
-/// width, in the regime where the alternative is content cropped with no way to reach it — but it is the
-/// one visible consequence of this parcel and it wants the owner's eye, not this seat's.
+/// `scroll.floating = false` with a 6-point bar (CHROME_SPEC), so on the frames the area *is* scrolling
+/// the bar takes 6 points of width from its rows. On the Planes tab those 6 points are taken from the
+/// width the choice row wraps against, so a bounded row wraps one step sooner than an unbounded one at
+/// the same pane width. That is the theme's own bar at the theme's own width, in the regime where the
+/// alternative is content cropped with no way to reach it — but it is the one visible consequence of
+/// this parcel and it wants the owner's eye, not this seat's.
 ///
 /// `auto_shrink` is off **across** and on **down**, the pairing this file already argues for at the
 /// subtype list: off across so the scrollbar sits at the pane's edge rather than inside the text, and so
-/// the strip's prose wraps against the same width it wraps against today; on down so a two-line strip
-/// does not hold half a pane of empty box open under it.
+/// the strip's prose (and the choice row's wrapping) works against the same width it does today; on down
+/// so a two-line strip does not hold half a pane of empty box open under it.
 ///
 /// `min_scrolled_height(0.0)` because egui otherwise floors a scrollable area at 64 points
 /// (`egui-0.36.1/src/containers/scroll_area.rs:399`, applied at `:776`), which would break the bound in
-/// exactly the panes it exists for — a 90-point pane would hand the strip 64 of it and the picture 26.
-fn screen_strip(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> StripRoom {
+/// exactly the panes it exists for — a 90-point pane would hand the controls 64 of it and the picture 26.
+fn bounded_control_area(
+    ui: &mut egui::Ui,
+    salt: &'static str,
+    add: impl FnOnce(&mut egui::Ui),
+) -> ControlRoom {
     let before = ui.available_height();
-    let cap = screen_strip_cap(before);
+    let cap = control_area_cap(before);
     let out = egui::ScrollArea::vertical()
-        // P7: an explicit, stable salt. The Screen tab's strip owns its own scroll position.
-        .id_salt("screen_controls")
+        // P7: an explicit, stable salt. Each tab's control area owns its own scroll position, which is
+        // why this is the caller's to name rather than one string shared by both.
+        .id_salt(salt)
         .max_height(cap)
         .min_scrolled_height(0.0)
         .auto_shrink([false, true])
         .show(ui, add);
-    // What the strip cost the pane, off the cursor rather than off the scroll area's own report: see
-    // [`StripRoom::shown`]. The `item_spacing` comes back out because egui advances the cursor past the
-    // widget *and* the gap before the next one, and that gap is the picture's business, not the strip's.
+    // What the controls cost the pane, off the cursor rather than off the scroll area's own report: see
+    // [`ControlRoom::shown`]. The `item_spacing` comes back out because egui advances the cursor past the
+    // widget *and* the gap before the next one, and that gap is the picture's business, not theirs.
     let shown = before - ui.available_height() - ui.spacing().item_spacing.y;
-    // The rule between the strip and the picture, exactly where it was: outside the scroll area, so it
-    // marks the boundary of the strip's box rather than scrolling away with the strip's last row.
+    // The rule between the controls and the picture, exactly where each tab already drew it: outside the
+    // scroll area, so it marks the boundary of the box rather than scrolling away with its last row.
     ui.separator();
-    StripRoom {
+    ControlRoom {
         cap,
         shown,
         wanted: out.content_size.y,
@@ -656,7 +698,7 @@ impl Panels<'_> {
     /// standing"*, and offered the strip's unbounded height as the thing that guaranteed it. It never
     /// did: an unbounded strip in a pane too short for it was **cropped** at the pane's edge with no
     /// scrollbar and no way to reach the rest, so the lines below the fold were not merely scrollable,
-    /// they were unreachable. [`screen_strip`] bounds the strip and gives it a scrollbar, which trades
+    /// they were unreachable. [`bounded_control_area`] bounds the strip and gives it a scrollbar, which trades
     /// that for lines that are off-screen **and reachable**. What actually holds the guarantee is the
     /// order: these statements are drawn first, so they are what the top of the strip shows, and the pane
     /// opens on them.
@@ -1508,35 +1550,8 @@ impl Panels<'_> {
     /// about.
     fn planes(&mut self, ui: &mut egui::Ui) {
         let ink = crate::planes::Ink::of(crate::theme::DEFAULT_FAMILY);
+        plane_choice_row(ui, self.planes);
         let is_window = self.planes.plane == oracle_core::render::Plane::Window;
-        ui.horizontal_wrapped(|ui| {
-            for (p, label) in crate::planes::CHOICES {
-                if ui
-                    .selectable_label(self.planes.plane == p, label)
-                    .on_hover_text("draw this plane whole, from its nametable")
-                    .clicked()
-                {
-                    // Through `select`, never by assignment: it is what drops a standing cell reading
-                    // about the plane you just left. See `planes::Panel::select`.
-                    self.planes.select(p);
-                }
-            }
-            ui.separator();
-            ui.checkbox(&mut self.planes.outline, "viewport")
-                .on_hover_text("outline the part of this plane the screen is showing");
-            // Offered and **disabled** rather than hidden, on the transport bar's rule: a control that
-            // vanishes teaches nothing, and the hover says why this one is off.
-            ui.add_enabled(
-                !is_window,
-                egui::Checkbox::new(&mut self.planes.apply_scroll, "apply live scroll"),
-            )
-            .on_hover_text(if is_window {
-                "the window plane does not scroll, so there is nothing to apply"
-            } else {
-                "draw the region the scroll cuts out of this plane instead of the plane itself"
-            });
-        });
-        ui.separator();
 
         // ⚑ Disjoint field borrows: the panel's own state mutably, the machine shared. The VDP read is
         // in-process and read-only (`screen_pick` reads it the same way for a click).
@@ -3032,6 +3047,62 @@ fn plane_image(ui: &mut egui::Ui, tex: &egui::TextureHandle) -> Option<egui::Res
         })
         .inner;
     Some(hit)
+}
+
+/// **The Planes tab's choice row, under the same height bound the Screen tab's strip is under**: which
+/// plane, and the two toggles over how it is drawn, then the rule between it and the picture.
+///
+/// Free rather than inline in [`Panels::planes`] for the reason [`plane_split`] is: `Panels` borrows a
+/// live `Machine`, so there is no headless value to call `planes` on, and the row's height in a squeezed
+/// pane is exactly what a gate has to be able to measure. It takes the panel alone because the panel is
+/// all it reads or writes, and it returns what [`bounded_control_area`] did for the same reason
+/// `Tab::Screen`'s call does: the tab ignores it, the gate does not.
+///
+/// ⚑ **The defect** (`F-PLANES-CHOICE-ROW-UNBOUNDED`). This row is `horizontal_wrapped`, so in a narrow
+/// pane it wraps to two, three or four lines, and below `PLANE_SIDE_BY_SIDE_MIN` [`plane_split`] stacks
+/// the picture directly under it. Nothing bounded it and the picture is elastic, so the wrapped lines
+/// came straight out of the picture until there was none: the tab drew [`NO_ROOM_FOR_PICTURE`] where the
+/// plane should be. [`bounded_control_area`] carries the measurement and the reasoning, including why a
+/// bound on a row of *controls* is a different call from a bound on a column of prose.
+fn plane_choice_row(ui: &mut egui::Ui, panel: &mut crate::planes::Panel) -> ControlRoom {
+    bounded_control_area(ui, "planes_choices", |ui| plane_choice_controls(ui, panel))
+}
+
+/// The controls the choice row is made of, with no bound on them.
+///
+/// Split from [`plane_choice_row`] so `plane_choice_row_tests` can lay the **unbounded** arrangement out
+/// — the one that shipped — against the bounded one and show the defect reproducing in the same harness
+/// that shows it fixed. A test-local copy of these five widgets would be a second spelling of the row,
+/// green the day the real row grows a sixth. Production has exactly one caller.
+fn plane_choice_controls(ui: &mut egui::Ui, panel: &mut crate::planes::Panel) {
+    let is_window = panel.plane == oracle_core::render::Plane::Window;
+    ui.horizontal_wrapped(|ui| {
+        for (p, label) in crate::planes::CHOICES {
+            if ui
+                .selectable_label(panel.plane == p, label)
+                .on_hover_text("draw this plane whole, from its nametable")
+                .clicked()
+            {
+                // Through `select`, never by assignment: it is what drops a standing cell reading
+                // about the plane you just left. See `planes::Panel::select`.
+                panel.select(p);
+            }
+        }
+        ui.separator();
+        ui.checkbox(&mut panel.outline, "viewport")
+            .on_hover_text("outline the part of this plane the screen is showing");
+        // Offered and **disabled** rather than hidden, on the transport bar's rule: a control that
+        // vanishes teaches nothing, and the hover says why this one is off.
+        ui.add_enabled(
+            !is_window,
+            egui::Checkbox::new(&mut panel.apply_scroll, "apply live scroll"),
+        )
+        .on_hover_text(if is_window {
+            "the window plane does not scroll, so there is nothing to apply"
+        } else {
+            "draw the region the scroll cuts out of this plane instead of the plane itself"
+        });
+    });
 }
 
 /// The width the Planes tab's side column is given when it sits beside the picture.
@@ -7550,20 +7621,25 @@ mod overlay_layout_tests {
 /// its viewport shorter than 64 points (`egui-0.36.1/src/containers/scroll_area.rs:399`, applied at
 /// `:776`). Laid out inside that wrapper at 1, 1.25 and 2 points per pixel (2026-09-12):
 ///
-/// * the **Screen tab no longer collapses at any pane height**: [`screen_strip`] takes at most half of
+/// * the **Screen tab no longer collapses at any pane height**: [`bounded_control_area`] takes at most half of
 ///   those 64 points, and a forty-row strip still left the picture 18;
 /// * the Planes tab's **side-by-side** branch does not collapse either, because the side column stretches
-///   the row to its own height (the picture was left about 200 points);
-/// * the Planes tab's **stacked** branch does. At every pane measured from 80 to 200 points wide and 30 to
-///   90 tall, the row of plane choices wraps past the floor and leaves the picture nothing; at 240 wide,
-///   or 200 tall, it does not.
+///   the row to its own height (the picture was left about 280 points in a 90-point pane);
+/// * the Planes tab's **stacked** branch used to. ⚑ **Amended by `F-PLANES-CHOICE-ROW-UNBOUNDED`
+///   (2026-09-12), which also corrects the shape of the regime recorded here.** It was booked as a box
+///   80 to 200 wide by 30 to 90 tall; re-measured it is a **diagonal**, because the choice row's height
+///   is a function of the width and the collapse is wherever that height reaches the pane. The panes
+///   that collapsed were 200x90, 120x90, **80x160** and 80x90 — the third of those outside the booked
+///   box. [`plane_choice_row`] now puts that row under the same bound, and `plane_choice_row_tests`
+///   pins both halves: the collapse reproduces unbounded and does not survive the bound.
 ///
-/// In that last case the sentence is laid out below the bottom of the viewport, and egui does not paint a
-/// label it cannot see (`Label::ui` tests `is_rect_visible`). An emulation of the old centred line in the
-/// same place was not painted either, so this is not something the one owner changed, and bringing the
-/// sentence into view means bounding that row, which is a layout change and a different row's. So the
-/// gates here collapse the pane itself: under one device pixel tall is exactly the condition
-/// `screen_pick::fit` gives up on, and it leaves the sentence's own line inside the clip.
+/// In that last case the sentence was laid out below the bottom of the viewport, and egui does not paint
+/// a label it cannot see (`Label::ui` tests `is_rect_visible`). An emulation of the old centred line in
+/// the same place was not painted either, so this was never something the one owner changed; bringing
+/// the sentence into view meant bounding that row, which is what `F-PLANES-CHOICE-ROW-UNBOUNDED` did.
+/// The gates here still collapse the pane itself, because that is the condition the *owner* is about
+/// rather than the layout: under one device pixel tall is exactly what `screen_pick::fit` gives up on,
+/// and it leaves the sentence's own line inside the clip.
 #[cfg(test)]
 mod no_room_tests {
     use super::*;
@@ -8099,8 +8175,8 @@ mod screen_strip_tests {
 
     /// What one lay-out of the Screen tab's body left behind.
     struct Room {
-        /// What [`screen_strip`] budgeted and what it spent.
-        strip: StripRoom,
+        /// What [`bounded_control_area`] budgeted and what it spent.
+        strip: ControlRoom,
         /// `ui.available_size()` at the moment [`Panels::screen`] would read it.
         picture: egui::Vec2,
         /// The height the tab body actually offered, inside `egui_dock`'s wrapper.
@@ -8180,17 +8256,17 @@ mod screen_strip_tests {
                     ui.expand_to_include_rect(body);
                     pane = Some(ui.available_height());
                     room = Some(if bound {
-                        screen_strip(ui, strip)
+                        bounded_control_area(ui, "screen_controls", strip)
                     } else {
                         // ⚑ **The arrangement that shipped**, for the gate that proves the tab's own
                         // scroll area cannot reach it: the strip straight into the stack, then the rule,
                         // then whatever is left.
                         let before = ui.available_height();
                         strip(ui);
-                        // The same measure [`screen_strip`] reports, so the two arms are comparable.
+                        // The same measure [`bounded_control_area`] reports, so the two arms are comparable.
                         let taken = before - ui.available_height() - ui.spacing().item_spacing.y;
                         ui.separator();
-                        StripRoom {
+                        ControlRoom {
                             cap: f32::INFINITY,
                             shown: taken,
                             wanted: taken,
@@ -8257,12 +8333,12 @@ mod screen_strip_tests {
                     room.pane,
                 );
                 assert!(
-                    room.strip.shown <= pane_h * SCREEN_STRIP_MAX_SHARE + EPS,
+                    room.strip.shown <= pane_h * CONTROL_AREA_MAX_SHARE + EPS,
                     "the strip took {} of a {pane_h}-point pane at {ppp}, past its \
-                     {SCREEN_STRIP_MAX_SHARE} share ({}). The picture is the remainder, so this is the \
+                     {CONTROL_AREA_MAX_SHARE} share ({}). The picture is the remainder, so this is the \
                      defect: budget {}, wanted {}.",
                     room.strip.shown,
-                    pane_h * SCREEN_STRIP_MAX_SHARE,
+                    pane_h * CONTROL_AREA_MAX_SHARE,
                     room.strip.cap,
                     room.strip.wanted,
                 );
@@ -8366,12 +8442,12 @@ mod screen_strip_tests {
     #[test]
     fn the_bound_bites_only_where_the_picture_was_already_the_minority() {
         for pane in PANE_HEIGHTS {
-            let cap = screen_strip_cap(pane);
+            let cap = control_area_cap(pane);
             // The ceiling. The budget itself is never more than what the budget leaves.
             assert!(
                 cap <= pane - cap,
                 "a {pane}-point pane budgets the strip {cap} and leaves the picture {}, so the strip is \
-                 allowed to be the larger half. {SCREEN_STRIP_MAX_SHARE} is above the rule it is \
+                 allowed to be the larger half. {CONTROL_AREA_MAX_SHARE} is above the rule it is \
                  documented as.",
                 pane - cap,
             );
@@ -8385,7 +8461,7 @@ mod screen_strip_tests {
                     picture_before < natural,
                     "a {natural}-point strip in a {pane}-point pane is bounded to {cap}, but it was \
                      leaving the picture {picture_before} — more than it took. The bound is charging a \
-                     strip that was not the larger half, so {SCREEN_STRIP_MAX_SHARE} is a preference \
+                     strip that was not the larger half, so {CONTROL_AREA_MAX_SHARE} is a preference \
                      rather than the rule it is documented as."
                 );
             }
@@ -8399,7 +8475,7 @@ mod screen_strip_tests {
     #[test]
     fn an_unmeasurable_pane_stands_the_bound_down_and_is_loud_one_level_down() {
         for h in [f32::INFINITY, f32::NAN, 0.0, -10.0, f32::NEG_INFINITY] {
-            let cap = screen_strip_cap(h);
+            let cap = control_area_cap(h);
             assert!(
                 cap.is_infinite() && cap.is_sign_positive(),
                 "a {h}-point pane produced a {cap}-point budget: a finite cap on an unmeasurable pane \
@@ -8458,6 +8534,422 @@ mod screen_strip_tests {
                     room.picture,
                 );
             }
+        }
+    }
+}
+
+/// **The Planes tab's choice row, measured in the pane sizes it breaks in.**
+///
+/// ⚑ **The defect** (`F-PLANES-CHOICE-ROW-UNBOUNDED`). [`plane_choice_controls`] is a
+/// `horizontal_wrapped` row of five controls, so its height is a function of the pane's **width**;
+/// [`plane_split`] stacks the picture directly under it below [`PLANE_SIDE_BY_SIDE_MIN`]; the picture is
+/// elastic. Nothing bounded the row, so in a pane narrow **and** short the wrapped lines took the whole
+/// pane and the tab drew [`NO_ROOM_FOR_PICTURE`] where the plane should be.
+///
+/// The gates here are the Screen tab's, restated against this row rather than copied: the same property
+/// through the same [`bounded_control_area`], and the parity gate below asserts at the source that there
+/// is one implementation and not two. Nothing is a stand-in — the row is the production row, the split is
+/// the production split, and the side column is the production column, because the thing under test is
+/// what the three of them leave each other.
+#[cfg(test)]
+mod plane_choice_row_tests {
+    use super::no_room_tests::said;
+    use super::planes_layout_tests::{facts, inputs};
+    use super::*;
+    use oracle_core::render::Plane;
+
+    /// The plane raster the Planes tab fits into what the split leaves, the size `planes_layout_tests`
+    /// measures: a 64 by 32 cell plane.
+    const SRC: (usize, usize) = (512, 256);
+
+    /// The scales the panel is actually drawn at. **1.0 is not enough on its own**: the bound is spent in
+    /// points but consumed in device pixels, the owner's display is not at 1.0, and a points-only harness
+    /// is exactly where it would agree with a broken build. Same list, same reason, as `no_room_tests`.
+    const SCALES: [f32; 3] = [1.0, 1.25, 2.0];
+
+    /// **Widths, and width is the axis that makes this row tall.** 1200 and 520 are above
+    /// [`PLANE_SIDE_BY_SIDE_MIN`] and just below it: the row is one line at both. 200, 120 and 80 are the
+    /// wrapping regime, measured 2026-09-12 at 91, 145 and 179 points of unbounded row.
+    const PANE_WIDTHS: [f32; 5] = [1200.0, 520.0, 200.0, 120.0, 80.0];
+
+    /// Heights from comfortable down to absurd, the same ladder `screen_strip_tests` uses.
+    const PANE_HEIGHTS: [f32; 5] = [800.0, 400.0, 240.0, 160.0, 90.0];
+
+    /// One point of slack for the pixel grid: egui rounds a scroll area's content rect to whole device
+    /// pixels, which at 1.25 points-per-pixel moves an edge by a fraction of a point.
+    const EPS: f32 = 1.0;
+
+    /// What one lay-out of the Planes tab's body left behind.
+    struct Room {
+        /// What [`bounded_control_area`] budgeted for the choice row and what it spent.
+        row: ControlRoom,
+        /// `ui.available_size()` at the moment `Panels::plane_picture` would read it.
+        picture: egui::Vec2,
+        /// The height the tab body actually offered, inside `egui_dock`'s wrapper.
+        pane: f32,
+    }
+
+    /// Lay the Planes tab's body out headless **inside the wrapper `egui_dock` really puts it in**
+    /// (`egui_dock-0.21.1/src/widgets/dock_area/show/leaf.rs:1390`; `TabViewer::scroll_bars` defaults to
+    /// `[true, true]` and [`Panels`] does not override it). A harness without that wrapper would be
+    /// measuring a pane this window does not have.
+    ///
+    /// `bound` picks the arrangement: `true` is production, `false` is the one that shipped — the same
+    /// controls straight into the stack with the same rule under them. Three frames, because egui settles
+    /// a scroll area's and an `egui::Grid`'s sizes off the previous frame's state, and the panel is
+    /// carried across them for the same reason: a fresh `Panel` every frame would be a fresh scroll
+    /// position every frame.
+    fn lay_out(pane: egui::Vec2, ppp: f32, bound: bool) -> Room {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let mut panel = crate::planes::Panel::default();
+        // The real note for a plane with an H-interrupt armed, so the side column carries its caveat
+        // paragraph — the long case `planes_layout_tests` measures the split under.
+        let note = crate::planes::scroll_note(&inputs(Plane::A, Some(0)));
+        let f = facts();
+        let (mut row, mut picture, mut pane_h) = (None, None, None);
+        for _ in 0..3 {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pane)),
+                ..Default::default()
+            };
+            let id = raw.viewport_id;
+            raw.viewports
+                .get_mut(&id)
+                .expect("egui's own RawInput::default carries the root viewport")
+                .native_pixels_per_point = Some(ppp);
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::ScrollArea::new([true, true]).show(ui, |ui| {
+                    // `leaf.rs` expands the body to the pane before handing it to the viewer.
+                    let body = ui.available_rect_before_wrap();
+                    ui.expand_to_include_rect(body);
+                    pane_h = Some(ui.available_height());
+                    row = Some(if bound {
+                        plane_choice_row(ui, &mut panel)
+                    } else {
+                        // ⚑ **The arrangement that shipped**: the row's own controls straight into the
+                        // stack, then the rule, then whatever is left. The same measure
+                        // [`bounded_control_area`] reports, so the two arms are comparable.
+                        let before = ui.available_height();
+                        plane_choice_controls(ui, &mut panel);
+                        let taken = before - ui.available_height() - ui.spacing().item_spacing.y;
+                        ui.separator();
+                        ControlRoom {
+                            cap: f32::INFINITY,
+                            shown: taken,
+                            wanted: taken,
+                        }
+                    });
+                    plane_split(
+                        ui,
+                        |ui| plane_side_column(ui, None, &f, &note, false),
+                        |ui| picture = Some(ui.available_size()),
+                    );
+                });
+            });
+            // The context is never painted, so a delta nobody consumes would otherwise be leaked.
+            out.textures_delta.clear();
+        }
+        // **Positive control on the scale itself.** Without this the whole `SCALES` loop is three runs of
+        // the same 1.0 pass wearing different labels.
+        assert_eq!(
+            ctx.pixels_per_point(),
+            ppp,
+            "the context ran at {} rather than the {ppp} this case is about",
+            ctx.pixels_per_point()
+        );
+        Room {
+            row: row.expect("the body ran"),
+            picture: picture.expect("the split ran its picture half"),
+            pane: pane_h.expect("the body ran"),
+        }
+    }
+
+    /// Whether this pane is one the bound has anything to do in: the row wants more than its budget.
+    /// Read off the row's own report rather than off a list of pane sizes, so it stays true if the
+    /// theme's text grows, the row gains a control, or [`CONTROL_AREA_MAX_SHARE`] moves.
+    fn squeezed(room: &Room) -> bool {
+        room.row.wanted > room.row.cap + EPS
+    }
+
+    /// **The bound.** The choice row never takes more of the pane than it leaves for the picture, at any
+    /// pane width, any pane height and any scale.
+    ///
+    /// **Derived, not copied**: the expectation is `pane * CONTROL_AREA_MAX_SHARE` computed here from the
+    /// pane the harness reports, never a point count read off a run or off `screen_strip_tests`. Against
+    /// `room.pane` rather than `pane.y` because `egui_dock`'s wrapper is between them and takes its own
+    /// margin, which is exactly the kind of gap a number typed from a run would paper over.
+    #[test]
+    fn the_choice_row_never_takes_more_of_the_pane_than_it_leaves() {
+        let mut squeezes = 0;
+        for ppp in SCALES {
+            for w in PANE_WIDTHS {
+                for h in PANE_HEIGHTS {
+                    let room = lay_out(egui::vec2(w, h), ppp, true);
+                    squeezes += usize::from(squeezed(&room));
+                    assert!(
+                        room.row.shown <= room.pane * CONTROL_AREA_MAX_SHARE + EPS,
+                        "the choice row took {} of a {}-point pane ({w}x{h} at {ppp}), past its \
+                         {CONTROL_AREA_MAX_SHARE} share ({}). The picture is the remainder, so this is \
+                         the defect: budget {}, wanted {}.",
+                        room.row.shown,
+                        room.pane,
+                        room.pane * CONTROL_AREA_MAX_SHARE,
+                        room.row.cap,
+                        room.row.wanted,
+                    );
+                }
+            }
+        }
+        // Positive control on the sweep: a grid in which the bound never bites would pass this gate
+        // without exercising it once.
+        assert!(
+            squeezes > 0,
+            "no pane in the sweep squeezed the row at all, so the bound was never under test"
+        );
+    }
+
+    /// **The defect, in the exact terms the tab failed in.** Not a height compared against a number read
+    /// off a run: what the row left is put through the same [`fit_or_say`] the picture is put through,
+    /// with the plane's own raster, and asked whether anything comes back.
+    #[test]
+    fn the_picture_keeps_room_to_draw_under_a_wrapped_choice_row() {
+        for ppp in SCALES {
+            for w in PANE_WIDTHS {
+                for h in PANE_HEIGHTS {
+                    let room = lay_out(egui::vec2(w, h), ppp, true);
+                    let (fit, _) = said(room.picture, SRC.0, SRC.1, ppp, PLANE_ASPECT, None);
+                    assert!(
+                        fit.is_some(),
+                        "a {w}x{h} pane at {ppp} left the picture {:?}, which draws nothing ({fit:?}). \
+                         The row took {} of the {}-point pane against a {} budget, wanting {}.",
+                        room.picture,
+                        room.row.shown,
+                        room.pane,
+                        room.row.cap,
+                        room.row.wanted,
+                    );
+                }
+            }
+        }
+    }
+
+    /// **The defect reproduces on the arrangement that shipped**, which is what makes the gate above mean
+    /// something. Under the unbounded row the picture is nothing and the tab says so — and the `bound`
+    /// arm of [`lay_out`] is the only difference between the two runs.
+    ///
+    /// The pane sizes are not a list of magic numbers: every pane in the sweep is tried, the ones that
+    /// collapse are collected, and each is then **laid out again bounded** and required to draw. That
+    /// pairing is the whole control, and it names no constant at all: whatever share the bound is spent
+    /// at, the statement "these are the panes the bound is what saved" stays exactly as checkable.
+    #[test]
+    fn the_unbounded_row_is_what_took_the_picture() {
+        let mut collapsed = Vec::new();
+        for ppp in SCALES {
+            for w in PANE_WIDTHS {
+                for h in PANE_HEIGHTS {
+                    let room = lay_out(egui::vec2(w, h), ppp, false);
+                    if said(room.picture, SRC.0, SRC.1, ppp, PLANE_ASPECT, None)
+                        .0
+                        .is_none()
+                    {
+                        collapsed.push((ppp, w, h, room.row.shown, room.pane));
+                    }
+                }
+            }
+        }
+        assert!(
+            !collapsed.is_empty(),
+            "no pane in the sweep collapsed under the unbounded row, so `F-PLANES-CHOICE-ROW-UNBOUNDED` \
+             does not reproduce in this harness and the gates above are measuring nothing"
+        );
+        for (ppp, w, h, shown, pane) in &collapsed {
+            // The row is what took it: it was the larger half of the pane, which is the sentence the
+            // bound exists to make false. Stated rather than assumed, because a collapse from some other
+            // cause would make this a control over the wrong thing.
+            assert!(
+                *shown > pane - shown,
+                "the {w}x{h} pane at {ppp} collapsed with the row taking only {shown} of {pane}, \
+                 leaving {} — so the row was not the larger half and something else took the picture's \
+                 height. This control is misnamed.",
+                pane - shown,
+            );
+            // And the bound is what fixes it: the same pane, laid out the production way, draws.
+            let fixed = lay_out(egui::vec2(*w, *h), *ppp, true);
+            assert!(
+                said(fixed.picture, SRC.0, SRC.1, *ppp, PLANE_ASPECT, None)
+                    .0
+                    .is_some(),
+                "the {w}x{h} pane at {ppp} collapses bounded as well as unbounded (picture {:?}), so \
+                 this parcel did not fix the case it reproduces",
+                fixed.picture,
+            );
+        }
+    }
+
+    /// The wrapped lines the bound pushes off the row are **reachable**, which is the whole difference
+    /// between a cap with a scrollbar and a crop, and the whole answer to this file's own rule that *a
+    /// control that vanishes teaches nothing*. A control below the fold is a control one scroll away; a
+    /// control cropped at the pane's edge is gone.
+    #[test]
+    fn the_rows_wrapped_lines_are_reachable_rather_than_cropped() {
+        let mut checked = 0;
+        for ppp in SCALES {
+            for w in PANE_WIDTHS {
+                for h in PANE_HEIGHTS {
+                    let room = lay_out(egui::vec2(w, h), ppp, true);
+                    if !squeezed(&room) {
+                        continue;
+                    }
+                    checked += 1;
+                    assert!(
+                        room.row.wanted > room.row.shown + EPS,
+                        "the row showed {} of the {} it wanted at {w}x{h}/{ppp}: nothing is off the \
+                         bottom, so nothing proves the rest can be reached",
+                        room.row.shown,
+                        room.row.wanted,
+                    );
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "no pane in the sweep put the row over its budget, so reachability was never under test"
+        );
+    }
+
+    /// **The no-regression control, and the reason the share can be applied unconditionally.** A row that
+    /// fits is laid out exactly as it was: it takes its natural height, the cap is nowhere near it, and
+    /// nothing scrolls. Every pane at or above 520 points wide is this case — which is every pane the
+    /// window opens at — so if this ever fails, the bound has started charging panes it was never meant
+    /// to touch, and the owner's parked look call would have been changed by the back door.
+    #[test]
+    fn a_choice_row_that_fits_is_left_exactly_as_it_was() {
+        for ppp in SCALES {
+            for w in [1200.0, 520.0] {
+                for h in PANE_HEIGHTS {
+                    let room = lay_out(egui::vec2(w, h), ppp, true);
+                    assert!(
+                        (room.row.shown - room.row.wanted).abs() <= EPS,
+                        "a one-line choice row showed {} of the {} it wanted at {w}x{h}/{ppp}: the cap \
+                         is biting a row that fits",
+                        room.row.shown,
+                        room.row.wanted,
+                    );
+                    assert!(
+                        room.row.wanted < room.row.cap,
+                        "the choice row wanted {} against a {} budget at {w}x{h}/{ppp}, so this case is \
+                         not the comfortable one it is here to measure",
+                        room.row.wanted,
+                        room.row.cap,
+                    );
+                    assert!(
+                        said(room.picture, SRC.0, SRC.1, ppp, PLANE_ASPECT, None)
+                            .0
+                            .is_some(),
+                        "the comfortable case left the picture {:?}, which draws nothing",
+                        room.picture,
+                    );
+                }
+            }
+        }
+    }
+
+    /// **The parity row: one implementation, two consumers, checked at the source.**
+    ///
+    /// The property this parcel is really about is not "the Planes row is bounded" — it is *the controls
+    /// may not take more of the pane than they leave for the picture*, on both tabs that draw a picture.
+    /// A second Planes-side copy of that rule would be true the day it was written and quietly false the
+    /// day someone edited one of them, which is `F-TWO-SPELLINGS-OF-ONE-GIVEUP` exactly. So this asserts
+    /// the shape rather than the behaviour: the only production code in `ui.rs` that reads
+    /// [`control_area_cap`] is inside [`bounded_control_area`], and both tabs reach it through that one
+    /// function. Modelled on `no_room_tests::the_owner_is_the_only_production_reader_of_the_fit`, which
+    /// makes the same argument about the give-up sentence's one owner.
+    #[test]
+    fn the_bound_has_one_implementation_and_both_tabs_reach_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("ui.rs");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("COULD NOT MEASURE: {}: {e}", path.display()));
+        let lines: Vec<&str> = src.lines().collect();
+        // Production is everything above the first test module, cut the same way the fit's owner gate
+        // cuts it.
+        let cut = lines
+            .windows(2)
+            .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod "))
+            .expect("COULD NOT MEASURE: ui.rs has no test module to cut production off at");
+        // Comment lines name the cap all the time; only code computes it.
+        let code: Vec<(usize, &str)> = lines[..cut]
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !l.trim_start().starts_with("//"))
+            .map(|(i, l)| (i + 1, *l))
+            .collect();
+        let owner = code
+            .iter()
+            .position(|(_, l)| l.starts_with("fn bounded_control_area("))
+            .expect(
+                "COULD NOT MEASURE: `fn bounded_control_area(` is not in ui.rs's production code",
+            );
+        let owner_end = owner
+            + code[owner..]
+                .iter()
+                .position(|(_, l)| *l == "}")
+                .expect("COULD NOT MEASURE: the owner's body never closes");
+        let outside: Vec<usize> = code
+            .iter()
+            .enumerate()
+            // The cap's own `fn` line names it and is not a second computation of it.
+            .filter(|(_, (_, l))| !l.starts_with("fn control_area_cap("))
+            .filter(|(i, (_, l))| {
+                l.contains("control_area_cap(") && !(owner..=owner_end).contains(i)
+            })
+            .map(|(_, (n, _))| *n)
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "ui.rs computes the control-area cap for itself at line(s) {outside:?}, outside \
+             `bounded_control_area` (ui.rs:{}-{}). Two spellings of `the controls may not take more of \
+             the pane than they leave for the picture` is the defect `F-TWO-SPELLINGS-OF-ONE-GIVEUP` \
+             closed: route it through the one function.",
+            code[owner].0,
+            code[owner_end].0,
+        );
+        // And both consumers are really there. A single-consumer `bounded_control_area` would pass the
+        // assertion above while the Planes row went back to being unbounded.
+        for (tab, caller) in [
+            ("Screen", "bounded_control_area(ui, \"screen_controls\","),
+            ("Planes", "bounded_control_area(ui, \"planes_choices\","),
+        ] {
+            assert!(
+                code.iter().any(|(_, l)| l.contains(caller)),
+                "no production line in ui.rs calls {caller:?}, so the {tab} tab's controls are not \
+                 under the one bound"
+            );
+        }
+    }
+
+    /// **Loud on unmeasurable**, for the Planes row's own consumer of the shared cap: a pane whose height
+    /// is not a finite positive number stands the bound down rather than erasing the plane selector, and
+    /// the give-up is said one level down by [`fit_or_say`]. `screen_strip_tests` pins the cap's own
+    /// behaviour; this pins that the Planes tab still says something when it stands down.
+    #[test]
+    fn an_unmeasurable_pane_still_says_it_on_the_planes_tab() {
+        for ppp in SCALES {
+            let (fit, runs) = said(
+                egui::vec2(f32::INFINITY, f32::INFINITY),
+                SRC.0,
+                SRC.1,
+                ppp,
+                PLANE_ASPECT,
+                None,
+            );
+            assert!(
+                fit.is_none() && runs == [NO_ROOM_FOR_PICTURE],
+                "an unmeasurable pane at {ppp} was not refused (answered {fit:?}, painted {runs:?}), so \
+                 standing the bound down leaves nothing saying anything"
+            );
         }
     }
 }
