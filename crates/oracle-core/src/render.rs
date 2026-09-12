@@ -1384,10 +1384,14 @@ impl Vdp {
 
     /// Read VSRAM word entry `idx` (recon RR6): big-endian, wrapped into the 80-byte region.
     ///
-    /// The wrap is taken against the **constant** [`VSRAM_SIZE`], not `self.vsram().len()`. That is the same
-    /// authority [`Vdp::data_read`] already wraps its VSRAM reads by, and the only length `Vdp::new` ever
-    /// builds the buffer at; a runtime `len()` here compiles to a hardware integer division, and this is a
-    /// per-plane-per-dot call — the single hottest divide in the renderer.
+    /// The wrap is taken against the **constant** [`VSRAM_SIZE`], not `self.vsram().len()`: it is the only
+    /// length `Vdp::new` ever builds the buffer at, and a runtime `len()` here compiles to a hardware integer
+    /// division in a per-plane-per-dot call, the single hottest divide in the renderer.
+    ///
+    /// ⚑ This said the data port wraps its VSRAM reads by the same constant until 2026-09-12. It no longer
+    /// does: the port decodes a 7-bit address and leaves `$50-$7F` unbacked ([`Vdp::vsram_byte`], cause A1).
+    /// The renderer never meets that decode, because every index it asks for is at most 39 (2-cell H40's
+    /// last column, and the R8 quirk's words 38/39), so this `%` never actually wraps.
     fn vsram_word(&self, idx: usize) -> u16 {
         debug_assert_eq!(
             self.vsram().len(),
@@ -1445,6 +1449,40 @@ impl Vdp {
             }
         } else {
             self.vsram_word((x / 16) * 2 + if plane == Plane::B { 1 } else { 0 })
+        }
+    }
+
+    /// **The last VSRAM word a line's background fetch reads**, which is what that line leaves in the VSRAM
+    /// read latch ([`Vdp::vsram_read_latch`], cause A1). `None` when the display is disabled: the line
+    /// fetches no tilemap, so it reads no VSRAM and the latch keeps what it had.
+    ///
+    /// Full-screen mode reads word 0 (plane A) and word 1 (plane B) for every column, so the last is
+    /// word 1. 2-cell mode reads one pair per 16-px column, so the last is the last column's plane-B word:
+    /// 39 in H40 (20 columns), 31 in H32 (16). "Plane B last" follows the order of Kabuto's per-line access
+    /// pattern (the one `Vdp::next_active_slot` transcribes), whose final render group is `AraaBSbb`: the A
+    /// tilemap fetch, then the B one, each preceded by its vertical-scroll read.
+    ///
+    /// Evidence: VDPFIFOTesting reads `$50-$7E` only in full-screen mode, where it pins word 0 or word 1
+    /// (both `$0123` in its table). The 2-cell choice and the A-before-B order are inferred from the access
+    /// pattern and unpinned by any vendored ROM.
+    fn last_vscroll_fetch(&self, h40: bool) -> Option<u16> {
+        if self.regs()[0x01] & 0x40 == 0 {
+            return None;
+        }
+        let idx = if self.regs()[0x0B] & 0x04 == 0 {
+            1
+        } else {
+            (usize::from(active_width(h40)) / 16 - 1) * 2 + 1
+        };
+        Some(self.vsram_word(idx))
+    }
+
+    /// Commit one line's vertical-scroll fetch to the VSRAM read latch. The one place both committed
+    /// per-line paths ([`Vdp::render_scanline`], [`Vdp::advance_scanline`]) feed it, so they cannot feed
+    /// it differently.
+    fn commit_scanline_vscroll(&mut self) {
+        if let Some(word) = self.last_vscroll_fetch(self.render_h40()) {
+            self.latch_vsram_fetch(word);
         }
     }
 
@@ -2348,6 +2386,7 @@ impl Vdp {
         );
         let report = self.line_report_from(line, resolved);
         self.commit_scanline_sprites(dot, over, coll);
+        self.commit_scanline_vscroll();
         report
     }
 
@@ -2386,6 +2425,7 @@ impl Vdp {
         let width = usize::from(active_width(h40));
         let sprite = self.sprite_line(line, h40, width);
         self.commit_scanline_sprites(sprite.dot_overflow, sprite.overflow, sprite.collision);
+        self.commit_scanline_vscroll();
     }
 }
 
