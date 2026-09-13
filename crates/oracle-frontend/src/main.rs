@@ -2643,8 +2643,14 @@ fn main() {
         //
         // Here, at the bottom of the present block and after every surface has finished drawing, because
         // that is the only moment the answer is *the frame that is on the glass* rather than one being
-        // composed. The next `bus.pump` is at the top of the following iteration, and hosted it runs on
-        // this very thread — so a client's read can never land mid-composition.
+        // composed. The next `bus.pump` is the following iteration's drain (after its frame, before its
+        // present — see the drain's own comment above), and hosted it runs on this very thread — so a
+        // client's read can never land mid-composition.
+        //
+        // ⚑ **It CAN land before the first composition.** Iteration 1's drain runs before this line ever
+        // has, so a request that drain answers is refused `noDisplay` (and `status.display` is `false`)
+        // from a window that exists. Measured on `oracle-player`'s identical order
+        // (F-PLAYER-SCREENTEXT-FIRST-READ); here by reading. Booked for a contract ruling, not fixed here.
         //
         // Gated on `is_serving`, which is the frontend's own skip of per-frame work nobody could read: with
         // no socket bound, no client can exist, so the snapshot is pure cost. The gate is deliberately NOT

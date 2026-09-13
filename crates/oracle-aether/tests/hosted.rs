@@ -122,6 +122,10 @@ impl Player {
                     }
                     // **Where the real loop pushes it**: after every surface has finished drawing and
                     // before the next drain, so what a client reads is the frame that is on the glass.
+                    // ⚑ One difference, on purpose: HERE the first push precedes the first pump, while
+                    // both real loops drain once before their first present. So this fixture cannot show
+                    // the start-of-session `noDisplay` (F-PLAYER-SCREENTEXT-FIRST-READ); rows that read
+                    // text still wait on `expect_progress`, which is what they rely on.
                     if let Some(s) = &screen {
                         host.set_screen_text(s.clone());
                     }
