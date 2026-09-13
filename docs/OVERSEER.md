@@ -95,7 +95,9 @@ F-MACHINEREPLACED-EVENT-RACE goes AFTER M24 and AHEAD OF M1** (it reddens unrela
 (delegated design call): the currency is in-tree Z80 timing probes (§1, §7), not an access-stream digest.** Order from here:
 **§7 parcels 1 (F-Z80 caveat, XS) then 2 (probes C1-C4, S; closes M24-NEEDS-A-CURRENCY)**, one agent after the other, no
 further ruling needed → **F-MACHINEREPLACED-EVENT-RACE** → **parcel 3 (EI delay, no ruling)** → M1.
-**Parcels 1-2 LANDED 2026-09-13 (merge `453aa96`, one agent; M24-NEEDS-A-CURRENCY CLOSED). NEXT: F-MACHINEREPLACED-EVENT-RACE.**
+**Parcels 1-2 LANDED 2026-09-13 (merge `453aa96`, one agent; M24-NEEDS-A-CURRENCY CLOSED). F-MACHINEREPLACED-EVENT-RACE
+LANDED 2026-09-13 (merge `7ccd42d`, test harness only). NEXT: F-PLAYER-SCREENTEXT-FIRST-READ (S), then parcel 3** —
+this seat's sequencing, (2a)'s own cause: a flake that reddens unrelated landings costs the signal every later one reads.
 What parcels 3-4 must move is pinned in `crates/oracle-core/tests/z80_timing_probes.rs`'s header table (C1-C4, C2 now split
 C2a/C2b); neither may move C3. Go for this pair: the hub, ruling (2) applied (empyrean `f1220de:docs/OVERSEER.md` 74-89). Parcel 3 is lens M24 proper,
 so it follows the flake (every landing reads CI). Parcels 4 (/INT level: R6's medium-confidence corollary, TAG listen),
@@ -166,6 +168,18 @@ through the Z80 window stays unmodelled, so caveat 1 does not cover it; aeon tol
 `BusEvent`s (fc 0), which moves the stream every sink sees (VGM logger, profiler, trace), so enumerate consumers first.
 *Hypothesis, unmeasured:* a timestamped Z80 access stream is a candidate for the Z80-timing currency M24 needs; shape the
 two together. Aeon is not blocked (they answered their own question from the driver's channel state).
+
+**Registered 2026-09-13, from the F-MACHINEREPLACED-EVENT-RACE parcel (brief `725fb04`):**
+- **F-EVENTS-BEGIN-UNSTATED, a contract gap for the HUB.** The server subscribes a connection when it processes
+  `initialized`, a notification nobody answers, so a client that *has sent* it can still miss an event (a window state
+  load in the gap: no event, `droppedEvents` 0). `protocol.md` §2.1/§3 say when the server may push, never when a
+  client may rely on receiving; empyrean's Python and TypeScript clients both return straight after `initialized`.
+  Today's remedy is any round trip after `initialized` (our test harness now does exactly that). A server-side
+  queue-at-`initialize` alternative moves the wire: a CR, not a slice. Live-window loss is reasoned from source, not observed.
+- **F-PLAYER-SCREENTEXT-FIRST-READ**, a different intermittent: CI red on `453aa96`,
+  `oracle-player` `loop_tests::a_client_reads_this_windows_top_bar_and_it_follows_the_run_state`, the first
+  `emulator/screen_text` answered `noDisplay` at frame 1 (the bar not yet published when the call was drained);
+  `ff194d8`, same code, green. Events off, no `initialized`, so NOT the registration race. Unmeasured beyond that.
 
 **Registered 2026-09-11 (a commitment to sigil):** sigil's `.lst` gains a top `DIGEST-` section, relying on `SymbolTable::parse`'s `Section::Body` arm treating pre-header non-matches as non-damage. **Kept, and pinned by a named test** (LENS-WAVE1-B). Told sigil: no preamble line may begin `Symbol Table`/`Equate Table`/`Phase Table`.
 
