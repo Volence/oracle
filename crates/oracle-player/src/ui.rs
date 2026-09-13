@@ -1653,9 +1653,10 @@ impl Panels<'_> {
     /// **The audit page's exemplar.** See `docs/2026-09-05-debug-window-audit.md`.
     ///
     /// The facts are projected by [`pacing::Readout::of`], which holds no egui type and is therefore
-    /// testable without a window. This function is only the drawing, and the split is the point: the
-    /// window cannot be opened from an agent seat, so a panel whose correctness lives in its draw calls is
-    /// a panel nothing can check.
+    /// testable without a window. This function gathers the sources and hands the projection to
+    /// [`pacing_tab`], which is only the drawing, and the split is the point: the window cannot be opened
+    /// from an agent seat, so a panel whose correctness lives in its draw calls is a panel nothing can
+    /// check.
     ///
     /// What it replaced was thirteen `ui.monospace(format!(..))` lines with their label columns spelled as
     /// literal spaces. See [`pacing::Readout`] for the three rules that broke and why P2's stated grep
@@ -1683,66 +1684,7 @@ impl Panels<'_> {
             self.status,
         );
 
-        egui::ScrollArea::vertical()
-            .id_salt("pacing")
-            .show(ui, |ui| {
-                // The three numbers the tab is opened to read, side by side and large. Emphasis is size
-                // and colour, never weight: egui has no bold axis.
-                //
-                // ⚑ Drawn TWICE, on purpose and not for long. See the temporary block at
-                // [`headline_comparison`]: the audit parked "bare number or bordered tile" as a look
-                // call, and a look call is settled by looking. Both arms read the same `r.headline`,
-                // which is the live projection, so neither is a mock.
-                headline_comparison(ui, &r.headline);
-                ui.add_space(SECTION_GAP);
-
-                section(ui, "governor", None, "the loop's own rate limiter");
-                card(ui, |ui| health_grid(ui, "pacing-governor", &r.governor));
-                ui.add_space(SECTION_GAP);
-
-                section(
-                    ui,
-                    "frame time",
-                    None,
-                    "wall clock per presented frame, as a distribution",
-                );
-                card(ui, |ui| health_grid(ui, "pacing-frame-time", &r.frame_time));
-                ui.add_space(SECTION_GAP);
-
-                section(ui, "audio", None, "the clock everything else follows");
-                card(ui, |ui| match &r.audio {
-                    // P4/P6: the absent case is a whole-section statement, not a table of zeroes. It is
-                    // warn-coloured from the arm the projection chose, never from reading the sentence.
-                    pacing::Audio::Absent { why } => {
-                        ui.colored_label(ui.visuals().warn_fg_color, *why);
-                    }
-                    pacing::Audio::Open(a) => {
-                        // The landed shape, deliberately not doubled: the comparison above is the
-                        // question, and asking it twice on one panel would make the tab about the
-                        // question rather than about pacing.
-                        stat_row(ui, &a.stats, StatShape::Bare);
-                        ui.add_space(SECTION_GAP);
-                        health_grid(ui, "pacing-audio", &a.facts);
-                        ui.add_space(SECTION_GAP);
-                        meter(ui, &a.meter);
-                    }
-                });
-                ui.add_space(SECTION_GAP);
-
-                // The line the window publishes for `emulator/screen_text`, said to be that rather than
-                // shown as a fourth opinion about numbers already above it. The Registers tab sets the
-                // precedent: a panel that silently shows one number twice is a new wrong answer.
-                ui.label(
-                    egui::RichText::new(&r.status)
-                        .text_style(egui::TextStyle::Small)
-                        .color(ui.visuals().weak_text_color()),
-                )
-                .on_hover_text(
-                    "The one-line summary this window publishes for `emulator/screen_text`, shown \
-                     verbatim. Its frame and rebase counts are the same two numbers as above, not a \
-                     second measurement of them.",
-                );
-            });
+        pacing_tab(ui, &r);
     }
 
     fn registers(&self, ui: &mut egui::Ui) {
@@ -3267,6 +3209,74 @@ fn health_colour(ui: &egui::Ui, h: pacing::Health) -> egui::Color32 {
         pacing::Health::Watch => crate::theme::WARNING,
         pacing::Health::Unmeasured => ui.visuals().weak_text_color(),
     }
+}
+
+/// **The Pacing tab's drawing**, from the projection [`Panels::pacing`] made this frame.
+///
+/// Free rather than inline in [`Panels::pacing`] for the reason [`plane_image`] is: a headless test can
+/// then draw the tab's own body from a [`pacing::Readout`] it built, without the `Machine`, the `Bus` and
+/// the save files a whole [`Panels`] opens.
+fn pacing_tab(ui: &mut egui::Ui, r: &pacing::Readout) {
+    egui::ScrollArea::vertical()
+        .id_salt("pacing")
+        .show(ui, |ui| {
+            // The three numbers the tab is opened to read, side by side and large. Emphasis is size
+            // and colour, never weight: egui has no bold axis.
+            //
+            // ⚑ Drawn TWICE, on purpose and not for long. See the temporary block at
+            // [`headline_comparison`]: the audit parked "bare number or bordered tile" as a look
+            // call, and a look call is settled by looking. Both arms read the same `r.headline`,
+            // which is the live projection, so neither is a mock.
+            headline_comparison(ui, &r.headline);
+            ui.add_space(SECTION_GAP);
+
+            section(ui, "governor", None, "the loop's own rate limiter");
+            card(ui, |ui| health_grid(ui, "pacing-governor", &r.governor));
+            ui.add_space(SECTION_GAP);
+
+            section(
+                ui,
+                "frame time",
+                None,
+                "wall clock per presented frame, as a distribution",
+            );
+            card(ui, |ui| health_grid(ui, "pacing-frame-time", &r.frame_time));
+            ui.add_space(SECTION_GAP);
+
+            section(ui, "audio", None, "the clock everything else follows");
+            card(ui, |ui| match &r.audio {
+                // P4/P6: the absent case is a whole-section statement, not a table of zeroes. It is
+                // warn-coloured from the arm the projection chose, never from reading the sentence.
+                pacing::Audio::Absent { why } => {
+                    ui.colored_label(ui.visuals().warn_fg_color, *why);
+                }
+                pacing::Audio::Open(a) => {
+                    // The landed shape, deliberately not doubled: the comparison above is the
+                    // question, and asking it twice on one panel would make the tab about the
+                    // question rather than about pacing.
+                    stat_row(ui, &a.stats, StatShape::Bare);
+                    ui.add_space(SECTION_GAP);
+                    health_grid(ui, "pacing-audio", &a.facts);
+                    ui.add_space(SECTION_GAP);
+                    meter(ui, &a.meter);
+                }
+            });
+            ui.add_space(SECTION_GAP);
+
+            // The line the window publishes for `emulator/screen_text`, said to be that rather than
+            // shown as a fourth opinion about numbers already above it. The Registers tab sets the
+            // precedent: a panel that silently shows one number twice is a new wrong answer.
+            ui.label(
+                egui::RichText::new(&r.status)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .on_hover_text(
+                "The one-line summary this window publishes for `emulator/screen_text`, shown \
+                 verbatim. Its frame and rebase counts are the same two numbers as above, not a \
+                 second measurement of them.",
+            );
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════════
