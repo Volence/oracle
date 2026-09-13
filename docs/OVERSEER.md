@@ -104,6 +104,10 @@ C2a/C2b); neither may move C3. Go for this pair: the hub, ruling (2) applied (em
 so it follows the flake (every landing reads CI). Parcels 4 (/INT level: R6's medium-confidence corollary, TAG listen),
 5 (Z80 access hook: a contract CR) and 6 (digest golden) each need a ruling when reached. New F-Z80 sub-finding, verified:
 the `fc` watch filter is optional and the tap emits raw Z80 addresses, so a watch on ROM `$004000` records Z80 FM writes.
+**OWNER, 2026-09-13T21:53:38Z (heard by the hub, banked verbatim at empyrean `a449627`, a docs commit on their `origin/main`):**
+*"cut sounds good. I don't care about a or b they both look good, you can make the decision."* **d-39 CLOSED: the hub
+picked `a-shared-card`** (theirs, overturnable by one word); delete B in one move (STYLE-NUMBER-BAKEOFF). **The cut is GO:**
+this lane cuts its own OVERSEER.md to about 40 KB by the when-read rule (aeon's ~20 KB boot file the model), row OVERSEER-CUT.
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates,
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
