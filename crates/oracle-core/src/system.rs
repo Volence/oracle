@@ -1332,7 +1332,9 @@ impl System {
     }
 
     /// Like [`run_frames`](Self::run_frames), but with a [`BusEventSink`] attached for the whole run so a
-    /// consumer (a [`crate::watchpoints::Watchpoints`], a recorder, a decoder) observes every bus access. The
+    /// consumer (a [`crate::watchpoints::Watchpoints`], a recorder, a decoder) observes every 68000 bus access
+    /// and, of the Z80's, only its FM/PSG register writes (F-Z80-ACCESSES-UNWATCHED: its fetches, its
+    /// bank-window traffic and its own RAM accesses reach no sink). The
     /// sink is the caller's — `System` never stores it, so it is in neither frozen currency and cannot move a
     /// state hash. Passing `&mut ()` (what `run_frames` does) is the untouched null-sink path.
     /// Returns the [`StopRecord`] for the run: with no stop signal in play this is always

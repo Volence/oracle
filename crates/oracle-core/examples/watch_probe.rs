@@ -1,11 +1,13 @@
 //! Watchpoint-probe dev tool — the "who wrote this?" primitive against a real ROM. Loads a ROM **file**,
 //! registers a recording [`Watchpoints`] on an address, runs it for N frames on a real [`System`] with the
-//! watchpoints attached as the sink, and prints the hit log: every access that touched the watched range,
-//! attributed to the instruction (PC) and master that drove it, with the value and frame.
+//! watchpoints attached as the sink, and prints the hit log: every delivered access that touched the watched
+//! range, attributed to the instruction (PC) and master that drove it, with the value and frame, then the
+//! instrument's caveats. Delivered means the 68000's accesses and, of the Z80's, only its FM/PSG register
+//! writes (F-Z80-ACCESSES-UNWATCHED); a caveat says so when the watched range is one the Z80 can reach.
 //!
 //! Two spaces (watchpoints v1 + v2):
 //! - `--space bus` (default): the **68000 bus** address space (work RAM, ROM, Z80 RAM, I/O, VDP ports). A hit
-//!   shows the bus value + the master (CPU vs DMA, via the function code).
+//!   shows the bus value + the master (the 68000 vs another master, via the function code).
 //! - `--space vram|cram|vsram`: a **VDP-internal** byte address — the "who wrote this tile / palette entry?"
 //!   case. A hit shows old→new + whether the write came Direct from the CPU or via DMA.
 //!
@@ -171,4 +173,10 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", ")
     );
+    // The instrument's own caveats travel with its numbers. A bus watch on work RAM, ROM or Z80 RAM is told
+    // here that the Z80's accesses to it are not delivered (F-Z80-ACCESSES-UNWATCHED), so an empty hit log
+    // above is a finding about the 68000 alone.
+    for c in wp.caveats() {
+        println!("CAVEAT: {c}");
+    }
 }

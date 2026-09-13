@@ -276,10 +276,21 @@ fn hits_carry_a_monotonic_master_clock_consistent_with_the_frame() {
         "mclk and the step-boundary frame stamp name the same instant"
     );
     assert!(wp.seen() > wp.matched(), "the filter rejected most traffic");
+    // cause: F-Z80-ACCESSES-UNWATCHED (docs/2026-09-13-z80-timing-currency-design.md §5). This row said "a
+    // plain bus watch has nothing to caveat" until that caveat existed. Work RAM is reachable by the Z80
+    // through its `$8000` bank window (`z80::bus::Z80Bus::read_window`'s `$E00000-$FFFFFF` arm), and none of
+    // the Z80's accesses there is delivered to a sink, so a plain work-RAM watch carries exactly that one
+    // caveat and nothing else.
+    let caveats = wp.caveats();
+    assert_eq!(
+        caveats.len(),
+        1,
+        "a plain work-RAM watch carries one caveat, the Z80's: {caveats:?}"
+    );
     assert!(
-        wp.caveats().is_empty(),
-        "a plain bus watch has nothing to caveat: {:?}",
-        wp.caveats()
+        caveats[0].contains("F-Z80-ACCESSES-UNWATCHED")
+            && caveats[0].starts_with("watch #0 'stir':"),
+        "and it names this watch: {caveats:?}"
     );
 }
 
