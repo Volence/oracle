@@ -658,7 +658,11 @@ impl Client {
         loop {
             let v = self.recv();
             if v.get("id").is_some_and(|i| !i.is_null()) {
-                assert_eq!(v["id"], json!(id), "registration barrier: response id must correlate");
+                assert_eq!(
+                    v["id"],
+                    json!(id),
+                    "registration barrier: response id must correlate"
+                );
                 assert!(
                     v.get("error").is_none(),
                     "registration barrier: emulator/status failed: {}",
