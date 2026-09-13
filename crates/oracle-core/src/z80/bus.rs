@@ -29,9 +29,7 @@
 //! | `$8000-$FFFF` | 68k bank window | **live** — `(bank << 15) \| (addr & 0x7FFF)` → ROM / work RAM / Z80 RAM |
 
 use super::Z80Io;
-use crate::bus::{
-    BusEvent, BusEventSink, BusOp, CartBanks, Size, Z80Access, Z80AccessKind, Z80_RAM_SIZE,
-};
+use crate::bus::{BusEvent, BusEventSink, BusOp, CartBanks, Size, Z80_RAM_SIZE};
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
 use crate::ym2612::Ym2612;
@@ -189,58 +187,6 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
             // ROM and every port/register region through the window: dropped this slice.
             _ => {}
         }
-    }
-
-    /// SPIKE (M24 hot-path A/B): the 68000-space address an access at Z80 `addr` resolves to — the bank
-    /// window through the bank, everything below `$8000` to the 68000's own alias of Z80 space.
-    fn resolve(&self, addr: u16) -> u32 {
-        if addr >= 0x8000 {
-            self.window_addr(addr)
-        } else {
-            0xA0_0000 | u32::from(addr)
-        }
-    }
-}
-
-/// SPIKE (M24 hot-path A/B, NOT PROPOSED FOR MERGE): the instrumented adapter. `catch_up_z80` builds it only
-/// when the sink asks for Z80 accesses, so `Z80Bus`'s own `read`/`write` bodies stay textually unchanged and
-/// the null sink's monomorph is today's.
-pub(crate) struct Watched<'b, 'a, S: BusEventSink>(pub(crate) &'b mut Z80Bus<'a, S>);
-
-impl<S: BusEventSink> Z80Io for Watched<'_, '_, S> {
-    fn read(&mut self, addr: u16) -> u8 {
-        let value = self.0.read(addr);
-        let access = Z80Access {
-            kind: Z80AccessKind::Read,
-            z80_addr: addr,
-            addr68k: self.0.resolve(addr),
-            value,
-            mclk: self.0.now_mclk,
-        };
-        self.0.sink.on_z80_access(access);
-        value
-    }
-
-    fn write(&mut self, addr: u16, value: u8) {
-        // Resolved before the write: a `$6000` write moves the bank.
-        let addr68k = self.0.resolve(addr);
-        self.0.write(addr, value);
-        let access = Z80Access {
-            kind: Z80AccessKind::Write,
-            z80_addr: addr,
-            addr68k,
-            value,
-            mclk: self.0.now_mclk,
-        };
-        self.0.sink.on_z80_access(access);
-    }
-
-    fn input(&mut self, port: u16) -> u8 {
-        self.0.input(port)
-    }
-
-    fn output(&mut self, port: u16, value: u8) {
-        self.0.output(port, value);
     }
 }
 

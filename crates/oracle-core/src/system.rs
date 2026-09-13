@@ -1836,9 +1836,6 @@ impl System {
             // Z80's $8000-$FFFF window reaches cartridge space through the cart's mapper, so its ROM reads
             // resolve through the same table the 68k side uses.
             let cart_banks = self.cart_banks;
-            // SPIKE (M24 hot-path A/B): asked once, before the split-borrow lends `sink` to the bus. For the
-            // null sink this is the trait's constant `false`, so the instrumented branch folds away.
-            let watch = sink.wants_z80_accesses();
             let System {
                 z80,
                 z80_ram,
@@ -1865,11 +1862,7 @@ impl System {
                     *z80_frontier_mclk,
                     sink,
                 );
-                let t = if watch {
-                    z80.step(&mut crate::z80::bus::Watched(&mut bus))
-                } else {
-                    z80.step(&mut bus)
-                };
+                let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }
         } else if self.z80_running {
