@@ -260,6 +260,11 @@ pub struct Client {
     awaiting: Option<String>,
     /// The read deadline this connection was armed with, kept so a failure can quote the number it blew.
     read_timeout: Duration,
+    /// **Events read off the wire by [`Client::handshake`]'s registration barrier, not yet handed to the
+    /// test.** [`Client::recv`] returns these first, in arrival order, so the barrier is invisible on the
+    /// event stream: a test sees exactly the lines it would have seen without it, minus the barrier's own
+    /// reply. Empty on every connection that did not subscribe.
+    backlog: std::collections::VecDeque<Value>,
 }
 
 /// **What became of one request — with "never came back" as a value, not a panic.**
@@ -311,6 +316,7 @@ impl Client {
                         pending: HashMap::new(),
                         awaiting: None,
                         read_timeout: READ_TIMEOUT,
+                        backlog: std::collections::VecDeque::new(),
                     };
                 }
                 Err(e) if std::time::Instant::now() < deadline => {
@@ -382,6 +388,10 @@ impl Client {
     /// off-contract shape without failing. See `common::schema` for what that covers and what it
     /// structurally cannot.
     pub fn recv(&mut self) -> Value {
+        // Already validated when the barrier read them; see `backlog`.
+        if let Some(v) = self.backlog.pop_front() {
+            return v;
+        }
         let line = self.read_line_or_explain();
         let v: Value = serde_json::from_str(&line)
             .unwrap_or_else(|e| panic!("bad JSON on the wire: {e}: {line}"));
@@ -535,6 +545,9 @@ impl Client {
         self.next_id += 1;
         let previous = self.read_timeout;
         self.set_read_timeout(deadline);
+        // Anything the handshake barrier held is ahead of this reply, and this method skips events ahead
+        // of its reply — so it skips those too, rather than leaving older lines to surface after newer.
+        self.backlog.clear();
         self.send_raw(
             &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}).to_string(),
         );
@@ -596,6 +609,27 @@ impl Client {
     }
 
     /// The full `initialize` + `initialized` handshake. Returns the `initialize` result.
+    ///
+    /// # With `events: true`, it returns only once the connection is REGISTERED
+    ///
+    /// The server subscribes a connection when its reader thread processes `initialized`
+    /// (`server.rs`, `Action::Subscribe` → `subs.add`), and `initialized` is a JSON-RPC notification, so
+    /// nothing comes back to say that has happened. Sending it and returning — which is what this did until
+    /// 2026-09-13 — handed the caller a connection that might not be subscribed yet. Any event whose source
+    /// is not a request on this same connection (a window gesture, another client's call, a free-running
+    /// machine) could then be broadcast before registration and never queued here: not dropped, so no
+    /// `droppedEvents` count either, just absent. That is `F-MACHINEREPLACED-EVENT-RACE`, reproduced
+    /// 20/20 by delaying `subs.add` 50 ms: `machine_replaced.rs` rows 2 and 5a ("got 0") and
+    /// `breakpoints.rs::a_breakpoint_actually_halts_a_free_running_machine` (a 30 s read timeout).
+    ///
+    /// So one round trip follows `initialized`: the server's reader handles one connection's lines in order,
+    /// so a reply to a request sent after `initialized` proves `initialized` was processed, and with it the
+    /// registration. This is an ordering guarantee, not a wait. `emulator/status` is the barrier because it
+    /// does not move the machine (`emulator/ping` is schematized but not served here).
+    ///
+    /// The barrier is invisible on the event stream: an event that lands between registration and its
+    /// reply goes to `backlog`, and [`Client::recv`] returns it first. The only visible trace is one request
+    /// id consumed from this connection's counter.
     pub fn handshake(&mut self, events: bool) -> Value {
         let r = self.ok(
             "initialize",
@@ -608,6 +642,36 @@ impl Client {
             }),
         );
         self.send_raw(&json!({"jsonrpc":"2.0","method":"initialized"}).to_string());
+        if events {
+            self.registration_barrier();
+        }
         r
+    }
+
+    /// The round trip that makes `handshake(true)` mean "subscribed". See [`Client::handshake`].
+    fn registration_barrier(&mut self) {
+        let id = self.next_request_id();
+        self.send_raw(
+            &json!({"jsonrpc":"2.0","id":id,"method":"emulator/status","params":{}}).to_string(),
+        );
+        let mut held = std::collections::VecDeque::new();
+        loop {
+            let v = self.recv();
+            if v.get("id").is_some_and(|i| !i.is_null()) {
+                assert_eq!(
+                    v["id"],
+                    json!(id),
+                    "registration barrier: response id must correlate"
+                );
+                assert!(
+                    v.get("error").is_none(),
+                    "registration barrier: emulator/status failed: {}",
+                    v["error"]
+                );
+                break;
+            }
+            held.push_back(v);
+        }
+        self.backlog.extend(held);
     }
 }

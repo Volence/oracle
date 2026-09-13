@@ -245,7 +245,8 @@ fn rom_reload_emits_rom_reloaded() {
 fn a_client_that_subscribes_and_stops_reading_cannot_wedge_the_emulator() {
     let h = spawn_with("slow", rom(), 4);
 
-    // The deliberately-dead client: raw socket, handshake written, then never read from.
+    // The deliberately-dead client: raw socket, handshake written and its registration proven (below),
+    // then never read from.
     let mut dead = UnixStream::connect(h.socket_path()).expect("connect");
     dead.write_all(
         json!({"jsonrpc":"2.0","id":1,"method":"initialize",
@@ -262,9 +263,36 @@ fn a_client_that_subscribes_and_stops_reading_cannot_wedge_the_emulator() {
     )
     .unwrap();
     dead.write_all(b"\n").unwrap();
+    // **Registered before the flood, by a barrier and not a bet.** `initialized` is a notification, so
+    // nothing says the server has processed it, and the server subscribes a connection only when it does.
+    // This used to be a 150 ms sleep "to let the server register it", and a 5 s delay before `subs.add`
+    // turned the row red at `dropped > 0`: the whole flood ran before registration, so there was nothing
+    // to drop (F-MACHINEREPLACED-EVENT-RACE, 2026-09-13). The reply to a request sent after `initialized`
+    // proves `initialized` was handled, because one reader thread handles a connection's lines in order.
+    // So the dead client reads its two handshake replies, and after that it never reads again.
+    dead.write_all(
+        json!({"jsonrpc":"2.0","id":100,"method":"emulator/status"})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    dead.write_all(b"\n").unwrap();
     dead.flush().unwrap();
-    // Let the server register it as a subscriber before we start pushing.
-    std::thread::sleep(Duration::from_millis(150));
+    {
+        dead.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let mut r = std::io::BufReader::new(dead.try_clone().expect("clone the dead socket"));
+        loop {
+            let mut line = String::new();
+            let n = std::io::BufRead::read_line(&mut r, &mut line)
+                .expect("the registration barrier's reply");
+            assert!(n > 0, "the server hung up during the registration barrier");
+            let v: Value = serde_json::from_str(&line).expect("a JSON line");
+            if v["id"] == json!(100) {
+                break;
+            }
+        }
+    }
 
     let mut driver = Client::connect(&h);
     driver.handshake(false);
