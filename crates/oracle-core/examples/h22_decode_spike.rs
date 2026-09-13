@@ -17,6 +17,7 @@
 use oracle_core::io::{Pad, PadPort};
 use oracle_core::m68000::decode::decode;
 use oracle_core::m68000::decode::h22_spike as spike;
+use oracle_core::m68000::ea::RecipeBuf;
 use oracle_core::m68000::microop::{MicroOp, MicroState};
 use oracle_core::m68000::registers::Registers;
 use oracle_core::system::System;
@@ -337,6 +338,47 @@ fn main() {
         "  MicroState clone (the table's per-lookup copy): {:.2} ns",
         t.elapsed().as_nanos() as f64 / (reps1 * 4) as f64
     );
+    // The real decode floor: RecipeBuf::new + one push + finish, with the repeat-expression filler and with
+    // the static-copy filler.
+    for ff in [false, true] {
+        spike::set_fast_fill(ff);
+        let t = Instant::now();
+        for _ in 0..reps1 * 4 {
+            let mut b = RecipeBuf::new();
+            b.push(MicroOp::Prefetch);
+            black_box(b.finish());
+        }
+        println!(
+            "  RecipeBuf::new + push(Prefetch) + finish, fast_fill={ff}: {:.2} ns",
+            t.elapsed().as_nanos() as f64 / (reps1 * 4) as f64
+        );
+    }
+    spike::set_fast_fill(false);
+    // The arm walk's own cost: decode() vs the same builder called directly.
+    for ff in [false, true] {
+        spike::set_fast_fill(ff);
+        for (name, op) in [
+            ("MOVE.w D0,D1 (arm 1)", 0x3200u16),
+            ("TST.b abs.w", 0x4A38),
+            ("BEQ.s -6 (not taken)", 0x67FA),
+            ("DBF D1", 0x51C9),
+            ("RTS", 0x4E75),
+            ("MOVEQ #1,D0 (arm 101)", 0x7001),
+        ] {
+            let r = spike::canonical_regs(op, true);
+            let via = time_decode(std::slice::from_ref(&r), reps1);
+            let t = Instant::now();
+            for _ in 0..reps1 {
+                black_box(spike::builder_direct(black_box(&r)));
+            }
+            let direct = t.elapsed().as_nanos() as f64 / reps1 as f64;
+            println!(
+                "  fast_fill={ff} {name:>22}: decode {via:6.2} ns, builder direct {direct:6.2} ns, walk {:+6.2} ns",
+                via - direct
+            );
+        }
+    }
+    spike::set_fast_fill(false);
 
     // ---- Phase 4: real ROM ------------------------------------------------------------------------------
     println!("== phase 4: real ROM {rom_path}, warm {warm} frames, then {frames} frames x {reps} reps");
@@ -418,9 +460,11 @@ fn main() {
     );
 
     let modes = [
-        ("cascade", spike::MODE_CASCADE),
-        ("table", spike::MODE_TABLE),
-        ("double", spike::MODE_DOUBLE),
+        ("cascade", spike::MODE_CASCADE, false),
+        ("cascade+fastfill", spike::MODE_CASCADE, true),
+        ("table", spike::MODE_TABLE, false),
+        ("table+fastfill", spike::MODE_TABLE, true),
+        ("double", spike::MODE_DOUBLE, false),
     ];
     let mut times: Vec<Vec<Duration>> = vec![Vec::new(); modes.len()];
     let mut hashes: Vec<u64> = Vec::new();
@@ -428,6 +472,7 @@ fn main() {
         for i in 0..modes.len() {
             let idx = (i + rep) % modes.len();
             spike::set_mode(modes[idx].1);
+            spike::set_fast_fill(modes[idx].2);
             let mut s = s0.clone();
             let t = Instant::now();
             run(&mut s, warm, frames);
@@ -437,10 +482,11 @@ fn main() {
     }
     let all_equal = hashes.iter().all(|&h| h == hash_record);
     let (_, base_med, _) = stats(&times[0]);
-    for (i, (name, _)) in modes.iter().enumerate() {
+    spike::set_fast_fill(false);
+    for (i, (name, _, _)) in modes.iter().enumerate() {
         let (lo, med, hi) = stats(&times[i]);
         println!(
-            "  {name:>8}: median {med:8.1} ms ({:.3} ms/frame)  min {lo:.1}  max {hi:.1}  vs cascade {:+.2}%",
+            "  {name:>17}: median {med:8.1} ms ({:.3} ms/frame)  min {lo:.1}  max {hi:.1}  vs cascade {:+.2}%",
             med / frames as f64,
             100.0 * (med - base_med) / base_med
         );
@@ -451,11 +497,18 @@ fn main() {
     let samples = rec.samples;
     println!("== phase 5: tight loop over {} recorded real decode inputs", samples.len());
     let reps5 = (40_000_000 / samples.len().max(1)).max(1);
-    for (name, m) in [("cascade", spike::MODE_CASCADE), ("table", spike::MODE_TABLE)] {
+    for (name, m, ff) in [
+        ("cascade", spike::MODE_CASCADE, false),
+        ("cascade+fastfill", spike::MODE_CASCADE, true),
+        ("table", spike::MODE_TABLE, false),
+        ("table+fastfill", spike::MODE_TABLE, true),
+    ] {
         spike::set_mode(m);
+        spike::set_fast_fill(ff);
         let _ = time_decode(&samples, 1); // warm
         let ns = time_decode(&samples, reps5);
-        println!("  {name:>8}: {ns:6.2} ns/decode");
+        println!("  {name:>17}: {ns:6.2} ns/decode");
     }
     spike::set_mode(spike::MODE_CASCADE);
+    spike::set_fast_fill(false);
 }

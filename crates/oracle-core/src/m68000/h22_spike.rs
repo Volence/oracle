@@ -13,11 +13,11 @@
 //! Lives as a child module of `decode` only so it can reach the private `decode_dispatch`.
 
 use super::decode_dispatch;
-use crate::m68000::microop::MicroState;
+use crate::m68000::microop::{MicroOp, MicroState, Size, MAX_OPS};
 use crate::m68000::registers::{Registers, SR_SUPERVISOR};
 use std::cell::{Cell, RefCell};
 use std::hint::black_box;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::LazyLock;
 
 /// The cascade exactly as `main` runs it (the hook returns `None`).
@@ -47,6 +47,41 @@ pub fn set_mode(m: u8) {
 /// The current front-end mode.
 pub fn mode() -> u8 {
     MODE.load(Ordering::Relaxed)
+}
+
+static FAST_FILL: LazyLock<AtomicBool> = LazyLock::new(|| {
+    AtomicBool::new(std::env::var("H22_SPIKE_FASTFILL").is_ok_and(|v| v == "1"))
+});
+
+/// Make `RecipeBuf::new` copy its filler from [`FILLER`] instead of the `[X; MAX_OPS]` repeat expression.
+pub fn set_fast_fill(on: bool) {
+    FAST_FILL.store(on, Ordering::Relaxed);
+}
+
+/// Whether `RecipeBuf::new` copies its filler from [`FILLER`].
+#[inline]
+pub fn fast_fill() -> bool {
+    FAST_FILL.load(Ordering::Relaxed)
+}
+
+/// The inert filler every recipe pads with, as a `static` so a copy of it is a block move from memory.
+pub static FILLER: [MicroOp; MAX_OPS] = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
+
+/// The dispatch's builder for a handful of hot opcodes, called DIRECTLY (no arm walk), latched like
+/// `decode`. `None` for any opcode not listed. `decode(regs) - builder_direct(regs)` is the walk's cost.
+pub fn builder_direct(regs: &Registers) -> Option<MicroState> {
+    let op = regs.prefetch[0];
+    let mut st = match op {
+        0x3200 => super::move_recipe(op, Size::Word),
+        0x4A38 => super::tst_recipe(op, Size::Byte),
+        0x67FA | 0x6604 => super::bcc_recipe(op, regs),
+        0x51C8 | 0x51C9 => super::dbcc_recipe(op, regs),
+        0x4E75 => super::rts_recipe(),
+        0x7001 => super::moveq_recipe(op),
+        _ => return None,
+    };
+    st.set_opcode(op);
+    Some(st)
 }
 
 /// The `(S, opcode)` key space: 2 × 65 536.
