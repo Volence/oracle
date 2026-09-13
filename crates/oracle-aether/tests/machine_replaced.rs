@@ -251,12 +251,22 @@ fn attach(w: &Window) -> Client {
 /// **Every line the server sends up to and including the reply to one marker call**, with the
 /// notifications split out.
 ///
-/// This is how both the positive and the negative rows read the event stream, and the reason it is sound
-/// is a property of the transport rather than of timing: a connection has ONE writer thread draining ONE
-/// `Outbound` queue (`server.rs`, `while let Some(line) = writer_out.pop()`), so replies and events share
-/// a single FIFO. An event pushed by a gesture that has already completed is therefore **ahead of** the
-/// reply to a request sent afterwards. A row can consequently assert an absence without a sleep and
-/// without a timeout: if the event were going to come, it would already be in this vector.
+/// This is how both the positive and the negative rows read the event stream. It is sound for a
+/// **registered** connection, and for that connection it depends on the transport, not on timing: a
+/// connection has ONE writer thread draining ONE `Outbound` queue (`server.rs`,
+/// `while let Some(line) = writer_out.pop()`), so replies and events share a single FIFO. An event pushed
+/// by a gesture that has already completed is therefore **ahead of** the reply to a request sent
+/// afterwards. A row can consequently assert an absence without a sleep and without a timeout: if the
+/// event were going to come, it would already be in this vector.
+///
+/// ⚑ **Registered is the precondition, and until 2026-09-13 nothing established it.** The server
+/// subscribes a connection when its reader thread handles `initialized`, a notification nobody replies
+/// to, and a gesture reaches the window thread over an in-process channel with no socket in between. So a
+/// row that gestured straight after `attach` could emit before the subscription existed. The event was
+/// then never queued here, so no `droppedEvents` either: rows 2 and 5a's intermittent "got 0"
+/// (F-MACHINEREPLACED-EVENT-RACE, 20/20 red with `subs.add` delayed 50 ms). [`attach`] now returns only
+/// once registered, because `Client::handshake(true)` ends with a round trip. The FIFO argument above
+/// covers what comes after that, and nothing before it.
 ///
 /// The marker is `emulator/status` — the cheapest call that does not move the machine, so reading the
 /// stream never becomes the thing that changes it.
@@ -460,7 +470,9 @@ fn the_latched_picture_is_invalidated_so_a_paused_subscriber_does_not_get_the_pr
 /// A signal that fires on a refused load reports a replacement that provably did not happen, which is
 /// worse than no signal: a listener would drop its own derived state and re-derive it against a machine
 /// that never changed. The absence is asserted through [`stream_to_marker`]'s ordering property rather
-/// than through a sleep, so this row cannot pass by being fast.
+/// than through a sleep, so this row cannot pass by being fast. That property is only as good as the
+/// subscription under it, and [`attach`] returns a connection that is already registered (see
+/// `stream_to_marker`'s ⚑ note).
 ///
 /// The machine is asserted unmoved too, because "no event" and "no replacement" are two claims and only
 /// the second one is what the user of a refused load cares about.

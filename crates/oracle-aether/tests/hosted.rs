@@ -276,6 +276,13 @@ impl Client {
             }),
         );
         self.send_raw(&json!({"jsonrpc":"2.0","method":"initialized"}).to_string());
+        // With `events`, return only once REGISTERED. This is `common::Client::handshake`'s barrier and its
+        // reason (F-MACHINEREPLACED-EVENT-RACE): `initialized` gets no reply, so only the reply to a later
+        // request proves the server handled it. `call` keeps any event it passes in `self.events`, so
+        // `stops()` still sees an event that lands before this reply.
+        if events {
+            self.ok("emulator/status", json!({}));
+        }
         r
     }
 }
@@ -461,7 +468,31 @@ fn a_client_that_never_reads_cannot_stall_the_player() {
     dead.write_all(format!("{hs}\n").as_bytes()).unwrap();
     dead.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}\n")
         .unwrap();
+    // **Registered before the flood, by a barrier.** Without this nothing ordered the server's handling of
+    // `initialized` (a notification: no reply) before the flood below. A dead client that was never
+    // subscribed would pass every assertion here without testing anything, because the assertions are all
+    // about liveness (F-MACHINEREPLACED-EVENT-RACE, 2026-09-13). The reply to a request sent after
+    // `initialized` proves it was handled, because one reader thread handles a connection's lines in
+    // order. The dead client reads its two handshake replies, and after that it never reads again.
+    dead.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"emulator/status\"}\n")
+        .unwrap();
     dead.flush().unwrap();
+    {
+        dead.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let mut r = BufReader::new(dead.try_clone().expect("clone the dead socket"));
+        loop {
+            let mut line = String::new();
+            let n = r
+                .read_line(&mut line)
+                .expect("the registration barrier's reply");
+            assert!(n > 0, "the player hung up during the registration barrier");
+            let v: Value = serde_json::from_str(&line).expect("a JSON line");
+            if v["id"] == json!(2) {
+                break;
+            }
+        }
+    }
 
     // A second, healthy client generates a flood of events (each bounded run emits resumed + stopped) that
     // the dead one will never drain.
