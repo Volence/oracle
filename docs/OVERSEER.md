@@ -80,6 +80,13 @@ moved with them.)*
    asserted as a whole sorted set, so it cannot drift silently. Board row `ACCEPT-16`. The arc's closed
    history (survey, CR-A, trio, CR-B) is in the log.
 
+**Order of work, 2026-09-13 (the HUB's ruling, not his; overturnable by one word from him).** Under the owner's
+goodnight delegation (empyrean `cdb8035`, verified an ancestor of their `origin/main`, a docs commit carrying his words:
+*"if you need any decisions you don't think I need to answwer feel free to confer yourself"*), the hub ruled this lane's
+pick by his 09-09 order of work (finish lens items first) and his 09-11 aim (*"oracle's cleaned up a bit"*):
+**H22-68000-DECODE (design doc first) → M24-NEEDS-A-CURRENCY → M1-FILL-OVER-TIME.** LENS-WAVE-1's two look questions
+stay his. If H22 needs a call that is his (look, or an irreversible bet), file the card and take M24.
+
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates,
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
 sub-line arc), F-CRAMDOT, F-SUBLINE-{HGRID, ACCESSMCLK, DMASPREAD, CAPTURE-SCRATCH}, F-VCOUNT-PHASE,
