@@ -89,6 +89,15 @@ stay his. If H22 needs a call that is his (look, or an irreversible bet), file t
 **H22 design LANDED (merge `1404a07`, docs only) and RULED under delegation:** option E* adopted, staged; landing 1
 (static-copy filler) takeable now; landings 2-3 HELD until decode share is re-measured on a workload that is not mostly a
 VBlank spin loop (the doc's own falsifier); M32 refuted. **Next is M24; shape it with F-Z80-ACCESSES-UNWATCHED below.**
+**Hub amendment (2a), 2026-09-13 (verified at empyrean `3bb082d`, docs commit carrying it; the hub's, overturnable by him):
+F-MACHINEREPLACED-EVENT-RACE goes AFTER M24 and AHEAD OF M1** (it reddens unrelated commits; may jump ahead of M24 if needed).
+**M24 design LANDED (merge `9a09adc`, docs only, `docs/2026-09-13-z80-timing-currency-design.md`) and RULED by this seat
+(delegated design call): the currency is in-tree Z80 timing probes (§1, §7), not an access-stream digest.** Order from here:
+**§7 parcels 1 (F-Z80 caveat, XS) then 2 (probes C1-C4, S; closes M24-NEEDS-A-CURRENCY)**, one agent after the other, no
+further ruling needed → **F-MACHINEREPLACED-EVENT-RACE** → **parcel 3 (EI delay, no ruling)** → M1. Parcel 3 is lens M24 proper,
+so it follows the flake (every landing reads CI). Parcels 4 (/INT level: R6's medium-confidence corollary, TAG listen),
+5 (Z80 access hook: a contract CR) and 6 (digest golden) each need a ruling when reached. New F-Z80 sub-finding, verified:
+the `fc` watch filter is optional and the tap emits raw Z80 addresses, so a watch on ROM `$004000` records Z80 FM writes.
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates,
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
