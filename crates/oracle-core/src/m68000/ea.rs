@@ -141,9 +141,16 @@ impl RecipeBuf {
     /// An empty buffer (filler slots are inert `Internal { cycles: 0 }`, identical to what
     /// [`MicroState::from_ops`] pads with, so a built recipe compares equal to the literal one).
     pub fn new() -> Self {
-        // SPIKE (H22 design parcel, NOT for merge): a runtime switch to a static-copy filler.
+        // SPIKE (H22 design parcel, NOT for merge): a static-copy filler, fixed at compile time
+        // (`h22-fixed-fastfill`) or switched at run time (`h22-spike` alone).
+        #[cfg(feature = "h22-fixed-fastfill")]
+        let fast = true;
+        #[cfg(all(feature = "h22-fixed", not(feature = "h22-fixed-fastfill")))]
+        let fast = false;
+        #[cfg(all(feature = "h22-spike", not(feature = "h22-fixed")))]
+        let fast = super::decode::h22_spike::fast_fill();
         #[cfg(feature = "h22-spike")]
-        if super::decode::h22_spike::fast_fill() {
+        if fast {
             return Self {
                 ops: super::decode::h22_spike::FILLER,
                 len: 0,

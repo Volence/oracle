@@ -287,11 +287,22 @@ pub const fn return_pop_bytes(opcode: u16) -> u32 {
 /// SSW fields after the prefetch shifts have overwritten `regs.prefetch`.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
-    // SPIKE (H22 design parcel, NOT for merge): a runtime-selectable front end, only under `h22-spike`.
-    #[cfg(feature = "h22-spike")]
+    // SPIKE (H22 design parcel, NOT for merge): a runtime-selectable front end (`h22-spike` alone), or ONE
+    // compile-time-fixed variant (`h22-fixed-*`) with no runtime switch on the path.
+    #[cfg(all(feature = "h22-spike", not(feature = "h22-fixed")))]
     if let Some(state) = h22_spike::front(regs) {
         return state;
     }
+    #[cfg(feature = "h22-fixed-table")]
+    if let Some(state) = h22_spike::TABLE[h22_spike::key_of(regs)].clone() {
+        return state;
+    }
+    #[cfg(feature = "h22-fixed-lazy")]
+    if let Some(state) = h22_spike::lazy_lookup(regs) {
+        return state;
+    }
+    #[cfg(feature = "h22-fixed-double")]
+    std::hint::black_box(decode_dispatch(std::hint::black_box(regs)));
     let mut state = decode_dispatch(regs);
     state.set_opcode(regs.prefetch[0]);
     state

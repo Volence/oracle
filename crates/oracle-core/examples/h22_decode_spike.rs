@@ -180,6 +180,7 @@ fn main() {
     let frames: u64 = get("--frames").and_then(|s| s.parse().ok()).unwrap_or(600);
     let reps: usize = get("--reps").and_then(|s| s.parse().ok()).unwrap_or(5);
     let skip_probe = args.iter().any(|a| a == "--skip-probe");
+    let probe_only = args.iter().any(|a| a == "--probe-only");
 
     println!("== sizes");
     println!(
@@ -232,11 +233,18 @@ fn main() {
             }
         }
         let mut s_sensitive = 0u32;
+        let (mut privileged_n, mut s_vs_priv_mismatch) = (0u32, 0u32);
         for op in 0..=0xFFFFu16 {
-            if spike::decode_canonical(op, false) != spike::decode_canonical(op, true) {
-                s_sensitive += 1;
+            let differs = spike::decode_canonical(op, false) != spike::decode_canonical(op, true);
+            s_sensitive += differs as u32;
+            privileged_n += spike::is_privileged(op) as u32;
+            if differs != spike::is_privileged(op) {
+                s_vs_priv_mismatch += 1;
             }
         }
+        println!(
+            "  is_privileged_opcode count {privileged_n}; opcodes where 'S changes the recipe' != 'privileged': {s_vs_priv_mismatch}"
+        );
         println!("  probe time {:.2} s", t.elapsed().as_secs_f64());
         println!("  keys whose recipe depends on a field (out of {} keys, both S halves):", spike::KEYS);
         for (f, c) in field_counts.iter().enumerate() {
@@ -259,6 +267,10 @@ fn main() {
                 println!("    {fam:>15}: {imp:>5} / {tot}");
             }
         }
+    }
+
+    if probe_only {
+        return;
     }
 
     // ---- Phase 2: table cost ---------------------------------------------------------------------------
@@ -464,6 +476,8 @@ fn main() {
         ("cascade+fastfill", spike::MODE_CASCADE, true),
         ("table", spike::MODE_TABLE, false),
         ("table+fastfill", spike::MODE_TABLE, true),
+        ("lazy", spike::MODE_LAZY, false),
+        ("lazy+fastfill", spike::MODE_LAZY, true),
         ("double", spike::MODE_DOUBLE, false),
     ];
     let mut times: Vec<Vec<Duration>> = vec![Vec::new(); modes.len()];
@@ -492,6 +506,14 @@ fn main() {
         );
     }
     println!("  every timed run ended at the record-run export_state_hash: {all_equal}");
+    let lazy_n = spike::lazy_filled();
+    println!(
+        "  lazy memo: {lazy_n} keys filled; storage {:.2} MiB of OnceLock slots ({} B each) + {:.2} MiB of recipes",
+        (spike::KEYS * std::mem::size_of::<std::sync::OnceLock<Option<Box<MicroState>>>>()) as f64
+            / (1024.0 * 1024.0),
+        std::mem::size_of::<std::sync::OnceLock<Option<Box<MicroState>>>>(),
+        (lazy_n * std::mem::size_of::<MicroState>()) as f64 / (1024.0 * 1024.0)
+    );
 
     // ---- Phase 5: tight loop over the recorded real register files -------------------------------------
     let samples = rec.samples;
@@ -502,6 +524,8 @@ fn main() {
         ("cascade+fastfill", spike::MODE_CASCADE, true),
         ("table", spike::MODE_TABLE, false),
         ("table+fastfill", spike::MODE_TABLE, true),
+        ("lazy", spike::MODE_LAZY, false),
+        ("lazy+fastfill", spike::MODE_LAZY, true),
     ] {
         spike::set_mode(m);
         spike::set_fast_fill(ff);

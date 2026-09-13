@@ -16,6 +16,13 @@ synth = []
 # SPIKE (H22 design parcel, 2026-09-13) — NOT PROPOSED FOR MERGE. A measurement-only decode front end
 # (`src/m68000/h22_spike.rs`) and its harness example. Default OFF.
 h22-spike = []
+# SPIKE (H22): compile-time-fixed variants for honest A/B against a no-feature build — each compiles ONE
+# front end with no runtime switch on the decode path (the runtime switch alone measured ~7%).
+h22-fixed = ["h22-spike"]
+h22-fixed-fastfill = ["h22-fixed"]
+h22-fixed-table = ["h22-fixed"]
+h22-fixed-lazy = ["h22-fixed"]
+h22-fixed-double = ["h22-fixed"]
 
 [dependencies]
 bincode = { version = "2", features = ["derive"] }

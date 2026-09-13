@@ -18,7 +18,7 @@ use crate::m68000::registers::{Registers, SR_SUPERVISOR};
 use std::cell::{Cell, RefCell};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 /// The cascade exactly as `main` runs it (the hook returns `None`).
 pub const MODE_CASCADE: u8 = 0;
@@ -30,6 +30,34 @@ pub const MODE_DOUBLE: u8 = 2;
 pub const MODE_RECORD: u8 = 3;
 /// The table, asserting on every pure-key lookup that it equals the cascade on the LIVE registers.
 pub const MODE_TABLE_CHECKED: u8 = 4;
+/// Lazy memo (option B): one `OnceLock` per key, filled from the canonical registers on first use.
+pub const MODE_LAZY: u8 = 5;
+
+/// Option B's storage: a pointer-sized `OnceLock` per key; only touched keys allocate a recipe.
+pub static LAZY: LazyLock<Vec<OnceLock<Option<Box<MicroState>>>>> =
+    LazyLock::new(|| (0..KEYS).map(|_| OnceLock::new()).collect());
+
+/// How many keys the lazy memo has filled (a `None` for an impure key counts as filled).
+pub fn lazy_filled() -> usize {
+    LAZY.iter().filter(|c| c.get().is_some()).count()
+}
+
+/// Option B's lookup: the memoized recipe for a pure key (filling it on first use), `None` for an impure one.
+#[inline]
+pub fn lazy_lookup(regs: &Registers) -> Option<MicroState> {
+    let k = key_of(regs);
+    LAZY[k]
+        .get_or_init(|| {
+            let op = k as u16;
+            if static_impure(op) {
+                None
+            } else {
+                Some(Box::new(decode_canonical(op, k >> 16 == 1)))
+            }
+        })
+        .as_deref()
+        .cloned()
+}
 
 static MODE: LazyLock<AtomicU8> = LazyLock::new(|| {
     let m = std::env::var("H22_SPIKE_MODE")
@@ -113,6 +141,11 @@ pub fn static_impure(op: u16) -> bool {
         || op == 0x4E76
         // Register shift/rotate with a Dn count — the idle reads D[(op>>9)&7] & 63.
         || (op & 0xF000 == 0xE000 && (op >> 6) & 3 != 3 && op & 0x20 != 0)
+}
+
+/// The dispatch's own privilege predicate (the gate in front of the cascade), exposed for the S-key question.
+pub fn is_privileged(op: u16) -> bool {
+    super::is_privileged_opcode(op)
 }
 
 /// The register file a table entry is built from: everything zero except the opcode and the S bit.
@@ -348,15 +381,40 @@ fn record(regs: &Registers) {
             r.samples.push(regs.clone());
         }
         r.calls += 1;
+        // A running summary on stderr every 2^22 calls, so a harness this spike cannot reach into (the
+        // replay playthroughs, run with `--nocapture`) still reports its opcode mix.
+        if r.calls % (1 << 22) == 0 {
+            let impure: u64 = (0..KEYS)
+                .filter(|&k| static_impure(k as u16))
+                .map(|k| r.hist[k])
+                .sum();
+            let mut top: Vec<(usize, u64)> =
+                r.hist.iter().copied().enumerate().filter(|x| x.1 > 0).collect();
+            top.sort_by(|a, b| b.1.cmp(&a.1));
+            let pct = |c: u64| 100.0 * c as f64 / r.calls as f64;
+            let shown: Vec<String> = top
+                .iter()
+                .take(16)
+                .map(|(k, c)| format!("{:#06x}:{:.2}%", *k as u16, pct(*c)))
+                .collect();
+            eprintln!(
+                "H22-REC calls={} static_impure={:.2}% touched={} top={shown:?}",
+                r.calls,
+                pct(impure),
+                top.len()
+            );
+        }
     });
 }
 
 /// The hook `decode` calls first under the feature: `Some(recipe)` short-circuits the cascade.
 #[inline]
+#[cfg_attr(feature = "h22-fixed", allow(dead_code))]
 pub(super) fn front(regs: &Registers) -> Option<MicroState> {
     match mode() {
         MODE_CASCADE => None,
         MODE_TABLE => TABLE[key_of(regs)].clone(),
+        MODE_LAZY => lazy_lookup(regs),
         MODE_DOUBLE => {
             black_box(decode_dispatch(black_box(regs)));
             None
