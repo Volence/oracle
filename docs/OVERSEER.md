@@ -86,6 +86,9 @@ goodnight delegation (empyrean `cdb8035`, verified an ancestor of their `origin/
 pick by his 09-09 order of work (finish lens items first) and his 09-11 aim (*"oracle's cleaned up a bit"*):
 **H22-68000-DECODE (design doc first) → M24-NEEDS-A-CURRENCY → M1-FILL-OVER-TIME.** LENS-WAVE-1's two look questions
 stay his. If H22 needs a call that is his (look, or an irreversible bet), file the card and take M24.
+**H22 design LANDED (merge `1404a07`, docs only) and RULED under delegation:** option E* adopted, staged; landing 1
+(static-copy filler) takeable now; landings 2-3 HELD until decode share is re-measured on a workload that is not mostly a
+VBlank spin loop (the doc's own falsifier); M32 refuted. **Next is M24; shape it with F-Z80-ACCESSES-UNWATCHED below.**
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates,
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the
