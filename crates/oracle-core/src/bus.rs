@@ -55,6 +55,24 @@ pub struct BusEvent {
     pub value: u32,
 }
 
+/// SPIKE (M24 hot-path A/B, NOT PROPOSED FOR MERGE): what kind of Z80 access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Z80AccessKind {
+    Read,
+    Write,
+}
+
+/// SPIKE (M24 hot-path A/B): one Z80 bus access, carrying both its Z80-space and its resolved 68000-space
+/// address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Z80Access {
+    pub kind: Z80AccessKind,
+    pub z80_addr: u16,
+    pub addr68k: u32,
+    pub value: u8,
+    pub mclk: u64,
+}
+
 /// One retired CPU step, delivered to [`BusEventSink::on_step_retire`] immediately after the step commits.
 ///
 /// A *step* is one turn of the run loop's CPU crank: normally one instruction, but also a reset / trace /
@@ -355,6 +373,16 @@ pub trait BusEventSink {
     /// boundary is also not an access, so it has no `addr`/`op`/`value` to carry.
     fn on_frame_boundary(&mut self, _frame: u64) {}
 
+    /// SPIKE (M24 hot-path A/B, NOT PROPOSED FOR MERGE): does this sink want the Z80's own accesses? A
+    /// constant `false` by default, which is what lets `catch_up_z80` fold the instrumented branch away for
+    /// the null sink.
+    fn wants_z80_accesses(&self) -> bool {
+        false
+    }
+
+    /// SPIKE (M24 hot-path A/B): one Z80 bus access, delivered only when `wants_z80_accesses`.
+    fn on_z80_access(&mut self, _access: Z80Access) {}
+
     /// **The stop signal.** Queried by the sink-generic run loop once per CPU step, immediately after
     /// [`on_step_boundary`](BusEventSink::on_step_boundary) and *before* the instruction executes; returning
     /// `true` ends the run early with
@@ -415,6 +443,12 @@ impl<S: BusEventSink + ?Sized> BusEventSink for &mut S {
     fn on_frame_boundary(&mut self, frame: u64) {
         (**self).on_frame_boundary(frame);
     }
+    fn wants_z80_accesses(&self) -> bool {
+        (**self).wants_z80_accesses()
+    }
+    fn on_z80_access(&mut self, access: Z80Access) {
+        (**self).on_z80_access(access);
+    }
     fn stop_requested(&self) -> bool {
         (**self).stop_requested()
     }
@@ -470,6 +504,14 @@ impl<S: BusEventSink> BusEventSink for Option<S> {
             s.on_frame_boundary(frame);
         }
     }
+    fn wants_z80_accesses(&self) -> bool {
+        self.as_ref().is_some_and(|s| s.wants_z80_accesses())
+    }
+    fn on_z80_access(&mut self, access: Z80Access) {
+        if let Some(s) = self {
+            s.on_z80_access(access);
+        }
+    }
     fn stop_requested(&self) -> bool {
         self.as_ref().is_some_and(|s| s.stop_requested())
     }
@@ -522,6 +564,12 @@ impl<S: BusEventSink> BusEventSink for Observe<S> {
     }
     fn on_frame_boundary(&mut self, frame: u64) {
         self.0.on_frame_boundary(frame);
+    }
+    fn wants_z80_accesses(&self) -> bool {
+        self.0.wants_z80_accesses()
+    }
+    fn on_z80_access(&mut self, access: Z80Access) {
+        self.0.on_z80_access(access);
     }
     /// The whole point: every capability query forwards, this one does not.
     fn stop_requested(&self) -> bool {
@@ -600,6 +648,13 @@ impl<A: BusEventSink, B: BusEventSink> BusEventSink for Fanout<A, B> {
     fn on_frame_boundary(&mut self, frame: u64) {
         self.a.on_frame_boundary(frame);
         self.b.on_frame_boundary(frame);
+    }
+    fn wants_z80_accesses(&self) -> bool {
+        self.a.wants_z80_accesses() || self.b.wants_z80_accesses()
+    }
+    fn on_z80_access(&mut self, access: Z80Access) {
+        self.a.on_z80_access(access);
+        self.b.on_z80_access(access);
     }
     fn stop_requested(&self) -> bool {
         self.a.stop_requested() || self.b.stop_requested()

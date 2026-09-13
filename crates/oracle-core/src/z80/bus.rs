@@ -29,7 +29,9 @@
 //! | `$8000-$FFFF` | 68k bank window | **live** — `(bank << 15) \| (addr & 0x7FFF)` → ROM / work RAM / Z80 RAM |
 
 use super::Z80Io;
-use crate::bus::{BusEvent, BusEventSink, BusOp, CartBanks, Size, Z80_RAM_SIZE};
+use crate::bus::{
+    BusEvent, BusEventSink, BusOp, CartBanks, Size, Z80Access, Z80AccessKind, Z80_RAM_SIZE,
+};
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
 use crate::ym2612::Ym2612;
@@ -188,11 +190,63 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
             _ => {}
         }
     }
+
+    /// SPIKE (M24 hot-path A/B): the 68000-space address an access at Z80 `addr` resolves to — the bank
+    /// window through the bank, everything below `$8000` to the 68000's own alias of Z80 space.
+    fn resolve(&self, addr: u16) -> u32 {
+        if addr >= 0x8000 {
+            self.window_addr(addr)
+        } else {
+            0xA0_0000 | u32::from(addr)
+        }
+    }
+}
+
+/// SPIKE (M24 hot-path A/B, NOT PROPOSED FOR MERGE): the instrumented adapter. `catch_up_z80` builds it only
+/// when the sink asks for Z80 accesses, so `Z80Bus`'s own `read`/`write` bodies stay textually unchanged and
+/// the null sink's monomorph is today's.
+pub(crate) struct Watched<'b, 'a, S: BusEventSink>(pub(crate) &'b mut Z80Bus<'a, S>);
+
+impl<S: BusEventSink> Z80Io for Watched<'_, '_, S> {
+    fn read(&mut self, addr: u16) -> u8 {
+        let value = self.0.read(addr);
+        let access = Z80Access {
+            kind: Z80AccessKind::Read,
+            z80_addr: addr,
+            addr68k: self.0.resolve(addr),
+            value,
+            mclk: self.0.now_mclk,
+        };
+        self.0.sink.on_z80_access(access);
+        value
+    }
+
+    fn write(&mut self, addr: u16, value: u8) {
+        // Resolved before the write: a `$6000` write moves the bank.
+        let addr68k = self.0.resolve(addr);
+        self.0.write(addr, value);
+        let access = Z80Access {
+            kind: Z80AccessKind::Write,
+            z80_addr: addr,
+            addr68k,
+            value,
+            mclk: self.0.now_mclk,
+        };
+        self.0.sink.on_z80_access(access);
+    }
+
+    fn input(&mut self, port: u16) -> u8 {
+        self.0.input(port)
+    }
+
+    fn output(&mut self, port: u16, value: u8) {
+        self.0.output(port, value);
+    }
 }
 
 impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
     fn read(&mut self, addr: u16) -> u8 {
-        let v = match addr {
+        match addr {
             // Z80 RAM (8 KiB), mirrored across $0000-$3FFF.
             0x0000..=0x3FFF => self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)],
             // YM2612 FM: read = the live status byte (Timer-A overflow bit0, Timer-B overflow bit1, bit7 BUSY
@@ -215,13 +269,10 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // we return open bus instead of modeling the hang. $7F10-$7F1F (PSG mirror region) is
             // write-only on hardware.
             _ => 0xFF,
-        };
-        crate::spike_m24::access(false, addr, v, self.now_mclk); // SPIKE (M24)
-        v
+        }
     }
 
     fn write(&mut self, addr: u16, value: u8) {
-        crate::spike_m24::access(true, addr, value, self.now_mclk); // SPIKE (M24)
         match addr {
             // Z80 RAM (8 KiB), mirrored across $0000-$3FFF.
             0x0000..=0x3FFF => self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)] = value,
@@ -241,7 +292,6 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // ADDITIONALLY drive the timer model (the tap is for the VGM logger; the timer update is what makes
             // the driver's Timer-A overflow poll fire — docs/2026-07-22-fm-timer-design.md). PSG has no timer.
             0x4000..=0x4003 | 0x7F11 => {
-                crate::spike_m24::fmpsg(addr, value, self.now_mclk); // SPIKE (M24)
                 self.sink.on_event_at(
                     BusEvent {
                         op: BusOp::Write,

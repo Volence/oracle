@@ -1709,7 +1709,6 @@ impl System {
             // same vblank drives both CPUs' vblank interrupts. The Z80 accepts it if its driver has run `EI`.
             EventKind::VInt => {
                 self.vdp.raise_vint();
-                crate::spike_m24::note_int_assert(deadline); // SPIKE (M24)
                 self.z80.set_int_line(true);
             }
             EventKind::FrameEnd => {}
@@ -1833,11 +1832,13 @@ impl System {
     fn catch_up_z80<S: BusEventSink>(&mut self, step_start: u64, sink: &mut S) {
         let now = self.scheduler.now();
         if self.z80_running && !self.z80_busreq {
-            crate::spike_m24::note_gated_on_entry(); // SPIKE (M24)
             // Read the (Copy) bank table out before the split-borrow, like `sram_map` on the 68k side: the
             // Z80's $8000-$FFFF window reaches cartridge space through the cart's mapper, so its ROM reads
             // resolve through the same table the 68k side uses.
             let cart_banks = self.cart_banks;
+            // SPIKE (M24 hot-path A/B): asked once, before the split-borrow lends `sink` to the bus. For the
+            // null sink this is the trait's constant `false`, so the instrumented branch folds away.
+            let watch = sink.wants_z80_accesses();
             let System {
                 z80,
                 z80_ram,
@@ -1850,17 +1851,6 @@ impl System {
                 ..
             } = self;
             while *z80_frontier_mclk < now {
-                // SPIKE (M24): latch the frontier for the probe; `M24_MUT=int1` drops `/INT` once the Z80's
-                // own clock is one line past the assert (R6: one line, 3420 mclk = 228 Z80 clocks).
-                crate::spike_m24::set_frontier(*z80_frontier_mclk);
-                if crate::spike_m24::int_one_line()
-                    && z80.spike_int_line()
-                    && *z80_frontier_mclk >= crate::spike_m24::int_assert_mclk() + MCLK_PER_LINE
-                {
-                    z80.set_int_line(false);
-                    crate::spike_m24::note_mut_fired();
-                }
-                crate::spike_m24::note_gated_on_step();
                 // The Z80 reads the FM timer at its own frontier (ZC4/FM7) — behind the 68000's `now`, both
                 // absolute on the one timeline. Pass the frontier value at the start of this step as the FM's
                 // `now`. The VDP port mirror ($7F04+) reads at the same frontier instant (K2).
@@ -1875,26 +1865,21 @@ impl System {
                     *z80_frontier_mclk,
                     sink,
                 );
-                let t = z80.step(&mut bus);
+                let t = if watch {
+                    z80.step(&mut crate::z80::bus::Watched(&mut bus))
+                } else {
+                    z80.step(&mut bus)
+                };
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }
         } else if self.z80_running {
             // Bus granted: run nothing, and keep the tail of the instruction the grant cut owed — it is
             // time the Z80 spends after the release (see the doc above).
             let tail = self.z80_frontier_mclk.saturating_sub(step_start);
-            // SPIKE (M24): count grants; `M24_MUT=m21` charges M21_EXTRA_MCLK once, at the grant edge.
-            let edge = crate::spike_m24::note_grant(tail);
-            let extra = if edge && crate::spike_m24::mutation() == crate::spike_m24::Mutation::M21 {
-                crate::spike_m24::note_mut_fired();
-                crate::spike_m24::M21_EXTRA_MCLK
-            } else {
-                0
-            };
-            self.z80_frontier_mclk = now + tail + extra;
+            self.z80_frontier_mclk = now + tail;
         } else {
             // Held in reset: run nothing and owe nothing. The cut instruction is abandoned, so the Z80
             // starts at the release instant with no backlog and no tail.
-            crate::spike_m24::note_reset(); // SPIKE (M24)
             self.z80_frontier_mclk = now;
         }
     }

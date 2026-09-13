@@ -851,15 +851,8 @@ fn intensity(level: u8, state: PixelState) -> u8 {
 fn cram_rgb_state_from(cram: &[u8], index: u8, state: PixelState) -> (u8, u8, u8) {
     let i = (index as usize & 0x3F) * 2;
     let word = ((cram[i] as u16) << 8) | cram[i + 1] as u16;
-    // SPIKE (M24): the output-only, timing-neutral control `M24_MUT=render` flips bit 0 of red.
-    let flip = if crate::spike_m24::mutation() == crate::spike_m24::Mutation::NeutralRender {
-        crate::spike_m24::note_mut_fired();
-        1
-    } else {
-        0
-    };
     (
-        intensity(((word >> 1) & 0x07) as u8, state) ^ flip,
+        intensity(((word >> 1) & 0x07) as u8, state),
         intensity(((word >> 5) & 0x07) as u8, state),
         intensity(((word >> 9) & 0x07) as u8, state),
     )
