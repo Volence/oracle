@@ -617,3 +617,30 @@ question while looking like an answer. Continuing §6's numbering.
 18. **Whether the readout should sit under the picture instead.** It goes in the side column, which the
     narrow layout pushes **below** the picture. *Question: at a realistic dock width, is your click's
     answer where your eye already is?*
+
+---
+
+## Addendum, 2026-09-13: look call 4 is settled, as bare numbers on one shared card
+
+*Appended under the same rule as the addenda above: nothing before this heading is edited, so the stamp
+keeps meaning what it says.*
+
+**The answer.** §6's parked call 4 (*bare text at 20px, or a small bordered tile?*), which the Planes
+addendum above still recorded as parked, is settled as **bare**: a headline number carries no box of its
+own, and a row of them shares one `card`. The pick was the hub's on 2026-09-13, made under the owner's
+delegation that evening (*"I don't care about a or b they both look good, you can make the decision."*),
+and one word from him overturns it. The decision card is `d-39-answered` in `docs/decisions.jsonl`. The
+ruling is about containment only: a number's colour is still whatever `health_colour` gives it.
+
+**What was deleted, and when.** From `22b602d` (2026-09-06) the Pacing tab drew its headline twice,
+labelled *treatment A* (bare numbers sharing one card) and *treatment B* (one bordered tile per number),
+under a standing line asking which read better. B, both labels, the question line, and the code that
+existed only to draw the choice were deleted at this parcel's merge (`<merge SHA>`). A was left exactly as
+it drew, so the tab now opens on its headline card.
+
+**One count above has rotted, measured here because a reader of this note will look there.** §3 says
+*"Three headline stats in a card"*; today there are four: `frames emulated`, `frames presented`,
+`presented fps` and `worst late`.
+
+**Not settled here.** Building the other panels' headline numbers in this shape is `DATA-DISPLAY-AUDIT`'s
+work. Nothing above this heading has been re-measured at this revision.

@@ -1653,9 +1653,10 @@ impl Panels<'_> {
     /// **The audit page's exemplar.** See `docs/2026-09-05-debug-window-audit.md`.
     ///
     /// The facts are projected by [`pacing::Readout::of`], which holds no egui type and is therefore
-    /// testable without a window. This function is only the drawing, and the split is the point: the
-    /// window cannot be opened from an agent seat, so a panel whose correctness lives in its draw calls is
-    /// a panel nothing can check.
+    /// testable without a window. This function gathers the sources and hands the projection to
+    /// [`pacing_tab`], which is only the drawing, and the split is the point: the window cannot be opened
+    /// from an agent seat, so a panel whose correctness lives in its draw calls is a panel nothing can
+    /// check.
     ///
     /// What it replaced was thirteen `ui.monospace(format!(..))` lines with their label columns spelled as
     /// literal spaces. See [`pacing::Readout`] for the three rules that broke and why P2's stated grep
@@ -1683,66 +1684,7 @@ impl Panels<'_> {
             self.status,
         );
 
-        egui::ScrollArea::vertical()
-            .id_salt("pacing")
-            .show(ui, |ui| {
-                // The three numbers the tab is opened to read, side by side and large. Emphasis is size
-                // and colour, never weight: egui has no bold axis.
-                //
-                // ⚑ Drawn TWICE, on purpose and not for long. See the temporary block at
-                // [`headline_comparison`]: the audit parked "bare number or bordered tile" as a look
-                // call, and a look call is settled by looking. Both arms read the same `r.headline`,
-                // which is the live projection, so neither is a mock.
-                headline_comparison(ui, &r.headline);
-                ui.add_space(SECTION_GAP);
-
-                section(ui, "governor", None, "the loop's own rate limiter");
-                card(ui, |ui| health_grid(ui, "pacing-governor", &r.governor));
-                ui.add_space(SECTION_GAP);
-
-                section(
-                    ui,
-                    "frame time",
-                    None,
-                    "wall clock per presented frame, as a distribution",
-                );
-                card(ui, |ui| health_grid(ui, "pacing-frame-time", &r.frame_time));
-                ui.add_space(SECTION_GAP);
-
-                section(ui, "audio", None, "the clock everything else follows");
-                card(ui, |ui| match &r.audio {
-                    // P4/P6: the absent case is a whole-section statement, not a table of zeroes. It is
-                    // warn-coloured from the arm the projection chose, never from reading the sentence.
-                    pacing::Audio::Absent { why } => {
-                        ui.colored_label(ui.visuals().warn_fg_color, *why);
-                    }
-                    pacing::Audio::Open(a) => {
-                        // The landed shape, deliberately not doubled: the comparison above is the
-                        // question, and asking it twice on one panel would make the tab about the
-                        // question rather than about pacing.
-                        stat_row(ui, &a.stats, StatShape::Bare);
-                        ui.add_space(SECTION_GAP);
-                        health_grid(ui, "pacing-audio", &a.facts);
-                        ui.add_space(SECTION_GAP);
-                        meter(ui, &a.meter);
-                    }
-                });
-                ui.add_space(SECTION_GAP);
-
-                // The line the window publishes for `emulator/screen_text`, said to be that rather than
-                // shown as a fourth opinion about numbers already above it. The Registers tab sets the
-                // precedent: a panel that silently shows one number twice is a new wrong answer.
-                ui.label(
-                    egui::RichText::new(&r.status)
-                        .text_style(egui::TextStyle::Small)
-                        .color(ui.visuals().weak_text_color()),
-                )
-                .on_hover_text(
-                    "The one-line summary this window publishes for `emulator/screen_text`, shown \
-                     verbatim. Its frame and rebase counts are the same two numbers as above, not a \
-                     second measurement of them.",
-                );
-            });
+        pacing_tab(ui, &r);
     }
 
     fn registers(&self, ui: &mut egui::Ui) {
@@ -2995,13 +2937,6 @@ const NAME_COL_FLOOR: f32 = 120.0;
 /// and the list is narrow, but never zero, which is the whole point.
 const LIST_GUTTER: f32 = 10.0;
 
-/// The narrowest a [`StatShape::Tile`]'s **content** may be, so a row of tiles is a row of like-sized
-/// boxes rather than three boxes shrink-wrapped to three different labels.
-///
-/// Chosen from the widest headline label the Pacing tab actually has (`frames emulated`, at the 10px
-/// `Small` face) rather than from taste, so the floor is the thing that is already setting the width.
-const TILE_MIN_W: f32 = 78.0;
-
 /// A bordered block on the `raised` surface, one step above the panel it sits on.
 ///
 /// The surface ladder is how depth is carried here: CHROME_SPEC forbids drop shadows on controls, and
@@ -3269,107 +3204,66 @@ fn health_colour(ui: &egui::Ui, h: pacing::Health) -> egui::Color32 {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
-// ⚑ TEMPORARY: THE HEADLINE-SHAPE CHOICE, ON SCREEN BECAUSE IT CANNOT BE SETTLED ANYWHERE ELSE
-//
-// `docs/2026-09-05-debug-window-audit.md` §6 parked look call 4 asks: *should a headline number be bare
-// text at the 20px section face, or a small bordered tile?* Both satisfy the owner's brief, neither can
-// be settled from source or from an argument, and this window cannot be opened from an agent seat. So
-// the answer is a screen he can point at: **the same three live numbers, drawn both ways, one above the
-// other, in the real panel among its real neighbours** rather than in a scratch tab where the reading
-// would prove nothing.
-//
-// ⚑ **HOW THE LOSER IS DELETED — one arm, not a rewrite.** In every case the choice collapses to
-// `stat_row`'s only shape, and the whole of the temporary surface is this block plus its call site:
-//
-//   * If **bare** wins: delete [`StatShape`] and [`headline_comparison`], delete `stat`'s `Tile` arm and
-//     the `TILE_MIN_W` const, drop the `shape` parameter from `stat`/`stat_row` and their two call
-//     sites, and restore `Panels::pacing`'s one line to `card(ui, |ui| stat_row(ui, &r.headline))`.
-//   * If **tile** wins: the same deletions with the arms swapped, `stat`'s body becoming the tile frame
-//     around [`stat_body`], and `Panels::pacing`'s line becoming a bare `stat_row(ui, &r.headline)` —
-//     the card goes, because tiles do their own containment and a card around them is two borders doing
-//     one job.
-//
-// Nothing else in the crate is touched by either outcome: [`stat_body`] is the content in both, so the
-// number, its unit, its label, its colour and its hover are byte-identical between the two treatments
-// and the only variable a reader is judging is the containment.
-// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
-
-/// Which of the two candidate shapes a [`stat`] is drawn in. **Temporary**; see the block above.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StatShape {
-    /// **Treatment A, and what the tab ships today.** Bare text on whatever surface it lands on: no
-    /// fill of its own, no border of its own, nothing but the number, its unit and its label.
-    Bare,
-    /// **Treatment B.** The same content inside a small bordered box on the `raised` step.
-    Tile,
-}
-
-/// The two treatments, one above the other, each labelled with which it is.
+/// **The Pacing tab's drawing**, from the projection [`Panels::pacing`] made this frame.
 ///
-/// **`stats` is the live headline projection, passed to both arms.** That is the load-bearing property
-/// and it is what [`stat_shape_tests`] guards: a comparison in which one treatment showed placeholder
-/// numbers would look exactly like a working one and be worth nothing.
-fn headline_comparison(ui: &mut egui::Ui, stats: &[pacing::Stat]) {
-    ui.label(
-        egui::RichText::new(HEADLINE_CHOICE)
-            .text_style(egui::TextStyle::Small)
-            .color(ui.visuals().warn_fg_color),
-    )
-    .on_hover_text(
-        "Both shapes are drawn from the same three live counters, so the only thing being judged is \
-         the box around them. Whichever one you keep becomes the shape every other panel's headline \
-         numbers are built in, and the other is deleted.",
-    );
-    ui.add_space(SECTION_GAP);
+/// Free rather than inline in [`Panels::pacing`] for the reason [`plane_image`] is: a headless test can
+/// then draw the tab's own body from a [`pacing::Readout`] it built, without the `Machine`, the `Bus` and
+/// the save files a whole [`Panels`] opens.
+fn pacing_tab(ui: &mut egui::Ui, r: &pacing::Readout) {
+    egui::ScrollArea::vertical()
+        .id_salt("pacing")
+        .show(ui, |ui| {
+            // The numbers the tab is opened to read, side by side and large. Emphasis is size and
+            // colour, never weight: egui has no bold axis. One card holds the row and no number gets
+            // a box of its own, which is how the audit's look call 4 was settled (`d-39-answered`).
+            card(ui, |ui| stat_row(ui, &r.headline));
+            ui.add_space(SECTION_GAP);
 
-    treatment_caption(
-        ui,
-        TREATMENT_A,
-        "bare numbers sharing one card, which is what this tab shows today",
-    );
-    card(ui, |ui| stat_row(ui, stats, StatShape::Bare));
-    ui.add_space(SECTION_GAP * 2.0);
+            section(ui, "governor", None, "the loop's own rate limiter");
+            card(ui, |ui| health_grid(ui, "pacing-governor", &r.governor));
+            ui.add_space(SECTION_GAP);
 
-    treatment_caption(
-        ui,
-        TREATMENT_B,
-        "one bordered tile per number, and no shared card, because the tiles are the containment",
-    );
-    stat_row(ui, stats, StatShape::Tile);
+            section(
+                ui,
+                "frame time",
+                None,
+                "wall clock per presented frame, as a distribution",
+            );
+            card(ui, |ui| health_grid(ui, "pacing-frame-time", &r.frame_time));
+            ui.add_space(SECTION_GAP);
+
+            section(ui, "audio", None, "the clock everything else follows");
+            card(ui, |ui| match &r.audio {
+                // P4/P6: the absent case is a whole-section statement, not a table of zeroes. It is
+                // warn-coloured from the arm the projection chose, never from reading the sentence.
+                pacing::Audio::Absent { why } => {
+                    ui.colored_label(ui.visuals().warn_fg_color, *why);
+                }
+                pacing::Audio::Open(a) => {
+                    stat_row(ui, &a.stats);
+                    ui.add_space(SECTION_GAP);
+                    health_grid(ui, "pacing-audio", &a.facts);
+                    ui.add_space(SECTION_GAP);
+                    meter(ui, &a.meter);
+                }
+            });
+            ui.add_space(SECTION_GAP);
+
+            // The line the window publishes for `emulator/screen_text`, said to be that rather than
+            // shown as a fourth opinion about numbers already above it. The Registers tab sets the
+            // precedent: a panel that silently shows one number twice is a new wrong answer.
+            ui.label(
+                egui::RichText::new(&r.status)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .on_hover_text(
+                "The one-line summary this window publishes for `emulator/screen_text`, shown \
+                 verbatim. Its frame and rebase counts are the same two numbers as above, not a \
+                 second measurement of them.",
+            );
+        });
 }
-
-/// Which treatment the block below the line is, said in two weights on one line the way [`section`] does.
-fn treatment_caption(ui: &mut egui::Ui, name: &str, note: &str) {
-    let (weak, strong) = (
-        ui.visuals().weak_text_color(),
-        ui.visuals().strong_text_color(),
-    );
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(
-            egui::RichText::new(name)
-                .text_style(egui::TextStyle::Small)
-                .color(strong),
-        );
-        ui.label(
-            egui::RichText::new(note)
-                .text_style(egui::TextStyle::Small)
-                .color(weak),
-        );
-    });
-}
-
-/// The standing line above the two treatments. **Temporary**, and it says so, because a block a reader
-/// cannot tell is a question is a block he will read as a design.
-const HEADLINE_CHOICE: &str =
-    "One choice, and this block is temporary: the same three numbers are drawn \
-                               twice below. Say which reads better and the other one goes away.";
-
-/// The two treatment names, as one constant each so the gate can look for the strings the panel actually
-/// draws rather than for a second copy of them.
-const TREATMENT_A: &str = "treatment A";
-const TREATMENT_B: &str = "treatment B";
 
 /// **The big-number readout: the "pops" in "clean and readable and pops".**
 ///
@@ -3380,36 +3274,7 @@ const TREATMENT_B: &str = "treatment B";
 ///
 /// Emphasis is size and colour and nothing else. egui selects fonts by family and has no weight axis, so
 /// there is no bold to reach for here even if one were wanted.
-///
-/// ⚑ **Two shapes are drawn side by side right now, and one of them is going away.** See [`StatShape`]
-/// and [`headline_comparison`]. This function is the content of both; the shape only decides what is
-/// drawn around it.
-fn stat(ui: &mut egui::Ui, s: &pacing::Stat, shape: StatShape) {
-    match shape {
-        StatShape::Bare => stat_body(ui, s),
-        StatShape::Tile => {
-            egui::Frame::new()
-                // The same surface step and the same border the `card` above it takes, at the scale of
-                // one number instead of three. Nothing new is invented: `faint_bg_color` is the family's
-                // `raised` and the stroke is `theme.rs`'s 1px `border`.
-                .fill(ui.visuals().faint_bg_color)
-                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .corner_radius(egui::CornerRadius::same(4))
-                .inner_margin(egui::Margin::same(CARD_PAD))
-                .show(ui, |ui| {
-                    // Without a floor the three tiles are three different widths, which is the one thing
-                    // a tile row must not be: the boxes would then read as a ragged list rather than as
-                    // a set of readings.
-                    ui.set_min_width(TILE_MIN_W);
-                    stat_body(ui, s);
-                });
-        }
-    }
-}
-
-/// The number, its unit and its label: the part that is **identical in both treatments**, so the choice
-/// below is about containment and nothing else.
-fn stat_body(ui: &mut egui::Ui, s: &pacing::Stat) {
+fn stat(ui: &mut egui::Ui, s: &pacing::Stat) {
     let big = ui
         .style()
         .text_styles
@@ -3444,20 +3309,15 @@ fn stat_body(ui: &mut egui::Ui, s: &pacing::Stat) {
 
 /// A row of [`stat`]s across the top of a section, evenly gutted.
 ///
-/// The gutter is the shape's, not a second free choice: bare numbers are held apart by whitespace and
-/// nothing else, so they get the wide one; tiles are held apart by their own borders, so a gutter that
-/// wide would push the row off a narrow dock panel for no gain.
-fn stat_row(ui: &mut egui::Ui, stats: &[pacing::Stat], shape: StatShape) {
-    let gutter = match shape {
-        StatShape::Bare => COL_GUTTER * 2.0,
-        StatShape::Tile => COL_GUTTER,
-    };
+/// The gutter is twice [`COL_GUTTER`] because nothing else holds bare numbers apart: they have no box of
+/// their own, only whitespace.
+fn stat_row(ui: &mut egui::Ui, stats: &[pacing::Stat]) {
     ui.horizontal_top(|ui| {
         for (i, s) in stats.iter().enumerate() {
             if i > 0 {
-                ui.add_space(gutter);
+                ui.add_space(COL_GUTTER * 2.0);
             }
-            stat(ui, s, shape);
+            stat(ui, s);
         }
     });
 }
@@ -6979,27 +6839,34 @@ mod json_tests {
     }
 }
 
-/// ⚑ **Temporary, and it dies with the block it guards.** See the marked region above [`StatShape`].
+/// **The Pacing headline draws each live number and label exactly once, on one shared card.**
 ///
-/// The one property that makes the on-screen comparison worth anything: **both treatments draw the same
-/// live numbers.** A block in which treatment B showed placeholder values would render perfectly, read
-/// as a working comparison, and settle nothing, which is a failure in the direction that looks like
-/// success. So this renders the real thing headlessly and counts what actually reached the screen.
+/// The audit's look call 4 was settled as bare numbers sharing one card (`d-39-answered`). This pins that
+/// form through [`pacing_tab`], the tab's own drawing, fed a projection built from a real `Presents` meter
+/// and an open device rather than a hand-typed struct. With a device open, the audio section's own stat
+/// row is drawn beside the headline, so a count of one is a count across the whole tab.
 ///
-/// **What it does if the thing it guards is removed:** delete `stat`'s `Tile` arm, or feed the second
-/// row anything other than `stats`, and every count below falls from two to one and the test is red.
-/// Delete the whole comparison and it does not compile. The positive control at the top is there for the
-/// third failure, the one that would otherwise pass in silence: a collector that finds no text at all.
+/// **What it catches:** a second headline row anywhere on the tab (a count goes from one to two); a row
+/// fed anything but the live projection, or missing a stat (a count falls to zero); anything drawn above
+/// the headline, such as a caption or a standing question; and the numbers leaving their one card, into a
+/// box each or out of any box.
+///
+/// **What it does not cover:** [`Panels::pacing`]'s own gathering (the `Machine`, device and `self.pacing`
+/// reads that build the projection), because a whole [`Panels`] cannot be built headlessly without the
+/// save files it opens; the hover text; and how any of it looks, which only the owner's window can show.
 #[cfg(test)]
-mod stat_shape_tests {
+mod pacing_headline_tests {
     use super::*;
     use std::time::Instant;
 
-    /// Every string that reached the screen, in draw order. `Shape::Vec` nests, so this walks.
-    fn drawn(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
-        fn walk(s: &egui::epaint::Shape, out: &mut Vec<String>) {
+    /// Every string that reached the screen, in draw order, with the rect its glyphs occupy.
+    /// `Shape::Vec` nests, so this walks.
+    fn drawn(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+        fn walk(s: &egui::epaint::Shape, out: &mut Vec<(String, egui::Rect)>) {
             match s {
-                egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                egui::epaint::Shape::Text(t) => {
+                    out.push((t.galley.text().to_owned(), t.visual_bounding_rect()))
+                }
                 egui::epaint::Shape::Vec(v) => {
                     for s in v {
                         walk(s, out);
@@ -7015,13 +6882,45 @@ mod stat_shape_tests {
         out
     }
 
-    /// Numbers no other part of the block can produce by accident, so a count of two is a count of the
-    /// two treatments rather than of a coincidence.
-    fn headline() -> Vec<pacing::Stat> {
+    /// Every bordered box that reached the screen. A `card` has a visible stroke; a grid's row stripes and
+    /// the root's background do not, so they are not boxes.
+    fn boxes(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+        fn walk(s: &egui::epaint::Shape, out: &mut Vec<egui::Rect>) {
+            match s {
+                egui::epaint::Shape::Rect(r) if r.stroke.width > 0.0 => out.push(r.rect),
+                egui::epaint::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            walk(&c.shape, &mut out);
+        }
+        out
+    }
+
+    fn device() -> pacing::DeviceFacts {
+        pacing::DeviceFacts {
+            rate_hz: 48_000,
+            channels: 2,
+            occupied: 1_234,
+            capacity: 4_096,
+            starved_steady: 0,
+            dropped: 0,
+        }
+    }
+
+    /// The tab's projection, with headline numbers no other part of the tab can produce by accident, so a
+    /// count of one is a count of the headline rather than of a coincidence.
+    fn readout() -> pacing::Readout {
         let now = Instant::now();
         let g = Governor::start(now, pacing::FRAME_PERIOD);
-        // Presents fed to the meter rather than a `PacingFacts` typed here: the block under test draws
-        // the LIVE projection, and a hand-assembled struct would make that claim false.
+        // Presents fed to the meter rather than a `PacingFacts` typed here: the tab draws the LIVE
+        // projection, and a hand-assembled struct would make that claim false.
         let mut p = pacing::Presents::start(now);
         for i in 1..=3u32 {
             p.note(now + pacing::FRAME_PERIOD * i);
@@ -7029,80 +6928,98 @@ mod stat_shape_tests {
         let facts = p.facts(
             now + pacing::FRAME_PERIOD * 4,
             &g,
-            oracle_aether::engine::PacingAudio::Unmeasured,
+            pacing::audio_facts(Some(device())),
         );
-        pacing::Readout::of(987_654, &facts, &g, None, "").headline
+        pacing::Readout::of(987_654, &facts, &g, Some(device()), "")
     }
 
     #[test]
-    fn both_treatments_draw_the_same_live_numbers() {
-        let stats = headline();
-        assert_eq!(stats.len(), 4, "the exemplar's four headline numbers");
+    fn the_pacing_headline_draws_each_live_number_once_on_one_card() {
+        let r = readout();
+        assert!(
+            !r.headline.is_empty(),
+            "no headline numbers, so every count below is a count of nothing"
+        );
+        let pacing::Audio::Open(audio) = &r.audio else {
+            panic!(
+                "the fixture opens a device, so the audio section's own stat row must be drawn too"
+            );
+        };
+        assert!(!audio.stats.is_empty());
 
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
-                egui::vec2(900.0, 700.0),
+                egui::vec2(900.0, 1400.0),
             )),
             ..Default::default()
         };
-        let mut out = ctx.run_ui(raw, |ui| headline_comparison(ui, &stats));
-        let texts = drawn(&out.shapes);
+        let mut out = ctx.run_ui(raw, |ui| pacing_tab(ui, &r));
+        let (texts, boxes) = (drawn(&out.shapes), boxes(&out.shapes));
         out.textures_delta.clear();
+        let names: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
 
-        // Positive control: the walk found the block at all. Without this every assertion below passes
-        // vacuously on an empty vector, which is exactly the shape of gate that cannot fail.
+        // Positive control: the walk found the tab at all. Without this every count below could pass
+        // vacuously on an empty vector.
         assert!(
             !texts.is_empty(),
             "nothing was drawn, so nothing below is a measurement"
         );
-        for name in [TREATMENT_A, TREATMENT_B] {
+
+        // The property. Every headline number and label reaches the screen exactly once.
+        let wanted: Vec<&str> = r
+            .headline
+            .iter()
+            .flat_map(|s| [s.value.as_str(), s.label])
+            .collect();
+        for want in &wanted {
+            let n = names.iter().filter(|t| *t == want).count();
             assert_eq!(
-                texts.iter().filter(|t| t.as_str() == name).count(),
-                1,
-                "each treatment is labelled exactly once, or a reader cannot tell which is which. \
-                 Drawn: {texts:?}"
+                n, 1,
+                "{want:?} reached the screen {n} times, not once. Drawn: {names:?}"
             );
         }
 
-        // The property. Every headline number and every headline label reaches the screen twice: once
-        // per treatment, from one projection.
-        for s in &stats {
+        // One shared card: every headline string sits inside exactly one box, and the same one.
+        let inside = |at: egui::Rect| -> Vec<egui::Rect> {
+            boxes
+                .iter()
+                .copied()
+                .filter(|b| b.contains_rect(at))
+                .collect()
+        };
+        let at = |want: &str| {
+            texts
+                .iter()
+                .find(|(t, _)| t == want)
+                .map(|(_, r)| *r)
+                .unwrap()
+        };
+        let card = inside(at(wanted[0]));
+        assert_eq!(
+            card.len(),
+            1,
+            "{:?} sits inside {} boxes, where the settled form is one shared card",
+            wanted[0],
+            card.len()
+        );
+        for want in &wanted {
             assert_eq!(
-                texts.iter().filter(|t| t.as_str() == s.value).count(),
-                2,
-                "{:?} was drawn a different number of times than twice, so the two treatments are not \
-                 showing the same live number. Drawn: {texts:?}",
-                s.value
-            );
-            assert_eq!(
-                texts.iter().filter(|t| t.as_str() == s.label).count(),
-                2,
-                "the label {:?} does not appear under both treatments. Drawn: {texts:?}",
-                s.label
+                inside(at(want)),
+                card,
+                "{want:?} is not inside the one card the rest of the headline shares"
             );
         }
-    }
 
-    /// **P3 and P10 over the strings this temporary block adds.** The exemplar's own gates walk
-    /// `pacing::Readout`; these three strings are composed in the render and no existing gate can see
-    /// them, which is precisely how a temporary block accretes a rule violation nobody sweeps.
-    #[test]
-    fn the_comparison_blocks_own_strings_keep_the_panel_rules() {
-        for s in [HEADLINE_CHOICE, TREATMENT_A, TREATMENT_B] {
-            for bad in ['\u{2014}', '\u{2013}'] {
-                assert!(
-                    !s.contains(bad),
-                    "P10: {bad:?} in user-facing text, which the owner's 2026-09-05 ruling bars: {s:?}"
-                );
-            }
-            assert!(
-                !s.contains("  ") && !s.contains('\t'),
-                "P2: a run of spaces or a tab is a column drawn inside a string: {s:?}"
-            );
-        }
+        // The tab opens on its headline: nothing is drawn above the card.
+        let above: Vec<&str> = texts
+            .iter()
+            .filter(|(_, r)| r.min.y < card[0].min.y)
+            .map(|(t, _)| t.as_str())
+            .collect();
+        assert!(above.is_empty(), "drawn above the headline card: {above:?}");
     }
 }
 
