@@ -167,7 +167,11 @@ impl Presenter {
                 host.serve(Some(t_socket)).expect("bind the pacing socket");
                 ready_tx.send(()).ok();
                 while !t_stop.load(Ordering::SeqCst) {
-                    // Where the real loop publishes it: once per present, before the drain.
+                    // Once per iteration, like the real loop. NOT at the real loop's position:
+                    // `oracle-player` publishes after its drain (so before the NEXT one), and its first
+                    // drain precedes any publish, where a read is refused `noPacing`
+                    // (F-PLAYER-SCREENTEXT-FIRST-READ's shape). Here the first publish precedes the first
+                    // pump, so every row below reads a published value.
                     if let Some(f) = facts {
                         host.set_pacing(f);
                     }

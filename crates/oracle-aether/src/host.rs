@@ -396,8 +396,17 @@ impl Host {
     /// The same seam shape as [`set_live_pads`](Host::set_live_pads), and for the same reason it needs no
     /// lock and no thread: hosted, the bus handlers run on the frontend's **own main thread**, synchronously,
     /// inside [`pump`](Host::pump). The push happens at the end of iteration *N*'s present and the next
-    /// drain is at the top of *N+1*, so the served text describes the frame that is actually on the glass —
-    /// never one being composed, never one that has not been shown.
+    /// drain is in *N+1*, after that iteration's frame and before its composition (both embedders), so the
+    /// served text describes the frame that is actually on the glass — never one being composed, never one
+    /// that has not been shown.
+    ///
+    /// ⚑ **The FIRST drain has no push before it.** Both embedders drain once in iteration 1 before that
+    /// iteration's present, and one `pump` answers every request it finds queued. So a request answered by
+    /// that drain is refused `noDisplay`, and `emulator/status` answers `display: false`, **from a window
+    /// that exists**. Measured in `oracle-player` (F-PLAYER-SCREENTEXT-FIRST-READ: `frame 1`, the frame
+    /// iteration 1 ran before its drain); the frontend has the same order by reading. What the wire should
+    /// say in that state is booked for a contract ruling, not decided here; a client that must not see it
+    /// waits for `emulator/status`'s `display: true`.
     ///
     /// **Deliberately NOT gated on [`has_clients`](Host::has_clients)**, unlike
     /// [`publish_capture`](Host::publish_capture) beside it, and the difference is not an oversight. That

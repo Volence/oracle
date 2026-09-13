@@ -952,6 +952,9 @@ impl Loop {
         // Gated on `is_serving` exactly as the screen-text snapshot below is, and for the same reason:
         // with no socket bound no client can exist, so the publish is pure cost — and gating on
         // *attachment* instead would leave a client that connects mid-session reading a refusal.
+        // It has the snapshot's start-of-session gap too: the drain above runs before this line's
+        // FIRST publish, so a request iteration 1's drain answers is refused `noPacing` (see the
+        // screen-text block below, F-PLAYER-SCREENTEXT-FIRST-READ).
         if self.bus.is_serving() {
             self.bus.set_pacing(self.pacing);
         }
@@ -975,9 +978,18 @@ impl Loop {
         // `Host::set_screen_text`'s own doc names the trap: text describing a frame *not yet presented* is
         // a false answer to the one question the method answers truthfully. `drew` cannot exist before
         // `build_ui` returns it — that is why it is a return value and not a helper this line could have
-        // called earlier — and the next drain is at step 3 of iteration N+1, after eframe has presented
-        // what was just composed. So a client's read lands on the frame that is on the glass, never on one
-        // mid-composition. Design §5.8.2 booked this call's absence; this is it.
+        // called earlier — and the next drain is in iteration N+1, after its frame and before its
+        // `build_ui`, so after eframe has presented what was just composed. So a client's read lands on
+        // the frame that is on the glass, never on one mid-composition. Design §5.8.2 booked this call's
+        // absence; this is it.
+        //
+        // ⚑ **Except before the FIRST of these pushes** (F-PLAYER-SCREENTEXT-FIRST-READ, measured).
+        // Iteration 1's drain runs before this line has ever executed, and one `Host::pump` answers every
+        // request it finds queued, so a request that drain answers is refused `noDisplay`, and
+        // `status.display` is `false`, from a window that exists (`frame 1`: the frame this iteration
+        // ran before its drain). A client that must not see that waits for `display: true`, as
+        // `a_client_reads_this_windows_top_bar_and_it_follows_the_run_state` does. What the wire should
+        // say in that state is booked for a contract ruling, not decided here.
         //
         // **Gated on `is_serving`, deliberately not on `has_clients`**, which is `oracle-frontend`'s split
         // and its reason travels unchanged: with no socket bound no client can exist, so the snapshot is
@@ -2294,6 +2306,21 @@ mod loop_tests {
     /// 4. *The push happens but reports something other than the bar.* The line is asserted to carry all
     ///    three pieces the bar draws — the app name, the transport labels, the loop's own status string —
     ///    and the title bar to be a separate surface with the window-manager's own text.
+    ///
+    /// # The first read waits for the first present, on an observable (F-PLAYER-SCREENTEXT-FIRST-READ)
+    ///
+    /// Premise (1) holds *because* nothing has been drawn, and the same fact made an unguarded first
+    /// read a race. `Loop::iterate` drains (after its frame) **before** its `set_screen_text`, so
+    /// iteration 1's drain precedes every publish, and one `Host::pump` answers every request it finds
+    /// queued. CI run 34752339602 read `noDisplay` with `frame: 1, mclk: 896042`: answered in iteration
+    /// 1's drain. Reproduced every time by letting that one drain keep answering (3 x 50 ms, 20 x 5 ms and
+    /// 4 x 1 ms: 15 of 15 red, the refusal byte-identical to CI's); a SLOW iteration 1 with no extra
+    /// answering stays green (5 of 5), so the cause is several answers in one drain, not slowness.
+    ///
+    /// So the client polls `emulator/status` until `display: true` before its first read. That waits
+    /// for *a* snapshot, never for the one this test wants: the first read must still say `⏸ pause` and
+    /// the second `▶ resume`, so the out-of-step measure above is untouched, and premise (1) still runs
+    /// in-process before the client exists.
     #[test]
     fn a_client_reads_this_windows_top_bar_and_it_follows_the_run_state() {
         use std::io::{BufRead as _, Write as _};
@@ -2380,7 +2407,28 @@ mod loop_tests {
             // No `initialized` notification: `Session::on_message` gates ordinary methods on the
             // `initialize` REQUEST alone (session.rs:96), and `initialized` only opens the event
             // subscription this client declined. Omitted deliberately, not forgotten.
-            let status = call(&mut reader, "emulator/status", serde_json::json!({}));
+            // ⚑ **The barrier: no read before this window has PRESENTED, and it is an observable, not
+            // a sleep.** See the doc's last section for the race it closes. `display` is derived from
+            // the very field the refusal is (`Engine::status`), so `true` is an ordering guarantee.
+            // The deadline FAILS; and a reply without the boolean fails at once, because §11.29's
+            // rider is that a client can ASK whether there is a window rather than provoke a refusal.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let st = call(&mut reader, "emulator/status", serde_json::json!({}));
+                match st["display"].as_bool() {
+                    Some(true) => break,
+                    Some(false) => assert!(
+                        Instant::now() < deadline,
+                        "the window never reported `display: true`, so `Loop::iterate` is not \
+                         publishing its screen text: {st}"
+                    ),
+                    None => panic!(
+                        "`emulator/status` must let a client ASK whether there is a window rather \
+                         than probe by provoking a refusal (§11.29's rider): {st}"
+                    ),
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
 
             // The window is RUNNING here. Its bar says `⏸ pause`, and this read is what pins that.
             let running = call(&mut reader, "emulator/screen_text", serde_json::json!({}));
@@ -2405,7 +2453,7 @@ mod loop_tests {
                 );
                 std::thread::sleep(Duration::from_millis(2));
             };
-            (status, running, paused)
+            (running, paused)
         });
 
         let ctx = egui::Context::default();
@@ -2429,7 +2477,7 @@ mod loop_tests {
             out.textures_delta.clear();
             std::thread::sleep(Duration::from_millis(1));
         }
-        let (status, running, paused) = client.join().expect("the client thread");
+        let (running, paused) = client.join().expect("the client thread");
 
         // (2) The window really was advancing the machine when its bar said `⏸ pause`.
         let ran = lp.machine.frames();
@@ -2440,12 +2488,8 @@ mod loop_tests {
             crate::ui::PAUSE_LABEL
         );
 
-        assert_eq!(
-            status["display"],
-            serde_json::json!(true),
-            "`emulator/status` must let a client ASK whether there is a window rather than probe by \
-             provoking a refusal (§11.29's rider)"
-        );
+        // (The rider — `emulator/status` carries `display` and it reaches `true` — is asserted by the
+        // client's barrier above, which cannot exit any other way.)
 
         // --- the shape of the answer ---
         for (what, v) in [("running", &running), ("paused", &paused)] {

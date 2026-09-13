@@ -1628,11 +1628,17 @@ pub struct Engine {
     ///   chip (`Vdp::render_scanline` and `Vdp::advance_scanline`, which commit the sprite-overflow /
     ///   collision latches) is on any path from this field.
     ///
-    /// **`None` means there is no window**, and that is load-bearing rather than incidental: a windowed
+    /// **`None` means no window has published**, and that is load-bearing rather than incidental: a windowed
     /// player showing *no* text is the ordinary default launch state and pushes `Some(vec![])`. An empty
     /// list and an absent display must therefore stay distinguishable, which is why the handler REFUSES
     /// (`-32005`, `reason: "noDisplay"`) instead of serving an empty list. A headless `oracle-aether` never
     /// leaves `None`.
+    ///
+    /// ⚑ **`None` is not only "headless".** A presenting host is also `None` until its first present, and
+    /// both embedders drain once before that (see [`Host::set_screen_text`](crate::host::Host::set_screen_text)).
+    /// So the refusal, and `status.display: false`, are served from a window that exists to any request
+    /// answered by that first drain (F-PLAYER-SCREENTEXT-FIRST-READ). The wire does not distinguish the two
+    /// states today; that is booked for a contract ruling.
     screen_text: Option<Vec<ScreenSurface>>,
     /// **What the presenting host last measured about its own pacing** (`emulator/pacing`, §11.42), or
     /// `None` when nothing has published — which on a headless server is forever, and is why the row is
