@@ -138,6 +138,19 @@ notice said the commit "touches exactly one file" and `--stat` showed two. They 
 care — run `git show --stat` in the same tool call that composes any notice naming what moved — which is protocol
 bar 23 arriving in mail instead of a commit message.)*
 
+**Registered 2026-09-13, from aeon (inbound instrument ask; verified firsthand at `e272ac7`): F-Z80-ACCESSES-UNWATCHED.**
+A bus watch never sees the Z80 read cartridge ROM through its `$8000` window: `Z80Bus::read_window`
+(`crates/oracle-core/src/z80/bus.rs`) returns the byte with no sink call. **Wider than the ask:** the only `on_event_at`
+in that file is the FM/PSG write tap, so every other Z80 access (its own RAM, window writes into 68k work RAM, the VDP
+mirror) is undelivered too, while `watchpoints.rs`'s module header says *"the real 68000/Z80 bus adapters deliver every
+access"* and `Watchpoints::caveats` says nothing. Aeon measured it: read watches on one sound effect's FM patch bytes,
+effect fired, **0 hits / 0 dropped** while the driver's channel state pointed at them. ⚑ **So a zero on a Z80-read subject
+is the instrument being absent reported as a negative finding**, and the `seen = 0` caveat cannot fire because the
+68000's traffic makes `seen` non-zero. Two halves: (1) cheap, a caveat plus the header made true; (2) emit Z80 accesses as
+`BusEvent`s (fc 0), which moves the stream every sink sees (VGM logger, profiler, trace), so enumerate consumers first.
+*Hypothesis, unmeasured:* a timestamped Z80 access stream is a candidate for the Z80-timing currency M24 needs; shape the
+two together. Aeon is not blocked (they answered their own question from the driver's channel state).
+
 **Registered 2026-09-11 (a commitment to sigil):** sigil's `.lst` gains a top `DIGEST-` section, relying on `SymbolTable::parse`'s `Section::Body` arm treating pre-header non-matches as non-damage. **Kept, and pinned by a named test** (LENS-WAVE1-B). Told sigil: no preamble line may begin `Symbol Table`/`Equate Table`/`Phase Table`.
 
 **Registered 2026-09-04, from taking the foreground runtime backlog the moment an instrument existed:**
