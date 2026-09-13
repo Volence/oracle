@@ -227,8 +227,11 @@ pub struct WatchView {
     pub watches: Vec<WatchRow>,
     /// The retained hit log, newest last.
     pub hits: Vec<WatchHit>,
-    /// Accesses the instrument saw at all. **`seen > 0, matched == 0` is a genuine negative finding**, and
-    /// it is only distinguishable from a silently-dropped watch because both numbers are shown.
+    /// Accesses the instrument saw at all. **`seen > 0, matched == 0` is a genuine negative finding** about
+    /// what the instrument is handed, and it is only distinguishable from a silently-dropped watch because
+    /// both numbers are shown. It is handed the 68000's traffic and, of the Z80's, only the FM/PSG register
+    /// writes (F-Z80-ACCESSES-UNWATCHED); [`caveats`](Self::caveats) says so when a watch covers memory the
+    /// Z80 can reach.
     pub seen: u64,
     pub matched: u64,
     /// Hits the ring could not keep. Non-zero means the log below has gaps, and a `seq` gap marks them.

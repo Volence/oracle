@@ -419,7 +419,9 @@ fn a_via_census_answers_cpu_versus_dma_on_a_vdp_watch() {
 ///
 /// `seen > 0` with `matched == 0` is a live instrument that found nothing. `seen == 0` is an instrument
 /// that was never attached to the run, and a zero from it means nothing at all. Without the distinction a
-/// client cannot tell "this address is never written" from "the recorder was not in the run" — and the
+/// client cannot tell "the 68000 never writes this address" from "the recorder was not in the run" (the
+/// Z80's accesses are not delivered to the recorder at all, F-Z80-ACCESSES-UNWATCHED, and `caveats()`,
+/// which says so, is not on this wire) — and the
 /// second is a real failure mode wherever the process that owns the loop is not the one that armed the
 /// watch, which is precisely this server's hosted arrangement.
 #[test]

@@ -3,7 +3,10 @@
 //! Chips never touch memory directly; each step they borrow a transient `&mut SystemBus` (only one
 //! `&mut` live at a time, monomorphized, zero dispatch — no `Rc`/`RefCell`/raw pointers). Every access
 //! emits a [`BusEvent`] to a sink, so instrumentation (watchpoints, decoders, the profiler) is an
-//! event-stream *consumer* rather than a CPU special-case. Re-entrant cross-chip writes go through one
+//! event-stream *consumer* rather than a CPU special-case. (The real 68000 adapter, `MegaDriveBus`, keeps
+//! that promise; the real Z80 adapter, `z80::bus::Z80Bus`, emits only its FM/PSG register writes, so the
+//! Z80's fetches, bank-window traffic and own RAM accesses reach no sink: F-Z80-ACCESSES-UNWATCHED.)
+//! Re-entrant cross-chip writes go through one
 //! explicit deferred-write seam: such writes are queued and drained by [`SystemBus::apply_writes`]
 //! after the access completes (jgenesis's `MainBusWrites` pattern, reimplemented).
 //!
@@ -44,8 +47,10 @@ pub enum BusOp {
 
 /// One memory access, emitted per bus operation. `value` is the value read or (requested to be) written.
 /// `fc` is the 68000 function code that drove the access (5 = supervisor data, 6 = supervisor program,
-/// etc.); non-CPU masters (DMA, later chips) emit `fc = 0`, so instrumentation can attribute every access
-/// to its master and space.
+/// etc.); a non-68000 master emits `fc = 0`, so instrumentation can attribute every access it is delivered
+/// to its master and space. In the real run loop `fc = 0` comes from the Z80's FM/PSG tap and from the
+/// 68000's `$A07F11` PSG write re-emitted Z80-shaped; a DMA reaches instrumentation as a VDP-internal write
+/// instead, and the Z80's other accesses are not delivered at all (F-Z80-ACCESSES-UNWATCHED).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BusEvent {
     pub op: BusOp,

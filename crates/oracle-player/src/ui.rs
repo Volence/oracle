@@ -2548,8 +2548,10 @@ impl Panels<'_> {
     /// it is.
     ///
     /// `seen` and `matched` are shown together and always: **`seen > 0, matched == 0` is a genuine
-    /// negative finding** and is indistinguishable from a silently-dropped watch unless both numbers are
-    /// in front of the reader. That is the instrument's own stated hazard, not a rule invented here.
+    /// negative finding** about what the instrument is handed, and is indistinguishable from a
+    /// silently-dropped watch unless both numbers are in front of the reader. That is the instrument's own
+    /// stated hazard, not a rule invented here. What it is handed excludes the Z80's accesses apart from its
+    /// FM/PSG register writes (F-Z80-ACCESSES-UNWATCHED), and its caveats, drawn below the counters, say so.
     fn watchpoints(&mut self, ui: &mut egui::Ui) {
         let view = {
             let (w, _, _) = self.bus.read_instruments();
@@ -2645,9 +2647,11 @@ impl Panels<'_> {
             view.seen, view.matched, view.dropped
         ));
         ui.small(
-            "`seen` counts every access the instrument looked at. seen > 0 with matched == 0 is a real \
-             negative finding (the range was watched and nothing touched it), and it is only \
-             distinguishable from a watch that never armed because both numbers are here.",
+            "`seen` counts every access the instrument was handed. seen > 0 with matched == 0 is a real \
+             negative finding about those accesses (the range was watched and nothing it was handed \
+             touched it), and it is only distinguishable from a watch that never armed because both \
+             numbers are here. The Z80's accesses are not handed to it, apart from its FM/PSG register \
+             writes; a warning below says so when a watch covers memory the Z80 can reach.",
         );
         for c in &view.caveats {
             ui.colored_label(ui.visuals().warn_fg_color, c);
