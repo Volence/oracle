@@ -13,6 +13,9 @@ description = "Deterministic, no-I/O Sega Genesis / Mega Drive emulation core fo
 # vendored FM core) out of the default build the currency gates compile. Currency-neutrality itself comes
 # from the caller-owned sink seam, not the feature — this is belt-and-suspenders isolation.
 synth = []
+# SPIKE (H22 design parcel, 2026-09-13) — NOT PROPOSED FOR MERGE. A measurement-only decode front end
+# (`src/m68000/h22_spike.rs`) and its harness example. Default OFF.
+h22-spike = []
 
 [dependencies]
 bincode = { version = "2", features = ["derive"] }
@@ -38,3 +41,8 @@ test = true
 [[example]]
 name = "synth_render"
 required-features = ["synth"]
+
+# SPIKE (H22, not for merge): the decode measurement harness needs the spike front end.
+[[example]]
+name = "h22_decode_spike"
+required-features = ["h22-spike"]

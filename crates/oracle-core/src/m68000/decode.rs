@@ -19,6 +19,11 @@ use super::microop::{
 };
 use super::registers::{Registers, CCR_V};
 
+/// SPIKE (H22 design parcel, 2026-09-13) — NOT PROPOSED FOR MERGE; see the module docs.
+#[cfg(feature = "h22-spike")]
+#[path = "h22_spike.rs"]
+pub mod h22_spike;
+
 /// Scratch slot holding a `JMP`'s computed 32-bit branch target (the `SetPc` source). Slot 0 — the same
 /// slot a `Bcc`'s `TargetCalc` deposits its target into.
 const JMP_TARGET_SLOT: u8 = 0;
@@ -282,6 +287,11 @@ pub const fn return_pop_bytes(opcode: u16) -> u32 {
 /// SSW fields after the prefetch shifts have overwritten `regs.prefetch`.
 #[inline]
 pub fn decode(regs: &Registers) -> MicroState {
+    // SPIKE (H22 design parcel, NOT for merge): a runtime-selectable front end, only under `h22-spike`.
+    #[cfg(feature = "h22-spike")]
+    if let Some(state) = h22_spike::front(regs) {
+        return state;
+    }
     let mut state = decode_dispatch(regs);
     state.set_opcode(regs.prefetch[0]);
     state
