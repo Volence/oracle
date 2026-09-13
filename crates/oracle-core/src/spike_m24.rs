@@ -33,6 +33,10 @@ pub enum Mutation {
     EiDelay,
     /// `int1`: `/INT` deasserted one line (`MCLK_PER_LINE`) after it was asserted, instead of at line 0.
     IntOneLine,
+    /// `int1lvl`: `int1`, and the line is a LEVEL — acceptance no longer consumes it, so a handler that
+    /// re-enables while it is still asserted takes it again (R6: "re-triggered ... within 228 Z80 clock
+    /// cycles").
+    IntOneLineLevel,
     /// `render`: timing-neutral, output-only. Flips bit 0 of every decoded red channel.
     NeutralRender,
     /// `r`: timing-neutral state change. The Z80 refresh register advances by 2 per M1 instead of 1.
@@ -46,11 +50,17 @@ pub fn mutation() -> Mutation {
         Ok("m21") => Mutation::M21,
         Ok("ei") => Mutation::EiDelay,
         Ok("int1") => Mutation::IntOneLine,
+        Ok("int1lvl") => Mutation::IntOneLineLevel,
         Ok("render") => Mutation::NeutralRender,
         Ok("r") => Mutation::NeutralR,
         Ok("") | Err(_) => Mutation::None,
         Ok(other) => panic!("M24_MUT={other}: unknown mutation"),
     })
+}
+
+/// Either one-line `/INT` mutation (the width half of M24, with or without the level half).
+pub fn int_one_line() -> bool {
+    matches!(mutation(), Mutation::IntOneLine | Mutation::IntOneLineLevel)
 }
 
 /// The M21 mutation's per-grant cost: eight lines, `8 * MCLK_PER_LINE` = 8 * 3420 = 27,360 mclk.
@@ -92,6 +102,14 @@ pub struct Probe {
     pub accept_late: u64,
     /// `/INT` asserts (VInt events).
     pub int_asserts: u64,
+    /// Late acceptances where the bus was granted at some point after the assert (the Z80 was stopped
+    /// through part of the window), and those where it never was (the driver held interrupts off).
+    pub late_grant: u64,
+    pub late_masked: u64,
+    /// Acceptances beyond the first for one assert (only possible with a level `/INT`).
+    pub retriggers: u64,
+    accepts_this_assert: u64,
+    granted_since_assert: bool,
     /// Times the active mutation took effect.
     pub mut_fired: u64,
     /// Candidate (a): every Z80 bus access, `(op, z80 addr, value, mclk)`.
@@ -124,6 +142,11 @@ impl Default for Probe {
             ei_then_accept: 0,
             accept_late: 0,
             int_asserts: 0,
+            late_grant: 0,
+            late_masked: 0,
+            retriggers: 0,
+            accepts_this_assert: 0,
+            granted_since_assert: false,
             mut_fired: 0,
             access_count: 0,
             access_timed: FNV_OFFSET,
@@ -145,7 +168,8 @@ impl Probe {
     pub fn line(&self) -> String {
         format!(
             "gated_on_steps={} grants={} grants_with_tail={} reset_calls={} ei={} accepts={} \
-             ei_then_accept={} accept_late={} int_asserts={} mut_fired={} access_count={} \
+             ei_then_accept={} accept_late={} late_grant={} late_masked={} retriggers={} int_asserts={} \
+             mut_fired={} access_count={} \
              access_timed={:016x} access_order={:016x} fmpsg_count={} fmpsg_timed={:016x} \
              fmpsg_frame={:016x} accept_log={:016x}",
             self.gated_on_steps,
@@ -156,6 +180,9 @@ impl Probe {
             self.accepts,
             self.ei_then_accept,
             self.accept_late,
+            self.late_grant,
+            self.late_masked,
+            self.retriggers,
             self.int_asserts,
             self.mut_fired,
             self.access_count,
@@ -246,7 +273,16 @@ pub(crate) fn note_accept(after_ei: bool) {
         }
         if p.int_asserts > 0 && p.frontier >= p.int_assert_mclk + crate::vdp::MCLK_PER_LINE {
             p.accept_late += 1;
+            if p.granted_since_assert {
+                p.late_grant += 1;
+            } else {
+                p.late_masked += 1;
+            }
         }
+        if p.accepts_this_assert > 0 {
+            p.retriggers += 1;
+        }
+        p.accepts_this_assert += 1;
         let f = p.frontier;
         fnv(&mut p.accept_log, &f.to_le_bytes());
     });
@@ -260,6 +296,8 @@ pub(crate) fn note_int_assert(mclk: u64) {
     with(|p| {
         p.int_asserts += 1;
         p.int_assert_mclk = mclk;
+        p.accepts_this_assert = 0;
+        p.granted_since_assert = false;
     });
 }
 
@@ -278,6 +316,7 @@ pub(crate) fn note_gated_on_step() {
 /// A bus-granted call. Returns `true` on the grant's first call (the grant edge).
 pub(crate) fn note_grant(tail: u64) -> bool {
     with(|p| {
+        p.granted_since_assert = true;
         if p.in_grant {
             return false;
         }

@@ -1853,7 +1853,7 @@ impl System {
                 // SPIKE (M24): latch the frontier for the probe; `M24_MUT=int1` drops `/INT` once the Z80's
                 // own clock is one line past the assert (R6: one line, 3420 mclk = 228 Z80 clocks).
                 crate::spike_m24::set_frontier(*z80_frontier_mclk);
-                if crate::spike_m24::mutation() == crate::spike_m24::Mutation::IntOneLine
+                if crate::spike_m24::int_one_line()
                     && z80.spike_int_line()
                     && *z80_frontier_mclk >= crate::spike_m24::int_assert_mclk() + MCLK_PER_LINE
                 {

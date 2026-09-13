@@ -88,6 +88,36 @@ fn leg_a_aeon_fixed_frames() {
     ));
 }
 
+/// Folds every emitted scanline into a digest, which arms the real renderer (`wants_scanlines`), so the
+/// output-only `render` control has a CRAM decode to act on. Leg A's null/VGM sinks never decode CRAM
+/// (finding C5: the unarmed arm runs `advance_scanline`), which is why `render` never fired there.
+struct PixelDigest(u64);
+
+impl oracle_core::bus::BusEventSink for PixelDigest {
+    fn on_event(&mut self, _event: oracle_core::bus::BusEvent) {}
+    fn wants_scanlines(&self) -> bool {
+        true
+    }
+    fn on_scanline(&mut self, line: u16, rgb: &[(u8, u8, u8)]) {
+        fnv(&mut self.0, &line.to_le_bytes());
+        for &(r, g, b) in rgb {
+            fnv(&mut self.0, &[r, g, b]);
+        }
+    }
+}
+
+/// Leg A2: 300 frames of aeon with the renderer armed. The pixel digest is the render control's positive
+/// control; the probe's timing digests must not care whether anything was rendered.
+#[test]
+fn leg_a2_aeon_rendered() {
+    spike_m24::reset();
+    let mut sys = System::boot_with_sink(runner::POWER_ON_SEED, aeon("s4.debug.bin"), &mut ());
+    let mut px = PixelDigest(FNV_BASIS);
+    sys.run_frames_with_sink(300, &mut px);
+    let p = spike_m24::snapshot();
+    out(format!("leg=A2 frames=300 pixels={:016x} {}", px.0, p.line()));
+}
+
 fn leg_b(fixture: Fixture) {
     let lst = String::from_utf8_lossy(&aeon("s4.debug.lst")).into_owned();
     let prepared = Prepared::new(aeon("s4.debug.bin"), &lst, fixture).expect("prepare");

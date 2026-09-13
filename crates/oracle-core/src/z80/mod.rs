@@ -596,7 +596,13 @@ impl Z80 {
                 crate::spike_m24::note_mut_fired();
             } else {
                 crate::spike_m24::note_accept(after_ei);
-                return self.accept_interrupt(bus);
+                let t = self.accept_interrupt(bus);
+                // `M24_MUT=int1lvl`: the line is a level; acceptance does not drop it.
+                if crate::spike_m24::mutation() == crate::spike_m24::Mutation::IntOneLineLevel {
+                    crate::spike_m24::note_mut_fired();
+                    self.int_pending = true;
+                }
+                return t;
             }
         }
         if self.halted {
