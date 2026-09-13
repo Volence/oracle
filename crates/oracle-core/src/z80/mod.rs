@@ -457,7 +457,14 @@ impl Z80 {
 
     /// The per-M1 refresh-counter increment: bits 0..6 count, bit 7 is preserved (UM008 §"R").
     fn inc_r(&mut self) {
-        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7F);
+        // SPIKE (M24): the timing-neutral state control `M24_MUT=r` advances R by 2.
+        let step = if crate::spike_m24::mutation() == crate::spike_m24::Mutation::NeutralR {
+            crate::spike_m24::note_mut_fired();
+            2
+        } else {
+            1
+        };
+        self.r = (self.r & 0x80) | (self.r.wrapping_add(step) & 0x7F);
     }
 
     /// Fetch an M1 opcode byte at `PC`, advancing `PC` and bumping the refresh counter (one M1 cycle).
@@ -581,8 +588,16 @@ impl Z80 {
         // Maskable interrupt acceptance (ZC14), sampled at the instruction boundary. Taken only when the /INT
         // line is asserted AND interrupts are enabled (IFF1). Acceptance also wakes a HALT. A masked request
         // (IFF1 = 0) is ignored — HALT then continues idling. The Genesis has no Z80 NMI source (Plutiedev).
+        // SPIKE (M24): was the previous instruction EI? UM0080 p.18: "any pending interrupt request is not
+        // accepted until after the instruction following EI is executed".
+        let after_ei = crate::spike_m24::take_last_ei();
         if self.int_pending && self.iff1 {
-            return self.accept_interrupt(bus);
+            if after_ei && crate::spike_m24::mutation() == crate::spike_m24::Mutation::EiDelay {
+                crate::spike_m24::note_mut_fired();
+            } else {
+                crate::spike_m24::note_accept(after_ei);
+                return self.accept_interrupt(bus);
+            }
         }
         if self.halted {
             // HALT idle: the CPU runs internal NOPs (refresh continues) until an accepted interrupt clears
@@ -634,6 +649,11 @@ impl Z80 {
     /// at each instruction boundary in [`Z80::step`].
     pub fn set_int_line(&mut self, asserted: bool) {
         self.int_pending = asserted;
+    }
+
+    /// SPIKE (M24): the `/INT` level as the core holds it.
+    pub(crate) fn spike_int_line(&self) -> bool {
+        self.int_pending
     }
 
     /// The prefix-accumulating front end (ZC3b): `CB`/`ED` select an alternate table, `DD`/`FD` set an
@@ -972,6 +992,7 @@ impl Z80 {
             0xFB => {
                 self.iff1 = true;
                 self.iff2 = true;
+                crate::spike_m24::note_ei(); // SPIKE (M24)
                 4
             }
 

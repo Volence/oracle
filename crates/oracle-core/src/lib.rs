@@ -31,6 +31,9 @@ pub mod symbols;
 /// that is never part of `System` / `state_hash` / `export_state`.
 #[cfg(feature = "synth")]
 pub mod synth;
+/// SPIKE (M24), not proposed for merge; removed from the tip in the parcel's final `spike:` commit.
+#[doc(hidden)]
+pub mod spike_m24;
 pub mod system;
 /// Hand-authored 68000 test ROM fixture (see [`testrom::build`]). Not part of the stable API.
 #[doc(hidden)]

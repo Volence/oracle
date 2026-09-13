@@ -192,7 +192,7 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
 
 impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
     fn read(&mut self, addr: u16) -> u8 {
-        match addr {
+        let v = match addr {
             // Z80 RAM (8 KiB), mirrored across $0000-$3FFF.
             0x0000..=0x3FFF => self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)],
             // YM2612 FM: read = the live status byte (Timer-A overflow bit0, Timer-B overflow bit1, bit7 BUSY
@@ -215,10 +215,13 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // we return open bus instead of modeling the hang. $7F10-$7F1F (PSG mirror region) is
             // write-only on hardware.
             _ => 0xFF,
-        }
+        };
+        crate::spike_m24::access(false, addr, v, self.now_mclk); // SPIKE (M24)
+        v
     }
 
     fn write(&mut self, addr: u16, value: u8) {
+        crate::spike_m24::access(true, addr, value, self.now_mclk); // SPIKE (M24)
         match addr {
             // Z80 RAM (8 KiB), mirrored across $0000-$3FFF.
             0x0000..=0x3FFF => self.z80_ram[(addr as usize) & (Z80_RAM_SIZE - 1)] = value,
@@ -238,6 +241,7 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
             // ADDITIONALLY drive the timer model (the tap is for the VGM logger; the timer update is what makes
             // the driver's Timer-A overflow poll fire — docs/2026-07-22-fm-timer-design.md). PSG has no timer.
             0x4000..=0x4003 | 0x7F11 => {
+                crate::spike_m24::fmpsg(addr, value, self.now_mclk); // SPIKE (M24)
                 self.sink.on_event_at(
                     BusEvent {
                         op: BusOp::Write,
