@@ -297,6 +297,10 @@ pub fn decode(regs: &Registers) -> MicroState {
     if let Some(state) = h22_spike::TABLE[h22_spike::key_of(regs)].clone() {
         return state;
     }
+    #[cfg(feature = "h22-fixed-variant")]
+    if let Some(state) = h22_spike::variant_lookup(regs) {
+        return state;
+    }
     #[cfg(feature = "h22-fixed-lazy")]
     if let Some(state) = h22_spike::lazy_lookup(regs) {
         return state;

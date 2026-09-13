@@ -269,6 +269,52 @@ fn main() {
         }
     }
 
+    // ---- Phase 1b: the variant memo (option E) against the cascade, over its whole reachable input space --
+    {
+        let t = Instant::now();
+        let (mut checked, mut bad) = (0u64, 0u64);
+        let mut check = |r: &Registers| {
+            let want = spike::cascade(r);
+            let got = spike::variant_lookup(r).expect("a Bcc / DBcc register file");
+            checked += 1;
+            if got != want {
+                bad += 1;
+                if bad <= 5 {
+                    println!("    MISMATCH op {:#06x} sr {:#06x} d {:08x?}", r.prefetch[0], r.sr, r.d);
+                }
+            }
+        };
+        for op in 0x6000u16..=0x6FFF {
+            if (op >> 8) & 0xF == 1 {
+                continue; // BSR
+            }
+            for ccr in 0u16..32 {
+                for s in [false, true] {
+                    let mut r = spike::canonical_regs(op, s);
+                    r.sr |= 0x0700 | ccr;
+                    r.prefetch[1] = 0x8123;
+                    r.pc = 0x0012_3456;
+                    check(&r);
+                }
+            }
+        }
+        for op in (0x50C8u16..=0x5FCF).filter(|o| o & 0xF0F8 == 0x50C8) {
+            for ccr in 0u16..32 {
+                for dv in [0u32, 1, 0xFFFF, 0x1_0000, 0xFFFF_0000, 0x8000_0001] {
+                    let mut r = spike::canonical_regs(op, true);
+                    r.sr |= ccr;
+                    r.d[usize::from(op & 7)] = dv;
+                    r.prefetch[1] = 0xFFFE;
+                    check(&r);
+                }
+            }
+        }
+        println!(
+            "== phase 1b: variant memo (Bcc taken / DBcc 3-way) == cascade on {checked} register files: {bad} mismatches ({:.1} ms)",
+            t.elapsed().as_secs_f64() * 1e3
+        );
+    }
+
     if probe_only {
         return;
     }

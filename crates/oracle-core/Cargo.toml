@@ -23,6 +23,7 @@ h22-fixed-fastfill = ["h22-fixed"]
 h22-fixed-table = ["h22-fixed"]
 h22-fixed-lazy = ["h22-fixed"]
 h22-fixed-double = ["h22-fixed"]
+h22-fixed-variant = ["h22-fixed"]
 
 [dependencies]
 bincode = { version = "2", features = ["derive"] }

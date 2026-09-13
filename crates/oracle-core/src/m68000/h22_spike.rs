@@ -112,6 +112,84 @@ pub fn builder_direct(regs: &Registers) -> Option<MicroState> {
     Some(st)
 }
 
+/// The cascade exactly as `main` runs it (dispatch + opcode latch), bypassing every spike front end.
+pub fn cascade(regs: &Registers) -> MicroState {
+    let mut st = decode_dispatch(regs);
+    st.set_opcode(regs.prefetch[0]);
+    st
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Option E (variant key), measured for the two hottest impure families only. A second lazy memo keyed by
+// (opcode, the one decode-time fact the builder reads): Bcc → taken; DBcc → cond-true / expired / branch.
+// Filled from a WITNESS register file that produces that variant, never from the live registers.
+// ---------------------------------------------------------------------------------------------------------
+
+/// Bcc/BRA (not BSR): 4096 opcodes × {not taken, taken}.
+pub static LAZY_BCC: LazyLock<Vec<OnceLock<Box<MicroState>>>> =
+    LazyLock::new(|| (0..(1usize << 13)).map(|_| OnceLock::new()).collect());
+/// DBcc: 16 conditions × 8 counters × {cond true, expired, branch}.
+pub static LAZY_DBCC: LazyLock<Vec<OnceLock<Box<MicroState>>>> =
+    LazyLock::new(|| (0..(128usize * 3)).map(|_| OnceLock::new()).collect());
+
+/// A CCR value (low 5 bits) under which condition `cc` evaluates to `want`, or `None` (T can never be false,
+/// F can never be true).
+fn ccr_witness(cc: u8, want: bool) -> Option<u16> {
+    (0u16..32).find(|&c| crate::m68000::microop::condition_true(cc, c) == want)
+}
+
+/// The variant selector — a mirror of exactly what `bcc_recipe` / `dbcc_recipe` read at decode time:
+/// `Some((is_bcc, index))` for a Bcc / DBcc register file, `None` for anything else.
+#[inline]
+pub fn variant_key(regs: &Registers) -> Option<(bool, usize)> {
+    let op = regs.prefetch[0];
+    let cc = ((op >> 8) & 0xF) as u8;
+    if op >> 12 == 0x6 && cc != 1 {
+        let taken = crate::m68000::microop::condition_true(cc, regs.sr);
+        return Some((true, (usize::from(op & 0x0FFF) << 1) | usize::from(taken)));
+    }
+    if op & 0xF0F8 == 0x50C8 {
+        let reg = usize::from(op & 7);
+        let v = if crate::m68000::microop::condition_true(cc, regs.sr) {
+            0
+        } else if regs.d[reg] & 0xFFFF == 0 {
+            1
+        } else {
+            2
+        };
+        return Some((false, ((usize::from(cc) << 3) | reg) * 3 + v));
+    }
+    None
+}
+
+fn variant_witness(op: u16, is_bcc: bool, idx: usize) -> Registers {
+    let cc = ((op >> 8) & 0xF) as u8;
+    let mut r = canonical_regs(op, true);
+    if is_bcc {
+        let ccr = ccr_witness(cc, idx & 1 == 1).expect("the selector only yields reachable Bcc variants");
+        r.sr = (r.sr & 0xFF00) | ccr;
+    } else {
+        let v = idx % 3;
+        let ccr = ccr_witness(cc, v == 0).expect("the selector only yields reachable DBcc variants");
+        r.sr = (r.sr & 0xFF00) | ccr;
+        r.d[usize::from(op & 7)] = if v == 2 { 1 } else { 0 };
+    }
+    r
+}
+
+/// Option E's lookup: the memoized recipe for a Bcc / DBcc register file's variant, `None` otherwise.
+#[inline]
+pub fn variant_lookup(regs: &Registers) -> Option<MicroState> {
+    let (is_bcc, idx) = variant_key(regs)?;
+    let op = regs.prefetch[0];
+    let slot = if is_bcc { &LAZY_BCC[idx] } else { &LAZY_DBCC[idx] };
+    Some(
+        slot.get_or_init(|| Box::new(cascade(&variant_witness(op, is_bcc, idx))))
+            .as_ref()
+            .clone(),
+    )
+}
+
 /// The `(S, opcode)` key space: 2 × 65 536.
 pub const KEYS: usize = 1 << 17;
 
