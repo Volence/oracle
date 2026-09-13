@@ -96,7 +96,8 @@ F-MACHINEREPLACED-EVENT-RACE goes AFTER M24 and AHEAD OF M1** (it reddens unrela
 **§7 parcels 1 (F-Z80 caveat, XS) then 2 (probes C1-C4, S; closes M24-NEEDS-A-CURRENCY)**, one agent after the other, no
 further ruling needed → **F-MACHINEREPLACED-EVENT-RACE** → **parcel 3 (EI delay, no ruling)** → M1.
 **Parcels 1-2 LANDED 2026-09-13 (merge `453aa96`, one agent; M24-NEEDS-A-CURRENCY CLOSED). F-MACHINEREPLACED-EVENT-RACE
-LANDED 2026-09-13 (merge `7ccd42d`, test harness only). NEXT: F-PLAYER-SCREENTEXT-FIRST-READ (S), then parcel 3** —
+LANDED 2026-09-13 (merge `7ccd42d`, test harness only). F-PLAYER-SCREENTEXT-FIRST-READ
+LANDED 2026-09-13 (merge `70a83cd`, test barrier + comments). NEXT: parcel 3** —
 this seat's sequencing, (2a)'s own cause: a flake that reddens unrelated landings costs the signal every later one reads.
 What parcels 3-4 must move is pinned in `crates/oracle-core/tests/z80_timing_probes.rs`'s header table (C1-C4, C2 now split
 C2a/C2b); neither may move C3. Go for this pair: the hub, ruling (2) applied (empyrean `f1220de:docs/OVERSEER.md` 74-89). Parcel 3 is lens M24 proper,
@@ -176,10 +177,14 @@ two together. Aeon is not blocked (they answered their own question from the dri
   client may rely on receiving; empyrean's Python and TypeScript clients both return straight after `initialized`.
   Today's remedy is any round trip after `initialized` (our test harness now does exactly that). A server-side
   queue-at-`initialize` alternative moves the wire: a CR, not a slice. Live-window loss is reasoned from source, not observed.
-- **F-PLAYER-SCREENTEXT-FIRST-READ**, a different intermittent: CI red on `453aa96`,
-  `oracle-player` `loop_tests::a_client_reads_this_windows_top_bar_and_it_follows_the_run_state`, the first
-  `emulator/screen_text` answered `noDisplay` at frame 1 (the bar not yet published when the call was drained);
-  `ff194d8`, same code, green. Events off, no `initialized`, so NOT the registration race. Unmeasured beyond that.
+- ~~F-PLAYER-SCREENTEXT-FIRST-READ~~ **CLOSED 2026-09-13 (merge `70a83cd`, brief `f3951f3`).** Iteration 1's drain runs
+  before the first `set_screen_text`, and one `Host::pump` answers every request it finds queued; reproduced 15/15 red,
+  byte-identical to CI's refusal; fixed test-side (the client waits for `status.display: true`). It leaves
+  **F-FIRST-PRESENT-REFUSAL, a contract question for the HUB**: a client answered by that first drain is told `noDisplay`
+  (*"this server has no window"*) and `status.display: false` by a window that exists, and `emulator/pacing` gives
+  `noPacing`, in both embedders (`oracle-frontend` by reading). §11.29 is silent on a presenting host that has not yet
+  presented. Options: a distinct reason (wire, a CR), holding answers until the first present (moves iteration 1's
+  repairs), or documenting the `display` poll. Not built; the agent's report is in the merge message.
 
 **Registered 2026-09-11 (a commitment to sigil):** sigil's `.lst` gains a top `DIGEST-` section, relying on `SymbolTable::parse`'s `Section::Body` arm treating pre-header non-matches as non-damage. **Kept, and pinned by a named test** (LENS-WAVE1-B). Told sigil: no preamble line may begin `Symbol Table`/`Equate Table`/`Phase Table`.
 
