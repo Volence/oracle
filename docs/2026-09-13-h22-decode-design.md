@@ -321,7 +321,13 @@ H22.** A reorder would churn the recon-ordered cascade for no measurable gain.
   every vendored SingleStepTests case (randomized registers per case) and every oracle-core unit test
   decoded through the lazy memo, the static-copy filler and the Bcc/DBcc fact memo, and agreed.
 - **Replay playthroughs**: green under every compile-time variant in §2 and §4 (46 timed runs).
-- **Leg A: the workspace at the tip.** LEG_A_PLACEHOLDER
+- **Leg A: the workspace at the tip.** `cargo test --workspace --release` on `4092504` (code identical to
+  `d77182c`; the spike is removed), load 2.1-4.8: **89 legs, 2 898 passed, 0 failed, 3 ignored (release)**.
+  No `FAILED` rows. That equals `main`'s reference exactly.
+- **Why leg B's oracle-core lib shows 960 tests and leg A's 1 019.** Under `--workspace`, `oracle-player`
+  and `oracle-panels-spike` switch on `oracle-core/synth` through feature unification, which compiles the
+  synth module's 59 tests; `-p oracle-core` alone does not. 1 019 − 960 = 59. So leg B covered every
+  non-synth oracle-core test, and the synth module has no decode path.
 
 ## 10. The spike (not proposed for merge)
 
