@@ -94,7 +94,10 @@ F-MACHINEREPLACED-EVENT-RACE goes AFTER M24 and AHEAD OF M1** (it reddens unrela
 **M24 design LANDED (merge `9a09adc`, docs only, `docs/2026-09-13-z80-timing-currency-design.md`) and RULED by this seat
 (delegated design call): the currency is in-tree Z80 timing probes (§1, §7), not an access-stream digest.** Order from here:
 **§7 parcels 1 (F-Z80 caveat, XS) then 2 (probes C1-C4, S; closes M24-NEEDS-A-CURRENCY)**, one agent after the other, no
-further ruling needed → **F-MACHINEREPLACED-EVENT-RACE** → **parcel 3 (EI delay, no ruling)** → M1. Parcel 3 is lens M24 proper,
+further ruling needed → **F-MACHINEREPLACED-EVENT-RACE** → **parcel 3 (EI delay, no ruling)** → M1.
+**Parcels 1-2 LANDED 2026-09-13 (merge `453aa96`, one agent; M24-NEEDS-A-CURRENCY CLOSED). NEXT: F-MACHINEREPLACED-EVENT-RACE.**
+What parcels 3-4 must move is pinned in `crates/oracle-core/tests/z80_timing_probes.rs`'s header table (C1-C4, C2 now split
+C2a/C2b); neither may move C3. Go for this pair: the hub, ruling (2) applied (empyrean `f1220de:docs/OVERSEER.md` 74-89). Parcel 3 is lens M24 proper,
 so it follows the flake (every landing reads CI). Parcels 4 (/INT level: R6's medium-confidence corollary, TAG listen),
 5 (Z80 access hook: a contract CR) and 6 (digest golden) each need a ruling when reached. New F-Z80 sub-finding, verified:
 the `fc` watch filter is optional and the tap emits raw Z80 addresses, so a watch on ROM `$004000` records Z80 FM writes.
@@ -158,7 +161,8 @@ mirror) is undelivered too, while `watchpoints.rs`'s module header says *"the re
 access"* and `Watchpoints::caveats` says nothing. Aeon measured it: read watches on one sound effect's FM patch bytes,
 effect fired, **0 hits / 0 dropped** while the driver's channel state pointed at them. ⚑ **So a zero on a Z80-read subject
 is the instrument being absent reported as a negative finding**, and the `seen = 0` caveat cannot fire because the
-68000's traffic makes `seen` non-zero. Two halves: (1) cheap, a caveat plus the header made true; (2) emit Z80 accesses as
+68000's traffic makes `seen` non-zero. Two halves: (1) cheap, a caveat plus the header made true (**LANDED 2026-09-13, merge `453aa96`**; VDP/I-O
+through the Z80 window stays unmodelled, so caveat 1 does not cover it; aeon told); (2) emit Z80 accesses as
 `BusEvent`s (fc 0), which moves the stream every sink sees (VGM logger, profiler, trace), so enumerate consumers first.
 *Hypothesis, unmeasured:* a timestamped Z80 access stream is a candidate for the Z80-timing currency M24 needs; shape the
 two together. Aeon is not blocked (they answered their own question from the driver's channel state).
