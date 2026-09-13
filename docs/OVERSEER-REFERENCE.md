@@ -14,6 +14,11 @@ do not need this file.
 **What is in it.** Two sections, moved verbatim out of the boot file: **The bars** (house methods,
 each earned by a measured failure) and **Ops** (each line a paid-for lesson).
 
+**Since 2026-09-13 it also holds the follow-up register and the live rulings the when-read cut moved out
+of `OVERSEER.md`**, appended at the end under **Moved from OVERSEER.md 2026-09-13**. Each is read at the
+moment its stub in `OVERSEER.md` names, and some of those moments (reporting a lens count, cutting the boot
+file, starting a server, a peer filing a demand) fall outside the three above.
+
 **One thing deliberately did NOT move.** The bootstrap stanza (read the protocol at a committed
 revision, never through `../empyrean/docs/OVERSEER-PROTOCOL.md`) stayed in `docs/OVERSEER.md`
 under its own heading. It is upstream of the boot read itself, and a rule read at a later moment
@@ -1094,6 +1099,8 @@ writing that instruction into briefs**; ask for the fix commit, then the ledger 
 ## Moved from OVERSEER.md 2026-09-13 (the when-read cut, 97,771 → 26,170 B) — live rules, each read at the moment its stub names
 
 *Fourteen blocks moved whole out of `a44cb9e:docs/OVERSEER.md` under the owner's go (row OVERSEER-CUT): twelve whole sections, each below under its original heading, and two partial blocks, the tail of "The boot read is bounded" under that same heading and the follow-up register under a new heading naming where it came from. None of it is closed history: each block is a live rule or booking read at one later moment, and `OVERSEER.md` keeps each heading (for the register, its place in the queue section) plus one pointer line naming that moment. Orig line numbers are of `a44cb9e:docs/OVERSEER.md`. Proved lossless by `tools/prove_doc_split.py` with the fourteen slices declared as outputs beside `OVERSEER.md` (never this whole file, which is vacuously red here) and the fourteen pointer lines declared new: exit 0, PROVED, 956/956 non-blank lines, token delta 0, PROOF 3 seams introduced heading-aware 0 and heading-blind 12 (all twelve a stub heading followed by its pointer), 42 derived cut points all OK. The same invocation, with the slices and the declared-new file still empty, was green on the untouched tree first.*
+
+*Referents, because the cut commit left the moved text as written. In the tail of **The boot read is bounded**, "this file", "here" and "at the foot of this file" mean `docs/OVERSEER.md`, whose foot carries **Where the detail lives**. In the follow-up register, "Measure before you add here" means `docs/OVERSEER.md`. "The four rulings above" (d-16 SUBSTITUTE), "see the flag above" (THE CUTOVER's heading) and "the relayed rulings above" (HERMETIC GATE) name the **FOUR OWNER RULINGS, 2026-08-22** section, and "hub ruling above" (HERMETIC GATE) names the 2026-09-10 hub ruling inside **CUT THE CEREMONY**; both stayed in `docs/OVERSEER.md`.*
 
 ## The boot read is bounded (100,000 B, gated)
 

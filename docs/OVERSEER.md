@@ -7,8 +7,8 @@
 
 Companion: the suite-wide protocol at `empyrean/docs/OVERSEER-PROTOCOL.md` (shared patterns; this
 file is the oracle-specific half). Repo ground rules: the workspace `CLAUDE.md`. **Solo-first:**
-everything below is workable with no peer sessions up: the queue, the follow-up register, and every
-demand are committed artifacts in this repo; peers accelerate, they are never prerequisites.
+everything below is workable with no peer sessions up: the queue, the follow-up register (now in
+`docs/OVERSEER-REFERENCE.md`), and every demand are committed artifacts in this repo; peers accelerate, they are never prerequisites.
 
 ## The role
 
@@ -57,7 +57,7 @@ pick by his 09-09 order of work (finish lens items first) and his 09-11 aim (*"o
 stay his. If H22 needs a call that is his (look, or an irreversible bet), file the card and take M24.
 **H22 design LANDED (merge `1404a07`, docs only) and RULED under delegation:** option E* adopted, staged; landing 1
 (static-copy filler) takeable now; landings 2-3 HELD until decode share is re-measured on a workload that is not mostly a
-VBlank spin loop (the doc's own falsifier); M32 refuted. **Next is M24; shape it with F-Z80-ACCESSES-UNWATCHED below.**
+VBlank spin loop (the doc's own falsifier); M32 refuted. **Next is M24; shape it with F-Z80-ACCESSES-UNWATCHED in the follow-up register (`docs/OVERSEER-REFERENCE.md`).**
 **Hub amendment (2a), 2026-09-13 (verified at empyrean `3bb082d`, docs commit carrying it; the hub's, overturnable by him):
 F-MACHINEREPLACED-EVENT-RACE goes AFTER M24 and AHEAD OF M1** (it reddens unrelated commits; may jump ahead of M24 if needed).
 **M24 design LANDED (merge `9a09adc`, docs only, `docs/2026-09-13-z80-timing-currency-design.md`) and RULED by this seat
@@ -103,7 +103,7 @@ verbatim text — the seraph-hold defect, second file, opposite direction.
 read-back. (a)** The boot-doc-growth prohibition **has lapsed**, by the hub's terms not his. **(b)** It does
 **not lift into permission**: the undated preference stands, so a new bar is now **governed by his test** —
 *does it arbitrarily slow us down without an actual good reason* — rather than forbidden. **(c) Each hold that
-rested on it is RE-DECIDED ON ITS OWN MERITS**, neither auto-revived nor auto-kept. Applied below:
+rested on it is RE-DECIDED ON ITS OWN MERITS**, neither auto-revived nor auto-kept. Applied in the HERMETIC GATE ruling (moved to `docs/OVERSEER-REFERENCE.md`):
 `SCHEMA-DRIFT-NIGHTLY` survives (merits argued, only the blocker outlived them); `F-CITATION-LINT` does not
 (its own text says the hold was *the moratorium, NOT the merits*, so there is nothing to inherit).
 ⚑ **CORRECTION ACCEPTED, against this seat:** I proposed treating it as in force *because in-force is what
@@ -330,7 +330,9 @@ demand, the streaming asks. `docs/2026-08-19-subline-shipped.md` is the model ha
 * **`docs/OVERSEER.md`** (this file) is the boot read, bounded at 100,000 B. It holds scope, the queue,
   any resume brief, and the standing rulings that change what a session does FIRST.
 * **`docs/OVERSEER-REFERENCE.md`** holds the bars and the ops lessons: not read at boot, opened
-  before dispatching, before reviewing returned work, and before landing.
+  before dispatching, before reviewing returned work, and before landing. Since the 2026-09-13 cut it also
+  holds the follow-up register and the live rulings that moved out of this file; each keeps its heading here
+  with one pointer line naming the moment to read it.
 * **`docs/OVERSEER-LOG.md`** holds closed history, append-only, newest last: not read at boot, read by
   `tail`/`grep` when a particular night or a moved entry is in question. **A live ruling goes in
   `OVERSEER.md`, never only in the log.**
