@@ -79,6 +79,8 @@ picked `a-shared-card`** (theirs, overturnable by one word); delete B in one mov
 this lane cuts its own OVERSEER.md to about 40 KB by the when-read rule (aeon's ~20 KB boot file the model), row OVERSEER-CUT.
 **OVERSEER-CUT LANDED 2026-09-13 (merge `e4b4bbf`): 97,771 → 26,517 B, fourteen blocks to the reference. Hub GO covers the
 next two in order (empyrean `492a2ac`): NEXT is delete B (STYLE-NUMBER-BAKEOFF), then parcel 3.**
+**Delete B LANDED 2026-09-13 (merge `f0f0a96`, agent tip `421b005`; STYLE-NUMBER-BAKEOFF CLOSED, DATA-DISPLAY-AUDIT
+unblocked). NEXT: M24 parcel 3 (EI delay), no further go needed (the hub, empyrean `579d485:docs/OVERSEER.md:173`).**
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

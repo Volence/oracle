@@ -635,7 +635,7 @@ ruling is about containment only: a number's colour is still whatever `health_co
 **What was deleted, and when.** From `22b602d` (2026-09-06) the Pacing tab drew its headline twice,
 labelled *treatment A* (bare numbers sharing one card) and *treatment B* (one bordered tile per number),
 under a standing line asking which read better. B, both labels, the question line, and the code that
-existed only to draw the choice were deleted at this parcel's merge (`<merge SHA>`). A was left exactly as
+existed only to draw the choice were deleted at this parcel's merge (`f0f0a96`). A was left exactly as
 it drew, so the tab now opens on its headline card.
 
 **One count above has rotted, measured here because a reader of this note will look there.** §3 says
