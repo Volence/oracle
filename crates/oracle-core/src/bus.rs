@@ -1482,6 +1482,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                     DmaRequest::Mem { .. } => r.mem_dma += 1,
                     DmaRequest::Copy { .. } => r.copy += 1,
                     DmaRequest::Fill { .. } => r.fill += 1,
+                    DmaRequest::FillRunning => {}
                 }
             }
         });
@@ -1506,6 +1507,7 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 self.vdp.run_copy(source, len, self.now_mclk);
                 0
             }
+            DmaRequest::FillRunning => 0, // spike prototype: never handed to the bus
         }
     }
 

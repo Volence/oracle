@@ -530,6 +530,80 @@ pub mod fill_spike {
     }
 }
 
+// spike prototype: the proposed model, lazy catch-up on the one external-slot clock.
+impl Vdp {
+    fn prototype_fill_running(&self) -> bool {
+        self.dma_pending == Some(DmaRequest::FillRunning)
+    }
+
+    /// Advance a running fill to `now`: pending FIFO entries first (they have priority), then one fill
+    /// step per external slot while the FIFO is empty and the live CD5/DMD still name a fill.
+    pub fn fill_catch_up(&mut self, now: u64) {
+        if !self.prototype_fill_running() {
+            return;
+        }
+        loop {
+            while self.fifo_len > 0 {
+                let oldest = self.fifo_oldest();
+                let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
+                if self.fifo_slot_clock + cost > now {
+                    return;
+                }
+                self.fifo_slot_clock += cost;
+                self.fifo_len -= 1;
+            }
+            if !self.fill_armed() {
+                return;
+            }
+            let t = self.spike_slot_walk(self.fifo_slot_clock, 1);
+            if t > now {
+                return;
+            }
+            self.fifo_slot_clock = t;
+            self.prototype_fill_step(t);
+            if !self.prototype_fill_running() {
+                return;
+            }
+        }
+    }
+
+    /// One fill step at slot instant `t`. Target and VRAM data from the newest FIFO entry (Nemesis: "pull
+    /// the write target and the upper byte of the write data from the FIFO entry"); CRAM/VSRAM data from
+    /// the next-available entry (the documented bug). Then the standard advance: source +1, length -1,
+    /// and CD5 clears when the length reaches 0.
+    fn prototype_fill_step(&mut self, t: u64) {
+        self.now_mclk = t;
+        let last = self.fifo[(self.fifo_write.wrapping_sub(1) & 3) as usize];
+        let next = self.fifo[self.fifo_write as usize];
+        if Self::code_names_a_write_target(last.code) {
+            self.in_dma = true;
+            match Self::target_of(last.code) {
+                VdpTarget::Vram => {
+                    let a = (self.addr ^ 1) as usize & (VRAM_SIZE - 1);
+                    self.write_vram_byte(a, (last.data >> 8) as u8);
+                }
+                _ => {
+                    let saved = self.code;
+                    self.code = (saved & !0x0F) | (last.code & 0x0F);
+                    self.write_target(next.data);
+                    self.code = saved;
+                }
+            }
+            self.in_dma = false;
+        }
+        self.autoinc();
+        let src = ((self.regs[0x16] as u16) << 8) | self.regs[0x15] as u16;
+        self.advance_dma_source_low16(src, 1);
+        let len = (((self.regs[0x14] as u16) << 8) | self.regs[0x13] as u16).wrapping_sub(1);
+        self.regs[0x13] = (len & 0xFF) as u8;
+        self.regs[0x14] = (len >> 8) as u8;
+        if len == 0 {
+            self.code &= !0x20;
+            self.dma_pending = None;
+        }
+    }
+}
+
 // spike: the proposed model's fill clock, walked slot by slot for the population count.
 impl Vdp {
     pub fn spike_display_enabled(&self) -> bool {
@@ -1362,6 +1436,7 @@ impl Vdp {
                 }
             });
         }
+        self.fill_catch_up(mclk); // spike prototype
         if !self.pending {
             // A first control word ALWAYS latches CD1-CD0 from bits 15-14 — including the `$8xxx` register
             // form, whose bits 15-14 are `10`. CD3-CD0 = `xx10` names no target in the code table, so after
@@ -1391,6 +1466,10 @@ impl Vdp {
                 self.code = (self.code & 0x23) | ((cd_hi << 2) & 0x1C);
             }
             self.pending = false;
+            // spike prototype: the fill decides on the LIVE CD5 (Nemesis); a command word that clears it stops it.
+            if self.code & 0x20 == 0 && self.dma_pending == Some(DmaRequest::FillRunning) {
+                self.dma_pending = None;
+            }
             // A completed read command pre-fills the read buffer from the set address (recon R3 pre-cache).
             if self.code & 0x01 == 0 {
                 self.read_buffer = self.read_target();
@@ -1432,6 +1511,9 @@ impl Vdp {
     /// this, CD5 goes stale and a later M1=0 command retains it (recon R1/V1) and re-fires a phantom DMA — the
     /// DR-2 spurious 65536-word transfer. Guarded on an actual take: a non-DMA VDP access must not touch CD5.
     pub fn take_dma_request(&mut self) -> Option<DmaRequest> {
+        if self.dma_pending == Some(DmaRequest::FillRunning) {
+            return None; // spike prototype: a running fill is the VDP's, not the bus's
+        }
         let req = self.dma_pending.take();
         if req.is_some() {
             self.code &= !0x20;
@@ -1637,6 +1719,7 @@ impl Vdp {
             });
         }
         self.pending = false;
+        self.fill_catch_up(mclk); // spike prototype
         // Advance the time-based FIFO drain to `mclk` first so the live EMPTY/FULL bits (A1, T16) reflect
         // the FIFO's occupancy *now* — a status read never pops entries beyond this normal drain.
         self.fifo_drain(mclk);
@@ -1694,7 +1777,17 @@ impl Vdp {
                     self.write_target(w);
                 }
                 self.autoinc();
-                self.dma_pending = Some(DmaRequest::Fill { len, fill: w });
+                // spike prototype: the fill runs over time. A write while it runs is only a FIFO write.
+                if self.dma_pending != Some(DmaRequest::FillRunning) {
+                    self.last_dma = Some(DmaRecord {
+                        mode: DmaMode::Fill,
+                        source: 0,
+                        dest: self.addr,
+                        len,
+                        target: self.target(),
+                    });
+                    self.dma_pending = Some(DmaRequest::FillRunning);
+                }
             }
             return;
         }
@@ -1928,8 +2021,10 @@ impl Vdp {
                 }
             });
         }
+        self.fill_catch_up(now); // spike prototype
         // A DMA command's data write is not FIFO-timed here (the DMA slices own it); no stall, apply as before.
-        if self.code & 0x20 != 0 {
+        // spike prototype: except a fill's, which is an ordinary FIFO write (trigger and mid-fill alike).
+        if self.code & 0x20 != 0 && self.regs[0x17] & 0xC0 != 0x80 {
             self.apply_data_write(w);
             return 0;
         }
@@ -2012,6 +2107,7 @@ impl Vdp {
     /// SST corpus is untouched).
     pub fn data_read_at(&mut self, open_bus: u16, now: u64) -> (u16, u32) {
         fill_spike::note(now, true, |r, inw| r.data_r += inw as u32); // spike
+        self.fill_catch_up(now); // spike prototype
         self.fifo_drain(now);
         let mut wait_mclk = 0u64;
         // C2, same rule as `data_write_at`: measure from the already-charged mark, not from the caller's
@@ -2374,6 +2470,9 @@ pub enum DmaRequest {
     /// VRAM copy: `len` byte read+write steps within VRAM from `source`, FIFO-bypass, 68k runs (recon R4(c));
     /// each read and each write takes the opposite byte lane (`^ 1`, F-COPYXOR — see [`Vdp::run_copy`]).
     Copy { source: u16, len: u16 },
+    /// spike prototype: a fill has taken its trigger and is running over time. Trailing, so an old
+    /// snapshot (always `None` here at an instruction boundary) decodes unchanged.
+    FillRunning,
 }
 
 /// A completed DMA, for the `frame_report` introspection surface (design §4; recon R4).

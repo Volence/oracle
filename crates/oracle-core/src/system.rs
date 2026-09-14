@@ -1547,6 +1547,16 @@ impl System {
             // register write mid-step is picked up here too (recon R12).
             self.cpu.set_ipl(self.vdp.ipl());
         }
+        // spike prototype: a paused machine is caught up to its own now, and that catch-up's writes are
+        // delivered like any step's (a snapshot refuses a non-empty capture buffer).
+        self.vdp.fill_catch_up(self.scheduler.now());
+        if capture {
+            for w in self.vdp.take_write_captures() {
+                if wants_writes {
+                    sink.on_vdp_write(w);
+                }
+            }
+        }
         // Disarm — leave the VDP as the run found it (a subsequent null-sink run must stay on the hot path).
         if capture {
             self.vdp.set_write_capture(false);
@@ -1667,6 +1677,7 @@ impl System {
                 // inlined `bool` call per line against re-introducing that second source, which is not a
                 // trade worth making for a branch the optimiser already sees through.
                 if line < u64::from(ACTIVE_LINES) {
+                    self.vdp.fill_catch_up(deadline); // spike prototype: the line sees the fill as of its start
                     // spike
                     let on = self.vdp.spike_display_enabled();
                     crate::vdp::fill_spike::note(deadline, false, |r, inw| {
