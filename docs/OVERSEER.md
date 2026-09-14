@@ -85,6 +85,13 @@ unblocked). NEXT: M24 parcel 3 (EI delay), no further go needed (the hub, empyre
 `f13feff:docs/OVERSEER.md:99`).** The EI delay: C1 `A`, C2a/C2b `HL` 0 → 1, nothing else moved; SST-z80 now grades the
 corpus's `ei` field. Saves from before `d421f51` are refused by the layout fingerprint (precedent `28e4587`). **NEXT: M1-FILL-OVER-TIME**
 (the hub's 09-13 order, H22 → M24 → M1). Parcel 4 (`/INT` level) needs his listen ruling when reached; no card filed yet.
+**M1 DESIGN LANDED 2026-09-14 (merge `b34bac2`, docs only, agent tip `acb753b`; go: the hub under his delegation, order read at
+empyrean `3d322af:docs/OVERSEER.md:105`; the go stops at the doc).** `docs/2026-09-14-m1-fill-over-time-design.md`: lazy catch-up on
+`fifo_slot_clock`, one trailing `DmaRequest::FillRunning` variant, no save-layout move, old saves load (3/3 measured). **P1 FILL-RUN waits on
+the hub's R1-R4** (R1 watch-hit attribution, wire-visible; this seat's hypothesis: the trigger pc as `FillRunning`'s payload keeps today's
+meaning at no layout cost. R2 C-6 per-step stamps for fills. R3 old builds refuse new mid-fill saves. R4 three synthetic fixtures gain a
+busy-poll). Parcel 4's card is filed: **d-51** (listen-first). **`docs/lane-status.json` stays TRACKED and is committed with the lane files at
+landings** (the hub's 09-14 ask, this seat's call: untracking reddens `tools/land.sh` G2b, which validates the committed blob).
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 
