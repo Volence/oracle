@@ -1,22 +1,38 @@
 {
-  "focus": "Everything parked overnight is landed and pushed. Seven parcels in, including both things you flagged on screen.",
+  "focus": "Starting the written design for fills that take time. Also filed one question for your ear about the sound chip.",
   "inFlight": [],
   "blockedOnOwner": [
     {
-      "what": "A or B on the Pacing tab, which decides how every remaining panel shows a number (d-39)",
-      "since": "2026-09-06",
-      "id": "d-39"
+      "what": "Whether to hear the sound-chip interrupt change before it lands",
+      "since": "2026-09-14",
+      "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. Nothing running, nothing unpushed, seven parcels landed.",
+  "nextBoundary": "When the fill design doc comes back and is reviewed; its save and currency answers then go to the hub before anything is built.",
   "queue": [
     {
-      "id": "C5-REPLAY-DISCARDED-RASTER",
+      "id": "F-FIRST-PRESENT-REFUSAL",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "a contract ruling (the hub's)",
+      "project": "ORACLE-DEFAULT",
+      "title": "Found by today's fix: in its first moment a window tells a connected program 'there is no window'. What it should say is a ruling for the hub."
+    },
+    {
+      "id": "M1-FILL-OVER-TIME",
       "state": "next",
-      "size": "M",
+      "size": "L",
       "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Next up: the last three test-ROM checks, one design item: on real hardware a fill takes time and a mid-fill write changes the rest. Ours finishes instantly."
+    },
+    {
+      "id": "M24-PARCEL-4-INT-LEVEL",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "your ear: card d-51",
       "project": "LENS-PASS",
-      "title": "Your last open critical, and now unblocked: every replay frame draws a full analysed picture and throws it away. You answered 'split it', and last night's safety fix confirmed the cheap version is allowed."
+      "title": "The sound chip's interrupt signal should last one line, not until taken. It changes what a real driver hears, so card d-51 asks whether you want to listen first."
     },
     {
       "id": "H22-68000-DECODE",
@@ -24,23 +40,31 @@
       "size": "L",
       "blockedBy": null,
       "project": "LENS-PASS",
-      "title": "The other remaining serious lens item. A design call about how the processor decodes instructions, not a fix -- it wants thought, not a patch."
+      "title": "Answered: the processor should remember its instruction decoding, in a careful form, for 15-22% speed. The first small piece (~7%) can be built now; the rest waits on one more measurement."
     },
     {
-      "id": "F-MACHINEREPLACED-EVENT-RACE",
+      "id": "F-Z80-ACCESSES-UNWATCHED",
       "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A test failed once during a landing and never again: 1 in 31 runs, the clean ones at higher load. Booked as a real bug because this repo has twice called that noise and been wrong."
+      "title": "From aeon: a watch never catches the sound chip reading an address. The warning half is landed and aeon is told; the full fix needs a contract change and a ruling later."
     },
     {
-      "id": "F-TWO-SPELLINGS-OF-ONE-GIVEUP",
+      "id": "LENS-WAVE-1",
       "state": "open",
-      "size": "S",
+      "size": "L",
       "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Small tidy: the plane viewer and the Screen tab now say 'I cannot draw this' two different ways. One carries its own explanation and cannot be silenced by accident; the older one can."
+      "project": "LENS-PASS",
+      "title": "Sweep wave 1: both measured fixes landed today. Left: two look-at-it questions for you (how an unreadable save is shown; which rule the two address boxes share)."
+    },
+    {
+      "id": "F-BANKED-ADDR-AMBIGUITY",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "On bank-switching games, an address no longer names one byte over time, and nothing shows which bank was live beside a symbol, a watch hit or a profiler line."
     },
     {
       "id": "OWNER-UX-GROUP-B",
@@ -67,20 +91,12 @@
       "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
     },
     {
-      "id": "STYLE-NUMBER-BAKEOFF",
-      "state": "blocked",
-      "size": "S",
-      "blockedBy": "your A or B (d-39)",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Waiting on you, and it holds the rest of the panel work up: both ways of showing a headline number are on the Pacing tab. Say A or B and the other is deleted."
-    },
-    {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "blocked",
+      "state": "open",
       "size": "L",
-      "blockedBy": "your A or B (d-39)",
+      "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The remaining panels follow your A/B answer plus a few things only your eyes can settle. Run past you one at a time, not in a batch."
+      "title": "Unblocked now B is gone: the other panels follow the shared-card shape. Two for your eyes: the tab opening straight on its numbers, and how it clips in a narrow panel."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -105,33 +121,9 @@
       "blockedBy": null,
       "project": "LIVE-EFFECTS",
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
-    },
-    {
-      "id": "SCHEMA-DRIFT-NIGHTLY",
-      "state": "open",
-      "size": "S",
-      "blockedBy": "your cut-the-ceremony ruling, nothing else",
-      "project": "ORACLE-DEFAULT",
-      "title": "A nightly that reports when the contract team moves past our pinned copy. Not machine-bound and needs nothing further from you -- it is held only by your instruction to stop building what is not the feature."
-    },
-    {
-      "id": "F-CITATION-LINT",
-      "state": "open",
-      "size": "M",
-      "blockedBy": "the same cut-the-ceremony ruling",
-      "project": "ORACLE-DEBUG-UI",
-      "title": "A cheap check would make a wrong cross-repo citation impossible to write. Booked with the design written down; not built, because you told us to stop building apparatus that is not the feature."
-    },
-    {
-      "id": "LENS-LEFT-113",
-      "state": "open",
-      "size": "L",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "About 70 minor sweep findings remain. Each needs checking that it is still real before anyone works it -- two of tonight's turned out to be already fixed or never true."
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-10T06:52:43Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-14T01:05:54Z"
 }
