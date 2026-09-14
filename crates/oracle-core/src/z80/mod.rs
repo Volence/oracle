@@ -80,7 +80,8 @@ pub struct Z80 {
     i: u8,
     /// Memory-refresh counter (bit 7 is preserved across the per-M1 increment).
     r: u8,
-    /// Interrupt-enable flip-flops.
+    /// Interrupt-enable flip-flops. `EI` sets both at once, but a pending request is still refused for one
+    /// more instruction: see [`ei_shadow`](Self::ei_shadow).
     iff1: bool,
     iff2: bool,
     /// Interrupt mode (0/1/2).
@@ -89,6 +90,17 @@ pub struct Z80 {
     halted: bool,
     /// `/INT` asserted (VDP vblank), not yet taken.
     int_pending: bool,
+    /// **The `EI` shadow** (M24, UM0080 p.18): "When an EI instruction is executed, any pending interrupt
+    /// request is not accepted until after the instruction following EI is executed." Set by `EI` (every
+    /// `EI`, including one inside the shadow, which re-arms it), honoured by the acceptance test in
+    /// [`Z80::step`], and consumed by the next step that does not accept: the instruction after `EI`, or a
+    /// `HALT` idle slice if the core is somehow halted with it set. Cleared by [`Z80::reset`].
+    ///
+    /// Machine state that lives for exactly one instruction, so a frame boundary, a checkpoint or a save
+    /// can fall inside it: it rides the bincode snapshot like every field, it is in [`Z80Regs`] as `ei`
+    /// (the SingleStepTests/z80 corpus's own field, graded there), and it is byte 30 of
+    /// [`Z80::export_region`].
+    ei_shadow: bool,
     /// MEMPTR — drives the undocumented YF/XF of `BIT n,(HL)` etc. **RESERVED**, inert until ZEXALL (ZC11).
     wz: u16,
     /// Last-flag-write tracker for the `SCF`/`CCF` undocumented flags. **RESERVED**, inert until ZEXALL.
@@ -99,7 +111,7 @@ pub struct Z80 {
     /// (a hardware `/RESET` genuinely restarts the CPU, and a driver re-upload deserves a fresh start).
     ///
     /// Deliberately **not** in [`Z80Regs`] or [`Z80::export_region`]: it is not an architectural
-    /// register, the SST corpus has no field for it, and region 4's 30-byte export layout must not move.
+    /// register, the SST corpus has no field for it, and region 4's export layout must not move.
     /// It rides the internal bincode snapshot like every other non-architectural scalar.
     fault: Option<Z80Fault>,
 }
@@ -201,13 +213,16 @@ pub struct Z80Regs {
     pub iff2: bool,
     pub im: u8,
     pub halted: bool,
+    /// The `EI` shadow: the last instruction was `EI`, so a pending interrupt is refused until one more
+    /// instruction has run (UM0080 p.18). The corpus's `ei` field, under the corpus's name.
+    pub ei: bool,
     pub wz: u16,
     pub q: u8,
 }
 
 impl Z80 {
     /// Build a `Z80` from a flat register view (test/introspection entry point; `int_pending` starts
-    /// clear — the SST-z80 corpus has no pending-interrupt input).
+    /// clear — the SST-z80 corpus has no pending-interrupt input). The `EI` shadow is taken from `r.ei`.
     pub fn from_regs(r: &Z80Regs) -> Self {
         Self {
             af: ((r.a as u16) << 8) | r.f as u16,
@@ -229,6 +244,7 @@ impl Z80 {
             im: r.im,
             halted: r.halted,
             int_pending: false,
+            ei_shadow: r.ei,
             wz: r.wz,
             q: r.q,
             fault: None,
@@ -307,13 +323,14 @@ impl Z80 {
             iff2: self.iff2,
             im: self.im,
             halted: self.halted,
+            ei: self.ei_shadow,
             wz: self.wz,
             q: self.q,
         }
     }
 
-    /// The 30-byte export-golden layout for `export_state` region 4 (ZC9), in a fixed little-endian order.
-    /// The architectural register file, packed:
+    /// The 31-byte export-golden layout for `export_state` region 4 (ZC9), in a fixed little-endian order.
+    /// The architectural register file, packed, then the `EI` shadow:
     ///
     /// | Bytes | Field |
     /// |---|---|
@@ -325,12 +342,15 @@ impl Z80 {
     /// | 1 | IFF1·IFF2·IM packed (`iff1<<0 | iff2<<1 | im<<2`) |
     /// | 1 | HALT flag (0/1) |
     /// | 2 | WZ |
+    /// | 1 | `EI` shadow (0/1), M24 |
     ///
     /// At the reset state every field is zero (ZC9 all-zero reset model), so this emits all-zero bytes and the
-    /// export golden does not move at Z-live go-live. `System::export_state` copies these 30 bytes and pads to
-    /// the reserved `0x40` region (>2× margin).
-    pub fn export_region(&self) -> [u8; 30] {
-        let mut b = [0u8; 30];
+    /// export golden does not move at Z-live go-live. `System::export_state` copies these bytes and pads to
+    /// the reserved `0x40` region. The `EI` shadow went in at byte 30 as a content fill of that reserve at
+    /// unchanged size (`docs/export-state-v1.md`'s rule: no version bump); every existing offset is where it
+    /// was, and the golden's Z80 is held in reset, so the byte is zero there.
+    pub fn export_region(&self) -> [u8; 31] {
+        let mut b = [0u8; 31];
         let mut w = |off: usize, v: u16| b[off..off + 2].copy_from_slice(&v.to_le_bytes());
         w(0, self.af);
         w(2, self.bc);
@@ -349,6 +369,7 @@ impl Z80 {
         b[26] = (self.iff1 as u8) | ((self.iff2 as u8) << 1) | (self.im << 2);
         b[27] = self.halted as u8;
         b[28..30].copy_from_slice(&self.wz.to_le_bytes());
+        b[30] = self.ei_shadow as u8;
         b
     }
 
@@ -379,7 +400,8 @@ impl Z80 {
     /// the Z80's register file is static storage that `/RESET` does not drive, and clearing state the
     /// hardware leaves alone would be the worse error in the generous direction. The internal `WZ`/`Q`
     /// support fields are internal machine state, not the programmer's register file, so they clear with
-    /// the defined set.
+    /// the defined set, and so does the `EI` shadow (M24): it is interrupt-control state like the two
+    /// flip-flops `/RESET` clears, and a restart at `PC = 0` has no "instruction after `EI`" to protect.
     ///
     /// Two consequences worth stating because they are load-bearing:
     ///
@@ -403,6 +425,7 @@ impl Z80 {
         self.iff2 = false;
         self.im = 0;
         self.halted = false;
+        self.ei_shadow = false;
         self.wz = 0;
         self.q = 0;
         // A latched refusal (`Z80Fault`) clears here and only here. `/RESET` genuinely restarts the CPU at
@@ -579,11 +602,17 @@ impl Z80 {
             return 4;
         }
         // Maskable interrupt acceptance (ZC14), sampled at the instruction boundary. Taken only when the /INT
-        // line is asserted AND interrupts are enabled (IFF1). Acceptance also wakes a HALT. A masked request
-        // (IFF1 = 0) is ignored — HALT then continues idling. The Genesis has no Z80 NMI source (Plutiedev).
-        if self.int_pending && self.iff1 {
+        // line is asserted AND interrupts are enabled (IFF1) AND this is not the boundary right after an `EI`
+        // (the `EI` shadow, M24: UM0080 p.18, "any pending interrupt request is not accepted until after the
+        // instruction following EI is executed"). Acceptance also wakes a HALT. A masked request (IFF1 = 0)
+        // is ignored — HALT then continues idling. The Genesis has no Z80 NMI source (Plutiedev).
+        if self.int_pending && self.iff1 && !self.ei_shadow {
             return self.accept_interrupt(bus);
         }
+        // Nothing is accepted from here to the end of this step, so whatever runs now (the instruction after
+        // `EI`, or a HALT idle slice) is what the shadow was protecting, and it ends with it. `EI` sets it
+        // again inside `execute`, so an `EI` in the shadow re-arms it for the instruction after itself.
+        self.ei_shadow = false;
         if self.halted {
             // HALT idle: the CPU runs internal NOPs (refresh continues) until an accepted interrupt clears
             // `halted`. Not exercised by SST (no halted-initial case).
@@ -608,8 +637,13 @@ impl Z80 {
     /// On the Genesis the data bus floats to `$FF` during the interrupt-acknowledge M1, so IM 0 sees `RST 38h`
     /// (→ `$0038`, identical to IM 1) and IM 2 forms its vector as `(I << 8) | $FF`. Cost: 13 T-states for
     /// IM 0/1, 19 for IM 2 (Z80 UM008 §"Interrupt Response"). `int_pending` is consumed (the acknowledged
-    /// request is cleared); a still-asserted line re-arms only when the driver `EI`s and the next VINT raises it.
+    /// request is cleared), so nothing is taken again until the next VINT raises it, however soon the
+    /// handler re-enables. Never reached inside the `EI` shadow: [`Z80::step`] refuses acceptance there.
     fn accept_interrupt<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
+        debug_assert!(
+            !self.ei_shadow,
+            "acceptance inside the EI shadow (UM0080 p.18)"
+        );
         self.halted = false;
         self.iff1 = false;
         self.iff2 = false;
@@ -631,7 +665,8 @@ impl Z80 {
 
     /// Set the maskable-interrupt (`/INT`) line level (ZC14). The Genesis VDP asserts this once per frame at
     /// vblank; `System` raises it on the VInt event and clears it at the next frame start. The Z80 samples it
-    /// at each instruction boundary in [`Z80::step`].
+    /// at each instruction boundary in [`Z80::step`], except the one right after an `EI` (the `EI` shadow,
+    /// UM0080 p.18).
     pub fn set_int_line(&mut self, asserted: bool) {
         self.int_pending = asserted;
     }
@@ -962,8 +997,11 @@ impl Z80 {
                 4
             }
 
-            // ---- DI / EI: set both interrupt-enable flip-flops (EI's one-instruction delay is unobserved
-            // by the SST-z80 gate, which checks only the final IFF1/IFF2). ----
+            // ---- DI / EI: clear or set both interrupt-enable flip-flops. EI also raises the EI shadow, so a
+            // pending request waits until the instruction after it has run (UM0080 p.18; `Z80::step`). Every
+            // EI raises it, including one inside the shadow: the corpus's `ei` field reads 1 after all 1000
+            // `fb` cases, whatever it read before. DI needs no shadow code: as the instruction after an EI it
+            // consumes the shadow like any other, and with IFF1 clear nothing is accepted anyway. ----
             0xF3 => {
                 self.iff1 = false;
                 self.iff2 = false;
@@ -972,6 +1010,7 @@ impl Z80 {
             0xFB => {
                 self.iff1 = true;
                 self.iff2 = true;
+                self.ei_shadow = true;
                 4
             }
 
@@ -2396,6 +2435,7 @@ mod tests {
             iff2: true,
             im: 2,
             halted: true,
+            ei: true,
             wz: 0x4321,
             q: 0xAB,
         };
@@ -2408,6 +2448,7 @@ mod tests {
         assert!(!r.iff1 && !r.iff2, "both interrupt flip-flops cleared");
         assert_eq!(r.im, 0, "interrupt mode 0");
         assert!(!r.halted, "HALT lifted");
+        assert!(!r.ei, "the EI shadow cleared (M24)");
         assert_eq!((r.wz, r.q), (0, 0), "internal WZ/Q cleared");
         assert_eq!(
             Z80Regs {
@@ -2418,6 +2459,7 @@ mod tests {
                 iff2: false,
                 im: 0,
                 halted: false,
+                ei: false,
                 wz: 0,
                 q: 0,
                 ..dirty
@@ -2432,7 +2474,7 @@ mod tests {
         assert_eq!(fresh, Z80::new(), "reset at power-on is the identity");
         assert_eq!(
             fresh.export_region(),
-            [0u8; 30],
+            [0u8; 31],
             "the reset state still serializes as all-zero (ZC9)"
         );
     }
@@ -2463,6 +2505,8 @@ mod tests {
             im: 2,
             halted: true,
             int_pending: true,
+            // The EI shadow lives for one instruction, so a checkpoint can land inside it (M24).
+            ei_shadow: true,
             wz: 0x1B1C,
             q: 0x1D,
             // A latched refusal rides the snapshot too: a rewind must not resurrect a Z80 that was
@@ -2584,16 +2628,16 @@ mod tests {
 
     #[test]
     fn export_region_reset_is_all_zero() {
-        // The go-live guarantee: at reset the 30-byte export region is all zero, so export_state region 4
+        // The go-live guarantee: at reset the 31-byte export region is all zero, so export_state region 4
         // stays byte-frozen and the golden never moves (all-zero reset model, ZC9).
-        assert_eq!(Z80::new().export_region(), [0u8; 30]);
+        assert_eq!(Z80::new().export_region(), [0u8; 31]);
     }
 
     #[test]
     fn export_region_lays_out_registers_at_fixed_offsets() {
         // Prove region 4 is genuinely DRIVEN from the struct (not still a hardcoded zero fill): distinct
         // sentinels in every field must land at their pinned ZC9 little-endian offsets.
-        let z = Z80::from_regs(&Z80Regs {
+        let regs = Z80Regs {
             a: 0xA1,
             f: 0xF2, // AF = 0xA1F2
             b: 0xB3,
@@ -2616,9 +2660,13 @@ mod tests {
             iff2: false,
             im: 2,
             halted: true,
+            ei: true,
             wz: 0x1B1C,
             q: 0x1D,
-        });
+        };
+        let z = Z80::from_regs(&regs);
+        // The flat view round-trips every field, the EI shadow included: `from_regs` must not drop it.
+        assert_eq!(z.regs(), regs, "from_regs then regs is the identity");
         let b = z.export_region();
         assert_eq!(&b[0..2], &0xA1F2u16.to_le_bytes(), "AF");
         assert_eq!(&b[2..4], &0xB3C4u16.to_le_bytes(), "BC");
@@ -2636,6 +2684,10 @@ mod tests {
         assert_eq!(b[26], 0b0000_1001, "IFF/IM packed");
         assert_eq!(b[27], 1, "HALT");
         assert_eq!(&b[28..30], &0x1B1Cu16.to_le_bytes(), "WZ");
+        assert_eq!(
+            b[30], 1,
+            "the EI shadow (M24), filling the region-4 reserve at unchanged size"
+        );
     }
 
     /// A **latched refusal stops the core**, and only a `/RESET` restarts it. No guest byte reaches
@@ -2712,5 +2764,148 @@ mod tests {
         let text = f.to_string();
         assert!(text.contains("DD CB 05 00"), "must name the bytes: {text}");
         assert!(text.contains("$0100"), "must name the address: {text}");
+    }
+
+    // ---- The EI shadow (M24 parcel 3) ----------------------------------------------------------------------
+    //
+    // Expected values come from Zilog's Z80 CPU User Manual (UM0080): p.18 for the delay, each instruction's
+    // page for its T-states (EI 4, INC r 4, HALT's idle slice 4, the IM 1 acceptance 13, "two more than
+    // normal" on an 11-T restart), and from the SingleStepTests/z80 corpus's `ei` field for the two calls the
+    // manual is silent on. None is read back from this core.
+
+    /// A 256-byte flat bus: every address folds into it, so the stack at `$0080` and the `$0038` vector land.
+    struct Ram256([u8; 0x100]);
+    impl Z80Io for Ram256 {
+        fn read(&mut self, addr: u16) -> u8 {
+            self.0[addr as usize & 0xFF]
+        }
+        fn write(&mut self, addr: u16, value: u8) {
+            self.0[addr as usize & 0xFF] = value;
+        }
+        fn input(&mut self, _port: u16) -> u8 {
+            0xFF
+        }
+        fn output(&mut self, _port: u16, _value: u8) {}
+    }
+
+    /// An IM 1 Z80 with interrupts disabled and `SP = $0080`, `program` at `$0000`, `/INT` at `line`.
+    fn ei_rig(program: &[u8], line: bool) -> (Z80, Ram256) {
+        let mut mem = Ram256([0; 0x100]);
+        mem.0[..program.len()].copy_from_slice(program);
+        let mut z = Z80 {
+            sp: 0x0080,
+            im: 1,
+            ..Z80::new()
+        };
+        z.set_int_line(line);
+        (z, mem)
+    }
+
+    /// The return address the acceptance pushed at `$007E`.
+    fn pushed(mem: &Ram256) -> u16 {
+        u16::from_le_bytes([mem.0[0x7E], mem.0[0x7F]])
+    }
+
+    /// **The `EI` delay** (UM0080 p.18): "When an EI instruction is executed, any pending interrupt request is
+    /// not accepted until after the instruction following EI is executed." A request already pending when
+    /// `EI` runs waits for one `INC A`: `A = 1`, and the pushed return address is the second `INC A`'s.
+    #[test]
+    fn ei_holds_off_a_pending_interrupt_until_the_instruction_after_it_has_run() {
+        let (mut z, mut mem) = ei_rig(&[0xFB, 0x3C, 0x3C, 0x3C], true); // EI; INC A; INC A; INC A
+        let t: Vec<u32> = (0..3).map(|_| z.step(&mut mem)).collect();
+        assert_eq!(t, [4, 4, 13], "EI, then INC A, then the IM 1 acceptance");
+        assert_eq!(
+            z.a(),
+            1,
+            "exactly one INC A ran before the pending request was taken"
+        );
+        assert_eq!(z.pc, 0x0038, "vectored to the IM 1 handler");
+        assert_eq!(
+            pushed(&mem),
+            0x0002,
+            "the return address follows the instruction EI protected"
+        );
+        assert!(!z.iff1, "acceptance cleared IFF1");
+    }
+
+    /// **A run of `EI`s** (design §6.1, "Silent": the manual describes one following instruction). The call:
+    /// every `EI` re-arms the shadow, so a pending request waits for the instruction after the LAST `EI`.
+    /// Reasons: (1) UM0080's `EI` page says "during the execution of this instruction and the following
+    /// instruction, maskable interrupts are disabled", and nothing there exempts an `EI` that is itself the
+    /// following instruction, so the sentence applies to the second `EI` of a pair as it did to the first.
+    /// (2) The SingleStepTests/z80 corpus carries the shadow as its `ei` field and ends all 1000 `fb` cases with
+    /// `ei = 1`, including the 475 that began with `ei = 1`: an `EI` inside the shadow leaves it raised
+    /// (graded case by case in `tests/singlestep_z80.rs`). The other call, no re-arm, would take the request
+    /// after the second `EI`, with `A = 0` and return address `$0002`.
+    #[test]
+    fn a_run_of_eis_re_arms_the_shadow_so_the_request_waits_for_the_instruction_after_the_last() {
+        let (mut z, mut mem) = ei_rig(&[0xFB, 0xFB, 0xFB, 0x3C, 0x3C], true); // EI; EI; EI; INC A; INC A
+        let t: Vec<u32> = (0..5).map(|_| z.step(&mut mem)).collect();
+        assert_eq!(
+            t,
+            [4, 4, 4, 4, 13],
+            "three EIs and an INC A, none interrupted, then the acceptance"
+        );
+        assert_eq!(z.a(), 1, "the INC A after the last EI ran first");
+        assert_eq!(
+            pushed(&mem),
+            0x0004,
+            "taken after the INC A that followed the last EI"
+        );
+    }
+
+    /// **`EI; HALT`** (design §6.1, "Silent": whether the delay extends across a `HALT`). The call: `HALT` is
+    /// the instruction following `EI`, so it runs under the shadow and ends it, and a pending request is taken
+    /// at the first boundary after it, its first idle slice, with the return address past the `HALT`.
+    /// Reasons: (1) p.18 names no exception to "the instruction following EI"; (2) the corpus ends all 1000
+    /// `76` (`HALT`) cases with `ei = 0`, including the 515 that began with `ei = 1`, so `HALT` consumes the
+    /// shadow like any instruction; (3) *HALT Exit*: "the two interrupt lines are sampled with the rising
+    /// clock edge during each T4 state", so nothing stretches the shadow over the idle slices. The two other
+    /// calls: no shadow over `HALT` (the pre-M24 answer: taken before `HALT` runs, return address the `HALT`
+    /// itself, so a returning handler re-enters `HALT`), or a shadow stretched over the first idle slice (taken
+    /// 4 T later).
+    #[test]
+    fn ei_then_halt_the_halt_runs_under_the_shadow_and_the_request_is_taken_at_its_first_idle_boundary(
+    ) {
+        let (mut z, mut mem) = ei_rig(&[0xFB, 0x76], true); // EI; HALT
+        assert_eq!(z.step(&mut mem), 4, "EI");
+        assert_eq!(
+            z.step(&mut mem),
+            4,
+            "HALT runs: the pending request is refused inside the shadow"
+        );
+        assert!(z.halted, "the core entered HALT");
+        assert!(!z.regs().ei, "HALT consumed the shadow");
+        assert_eq!(
+            z.step(&mut mem),
+            13,
+            "the first idle boundary takes the request"
+        );
+        assert!(!z.halted, "acceptance woke the HALT");
+        assert_eq!(
+            pushed(&mem),
+            0x0002,
+            "the return address is past the HALT, not the HALT itself"
+        );
+    }
+
+    /// **The shadow lasts exactly one instruction.** A request that arrives once the instruction after `EI` has
+    /// run is taken at the very next boundary: a shadow that outlived that instruction would starve acceptance.
+    /// The flat view agrees: `ei` reads 1 between the `EI` and the instruction after it, and 0 after.
+    #[test]
+    fn the_ei_shadow_ends_with_the_instruction_after_ei() {
+        let (mut z, mut mem) = ei_rig(&[0xFB, 0x3C, 0x3C, 0x3C], false); // EI; INC A; INC A; INC A
+        z.step(&mut mem);
+        assert!(z.regs().ei, "EI raised the shadow");
+        z.step(&mut mem);
+        assert!(!z.regs().ei, "the instruction after EI ended it");
+        z.set_int_line(true);
+        assert_eq!(
+            z.step(&mut mem),
+            13,
+            "a request raised now is taken at the next boundary"
+        );
+        assert_eq!(pushed(&mem), 0x0002, "before the second INC A");
+        assert_eq!(z.a(), 1);
     }
 }

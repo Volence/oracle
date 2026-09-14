@@ -17,11 +17,11 @@
 //!
 //! | Probe | Observable | Pinned today | Documented (source) | Moved by |
 //! |---|---|---|---|---|
-//! | C1 | `A` when the interrupt is taken, `EI` then `INC A` | 0, WRONG | 1 (UM0080 p.18) | parcel 3 |
-//! | C2a | `V`, `HL` when taken, `EI` about 0.7 line after the assert | `$E0`, 0 | `$E0` (R6), 1 (UM0080 p.18) | HL: parcel 3. Parcel 4 must leave it; a `/INT` shorter than about 0.7 line moves HL to 3309-3311 (the next frame's assert, also at `$E0`) |
-//! | C2b | `V`, `HL` when taken, `EI` about 1.2 lines after the assert | `$E1`, 0, WRONG | `$E0`, 3303-3305 (R6) | V and HL: parcel 4. Parcel 3 alone moves HL to 1 |
+//! | C1 | `A` when the interrupt is taken, `EI` then `INC A` | 1 | 1 (UM0080 p.18) | parcel 3 (landed: 0 -> 1) |
+//! | C2a | `V`, `HL` when taken, `EI` about 0.7 line after the assert | `$E0`, 1 | `$E0` (R6), 1 (UM0080 p.18) | HL: parcel 3 (landed: 0 -> 1). Parcel 4 must leave it; a `/INT` shorter than about 0.7 line moves HL to 3309-3311 (the next frame's assert, also at `$E0`) |
+//! | C2b | `V`, `HL` when taken, `EI` about 1.2 lines after the assert | `$E1`, 1, WRONG | `$E0`, 3303-3305 (R6) | V and HL: parcel 4. Parcel 3 moved HL 0 -> 1 |
 //! | C3 | passes of a 34-T-state loop across 100 bus grants | the derived count | the same (UM0080 T-states, `MCLK_PER_Z80_CYCLE`) | nothing in M24; it guards M21 |
-//! | C4 | handler entries per `/INT` assert, handler re-enables inside the window | 1 per assert, WRONG (medium confidence) | 6, or 5 once parcel 3 lands (R6's level corollary, MEDIUM confidence) | parcel 4 |
+//! | C4 | handler entries per `/INT` assert, handler re-enables inside the window | 1 per assert, WRONG (medium confidence) | 5 now that parcel 3's `EI` delay has landed; 6 without it (R6's level corollary, MEDIUM confidence) | parcel 4 |
 //!
 //! C2 has two legs where the design had one, with cause. The design's single leg enabled two lines after
 //! the assert, so it could only tell "`/INT` is gone within about 2.2 lines" from "it is not". A two-line
@@ -166,12 +166,13 @@ const C1_ISR: &[u8] = &[
     0x76, // HALT
 ];
 
-/// **WRONG by the documentation, pinned because it is today's behaviour.** The core accepts a pending
-/// request at the first instruction boundary after `EI` (`Z80::step` samples `int_pending && iff1` at
-/// every boundary and `EI` sets IFF1 at once), so no `INC A` has run: `A = 0`.
-const C1_A_TODAY: u8 = 0;
+/// Today's behaviour, which is now the documented one. `EI` raises a one-instruction shadow and `Z80::step`
+/// refuses acceptance inside it, so the first `INC A` runs before the pending request is taken: `A = 1`.
+/// Before parcel 3 the core accepted at the very next boundary after `EI`, before any `INC A`: `A = 0`.
+// cause: M24 EI delay (UM0080 p.18): C1 A 0 -> 1 (measured: A = 1, V = $E0, sentinel $AA)
+const C1_A_TODAY: u8 = 1;
 /// UM0080 p.18: "any pending interrupt request is not accepted until after the instruction following EI is
-/// executed", so one `INC A` runs first. Parcel 3 (the `EI` delay) moves C1 from 0 to this.
+/// executed", so one `INC A` runs first. Parcel 3 (the `EI` delay) moved C1 from 0 to this.
 const C1_A_DOCUMENTED: u8 = 1;
 
 #[test]
@@ -182,9 +183,10 @@ fn c1_ei_delay_the_instruction_after_ei_runs_before_the_pending_interrupt() {
     let (a, sentinel, v) = (seen[0], seen[1], seen[2]);
     assert_eq!(sentinel, 0xAA, "UNMEASURABLE: the handler never ran");
     // The EI runs 1275-1754 mclk into line $E0 (the poll's slack, then 85 T of LD A, CP, JR, LD B, DJNZ and
-    // XOR A), so its following boundary is inside any /INT pulse longer than about 0.52 line (C2a brackets
-    // the width from below), and the handler reads V two instructions after acceptance. Any other line
-    // means the probe's layout failed, not that the EI delay moved.
+    // XOR A), so the boundary acceptance waits for, after the EI and the INC A it protects, is inside any
+    // /INT pulse longer than about 0.54 line (C2a brackets the width from below), and the handler reads V
+    // two instructions after acceptance. Any other line means the probe's layout failed, not that the EI
+    // delay moved.
     assert_eq!(
         v, 0xE0,
         "UNMEASURABLE: the request was taken at V = {v:02X}, not on the assert's own line"
@@ -196,8 +198,9 @@ fn c1_ei_delay_the_instruction_after_ei_runs_before_the_pending_interrupt() {
     );
     assert_eq!(
         a, C1_A_TODAY,
-        "C1 moved: A = {a} when taken. Pinned {C1_A_TODAY} (today, WRONG); documented {C1_A_DOCUMENTED} \
-         (UM0080 p.18, the EI delay), which parcel 3 must produce with a cause: line"
+        "C1 moved: A = {a} when taken. Pinned {C1_A_TODAY} (parcel 3's EI delay); documented \
+         {C1_A_DOCUMENTED} (UM0080 p.18). A = 0 is the EI delay lost: acceptance at the boundary right \
+         after EI"
     );
 }
 
@@ -266,11 +269,12 @@ const C2A_EI_IN_LINE: (u64, u64) = {
 };
 
 /// Today: the request is held from the assert to the next frame's line 0 (`System`'s `EventKind::VInt`
-/// sets it, line 0 or acceptance clears it), so it is pending at the `EI` and taken at once: V = `$E0`,
-/// HL = 0.
-const C2A_TODAY: (u8, u16) = (0xE0, 0);
+/// sets it, line 0 or acceptance clears it), so it is pending at the `EI` and taken once the `INC HL` after
+/// it has run: V = `$E0`, HL = 1.
+// cause: M24 EI delay (UM0080 p.18): C2a HL 0 -> 1 (measured: (V, HL) = ($E0, 1); V unmoved)
+const C2A_TODAY: (u8, u16) = (0xE0, 1);
 /// R6: the pulse is one line, so it is still asserted 0.67-0.81 line after the assert and is taken on the
-/// same line, V = `$E0`. UM0080 p.18 runs the `INC HL` after `EI` first, HL = 1: parcel 3 moves HL 0 -> 1,
+/// same line, V = `$E0`. UM0080 p.18 runs the `INC HL` after `EI` first, HL = 1: parcel 3 moved HL 0 -> 1,
 /// parcel 4 must leave C2a alone. A `/INT` shorter than about 0.7 line would miss this `EI`, and the next
 /// frame's assert would be taken instead: also at V = `$E0`, but with HL a frame of passes
 /// ([`next_frame_hl`]).
@@ -279,10 +283,10 @@ const C2A_DOCUMENTED: (u8, u16) = (0xE0, 1);
 #[test]
 fn c2a_int_width_the_request_is_still_held_most_of_a_line_after_the_assert() {
     let (ei_lo, ei_hi) = C2A_EI_IN_LINE;
-    // The probe's own premise, from the constants: the EI (and the boundary after it) falls after the
-    // assert and before one line past it.
+    // The probe's own premise, from the constants: the EI, and the boundary acceptance waits for (after
+    // the EI and the INC HL it protects, UM0080 p.18), fall after the assert and before one line past it.
     assert!(
-        ei_lo > ASSERT_IN_LINE && ei_hi + mclk(T_EI) < ASSERT_IN_LINE + MCLK_PER_LINE,
+        ei_lo > ASSERT_IN_LINE && ei_hi + mclk(T_EI + T_INC_HL) < ASSERT_IN_LINE + MCLK_PER_LINE,
         "the C2a layout must enable inside the documented pulse: EI at {ei_lo}-{ei_hi} mclk"
     );
     let (miss_lo, miss_hi) = next_frame_hl(ACTIVE_LINES as u64, ei_lo);
@@ -294,8 +298,9 @@ fn c2a_int_width_the_request_is_still_held_most_of_a_line_after_the_assert() {
     assert_eq!(
         got, C2A_TODAY,
         "C2a moved: (V, HL) = ({:02X}, {}) when taken. Pinned ({:02X}, {}) today; documented ({:02X}, {}): \
-         R6 holds /INT for one line, so V stays $E0, and UM0080 p.18 makes HL 1 (parcel 3). HL in \
-         {miss_lo}-{miss_hi} is the next frame's assert: /INT got shorter than this EI's 0.67-0.81 line",
+         R6 holds /INT for one line, so V stays $E0, and UM0080 p.18 makes HL 1 (parcel 3; HL 0 is the EI \
+         delay lost). HL in {miss_lo}-{miss_hi} is the next frame's assert: /INT got shorter than this \
+         EI's 0.67-0.81 line",
         got.0, got.1, C2A_TODAY.0, C2A_TODAY.1, C2A_DOCUMENTED.0, C2A_DOCUMENTED.1
     );
 }
@@ -322,10 +327,12 @@ const C2B_EI_IN_LINE: (u64, u64) = {
 };
 
 /// **WRONG by the documentation, pinned because it is today's behaviour.** The request is held until the
-/// next frame's line 0, so it is still pending at this `EI` on line `$E1` and is taken at once: V = `$E1`,
-/// HL = 0. R6's value: with the pulse one line wide the request is gone before this `EI`, so the Z80 takes
-/// the NEXT frame's assert, at V = `$E0`, with HL a frame of passes ([`next_frame_hl`]).
-const C2B_TODAY: (u8, u16) = (0xE1, 0);
+/// next frame's line 0, so it is still pending at this `EI` on line `$E1` and is taken once the `INC HL`
+/// after it has run (parcel 3's `EI` delay, UM0080 p.18): V = `$E1`, HL = 1. R6's value: with the pulse one
+/// line wide the request is gone before this `EI`, so the Z80 takes the NEXT frame's assert, at V = `$E0`,
+/// with HL a frame of passes ([`next_frame_hl`]). V stays wrong until parcel 4.
+// cause: M24 EI delay (UM0080 p.18): C2b HL 0 -> 1 (measured: (V, HL) = ($E1, 1); V unmoved, still WRONG)
+const C2B_TODAY: (u8, u16) = (0xE1, 1);
 
 #[test]
 fn c2b_int_width_the_request_is_gone_a_fifth_of_a_line_after_one_line() {
@@ -349,7 +356,8 @@ fn c2b_int_width_the_request_is_gone_a_fifth_of_a_line_after_one_line() {
         got, C2B_TODAY,
         "C2b moved: (V, HL) = ({:02X}, {}) when taken. Pinned ({:02X}, {}) today, WRONG. Documented: V = \
          $E0 and HL in {hl_lo}-{hl_hi} (R6, a one-line /INT: the next frame's assert is taken), which \
-         parcel 4 must produce with a cause: line; parcel 3 alone moves HL to 1 (UM0080 p.18)",
+         parcel 4 must produce with a cause: line; parcel 3 moved HL 0 -> 1 (UM0080 p.18), so HL 0 is the \
+         EI delay lost",
         got.0, got.1, C2B_TODAY.0, C2B_TODAY.1
     );
 }
