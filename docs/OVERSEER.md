@@ -92,6 +92,13 @@ the hub's R1-R4** (R1 watch-hit attribution, wire-visible; this seat's hypothesi
 meaning at no layout cost. R2 C-6 per-step stamps for fills. R3 old builds refuse new mid-fill saves. R4 three synthetic fixtures gain a
 busy-poll). Parcel 4's card is filed: **d-51** (listen-first). **`docs/lane-status.json` stays TRACKED and is committed with the lane files at
 landings** (the hub's 09-14 ask, this seat's call: untracking reddens `tools/land.sh` G2b, which validates the committed blob).
+**HUB RULINGS R1-R4 on the M1 design, 2026-09-14T02:08:55Z (verified: empyrean `a3e2c42`, ancestor of their `origin/main`, the docs
+commit carrying it, `docs/OVERSEER.md:215`; the hub's under his delegation, overturnable by one word from him). All four are this seat's
+recommendations.** R1: a fill-write watch hit keeps today's `pc`, the TRIGGERING instruction (`protocol.md`: "the accessing instruction's pc
+per hit, so no triggerPc key"), carried as `FillRunning`'s payload; per-step `mclk` stands. **If P1 finds that moves the save layout, STOP and
+go back to the hub: option (c) is a contract change and runs as a CR in empyrean.** R2: per-step stamps for fills only; C-6 stands for
+68k-to-VDP DMA. R3: accepted. R4: a busy-poll after each fill in the three synthetic fixtures. **NEXT: P1 FILL-RUN** (design §7 row 1),
+no further go needed.
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

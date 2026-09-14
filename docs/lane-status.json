@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. The next session reads the hub's rulings on the fill design, then builds it or takes the next row.",
+  "nextBoundary": "Now. The next session builds the fill change under the hub's rulings; nothing needs asking first.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -20,11 +20,11 @@
     },
     {
       "id": "M1-FILL-OVER-TIME",
-      "state": "open",
+      "state": "next",
       "size": "L",
-      "blockedBy": "the hub's rulings on four points (R1-R4)",
+      "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Designed: fills that take time, one small build that breaks no save. Four points go to the hub before anyone builds it."
+      "title": "Next: build fills that take time. The design is landed, the hub has ruled on its four points, and no save you have changes."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -36,7 +36,7 @@
     },
     {
       "id": "H22-68000-DECODE",
-      "state": "next",
+      "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "LENS-PASS",
@@ -125,5 +125,5 @@
   ],
   "awaiting": "A clear, please: 186,670 tokens at 02:05Z, near your 200k line. The fill design is landed and pushed; nothing is running.",
   "atBoundary": true,
-  "updatedAt": "2026-09-14T02:07:50Z"
+  "updatedAt": "2026-09-14T02:09:35Z"
 }
