@@ -39,3 +39,25 @@ the ring as it stands after the write.
 ### 1.3 Derivation of test 31 group 2 (ROM `$2E5E..$2F06`)
 
 PENDING write-up (derived by hand from the disassembly; see commit message).
+
+## 6. Who else changes behaviour (population, measured; draft numbers, instrument at `c60d3b0`)
+
+Observer-only spike, release profile, every suite green with it armed (so it is inert). One row per
+DMA fill or copy: the window today's model opens (`dma_cost`) and the one the proposed model would
+take (pending FIFO entries drain first, then one external slot per step on the published slot
+positions and the flat blanked rate). Counted inside the proposed window: every VDP port access, every
+DMA started, and every active line rendered.
+
+* **aeon replay fixtures** (`replay_real_artifacts`, 16 tests): 10 fills, all 64 KiB VRAM clears with
+  the display off. Proposed window 1,093,302 mclk against today's 1,093,315 (13 mclk shorter). **No port
+  access, no DMA and no displayed line inside any of them.** No replay verdict is at risk.
+* **Vendored ROMs other than VDPFIFOTesting**: every fill is a 64 KiB display-off clear at boot, plus
+  io_sample's 313 fills (308 of 462 bytes). Windows agree to 2-15 mclk. m68k_bcd (5,578 polls) and
+  io_sample (19,289 polls) poll status inside the window, and **no poll reads a different busy bit**
+  under the two models. No data write, data read, control write or DMA inside any window.
+* **VDPFIFOTesting**: 73 fills, 34 copies. Exactly **6 fills see mid-fill data-port writes (9 writes)**:
+  tests 31/32/33, one write in group 2 and two in group 3. No data read, control write or DMA inside a
+  fill window. 50 fills have polls whose busy bit differs between the models (the per-slot rate against
+  today's flat rate taken at the start instant); 34 fills overlap displayed lines. The longest proposed
+  window is 5,038,907 mclk (test 34 group 4's 64 KiB fill, display on) against today's 12,451,840.
+* `golden_frames`, `determinism_gate` and `export_state_v1` run no fill through the bus at all.
