@@ -40,6 +40,22 @@ the ring as it stands after the write.
 
 PENDING write-up (derived by hand from the disassembly; see commit message).
 
+## 5. Prototype results (draft; prototype spike `9da8784`, release, load 2.87 at start, up 1 day 34 min)
+
+`cargo test --release --workspace --no-fail-fast`: 90 suites, **2894 passed / 18 failed / 3 ignored**
+(baseline 2912 / 0 / 3, so the same 2915 tests ran). VDPFIFOTesting prints **122/0/122** (605 frames,
+from 617); tests 31, 32, 33 pass at 0/48 words off, and the pin names no other test. The scorecard moves
+only the `vdp_port_access` tally row; the other 16 rows, every VISUAL-BASELINE hash, `scanline_goldens`,
+`golden_frames`, `determinism_gate`, `export_state_v1` and every aeon replay test are green. The layout
+fingerprint is unchanged (`dff350afa2eb3e1d`, 140,072-byte probe, both builds). Old snapshots load in the
+new build (3 of 3, two taken mid-fill) and reach the old build's hashes; the old build refuses a new
+mid-fill snapshot with bincode `UnexpectedVariant { type_name: "DmaRequest", allowed: 0..=2, found: 3 }`.
+
+The 18: 2 conformance pins (expected), 12 unit tests that drive a fill through the untimed port path or
+`run_fill` and read at once (instant-completion encoders), and 4 integration tests on synthetic fixtures
+the population spike did not cover: `testrom::build_pad_poll`, `build_cram_midframe` and the frontend's
+`build_midframe_cram_rom` each trigger a 64 KiB fill and never wait for it.
+
 ## 6. Who else changes behaviour (population, measured; draft numbers, instrument at `c60d3b0`)
 
 Observer-only spike, release profile, every suite green with it armed (so it is inert). One row per
