@@ -409,6 +409,165 @@ pub struct Vdp {
     vsram_read_latch: u16,
 }
 
+// spike: M1-FILL-OVER-TIME population instrument. Observer only; inert unless FILLSPIKE_OUT names a file.
+pub mod fill_spike {
+    use std::cell::RefCell;
+    use std::io::Write as _;
+
+    #[derive(Default, Clone, Debug)]
+    pub struct Rec {
+        pub rom: String,
+        pub idx: u32,
+        pub start: u64,
+        pub fill_start: u64,
+        pub end: u64,
+        pub old_until: u64,
+        pub len: u32,
+        pub target: &'static str,
+        pub dest: u16,
+        pub inc: u8,
+        pub display_on: bool,
+        pub h40: bool,
+        pub data_w: u32,
+        pub data_w_cd5: u32,
+        pub data_r: u32,
+        pub ctrl_reg: u32,
+        pub ctrl_reg_fill: u32,
+        pub ctrl_cmd: u32,
+        pub status: u32,
+        pub status_busy_differs: u32,
+        pub hv: u32,
+        pub mem_dma: u32,
+        pub copy: u32,
+        pub fill: u32,
+        pub lines_on: u32,
+        pub lines_off: u32,
+        pub first_port: Option<u64>,
+    }
+
+    struct State {
+        out: Option<String>,
+        rom: String,
+        idx: u32,
+        cur: Option<Rec>,
+    }
+
+    impl Drop for State {
+        fn drop(&mut self) {
+            if let Some(r) = self.cur.take() {
+                emit(&self.out, &r);
+            }
+        }
+    }
+
+    thread_local! {
+        static S: RefCell<State> = RefCell::new(State {
+            out: std::env::var("FILLSPIKE_OUT").ok(),
+            rom: String::new(),
+            idx: 0,
+            cur: None,
+        });
+    }
+
+    pub fn enabled() -> bool {
+        S.with(|s| s.borrow().out.is_some())
+    }
+    pub fn set_rom(l: String) {
+        S.with(|s| s.borrow_mut().rom = l);
+    }
+    pub fn begin(mut r: Rec) {
+        S.with(|s| {
+            let mut s = s.borrow_mut();
+            if s.out.is_none() {
+                return;
+            }
+            if let Some(p) = s.cur.take() {
+                emit(&s.out, &p);
+            }
+            s.idx += 1;
+            r.idx = s.idx;
+            r.rom = s.rom.clone();
+            s.cur = Some(r);
+        });
+    }
+    /// `f(rec, in_new_window)` for the open fill iff `mclk` lies in `[start, max(end, old_until))`.
+    pub fn note(mclk: u64, port: bool, f: impl FnOnce(&mut Rec, bool)) {
+        S.with(|s| {
+            let mut s = s.borrow_mut();
+            if let Some(r) = s.cur.as_mut() {
+                if mclk >= r.start && mclk < r.end.max(r.old_until) {
+                    let inw = mclk < r.end;
+                    if inw && port && r.first_port.is_none() {
+                        r.first_port = Some(mclk - r.start);
+                    }
+                    f(r, inw);
+                }
+            }
+        });
+    }
+    fn emit(out: &Option<String>, r: &Rec) {
+        let Some(p) = out else { return };
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        let line = format!(
+            "FILL\tthread={thread}\trom={}\tidx={}\tlen={}\ttarget={}\tdest={:#06x}\tinc={}\tdisp={}\th40={}\tstart={}\tfill_start_off={}\tnew_dur={}\told_dur={}\tdata_w={}\tdata_w_cd5={}\tdata_r={}\tctrl_reg={}\tctrl_reg_fill={}\tctrl_cmd={}\tstatus={}\tstatus_busy_differs={}\thv={}\tmem_dma={}\tcopy={}\tfill={}\tlines_on={}\tlines_off={}\tfirst_port={:?}\n",
+            r.rom, r.idx, r.len, r.target, r.dest, r.inc, r.display_on, r.h40, r.start,
+            r.fill_start - r.start, r.end - r.start, r.old_until - r.start, r.data_w, r.data_w_cd5,
+            r.data_r, r.ctrl_reg, r.ctrl_reg_fill, r.ctrl_cmd, r.status, r.status_busy_differs, r.hv,
+            r.mem_dma, r.copy, r.fill, r.lines_on, r.lines_off, r.first_port
+        );
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+}
+
+// spike: the proposed model's fill clock, walked slot by slot for the population count.
+impl Vdp {
+    pub fn spike_display_enabled(&self) -> bool {
+        self.display_enabled()
+    }
+    /// Instant of the `steps`-th external access slot strictly after `t`. Active lines use the published
+    /// slot positions (`next_active_slot`); blanked lines the flat per-line count at `k * L / spl`.
+    fn spike_slot_walk(&self, mut t: u64, steps: u64) -> u64 {
+        let mut left = steps;
+        while left > 0 {
+            let u = t + 1;
+            let line_start = (u / MCLK_PER_LINE) * MCLK_PER_LINE;
+            let blanked = self.vblank(line_start) || !self.display_enabled();
+            if !blanked {
+                t = self.next_active_slot(t);
+                left -= 1;
+                continue;
+            }
+            let spl = self.slots_per_line(line_start);
+            let pos = u - line_start;
+            let k = (pos * spl).div_ceil(MCLK_PER_LINE);
+            if k >= spl {
+                t = line_start + MCLK_PER_LINE - 1;
+                continue;
+            }
+            let avail = spl - k;
+            if left <= avail {
+                t = line_start + (k + left - 1) * MCLK_PER_LINE / spl;
+                left = 0;
+            } else {
+                left -= avail;
+                t = line_start + MCLK_PER_LINE - 1;
+            }
+        }
+        t
+    }
+    /// `(fill_start, end)` for a fill of `count` steps triggered at `now`: pending FIFO entries drain first.
+    fn spike_fill_window(&self, now: u64, count: u64) -> (u64, u64) {
+        let mut t = if self.fifo_len == 0 { now } else { self.fifo_slot_clock };
+        for i in 0..self.fifo_len {
+            let e = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len).wrapping_add(i) & 3) as usize];
+            t += self.entry_drain_cost(e.code, t);
+        }
+        (t, self.spike_slot_walk(t, count))
+    }
+}
+
 /// Palette entries in CRAM: 64 nine-bit colours, two bytes each ([`CRAM_SIZE`] = 128).
 pub const CRAM_ENTRIES: usize = CRAM_SIZE / 2;
 
@@ -647,6 +806,7 @@ impl Vdp {
     /// The HV-counter port value ($C00008): `(V << 8) | H`. Frozen to the M3 latch while reg 0 bit 1 (M3)
     /// is set — the interim HV-latch model (recon R2; see [`Vdp::hv_latch`]).
     pub fn hv_counter_read(&self, mclk: u64) -> u16 {
+        fill_spike::note(mclk, true, |r, inw| r.hv += inw as u32); // spike
         if self.regs[0] & 0x02 != 0 {
             self.hv_latch
         } else {
@@ -1160,6 +1320,22 @@ impl Vdp {
     /// CD1-CD0 + A13-A0 immediately, arm the toggle); or a second command word (CD5-CD2 + A15-A14, disarm).
     pub fn control_write(&mut self, w: u16, mclk: u64) {
         self.now_mclk = mclk; // the write choke points read it from here (slice 1)
+        {
+            // spike
+            let (pending, reg) = (self.pending, ((w >> 8) & 0x1F) as u8);
+            fill_spike::note(mclk, true, |r, inw| {
+                if inw {
+                    if !pending && (w >> 14) & 3 == 0b10 {
+                        r.ctrl_reg += 1;
+                        if matches!(reg, 1 | 15 | 19..=23) {
+                            r.ctrl_reg_fill += 1;
+                        }
+                    } else {
+                        r.ctrl_cmd += 1;
+                    }
+                }
+            });
+        }
         if !self.pending {
             // A first control word ALWAYS latches CD1-CD0 from bits 15-14 — including the `$8xxx` register
             // form, whose bits 15-14 are `10`. CD3-CD0 = `xx10` names no target in the code table, so after
@@ -1424,6 +1600,16 @@ impl Vdp {
     /// bits (memtest row 11: residue `4E71` + status `$288` → `4E88`). Internal/Z80-mirror callers pass 0
     /// (behavior-identical to pre-K4-5 for them).
     pub fn control_read_status(&mut self, open_bus: u16, mclk: u64) -> u16 {
+        {
+            // spike
+            let armed = self.fill_armed();
+            fill_spike::note(mclk, true, |r, inw| {
+                r.status += inw as u32;
+                if (armed || mclk < r.old_until) != (armed || mclk < r.end) {
+                    r.status_busy_differs += 1;
+                }
+            });
+        }
         self.pending = false;
         // Advance the time-based FIFO drain to `mclk` first so the live EMPTY/FULL bits (A1, T16) reflect
         // the FIFO's occupancy *now* — a status read never pops entries beyond this normal drain.
@@ -1578,6 +1764,27 @@ impl Vdp {
             len,
             target,
         });
+        if fill_spike::enabled() {
+            // spike
+            let (fs, end) = self.spike_fill_window(now, count as u64);
+            fill_spike::begin(fill_spike::Rec {
+                start: now,
+                fill_start: fs,
+                end,
+                old_until: now + cost,
+                len: count,
+                target: match target {
+                    VdpTarget::Vram => "vram",
+                    VdpTarget::Cram => "cram",
+                    VdpTarget::Vsram => "vsram",
+                },
+                dest,
+                inc: self.regs[0x0F],
+                display_on: self.display_enabled(),
+                h40: self.h40(),
+                ..Default::default()
+            });
+        }
         self.dma_busy_until = now + cost;
     }
 
@@ -1668,6 +1875,16 @@ impl Vdp {
     pub fn data_write_at(&mut self, w: u16, now: u64) -> u32 {
         // Slice 1: the write choke points read the instant from here.
         self.now_mclk = now;
+        {
+            // spike
+            let cd5 = self.code & 0x20 != 0;
+            fill_spike::note(now, true, |r, inw| {
+                if inw {
+                    r.data_w += 1;
+                    r.data_w_cd5 += cd5 as u32;
+                }
+            });
+        }
         // A DMA command's data write is not FIFO-timed here (the DMA slices own it); no stall, apply as before.
         if self.code & 0x20 != 0 {
             self.apply_data_write(w);
@@ -1751,6 +1968,7 @@ impl Vdp {
     /// Returns the value plus the CPU wait cycles for the `Bus68k` channel (`FlatBus` never reaches here → the
     /// SST corpus is untouched).
     pub fn data_read_at(&mut self, open_bus: u16, now: u64) -> (u16, u32) {
+        fill_spike::note(now, true, |r, inw| r.data_r += inw as u32); // spike
         self.fifo_drain(now);
         let mut wait_mclk = 0u64;
         // C2, same rule as `data_write_at`: measure from the already-charged mark, not from the caller's

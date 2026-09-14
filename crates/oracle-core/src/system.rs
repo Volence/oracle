@@ -1666,6 +1666,17 @@ impl System {
                 // inlined `bool` call per line against re-introducing that second source, which is not a
                 // trade worth making for a branch the optimiser already sees through.
                 if line < u64::from(ACTIVE_LINES) {
+                    // spike
+                    let on = self.vdp.spike_display_enabled();
+                    crate::vdp::fill_spike::note(deadline, false, |r, inw| {
+                        if inw {
+                            if on {
+                                r.lines_on += 1;
+                            } else {
+                                r.lines_off += 1;
+                            }
+                        }
+                    });
                     if sink.wants_scanlines() {
                         // Retain the resolved row + a 128-byte CRAM snapshot instead of decoding it now
                         // (conformance Limitation L1); the run loop decodes it at the next line's event.
