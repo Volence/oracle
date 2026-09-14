@@ -1174,9 +1174,10 @@ impl System {
         out.extend_from_slice(&self.ram);
         // Z80: the live 8 KiB Z80 RAM (68000-reachable at $A00000 — real mutable state that must be in the
         // currency) followed by the register sub-block. Region 4 is now LIVE (Z-live go-live): the 30-byte
-        // architectural register file (ZC9 layout), padded to the reserved 0x40. Because every committed
-        // fixture holds the Z80 in reset (all-zero reset model), these 30 bytes are all zero and the export
-        // golden does not move — a content change at unchanged size, no version bump (docs/export-state-v1.md).
+        // architectural register file (ZC9 layout), then the M24 `EI` shadow at byte 30, padded to the reserved
+        // 0x40. Because every committed fixture holds the Z80 in reset (all-zero reset model), these bytes are
+        // all zero and the export golden does not move — a content change at unchanged size, no version bump
+        // (docs/export-state-v1.md).
         out.extend_from_slice(&self.z80_ram);
         let z80_regs = self.z80.export_region();
         out.extend_from_slice(&z80_regs);
@@ -1708,7 +1709,8 @@ impl System {
                 }
             }
             // VInt raises the 68000's vblank IPL *and* asserts the Z80's `/INT` line (ZC14): on the Genesis the
-            // same vblank drives both CPUs' vblank interrupts. The Z80 accepts it if its driver has run `EI`.
+            // same vblank drives both CPUs' vblank interrupts. The Z80 accepts it once its driver has run `EI`
+            // and the one instruction after it (the `EI` shadow, UM0080 p.18; `Z80::step`).
             EventKind::VInt => {
                 self.vdp.raise_vint();
                 self.z80.set_int_line(true);
@@ -3515,6 +3517,95 @@ mod tests {
         assert!(r.halted, "the handler's final HALT re-idled the Z80");
     }
 
+    /// A Z80 caught between an `EI` and the instruction after it (M24's `EI` shadow), with interrupts enabled
+    /// and a request pending. Program at `$0100`: `INC A` ×3, `JR $`; the IM 1 handler at `$0038` stores `A`
+    /// at `$1000` and halts. `$1000` starts at `$FF`, so "not taken yet" reads apart from `A = 0`. Set up two
+    /// lines into the frame, so the frame-top deassert (line 0) cannot clear the request under the test.
+    fn z80_inside_the_ei_shadow() -> System {
+        use crate::z80::{Z80Regs, Z80};
+        let mut s = booted(0xE1);
+        let t = s.scheduler().now();
+        s.run_until(t + 2 * MCLK_PER_LINE);
+        s.z80_ram[0x0100..0x0105].copy_from_slice(&[0x3C, 0x3C, 0x3C, 0x18, 0xFE]);
+        s.z80_ram[0x0038..0x003C].copy_from_slice(&[0x32, 0x00, 0x10, 0x76]); // LD ($1000),A; HALT
+        s.z80_ram[0x1000] = 0xFF;
+        s.z80 = Z80::from_regs(&Z80Regs {
+            pc: 0x0100,
+            sp: 0x2000,
+            iff1: true,
+            iff2: true,
+            im: 1,
+            ei: true,
+            ..Default::default()
+        });
+        s.z80.set_int_line(true);
+        s.z80_running = true;
+        s
+    }
+
+    /// **A snapshot taken inside the `EI` shadow restores it** (M24). The shadow lives for one instruction, so
+    /// a frame boundary, a checkpoint or a save can land inside it, and a restore that lost it would take the
+    /// pending request one instruction early. The original and the restored machine must both store `A = 1`
+    /// (UM0080 p.18) and agree afterwards.
+    #[test]
+    fn a_snapshot_taken_inside_the_ei_shadow_restores_the_shadow() {
+        let mut s = z80_inside_the_ei_shadow();
+        let mut back = System::restore(&s.snapshot()).expect("snapshot decodes");
+        assert!(
+            back.z80.regs().ei,
+            "the restored Z80 is still inside the EI shadow"
+        );
+        for m in [&mut s, &mut back] {
+            let t = m.scheduler().now();
+            m.run_until(t + 20_000);
+        }
+        assert_eq!(
+            s.z80_ram[0x1000], 1,
+            "original: one INC A ran before the request was taken"
+        );
+        assert_eq!(
+            back.z80_ram[0x1000], 1,
+            "restored: the shadow survived the round trip"
+        );
+        assert_eq!(
+            back.z80.regs(),
+            s.z80.regs(),
+            "the restored Z80 is the one it was cut from"
+        );
+        assert_eq!(
+            back.export_state(),
+            s.export_state(),
+            "and so is the whole exported machine"
+        );
+    }
+
+    /// **A bus grant inside the `EI` shadow neither consumes nor loses it** (M24 under M21's grant model).
+    /// `catch_up_z80`'s grant arm moves only the frontier and never steps the core, and the shadow is written
+    /// only inside `Z80::step`, in the same call that runs the instruction after `EI`, so the acceptance test at
+    /// the top of the next step is the first place it is read. Held off the bus with the request pending, the
+    /// core takes nothing; released, it runs the one `INC A` and only then takes the request.
+    #[test]
+    fn a_bus_grant_inside_the_ei_shadow_neither_consumes_nor_loses_it() {
+        let mut s = z80_inside_the_ei_shadow();
+        s.z80_busreq = true;
+        let t = s.scheduler().now();
+        s.run_until(t + 20_000);
+        assert_eq!(
+            s.z80_ram[0x1000], 0xFF,
+            "nothing was taken while the 68000 held the bus"
+        );
+        let r = s.z80.regs();
+        assert!(r.ei, "the grant did not consume the shadow");
+        assert_eq!((r.a, r.pc), (0, 0x0100), "and ran nothing");
+        s.z80_busreq = false;
+        let t = s.scheduler().now();
+        s.run_until(t + 20_000);
+        assert_eq!(
+            s.z80_ram[0x1000], 1,
+            "released: one INC A ran, then the request was taken"
+        );
+    }
+
     /// `C3` (lens sweep 2026-09-06): a `$A11200` write drives a real `/RESET` into the **core**, not just
     /// the `z80_running` clock gate. Every other Z80-live test in this file sets `s.z80_running = true`
     /// directly and the one bus-driven test
@@ -3558,6 +3649,7 @@ mod tests {
             iff2: true,
             im: 2,
             halted: true,
+            ei: true,
             wz: 0x4321,
             q: 0xAB,
         };
@@ -3601,6 +3693,7 @@ mod tests {
         assert!(!r.iff2, "/RESET clears IFF2");
         assert_eq!(r.im, 0, "/RESET selects interrupt mode 0");
         assert!(!r.halted, "/RESET un-halts the core");
+        assert!(!r.ei, "/RESET clears the EI shadow (M24)");
         assert_eq!(r.wz, 0, "/RESET clears the internal WZ");
         assert_eq!(r.q, 0, "/RESET clears the internal Q");
         // Preserved: the architecturally-undefined register file (ZC9) — static storage /RESET never drives.

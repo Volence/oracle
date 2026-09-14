@@ -20,7 +20,8 @@
 //! - The per-case comparison gates on the `final` **register + touched-RAM** state and **ignores** the
 //!   per-cycle `cycles` bus trace — our instruction-atomic core does not reproduce sub-instruction bus cycles.
 //! - **Documented-flag mode** (the default, this slice's gate, ZC11): everything is asserted exactly — all
-//!   main + shadow registers, `pc`, `sp`, `i`, `r`, `iff1`/`iff2`, `im`, the documented flag bits
+//!   main + shadow registers, `pc`, `sp`, `i`, `r`, `iff1`/`iff2`, `im`, the `EI` shadow (the corpus's
+//!   `ei` field, M24: 1 after an `EI`, 0 after any other instruction), the documented flag bits
 //!   `S Z H P/V N C`, and RAM — **except** the undocumented flag bits 5/3 (`YF`/`XF`) and the `wz`/`q`
 //!   registers, which stay inert until the ZEXALL follow-up. Flipping [`STRICT_FLAGS`] on turns the excluded
 //!   state (all flag bits + `wz` + `q`) into hard assertions — the named, defaulted-off path a future
@@ -234,6 +235,7 @@ fn build_regs(s: &Value) -> Z80Regs {
         iff2: boolf(s, "iff2"),
         im: u8f(s, "im"),
         halted: false, // SST has no halted-input field; every case starts non-halted.
+        ei: boolf(s, "ei"),
         wz: u16f(s, "wz"),
         q: u8f(s, "q"),
     }
@@ -270,6 +272,8 @@ fn assert_final(name: &str, got: &Z80Regs, bus: &Z80TestBus, fin: &Value) {
     assert_eq!(got.iff1, want.iff1, "IFF1 [{name}]");
     assert_eq!(got.iff2, want.iff2, "IFF2 [{name}]");
     assert_eq!(got.im, want.im, "IM [{name}]");
+    // The EI shadow (M24, UM0080 p.18) is documented behaviour, so it is asserted in every mode.
+    assert_eq!(got.ei, want.ei, "EI shadow (the corpus's `ei`) [{name}]");
 
     // Flags: documented mode masks off the undocumented YF/XF (bits 5/3); strict mode asserts all 8 bits.
     if STRICT_FLAGS {
@@ -315,7 +319,8 @@ fn split_ports(t: &Value) -> (Vec<u8>, Vec<(u16, u8)>) {
     (reads, writes)
 }
 
-fn run_case(t: &Value) {
+/// Run one case, and return its `ei` before and after as the corpus states them, for the shadow tallies.
+fn run_case(t: &Value) -> (bool, bool) {
     let name = t["name"].as_str().unwrap_or("?");
     let ini = &t["initial"];
     let mut z80 = Z80::from_regs(&build_regs(ini));
@@ -328,6 +333,7 @@ fn run_case(t: &Value) {
 
     assert_final(name, &z80.regs(), &bus, &t["final"]);
     assert_eq!(bus.port_writes, expected_writes, "port OUT writes [{name}]");
+    (boolf(ini, "ei"), boolf(&t["final"], "ei"))
 }
 
 /// CI guard: the vendored corpus MUST be present under CI so a fetch regression fails loudly instead of the
@@ -367,6 +373,10 @@ fn z80_matches_singlesteptests() {
         return;
     }
     let mut total = 0usize;
+    // The EI shadow's three behaviours as the corpus states them, tallied so a zero is loud: cases that end
+    // with it raised (only an EI raises it), those of them that began raised (an EI inside the shadow
+    // re-arms it), and cases that began raised and end lowered (any other instruction consumes it).
+    let (mut ei_raised, mut ei_rearmed, mut ei_consumed) = (0usize, 0usize, 0usize);
     for fname in opcode_files() {
         let path = format!("{VENDOR_DIR}/{fname}.json");
         if !Path::new(&path).exists() {
@@ -376,7 +386,10 @@ fn z80_matches_singlesteptests() {
         let file = std::fs::File::open(&path).unwrap();
         let data: Vec<Value> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
         for t in &data {
-            run_case(t);
+            let (before, after) = run_case(t);
+            ei_raised += usize::from(after);
+            ei_rearmed += usize::from(before && after);
+            ei_consumed += usize::from(before && !after);
         }
         eprintln!("  {fname}.json: {} cases passed", data.len());
         total += data.len();
@@ -396,5 +409,14 @@ fn z80_matches_singlesteptests() {
         "expected 1268000 Z80 SST cases (base 252k + CB 256k + documented ED 58k + undocumented ED \
          mirrors 20k + documented DD/FD base 78k + undocumented IXH/IXL 92k + documented DDCB/FDCB 64k + \
          undocumented DDCB/FDCB register-copy 448k)"
+    );
+    eprintln!(
+        "EI shadow graded in all {total} cases: {ei_raised} end raised ({ei_rearmed} re-armed by an EI inside \
+         it), {ei_consumed} consumed by the instruction after it"
+    );
+    assert!(
+        ei_raised > 0 && ei_rearmed > 0 && ei_consumed > 0,
+        "UNMEASURABLE: the corpus no longer exercises every EI-shadow behaviour (raised {ei_raised}, \
+         re-armed {ei_rearmed}, consumed {ei_consumed})"
     );
 }

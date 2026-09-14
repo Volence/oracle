@@ -109,6 +109,7 @@ fn seed_regs() -> Z80Regs {
         iff2: true,
         im: 1,
         halted: false,
+        ei: false,
         wz: 0,
         q: 0,
     }
