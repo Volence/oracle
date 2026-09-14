@@ -1491,7 +1491,8 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 .get(0x150..0x180)
                 .map(|b| String::from_utf8_lossy(b).split_whitespace().collect::<Vec<_>>().join(" "))
                 .unwrap_or_default();
-            crate::vdp::fill_spike::set_rom(format!("{lab}|{:#x}", self.rom.len()));
+            let fnv = crate::state_hash::fnv1a_bytes(self.rom);
+            crate::vdp::fill_spike::set_rom(format!("{lab}|{:#x}|{fnv:016x}", self.rom.len()));
         }
         match req {
             DmaRequest::Mem { source, len } => self.run_mem_dma(source, len),

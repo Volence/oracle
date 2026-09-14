@@ -472,6 +472,15 @@ pub mod fill_spike {
     pub fn enabled() -> bool {
         S.with(|s| s.borrow().out.is_some())
     }
+    /// A new machine (power-on) or a restored one: close the open record, whose window belongs to the old.
+    pub fn reset() {
+        S.with(|s| {
+            let mut s = s.borrow_mut();
+            if let Some(p) = s.cur.take() {
+                emit(&s.out, &p);
+            }
+        });
+    }
     pub fn set_rom(l: String) {
         S.with(|s| s.borrow_mut().rom = l);
     }
@@ -559,10 +568,26 @@ impl Vdp {
     }
     /// `(fill_start, end)` for a fill of `count` steps triggered at `now`: pending FIFO entries drain first.
     fn spike_fill_window(&self, now: u64, count: u64) -> (u64, u64) {
-        let mut t = if self.fifo_len == 0 { now } else { self.fifo_slot_clock };
-        for i in 0..self.fifo_len {
+        // Drain exactly as `fifo_drain(now)` would (the CD5 trigger path skips it, so the clock may be
+        // stale), then drain what is still pending after `now`; the fill's first slot follows.
+        let mut t = self.fifo_slot_clock;
+        let mut i = 0u8;
+        while i < self.fifo_len {
+            let e = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len).wrapping_add(i) & 3) as usize];
+            let c = self.entry_drain_cost(e.code, t);
+            if t + c > now {
+                break;
+            }
+            t += c;
+            i += 1;
+        }
+        if i == self.fifo_len {
+            t = t.max(now);
+        }
+        while i < self.fifo_len {
             let e = self.fifo[(self.fifo_write.wrapping_sub(self.fifo_len).wrapping_add(i) & 3) as usize];
             t += self.entry_drain_cost(e.code, t);
+            i += 1;
         }
         (t, self.spike_slot_walk(t, count))
     }
@@ -606,6 +631,7 @@ impl Vdp {
     /// what [`crate::system::System::new`] did before the extraction, so the power-on `state_hash` is
     /// byte-identical. The RNG is drawn from **after** the work-RAM fill, preserving the draw order.
     pub fn power_on(rng: &mut SplitMix64) -> Self {
+        fill_spike::reset(); // spike
         let mut vram = vec![0u8; VRAM_SIZE];
         crate::system::fill_random(rng, &mut vram);
         Self {
@@ -1836,6 +1862,23 @@ impl Vdp {
             len,
             target: VdpTarget::Vram,
         });
+        if fill_spike::enabled() {
+            // spike: a copy's window on the same slot walk, two slots per byte (read + write).
+            let (fs, end) = self.spike_fill_window(now, count as u64 * 2);
+            fill_spike::begin(fill_spike::Rec {
+                start: now,
+                fill_start: fs,
+                end,
+                old_until: now + cost,
+                len: count,
+                target: "copy",
+                dest,
+                inc: self.regs[0x0F],
+                display_on: self.display_enabled(),
+                h40: self.h40(),
+                ..Default::default()
+            });
+        }
         self.dma_busy_until = now + cost;
     }
 

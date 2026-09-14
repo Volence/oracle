@@ -1072,6 +1072,7 @@ impl System {
     /// The restored machine holds **no** deferred scanline row (the retained row round-trips as nothing —
     /// see [`snapshot`](Self::snapshot)), so restoring a mid-frame checkpoint costs the resumed run one row.
     pub fn restore(bytes: &[u8]) -> Result<Self, RestoreError> {
+        crate::vdp::fill_spike::reset(); // spike
         let (system, _len): (System, usize) =
             bincode::decode_from_slice(bytes, bincode::config::standard())?;
         system.check_regions().map_err(RestoreError::Malformed)?;
