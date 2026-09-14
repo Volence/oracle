@@ -1072,7 +1072,6 @@ impl System {
     /// The restored machine holds **no** deferred scanline row (the retained row round-trips as nothing —
     /// see [`snapshot`](Self::snapshot)), so restoring a mid-frame checkpoint costs the resumed run one row.
     pub fn restore(bytes: &[u8]) -> Result<Self, RestoreError> {
-        crate::vdp::fill_spike::reset(); // spike
         let (system, _len): (System, usize) =
             bincode::decode_from_slice(bytes, bincode::config::standard())?;
         system.check_regions().map_err(RestoreError::Malformed)?;
@@ -1547,16 +1546,6 @@ impl System {
             // register write mid-step is picked up here too (recon R12).
             self.cpu.set_ipl(self.vdp.ipl());
         }
-        // spike prototype: a paused machine is caught up to its own now, and that catch-up's writes are
-        // delivered like any step's (a snapshot refuses a non-empty capture buffer).
-        self.vdp.fill_catch_up(self.scheduler.now());
-        if capture {
-            for w in self.vdp.take_write_captures() {
-                if wants_writes {
-                    sink.on_vdp_write(w);
-                }
-            }
-        }
         // Disarm — leave the VDP as the run found it (a subsequent null-sink run must stay on the hot path).
         if capture {
             self.vdp.set_write_capture(false);
@@ -1677,18 +1666,6 @@ impl System {
                 // inlined `bool` call per line against re-introducing that second source, which is not a
                 // trade worth making for a branch the optimiser already sees through.
                 if line < u64::from(ACTIVE_LINES) {
-                    self.vdp.fill_catch_up(deadline); // spike prototype: the line sees the fill as of its start
-                    // spike
-                    let on = self.vdp.spike_display_enabled();
-                    crate::vdp::fill_spike::note(deadline, false, |r, inw| {
-                        if inw {
-                            if on {
-                                r.lines_on += 1;
-                            } else {
-                                r.lines_off += 1;
-                            }
-                        }
-                    });
                     if sink.wants_scanlines() {
                         // Retain the resolved row + a 128-byte CRAM snapshot instead of decoding it now
                         // (conformance Limitation L1); the run loop decodes it at the next line's event.

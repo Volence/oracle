@@ -1475,26 +1475,6 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         let Some(req) = self.vdp.take_dma_request() else {
             return 0;
         };
-        // spike: count DMAs started inside an open fill window, and label the ROM for the record.
-        crate::vdp::fill_spike::note(self.now_mclk, true, |r, inw| {
-            if inw {
-                match req {
-                    DmaRequest::Mem { .. } => r.mem_dma += 1,
-                    DmaRequest::Copy { .. } => r.copy += 1,
-                    DmaRequest::Fill { .. } => r.fill += 1,
-                    DmaRequest::FillRunning => {}
-                }
-            }
-        });
-        if crate::vdp::fill_spike::enabled() {
-            let lab = self
-                .rom
-                .get(0x150..0x180)
-                .map(|b| String::from_utf8_lossy(b).split_whitespace().collect::<Vec<_>>().join(" "))
-                .unwrap_or_default();
-            let fnv = crate::state_hash::fnv1a_bytes(self.rom);
-            crate::vdp::fill_spike::set_rom(format!("{lab}|{:#x}|{fnv:016x}", self.rom.len()));
-        }
         match req {
             DmaRequest::Mem { source, len } => self.run_mem_dma(source, len),
             DmaRequest::Fill { len, fill } => {
@@ -1507,7 +1487,6 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 self.vdp.run_copy(source, len, self.now_mclk);
                 0
             }
-            DmaRequest::FillRunning => 0, // spike prototype: never handed to the bus
         }
     }
 
