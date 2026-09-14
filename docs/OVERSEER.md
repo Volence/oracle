@@ -81,6 +81,10 @@ this lane cuts its own OVERSEER.md to about 40 KB by the when-read rule (aeon's 
 next two in order (empyrean `492a2ac`): NEXT is delete B (STYLE-NUMBER-BAKEOFF), then parcel 3.**
 **Delete B LANDED 2026-09-13 (merge `f0f0a96`, agent tip `421b005`; STYLE-NUMBER-BAKEOFF CLOSED, DATA-DISPLAY-AUDIT
 unblocked). NEXT: M24 parcel 3 (EI delay), no further go needed (the hub, empyrean `579d485:docs/OVERSEER.md:173`).**
+**M24 parcel 3 LANDED 2026-09-14 (merge `d421f51`, agent tip `06bd27a`; go: the hub under his delegation, read at empyrean
+`f13feff:docs/OVERSEER.md:99`).** The EI delay: C1 `A`, C2a/C2b `HL` 0 → 1, nothing else moved; SST-z80 now grades the
+corpus's `ei` field. Saves from before `d421f51` are refused by the layout fingerprint (precedent `28e4587`). **NEXT: M1-FILL-OVER-TIME**
+(the hub's 09-13 order, H22 → M24 → M1). Parcel 4 (`/INT` level) needs his listen ruling when reached; no card filed yet.
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 
