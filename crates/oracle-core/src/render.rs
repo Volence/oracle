@@ -940,22 +940,63 @@ pub fn decode_cell(word: u16) -> Cell {
     }
 }
 
+/// **Where pixel (`px`, `py`) of pattern `tile` lives in VRAM**, as a byte address: a tile is 32 bytes
+/// (8 rows × 4 bytes), each byte two pixels, and the address wraps into the 64 KiB region.
+///
+/// A function rather than an expression repeated at each call site, for lens M63's reason: until M63 the
+/// renderer and the player's plane viewer each carried this arithmetic byte for byte, so the viewer and the
+/// picture could disagree about a tile with nothing red to say so. [`tile_pixel`] and [`tile_row`] are the
+/// two *shapes* the fetch is wanted in — one pixel on the renderer's per-dot path, a whole row where eight
+/// pixels are about to be painted at once — and they are two readings of this one address, not two
+/// spellings of it.
+#[inline]
+fn tile_byte(tile: u16, px: u8, py: u8) -> usize {
+    (tile as usize * 32 + py as usize * 4 + (px as usize >> 1)) & (VRAM_SIZE - 1)
+}
+
+/// The two pixels a tile byte packs, **high nibble = left**. The one statement of that order.
+#[inline]
+fn tile_nibbles(byte: u8) -> (u8, u8) {
+    (byte >> 4, byte & 0x0F)
+}
+
 /// **The 4-bit colour index of pixel (`px`, `py`) of pattern `tile`**, read from `vram` (recon RR2): a tile
 /// is 32 bytes (8 rows × 4 bytes), each byte two pixels, **high nibble = left**. `px`/`py` are 0..=7 with
 /// any flips already applied by the caller; the address wraps into the 64 KiB region.
 ///
-/// The one statement of the tile pixel fetch in the tree. The renderer (`Vdp::tile_nibble`, once per plane
-/// per dot) and the player's plane viewer (`oracle-player`'s `planes::nibble`) both call it; until lens
-/// M63 each carried the address expression byte for byte, so the viewer and the picture could disagree
-/// about a tile with nothing red to say so.
+/// One byte read, because the renderer wants exactly one pixel: `Vdp::tile_nibble` calls this once per
+/// plane per dot. A caller that is about to paint a whole tile row wants [`tile_row`] instead — the same
+/// fetch through the same [`tile_byte`], with the address resolved four times rather than eight.
 #[inline]
 pub fn tile_pixel(vram: &[u8], tile: u16, px: u8, py: u8) -> u8 {
-    let byte = vram[(tile as usize * 32 + py as usize * 4 + (px as usize >> 1)) & (VRAM_SIZE - 1)];
+    let (hi, lo) = tile_nibbles(vram[tile_byte(tile, px, py)]);
     if px & 1 == 0 {
-        byte >> 4
+        hi
     } else {
-        byte & 0x0F
+        lo
     }
+}
+
+/// **The eight 4-bit colour indices of row `py` of pattern `tile`**, left to right, no flips applied.
+///
+/// [`tile_pixel`]'s fetch through [`tile_pixel`]'s address, for the caller that wants all eight: four byte
+/// reads and four address computations instead of eight of each. The plane viewer (`oracle-player`'s
+/// `planes::cell_row`) paints a tile row at a time and calls this; the renderer's own path resolves one dot
+/// at a time and keeps [`tile_pixel`].
+///
+/// ⚑ `Vdp::tile_pixels` is a **third** decode of the same bytes, over a whole tile, and it still carries
+/// address arithmetic of its own (`index.wrapping_mul(32)`, over a `usize` slot rather than a pattern
+/// number). It is left alone here deliberately — its signature is wider than a pattern index and callers
+/// rely on that — and named so the next reader finds it rather than rediscovers it.
+#[inline]
+pub fn tile_row(vram: &[u8], tile: u16, py: u8) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    for i in 0..4u8 {
+        let (hi, lo) = tile_nibbles(vram[tile_byte(tile, i * 2, py)]);
+        out[i as usize * 2] = hi;
+        out[i as usize * 2 + 1] = lo;
+    }
+    out
 }
 
 /// Decode a plane's dimensions in **cells** from register $10 (recon RR3): horizontal size = bits 1–0,
@@ -2898,6 +2939,42 @@ mod tests {
         set_reg(&mut v, 0x0C, 0x81); // H40
         assert_eq!(v.window_base(), 0x3C << 10, "H40 clears WD11 (bit 1)");
         assert_eq!(v.window_stride(), 64);
+    }
+
+    /// ⚑ **[`tile_row`] is [`tile_pixel`], eight at a time.** They are two readings of one address
+    /// ([`tile_byte`]) and one nibble order ([`tile_nibbles`]), and this row is what keeps that true: over
+    /// pseudo-random VRAM, every pixel of the first 64 patterns has to agree, pixel by pixel.
+    ///
+    /// Without it the row shape could drift — a swapped nibble pair, an off-by-one row stride — and the
+    /// only witness would be the plane viewer looking *almost* right, which is the exact failure lens M63
+    /// was raised for.
+    #[test]
+    fn tile_row_is_tile_pixel_eight_at_a_time() {
+        let mut rng = SplitMix64::new(0x00C0_FFEE);
+        let mut vram = vec![0u8; VRAM_SIZE];
+        for b in vram.iter_mut() {
+            *b = (rng.next_u64() >> 29) as u8;
+        }
+        let mut nonzero = 0usize;
+        for tile in 0..64u16 {
+            for py in 0..8u8 {
+                let row = tile_row(&vram, tile, py);
+                for px in 0..8u8 {
+                    assert_eq!(
+                        row[px as usize],
+                        tile_pixel(&vram, tile, px, py),
+                        "tile {tile}, row {py}, pixel {px}"
+                    );
+                    nonzero += usize::from(row[px as usize] != 0);
+                }
+            }
+        }
+        // Loud on a fixture that stopped varying: over zeroed VRAM every assertion above is 0 == 0, and
+        // a row function that returned zeros would pass the lot.
+        assert!(
+            nonzero > 3000,
+            "only {nonzero} of 4096 pixels were non-zero: the fixture stopped varying"
+        );
     }
 
     // --- design §4: plane_decoded -------------------------------------------------------------------------
