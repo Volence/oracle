@@ -1,5 +1,5 @@
 {
-  "focus": "Two of the three window complaints left on your list were already fixed; two quick looks are yours.",
+  "focus": "The next panel job is measured and written down, so whoever picks it up starts from what is true today.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -18,7 +18,7 @@
       "id": "d-53"
     }
   ],
-  "nextBoundary": "Now. Landed, pushed, verified; nothing is running.",
+  "nextBoundary": "Now, and cheaply: the next job's homework is committed, so a fresh session starts it without asking you anything.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -98,7 +98,7 @@
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Unblocked now B is gone: the other panels follow the shared-card shape. Two for your eyes: the tab opening straight on its numbers, and how it clips in a narrow panel."
+      "title": "Ready to start and needs no decision from you: the other panels follow the shared-card shape. Measured fresh today, because the week-old note was wrong in both directions. Two bits are for your eyes."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -117,7 +117,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "Nothing blocking. Three cards wait on you when you are around (d-51, d-52, d-53); the next row is the rest of the panels' readability and needs no decision.",
+  "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-16T10:31:54Z"
+  "updatedAt": "2026-09-16T11:44:53Z"
 }

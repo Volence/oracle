@@ -233,12 +233,40 @@ Wayland, `xdotool` is not installed so no gesture was synthesised, and §1.7's W
 source (pointer drag, in-viewport `egui::Window`) rather than a measurement on his compositor. Tab drag does NOT inherit the
 `DroppedFile` blind spot; that is reasoned, not observed.
 
-**NEXT: `DATA-DISPLAY-AUDIT`** — ⚑ *re-derive before starting, and this clause is refreshed by the same edit that landed the
-row above, which is the habit booked this morning against its own rotting*: the sources are `docs/2026-09-05-debug-window-audit.md`
-(the per-panel build order), the style rules it applies and in two places corrects, and the 2026-09-03 tab ruling in
-`docs/OVERSEER-REFERENCE.md`. It was blocked on the duplicate number style and is unblocked since `f0f0a96`. **Two items in it
-are HIS eyes, not ours.** ⚑ And the row above is the reason to check the premise in the tree first: this row's booking is
-also a week old.
+**NEXT: `DATA-DISPLAY-AUDIT`, and its premise is now RE-DERIVED rather than booked** — the derivation is
+banked at the audit's own canonical site (`docs/2026-09-05-debug-window-audit.md`, addendum 2026-09-16, written
+at `16eef9e`), so a brief is composed from that addendum and never from §2. Sources, no figures: that addendum,
+the per-panel build order it corrects, the style rules, and the 2026-09-03 tab ruling in `docs/OVERSEER-REFERENCE.md`.
+Unblocked since `f0f0a96`. **Two items in it are HIS eyes, not ours.**
+⚑ **The re-derivation earned its cost immediately, and in BOTH directions, which is new.** Every earlier
+instance this week was a booking that overstated what was left. This one **overstated and understated at once**:
+item 1's em dash was already gone (closed as a side effect of the P10 dash sweep, `7e16748`, which had no idea
+it was touching this row), while its two secondary sites had **drifted ninety lines** from the cited `:504`/`:518`
+to `:596`/`:610`. A brief written from §2 would have sent an agent to fix something already fixed and to read
+two wrong addresses. **A booking does not rot in one direction, so "is it still needed" is only half the check;
+the other half is "is it still WHERE it says".**
+⚑ **And a rule-by-rule claim can be PARTLY closed by a sweep keyed to one of its rules.** §0.3 charged one
+expression under P1, P3 and P10. P10 is closed and the other two are untouched — by a parcel that was not
+looking at this row at all. **A multi-rule finding needs re-checking per rule, because nothing anywhere records
+that a sweep closed a third of it.**
+⚑ **One provenance check that changes how the item reads, and it is why it was worth running:** the doc comment
+above `memory.rs`'s `Line` declares the JSON passthrough deliberate (*"Nothing here paraphrases the server"*).
+`git log -S` puts it at `9c4908f`, **two days BEFORE the audit read that code and named the line its
+highest-value fix.** So it is prior art the audit already overruled, not a later ruling — doing item 1 overturns
+nothing. **A rationale sitting at the decision site outranks nothing by being there**, and a reader meeting it
+cold would reasonably have stopped.
+
+**SEQUENCING, this seat's, 2026-09-16, after the hub's nudge and recorded as a REASON rather than a wait.** The
+hub observed — correctly — that this lane sat at a boundary with `awaiting` saying *"waiting on your pick"* while
+its own `next` row needs no pick, which is the **inflating** direction of sigil's finding (*a row that manufactures
+an owner-wait is the kind nobody audits, because it looks like care*). `awaiting` was fixed on the spot. The
+licence not to wait is real and was verified firsthand rather than taken from the nudge: empyrean `70077e2` is an
+ancestor of their `origin/main` and carries both *"Do not boot into a stop and wait for a pick"* and *a lane
+rebooted mid-project does NOT stop at its boot stop*. **The dispatch is nevertheless HELD, on the hub's own
+asymmetry: a background agent does not survive the `/clear` this lane is queued for on his card**, and the
+protocol's rotation rule says to bank enough state to re-dispatch from the repo alone. That is exactly what the
+addendum above is. **So the hold is on the AGENT, not on the row**, and it costs nothing: a fresh session boots,
+reads the addendum, and dispatches without re-deriving anything.
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

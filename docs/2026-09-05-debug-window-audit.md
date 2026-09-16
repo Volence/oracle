@@ -644,3 +644,46 @@ it drew, so the tab now opens on its headline card.
 
 **Not settled here.** Building the other panels' headline numbers in this shape is `DATA-DISPLAY-AUDIT`'s
 work. Nothing above this heading has been re-measured at this revision.
+
+---
+
+## Addendum, 2026-09-16: the build order re-derived from the TREE before the row starts, and item 1 is not what the booking says
+
+Written at `16eef9e` by the overseer seat, before dispatching anything. **The row's booking is eleven days
+old and nothing above this heading had been re-measured since**, so this is the habit banked this morning
+(*re-derive a queue row's premise from the tree, never from the note that booked it*) applied to a row
+**before** it is started rather than after it lands. Two of the booking's facts had moved, **in opposite
+directions**, which is the part worth keeping: a brief composed from §2 alone would have told an agent to
+fix something already fixed *and* pointed it at line numbers ninety lines off.
+
+**Item 1 (§0.3) is STILL OPEN in substance, and it is cheaper than booked.**
+
+* `memory.rs:842` `answer_line` still renders `Answer::Ok(v)` as `format!("ok: {v}")` — a raw
+  `serde_json::Value` by `Display`. **P1 and P3 stand broken on the five surfaces §0.3 names.**
+* **What closed, and by an unrelated parcel: the em dash only.** `"ok — "` is now `"ok: "`, swept at
+  `7e16748` (the P10 workspace dash sweep), which had no idea it was touching this row. So **one third of
+  §0.3's three-rule claim is closed as a side effect of someone else's work, and the other two are
+  untouched.** A rule-by-rule claim can be partly closed by a sweep keyed to one of its rules.
+* The refusal arm improved independently and is no longer part of the item: it spells `code`, `reason` and
+  `message` rather than dumping.
+* The two extra sites are live and have **drifted**: `memory.rs:596` and `:610`, not the `:504`/`:518` §0.3
+  cites. `:610` is still the prefix-search path, so the audit's "not a rare path" still holds.
+* **The doc comment above `Line` is PRIOR ART, not a ruling, and it was checked rather than assumed.**
+  It says *"The text itself is the reply's own JSON … Nothing here paraphrases the server."* Provenance by
+  `git log -S`: it entered at `9c4908f` (2026-09-03), the panel's original authoring — **two days before
+  this audit read the code and named the line its highest-value fix.** So doing item 1 overturns nothing;
+  it resolves a disagreement the audit already adjudicated, against a rationale it had already seen.
+  *(Worth stating because a reader meeting that comment cold would reasonably stop.)*
+* **The fix model is one file away and already gated.** `ui.rs`'s `render` is exhaustive over every
+  `Value` variant with `no_served_value_can_put_raw_json_on_the_screen` walking them. Item 1 is therefore
+  **applying a shipped, tested treatment to three sites**, not a design question.
+
+**Parcels 3-5's prerequisite is genuinely undone, and §2's description of it survives the tree.**
+`text_w` (`ui.rs:3904`), `column_widths` (`:3934`), `table_cell` (`:3987`) and `cell_face` (`:4038`) all
+still take `&objects::Col`; `cell_colour` (`:4492`) still matches `c.field` on `objects::Field`, and
+`Col` still carries `field`. Lifting the colour decision to a caller-supplied closure is still the whole
+of it. **13 `monospace(format!)` draws remain in `ui.rs`**, which is the crude size of what is left.
+
+**Not re-measured here:** items 6-11. They are not what a first parcel would touch, and a figure
+re-derived now would be the same eleven days stale by the time anyone reads it — **name the source, not
+the figure.** Re-derive each at the moment it is proposed, the same way this one was.
