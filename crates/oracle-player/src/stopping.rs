@@ -54,9 +54,11 @@ use std::collections::BTreeMap;
 use oracle_aether::breakpoints::Breakpoints;
 use oracle_aether::engine::{breakpoint_wire_id, symbol_at, watch_wire_id, LastBreak};
 use oracle_aether::hex;
+use oracle_core::bus::BusOp;
+use oracle_core::m68000::microop::Size;
 use oracle_core::profiler::{Counts, Profiler};
 use oracle_core::symbols::SymbolTable;
-use oracle_core::watchpoints::{WatchHit, WatchReport, Watchpoints};
+use oracle_core::watchpoints::{WatchHit, WatchOp, WatchReport, WatchSpace, Watchpoints};
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------------------------------
@@ -220,6 +222,253 @@ pub struct WatchRow {
     pub report: WatchReport,
 }
 
+/// What a watch's `stopAfter` cell says when the watch will never halt a run.
+///
+/// **P6: a stated absence, never a blank and never a zero.** A blank here and a `stopAfter` of zero
+/// would read the same, and one of them means *halt immediately*.
+pub const STOP_NEVER: &str = "never";
+
+/// Why, for the hover on [`STOP_NEVER`].
+pub const STOP_NEVER_WHY: &str =
+    "this watch records and counts but never halts a run. A number here is \
+                                  the match count at which it does.";
+
+/// What a `label` cell says when the caller gave none.
+///
+/// The window's markers are parenthesised and lower case ([`crate::objects::NO_NAME`] is the first of
+/// them), so a reader who learns one meets the same shape here. The *reason* is not shared, because a
+/// missing label is a fact about the gesture that armed the row and a missing symbol is a fact about the
+/// listing.
+pub const NO_LABEL: &str = "(no label)";
+
+/// Why, for the hover on [`NO_LABEL`].
+pub const NO_LABEL_WHY: &str =
+    "the gesture that armed this row carried no label. It is the caller's own \
+                                free text and the server never invents one.";
+
+/// How a watch's **op filter** is spelled for a reader, in place of `{:?}` on [`WatchOp`].
+///
+/// ⚑ `Any` is *"read and write"* rather than `Any`, because `Any` is this crate's word for the filter and
+/// the reader's question is *which accesses does this catch?*. The three strings are the whole vocabulary
+/// of the column, so [`OP_WORDS`] holds them once and the column's width can be measured from the list
+/// rather than from every row.
+pub fn op_word(op: WatchOp) -> &'static str {
+    match op {
+        WatchOp::Read => OP_WORDS[0],
+        WatchOp::Write => OP_WORDS[1],
+        WatchOp::Any => OP_WORDS[2],
+    }
+}
+
+/// Every word [`op_word`] can produce, in its own order.
+pub const OP_WORDS: [&str; 3] = ["read", "write", "read and write"];
+
+/// How a **recorded hit's** bus operation is spelled, in place of `{:?}` on [`BusOp`].
+///
+/// `Tas` is spelled out because it is the 68000's indivisible read-modify-write and a reader meeting
+/// `Tas` in a column has to go and look it up; the three letters are an abbreviation of exactly this.
+pub fn bus_op_word(op: BusOp) -> &'static str {
+    match op {
+        BusOp::Read => HIT_OP_WORDS[0],
+        BusOp::Write => HIT_OP_WORDS[1],
+        BusOp::Tas => HIT_OP_WORDS[2],
+    }
+}
+
+/// Every word [`bus_op_word`] can produce.
+pub const HIT_OP_WORDS: [&str; 3] = ["read", "write", "test and set"];
+
+/// How an access width is spelled, in place of `{:?}` on [`Size`].
+pub fn size_word(s: Size) -> &'static str {
+    match s {
+        Size::Byte => SIZE_WORDS[0],
+        Size::Word => SIZE_WORDS[1],
+        Size::Long => SIZE_WORDS[2],
+    }
+}
+
+/// Every word [`size_word`] can produce.
+pub const SIZE_WORDS: [&str; 3] = ["byte", "word", "long"];
+
+/// How an address space is spelled, in place of `{:?}` on [`WatchSpace`].
+///
+/// ⚑ **Indexed into [`WATCH_SPACES`] rather than spelled a second time**, so the word the table shows for
+/// a watch and the word the add row's selector offered for it are the same string by construction. A
+/// second spelling here is how a panel comes to say `Vram` in one place and `vram` in another, on the one
+/// tab where the space is the difference between a hit and a missed one.
+pub fn space_word(s: WatchSpace) -> &'static str {
+    match s {
+        WatchSpace::Bus => WATCH_SPACES[0],
+        WatchSpace::Vram => WATCH_SPACES[1],
+        WatchSpace::Cram => WATCH_SPACES[2],
+        WatchSpace::Vsram => WATCH_SPACES[3],
+    }
+}
+
+/// **The armed-watch table's columns.**
+///
+/// The three cell counts (`matched`, `stopAfter`) keep the monospace face for [`PROFILER_COLS`]' stated
+/// reason: a right-aligned column of proportional digits does not line up, which is the entire reason the
+/// column is right-aligned. `stopAfter` keeps it even though most of its cells say [`STOP_NEVER`] — the
+/// cells that matter are the numbers, and they are read against `matched` one column over.
+pub const WATCH_COLS: [crate::table::Col; 7] = [
+    crate::table::Col {
+        head: "handle",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "space",
+        numeric: false,
+        mono: false,
+    },
+    crate::table::Col {
+        head: "range",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "op",
+        numeric: false,
+        mono: false,
+    },
+    crate::table::Col {
+        head: "matched",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "stopAfter",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "label",
+        numeric: false,
+        mono: false,
+    },
+];
+
+/// **The retained hit log's columns.**
+///
+/// The order is the order the log shipped in, because a reader who has watched this log scroll reads it
+/// left to right by muscle memory; what changed is that the columns are columns now rather than a
+/// `"#{:<7} f{:<6} …"` format string.
+pub const HIT_COLS: [crate::table::Col; 7] = [
+    crate::table::Col {
+        head: "seq",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "frame",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "addr",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "op",
+        numeric: false,
+        mono: false,
+    },
+    crate::table::Col {
+        head: "size",
+        numeric: false,
+        mono: false,
+    },
+    crate::table::Col {
+        head: "value",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "pc",
+        numeric: false,
+        mono: true,
+    },
+];
+
+impl WatchRow {
+    /// This row's cells for [`WATCH_COLS`], in order. **The single place an armed watch becomes display
+    /// text**, so the panel is a table of facts rather than a table of format strings.
+    pub fn cells(&self) -> Vec<String> {
+        let w = &self.report;
+        vec![
+            self.handle.clone(),
+            space_word(w.space).to_owned(),
+            format!(
+                "{}..={}",
+                hex::addr(*w.range.start()),
+                hex::addr(*w.range.end())
+            ),
+            op_word(w.op).to_owned(),
+            w.matched.to_string(),
+            match w.stop_after {
+                Some(n) => n.to_string(),
+                None => STOP_NEVER.to_owned(),
+            },
+            if w.label.is_empty() {
+                NO_LABEL.to_owned()
+            } else {
+                w.label.clone()
+            },
+        ]
+    }
+}
+
+/// One recorded hit's cells for [`HIT_COLS`], in order.
+///
+/// A free function rather than a method on a view row, because **the log is virtualised and no row type
+/// is built for the hits that are not on screen.** The ring holds up to `EngineConfig::watch_ring_cap`
+/// entries; projecting all of them into rows every repaint is the cost `show_rows` exists to avoid, and
+/// building a `Vec<TableRow>` of the whole log in the view would have reintroduced it one layer up.
+pub fn hit_cells(h: &WatchHit) -> Vec<String> {
+    vec![
+        h.seq.to_string(),
+        h.frame.to_string(),
+        hex::addr(h.addr),
+        bus_op_word(h.op).to_owned(),
+        size_word(h.size).to_owned(),
+        format!("{:#X}", h.value),
+        hex::addr(h.pc),
+    ]
+}
+
+/// ⚑ **The widest string each [`HIT_COLS`] column can hold, without looking at every row.**
+///
+/// The hit log's widths have to be measured **once, outside `show_rows`**, or the virtualisation is
+/// undone: measuring the true widest cell of a 4096-entry ring every repaint is the same whole-log walk
+/// that cost 15.220 ms of `ui-build` before the log was virtualised at all. So the widths are measured
+/// from *bounds* rather than from the data:
+///
+/// * `seq` and `frame` are **monotonic and the log is newest-last**, so the last entry carries the
+///   largest of each. One row, read in `O(1)`.
+/// * `addr` and `pc` are [`hex::addr`], which is `0x` plus exactly eight digits for every `u32`, so the
+///   bound is any address and `u32::MAX` is the honest spelling of one.
+/// * `value` is `{:#X}`, whose widest `u32` is `0xFFFFFFFF`.
+/// * `op` and `size` are closed word lists ([`HIT_OP_WORDS`], [`SIZE_WORDS`]), so **every** word is a
+///   candidate and the caller measures the widest — which is not the longest by character count once a
+///   proportional face is installed, and is exactly why this hands back candidates rather than a pick.
+///
+/// Each entry is a column's candidate list; the caller takes the widest it measures. An empty log has no
+/// `seq`/`frame` bound and yields `"0"`, which is what an empty column is worth.
+pub fn hit_width_candidates(hits: &[WatchHit]) -> Vec<Vec<String>> {
+    let last = hits.last();
+    vec![
+        vec![last.map_or(0, |h| h.seq).to_string()],
+        vec![last.map_or(0, |h| h.frame).to_string()],
+        vec![hex::addr(u32::MAX)],
+        HIT_OP_WORDS.iter().map(|s| (*s).to_owned()).collect(),
+        SIZE_WORDS.iter().map(|s| (*s).to_owned()).collect(),
+        vec![format!("{:#X}", u32::MAX)],
+        vec![hex::addr(u32::MAX)],
+    ]
+}
+
 /// Everything the Watchpoints tab draws for one repaint: the armed watches, the hit log, and the three
 /// aggregate counters that make a *negative* finding readable.
 pub struct WatchView {
@@ -232,18 +481,68 @@ pub struct WatchView {
     /// both numbers are shown. It is handed the 68000's traffic and, of the Z80's, only the FM/PSG register
     /// writes (F-Z80-ACCESSES-UNWATCHED); [`caveats`](Self::caveats) says so when a watch covers memory the
     /// Z80 can reach.
+    /// ⚑ `matched` and `dropped` are deliberately **not** carried beside it. Each had exactly one reader
+    /// -- the renderer, which formatted it -- and each is now stated once, in [`headline`](Self::headline),
+    /// in the form the panel draws. `seen` stays because [`Live::Retained`]'s sentence branches on it,
+    /// which is a reader that is not the drawing of the number.
     pub seen: u64,
-    pub matched: u64,
-    /// Hits the ring could not keep. Non-zero means the log below has gaps, and a `seq` gap marks them.
-    pub dropped: u64,
     /// The instrument's own caveats about what its numbers mean on this run — its words, not ours.
     pub caveats: Vec<String>,
     pub live: Live,
+    /// **The three numbers the tab is opened to read**: `seen`, `matched`, `dropped`, in the shared
+    /// big-number shape.
+    ///
+    /// They are the three that make a *negative* finding readable, which is this instrument's own stated
+    /// hazard, and they used to be one `ui.monospace("seen {}   matched {}   dropped {}")` line: three
+    /// labelled counts glued into one sentence in the face reserved for machine numbers, with three
+    /// hand-counted spaces doing a column's work.
+    pub headline: Vec<crate::pacing::Stat>,
+    /// The hit log's own head: how many rows it retained, and what the ring could not keep.
+    ///
+    /// Composed here rather than at the draw site, which is the Pacing exemplar's first lesson: a panel
+    /// whose correctness lives in its draw calls is a panel nothing can check.
+    pub hit_log_head: String,
+    /// Per [`HIT_COLS`] column, the strings the log's widths are measured from — see
+    /// [`hit_width_candidates`] for why the widths cannot be measured from the rows.
+    pub hit_widths: Vec<Vec<String>>,
 }
+
+/// The hover behind `seen`.
+const SEEN_HOVER: &str = "Every access the instrument was handed, whether or not any watch matched it. \
+                          It is handed the 68000's traffic and, of the Z80's, only the FM/PSG register \
+                          writes.";
+
+/// The hover behind `matched`, which is the number a negative finding is read from.
+const MATCHED_HOVER: &str = "Accesses that fell inside an armed watch. `seen` above zero with this at \
+                             zero is a real answer: the range was watched and nothing the instrument was \
+                             handed touched it.";
+
+/// The hover behind `dropped`.
+const DROPPED_HOVER: &str =
+    "Hits the ring could not keep. Above zero, the log below has gaps, and a gap \
+                             in `seq` is where one is.";
+
+/// ⚑ **What the instrument is not handed**, drawn under the headline and never on a hover.
+///
+/// This is the half of the tab's standing caveat that is a fact about the *instrument* rather than about
+/// the three numbers, and it is the half a reader cannot recover from the numbers themselves: a range only
+/// the Z80 touches reads as never touched, and nothing on the glass would say why.
+///
+/// **What used to be in this sentence and is now on `matched`'s hover:** the `seen > 0, matched == 0`
+/// explanation. The instrument's stated requirement is that *both numbers are in front of the reader*, and
+/// they are, side by side and large; the paragraph explaining what the pair means is a second reading of a
+/// stat that now has a hover of its own, and two copies of one explanation is how they come to disagree.
+pub const HANDED_CAVEAT: &str = "The Z80's accesses are not handed to this instrument, apart from its \
+                                 FM/PSG register writes, so a range only the Z80 touches reads here as \
+                                 never touched. A warning below says so when a watch covers memory the \
+                                 Z80 can reach.";
 
 /// Read the watch instrument. Shared borrow of the engine's own — the same one `emulator/watchpoint_list`
 /// and `emulator/watchpoint_hits` answer from.
 pub fn watches(w: &Watchpoints) -> WatchView {
+    use crate::pacing::{Health, Stat};
+    let (seen, matched, dropped) = (w.seen(), w.matched(), w.dropped());
+    let hits = w.hits().to_vec();
     WatchView {
         live: watches_live(w),
         watches: w
@@ -254,10 +553,63 @@ pub fn watches(w: &Watchpoints) -> WatchView {
                 report,
             })
             .collect(),
-        hits: w.hits().to_vec(),
-        seen: w.seen(),
-        matched: w.matched(),
-        dropped: w.dropped(),
+        headline: vec![
+            Stat {
+                label: "seen",
+                value: seen.to_string(),
+                unit: None,
+                // Nothing handed to the instrument is `nothing was measured`, not `nothing happened` --
+                // the same distinction `Live::Never` draws one line above.
+                health: if seen == 0 {
+                    Health::Unmeasured
+                } else {
+                    Health::Good
+                },
+                hover: SEEN_HOVER,
+            },
+            Stat {
+                label: "matched",
+                value: matched.to_string(),
+                unit: None,
+                // ⚑ **Zero is never a warning here, however much was seen.** `seen > 0, matched == 0` is
+                // the negative finding this tab exists to make readable: the range was watched and
+                // nothing touched it. Colouring it as a fault would say the instrument failed, which is
+                // the one thing the pair of numbers is there to rule out. It is `unmeasured` only when
+                // the instrument was handed nothing at all, because then it is not an answer about the
+                // range.
+                health: if seen == 0 {
+                    Health::Unmeasured
+                } else {
+                    Health::Good
+                },
+                hover: MATCHED_HOVER,
+            },
+            Stat {
+                label: "dropped",
+                value: dropped.to_string(),
+                unit: None,
+                // A drop is the one of the three that means the reader is missing evidence, so it is the
+                // one that carries a colour. Zero is a healthy log, not an unmeasured one.
+                health: if dropped > 0 {
+                    Health::Watch
+                } else {
+                    Health::Good
+                },
+                hover: DROPPED_HOVER,
+            },
+        ],
+        hit_log_head: format!(
+            "hit log: {} retained{}",
+            hits.len(),
+            if dropped > 0 {
+                format!(", {dropped} dropped (a gap in `seq` marks them)")
+            } else {
+                String::new()
+            }
+        ),
+        hit_widths: hit_width_candidates(&hits),
+        hits,
+        seen,
         caveats: w.caveats(),
     }
 }
@@ -2636,5 +2988,346 @@ mod profiler_text {
             NO_NAME_WHY.contains("listing"),
             "the reason must say the absence is a fact about the LISTING, not about the routine"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ The Watchpoints tab's own gates (DATA-DISPLAY-AUDIT parcel 4)
+// ---------------------------------------------------------------------------------------------------
+
+/// **Every string the Watchpoints tab can draw, under the rules that bind them.**
+///
+/// The exemplar's first lesson, applied a second time: the tab's correctness lives in [`WatchView`] and
+/// in the constants beside it rather than in `ui.rs`'s draw calls, so it can be checked without a window.
+/// The two gates that genuinely need a laid-out frame (the hit log's column widths and the height it
+/// virtualises on) live in `ui.rs` instead, because they are facts about drawing.
+#[cfg(test)]
+mod watch_text {
+    use super::*;
+    use crate::bus::Bus;
+    use crate::machine::Machine;
+    use oracle_aether::host::MachineInfo;
+    use serde_json::json;
+
+    /// A real capture, taken the served way: arm a wide write watch, pause, run frames, read the
+    /// instrument the panel reads.
+    ///
+    /// Two watches rather than one, and the second carries a `stopAfter` and a label the first has not,
+    /// so the two stated absences and the two present values are all on the same table.
+    fn watched() -> WatchView {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut bus = Bus::new(machine.system_mut(), MachineInfo::default(), false, None);
+        for params in [
+            watch_add_params("0xFF0000", "65536", "bus", false, true, "", "")
+                .expect("valid panel input"),
+            watch_add_params("0xFF0000", "16", "bus", true, true, "1000000", "ram head")
+                .expect("valid panel input"),
+        ] {
+            let a = bus.call(machine.system_mut(), WATCHPOINT_ADD, &params);
+            assert!(!a.is_err(), "the watch was refused");
+        }
+        assert!(!bus
+            .call(machine.system_mut(), "emulator/pause", &json!({}))
+            .is_err());
+        let a = bus.call(
+            machine.system_mut(),
+            "emulator/run_frames",
+            &json!({"frames": 2}),
+        );
+        assert!(!a.is_err(), "run_frames refused");
+        let (w, _, _) = bus.read_instruments();
+        let v = watches(w);
+        // The anti-vacuity clause, checked before anything below leans on it: an empty capture would make
+        // every walk here pass over three sentences and no rows at all.
+        assert!(
+            !v.hits.is_empty() && v.watches.len() == 2,
+            "the capture is EMPTY, so these gates walk no rows and witness nothing: {} hits, {} watches",
+            v.hits.len(),
+            v.watches.len()
+        );
+        v
+    }
+
+    /// Every string this tab can put on the glass, the constants the renderer draws verbatim included.
+    fn every_string(v: &WatchView) -> Vec<String> {
+        let mut out = vec![
+            v.live.sentence("armed", "retained"),
+            v.hit_log_head.clone(),
+            HANDED_CAVEAT.to_owned(),
+            STOP_NEVER.to_owned(),
+            STOP_NEVER_WHY.to_owned(),
+            NO_LABEL.to_owned(),
+            NO_LABEL_WHY.to_owned(),
+        ];
+        for s in &v.headline {
+            out.push(s.label.to_owned());
+            out.push(s.value.clone());
+            out.push(s.hover.to_owned());
+            out.extend(s.unit.map(str::to_owned));
+        }
+        out.extend(WATCH_COLS.iter().map(|c| c.head.to_owned()));
+        out.extend(HIT_COLS.iter().map(|c| c.head.to_owned()));
+        out.extend(v.watches.iter().flat_map(WatchRow::cells));
+        out.extend(v.hits.iter().flat_map(hit_cells));
+        out.extend(v.caveats.clone());
+        out.extend(WATCH_SPACES.iter().map(|s| (*s).to_owned()));
+        out.extend(OP_WORDS.iter().map(|s| (*s).to_owned()));
+        out.extend(HIT_OP_WORDS.iter().map(|s| (*s).to_owned()));
+        out.extend(SIZE_WORDS.iter().map(|s| (*s).to_owned()));
+        out
+    }
+
+    /// **P2, on the rendered value rather than on the source.**
+    ///
+    /// The published check (`grep -cE '\{:[<>^][0-9]+'`) does see this tab's old body: the hit log drew
+    /// `"#{:<7} f{:<6} …"` and the armed list `"{:<4} … matched {}"`, seven and six columns of
+    /// like-shaped data with hand-rolled widths. The audit's 0.1 established the source check is the
+    /// narrower rule, so this is the widened one: no string this tab draws contains a run of two spaces
+    /// or a tab, because the columns are the table's job now.
+    #[test]
+    fn no_string_the_watchpoints_tab_draws_pads_itself_into_a_column() {
+        for s in every_string(&watched()) {
+            assert!(
+                !s.contains("  "),
+                "a run of spaces is a column being drawn inside a string, which is the pseudo-table P2 \
+                 outlaws. The table draws the columns: {s:?}"
+            );
+            assert!(
+                !s.contains('\t'),
+                "a tab is the same defect with a different character: {s:?}"
+            );
+        }
+    }
+
+    /// **P10.** The owner's 2026-09-05 ruling, over every string this tab can draw.
+    #[test]
+    fn nothing_the_watchpoints_tab_draws_carries_an_em_or_en_dash() {
+        for s in every_string(&watched()) {
+            for bad in ['\u{2014}', '\u{2013}'] {
+                assert!(
+                    !s.contains(bad),
+                    "user-facing text carries {bad:?}, which the owner's ruling bars: {s:?}"
+                );
+            }
+        }
+    }
+
+    /// **P9.** No runtime string on this tab cites a specification section.
+    #[test]
+    fn nothing_the_watchpoints_tab_draws_cites_a_specification_section() {
+        for s in every_string(&watched()) {
+            assert!(
+                !s.contains('§'),
+                "a runtime string cites a specification section at somebody looking at a game: {s:?}"
+            );
+        }
+    }
+
+    /// ★ **P2's structural half, for both of this tab's tables: a header and a body cannot disagree
+    /// about the columns.**
+    ///
+    /// Derivably, from the length of each column list rather than from a pinned 7, so adding a column
+    /// without teaching the cell builder about it is a failure rather than a silently short row. And no
+    /// cell is blank, which is the other half: a table whose rows are the right length and empty is the
+    /// failure a length check alone would pass.
+    #[test]
+    fn both_watch_tables_and_their_headers_cannot_disagree_about_the_columns() {
+        let v = watched();
+        for r in &v.watches {
+            let cells = r.cells();
+            assert_eq!(
+                cells.len(),
+                WATCH_COLS.len(),
+                "an armed watch answers a different number of columns than its header names"
+            );
+            for (c, cell) in WATCH_COLS.iter().zip(cells) {
+                assert!(
+                    !cell.trim().is_empty(),
+                    "the {:?} column drew a blank, which is never an answer",
+                    c.head
+                );
+            }
+        }
+        for h in &v.hits {
+            let cells = hit_cells(h);
+            assert_eq!(
+                cells.len(),
+                HIT_COLS.len(),
+                "a hit answers a different number of columns than its header names"
+            );
+            for (c, cell) in HIT_COLS.iter().zip(cells) {
+                assert!(
+                    !cell.trim().is_empty(),
+                    "the {:?} column drew a blank, which is never an answer",
+                    c.head
+                );
+            }
+        }
+    }
+
+    /// ★ **Every enum this tab draws is a word, and never its `{:?}` spelling.**
+    ///
+    /// Four enums reached the glass through `{:?}`: `WatchSpace` and `WatchOp` on an armed watch, `BusOp`
+    /// and `Size` on a hit. A reader met `Vram`, `Any`, `Tas` and `Long` -- three of which are this
+    /// crate's own words for a thing rather than the reader's, and one of which (`Any`) answers a
+    /// different question from the one the column asks.
+    ///
+    /// Asserted against `format!("{:?}")` itself rather than against a list of banned strings, so a word
+    /// that drifts back to the Debug spelling fails here whatever the variant is renamed to.
+    #[test]
+    fn every_enum_the_watch_tab_draws_is_a_word_and_never_a_debug_spelling() {
+        for (i, s) in [
+            WatchSpace::Bus,
+            WatchSpace::Vram,
+            WatchSpace::Cram,
+            WatchSpace::Vsram,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // ⚑ The space word is INDEXED into the selector's own list, so the word the table shows and
+            // the word the add row offered cannot drift.
+            assert_eq!(
+                space_word(s),
+                WATCH_SPACES[i],
+                "the table's word for a space is not the one the selector offers"
+            );
+        }
+        for op in [WatchOp::Read, WatchOp::Write, WatchOp::Any] {
+            assert_ne!(
+                op_word(op),
+                format!("{op:?}"),
+                "an op reaches the glass as its Debug spelling"
+            );
+        }
+        assert_eq!(
+            op_word(WatchOp::Any),
+            "read and write",
+            "`Any` must answer the column's question (which accesses does this catch?) and not name the \
+             filter"
+        );
+        for op in [BusOp::Read, BusOp::Write, BusOp::Tas] {
+            assert_ne!(
+                bus_op_word(op),
+                format!("{op:?}"),
+                "a recorded hit's op reaches the glass as its Debug spelling"
+            );
+        }
+        for s in [Size::Byte, Size::Word, Size::Long] {
+            assert_ne!(
+                size_word(s),
+                format!("{s:?}"),
+                "an access width reaches the glass as its Debug spelling"
+            );
+        }
+        for s in [
+            WatchSpace::Bus,
+            WatchSpace::Vram,
+            WatchSpace::Cram,
+            WatchSpace::Vsram,
+        ] {
+            assert_ne!(
+                space_word(s),
+                format!("{s:?}"),
+                "a space reaches the glass as its Debug spelling"
+            );
+        }
+    }
+
+    /// **P6, twice.** A watch that will never halt says so, and a watch with no label says so, and
+    /// neither column is ever silently empty.
+    ///
+    /// The fixture arms one of each on purpose, so both the stated absence and the present value are
+    /// witnessed on one table -- a gate that only saw the absent case would pass on a panel that had
+    /// hard-coded it.
+    #[test]
+    fn an_unstopped_or_unlabelled_watch_states_its_absence_rather_than_drawing_a_blank() {
+        let v = watched();
+        let stop: Vec<String> = v.watches.iter().map(|r| r.cells()[5].clone()).collect();
+        let label: Vec<String> = v.watches.iter().map(|r| r.cells()[6].clone()).collect();
+        assert!(
+            stop.contains(&STOP_NEVER.to_owned()),
+            "the watch armed with no stopAfter did not state it: {stop:?}"
+        );
+        assert!(
+            stop.iter().any(|s| s == "1000000"),
+            "the watch armed WITH a stopAfter did not show the number: {stop:?}"
+        );
+        assert!(
+            label.contains(&NO_LABEL.to_owned()),
+            "the watch armed with no label did not state it: {label:?}"
+        );
+        assert!(
+            label.iter().any(|s| s == "ram head"),
+            "the watch armed WITH a label did not show it: {label:?}"
+        );
+        assert!(!STOP_NEVER.trim().is_empty() && !NO_LABEL.trim().is_empty());
+    }
+
+    /// ★ **The three headline numbers are the instrument's own, and `matched == 0` is never a fault.**
+    ///
+    /// The tab's whole reason for showing `seen` and `matched` together is that `seen > 0, matched == 0`
+    /// is a *real answer* about the range, indistinguishable from a silently-dropped watch unless both
+    /// are in front of the reader. A panel that coloured a zero `matched` as a warning would be saying
+    /// the instrument failed, which is the one thing the pair exists to rule out.
+    #[test]
+    fn the_headline_is_the_instruments_own_three_numbers_and_a_zero_match_is_not_a_fault() {
+        let v = watched();
+        let by = |label: &str| {
+            v.headline
+                .iter()
+                .find(|s| s.label == label)
+                .unwrap_or_else(|| panic!("no `{label}` stat: {:?}", v.headline))
+        };
+        // Read back off the instrument, not off a second copy the view made of the number.
+        assert_eq!(by("seen").value, v.seen.to_string());
+        assert!(
+            v.seen > 0,
+            "the fixture saw nothing, so the negative-finding arm below is untested"
+        );
+        assert_eq!(
+            by("matched").health,
+            crate::pacing::Health::Good,
+            "a match count is never a fault, and a zero one is a finding rather than a failure"
+        );
+        // ...and the arm that DOES colour: a drop means the reader is missing evidence.
+        let mut torn = v;
+        torn.headline[2].health = crate::pacing::Health::Watch;
+        assert_ne!(
+            torn.headline[2].health,
+            crate::pacing::Health::Good,
+            "the three healths must be able to differ, or the assertion above is vacuous"
+        );
+    }
+
+    /// ★ **The hit log's width bounds actually bound the log**, at the level this module can check:
+    /// every cell a hit draws is no longer than the candidate its column was measured from.
+    ///
+    /// Character length is a weaker reading than the pixel width `ui.rs` checks, and it is the one that
+    /// catches the bound being taken from the wrong end of a monotonic series -- `hits.first()` instead
+    /// of `hits.last()` -- without a font. The pixel gate is
+    /// `the_hit_logs_columns_are_wide_enough_for_every_row_it_can_draw` in `ui.rs`.
+    #[test]
+    fn no_hit_cell_is_longer_than_the_candidate_its_column_was_measured_from() {
+        let v = watched();
+        let widest: Vec<usize> = v
+            .hit_widths
+            .iter()
+            .map(|cands| cands.iter().map(String::len).max().unwrap_or(0))
+            .collect();
+        assert_eq!(widest.len(), HIT_COLS.len());
+        for h in &v.hits {
+            for (i, cell) in hit_cells(h).into_iter().enumerate() {
+                assert!(
+                    cell.len() <= widest[i],
+                    "the {:?} column's bound is {} characters and a row drew {} ({cell:?}): the log's \
+                     columns are measured once, outside `show_rows`, so a cell wider than its bound is \
+                     silently truncated for as long as the log holds it",
+                    HIT_COLS[i].head,
+                    widest[i],
+                    cell.len()
+                );
+            }
+        }
     }
 }
