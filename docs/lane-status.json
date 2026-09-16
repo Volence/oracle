@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. CI is read and green, nothing is running, everything is pushed, and the next job needs no decision from you.",
+  "nextBoundary": "Now, and it is the cheapest moment today: nothing running, everything pushed and green, next job needs no decision.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -99,7 +99,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
+  "awaiting": "Nothing blocking. One choice if you want it: I am holding the next job rather than starting it, so this lane stays clearable while you decide about sleep mode. Say the word and I start it instead.",
   "atBoundary": true,
-  "updatedAt": "2026-09-16T17:33:24Z"
+  "updatedAt": "2026-09-16T17:35:08Z"
 }
