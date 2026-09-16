@@ -1,6 +1,12 @@
 {
-  "focus": "The next panel job is measured and written down, so whoever picks it up starts from what is true today.",
-  "inFlight": [],
+  "focus": "Rebuilding how the debug panels show data: the raw-JSON line, the shared table, and the Profiler tab.",
+  "inFlight": [
+    {
+      "what": "The panel data-display parcel: the raw-JSON line on screen, the shared table furniture, and the Profiler tab rebuilt in the card shape",
+      "where": "branch parcel/data-display-1 (worktree ../oracle-datadisplay)",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -18,7 +24,7 @@
       "id": "d-53"
     }
   ],
-  "nextBoundary": "Now, and cheaply: the next job's homework is committed, so a fresh session starts it without asking you anything.",
+  "nextBoundary": "When the agent returns and its work is verified and landed. Not before: an agent is holding a branch.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -94,11 +100,11 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "next",
+      "state": "doing",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Ready to start and needs no decision from you: the other panels follow the shared-card shape. Measured fresh today, because the week-old note was wrong in both directions. Two bits are for your eyes."
+      "title": "Started. An agent has the first three pieces: the raw-JSON line, the shared table, and the Profiler tab. Two bits in it are still for your eyes."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -118,6 +124,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-16T11:44:53Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-16T13:12:05Z"
 }
