@@ -125,12 +125,24 @@ Verified firsthand on the merged tree: clippy clean in BOTH shapes, debug 90 leg
 reproduced red-first with the mutation on disk then restored. **It CORRECTED ITS OWN DESIGN'S CLAIM: −4.71 %/−4.88 % measured against the stated
 −7.5 %**, with a byte-identical null arm validating the instrument at ±0.5 %; recorded at the design's canonical site (`b6410dd`), the original left
 standing as the spike's record. **Landings 2-3 STAY HELD**, and this is evidence FOR the hold: the one figure this parcel could check was overstated
-by a third. **NEXT: `TESTROM-SPRITE-MASKING`** — ⚑ *re-derive before proposing it, do not quote this line*: the source is the scorecard row in
-`docs/2026-07-25-testrom-conformance.md` and ledger row P1 in `docs/2026-07-16-vdp-pixel-known-differences.md`; as last read it is 2 failures (test 3's
-COMPLEX sub-case and test 6 MASK S1 ON DOT OVERFLOW) from one cause, the whole-sprite pixel-budget cut against hardware's mid-sprite cut.
+by a third. **NEXT: `TESTROM-SPRITE-MASKING`** — ⚑ *re-derive before proposing it; this clause names its SOURCES and deliberately carries no count and no
+cause*: the scorecard row in `docs/2026-07-25-testrom-conformance.md`, ledger row P1 in `docs/2026-07-16-vdp-pixel-known-differences.md`, and
+**`F-POSTHOC-STALE-CARRY` in `docs/OVERSEER-REFERENCE.md`, which any reading of the first two without the third will get wrong.**
 ⚑ **THIS POINTER LINE IS THE ARTIFACT CLASS THAT BIT THE HUB TONIGHT** (they proposed M1 hours after acknowledging it closed, off their own boot-read
 copy of a figure): **a `NEXT:` clause naming a live measurement rots the moment the work lands, and it is the one sentence that costs someone hours.
 Re-measure at the moment of the recommendation, from the artifact, never from this file.**
+⚑ **AND THE CLAUSE THEN DID IT AGAIN, TO ITS OWN SUBJECT, WHICH IS WHY THE FIGURES ARE GONE RATHER THAN UPDATED.** It read *"2 failures … from one cause,
+the whole-sprite pixel-budget cut"*. Re-derived at boot 2026-09-16 from the scorecard: **at most ONE of those two is ours.** Test 6 (MASK S1 ON DOT
+OVERFLOW) reads `FAIL` through the scraper's post-hoc `Vdp::render_line` and **`PASS` through the live path** — `render_line` re-seeds the sprite
+dot-overflow carry from the end-of-frame value on every line instead of advancing it, so that `FAIL` describes a machine state that never existed. The row
+and P1 are knowingly left unamended; the reason is in `F-POSTHOC-STALE-CARRY` and it is load-bearing: re-pathing the scraper re-derives four glyph
+constants **that were themselves pinned from post-hoc pixels**, i.e. the defect reproducing itself one layer down. **Two wrong figures out of this one
+clause in six hours** (the hub's `119/122`, then this) — the strongest available argument for *name the source, never the figure*, made against the
+sentence that states the rule. ⚑ **Its second lesson is a DIFFERENT mechanism from its first, and the fixes do not transfer** (the hub's split, banked
+empyrean `docs/OVERSEER.md:85`): the `119/122` was **true when written and rotted**; this one was **wrong when written and never rotted**, surviving since
+2026-08-15 because the artifact and a real failure are **identical in the output** — both a `FAIL` glyph. A rotted claim is fixed by naming sources; an
+absence rendered as a positive finding is fixed only by **making the instrument fire on purpose**. Control arm here, one line, never run because the
+harness is non-gating and the glyph "worked": **render a frame both ways and require them to agree.**
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

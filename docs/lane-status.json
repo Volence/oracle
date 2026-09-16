@@ -1,5 +1,5 @@
 {
-  "focus": "Two things done and checked: the video test ROM is perfect, and the emulator runs ~5% faster.",
+  "focus": "Fresh session, booted with the others. Nothing running; waiting on your word before I start anything.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. Everything is published and checked; nothing is running and nothing is in my head.",
+  "nextBoundary": "Now. Nothing is running and nothing is in my head that isn't written down.",
   "queue": [
     {
       "id": "TESTROM-SPRITE-MASKING",
@@ -16,7 +16,7 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Next, straight off your words about the test ROMs: the sprite test ROM's last 2 failures. Both are one known cause -- we budget sprite pixels per whole sprite, the real chip cuts mid-sprite."
+      "title": "Re-derived at boot: the sprite test ROM shows 2 failures, but only ONE is ours (test 3, our whole-sprite pixel budget). Test 6 already passes -- our own scraper reads the wrong picture."
     },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -115,7 +115,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "A clear whenever convenient -- this session has run 6+ hours. Everything is published and the build checks passed. Next session starts on the sprite test ROM; it needs nothing from you.",
+  "awaiting": "Your pick between two directions: the sprite test ROM (one real defect, one false alarm in our own test kit) or the three debug-window items you raised that you can actually see.",
   "atBoundary": true,
-  "updatedAt": "2026-09-16T06:19:50Z"
+  "updatedAt": "2026-09-16T06:22:35Z"
 }
