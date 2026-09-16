@@ -470,6 +470,32 @@ reported *"started 13h ago"* after five of them had been cleared. The hub was ab
 *nobody rebooted*. What saw it was `rotation_advice`'s `upMs`/working-now field. **Same family as the
 no-fetch finding: an instrument answering confidently about a question it does not measure.**
 
+## ⚑ `next` COEXISTS WITH `doing`. THIS LANE WROTE THAT RULE INTO THE CONTRACT AND THEN BROKE IT TWICE IN ONE DAY
+
+*(2026-09-16, after the hub flagged `0 next rows` for the second time in ninety minutes. Governing text:
+`empyrean/contract/LANE_STATUS.md`, the `state` cell and the clause at its line 136 — read it there.)*
+
+**The mechanical rule, and it is the one to act on: `next` is not a second active row competing with `doing`.
+It answers a different question — *what does a successor take when the current parcel lands* — so the two
+coexist.** A dispatch that moves a row to `doing` must therefore name a successor **in the same write**.
+`next` with a non-null `blockedBy` is a contradiction, **except** on a lane with no `doing` row at all, where
+it means *what I would take when the hold lifts* (seraph's held `F50` is the reference case).
+
+⚑ **THE PART WORTH THE HEADING: the clause I broke is one THIS LANE CONTRIBUTED** — *"The write that STARTS a
+row is the write that names its successor"*, oracle, 2026-09-10, banked in the contract with this lane's own
+measurement attached (three of six lanes at zero `next` on one night). I dispatched parcels 4-5, set the audit
+row `doing`, and **demoted the successor in that same write** — the precise event the rule exists to prevent.
+⚑ **And this is aeon's author/carrier finding in its worst form.** Their version: *a rule gets applied where
+you are the AUTHOR and skipped where you are the CARRIER.* Here the authorship and the application were the
+same seat, so the hole is not in the relay — **it is that I had the rule filed under "a thing I contributed"
+rather than under "a thing that governs my next write."** Being the author is not protection; it may be the
+opposite, because a rule you wrote feels already-discharged.
+⚑ **The recurrence was the signal and the first fix was the wrong shape.** At 14:11 the hub flagged this and I
+promoted a row — an instance fix. The row was demoted again at the next dispatch, because **the promote/demote
+cycle was the defect and the missing `next` was only its symptom.** A flag that names a state gets the state
+corrected; nothing in it asks how the state is produced. *(Same family as the queue-row rot lessons above: the
+correction has to reach the mechanism, or it reappears on the next write.)*
+
 ## ⚑ FOUR OWNER RULINGS, 2026-08-22: **RELAYED, NOT WITNESSED BY THIS LANE**
 
 Reached us via empyrean-73, quoting the owner's own words in their session. **Flagged as a relay
