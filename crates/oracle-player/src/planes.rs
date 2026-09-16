@@ -41,15 +41,29 @@
 //! A plane is up to 128 by 128 cells, and even the ordinary 64 by 32 is 512 by 256 pixels. Rasterising
 //! that per repaint and re-uploading it would spend real budget against a toolkit measured at 0.22 ms of a
 //! 16.67 ms frame. So [`Panel::refresh`] gathers the inputs, [fingerprints](Inputs::fingerprint) them, and
-//! rasterises **only when the fingerprint moves**. The fingerprint covers exactly what the picture is a
-//! function of and nothing else:
+//! rasterises **only when the fingerprint moves**.
+//!
+//! ## ⚑ The key is over what THIS VIEW reads, not over everything the panel gathered
+//!
+//! The fingerprint is in two parts, and the split is the point rather than a detail of the arithmetic.
+//! [`Inputs::content`] is what every view of the picture reads:
 //!
 //! * the decoded nametable cells (so a map edit redraws),
 //! * the bytes of **the tiles those cells reference** (so an art edit redraws, and an edit to a tile the
 //!   plane does not use does not),
 //! * CRAM (so a palette change redraws),
-//! * the per-line scroll and window spans (so the viewport outline follows),
-//! * the plane selected, the toggles, the grid size, the base, and the ink.
+//! * the plane selected, the scroll toggle, the grid size, and the ink.
+//!
+//! [`Inputs::viewport`] is the display size, the per-line scroll and the window's spans — and the picture
+//! reads those in **two of its three views and not in the third**. [`Inputs::fingerprint`] takes the
+//! outline toggle and folds the viewport part in only where the raster actually consumes it.
+//!
+//! That conditional is a fix, not a nicety. Mixed unconditionally, as it was until the PLANES-RASTER
+//! parcel, the key moved every frame of any scrolling game — `hscroll` moves, so the mix moves — while the
+//! unscrolled picture with the outline off is a pure function of inputs that do not include the scroll. The
+//! whole plane was re-rasterised sixty times a second to produce **the same bytes**, and the
+//! render-on-change gate, which was working perfectly, never got to skip anything. A key over more than the
+//! picture is not conservative; it is the cache switched off, quietly.
 //!
 //! Everything is mixed eight bytes at a time rather than one, which is what keeps the skip cheaper than
 //! the work it skips: the raster it avoids is 131072 pixel decodes plus a 512 KB texture upload, and the
@@ -58,6 +72,13 @@
 //!
 //! The panel **shows its own redraw count** beside the picture. A claim that something rasterises rarely
 //! is worth nothing if a person cannot see it not happening.
+//!
+//! ## And the raster itself is a cell at a time
+//!
+//! Everything above is about the *idle* case. On the views whose picture genuinely does change every frame
+//! — the scrolled one always, the outlined one whenever the game scrolls — no key can save the work, so the
+//! work has to be cheap. [`raster`] resolves a cell, its tile row and its palette line **once per eight
+//! pixels** rather than once per pixel; see [`Paint::run`].
 //!
 //! # ⚑ CLICK TO IDENTIFY A CELL, AND THE QUESTION IT ANSWERS IS NOT THE SCREEN TAB'S
 //!
@@ -104,7 +125,7 @@
 //! in this one.
 
 use egui::Color32;
-use oracle_core::render::{tile_pixel, Cell, Plane, PlaneScroll, VScroll, WindowSpan};
+use oracle_core::render::{tile_row, Cell, Plane, PlaneScroll, VScroll, WindowSpan};
 use oracle_core::state_hash::VRAM_SIZE;
 use oracle_core::vdp::Vdp;
 use oracle_frontend::pick::{tile_range, TILE_SPACE};
@@ -188,8 +209,15 @@ pub struct Inputs {
     pub htable: usize,
     /// The line reg `$0A` reloads the H-interrupt counter with, when reg `$00` bit 4 arms it.
     pub hint_line: Option<u8>,
-    /// The mix over every field above plus the referenced tiles, CRAM and the ink.
-    pub fingerprint: u64,
+    /// **The mix over everything the raster reads in every one of its views**: the plane, the scroll
+    /// toggle, the grid, the ink, the map, the tiles the map reaches, and CRAM.
+    pub content: u64,
+    /// **The mix over the viewport facts** — the display size, the per-line scroll and the window's spans.
+    ///
+    /// Held apart from [`Inputs::content`] because the picture reads them in some views and not in others,
+    /// and a key that mixed them anyway would redraw an identical picture on every frame of any scrolling
+    /// game. [`Inputs::fingerprint`] is where the two are combined, and it is where that condition lives.
+    pub viewport: u64,
 }
 
 /// A 2048-bit set of tile indices, one bit per pattern the VDP can address.
@@ -227,13 +255,14 @@ pub fn gather(vdp: &Vdp, plane: Plane, want_scroll: bool, ink: Ink) -> Inputs {
         Plane::Window => 3,
     });
     h.mix(u64::from(want_scroll && !window));
-    h.mix(base as u64);
     h.mix((cols as u64) << 16 | rows as u64);
-    h.mix((display.0 as u64) << 16 | display.1 as u64);
-    h.mix(u64::from(regs[0x0B]));
-    h.mix(u64::from(regs[0x0D]));
-    h.mix(u64::from(regs[0x00]));
-    h.mix(u64::from(regs[0x0A]));
+    // ⚑ Four things are deliberately NOT mixed here, and each one is an input the picture does not read.
+    // The **base** is where `plane_decoded` read the map from, and the map itself is mixed below, so a base
+    // moved onto identical bytes is an identical picture. Regs `$0B` and `$0D` are the scroll mode and its
+    // table, and the only thing they reach is `scroll`, which is mixed into the viewport part *as the
+    // renderer reported it* — two modes that report the same per-line values draw the same picture. Regs
+    // `$00` and `$0A` are the armed H-interrupt, which is a sentence beside the picture and never a pixel
+    // in it. All five are still gathered, shown and clicked on; they are just not part of the texture's key.
     for c in [ink.empty_a, ink.empty_b, ink.outline] {
         h.mix(u64::from(u32::from_le_bytes(c.to_array())));
     }
@@ -257,19 +286,26 @@ pub fn gather(vdp: &Vdp, plane: Plane, want_scroll: bool, ink: Ink) -> Inputs {
         }
     }
     h.bytes(vdp.cram());
+
+    // The viewport, mixed into a hash of its own: the display size (which is the raster's size when the
+    // scroll is applied, and the covered band's when it is not), the per-line scroll, and the window's
+    // spans. Whether any of it reaches the texture's key is `Inputs::fingerprint`'s decision, made against
+    // the view being drawn.
+    let mut vp = Fnv::new();
+    vp.mix((display.0 as u64) << 16 | display.1 as u64);
     for s in &scroll {
-        h.mix(u64::from(s.hscroll));
+        vp.mix(u64::from(s.hscroll));
         match &s.vscroll {
-            VScroll::Full(v) => h.mix(u64::from(*v) << 1),
+            VScroll::Full(v) => vp.mix(u64::from(*v) << 1),
             VScroll::TwoCell(v) => {
                 for x in v {
-                    h.mix(u64::from(*x) << 1 | 1);
+                    vp.mix(u64::from(*x) << 1 | 1);
                 }
             }
         }
     }
     for s in &spans {
-        h.mix(match s {
+        vp.mix(match s {
             None => 0,
             Some(w) => 1 | (u64::from(w.start_x) << 8) | (u64::from(w.end_x) << 24),
         });
@@ -289,7 +325,8 @@ pub fn gather(vdp: &Vdp, plane: Plane, want_scroll: bool, ink: Ink) -> Inputs {
         vcolumns: regs[0x0B] & 0x04 != 0,
         htable: ((regs[0x0D] & 0x3F) as usize) << 10,
         hint_line: (regs[0x00] & 0x10 != 0).then_some(regs[0x0A]),
-        fingerprint: h.0,
+        content: h.0,
+        viewport: vp.0,
     }
 }
 
@@ -305,6 +342,35 @@ fn encode_cell(c: &Cell) -> u16 {
 }
 
 impl Inputs {
+    /// **The key the standing texture is held under**, for a raster drawn with the outline on or off.
+    ///
+    /// [`Inputs::content`] always; [`Inputs::viewport`] **only where the picture reads it**, which is the
+    /// whole of this function and the reason it is not a field:
+    ///
+    /// * **scrolled**: every pixel of that raster was fetched *through* the per-line scroll, so the scroll
+    ///   is read whatever the outline toggle says — and the outline is not drawn on that view at all, so
+    ///   the toggle must not reach the key either. Toggling it used to cost a re-raster of an identical
+    ///   picture.
+    /// * **unscrolled with the outline on**: [`covered_mask`] reads the display size and the scroll (or, for
+    ///   the window, the spans) to work out the covered region, and that region is baked into the pixels.
+    ///   The dependency is real, and the key must carry it.
+    /// * **unscrolled with the outline off**: [`raster`] never calls [`covered_mask`] and never touches
+    ///   `scroll`. The picture cannot be a function of a scroll it does not read, so a scroll that moves
+    ///   every frame must not move this key.
+    ///
+    /// The flag itself is mixed, not just used as a condition, so that "the viewport was read" and "the
+    /// viewport was not read" cannot collide with each other on a machine whose viewport mix happened to be
+    /// the identity of the mixer.
+    pub fn fingerprint(&self, outline: bool) -> u64 {
+        let reads_viewport = self.scrolled || outline;
+        let mut h = Fnv(self.content);
+        h.mix(u64::from(reads_viewport));
+        if reads_viewport {
+            h.mix(self.viewport);
+        }
+        h.0
+    }
+
     /// The plane's size in pixels.
     pub fn pixels(&self) -> (usize, usize) {
         (self.cols as usize * 8, self.rows as usize * 8)
@@ -388,10 +454,23 @@ pub fn scroll_note(inp: &Inputs) -> ScrollNote {
 ///   and back on at the left has no false edge down the middle of it.
 /// * **on**: the display-sized region the scroll cuts out of that plane, this plane alone, with no other
 ///   plane and no sprites over it. That is what the toggle buys over the Screen tab.
+///
+/// # ⚑ A cell at a time, because the cheap case is not the only case
+///
+/// [`Panel::refresh`] skips this whole function when the picture cannot have changed. On the two views
+/// this panel was *built* for — a scrolling game with the viewport outline on, and the scrolled cut-out —
+/// the picture changes every frame by design, so there is nothing to skip and the work itself has to be
+/// cheap. It is spent [`Paint::run`] at a time: one cell lookup, one tile-row fetch and one palette-line
+/// address for **eight pixels**, where the shape this replaced did all three per pixel and an unscrolled
+/// 128-by-64-cell plane is 524288 pixels.
 pub fn raster(vdp: &Vdp, inp: &Inputs, ink: Ink, outline: bool) -> egui::ColorImage {
     let (pw, ph) = inp.pixels();
-    let cram = vdp.cram_decoded();
-    let vram = vdp.vram();
+    let paint = Paint {
+        inp,
+        vram: vdp.vram(),
+        cram: vdp.cram_decoded(),
+        ink,
+    };
     let (w, h) = inp.raster_size();
     let mut pixels = Vec::with_capacity(w * h);
 
@@ -400,17 +479,20 @@ pub fn raster(vdp: &Vdp, inp: &Inputs, ink: Ink, outline: bool) -> egui::ColorIm
         // viewport, so an outline round it would trace the border of the image.
         for line in 0..h {
             let sc = &inp.scroll[line];
-            for x in 0..w {
+            let mut x = 0;
+            while x < w {
                 let (sx, sy) = sample(sc, x, line, pw, ph);
-                pixels.push(dot(inp, vram, &cram, ink, sx, sy));
+                let run = run_from(sc, x, sx, w);
+                paint.run(&mut pixels, sx, sy, run);
+                x += run;
             }
         }
         return image(w, h, pixels);
     }
 
     for py in 0..ph {
-        for px in 0..pw {
-            pixels.push(dot(inp, vram, &cram, ink, px, py));
+        for col in 0..inp.cols as usize {
+            paint.run(&mut pixels, col * 8, py, 8);
         }
     }
     if outline {
@@ -419,6 +501,93 @@ pub fn raster(vdp: &Vdp, inp: &Inputs, ink: Ink, outline: bool) -> egui::ColorIm
         }
     }
     image(pw, ph, pixels)
+}
+
+/// **How many pixels from raster `x` share one cell and one vertical scroll**, so [`Paint::run`] can
+/// resolve both once instead of once per pixel.
+///
+/// Three limits, and every one of them is read off [`sample`] rather than guessed:
+///
+/// * the cell ends at the next multiple of 8 in **plane** x, because that is where `sx / 8` turns over —
+///   and a plane is a whole number of cells wide, so the wrap at `pw` lands on a cell boundary too;
+/// * under [`VScroll::TwoCell`] the vertical scroll is read at `x / 16` in **raster** x, so a run may not
+///   cross a 16-pixel column; under [`VScroll::Full`] there is one value for the whole line and no such
+///   limit, and taking one anyway would chop every run in half for nothing;
+/// * and the line ends at `w`.
+fn run_from(sc: &PlaneScroll, x: usize, sx: usize, w: usize) -> usize {
+    let cell = 8 - sx % 8;
+    let column = match sc.vscroll {
+        VScroll::Full(_) => usize::MAX,
+        VScroll::TwoCell(_) => 16 - x % 16,
+    };
+    cell.min(column).min(w - x)
+}
+
+/// **Everything a run of pixels needs that does not change within one raster**, resolved once at the top
+/// of [`raster`] rather than passed as five arguments per run.
+struct Paint<'a> {
+    inp: &'a Inputs,
+    vram: &'a [u8],
+    cram: [(u8, u8, u8); 64],
+    ink: Ink,
+}
+
+impl Paint<'_> {
+    /// **Paint a run of at most eight pixels of one plane row**, starting at plane pixel (`sx`, `sy`).
+    ///
+    /// The cell, its tile row and its palette line are resolved **once for the run**. The shape this
+    /// replaced resolved all three per pixel — `(py / 8) * cols + (px / 8)` for the cell, the tile's byte
+    /// address inside `tile_pixel` for the nibble, and `(palette & 3) * 16` for the line — which over an
+    /// unscrolled 128-by-64-cell plane is 524288 of each.
+    ///
+    /// **Nibble 0 is transparent on real hardware and it is drawn as transparent here**, rather than as
+    /// CRAM entry 0 of the line. Painting it as a colour would make an empty plane look like a filled one,
+    /// and *where the art is* is the first question this panel is asked.
+    ///
+    /// ⚑ **The checker is in plane coordinates, not raster coordinates**, and that is load bearing: the
+    /// scrolled view calls this with the plane pixel it sampled, so the transparent checker belongs to the
+    /// plane and slides under the viewport as the game scrolls. Taking it off the raster x would pin it to
+    /// the window instead, and would look, at a glance, exactly as correct.
+    fn run(&self, out: &mut Vec<Color32>, sx: usize, sy: usize, n: usize) {
+        let cell = &self.inp.cells[(sy / 8) * self.inp.cols as usize + (sx / 8)];
+        let row = cell_row(self.vram, cell, (sy % 8) as u8);
+        let line = (cell.palette as usize & 3) * 16;
+        let tx = sx % 8;
+        let mut painted = [Color32::BLACK; 8];
+        for (i, slot) in painted.iter_mut().enumerate().take(n) {
+            let nibble = row[tx + i] as usize;
+            *slot = if nibble == 0 {
+                if ((sx + i) / CHECKER + sy / CHECKER).is_multiple_of(2) {
+                    self.ink.empty_a
+                } else {
+                    self.ink.empty_b
+                }
+            } else {
+                let (r, g, b) = self.cram[line + nibble];
+                Color32::from_rgb(r, g, b)
+            };
+        }
+        out.extend_from_slice(&painted[..n]);
+    }
+}
+
+/// **The eight 4-bit pixels of row `ty` of `cell`'s tile**, left to right, flips applied.
+///
+/// The flips are this viewer's; the fetch is the renderer's own, [`tile_row`]: 32 bytes per tile, 4 bytes
+/// per row, **high nibble first**. Getting that backwards mirrors every tile in the plane by one pixel
+/// pair and looks almost right, which is why it has a test of its own here as well as there. This used to
+/// restate the address expression byte for byte (lens M63), so the viewer and the picture could have
+/// disagreed about a tile with nothing red to say so; [`tile_row`] and `tile_pixel` are now two readings
+/// of one address rather than two spellings of it.
+///
+/// A whole row rather than a pixel, and `reverse` rather than `7 - tx` per pixel, because the caller is
+/// [`Paint::run`] and it wants all eight.
+fn cell_row(vram: &[u8], cell: &Cell, ty: u8) -> [u8; 8] {
+    let mut row = tile_row(vram, cell.tile, if cell.vflip { 7 - ty } else { ty });
+    if cell.hflip {
+        row.reverse();
+    }
+    row
 }
 
 fn image(w: usize, h: usize, pixels: Vec<Color32>) -> egui::ColorImage {
@@ -445,47 +614,6 @@ fn sample(sc: &PlaneScroll, x: usize, line: usize, pw: usize, ph: usize) -> (usi
     let sx = (x as isize - sc.hscroll as isize).rem_euclid(pw as isize) as usize;
     let sy = (line as isize + v as isize).rem_euclid(ph as isize) as usize;
     (sx, sy)
-}
-
-/// One plane pixel's colour: the tile's nibble through the cell's palette line, or the checker where the
-/// nibble is 0.
-///
-/// **Nibble 0 is transparent on real hardware and it is drawn as transparent here**, rather than as CRAM
-/// entry 0 of the line. Painting it as a colour would make an empty plane look like a filled one, and
-/// *where the art is* is the first question this panel is asked.
-fn dot(
-    inp: &Inputs,
-    vram: &[u8],
-    cram: &[(u8, u8, u8); 64],
-    ink: Ink,
-    px: usize,
-    py: usize,
-) -> Color32 {
-    let cell = &inp.cells[(py / 8) * inp.cols as usize + (px / 8)];
-    let n = nibble(vram, cell, (px % 8) as u8, (py % 8) as u8);
-    if n == 0 {
-        if ((px / CHECKER) + (py / CHECKER)).is_multiple_of(2) {
-            ink.empty_a
-        } else {
-            ink.empty_b
-        }
-    } else {
-        let (r, g, b) = cram[(cell.palette as usize & 3) * 16 + n as usize];
-        Color32::from_rgb(r, g, b)
-    }
-}
-
-/// The 4-bit pixel at (`tx`, `ty`) of `cell`'s tile, flips applied.
-///
-/// The flips are this viewer's; the fetch is the renderer's own, [`tile_pixel`]: 32 bytes per tile,
-/// 4 bytes per row, **high nibble first**. Getting that backwards mirrors every tile in the plane by one
-/// pixel pair and looks almost right, which is why it has a test of its own here as well as there. This
-/// used to restate the address expression byte for byte (lens M63), so the viewer and the picture could
-/// have disagreed about a tile with nothing red to say so.
-fn nibble(vram: &[u8], cell: &Cell, tx: u8, ty: u8) -> u8 {
-    let tx = if cell.hflip { 7 - tx } else { tx };
-    let ty = if cell.vflip { 7 - ty } else { ty };
-    tile_pixel(vram, cell.tile, tx, ty)
 }
 
 /// **Which plane pixels the display is currently showing**, as a `pw` by `ph` mask.
@@ -905,13 +1033,9 @@ impl Panel {
         self.repaints += 1;
         let inp = gather(vdp, self.plane, self.apply_scroll, ink);
         // The outline is baked into the raster rather than painted over it, so it belongs to the same
-        // change decision as the pixels under it.
-        let want = if self.outline {
-            inp.fingerprint
-        } else {
-            // A distinct value for the same inputs with the outline off, so toggling it redraws.
-            inp.fingerprint ^ 0x5EED_0111_0000_0001
-        };
+        // change decision as the pixels under it — and, on the view that does not draw it at all, to
+        // neither. Both of those are [`Inputs::fingerprint`]'s, against the view actually being drawn.
+        let want = inp.fingerprint(self.outline);
         if self.drawn != Some(want) {
             let img = raster(vdp, &inp, ink, self.outline);
             let opts = egui::TextureOptions::NEAREST;
@@ -1013,8 +1137,7 @@ mod tests {
             vflip: false,
             priority: false,
         };
-        let row: Vec<u8> = (0..8).map(|x| nibble(v.vram(), &cell, x, 0)).collect();
-        assert_eq!(row, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(cell_row(v.vram(), &cell, 0), [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     /// Both flips mirror the pixel the cell's bits say they mirror, and they compose.
@@ -1031,13 +1154,13 @@ mod tests {
             vflip: false,
             priority: false,
         };
-        assert_eq!(nibble(v.vram(), &base, 0, 0), 1);
+        assert_eq!(cell_row(v.vram(), &base, 0)[0], 1);
         let hf = Cell {
             hflip: true,
             ..base
         };
         assert_eq!(
-            nibble(v.vram(), &hf, 7, 0),
+            cell_row(v.vram(), &hf, 0)[7],
             1,
             "hflip moves it to the right edge"
         );
@@ -1046,7 +1169,7 @@ mod tests {
             ..base
         };
         assert_eq!(
-            nibble(v.vram(), &vf, 0, 7),
+            cell_row(v.vram(), &vf, 7)[0],
             1,
             "vflip moves it to the bottom"
         );
@@ -1055,9 +1178,9 @@ mod tests {
             vflip: true,
             ..base
         };
-        assert_eq!(nibble(v.vram(), &both, 7, 7), 1);
+        assert_eq!(cell_row(v.vram(), &both, 7)[7], 1);
         assert_eq!(
-            nibble(v.vram(), &both, 0, 0),
+            cell_row(v.vram(), &both, 0)[0],
             2,
             "and brings row 7 to row 0"
         );
@@ -1134,9 +1257,9 @@ mod tests {
     fn the_fingerprint_moves_when_a_drawn_tile_moves() {
         let mut v = fixture();
         put_cell(&mut v, 0xC000, 0x0001);
-        let before = gathered(&v, Plane::A, false).fingerprint;
+        let before = gathered(&v, Plane::A, false).fingerprint(true);
         v.vram_mut()[32] = 0x22;
-        assert_ne!(before, gathered(&v, Plane::A, false).fingerprint);
+        assert_ne!(before, gathered(&v, Plane::A, false).fingerprint(true));
     }
 
     /// ⚑ **And the other half of it, which is what makes the first half worth anything.** An edit to a
@@ -1148,26 +1271,26 @@ mod tests {
         for i in 0..(32 * 32) {
             put_cell(&mut v, 0xC000 + i * 2, 0x0001); // every cell draws tile 1
         }
-        let before = gathered(&v, Plane::A, false).fingerprint;
+        let before = gathered(&v, Plane::A, false).fingerprint(true);
         v.vram_mut()[900 * 32] = 0x77; // tile 900, referenced by nothing
-        assert_eq!(before, gathered(&v, Plane::A, false).fingerprint);
+        assert_eq!(before, gathered(&v, Plane::A, false).fingerprint(true));
     }
 
     /// A map edit, a palette edit and a scroll move each redraw.
     #[test]
     fn the_fingerprint_moves_on_map_palette_and_scroll() {
         let mut v = fixture();
-        let before = gathered(&v, Plane::A, false).fingerprint;
+        let before = gathered(&v, Plane::A, false).fingerprint(true);
         put_cell(&mut v, 0xC000, 0x0001);
-        let after_map = gathered(&v, Plane::A, false).fingerprint;
+        let after_map = gathered(&v, Plane::A, false).fingerprint(true);
         assert_ne!(before, after_map, "map");
         write_cram(&mut v, 1, 0x0EE0);
-        let after_cram = gathered(&v, Plane::A, false).fingerprint;
+        let after_cram = gathered(&v, Plane::A, false).fingerprint(true);
         assert_ne!(after_map, after_cram, "palette");
         put_cell(&mut v, 0x8000, 0x0040); // h-scroll table line 0, plane A = 64
         assert_ne!(
             after_cram,
-            gathered(&v, Plane::A, false).fingerprint,
+            gathered(&v, Plane::A, false).fingerprint(true),
             "scroll, because the outline follows it"
         );
     }
@@ -1177,8 +1300,8 @@ mod tests {
     fn the_fingerprint_holds_when_nothing_moves() {
         let v = fixture();
         assert_eq!(
-            gathered(&v, Plane::A, false).fingerprint,
-            gathered(&v, Plane::A, false).fingerprint
+            gathered(&v, Plane::A, false).fingerprint(true),
+            gathered(&v, Plane::A, false).fingerprint(true)
         );
     }
 
@@ -1187,9 +1310,9 @@ mod tests {
     #[test]
     fn each_plane_has_its_own_fingerprint() {
         let v = fixture();
-        let a = gathered(&v, Plane::A, false).fingerprint;
-        let b = gathered(&v, Plane::B, false).fingerprint;
-        let w = gathered(&v, Plane::Window, false).fingerprint;
+        let a = gathered(&v, Plane::A, false).fingerprint(true);
+        let b = gathered(&v, Plane::B, false).fingerprint(true);
+        let w = gathered(&v, Plane::Window, false).fingerprint(true);
         assert_ne!(a, b);
         assert_ne!(b, w);
         assert_ne!(a, w);
@@ -1748,5 +1871,569 @@ mod tests {
         let inp = gathered(&v, Plane::A, false);
         assert_eq!((inp.cols, inp.rows), (64, 32));
         assert_eq!(inp.raster_size(), (512, 256));
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The key is over what THIS VIEW reads
+    // -----------------------------------------------------------------------------------------------
+
+    /// ⚑ **The defect this parcel was booked for, at the seam it lives on.**
+    ///
+    /// Unscrolled with the outline off, [`raster`] never calls [`covered_mask`] and never touches
+    /// `inp.scroll`: the picture is a pure function of inputs that do not include the scroll. The h-scroll
+    /// table moves every frame of every scrolling game, and until this parcel it moved the key with it, so
+    /// the whole plane was re-rasterised sixty times a second to produce **the same bytes**.
+    ///
+    /// Both halves are asserted, and the second is what makes the first a claim about the *picture* rather
+    /// than about a hash: with the outline **on** the rectangle really does follow the scroll, so there the
+    /// key must still move.
+    #[test]
+    fn a_scroll_the_picture_does_not_read_does_not_move_the_key() {
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01); // 64 by 32 cells, so the display does not cover the whole plane
+        put_cell(&mut v, 0xC000, 0x0001);
+        let before = gathered(&v, Plane::A, false);
+        let plain = raster(&v, &before, ink(), false).pixels;
+        let lined = raster(&v, &before, ink(), true).pixels;
+
+        put_cell(&mut v, 0x8000, 0x0040); // h-scroll table line 0, plane A = 64
+        let after = gathered(&v, Plane::A, false);
+        assert_ne!(before.viewport, after.viewport, "the scroll itself moved");
+
+        assert_eq!(
+            raster(&v, &after, ink(), false).pixels,
+            plain,
+            "outline off: the identical picture, so the key must not move"
+        );
+        assert_eq!(
+            before.fingerprint(false),
+            after.fingerprint(false),
+            "outline off: and it does not"
+        );
+        assert_ne!(
+            raster(&v, &after, ink(), true).pixels,
+            lined,
+            "outline on: the rectangle followed the scroll"
+        );
+        assert_ne!(
+            before.fingerprint(true),
+            after.fingerprint(true),
+            "outline on: so this key does move"
+        );
+    }
+
+    /// The window's covered band is regs `$11`/`$12` rather than a scroll, and it takes the same rule: the
+    /// picture reads it only to draw the outline over it.
+    #[test]
+    fn a_window_band_the_picture_does_not_read_does_not_move_the_key() {
+        let mut v = fixture();
+        for i in 0..(32 * 32) {
+            put_cell(&mut v, 0xA000 + i * 2, 0x0001); // a window map with art in it
+        }
+        set_reg(&mut v, 0x11, 0x05); // left window, 80 px
+        let before = gathered(&v, Plane::Window, false);
+        let plain = raster(&v, &before, ink(), false).pixels;
+        let lined = raster(&v, &before, ink(), true).pixels;
+
+        set_reg(&mut v, 0x11, 0x0A); // left window, 160 px
+        let after = gathered(&v, Plane::Window, false);
+        assert_ne!(before.viewport, after.viewport, "the band itself moved");
+        assert_eq!(raster(&v, &after, ink(), false).pixels, plain);
+        assert_eq!(before.fingerprint(false), after.fingerprint(false));
+        assert_ne!(raster(&v, &after, ink(), true).pixels, lined);
+        assert_ne!(before.fingerprint(true), after.fingerprint(true));
+    }
+
+    /// ⚑ **The other half, and the one a wrong fix breaks silently.** On the scrolled view every pixel is
+    /// fetched *through* the scroll, so the scroll is exactly what the picture reads and a key that dropped
+    /// it would leave a stale picture on the glass.
+    #[test]
+    fn the_scrolled_view_still_redraws_when_the_scroll_moves() {
+        let mut v = fixture();
+        put_cell(&mut v, 0xC000, 0x0001);
+        let before = gathered(&v, Plane::A, true);
+        let pixels = raster(&v, &before, ink(), false).pixels;
+        put_cell(&mut v, 0x8000, 0x0040);
+        let after = gathered(&v, Plane::A, true);
+        assert_ne!(
+            raster(&v, &after, ink(), false).pixels,
+            pixels,
+            "the picture moved with the scroll"
+        );
+        for outline in [false, true] {
+            assert_ne!(
+                before.fingerprint(outline),
+                after.fingerprint(outline),
+                "outline={outline}"
+            );
+        }
+    }
+
+    /// The outline is not drawn at all on the scrolled view — that raster **is** the viewport — so toggling
+    /// it must not spend a re-raster on a picture that cannot change. This is the same defect one field
+    /// over: the toggle used to be XORed into the key unconditionally.
+    #[test]
+    fn the_outline_toggle_does_not_redraw_the_scrolled_view() {
+        let mut v = fixture();
+        put_cell(&mut v, 0xC000, 0x0001);
+        let inp = gathered(&v, Plane::A, true);
+        assert_eq!(
+            raster(&v, &inp, ink(), true).pixels,
+            raster(&v, &inp, ink(), false).pixels,
+            "the flag is ignored by this view"
+        );
+        assert_eq!(inp.fingerprint(true), inp.fingerprint(false));
+    }
+
+    /// **A fact that is only a sentence is not part of the key.** Reg `$00` bit 4 and reg `$0A` are the
+    /// armed H-interrupt; [`scroll_note`] and [`unestablished`] say so in words *beside* the picture, and
+    /// those words are rebuilt on every repaint whether or not a raster follows. No pixel reads them.
+    #[test]
+    fn a_fact_that_is_only_a_sentence_is_not_part_of_the_key() {
+        let mut v = fixture();
+        put_cell(&mut v, 0xC000, 0x0001);
+        let before = gathered(&v, Plane::A, false);
+        let lined = raster(&v, &before, ink(), true).pixels;
+        set_reg(&mut v, 0x0A, 174);
+        set_reg(&mut v, 0x00, 0x10);
+        let after = gathered(&v, Plane::A, false);
+        assert_eq!(after.hint_line, Some(174), "the sentence changed");
+        assert!(scroll_note(&after).unestablished.is_some());
+        assert_eq!(
+            raster(&v, &after, ink(), true).pixels,
+            lined,
+            "the picture did not"
+        );
+        for outline in [false, true] {
+            assert_eq!(before.fingerprint(outline), after.fingerprint(outline));
+        }
+    }
+
+    /// And the nametable **base** is not part of the key either, for the same reason: the picture is drawn
+    /// from the cells `plane_decoded` read *through* that base, so a base moved onto an identical map is an
+    /// identical picture. The base is shown beside the picture and named in a click's detail line, and both
+    /// of those are rebuilt every repaint.
+    #[test]
+    fn a_base_moved_onto_the_same_map_is_not_a_redraw() {
+        let mut v = fixture();
+        put_cell(&mut v, 0xC000, 0x0001);
+        for i in 0..(32 * 32 * 2) {
+            let b = v.vram()[0xC000 + i];
+            v.vram_mut()[0xA000 + i] = b;
+        }
+        let before = gathered(&v, Plane::A, false);
+        let lined = raster(&v, &before, ink(), true).pixels;
+        set_reg(&mut v, 0x02, 0x28); // plane A base $A000, the copy
+        let after = gathered(&v, Plane::A, false);
+        assert_eq!(
+            (before.base, after.base),
+            (0xC000, 0xA000),
+            "the base moved"
+        );
+        assert_eq!(raster(&v, &after, ink(), true).pixels, lined);
+        assert_eq!(before.fingerprint(true), after.fingerprint(true));
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The raster is a cell at a time, and it is the same picture
+    // -----------------------------------------------------------------------------------------------
+
+    /// **[`raster`] as it stood before this parcel**, kept whole as the model the fast one is proved
+    /// against.
+    ///
+    /// A pixel at a time: `dot` recomputes the cell index, `nibble` recomputes the flips and `tile_pixel`
+    /// recomputes the byte address, once for every one of up to 524288 dots. It is here rather than deleted
+    /// because *"this is only an optimisation, the picture is unchanged"* is a claim, and a claim about
+    /// bytes is worth exactly the comparison behind it.
+    ///
+    /// ⚑ **Frozen on purpose.** It must NOT be kept in step with the production raster: the moment someone
+    /// edits both to agree it stops being independent evidence and becomes a second spelling. A deliberate
+    /// change to what the picture looks like belongs here as a change to *this* model first, watched to go
+    /// red, and then to the fast one.
+    mod reference {
+        use super::*;
+        use oracle_core::render::tile_pixel;
+
+        pub fn raster(vdp: &Vdp, inp: &Inputs, ink: Ink, outline: bool) -> egui::ColorImage {
+            let (pw, ph) = inp.pixels();
+            let cram = vdp.cram_decoded();
+            let vram = vdp.vram();
+            let (w, h) = inp.raster_size();
+            let mut pixels = Vec::with_capacity(w * h);
+
+            if inp.scrolled {
+                for line in 0..h {
+                    let sc = &inp.scroll[line];
+                    for x in 0..w {
+                        let (sx, sy) = sample(sc, x, line, pw, ph);
+                        pixels.push(dot(inp, vram, &cram, ink, sx, sy));
+                    }
+                }
+                return image(w, h, pixels);
+            }
+
+            for py in 0..ph {
+                for px in 0..pw {
+                    pixels.push(dot(inp, vram, &cram, ink, px, py));
+                }
+            }
+            if outline {
+                for i in covered_edges(inp, pw, ph) {
+                    pixels[i] = ink.outline;
+                }
+            }
+            image(pw, ph, pixels)
+        }
+
+        fn dot(
+            inp: &Inputs,
+            vram: &[u8],
+            cram: &[(u8, u8, u8); 64],
+            ink: Ink,
+            px: usize,
+            py: usize,
+        ) -> Color32 {
+            let cell = &inp.cells[(py / 8) * inp.cols as usize + (px / 8)];
+            let n = nibble(vram, cell, (px % 8) as u8, (py % 8) as u8);
+            if n == 0 {
+                if ((px / CHECKER) + (py / CHECKER)).is_multiple_of(2) {
+                    ink.empty_a
+                } else {
+                    ink.empty_b
+                }
+            } else {
+                let (r, g, b) = cram[(cell.palette as usize & 3) * 16 + n as usize];
+                Color32::from_rgb(r, g, b)
+            }
+        }
+
+        pub fn nibble(vram: &[u8], cell: &Cell, tx: u8, ty: u8) -> u8 {
+            let tx = if cell.hflip { 7 - tx } else { tx };
+            let ty = if cell.vflip { 7 - ty } else { ty };
+            tile_pixel(vram, cell.tile, tx, ty)
+        }
+    }
+
+    /// A machine with **varied** art and a varied map on all three plane bases: every cell gets its own
+    /// pseudo-random word — both flips, all four palette lines, the priority bit, and a tile index inside
+    /// the art written below — and the art is pseudo-random nibbles, so nibble 0 (the checker) and nibbles
+    /// 1 to 15 (the palette) both occur in quantity. Tile 0 is left zero, so a fully transparent cell is
+    /// reachable too.
+    ///
+    /// The three maps are laid end to end from `$A000` to the top of VRAM, which is where `fixture` put the
+    /// window, plane A and plane B bases; the art and the h-scroll table sit below `$8400` and are not
+    /// touched by them.
+    fn dense(seed: u64, reg10: u8, h40: bool) -> Vdp {
+        let mut v = fixture();
+        set_reg(&mut v, 0x0C, if h40 { 0x81 } else { 0x00 });
+        set_reg(&mut v, 0x10, reg10);
+        let mut r = SplitMix64::new(seed);
+        for b in 32..(ART_TILES * 32) {
+            v.vram_mut()[b] = (r.next_u64() >> 27) as u8;
+        }
+        for base in [0xA000usize, 0xC000, 0xE000] {
+            for i in 0..4096 {
+                let x = r.next_u64();
+                let word = (x % ART_TILES as u64) as u16 | ((((x >> 8) & 0x1F) as u16) << 11);
+                put_cell(&mut v, base + i * 2, word);
+            }
+        }
+        v
+    }
+
+    /// How many patterns [`dense`] fills with art. 96 tiles is 3 KiB, which fits under the h-scroll table
+    /// at `$8000` with room to spare and is more distinct art than any grid here has cells for.
+    const ART_TILES: usize = 96;
+
+    /// **The corpus the byte-identity proof runs over**, and the list is the argument: a differential that
+    /// only ever saw one grid, one width and one scroll mode would be green on a raster that got every
+    /// other case wrong.
+    fn corpus() -> Vec<(String, Vdp)> {
+        let mut out: Vec<(String, Vdp)> = vec![
+            (
+                "the bare fixture, H32 32 by 32, almost all transparent".into(),
+                fixture(),
+            ),
+            ("dense H32 32 by 32".into(), dense(7, 0x00, false)),
+            ("dense H40 64 by 32".into(), dense(11, 0x01, true)),
+            (
+                "dense H40 32 by 64, taller than it is wide".into(),
+                dense(13, 0x10, true),
+            ),
+            ("dense H32 128 by 32".into(), dense(17, 0x03, false)),
+        ];
+        // A per-line h-scroll and a per-2-cell-column v-scroll: the shear the panel exists for, and the
+        // one shape that splits a run at 16 pixels rather than at the cell.
+        let mut shear = dense(19, 0x01, true);
+        set_reg(&mut shear, 0x0B, 0x07);
+        for line in 0..224usize {
+            put_cell(&mut shear, 0x8000 + line * 4, (line as u16 * 3) & 0x03FF);
+        }
+        for c in 0..20usize {
+            write_vsram(&mut shear, c * 2, (c as u16 * 37) & 0x03FF);
+        }
+        out.push((
+            "dense H40 64 by 32, per-line h-scroll and per-column v-scroll".into(),
+            shear,
+        ));
+        // A window band that covers whole lines at the top and a left band below it.
+        let mut win = dense(23, 0x01, true);
+        set_reg(&mut win, 0x11, 0x05);
+        set_reg(&mut win, 0x12, 0x08);
+        out.push(("dense H40 64 by 32 with a window band".into(), win));
+        out
+    }
+
+    /// ⚑ **THE PROOF THAT THE FAST RASTER IS THE OLD ONE.** Every view of every machine in [`corpus`],
+    /// both ways, compared pixel for pixel.
+    ///
+    /// The counters at the bottom are not decoration. A differential between two rasters of an empty plane
+    /// agrees perfectly and measures nothing, and this repo has shipped a fixture that looked like coverage
+    /// for a year while testing nothing at all (SPRITE-MID-CUT). So the row asserts what it actually
+    /// compared: millions of dots, with art in them, transparency in them, and an outline drawn on them.
+    #[test]
+    fn the_cell_raster_draws_the_pixel_raster_byte_for_byte() {
+        let (mut views, mut dots, mut checker, mut coloured, mut outlined) = (0, 0, 0, 0, 0usize);
+        for (name, v) in corpus() {
+            for plane in [Plane::A, Plane::B, Plane::Window] {
+                for scrolled in [false, true] {
+                    for outline in [false, true] {
+                        let inp = gathered(&v, plane, scrolled);
+                        let fast = raster(&v, &inp, ink(), outline);
+                        let slow = reference::raster(&v, &inp, ink(), outline);
+                        let at =
+                            format!("{name}; {plane:?}; scrolled={scrolled}; outline={outline}");
+                        assert_eq!(fast.size, slow.size, "{at}: size");
+                        assert_eq!(fast.pixels.len(), slow.pixels.len(), "{at}: pixel count");
+                        if let Some(i) = fast
+                            .pixels
+                            .iter()
+                            .zip(&slow.pixels)
+                            .position(|(a, b)| a != b)
+                        {
+                            panic!(
+                                "{at}: first difference at pixel {i} = ({}, {}) of {} by {}: the cell \
+                                 raster says {:?}, the pixel raster says {:?}",
+                                i % fast.size[0],
+                                i / fast.size[0],
+                                fast.size[0],
+                                fast.size[1],
+                                fast.pixels[i],
+                                slow.pixels[i],
+                            );
+                        }
+                        views += 1;
+                        dots += fast.pixels.len();
+                        for p in &fast.pixels {
+                            if *p == ink().empty_a || *p == ink().empty_b {
+                                checker += 1;
+                            } else if *p != ink().outline {
+                                coloured += 1;
+                            }
+                        }
+                        // The outline is counted where it is *known* to be, from the same edge list the
+                        // raster paints from, rather than by looking for a colour a palette could also hold.
+                        if outline && !scrolled {
+                            let (pw, ph) = inp.pixels();
+                            let edges = covered_edges(&inp, pw, ph);
+                            for &i in &edges {
+                                assert_eq!(fast.pixels[i], ink().outline, "{at}: outline at {i}");
+                            }
+                            outlined += edges.len();
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            views,
+            corpus().len() * 3 * 2 * 2,
+            "every view of every machine"
+        );
+        assert!(dots > 3_000_000, "only {dots} dots compared");
+        assert!(
+            checker > 100_000,
+            "only {checker} transparent dots in the corpus"
+        );
+        assert!(
+            coloured > 100_000,
+            "only {coloured} painted dots in the corpus"
+        );
+        assert!(
+            outlined > 10_000,
+            "only {outlined} outline dots in the corpus"
+        );
+    }
+
+    /// ⚑ **And the corpus varies what the raster actually branches on.** Counted off the corpus itself, so
+    /// a fixture that quietly stops varying goes red here rather than leaving the differential above green
+    /// and empty.
+    #[test]
+    fn the_raster_corpus_varies_what_the_raster_branches_on() {
+        let (mut hflip, mut vflip, mut priority) = (0usize, 0usize, 0usize);
+        let mut palettes = [0usize; 4];
+        let mut grids = std::collections::BTreeSet::new();
+        let mut widths = std::collections::BTreeSet::new();
+        let (mut full, mut two_cell) = (0usize, 0usize);
+        let mut banded = 0usize;
+        for (_, v) in corpus() {
+            for plane in [Plane::A, Plane::B, Plane::Window] {
+                let inp = gathered(&v, plane, true);
+                grids.insert((inp.cols, inp.rows));
+                widths.insert(inp.display.0);
+                for c in &inp.cells {
+                    hflip += usize::from(c.hflip);
+                    vflip += usize::from(c.vflip);
+                    priority += usize::from(c.priority);
+                    palettes[c.palette as usize & 3] += 1;
+                }
+                for s in &inp.scroll {
+                    match s.vscroll {
+                        VScroll::Full(_) => full += 1,
+                        VScroll::TwoCell(_) => two_cell += 1,
+                    }
+                }
+                banded += inp.spans.iter().filter(|s| s.is_some()).count();
+            }
+        }
+        assert!(hflip > 1000 && vflip > 1000, "flips: {hflip} h, {vflip} v");
+        assert!(priority > 1000, "priority: {priority}");
+        assert!(
+            palettes.iter().all(|n| *n > 1000),
+            "all four palette lines: {palettes:?}"
+        );
+        assert!(grids.len() >= 4, "grids: {grids:?}");
+        assert_eq!(
+            widths,
+            [256u16, 320].into_iter().collect(),
+            "both H32 and H40"
+        );
+        assert!(full > 0 && two_cell > 0, "{full} full, {two_cell} two-cell");
+        assert!(banded > 0, "a window band on some line");
+    }
+
+    /// One arm of [`race`]: the best rep and the sum of all of them.
+    #[derive(Clone, Copy)]
+    struct Arm {
+        best: std::time::Duration,
+        total: std::time::Duration,
+    }
+
+    /// Run two arms **alternately**, `reps` times each.
+    ///
+    /// Alternating rather than all of one then all of the other: a machine that gets busier half way
+    /// through would otherwise hand the whole slow-down to whichever arm ran second, and the ratio would
+    /// report it as a result. The headline is the **best** rep of each, for the reason a stopwatch is read
+    /// at its minimum — noise only ever adds — and the totals are printed beside it so a reader can see
+    /// whether the two ever disagree.
+    fn race(reps: usize, mut a: impl FnMut(), mut b: impl FnMut()) -> (Arm, Arm) {
+        use std::time::{Duration, Instant};
+        let (mut ab, mut at) = (Duration::MAX, Duration::ZERO);
+        let (mut bb, mut bt) = (Duration::MAX, Duration::ZERO);
+        for _ in 0..reps {
+            let t = Instant::now();
+            a();
+            let d = t.elapsed();
+            ab = ab.min(d);
+            at += d;
+            let t = Instant::now();
+            b();
+            let d = t.elapsed();
+            bb = bb.min(d);
+            bt += d;
+        }
+        (
+            Arm {
+                best: ab,
+                total: at,
+            },
+            Arm {
+                best: bb,
+                total: bt,
+            },
+        )
+    }
+
+    fn report(what: &str, reps: usize, dots: usize, old: Arm, new: Arm) {
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+        println!(
+            "{what}\n  {dots} dots, {reps} reps each, alternating\n  \
+             pixel at a time: {:8.3} ms best, {:9.3} ms total\n  \
+             cell at a time:  {:8.3} ms best, {:9.3} ms total\n  \
+             ratio: {:.2}x on the best rep, {:.2}x on the totals",
+            ms(old.best),
+            ms(old.total),
+            ms(new.best),
+            ms(new.total),
+            ms(old.best) / ms(new.best),
+            ms(old.total) / ms(new.total),
+        );
+    }
+
+    /// **The measurement, with its control arm.**
+    ///
+    /// `#[ignore]`d because it is an instrument and not a gate: a wall-clock ratio asserted on a shared
+    /// machine is a flake generator. Run it with
+    /// `cargo test -p oracle-player --release -- --ignored --nocapture raster_timing`.
+    ///
+    /// ⚑ **The null arm is the part that matters and it is printed first.** It times the old raster against
+    /// **itself**. If that does not come out at about 1.00 then the instrument is measuring the machine
+    /// rather than the code, and every other figure below it is worth nothing.
+    #[test]
+    #[ignore = "timing instrument; run with --release -- --ignored --nocapture"]
+    fn raster_timing() {
+        use std::hint::black_box;
+        const REPS: usize = 15;
+        // 64 by 64 cells = 512 by 512 = 262144 dots of dense art: the realistic worst case, and the
+        // half a million pixel lookups the queue row was booked on.
+        let v = dense(101, 0x11, false);
+
+        let inp = gathered(&v, Plane::A, false);
+        assert_eq!(inp.pixels(), (512, 512));
+        let dots = 512 * 512;
+        let (a, b) = race(
+            REPS,
+            || {
+                black_box(reference::raster(&v, &inp, ink(), false));
+            },
+            || {
+                black_box(reference::raster(&v, &inp, ink(), false));
+            },
+        );
+        report(
+            "NULL CONTROL -- the old raster against itself; anything but ~1.00 invalidates the rest",
+            REPS,
+            dots,
+            a,
+            b,
+        );
+
+        for (what, scrolled, outline) in [
+            ("unscrolled, outline off -- the raster alone", false, false),
+            (
+                "unscrolled, outline on -- what the panel draws by default",
+                false,
+                true,
+            ),
+            ("scrolled -- the viewport cut out of the plane", true, false),
+        ] {
+            let inp = gathered(&v, Plane::A, scrolled);
+            assert_eq!(
+                raster(&v, &inp, ink(), outline).pixels,
+                reference::raster(&v, &inp, ink(), outline).pixels,
+                "a timing figure for a raster that draws a different picture is worth nothing"
+            );
+            let dots = inp.raster_size().0 * inp.raster_size().1;
+            let (old, new) = race(
+                REPS,
+                || {
+                    black_box(reference::raster(&v, &inp, ink(), outline));
+                },
+                || {
+                    black_box(raster(&v, &inp, ink(), outline));
+                },
+            );
+            report(what, REPS, dots, old, new);
+        }
     }
 }

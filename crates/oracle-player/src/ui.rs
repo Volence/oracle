@@ -7061,7 +7061,8 @@ mod planes_layout_tests {
             vcolumns: false,
             htable: 0xFC00,
             hint_line,
-            fingerprint: 0,
+            content: 0,
+            viewport: 0,
         }
     }
 
