@@ -203,11 +203,42 @@ quietly relying on it, which is the behaviour the bars exist to produce. Registe
 matters now because the outline is roughly **half the cost of the panel's default view**, so the next parcel in this area is aimed
 at code this parcel's instrument cannot see.
 
-**NEXT: `OWNER-UX-GROUP-B`** — ⚑ *re-derive before starting, from the sources and not from this clause*: the three remaining rows of
-the owner's own ten, in `docs/OVERSEER-REFERENCE.md`'s follow-up register, and his 2026-09-03 ruling on what gets a tab (same file).
-The board's one-line reason for their being takeable — that this seat had wrongly parked them as things the window rebuild would
-fix — is itself a restatement and is exactly the shape that was wrong twice tonight. **Check it against the register before acting
-on it.**
+**OWNER-UX-GROUP-B LANDED 2026-09-16, merge `535f719`** (agent tip `6af2d30`, branch `parcel/owner-ux-chrome`, base `c13e97b`;
+`tools/land.sh` GREEN and pushed, origin confirmed moved by this seat: release 90 legs / 2937 / 0 / 4, byte-for-byte the
+baseline, which is the expected result for a diff whose only change to `crates/` is comments). **The row was NOT three open
+items and the parcel's output is the re-derivation, not the fix.** Verified firsthand here, not taken from the agent:
+`ad7bc78` and `4f31f0d` (2026-09-09) and `541c872` (09-04) are all ancestors of the base, so capture §1.7 (dragging) and the
+CHROME half of §1.4 and the navigation half of §1.1 were already done. What is genuinely left is the LAYOUT half of §1.4,
+and it is a look call: cards **d-52** (the per-tab `x`) and **d-53** (the right column's three stacked leaves) are filed.
+⚑ **THE ROW'S ID NAMES THE WRONG GROUP** — the board says `GROUP-B`; in the capture these three are the hub's **Group A**
+(§3), and Group B is a disjoint list. Cite capture sections, never either name.
+⚑ **AND THE BOARD CLAUSE WAS STALE BY ONE COMMIT, WHICH IS A FIFTH INSTANCE AND A NEW SUB-SHAPE.** It rested on lane-log
+`13:29:21Z` — the ANALYSIS — and the WORK landed at `13:56:29Z` the same morning. Every earlier instance this week was a
+restatement drifting from a source that stood still; **this one is a restatement that was TRUE OF ITS SOURCE and false of
+the tree, because the source was a note about what was about to be done.** A lane log records intent as readily as outcome
+and nothing in the entry distinguishes them. **Re-derive a queue row's premise from the TREE (`merge-base --is-ancestor`),
+never from the note that booked it** — the note cannot know what happened after it.
+⚑ **The parcel's own fix is a COMMENT, and it is the class worth keeping: a number in our own record wrong by half.**
+`main.rs` said `egui_dock` draws *"the per-tab `x` on the ACTIVE tab"*. Re-verified at this seat against the crate:
+`widgets/dock_area/show/leaf.rs:431` computes `show_close_button` INSIDE the per-tab loop at `:402`, with no reference to
+`is_active`, and `nav.rs:69` had it right the whole time — **the crate asserted both things and the wrong one sat at the
+decision site.** `ui::initial_dock` is 4 leaves / 11 tabs, so the remaining chrome is FIFTEEN controls and not eight;
+counted firsthand in the committed screenshot. **A cost estimate for the next parcel in this area was being read off a
+sentence that was wrong by half, and only a picture settled it** — the same instrument that corrected the last two parcels'
+own figures. Second correction in the same parcel: `nav.rs` called `F-NAV-COLLAPSED-LEAF` *"real and still open"*; the
+LIMITATION stands, the BOOKING closed as `d-31` `leave-it` 2026-09-09T23:18:15Z (verified in `decisions.jsonl`), and the id
+is in no queue — so a reader who went looking would doubt the paragraph rather than the row.
+⚑ **What the captures CANNOT say, stated rather than glossed:** all three shots are X11 on a private Xvfb and his desktop is
+Wayland, `xdotool` is not installed so no gesture was synthesised, and §1.7's Wayland-safety is an argument from `egui_dock`'s
+source (pointer drag, in-viewport `egui::Window`) rather than a measurement on his compositor. Tab drag does NOT inherit the
+`DroppedFile` blind spot; that is reasoned, not observed.
+
+**NEXT: `DATA-DISPLAY-AUDIT`** — ⚑ *re-derive before starting, and this clause is refreshed by the same edit that landed the
+row above, which is the habit booked this morning against its own rotting*: the sources are `docs/2026-09-05-debug-window-audit.md`
+(the per-panel build order), the style rules it applies and in two places corrects, and the 2026-09-03 tab ruling in
+`docs/OVERSEER-REFERENCE.md`. It was blocked on the duplicate number style and is unblocked since `f0f0a96`. **Two items in it
+are HIS eyes, not ours.** ⚑ And the row above is the reason to check the premise in the tree first: this row's booking is
+also a week old.
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

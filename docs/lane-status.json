@@ -1,11 +1,21 @@
 {
-  "focus": "The plane picture stopped redrawing itself to produce the same image. Landed and checked.",
+  "focus": "Two of the three window complaints left on your list were already fixed; two quick looks are yours.",
   "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
       "since": "2026-09-14",
       "id": "d-51"
+    },
+    {
+      "what": "Whether the little close glyph on every tab should go",
+      "since": "2026-09-16",
+      "id": "d-52"
+    },
+    {
+      "what": "How the right-hand column of panels should be arranged",
+      "since": "2026-09-16",
+      "id": "d-53"
     }
   ],
   "nextBoundary": "Now. Landed, pushed, verified; nothing is running.",
@@ -60,11 +70,11 @@
     },
     {
       "id": "OWNER-UX-GROUP-B",
-      "state": "next",
-      "size": "L",
-      "blockedBy": null,
+      "state": "open",
+      "size": "S",
+      "blockedBy": "your two answers: cards d-52 and d-53",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Three of your ten remain: the clutter, the stacked tab strips, and dragging panels to any side. All three are takeable now -- I had wrongly parked them as things the rebuild would fix."
+      "title": "Landed, and it was mostly already done: two of the three were fixed a week ago. What is left is two looks for you -- the close glyph on every tab, and how the right column is arranged."
     },
     {
       "id": "ROM-DROP-WAYLAND",
@@ -84,7 +94,7 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "open",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -107,7 +117,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "Nothing. The next row is three of your own ten UX items and needs no decision from you; say the word or let it start.",
+  "awaiting": "Nothing blocking. Three cards wait on you when you are around (d-51, d-52, d-53); the next row is the rest of the panels' readability and needs no decision.",
   "atBoundary": true,
-  "updatedAt": "2026-09-16T09:29:06Z"
+  "updatedAt": "2026-09-16T10:31:54Z"
 }
