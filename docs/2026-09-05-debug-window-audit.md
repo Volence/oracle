@@ -1026,3 +1026,46 @@ part `show_rows` exists to prevent is still prevented: nothing walks the whole r
     full weight when it is non-zero, because it is the evidence the row is kept for. *Question: does that
     read as the point being made, or as a rendering bug?*
 
+
+
+---
+
+## Addendum, 2026-09-16 (landing, parcels 4-5): verified at the merge, and the blind-lock finding is confirmed independently
+
+*Appended under the standing rule; nothing above is edited. Written by the overseer seat at merge `161d6f4`,
+re-running the parcel's own proofs rather than transcribing its report.*
+
+**Both profiles, measured here on the MERGED tree, with the leg count as the completeness check:** debug
+**90 legs / 2965 / 0 / 7**, release **90 / 2968 / 0 / 4**, +19 in each, reconciled BY NAME against the
+nineteen `#[test]` attributes the diff adds. fmt clean; clippy `-D warnings` clean in both shapes.
+⚑ **The first aggregate this seat took was 63 legs / 1796 and it was a PARTIAL LOG** — a wait loop expired
+instead of succeeding, which is the landing checklist's own CI lesson (*a waiter that times out exits 0 and
+reads exactly like success*) arriving on a test run. **The leg count is what caught it, not the waiting.**
+
+**M9 reproduced here, and the third named-lock instance is confirmed exactly.** With every `BreakRow` cell's
+address replaced by a constant (`"0xDEAD"`, quoted from disk, `git diff --stat` naming the file), **exactly
+one test fails — the parcel's new `every_cell_the_breakpoint_table_draws_is_the_served_rows_own_spelling`.**
+`the_armed_set_the_window_names_is_the_one_breakpoint_list_serves` prints `ok`. **That lock is not vacuous**
+— it carries the R1 third assertion proving its shared derivation did something — **it simply compares
+`Halting::armed_handles`, the ALARM's handle set, against the served list, and never touches a cell the
+table draws.** Restored with `git restore --source=HEAD`; 481 pass.
+
+**An 8(e) gap in the parcel's report, closed here, and the answer is better than the report.** The agent
+changed its restore method mid-parcel after `git checkout --` on a dirty tree destroyed an uncommitted edit,
+and did not say which earlier claims it re-established. Reds are self-evidencing, so they need nothing — but
+**M6's claim is that a mutation stayed GREEN, which is exactly what an unapplied mutation also looks like.**
+Re-run here with the second spelling on disk (`WatchSpace::Bus => "buss"`): `every_watch_space_the_selector_offers_is_one_the_handler_takes`
+**does** stay `ok`, so the blindness is real — **and the parcel's own new
+`every_enum_the_watch_tab_draws_is_a_word_and_never_a_debug_spelling` FAILS on it**, which the report does
+not mention. **The gap it found is one its own work closed.**
+
+**P10 confirmed zero for the third and fourth time, measured at this seat.** `fn breakpoints` holds two em
+dashes and `fn watchpoints` eight, **all of them in comments and none in a runtime string**; §4's four cited
+Watchpoints lines (`1503`, `1540`, `1561`, `1598`) are in the spawn picker and the planes readout, not on
+either tab. Four bogus P10 charges from this page so far.
+
+⚑ **The citation-drift finding is the durable one and it is the agent's:** `ui.rs` citations are off by
+**1013-1091** lines while **`stopping.rs:150` is EXACT** — it still lands on the padded `format!` inside
+`BreakRow::summary`. `stopping.rs` barely moved while `ui.rs` grew a thousand lines beneath it. **A page
+whose citations all rot at one rate is a page nobody checked file by file**, and the uniform rate is the
+tell, not the staleness.
