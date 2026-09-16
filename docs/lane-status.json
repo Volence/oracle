@@ -89,9 +89,17 @@
       "blockedBy": null,
       "project": "LIVE-EFFECTS",
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
+    },
+    {
+      "id": "OVERSEER-RECUT",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "My own start-up notes grew by over a third today, mostly checklists that belong in the file read at review time. Moving them back keeps every future session quick to start. Source: git diff 61288ff HEAD."
     }
   ],
   "awaiting": "nothing from you. Note only: CI is still running on this landing and I will read it to completion before calling it done.",
   "atBoundary": true,
-  "updatedAt": "2026-09-16T18:43:09Z"
+  "updatedAt": "2026-09-16T18:45:23Z"
 }
