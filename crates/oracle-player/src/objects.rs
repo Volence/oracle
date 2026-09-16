@@ -98,24 +98,23 @@ pub const NO_NAME_WHY: &str =
     "`ObjCodeBase` is absent from the loaded listing, or nothing resolves at the address this record's \
      code word points to. Both are facts about the listing, not about the object.";
 
-/// One column of a slot table, named once so a header and a body cannot disagree about how many there
-/// are or what order they come in.
+/// One column of a slot table: **a drawn column, plus which of this row's facts it holds.**
 ///
-/// `numeric` and `mono` are **presentation facts derived from what the column holds**, kept here rather
-/// than in the renderer so the two tables cannot align one column two ways: a machine address and a
-/// coordinate are monospace because they are read digit by digit against each other, and a count or a
-/// coordinate is right-aligned because that is what makes a column of numbers comparable at a glance.
-/// A symbol name is neither.
+/// ⚑ **Split, 2026-09-16.** `head`, `numeric` and `mono` used to live here, and because they did, the
+/// window's whole table furniture took an `objects::Col` — so the Profiler, the Watch log and the
+/// Breakpoint list could not reach it without dragging [`Field`] in with them. Those three are
+/// presentation facts about a column of text and say nothing about objects, so they are
+/// [`crate::table::Col`] now and this **composes** that rather than restating it. There is still exactly
+/// one spelling of each; what changed is which module owns it.
+///
+/// [`Field`] stays here because it genuinely is object-specific: it is how a [`Row`] knows which of its
+/// own facts a column holds.
 #[derive(Clone, Copy)]
 pub struct Col {
-    /// The header cell. Lower case: this is a column of a table, not a title.
-    pub head: &'static str,
+    /// How the column is drawn: its header, its alignment and its face.
+    pub col: crate::table::Col,
     /// Which fact the cell holds.
     pub field: Field,
-    /// Right-aligned. True for anything whose digits a reader compares down the column.
-    pub numeric: bool,
-    /// Drawn in the monospace face. Style page P3: addresses, hex and machine numbers only.
-    pub mono: bool,
 }
 
 /// The facts a slot table can show, as an enum rather than as contract key strings in the renderer, so a
@@ -137,40 +136,52 @@ pub enum Field {
 /// The pool table's columns.
 pub const POOL_COLS: [Col; 6] = [
     Col {
-        head: "slot",
+        col: crate::table::Col {
+            head: "slot",
+            numeric: true,
+            mono: true,
+        },
         field: Field::Slot,
-        numeric: true,
-        mono: true,
     },
     Col {
-        head: "addr",
+        col: crate::table::Col {
+            head: "addr",
+            numeric: false,
+            mono: true,
+        },
         field: Field::Addr,
-        numeric: false,
-        mono: true,
     },
     Col {
-        head: "code",
+        col: crate::table::Col {
+            head: "code",
+            numeric: false,
+            mono: true,
+        },
         field: Field::Code,
-        numeric: false,
-        mono: true,
     },
     Col {
-        head: "x",
+        col: crate::table::Col {
+            head: "x",
+            numeric: true,
+            mono: true,
+        },
         field: Field::X,
-        numeric: true,
-        mono: true,
     },
     Col {
-        head: "y",
+        col: crate::table::Col {
+            head: "y",
+            numeric: true,
+            mono: true,
+        },
         field: Field::Y,
-        numeric: true,
-        mono: true,
     },
     Col {
-        head: "name",
+        col: crate::table::Col {
+            head: "name",
+            numeric: false,
+            mono: false,
+        },
         field: Field::Name,
-        numeric: false,
-        mono: false,
     },
 ];
 
@@ -180,10 +191,12 @@ pub const POOL_COLS: [Col; 6] = [
 /// slot 0 — and because it is the one column the pool table cannot show.
 pub const PLAYER_COLS: [Col; 7] = [
     Col {
-        head: "role",
+        col: crate::table::Col {
+            head: "role",
+            numeric: false,
+            mono: false,
+        },
         field: Field::Role,
-        numeric: false,
-        mono: false,
     },
     POOL_COLS[0],
     POOL_COLS[1],
@@ -1980,13 +1993,13 @@ mod bus_parity {
                         cell.as_str(),
                         "column `{}` of slot {} is padded: {cell:?}. Padding inside a cell is the \
                          pseudo-table P2 outlaws, just moved one function down",
-                        c.head,
+                        c.col.head,
                         r.slot
                     );
                     assert!(
                         !cell.contains('\n'),
                         "column `{}` of slot {} spans lines, so the table is not a table: {cell:?}",
-                        c.head,
+                        c.col.head,
                         r.slot
                     );
                 }
@@ -1994,7 +2007,7 @@ mod bus_parity {
         }
 
         // …and the header names every column exactly once, so no column is anonymous.
-        let heads: Vec<&str> = POOL_COLS.iter().map(|c| c.head).collect();
+        let heads: Vec<&str> = POOL_COLS.iter().map(|c| c.col.head).collect();
         let mut sorted = heads.clone();
         sorted.sort_unstable();
         sorted.dedup();
@@ -2075,7 +2088,7 @@ mod bus_parity {
             POOL_COLS
                 .iter()
                 .chain(PLAYER_COLS.iter())
-                .map(|c| c.head.to_string()),
+                .map(|c| c.col.head.to_string()),
         );
         for f in pool.layout_facts().iter().chain(rings.facts().iter()) {
             shown.push(f.label.clone());

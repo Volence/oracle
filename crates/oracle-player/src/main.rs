@@ -82,6 +82,7 @@ mod stats;
 mod states;
 mod stopping;
 mod symbols;
+mod table;
 // The suite's design tokens as an egui style. Installed once, in `run_native`'s creation closure.
 mod theme;
 mod ui;
