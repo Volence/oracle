@@ -729,3 +729,36 @@ a CI that does not run produce the same observable, which is a green board.** Th
 the CI repair, not by anything about M48.
 **What would have to be true for this to be wrong:** that `tools/land.sh` G7 stops being run by every
 landing, at which point nothing gates it at all.
+
+
+## L-15 — `palette.rs`'s echo keeps dumping raw JSON while seven sibling sites stopped · `SELF-RULED`
+
+**Verdict: RATIFIED — leave `palette.rs:336` echoing the raw `serde_json::Value`.** The
+`DATA-DISPLAY-AUDIT` parcel routed seven production echo sites through `bus::describe_reply` and
+deliberately excluded this one, flagging it for a ruling rather than settling it. That escalation was
+correct and the reading behind it is adopted. **Reviewer: none — substituted-reviewer rule, seat on HOLD.**
+
+**The distinction that decides it, and it is about the READER and not about the code.** Every other site
+echoes a reply at somebody who pressed a labelled button — they asked the panel to arm a watch, and the
+wire shape of the confirmation is noise between them and the answer. The command palette is a **raw RPC
+console**: its user typed a method name, and the JSON *is* the artifact they came for. Paraphrasing it
+there would remove the feature. So the style page's P1/P3 are not being overruled — **they do not reach a
+surface whose subject is the wire**.
+
+**Why this is not just left, but recorded.** This lane learned the opposite lesson twelve hours earlier:
+the doc comment above `memory.rs`'s `Line` declared the identical passthrough deliberate, predating the
+audit by two days, and a cold reader meeting it *"would reasonably have stopped and called the item
+settled"* — but it was prior art the audit had already overruled, and a rationale sitting at a decision
+site **outranks nothing by being there**. A comment alone would therefore re-create exactly the artifact
+that cost this row a re-derivation. The ruling is banked here, where the ledger's audit can reach it, and
+the site should carry a pointer to `L-15` rather than a fresh argument.
+
+**What would have to be true for this to be wrong:** that the command palette is, in practice, used as a
+general control surface by someone who does not read JSON — in which case the raw dump is the same defect
+as the seven that were fixed, and the fix is the same one line. **The audit should re-run** if the palette
+ever grows labelled buttons or a non-expert entry point, because the ruling is scoped to *who is looking*
+and nothing in the code records that scope.
+
+**Also booked and NOT ruled here:** `objects.rs`'s `Row::cell` ends `Some(v) => v.to_string()`, the
+identical catch-all, safe today only because `DecodedRecord::to_json` emits scalars. Latent rather than
+live; it belongs with parcel 10 and is not covered by this verdict.

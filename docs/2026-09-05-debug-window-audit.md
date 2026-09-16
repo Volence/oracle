@@ -803,3 +803,40 @@ this tab's.
     stated absence, recessed. Objects has the same property and it was judged acceptable there on a table
     of sixty-four slots. *Question: on the profiler's twenty-four, does a column of identical recessed
     markers read as an answer or as a broken column?*
+
+
+---
+
+## Addendum, 2026-09-16 (landing): three counts in the addendum above are wrong, re-derived at the merge
+
+*Appended under the same standing rule; nothing above this heading is edited. Written by the overseer
+seat at merge `beed8d9`, verifying the parcel's report rather than transcribing it. **The parcel's work
+is sound and every gate reproduced here** — what follows are counts in our own record, which is the exact
+class the parcel was documenting when it wrote them.*
+
+**"Eight sites in six files" does not reconcile, and the addendum's own table is the evidence against it.**
+Counted from the tree at `beed8d9`: `bus::describe_reply` has **seven** production call sites, in
+**three** files — `memory.rs` ×3, `ui.rs` ×3 (`Panels::memory`'s `Resolved::Symbol` arm, `Transport::issue`,
+`Transport::issue_all`, all three confirmed outside `#[cfg(test)]`), `rom_open.rs` ×1. The table above has
+**six ROWS**, because its `resolve_address` row carries two sites. So **six is the row count read as a file
+count**, and eight is seven fixed plus `palette.rs`, which the very next paragraph says was deliberately
+left. **The sentence "All eight now go through `bus::describe_reply`" contradicts the paragraph three lines
+below it**, and both are correct about the work — only the arithmetic joining them is wrong.
+
+**The P10 positive control of "243 em dashes in `ui.rs`" reproduces at no revision:** 267 at `61288ff`,
+271 at `beed8d9`, 0 en dashes at either. The load-bearing half is unaffected and was re-verified here —
+**zero em or en dashes in the Profiler body at the base** (lines 2761-2889), and §4's four cited line
+numbers (`1695`, `1718`, `1752`, `1784`) land in `pacing`, not the Profiler, so that charge was not merely
+closed but mis-addressed.
+
+⚑ **Why this is recorded rather than quietly fixed: the parcel's headline finding is that a booking's count
+was wrong, and it published three wrong counts in the addendum announcing it.** Not one of the three
+reaches the code, and that is the point — **a count in prose has nothing checking it**, which is why this
+document keeps generating them and why every one so far was caught by someone re-deriving from the tree
+instead of reading the sentence. Fourth consecutive parcel here to correct its own brief, and the first to
+need correcting in the same direction it was correcting.
+
+**Stale-citation note for anyone reading §4 cold:** its eight line citations under *Profiler* are stale by
+about 1,080 lines; `fn profiler` was at `:2761` at `61288ff` and `:1674` is inside `fn pacing`. §2's
+prerequisite set is right in count and wrong in membership: `text_w` never took an `objects::Col`, and
+`header_cell` did and is named nowhere.
