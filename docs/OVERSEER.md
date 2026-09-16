@@ -120,9 +120,17 @@ variant cannot move it BY CONSTRUCTION.** It is the right instrument for the own
 Two agent deviations ACCEPTED and banked in the design's landed note: the three fixtures need **display-off as well as** R4's busy-poll (a 64 KiB
 fill is ~6.6 frames displayed against ~1.5 blanked), and the watchpoints doc's `[0,0,0,0]` "status arm entirely dead" row was false — `build_pad_poll`
 drives 6,849 status reads in 2 frames. **THREE LIVE-LOOK TAGS ARE THIS SEAT'S, NOT AN AGENT'S** (no emulator from a background agent): §1.5 FIFO
-EMPTY/FULL during a running fill, §1.6 a non-DMA command word and a data-port read mid-fill, §1.1 the per-line deficit. **NEXT: H22 landing 1**
-(static-copy filler, ~7%, ruled takeable) unless he says otherwise; `vdp_sprite_masking`'s 2 residuals (ledger P1, the mid-sprite pixel-budget cut)
-are the only other test-ROM rows still red and are the natural read of his *"keep fixing the issues with the test rom"* once H22 lands.
+EMPTY/FULL during a running fill, §1.6 a non-DMA command word and a data-port read mid-fill, §1.1 the per-line deficit. **H22 LANDING 1 LANDED 2026-09-16, merge `a663ccf`** (agent tip `737c7fa`; docs correction `b6410dd`; pushed, origin confirmed moved).
+Verified firsthand on the merged tree: clippy clean in BOTH shapes, debug 90 legs / 2917 / 0 / 6, release 90 legs / 2920 / 0 / 3, and both new gates
+reproduced red-first with the mutation on disk then restored. **It CORRECTED ITS OWN DESIGN'S CLAIM: −4.71 %/−4.88 % measured against the stated
+−7.5 %**, with a byte-identical null arm validating the instrument at ±0.5 %; recorded at the design's canonical site (`b6410dd`), the original left
+standing as the spike's record. **Landings 2-3 STAY HELD**, and this is evidence FOR the hold: the one figure this parcel could check was overstated
+by a third. **NEXT: `TESTROM-SPRITE-MASKING`** — ⚑ *re-derive before proposing it, do not quote this line*: the source is the scorecard row in
+`docs/2026-07-25-testrom-conformance.md` and ledger row P1 in `docs/2026-07-16-vdp-pixel-known-differences.md`; as last read it is 2 failures (test 3's
+COMPLEX sub-case and test 6 MASK S1 ON DOT OVERFLOW) from one cause, the whole-sprite pixel-budget cut against hardware's mid-sprite cut.
+⚑ **THIS POINTER LINE IS THE ARTIFACT CLASS THAT BIT THE HUB TONIGHT** (they proposed M1 hours after acknowledging it closed, off their own boot-read
+copy of a figure): **a `NEXT:` clause naming a live measurement rots the moment the work lands, and it is the one sentence that costs someone hours.
+Re-measure at the moment of the recommendation, from the artifact, never from this file.**
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 
