@@ -1,12 +1,6 @@
 {
-  "focus": "On the sprite test ROM. An agent is out fixing how sprites get cut off at the line limit.",
-  "inFlight": [
-    {
-      "what": "The mid-sprite pixel cut: hardware stops a sprite mid-way through when the line's sprite budget runs out; we draw it whole or not at all.",
-      "where": "branch parcel/sprite-mid-cut, worktree ../oracle-spritecut",
-      "agent": true
-    }
-  ],
+  "focus": "Sprites now cut off mid-way at the line limit, like real hardware. Landed and checked.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,16 +8,8 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the agent returns and I have either landed its work or rejected it. Not before -- it holds a branch.",
+  "nextBoundary": "Now. The parcel is landed, pushed and verified; nothing is running.",
   "queue": [
-    {
-      "id": "TESTROM-SPRITE-MASKING",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Re-derived at boot: the sprite test ROM shows 2 failures, but only ONE is ours (test 3, our whole-sprite pixel budget). Test 6 already passes -- our own scraper reads the wrong picture."
-    },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
       "state": "open",
@@ -110,7 +96,7 @@
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The plane viewer redraws the whole picture every frame even when nothing changed. Startable cold: no decision from you, no look needed. Grounded in the 09-08 measurement (OVERSEER-LOG.md) and the register entry; the code is the plane panel in oracle-frontend. Cleared as the cause of your lag -- still a real waste the moment you open that tab."
+      "title": "The plane viewer redraws the whole picture every frame even when nothing changed. Cleared as the cause of your lag; still a real waste the moment you open that tab. Startable cold. Anchors: OVERSEER-LOG.md 09-08, the register."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -121,7 +107,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-16T06:44:14Z"
+  "awaiting": "A clear whenever convenient. Everything is banked; the next session starts on the plane viewer and needs nothing from you.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-16T08:01:18Z"
 }
