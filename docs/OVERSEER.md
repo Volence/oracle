@@ -386,6 +386,20 @@ aurora's caveat that it has been seen to move upward; (c) **if the number is not
 never substitute the feeling it would have replaced.** Loud on unmeasurable, in the one place where the
 temptation is to produce a plausible number because two peers just did.
 
+⚑ **AND NOTHING WILL ROTATE YOU ON A TIMER, SO SAY IT EARLIER THAN FEELS NECESSARY** *(from the hub,
+2026-09-16T13:1xZ; banked as the INSTRUMENT, deliberately not as the reading)*. Overnight auto-clear was
+reported disarmed at the runtime that afternoon, where it had been armed an hour earlier. **Read it from
+the socket (`/ws`), never from `dominion.config.json`** — the file is the intent and the socket is the
+state. The reading itself is exactly the class this repo keeps getting bitten by (*a verdict is true at an
+instant*), so **re-check it at the boundary rather than trusting this sentence**; what is durable is that
+when auto-rotation is off, **only his click rotates this lane**, so a size boundary goes into `awaiting`
+earlier than it otherwise would, and the machine will not cover a late one.
+⚑ **A SECOND INSTRUMENT FROM THE SAME EXCHANGE, and it is a false-negative that reads as a clean result:
+`ListAgents` UPTIME CANNOT SEE A REBOOT.** A Clear+Reboot keeps the session row, so every lane still
+reported *"started 13h ago"* after five of them had been cleared. The hub was about to read that as
+*nobody rebooted*. What saw it was `rotation_advice`'s `upMs`/working-now field. **Same family as the
+no-fetch finding: an instrument answering confidently about a question it does not measure.**
+
 ## ⚑ FOUR OWNER RULINGS, 2026-08-22: **RELAYED, NOT WITNESSED BY THIS LANE**
 
 Reached us via empyrean-73, quoting the owner's own words in their session. **Flagged as a relay
