@@ -449,6 +449,35 @@ are the documentation gaps in §1.5/§1.6.
 
 ## 7. Staging
 
+> **P1 FILL-RUN LANDED 2026-09-15** (branch `parcel/m1-fill-run`). Built as designed, under the hub's
+> rulings R1-R4 (empyrean `a3e2c42`). What was measured on the branch, against the base `7e2bd6e`:
+>
+> * **VDPFIFOTesting 119/3/122 → 122/0/122.** Tests 31, 32 and 33 pass on the tails §1.3 derived by hand;
+>   `PORT_ACCESS_FAILING` is empty; pages 1 and 2 unchanged; the other 16 scorecard rows byte-identical.
+> * **The save layout does not move, measured both ways.** `layout_fingerprint()` is `dff350afa2eb3e1d` in
+>   both builds (§4's value). Old saves — one taken mid-fill at mclk 500,024 and one quiet at 3,000,004 —
+>   load in the new build and reach the old build's own 60-frame hash `18444973284394439428`. The new
+>   build's own mid-fill save round-trips to the same hash. The old build refuses a new mid-fill save
+>   exactly as §4 predicted: `UnexpectedVariant { type_name: "DmaRequest", allowed: 0..=2, found: 3 }` (R3).
+> * **The 12 unit tests §5 named were exactly the 12 that went red**, name for name, and are rewritten with
+>   `cause:` lines that run the clock.
+> * **R1 changed the outcome §5 predicted, as intended.**
+>   `watchpoints::vram_watch_catches_a_dma_fill_write_with_via_dma` never went red: the trigger pc rides in
+>   the `FillRunning` payload, so the hit still names `$32BC`. Proven live by mutation — with the
+>   attribution removed the hit names the fixture's busy-poll `move.w (a0),d0` instead.
+> * **Of §5's four integration movers, one moved**: `scanline_capture::the_row_a_mid_line_cram_write_lands
+>   _on_is_the_row_that_splits`, and R4's busy-poll fixed it. The aether and frontend pair passed once the
+>   fixtures were fixed.
+> * **The fixtures needed more than a busy-poll**: they now also clear the display for the fill. A 64 KiB
+>   fill is ~6.6 frames with the display on against ~1.5 blanked (H32: 16 slots/line against 167), so a
+>   poll alone would have left every consumer of those fixtures reading garbage VRAM for six frames. This
+>   is what real ROMs do and is recorded here because §5 did not foresee it.
+> * **F-SLOTTABLE retired** in the same parcel (the fill walks those slots 65,536 times for a full-VRAM
+>   fill), with the derivation asserted entry by entry and the lookup checked against the arithmetic at
+>   every one of a line's 3,420 mclk.
+> * **Still open from this design**: the two live-look TAGs of §1.5/§1.6, the §1.1 documentation
+>   disagreement, and parcels P2/P3/P4. P1 took no position on any of them.
+
 | Parcel | What it moves | Needs a ruling |
 |---|---|---|
 | **P1 FILL-RUN** (the model, as prototyped, plus the door check and F-SLOTTABLE-style precomputed slot instants). Rewrites the 12 unit tests with `cause:` lines, adds a busy-poll to the 3 synthetic fixtures, empties `PORT_ACCESS_FAILING`, and updates the scorecard row and `docs/2026-09-12-vdp-port-access-full-rom.md`/`docs/2026-07-25-testrom-conformance.md` | bytes: VDPFIFOTesting's results and any mid-fill instant. **Save layout: none** (fingerprint measured unchanged). export_state/state_hash layout: none. Frozen goldens: none except the pins. Wire: three values (§4) | **yes:** R1 (watch-hit attribution and mclk, wire-visible), R2 (C-6 for fills: one stamp per step), R3 (old builds refuse new mid-fill saves), R4 (the three fixtures change) |

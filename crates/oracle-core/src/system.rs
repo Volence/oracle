@@ -219,6 +219,13 @@ pub enum SnapshotRegion {
     VdpFifoPending,
     /// The VDP write FIFO's next-slot cursor, an index into the 4-slot ring (`fifo[cursor]`).
     VdpFifoCursor,
+    /// **Untaken DMA requests in the VDP: none.** A `Mem`, `Fill` or `Copy` request is armed by a trigger
+    /// write and consumed by the bus inside the same bus access, so none can be pending where a caller can
+    /// take a snapshot (`Vdp::dma_pending`'s own invariant). Since M1-FILL-RUN the field's fourth value,
+    /// `FillRunning`, IS a legitimate thing to snapshot — a fill running across instructions — and it is
+    /// what this region admits by not counting it. A `Fill` here is therefore an old build's mid-instruction
+    /// bytes, which restoring would re-run as a whole instant fill on top of one that already happened.
+    VdpDmaPending,
     /// 68000 instructions in flight: none. `System` only ever runs whole instructions, so its CPU is between
     /// instructions wherever a snapshot can be taken. A decoded in-flight micro-op program would carry its
     /// own op count and cursor over a fixed op array, and operand indices into a fixed scratch file, and
@@ -243,6 +250,7 @@ impl SnapshotRegion {
             SnapshotRegion::VdpWriteCaptures => "VDP write-capture buffer",
             SnapshotRegion::VdpFifoPending => "VDP write-FIFO pending count",
             SnapshotRegion::VdpFifoCursor => "VDP write-FIFO cursor",
+            SnapshotRegion::VdpDmaPending => "VDP untaken DMA requests",
             SnapshotRegion::M68kInFlight => "68000 instructions in flight",
             SnapshotRegion::Z80FaultLength => "Z80 refusal's encoding length",
         }
@@ -260,7 +268,9 @@ impl SnapshotRegion {
             | SnapshotRegion::SatCache
             | SnapshotRegion::Sram
             | SnapshotRegion::Z80FaultLength => " bytes",
-            SnapshotRegion::VdpWriteCaptures | SnapshotRegion::VdpFifoPending => " entries",
+            SnapshotRegion::VdpWriteCaptures
+            | SnapshotRegion::VdpFifoPending
+            | SnapshotRegion::VdpDmaPending => " entries",
             SnapshotRegion::VdpFifoCursor | SnapshotRegion::M68kInFlight => "",
         }
     }
@@ -306,6 +316,12 @@ pub enum MalformedSnapshot {
     /// The cartridge SRAM map is inverted (`base` past `end`), so it implies no SRAM size to check the
     /// buffer against. [`System::load_rom`] never records one.
     SramMapInverted { base: u32, end: u32 },
+    /// The VDP holds a **running fill** (`DmaRequest::FillRunning`) but its command code has CD5 clear.
+    /// M1-FILL-RUN's second door check, and the one that is not a size: the engine tests live CD5 at every
+    /// step and the final step clears it, so "running" and "CD5 set" are one fact in any machine that ran.
+    /// A snapshot where they disagree would restore a fill that is both running and already finished — it
+    /// would take no step (`fill_armed` is false) and never clear `dma_pending` either.
+    VdpFillRunningWithoutCd5 { code: u8 },
 }
 
 impl std::fmt::Display for MalformedSnapshot {
@@ -325,6 +341,11 @@ impl std::fmt::Display for MalformedSnapshot {
                 f,
                 "malformed snapshot: the cartridge SRAM map is inverted (base ${base:06X} is past end \
                  ${end:06X}), so it implies no SRAM size"
+            ),
+            MalformedSnapshot::VdpFillRunningWithoutCd5 { code } => write!(
+                f,
+                "malformed snapshot: the VDP holds a running DMA fill but its command code ${code:02X} has \
+                 CD5 clear, so the fill could neither take a step nor ever finish"
             ),
         }
     }
@@ -1484,6 +1505,12 @@ impl System {
             // never reached the sink at all. `sp` is the ACTIVE A7 (`regs.a7()`, supervisor/user as the step
             // left it) — A7 is not in `regs.a[]`, which holds A0-A6 only. Placed before the VDP-write drain so
             // the ordering is boundary → accesses → retirement → writes → clock. No-op for `&mut ()`.
+            // M1-FILL-RUN / R1: if this step armed a fill, the fill is *its* fill for the rest of its
+            // life — a watch hit for any of its steps names this instruction, not whichever later one's
+            // port access catches the fill up. A no-op on every step that armed nothing, and it never
+            // overwrites an attribution already made. (Writes made during this step need nothing from it:
+            // the drain below pairs them with this same `step_pc`.)
+            self.vdp.attribute_running_fill(step_pc);
             sink.on_step_retire(StepRetire {
                 pc: step_pc,
                 opcode: step_opcode,
@@ -1495,42 +1522,12 @@ impl System {
                 executed: outcome.executed,
                 idle: outcome.idle,
             });
-            // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink, paired
-            // with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
-            // instruction that triggered it. Empty at every instruction boundary (the `dma_pending` precedent).
+            // Drain the VDP writes this step produced (empty unless armed) and deliver each to the sink,
+            // paired with the step-boundary PC/frame it just stamped — this is where a DMA write learns the
+            // instruction that triggered it. Empty at every instruction boundary (the `dma_pending`
+            // precedent).
             if capture {
-                for w in self.vdp.take_write_captures() {
-                    // Route CRAM writes into the retained row's journal, at their own in-line offset
-                    // (`F-SCANLINE-SUBLINE` slice 4). `w.mclk` is the write's own stamp (slice 1b), so a
-                    // burst sharing one instruction shares one landing pixel — decision C-6.
-                    //
-                    // ORDERING HAZARD, for whoever lands decision C-7 (Z80 CRAM writes through the
-                    // `$C00000` mirror). This drain runs *before* `catch_up_z80` below, so a CRAM write the
-                    // Z80 performs during the catch-up sits in the buffer until the NEXT step's drain — by
-                    // which time a line boundary may have moved the retained row on, and the write would be
-                    // journalled against the wrong one. The `journal_cram` line check turns that into a
-                    // loud debug assert rather than a silently wrong picture, and no corpus ROM writes CRAM
-                    // from the Z80 today; a C-7 slice must either drain again after the catch-up or file
-                    // late landings by their own stamped line.
-                    //
-                    // The same ordering has a second consequence, and it forces the first of those two
-                    // choices. `System::restore` refuses a snapshot whose VDP write-capture buffer is not
-                    // empty (`Vdp::check_regions`, `SnapshotRegion::VdpWriteCaptures`). A write the Z80
-                    // left in the buffer after this drain survives into the next iteration, which can
-                    // `break` on `stop_requested` before stepping, and `set_write_capture(false)` does not
-                    // clear the buffer. A checkpoint or save state taken at that stop would then be
-                    // refused on restore: an `emulator/restore` refusal of a well-formed checkpoint, and a
-                    // save file that no longer loads. So a C-7 slice MUST drain again after the catch-up,
-                    // which also fixes the journal hazard above. The engine's claim that a checkpoint
-                    // cannot reach `restore`'s malformed arm (its `restore` handler) rests on this.
-                    if wants_rows && w.target == VdpTarget::Cram {
-                        self.scanline_scaffold
-                            .journal_cram(w.mclk, w.addr as usize, w.new as u16);
-                    }
-                    if wants_writes {
-                        sink.on_vdp_write(w);
-                    }
-                }
+                self.drain_vdp_writes(sink, wants_rows, wants_writes);
             }
             self.scheduler.advance(cycles as u64 * MCLK_PER_CPU_CYCLE);
             // Catch the Z80 up to the 68000's new `now` (ZC4): the fixed total order is events → 68000 step
@@ -1546,6 +1543,27 @@ impl System {
             // register write mid-step is picked up here too (recon R12).
             self.cpu.set_ipl(self.vdp.ipl());
         }
+        // **M1-FILL-RUN's closing catch-up.** A fill advances lazily, so a run that ends with one still in
+        // flight would hand back a machine whose VRAM, registers 19-22 and DMA-busy bit are as of the last
+        // port access rather than as of `now`. Every peek a debugger takes on a paused machine —
+        // `emulator/read_vram`, `read_vdp_registers`, `state_hash`, `export_state`, a snapshot — reads the
+        // VDP directly rather than through a port, so this is what makes them exact.
+        //
+        // **The paths this covers, by symbol** (design §7's open item). `System::run_until_with_sink` is the
+        // one loop that advances the master clock — `run_until`, `run_frames`, `run_frames_with_sink` and
+        // `run_until_stop` all funnel through it, and so does every aether/frontend run, step, run-to and
+        // wait-for-break. The two public entry points that do NOT are `System::step_cpu` /
+        // `System::step_instruction`, which deliberately do not advance the clock at all (the caller owns
+        // time), so a fill cannot have progressed inside them; and `System::reset_with_sink`, which runs its
+        // boot step on a machine that cannot yet have armed anything. The one caller that moves the clock
+        // by hand, `oracle_frontend::pick`'s jump to a quiet instant, leaves the fill to the next port
+        // access or run — the lazy model's normal case, not a gap.
+        self.vdp.fill_catch_up(self.scheduler.now());
+        // Those steps' writes are deliveries like any other, and the buffer must be empty when the caller
+        // takes its snapshot (`SnapshotRegion::VdpWriteCaptures`).
+        if capture {
+            self.drain_vdp_writes(sink, wants_rows, wants_writes);
+        }
         // Disarm — leave the VDP as the run found it (a subsequent null-sink run must stay on the hot path).
         if capture {
             self.vdp.set_write_capture(false);
@@ -1556,6 +1574,53 @@ impl System {
             pc: self.cpu.regs.pc,
             frame: mclk / MCLK_PER_FRAME,
             mclk,
+        }
+    }
+
+    /// **Drain the VDP write-capture buffer into the run's consumers** — the retained scanline row's
+    /// CRAM journal and the sink — leaving it empty. Called at every instruction boundary of an armed
+    /// run, and once more at the end of the run, after M1-FILL-RUN's closing fill catch-up: the two
+    /// callers must deliver a captured write identically, so there is one body rather than two.
+    ///
+    /// The caller checks `capture` (the buffer is not even armed otherwise); `wants_rows` and
+    /// `wants_writes` are the run's two opt-ins, read once at the run's start.
+    fn drain_vdp_writes<S: BusEventSink>(
+        &mut self,
+        sink: &mut S,
+        wants_rows: bool,
+        wants_writes: bool,
+    ) {
+        for w in self.vdp.take_write_captures() {
+            // Route CRAM writes into the retained row's journal, at their own in-line offset
+            // (`F-SCANLINE-SUBLINE` slice 4). `w.mclk` is the write's own stamp (slice 1b), so a
+            // burst sharing one instruction shares one landing pixel — decision C-6.
+            //
+            // ORDERING HAZARD, for whoever lands decision C-7 (Z80 CRAM writes through the
+            // `$C00000` mirror). This drain runs *before* `catch_up_z80` below, so a CRAM write the
+            // Z80 performs during the catch-up sits in the buffer until the NEXT step's drain — by
+            // which time a line boundary may have moved the retained row on, and the write would be
+            // journalled against the wrong one. The `journal_cram` line check turns that into a
+            // loud debug assert rather than a silently wrong picture, and no corpus ROM writes CRAM
+            // from the Z80 today; a C-7 slice must either drain again after the catch-up or file
+            // late landings by their own stamped line.
+            //
+            // The same ordering has a second consequence, and it forces the first of those two
+            // choices. `System::restore` refuses a snapshot whose VDP write-capture buffer is not
+            // empty (`Vdp::check_regions`, `SnapshotRegion::VdpWriteCaptures`). A write the Z80
+            // left in the buffer after this drain survives into the next iteration, which can
+            // `break` on `stop_requested` before stepping, and `set_write_capture(false)` does not
+            // clear the buffer. A checkpoint or save state taken at that stop would then be
+            // refused on restore: an `emulator/restore` refusal of a well-formed checkpoint, and a
+            // save file that no longer loads. So a C-7 slice MUST drain again after the catch-up,
+            // which also fixes the journal hazard above. The engine's claim that a checkpoint
+            // cannot reach `restore`'s malformed arm (its `restore` handler) rests on this.
+            if wants_rows && w.target == VdpTarget::Cram {
+                self.scanline_scaffold
+                    .journal_cram(w.mclk, w.addr as usize, w.new as u16);
+            }
+            if wants_writes {
+                sink.on_vdp_write(w);
+            }
         }
     }
 
@@ -1666,6 +1731,14 @@ impl System {
                 // inlined `bool` call per line against re-introducing that second source, which is not a
                 // trade worth making for a branch the optimiser already sees through.
                 if line < u64::from(ACTIVE_LINES) {
+                    // M1-FILL-RUN: the line sees a running fill as it stood **when the line began**. A line
+                    // renders at its start (the existing model), so catching up to this event's own
+                    // `deadline` — not to `scheduler.now()`, which a long DMA stall can have carried past it
+                    // — is what makes a fill crossing active display appear line by line instead of all at
+                    // once. Same line granularity the FIFO's enqueue-immediate writes and A1's VSRAM latch
+                    // already accept. Steps write through `write_vram_byte`, so the SAT cache stays ordered
+                    // with the renders.
+                    self.vdp.fill_catch_up(deadline);
                     if sink.wants_scanlines() {
                         // Retain the resolved row + a 128-byte CRAM snapshot instead of decoding it now
                         // (conformance Limitation L1); the run loop decodes it at the next line's event.
@@ -1886,6 +1959,7 @@ impl System {
 mod tests {
     use super::*;
     use crate::bus::{BusEvent, BusOp, Size};
+    use crate::vdp::DmaRequest; // M1-FILL-RUN's door check bends `Vdp::dma_pending`
 
     /// A booted machine: the test ROM loaded and the power-on reset driven (prefetch primed at the ROM's
     /// entry point), ready to run real code.
@@ -4533,6 +4607,7 @@ mod tests {
             size: 2,
             via: VdpVia::Direct,
             mclk: 0,
+            pc: None,
         };
         let got = restore_bent(|s| s.vdp.regions_mut().write_captures.push(stray));
         assert_refused(
@@ -4559,6 +4634,62 @@ mod tests {
             RegionBound::AtMost(FIFO_SLOTS),
             FIFO_SLOTS + 1,
         );
+    }
+
+    /// **M1-FILL-RUN's door check, half one: an untaken DMA request.** A `Mem`, `Fill` or `Copy` request is
+    /// armed by a trigger write and consumed by the bus inside the same bus access, so none can survive to
+    /// a snapshot — but a **running fill** can and must, which is the state the whole parcel adds. Both
+    /// sides are asserted here: `FillRunning` restores, the three the bus owns do not.
+    #[test]
+    fn restore_refuses_an_untaken_vdp_dma_request_but_admits_a_running_fill() {
+        let running = restore_bent(|s| {
+            let r = s.vdp.regions_mut();
+            *r.dma_pending = Some(DmaRequest::FillRunning { pc: Some(0x200) });
+            *r.code |= 0x20; // …with the CD5 a running fill implies (the other half of the door check)
+        });
+        assert_restores(running, "a fill that is running across instructions");
+        for (what, req) in [
+            (
+                "a fill the bus never took",
+                DmaRequest::Fill { len: 4, fill: 0 },
+            ),
+            (
+                "a 68k transfer the bus never took",
+                DmaRequest::Mem { source: 0, len: 4 },
+            ),
+            (
+                "a copy the bus never took",
+                DmaRequest::Copy { source: 0, len: 4 },
+            ),
+        ] {
+            let got = restore_bent(|s| *s.vdp.regions_mut().dma_pending = Some(req));
+            assert_refused(
+                got,
+                SnapshotRegion::VdpDmaPending,
+                RegionBound::Exactly(0),
+                1,
+            );
+            let _ = what;
+        }
+    }
+
+    /// **…and half two: a running fill whose CD5 is clear.** The engine tests live CD5 at every step and the
+    /// last step clears it, so the two are one fact. A snapshot where they disagree restores a fill that can
+    /// neither step nor finish, and this refusal is not a size, so it has its own named variant.
+    #[test]
+    fn restore_refuses_a_running_fill_without_cd5() {
+        let got = restore_bent(|s| {
+            let r = s.vdp.regions_mut();
+            *r.dma_pending = Some(DmaRequest::FillRunning { pc: None });
+            *r.code &= !0x20;
+        });
+        match got {
+            Err(RestoreError::Malformed(MalformedSnapshot::VdpFillRunningWithoutCd5 { code })) => {
+                assert_eq!(code & 0x20, 0, "the refusal carries the offending code");
+            }
+            Err(e) => panic!("the wrong refusal: {e}"),
+            Ok(_) => panic!("a running fill with CD5 clear was accepted"),
+        }
     }
 
     #[test]

@@ -486,11 +486,14 @@ const STATUS: std::ops::RangeInclusive<u32> = 0xC0_0004..=0xC0_0007;
 
 const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/TestRoms");
 
-/// The vendored hardware test ROMs in the corpus below. `build_pad_poll` alone drives **zero** reads of
-/// `$C00004-$C00007` — it only ever *writes* the control port — so the whole status arm of both
-/// classifiers is dead on it, an agreement of `0 == 0`. (Measured: `status.any` = 0 on that fixture; it is
-/// still in the corpus, as the negative case.) These ROMs are the ones that hammer the status port, and
-/// they are what makes the comparison discriminating.
+/// The vendored hardware test ROMs in the corpus below. `build_pad_poll` **used to** drive zero reads of
+/// `$C00004-$C00007` — it only ever wrote the control port — so the whole status arm of both classifiers
+/// was dead on it, an agreement of `0 == 0`, and these vendored ROMs were the only thing making the
+/// comparison discriminating. **Since 2026-09-15 (M1 FILL-RUN, hub ruling R4) the fixture busy-polls the
+/// DMA-busy bit** while its 64 KiB VRAM clear runs, so it now drives 6,849 status reads in 2 frames
+/// (measured). That does not weaken anything here — the vendored ROMs still carry the floor, and the
+/// fixture now exercises the status arm too rather than agreeing at zero — but it does mean the fixture is
+/// no longer the corpus's negative case for that arm.
 const VENDOR_ROMS: &[&str] = &[
     "direct_color_dma",
     "io_sample",
@@ -575,21 +578,23 @@ fn k4_watches(wp: &mut Watchpoints) -> [oracle_core::watchpoints::WatchId; 4] {
 /// hand-rolled originals over real runs of a real machine — including `status_upper_reads`, which is one
 /// plain even-parity watch and not a hand-summed set of three.
 ///
-/// The corpus is deliberately not `build_pad_poll` alone: that fixture never *reads* `$C00004-$C00007`, so
-/// on it the entire status arm of both classifiers agrees at zero. The vendored ROMs below drive thousands
+/// The corpus is deliberately not `build_pad_poll` alone: that fixture drives no I/O-range reads of either
+/// width and, until its busy-poll landed, no status reads either — the vendored ROMs below drive thousands
 /// of status reads, and the test asserts a per-counter non-zero floor across the corpus so an agreement can
 /// never again be `0 == 0` without failing. Measured, per ROM,
 /// `[io_even_byte, io_word, status_upper, status_odd_byte]`:
 ///
 /// | ROM | counts |
 /// |---|---|
-/// | `testrom::build_pad_poll` (2 frames) | `[0, 0, 0, 0]` — status arm entirely dead, which is the point |
+/// | `testrom::build_pad_poll` (2 frames) | `[0, 0, 6849, 0]` — was `[0, 0, 0, 0]`; the 6,849 are the
+///   DMA-busy busy-poll the fixture gained with M1 FILL-RUN (hub ruling R4), spinning while its 64 KiB
+///   VRAM clear runs. Its I/O arm is still the negative case |
 /// | `direct_color_dma` | `[0, 3, 3, 9327]` |
 /// | `io_sample` | `[0, 3, 8403, 0]` |
 /// | `m68k_bcd` | `[0, 3, 5582, 0]` |
 /// | `m68k_memory_test` | `[1, 1, 30, 1]` |
 /// | `color_1536` | `[0, 0, 2, 1]` |
-/// | **corpus total** | **`[1, 10, 14020, 9329]`** |
+/// | **corpus total** | **`[1, 10, 20869, 9329]`** (was `[1, 10, 14020, 9329]`) |
 ///
 /// `io_even_byte_reads` clears the floor by exactly one access (`m68k_memory_test`) — thin, and recorded as
 /// thin rather than dressed up; the other three are in the thousands.
@@ -799,7 +804,8 @@ fn no_odd_address_word_access_ever_reaches_a_mapped_port() {
     }
     // Anti-vacuity: the odd-word watch is not dead. Odd-address word events DO exist on this corpus (the
     // interrupt-acknowledge cycles); the claim is that they are only ever those. `build_pad_poll` never
-    // enables an interrupt, so this is a corpus-level floor, not a per-ROM one.
+    // enables an interrupt, so this is a corpus-level floor, not a per-ROM one. (Its busy-poll, added by
+    // M1 FILL-RUN, reads the status port as a WORD at an even address, so it adds nothing here either.)
     assert!(iacks > 0, "the corpus acknowledged interrupts");
 }
 

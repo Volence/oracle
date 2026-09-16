@@ -392,7 +392,25 @@ with A4 and A5: the ROM prints **119/3/122** and fails exactly **31 32 33** — 
 matrix above, reached test for test. Page 1 is 9/0/9 and pages 1+2 are 16/0/16. What is left is one
 unmodelled mechanism, M1, not five behaviour bugs; `PORT_ACCESS_FAILING` now holds only its three tests.
 
-### M1: a DMA fill that runs over time (tests 31, 32, 33)
+### M1: a DMA fill that runs over time (tests 31, 32, 33) — **FIXED 2026-09-15 (P1 FILL-RUN)**
+
+**Closed.** A fill is now a process the VDP advances lazily on the external access-slot clock it already
+shares with the FIFO drain: design `docs/2026-09-14-m1-fill-over-time-design.md`, parcel P1, under the
+hub's rulings R1-R4. Tests **31, 32 and 33 pass**; all 22 pages went **119/3/122 → 122/0/122**, so
+`PORT_ACCESS_FAILING` is now **empty** and VDPFIFOTesting passes in full. Pages 1 and 2 are unchanged at
+9/0/9 and 16/0/16, and no other row of the conformance scorecard moved (measured: the 16 visual baselines,
+the two PASS rows and the sprite-masking glyphs are byte-identical). The three tails now read what §1.3 of
+the design derived by hand from the ROM's own code *before* the model was built — `5656 5656 0056 0000`,
+`9a9a 9a9a 9a9a 0000` (31), `0666 …` / `0888 …` (32), and 33's `0888 0888 0888 0800` with the snoop in
+bits 15-11.
+
+Three pieces make them pass, and the section below is the pre-fix statement of the problem they answer:
+a fill's steps take one external slot each and are advanced at every port access, line render and run end;
+each step reads its write target and data **out of the FIFO ring** rather than from a copy of the trigger
+word; and a mid-fill data-port write is an ordinary FIFO write that consumes **no** length count (the ROM
+pins that: with a count consumed, test 31 group 2's tail would read `5656 5656 0000 0000`).
+
+The old statement of the fault, kept because it is what the tables were read against:
 
 **The mechanism.** On hardware a fill takes time, and a data-port write made while it runs goes through
 the FIFO; the fill then continues with a byte of the new word. Mask of Destiny, SpritesMind *Is DMA Fill
@@ -401,8 +419,9 @@ then the fill will continue with a byte from the new word." Nemesis, *VDP Intern
 operation will effectively be suspended until the FIFO is empty again, and at that point, it will now pick
 up its fill data from the last data that was moved through the FIFO."
 
-**Ours.** The fill completes inside its trigger write: `MegaDriveBus::run_pending_dma` (`bus.rs:1463`) calls
-`Vdp::run_fill` (`bus.rs:1471`), which writes every byte at once and only opens a busy window.
+**Ours (before P1).** The fill completed inside its trigger write: `MegaDriveBus::run_pending_dma`
+(`bus.rs:1463`) called `Vdp::run_fill` (`bus.rs:1471`), which wrote every byte at once and only opened a
+busy window. Since P1 the trigger starts a `DmaRequest::FillRunning` the VDP owns and steps itself.
 
 **Evidence.** **Test 31** (ROM `$2BD8`) group 2 waits for the start of active display, fills `$FFB` bytes
 with `$12`, waits `$20` loop turns, and writes `$5678` mid-fill (`$2EF4`). Hardware's tail at `$8FF8` reads
@@ -415,6 +434,12 @@ it. Group 3 adds a second write, `$9ABC`. Hardware reads `9a9a 9a9a 9a9a`; ours 
 tables. What is missing is the mechanism: a fill that exists across time and shares the FIFO. Timing only
 matters once that mechanism exists, and then the per-line slot rate decides how far the fill has got (the
 deferred "Phase 3 per-line DMA cost", and follow-up F-DMAHALT).
+
+*That last sentence was half right, and the design measured which half* (§1.3 / §5): the tables also read
+the fill's **first four words**, which must still hold the old fill data, so the switch point has a lower
+bound of 7 fill steps. The model clears it with 11 steps for VRAM and 9 for CRAM/VSRAM — margins of 4 and 2
+slots. Timing does not decide the verdict, but it has to land inside a window, and the slot rate is what
+puts it there.
 
 ## Proposed queue rows
 
@@ -440,6 +465,14 @@ that busy survives a register write and a half-command.
 across time instead of inside its trigger write, sharing the FIFO with port writes. It touches
 `bus.rs` `run_pending_dma` and `vdp.rs` `run_fill`/`run_copy`, plus a DMA clock. It is the same design space
 as the deferred per-line DMA cost and F-DMAHALT. Tests 31, 32 and 33 are its acceptance tables.
+
+**Done 2026-09-15, for the fill half.** The design (`docs/2026-09-14-m1-fill-over-time-design.md`) landed
+2026-09-14 and its parcel P1 FILL-RUN landed the model: no new DMA clock was needed — `fifo_slot_clock`
+became the one external-slot clock the FIFO and the fill share — and no new state beyond one trailing
+`DmaRequest::FillRunning` variant. **Copy is deliberately not in it** (design §1.7, parcel P3): a copy runs
+over time the same way, two slots per byte, but nothing in the corpus observes one mid-flight, so it has no
+acceptance table, and whether a mid-copy command word stops it is unanswered. Per-line DMA cost / F-DMAHALT
+(parcel P4) is untouched by P1.
 
 ## What would settle the open points
 
@@ -542,9 +575,9 @@ expected table and the VDP's answer differ.
 | 28 | 4 | DMA Fill Source Reg Update | 24 | **FAIL** | 8/12 | A3 |
 | 29 | 4 | DMA Copy Source Reg Update | 24 | **FAIL** | 8/12 | A3 |
 | 30 | 5 | FIFO Full Before DMA Transfer | 32 | pass | 0/16 |  |
-| 31 | 5 | DP Writes During DMA Fill VRAM | 96 | **FAIL** | 6/48 | M1 |
-| 32 | 5 | DP Writes During DMA Fill CRAM | 96 | **FAIL** | 6/48 | M1 |
-| 33 | 5 | DP Writes During DMA Fill VSRAM | 96 | **FAIL** | 6/48 | M1 |
+| 31 | 5 | DP Writes During DMA Fill VRAM | 96 | ~~FAIL~~ **PASS** (M1 fixed 2026-09-15) | 0/48 | M1 |
+| 32 | 5 | DP Writes During DMA Fill CRAM | 96 | ~~FAIL~~ **PASS** (M1 fixed 2026-09-15) | 0/48 | M1 |
+| 33 | 5 | DP Writes During DMA Fill VSRAM | 96 | ~~FAIL~~ **PASS** (M1 fixed 2026-09-15) | 0/48 | M1 |
 | 34 | 5 | DMA Fill Control Port Writes | 160 | **FAIL** | 4/80 | A5 |
 | 35 | 6 | DMA Busy Flag DMA Transfer | 32 | pass | 0/16 |  |
 | 36 | 6 | DMA Busy Flag DMA Fill | 32 | **FAIL** | 2/16 | A4 |

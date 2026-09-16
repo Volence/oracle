@@ -3826,6 +3826,16 @@ mod tests {
         }
 
         // Zero VRAM with a fill DMA: every tile / nametable / SAT byte -> 0, so the whole screen is backdrop.
+        //
+        // Display OFF for the clear and a busy-poll after it (hub ruling R4, M1-FILL-RUN — the same change
+        // `oracle_core::testrom::build_pad_poll` and `build_cram_midframe` take, and `testrom::busy_poll`
+        // carries the citations). A fill runs over time now, one external access slot per byte: 64 KiB is
+        // ~6.6 frames with the display on against ~1.5 blanked, and the churn loop below would otherwise
+        // write a CRAM command word with DMA-enable set while the fill was still running, which clears live
+        // CD5 and stops it — leaving VRAM at its random power-on bytes, and "the whole screen is backdrop"
+        // false.
+        w(&mut rom, 0x30BC);
+        w(&mut rom, 0x8114); // reg 1  display OFF + DMA enable + M5, for the duration of the clear
         for reg in [0x8F01u16, 0x93FF, 0x94FF, 0x9780] {
             w(&mut rom, 0x30BC);
             w(&mut rom, reg);
@@ -3834,6 +3844,16 @@ mod tests {
         l(&mut rom, vdp_cmd(0x21, 0x0000)); // VRAM write @ $0000 + CD5
         w(&mut rom, 0x32BC);
         w(&mut rom, 0x0000); // data write triggers the fill (fill byte $00)
+                             // The wait: `move.w (a0),d0 / btst #1,d0 / bne.s .top` on the DMA-busy bit.
+        let poll_top = rom.len() as u32;
+        w(&mut rom, 0x3010);
+        w(&mut rom, 0x0800);
+        w(&mut rom, 0x0001);
+        let poll_at = rom.len() as u32;
+        let poll_disp = (poll_top as i32 - (poll_at as i32 + 2)) as i8 as u8;
+        w(&mut rom, 0x6600 | poll_disp as u16);
+        w(&mut rom, 0x30BC);
+        w(&mut rom, 0x8154); // reg 1  display back on
         w(&mut rom, 0x30BC);
         w(&mut rom, 0x8F02); // reg 15 back to autoinc 2
 

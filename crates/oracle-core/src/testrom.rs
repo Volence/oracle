@@ -131,6 +131,41 @@ fn short_disp(to: u32, at: u32) -> u8 {
     delta as i8 as u8
 }
 
+/// **Emit a 68000 DMA-busy poll**: spin on VDP status bit 1 until the transfer the ROM just started has
+/// finished. Ten bytes, `a0` = the control port ($C00004):
+///
+/// ```text
+///   move.w (a0),d0     ; $3010 — the status word
+///   btst   #1,d0       ; $0800 $0001 — the DMA-busy bit (recon R4 / A4)
+///   bne.s  .top        ; $66xx
+/// ```
+///
+/// **Why every fixture that starts a fill needs one** (hub ruling R4, M1-FILL-RUN §5). A DMA fill runs over
+/// time, on the VDP's external access slots, so the instruction after the trigger runs while the fill is
+/// still going. Touching the VDP there is *officially prohibited* — the MegaDrive Wiki's rule is that during
+/// a fill "only the VDP status register and H/V counter are read… Doing otherwise may corrupt VRAM and VDP
+/// registers" — and in this model a command word written with DMA-enable set clears live CD5 and **stops**
+/// the fill where it stands. The fixtures here used to write one immediately, which was invisible only
+/// because the fill had already finished inside its trigger write. This is the wait real ROMs write:
+/// VDPFIFOTesting's own fill tests poll exactly this way (disassembled at `$DD64..$DD6E`).
+///
+/// `d0` is clobbered. Every caller reloads it before use.
+fn busy_poll(rom: &mut Vec<u8>) {
+    let top = rom.len() as u32;
+    w_word(rom, 0x3010); // move.w (a0),d0
+    w_word(rom, 0x0800); // btst #1,d0
+    w_word(rom, 0x0001);
+    let at = rom.len() as u32;
+    let disp = short_disp(top, at);
+    w_word(rom, 0x6600 | u16::from(disp)); // bne.s .top
+}
+
+/// One big-endian word, appended — the byte emitter every builder here wraps in its own local `w`.
+fn w_word(rom: &mut Vec<u8>, word: u16) {
+    rom.push((word >> 8) as u8);
+    rom.push((word & 0xFF) as u8);
+}
+
 /// Build the test ROM image.
 #[doc(hidden)]
 pub fn build() -> Vec<u8> {
@@ -442,12 +477,21 @@ pub fn build_pad_poll() -> Vec<u8> {
     // Zero VRAM with a fill DMA ($0000, $FFFF bytes, fill byte $00): every tile/nametable/SAT byte → 0, so
     // all plane + sprite pixels are transparent and the whole screen shows the backdrop. Autoinc 1 covers
     // every byte.
+    //
+    // **The display goes off around it, and the ROM waits for it** (hub ruling R4, M1-FILL-RUN). A fill
+    // takes one external access slot per byte, and a line has 16 of them with the display on against 167
+    // blanked (H32, `Vdp::slots_per_line`) — so 64 KiB costs about 6.6 frames drawing and about 1.5 blanked.
+    // Turning the display off for the clear is what every real game does for the same reason, and the
+    // busy-poll after it is the wait that makes the next VDP write legal (see `busy_poll`).
+    ctrl(&mut rom, 0x8114); // reg 1  display OFF + DMA enable + M5, for the duration of the clear
     ctrl(&mut rom, 0x8F01); // reg 15 autoinc 1
     ctrl(&mut rom, 0x93FF); // reg 19 fill length low
     ctrl(&mut rom, 0x94FF); // reg 20 fill length high → $FFFF bytes
     ctrl(&mut rom, 0x9780); // reg 23 DMA fill mode
     cmd(&mut rom, vdp_cmd(0x21, 0x0000)); // VRAM write @ $0000 + CD5
     data(&mut rom, 0x0000); // data-port write triggers the fill (fill byte = top byte = $00)
+    busy_poll(&mut rom); // …and wait for it: VRAM is not zero until the last step has run
+    ctrl(&mut rom, 0x8154); // reg 1  display back on
 
     // Controller init: P1 control = $40 (TH output), P1 data = $00 (drive TH low for the Start/A nibble).
     w(&mut rom, 0x157C);
@@ -631,14 +675,21 @@ pub fn build_cram_midframe(line: u8) -> Vec<u8> {
     data(&mut rom, 0x0000);
     data(&mut rom, CRAM_MIDFRAME_A);
 
-    // Zero VRAM with a fill DMA, exactly as [`build_pad_poll`] does: all plane/sprite pixels transparent, so
-    // every visible dot is the backdrop.
+    // Zero VRAM with a fill DMA, exactly as [`build_pad_poll`] does — display off for the clear and a
+    // busy-poll after it (hub ruling R4; see `busy_poll` for why): all plane/sprite pixels transparent, so
+    // every visible dot is the backdrop. **Without the poll this fixture stops its own fill**: the raster
+    // loop's very next VDP write is a CRAM command word, written with DMA-enable set, which clears live CD5
+    // — and VRAM would keep its random power-on bytes, so "every visible dot is the backdrop" would be
+    // false and the split this fixture exists to make would be drawn over noise.
+    ctrl(&mut rom, 0x8114); // reg 1  display OFF + DMA enable + M5, for the duration of the clear
     ctrl(&mut rom, 0x8F01); // reg 15 autoinc 1
     ctrl(&mut rom, 0x93FF); // reg 19 fill length low
     ctrl(&mut rom, 0x94FF); // reg 20 fill length high -> $FFFF bytes
     ctrl(&mut rom, 0x9780); // reg 23 DMA fill mode
     cmd(&mut rom, vdp_cmd(0x21, 0x0000)); // VRAM write @ $0000 + CD5
     data(&mut rom, 0x0000); // the data-port write triggers the fill (fill byte $00)
+    busy_poll(&mut rom); // …and wait for it before touching the VDP again
+    ctrl(&mut rom, 0x8154); // reg 1  display back on
 
     // The raster loop. Re-arming in vblank is what makes every frame carry the split.
     let outer = rom.len() as u32;

@@ -249,16 +249,24 @@ const BASELINE: &[(&str, &str)] = &[
         // trigger — `Vdp::dma_busy` is now "a fill is armed (CD5 + register 23 = Fill) OR the transfer window
         // is open". Tests 36 and 38 flip; on the pre-A2 branch all 22 pages went **114/8 → 116/6**, failing
         // 20 27 31 32 33 34. Pages 1 and 2 unchanged, and no other scorecard row moved.
-        // A5 (2026-09-12, FILL-TGT): `Vdp::run_fill`'s body now shares `code_names_a_write_target` with the
+        // A5 (2026-09-12, FILL-TGT; the body is `Vdp::fill_step` since M1): `Vdp::run_fill`'s body shares `code_names_a_write_target` with the
         // two data-port write paths, so a fill armed on a code that names no write target runs — address,
         // length, source registers 21/22, busy window — and writes nowhere. Test 34 flips; on the pre-A2
         // branch all 22 pages went **116/6 → 117/5**, failing 20 27 31 32 33. Tests 4, 28, 29 and 72-95
         // unmoved. Follow-up F-FILLTGT retired.
         // A2 + A4 + A5 merged (2026-09-12), measured on the merged tree: **119/3/122**, failing 31 32 33 —
-        // M1 (FILL-OVER-TIME) alone, the size-L design item that is deliberately out of scope. Pages 1 and 2
+        // M1 (FILL-OVER-TIME) alone, the size-L design item that was then out of scope. Pages 1 and 2
         // stay 9/0/9 and 16/0/16.
+        // M1 (2026-09-15, FILL-RUN — parcel P1 of docs/2026-09-14-m1-fill-over-time-design.md): a DMA fill
+        // is a process the VDP advances lazily on the external-slot clock the FIFO already runs on, and each
+        // step pulls its write target and data out of the FIFO ring (Nemesis, *VDP Internals* p.4), so a
+        // data-port write made while a fill is running changes what the rest of the fill writes and consumes
+        // no length count. Tests 31, 32 and 33 flip; all 22 pages 119/3/122 → **122/0/122**, and
+        // PORT_ACCESS_FAILING is now EMPTY — this ROM passes every one of its 122 tests. Pages 1 and 2
+        // unchanged at 9/0/9 and 16/0/16, and **no other row of this scorecard moved**: the 16 visual
+        // baselines, the two PASS rows and the sprite-masking glyphs are byte-identical across the parcel.
         "vdp_port_access",
-        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=119/3/122",
+        "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=122/0/122",
     ),
     (
         // **`6=FAIL` is measured to be an artefact of this scraper, NOT an emulator inaccuracy (2026-08-15).**
@@ -1239,20 +1247,25 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 ///   triggered. Tests 36 and 38. **Fixed 2026-09-12 (FILL-BUSY-ARM)**: `Vdp::dma_busy` is now "a fill is
 ///   armed OR the transfer window is open"; both pass and are no longer listed.
 /// * **A5, a fill whose code names no write target writes nothing** (it closes follow-up F-FILLTGT). Test 34.
-///   **Fixed 2026-09-12 (FILL-TGT)**: `Vdp::run_fill`'s body shares `code_names_a_write_target` with the two
+///   **Fixed 2026-09-12 (FILL-TGT)**: the fill body (`Vdp::run_fill` then; `Vdp::fill_step` since M1) shares `code_names_a_write_target` with the two
 ///   port-write paths; the fill still walks its address, consumes its length and advances registers 21/22.
 ///   It passes and is no longer listed.
-/// * **M1, a fill that runs over time.** Ours completes inside its trigger write, so a data-port write made
-///   during a running fill never changes the fill byte. Tests 31, 32 and 33.
+/// * **M1, a fill that runs over time.** Ours completed inside its trigger write, so a data-port write made
+///   during a running fill never changed the fill byte. Tests 31, 32 and 33.
+///   **Fixed 2026-09-15 (M1 FILL-RUN, parcel P1)**: a fill is a process the VDP advances on the one
+///   external-slot clock it shares with the FIFO, and each step reads its data and write target out of the
+///   FIFO ring rather than from a copy of the trigger word, so a mid-fill data-port write changes what the
+///   remaining steps write — and consumes no length count. All three pass and the set below is **empty**;
+///   all 22 pages 119/3/122 → **122/0/122**, pages 1 and 2 unchanged at 9/0/9 and 16/0/16. Design:
+///   `docs/2026-09-14-m1-fill-over-time-design.md` (§1.3 derives the three tails by hand from the ROM's
+///   own code, before the model was built).
 ///
-/// A flip in either direction fails naming the test that moved. So does a failing test whose wrong-word
-/// count moves, which is how a partial fix or a partial regression shows. Update this list only together
-/// with that document and `docs/2026-07-25-testrom-conformance.md`.
-const PORT_ACCESS_FAILING: &[(usize, &str, usize, usize)] = &[
-    (31, "DP Writes During DMA Fill VRAM", 6, 48),  // M1
-    (32, "DP Writes During DMA Fill CRAM", 6, 48),  // M1
-    (33, "DP Writes During DMA Fill VSRAM", 6, 48), // M1
-];
+/// **The list is empty, and that is a claim, not an absence.** Every one of VDPFIFOTesting's 122 tests
+/// passes. A flip in either direction fails naming the test that moved — an empty pin makes the "NOW FAILS"
+/// arm the only one that can fire, which is exactly the guard a green suite wants. So does a failing test
+/// whose wrong-word count moves. Update this list only together with that document and
+/// `docs/2026-07-25-testrom-conformance.md`.
+const PORT_ACCESS_FAILING: &[(usize, &str, usize, usize)] = &[];
 
 /// **The whole of VDPFIFOTesting, pinned test by test from the ROM's own verdicts.** See
 /// [`PORT_ACCESS_FAILING`] for what the pinned set means and how to read it: it records today and accepts

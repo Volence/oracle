@@ -180,6 +180,16 @@ pub struct VdpWrite {
     pub size: u8,
     pub via: VdpVia,
     pub mclk: u64,
+    /// **The instruction this write attributes to, when it is not the one draining it** (hub ruling R1).
+    ///
+    /// `None` — the ordinary case — means `protocol.md`'s rule stands unqualified: the consumer stamps the
+    /// hit with the accessing instruction's pc, the step-boundary pc it is draining under. `Some(pc)` is a
+    /// write the machine performed on behalf of an *earlier* instruction, which since M1-FILL-RUN a DMA
+    /// fill's steps are: a fill runs across many instructions, so the step that writes VRAM at mclk *t*
+    /// belongs to whichever instruction triggered the fill, not to whichever one's port access happened to
+    /// catch it up. It carries the pc from [`DmaRequest::FillRunning`], and it is the only thing that
+    /// keeps `pc`'s meaning what it was when a fill completed inside its trigger.
+    pub pc: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
@@ -328,12 +338,12 @@ pub struct Vdp {
     /// between runs, in neither frozen currency. It does ride the bincode snapshot (as they do), which is
     /// the one byte this costs.
     capture_cram_only: bool,
-    /// Transient "this write is a DMA step" tag (watchpoints v2): raised around `run_fill`/`run_copy`/
+    /// Transient "this write is a DMA step" tag (watchpoints v2): raised around `fill_step`/`run_copy`/
     /// `dma_write_word` so the choke points stamp `via = Dma`; otherwise `via = Direct`. Always false at an
     /// instruction boundary (a DMA runs to completion within one bus access). In neither frozen currency.
     in_dma: bool,
     /// The master clock the VDP is currently working at — a **shadow** of the `now` its timed entry points
-    /// already receive ([`Vdp::control_write`], [`Vdp::data_write_at`], [`Vdp::run_fill`], [`Vdp::run_copy`],
+    /// already receive ([`Vdp::control_write`], [`Vdp::data_write_at`], [`Vdp::fill_step`], [`Vdp::run_copy`],
     /// [`Vdp::dma_write_word`]), carried down to the write choke points so a write can be located in time and
     /// not merely in order (F-SCANLINE-SUBLINE slice 1, design `docs/2026-08-19-subline-recon.md` §B).
     ///
@@ -439,6 +449,10 @@ pub(crate) struct VdpRegionsMut<'a> {
     pub write_captures: &'a mut Vec<VdpWrite>,
     pub fifo_len: &'a mut u8,
     pub fifo_write: &'a mut u8,
+    /// M1-FILL-RUN's door check: the pending-DMA field, and the command code its `FillRunning` value has
+    /// to agree with. Both are bent by `system::tests` to prove the two refusals fire.
+    pub dma_pending: &'a mut Option<DmaRequest>,
+    pub code: &'a mut u8,
 }
 
 impl Vdp {
@@ -539,6 +553,28 @@ impl Vdp {
         // Z80 cannot write the VDP until decision C-7 lands. C-7 must drain again after the Z80 catch-up:
         // see the ORDERING HAZARD comment in `System::run_until_with_sink`'s drain.
         check_region(R::VdpWriteCaptures, Exactly(0), self.write_captures.len())?;
+        // M1-FILL-RUN's door check. `dma_pending` is `None` or `FillRunning` wherever a snapshot can be
+        // taken: a `Mem`/`Fill`/`Copy` request is armed and consumed inside one bus access (the field's own
+        // documented invariant), so one surviving in a snapshot is a machine no run can produce — and, since
+        // nothing arms `Fill` any more, a decoded `Fill` is an old build's mid-instruction bytes. Counted as
+        // "untaken requests" so the refusal reads like every other region's.
+        check_region(
+            R::VdpDmaPending,
+            Exactly(0),
+            usize::from(matches!(
+                self.dma_pending,
+                Some(DmaRequest::Mem { .. } | DmaRequest::Fill { .. } | DmaRequest::Copy { .. })
+            )),
+        )?;
+        // …and a running fill implies live CD5, because CD5 is what the engine itself tests each step
+        // (`fill_armed`) and what the last step clears. The pair cannot disagree in a machine that ran; a
+        // snapshot where they do would restore a fill that is running and finished at once.
+        if matches!(self.dma_pending, Some(DmaRequest::FillRunning { .. })) && self.code & 0x20 == 0
+        {
+            return Err(crate::system::MalformedSnapshot::VdpFillRunningWithoutCd5 {
+                code: self.code,
+            });
+        }
         let ring = self.fifo.len();
         check_region(R::VdpFifoPending, AtMost(ring), usize::from(self.fifo_len))?;
         check_region(
@@ -554,6 +590,8 @@ impl Vdp {
     #[cfg(test)]
     pub(crate) fn regions_mut(&mut self) -> VdpRegionsMut<'_> {
         VdpRegionsMut {
+            dma_pending: &mut self.dma_pending,
+            code: &mut self.code,
             vram: &mut self.vram,
             cram: &mut self.cram,
             vsram: &mut self.vsram,
@@ -756,7 +794,7 @@ impl Vdp {
     /// word over a CRAM *read* command leaves code `001001`, which looks like a write but has no target.
     ///
     /// Shared by **all three** write paths — the ordinary data-port write, the A3b fill-trigger write, and
-    /// (since A5) the fill *body* in [`Vdp::run_fill`] — so the valid-code set can only ever be changed in
+    /// (since A5) the fill *body*, now [`Vdp::fill_step`] — so the valid-code set can only ever be changed in
     /// one place. [`Vdp::target_of`] still does not agree with this predicate: it falls back `_ => Vram` for
     /// an unrecognised nibble, because it answers "which region does this code name", which is a different
     /// question from "may this code write". Nothing now writes on the strength of `target_of` alone. That
@@ -851,6 +889,56 @@ impl Vdp {
     const H40_ACCESSES_PER_LINE: u64 = 210;
     const H32_ACCESSES_PER_LINE: u64 = 171;
 
+    /// **F-SLOTTABLE, retired here.** The mclk offsets *within a line* of the active-display external slots
+    /// above — `k × MCLK_PER_LINE / accesses` for each access index `k`, worked out once at compile time
+    /// instead of up to 18 divisions per probe. The follow-up was filed against
+    /// [`Vdp::next_active_slot`], which probed them one at a time; M1's fill walks the same slots once per
+    /// filled byte (65,536 of them for a full-VRAM fill), which is what made the arithmetic worth removing.
+    ///
+    /// Derived from [`Vdp::H40_ACTIVE_SLOTS`] / [`Vdp::H40_ACCESSES_PER_LINE`], never typed out: change a
+    /// slot position or the access count and these move with it.
+    /// `slot_offsets_match_the_access_grid` asserts exactly that derivation entry by entry, and
+    /// `the_slot_table_and_the_arithmetic_agree_at_every_mclk_of_a_line` asserts the *lookup* agrees with
+    /// the arithmetic form at every one of a line's 3,420 mclk, for both widths.
+    const H40_SLOT_MCLK: [u64; 18] =
+        Self::slot_offsets(&Self::H40_ACTIVE_SLOTS, Self::H40_ACCESSES_PER_LINE);
+    /// H32's half of [`Vdp::H40_SLOT_MCLK`].
+    const H32_SLOT_MCLK: [u64; 16] =
+        Self::slot_offsets(&Self::H32_ACTIVE_SLOTS, Self::H32_ACCESSES_PER_LINE);
+
+    /// The mclk offsets of a **blanked** line's external slots (vblank, or display off): that line's slots
+    /// are a uniform grid of [`Vdp::slots_per_line`] positions, `k × MCLK_PER_LINE / slots`. The blanked
+    /// branch of the slot model keeps the aggregate per-line rate (F-BLANKSLOT), so unlike the active table
+    /// this grid is the *rate* expressed as positions, not measured hardware positions.
+    ///
+    /// Sized by the rate itself, so the two can never drift apart: see
+    /// `the_blank_grids_are_sized_by_the_blanked_slot_rate`.
+    const H40_BLANK_SLOT_MCLK: [u64; 205] = Self::blank_offsets();
+    /// H32's half of [`Vdp::H40_BLANK_SLOT_MCLK`].
+    const H32_BLANK_SLOT_MCLK: [u64; 167] = Self::blank_offsets();
+
+    /// `[k × MCLK_PER_LINE / accesses]` over an access-index table — [`Vdp::H40_SLOT_MCLK`]'s constructor.
+    const fn slot_offsets<const N: usize>(indices: &[u64; N], accesses: u64) -> [u64; N] {
+        let mut out = [0u64; N];
+        let mut k = 0;
+        while k < N {
+            out[k] = indices[k] * MCLK_PER_LINE / accesses;
+            k += 1;
+        }
+        out
+    }
+
+    /// `[k × MCLK_PER_LINE / N]` for `N` uniformly spaced slots — [`Vdp::H40_BLANK_SLOT_MCLK`]'s constructor.
+    const fn blank_offsets<const N: usize>() -> [u64; N] {
+        let mut out = [0u64; N];
+        let mut k = 0;
+        while k < N {
+            out[k] = k as u64 * MCLK_PER_LINE / N as u64;
+            k += 1;
+        }
+        out
+    }
+
     /// The mclk instant of the first external access slot **strictly after** `at`, on an active-display
     /// line. Access `k` is placed at `k × MCLK_PER_LINE / accesses`, i.e. a uniform access grid — an
     /// approximation, since EDCLK is not constant across the line (follow-up **F-SLOTGRID**). Wraps to the
@@ -863,21 +951,62 @@ impl Vdp {
     /// active/blanked branch once, from the *start* instant. Recorded as a rider on follow-up
     /// **F-BLANKSLOT**; it is the same active-vs-blanked boundary, seen from the far side.
     fn next_active_slot(&self, at: u64) -> u64 {
-        let (slot_indices, accesses): (&[u64], u64) = if self.h40() {
-            (&Self::H40_ACTIVE_SLOTS, Self::H40_ACCESSES_PER_LINE)
+        // F-SLOTTABLE, retired: the offsets are the compile-time `H40_SLOT_MCLK` / `H32_SLOT_MCLK` now, so
+        // this is a scan of at most 18 `u64` comparisons and no division at all.
+        let offsets: &[u64] = if self.h40() {
+            &Self::H40_SLOT_MCLK
         } else {
-            (&Self::H32_ACTIVE_SLOTS, Self::H32_ACCESSES_PER_LINE)
+            &Self::H32_SLOT_MCLK
         };
         let line = at / MCLK_PER_LINE;
         let pos = at % MCLK_PER_LINE;
-        // F-SLOTTABLE: `k * MCLK_PER_LINE / accesses` is recomputed per probe, up to 18 divisions per call.
-        for &k in slot_indices {
-            let t = k * MCLK_PER_LINE / accesses;
+        for &t in offsets {
             if t > pos {
                 return line * MCLK_PER_LINE + t;
             }
         }
-        (line + 1) * MCLK_PER_LINE + slot_indices[0] * MCLK_PER_LINE / accesses
+        (line + 1) * MCLK_PER_LINE + offsets[0]
+    }
+
+    /// The instant of the next external (CPU/DMA) access slot **strictly after** `at`, on whichever kind of
+    /// line `at + 1` falls on: the real active-display positions ([`Vdp::next_active_slot`]) or a blanked
+    /// line's uniform grid ([`Vdp::H40_BLANK_SLOT_MCLK`]). **The one external-slot clock** M1-FILL-RUN
+    /// makes the FIFO drain and a running fill share: [`Vdp::entry_drain_cost`] charges a FIFO entry the
+    /// same slots, and [`Vdp::fill_catch_up`] spends one of these per filled byte.
+    ///
+    /// The kind of line is decided from the **candidate** instant (`at + 1`), not from `at`, so a walk that
+    /// crosses into or out of active display changes rate at the line boundary rather than a line late. A
+    /// walk that runs off the end of a blanked line's grid steps to the line's last mclk and takes the next
+    /// line's decision — so this always returns an instant `> at`, and a fill always makes progress.
+    fn next_external_slot(&self, at: u64) -> u64 {
+        let mut at = at;
+        loop {
+            let candidate = at + 1;
+            let line_start = candidate / MCLK_PER_LINE * MCLK_PER_LINE;
+            if !(self.vblank(line_start) || !self.display_enabled()) {
+                return self.next_active_slot(at);
+            }
+            let grid: &[u64] = if self.h40() {
+                &Self::H40_BLANK_SLOT_MCLK
+            } else {
+                &Self::H32_BLANK_SLOT_MCLK
+            };
+            let slots = grid.len() as u64;
+            debug_assert_eq!(
+                slots,
+                self.slots_per_line(line_start),
+                "the blanked grid must be the blanked slot rate itself"
+            );
+            let pos = candidate - line_start;
+            // The first grid index at or past `pos`: `k × MCLK_PER_LINE / slots >= pos` ⟺ `k >= pos × slots
+            // / MCLK_PER_LINE`, rounded up. Integer throughout, as everywhere else in the slot model.
+            let k = (pos * slots).div_ceil(MCLK_PER_LINE);
+            if k >= slots {
+                at = line_start + MCLK_PER_LINE - 1; // past this line's last slot: decide again on the next
+                continue;
+            }
+            return line_start + grid[k as usize];
+        }
     }
 
     /// The mclk cost of draining one FIFO entry with command `code` at slot-clock instant `at` (recon R3): a
@@ -970,7 +1099,8 @@ impl Vdp {
     ///
     /// **What ends an armed-but-never-triggered fill's busy flag is not something the ROM settles.** This
     /// model answers it by construction: nothing ends it except the arming condition going away — the fill
-    /// running (`take_dma_request` clears CD5 when the request is consumed, and `run_fill` then opens the
+    /// running (since M1-FILL-RUN the fill's own steps clear CD5 with the last one; before it,
+    /// `take_dma_request` cleared CD5 when the request was consumed and the instant fill then opened the
     /// window), a later command word clearing CD5 while DMA-enable is set, or register 23 leaving Fill mode.
     /// Time does not end it, and neither does a frame boundary. Test 38 group 2 rules out the three cheap
     /// alternatives — a register write, clearing DMA-enable, and a new first command word all leave it set.
@@ -996,7 +1126,7 @@ impl Vdp {
     /// reaches word 16). It used to be `addr % 80`, which put a write to `$50` on word 0.
     ///
     /// Every data-port path that touches VSRAM storage decodes through here: the port write and the DMA
-    /// word (`write_target`), the fill body (`run_fill`, through `write_target`) and the port read-ahead
+    /// word (`write_target`), the fill body ([`Vdp::fill_step`], through `write_target`) and the port read-ahead
     /// (`read_target`). The renderer and the debug surfaces index storage directly and never see a port
     /// address.
     fn vsram_byte(addr: u16) -> Option<usize> {
@@ -1160,6 +1290,9 @@ impl Vdp {
     /// CD1-CD0 + A13-A0 immediately, arm the toggle); or a second command word (CD5-CD2 + A15-A14, disarm).
     pub fn control_write(&mut self, w: u16, mclk: u64) {
         self.now_mclk = mclk; // the write choke points read it from here (slice 1)
+                              // M1-FILL-RUN: bring a running fill up to this access before the access can change what it reads —
+                              // its target, its stride, its rate, or (below) CD5 itself.
+        self.fill_catch_up(mclk);
         if !self.pending {
             // A first control word ALWAYS latches CD1-CD0 from bits 15-14 — including the `$8xxx` register
             // form, whose bits 15-14 are `10`. CD3-CD0 = `xx10` names no target in the code table, so after
@@ -1189,6 +1322,17 @@ impl Vdp {
                 self.code = (self.code & 0x23) | ((cd_hi << 2) & 0x1C);
             }
             self.pending = false;
+            // M1-FILL-RUN / design §1.6: the fill engine decides on the **live** command register, so a
+            // command word that clears CD5 stops a running fill where it stands. (With DMA-enable clear CD5
+            // cannot change at all — recon R1 — so such a command leaves the fill running, at the new
+            // address.) Officially this whole situation is prohibited: the MegaDrive Wiki's rule is that
+            // during a fill "only the VDP status register and H/V counter are read". No ROM in the corpus
+            // does it; the three synthetic fixtures that did now poll DMA-busy first (hub ruling R4).
+            if self.code & 0x20 == 0 {
+                if let Some(DmaRequest::FillRunning { .. }) = self.dma_pending {
+                    self.dma_pending = None;
+                }
+            }
             // A completed read command pre-fills the read buffer from the set address (recon R3 pre-cache).
             if self.code & 0x01 == 0 {
                 self.read_buffer = self.read_target();
@@ -1230,6 +1374,12 @@ impl Vdp {
     /// this, CD5 goes stale and a later M1=0 command retains it (recon R1/V1) and re-fires a phantom DMA — the
     /// DR-2 spurious 65536-word transfer. Guarded on an actual take: a non-DMA VDP access must not touch CD5.
     pub fn take_dma_request(&mut self) -> Option<DmaRequest> {
+        // M1-FILL-RUN: a running fill is the VDP's own work, not a request for the bus to execute, and its
+        // CD5 must stay set for the whole fill (it is what `fill_armed`/DMA-busy read, and what the last
+        // step clears). So it is never handed over and never taken.
+        if let Some(DmaRequest::FillRunning { .. }) = self.dma_pending {
+            return None;
+        }
         let req = self.dma_pending.take();
         if req.is_some() {
             self.code &= !0x20;
@@ -1288,6 +1438,16 @@ impl Vdp {
             } else {
                 VdpVia::Direct
             };
+            // R1: a running fill's step attributes to its trigger, whose pc the request itself carries —
+            // read here rather than shadowed in a field, so there is no second copy to keep in step and no
+            // new field in the snapshot. `in_dma` narrows it to the fill's own writes: a CPU data-port
+            // write made *during* a fill (the mid-fill write of VDPFIFOTesting 31/32/33) is the accessing
+            // instruction's own and attributes to it. The last step clears `dma_pending` only AFTER its
+            // write, so every step of the fill, the last included, is covered.
+            let pc = match self.dma_pending {
+                Some(DmaRequest::FillRunning { pc }) if self.in_dma => pc,
+                _ => None,
+            };
             self.write_captures.push(VdpWrite {
                 target,
                 addr,
@@ -1297,6 +1457,7 @@ impl Vdp {
                 via,
                 // The write's own instant, not the draining step's — F-TRACE-VDPWRITE-MCLK (slice 1b).
                 mclk: self.now_mclk,
+                pc,
             });
         }
     }
@@ -1425,6 +1586,10 @@ impl Vdp {
     /// (behavior-identical to pre-K4-5 for them).
     pub fn control_read_status(&mut self, open_bus: u16, mclk: u64) -> u16 {
         self.pending = false;
+        // M1-FILL-RUN: catch a running fill up first — the DMA-busy bit this read returns is the fill's own
+        // CD5, which the last step clears, so a poll must see every step that has happened by `mclk`. This
+        // is the read the three synthetic fixtures' busy-polls (R4) and every polling ROM spin on.
+        self.fill_catch_up(mclk);
         // Advance the time-based FIFO drain to `mclk` first so the live EMPTY/FULL bits (A1, T16) reflect
         // the FIFO's occupancy *now* — a status read never pops entries beyond this normal drain.
         self.fifo_drain(mclk);
@@ -1469,7 +1634,7 @@ impl Vdp {
                 // Same invalid-target guard as the non-DMA path below (one shared predicate, so the
                 // valid-code set can only be changed in one place): a code whose low nibble names no write
                 // target accepts the word into the FIFO and steps the address, but the *trigger* reaches no
-                // memory. Since A5 the fill *body* takes the same guard (`run_fill`), so a no-write-target
+                // memory. Since A5 the fill *body* takes the same guard (`fill_step`), so a no-write-target
                 // fill runs and writes nowhere — follow-up **F-FILLTGT** retired 2026-09-12 by
                 // VDPFIFOTesting test 34 group 3.
                 //
@@ -1482,7 +1647,29 @@ impl Vdp {
                     self.write_target(w);
                 }
                 self.autoinc();
-                self.dma_pending = Some(DmaRequest::Fill { len, fill: w });
+                // M1-FILL-RUN: the fill now *starts* here and runs over time ([`Vdp::fill_catch_up`]).
+                // A data-port write made while one is already running is therefore an ordinary FIFO write
+                // and nothing more — it does NOT re-trigger, and it consumes no length count. Nemesis: "that
+                // data port write is completed as normal, because the DMA unit is a bolt-on addition to the
+                // VDP core… The DMA fill operation will effectively be suspended until the FIFO is empty
+                // again, and at that point, it will now pick up its fill data from the last data that was
+                // moved through the FIFO." The ROM pins the no-count half: with it, test 31 group 2's tail
+                // reads `5656 5656 0056 0000`; without it, `5656 5656 0000 0000`.
+                if !matches!(self.dma_pending, Some(DmaRequest::FillRunning { .. })) {
+                    // Introspection only (`last_dma`), recorded at the trigger because that is where the
+                    // fill's parameters are all still in one place; `dest` keeps its A3b meaning, the
+                    // post-trigger address the engine walks from.
+                    self.last_dma = Some(DmaRecord {
+                        mode: DmaMode::Fill,
+                        source: 0,
+                        dest: self.addr,
+                        len,
+                        target: self.target(),
+                    });
+                    // `pc` is filled in by the run loop's step boundary (R1); a hand-driven fixture leaves
+                    // it `None`. See [`DmaRequest::FillRunning`].
+                    self.dma_pending = Some(DmaRequest::FillRunning { pc: None });
+                }
             }
             return;
         }
@@ -1495,92 +1682,142 @@ impl Vdp {
         self.autoinc();
     }
 
-    /// Execute a VRAM fill (recon R4(b) / RD2). 68k keeps running (the bus returns no wait); the busy window
-    /// models the elapsed transfer time. Fill data source: the top byte of the trigger word for VRAM; the
-    /// **next-available FIFO entry** ("4 writes ago") for CRAM/VSRAM — the documented hardware bug. Every write
-    /// routes through the SAT write-through (R5 rider: fill steps hit the window compare like any VRAM write).
-    /// Length is in bytes (RD2); regs 19/20 → 0 after the transfer (recon R4), and source regs 21/22 advance by
-    /// one per step even though a fill never reads its source ([`Vdp::advance_dma_source_low16`], A3).
+    /// **Advance a running DMA fill to `now`** — the whole of M1-FILL-RUN's engine, called lazily wherever
+    /// the fill could be observed: at the top of every VDP port path (data write, data read, status read,
+    /// control write), before every active line renders, and at the end of every run
+    /// ([`crate::system::System::run_until_with_sink`]).
     ///
-    /// **A5 / FILL-TGT: the body shares the data-port write decode.** If the live code's low nibble names no
-    /// write target ([`Vdp::code_names_a_write_target`]) the fill **still runs** — it walks its address, counts
-    /// its length down to 0, advances source registers 21/22 and opens its busy window — but no byte reaches
-    /// memory. This closes the asymmetry booked as follow-up **F-FILLTGT**, where the trigger write was
-    /// guarded and the body was not (the body resolved through [`Vdp::target_of`]'s `_ => Vram` fallback and
-    /// wrote VRAM anyway).
+    /// **Pending FIFO entries always go first.** Both share one external-slot clock (`fifo_slot_clock`), and
+    /// a fill step takes a slot only while the FIFO is empty — which is exactly Nemesis's "the DMA fill
+    /// operation will effectively be suspended until the FIFO is empty again". A mid-fill data-port write is
+    /// therefore serviced before the fill resumes, and it is the entry the resumed fill then reads its data
+    /// from (`Vdp::fill_step`).
     ///
-    /// VDPFIFOTesting **test 34** "DMA Fill Control Port Writes" (ROM `$45B2`) group 3 (`$4898..$4948`) is the
-    /// table. It arms a 4-byte fill with `$40020082` (code `$21`, VRAM `$8002`), then writes register `$8F02`
-    /// — and a register write replaces CD1-CD0 with `10` (genvdp.txt 1.5f; VDPFIFOTesting test 13), leaving
-    /// code `$22`, which names no write target. Then comes the `$68AC` trigger at `$48EE`. On hardware
-    /// `$8000-$800F` reads back **completely unchanged** (`1122 3344 5566 7788 99aa bbcc ddee ff00`); before
-    /// this fix we wrote `5568 7768 9968 bb68` into it, the four `$68` bytes of a fill that ran to VRAM.
+    /// **Nothing is stored that the machine did not already have.** Progress *is* the machine state: the
+    /// length in registers 19/20 counts down and clears CD5 at 0, the address register walks, registers
+    /// 21/22 advance, and the clock is the FIFO's own. So a snapshot taken mid-fill restores into the same
+    /// fill, and a fill nobody observes costs nothing but the `dma_pending` discriminant test below.
     ///
-    /// **Not an early return.** The hardware fill ran: group 4 (`$4954`) sets no length and fills well past
-    /// 16 bytes, which is only possible if group 3 left the length counter at 0 — i.e. it counted 4 steps down
-    /// and then group 4's 0 meant 65,536. So the length, the source-register advance (A3, tests 28 and 29) and
-    /// the busy window all still happen; only the write is dropped. Group 3 also *depends* on the busy window:
-    /// its `btst #1` poll at `$48F6` spins until the fill reports done.
-    pub fn run_fill(&mut self, len: u16, fill: u16, now: u64) {
-        self.now_mclk = now; // C-6: every step of the fill carries the transfer's own instant (slice 1)
-        let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
-        let target = self.target();
-        // A5 / F-FILLTGT: one shared decode with the port write. False → the engine runs and writes nowhere.
-        let writes = Self::code_names_a_write_target(self.code);
-        // The address register the fill engine starts from. Since A3b this is the *post-trigger* value
-        // (the trigger's autoincrement has already run), i.e. one step past the armed command address —
-        // which is what the engine actually walks. Introspection only (`last_dma`); in neither currency.
-        let dest = self.addr;
-        self.in_dma = true; // watchpoints v2: fill writes attribute to the triggering DMA
-        match target {
-            VdpTarget::Vram => {
-                let byte = (fill >> 8) as u8; // top byte (recon R4(b))
-                for _ in 0..count {
-                    // A3b / P3: a VRAM *byte* write from the fill engine lands at `address ^ 1`, not at
-                    // `address`. Mask of Destiny, *Is DMA Fill buggy?* (SpritesMind): "MSB of the word in
-                    // the FIFO is written DMA length times to address ^ 1"; Eke, same thread: "VRAM byte
-                    // writes (used by VRAM fill and copy DMA) actually occur to VRAM address ^ 1 so you can
-                    // get unexpected results depending on start address, DMA length and increment
-                    // alignments." With an odd autoincrement this produces the characteristic interleave —
-                    // a skipped byte at the tail and one byte written past the naive end — that
-                    // VDPFIFOTesting test 4 checks (expected table ROM $DC54). `run_copy` takes the same lane
-                    // swap on its read AND its write (F-COPYXOR, closed 2026-09-12 by the same ROM's tests 26
-                    // and 96-122; see `Vdp::run_copy`).
-                    if writes {
-                        self.write_vram_byte((self.addr ^ 1) as usize & (VRAM_SIZE - 1), byte);
-                    }
-                    self.autoinc();
+    /// Returning early on `!fill_armed()` is what makes a command word that clears live CD5, or a register
+    /// 23 write leaving Fill mode, **stop** the fill (design §1.6, from Nemesis's "it checks if CD5 is
+    /// currently set. Note that this is based on the live command register state").
+    pub fn fill_catch_up(&mut self, now: u64) {
+        // The whole hot-path cost when no fill is running: one discriminant test per port access and line.
+        if !matches!(self.dma_pending, Some(DmaRequest::FillRunning { .. })) {
+            return;
+        }
+        loop {
+            // FIFO first, on the same clock and the same per-entry cost as `fifo_drain` (recon R3).
+            while self.fifo_len > 0 {
+                let oldest = self.fifo_oldest();
+                let cost = self.entry_drain_cost(oldest.code, self.fifo_slot_clock);
+                if self.fifo_slot_clock + cost > now {
+                    return;
                 }
+                self.fifo_slot_clock += cost;
+                self.fifo_len -= 1;
             }
-            _ => {
-                // CRAM/VSRAM fill: the data comes from the next-available FIFO entry, NOT the trigger word
-                // (recon R4(b), "4 writes ago" — a documented hardware bug).
-                let src = self.fifo_snoop_word();
-                for _ in 0..count {
-                    if writes {
-                        self.write_target(src);
-                    }
-                    self.autoinc();
-                }
+            if !self.fill_armed() {
+                return; // live CD5 cleared, or register 23 left Fill mode: the fill stops here
+            }
+            let slot = self.next_external_slot(self.fifo_slot_clock);
+            if slot > now {
+                return; // the next step's slot has not arrived yet
+            }
+            self.fifo_slot_clock = slot;
+            self.fill_step(slot);
+            if !matches!(self.dma_pending, Some(DmaRequest::FillRunning { .. })) {
+                return; // that was the last step (the length reached 0 and CD5 cleared)
             }
         }
-        self.in_dma = false;
-        let cost = self.dma_cost(count as u64, now); // fill ≈ 1 slot/byte (recon R4(e))
-        self.regs[0x13] = 0;
-        self.regs[0x14] = 0;
-        // A3: the source counter steps with the fill although nothing is read from it (VDPFIFOTesting test 28).
-        let start = ((self.regs[0x16] as u16) << 8) | self.regs[0x15] as u16;
-        self.advance_dma_source_low16(start, count);
-        self.last_dma = Some(DmaRecord {
-            mode: DmaMode::Fill,
-            source: 0,
-            dest,
-            len,
-            target,
-        });
-        self.dma_busy_until = now + cost;
     }
 
+    /// **One fill step, at the slot instant `t` it occupies.** The step Nemesis describes, in his order:
+    ///
+    /// > "If CD5 is set, and DMD1 is true, and DMD0 is false, the DMA unit will pull the write target and
+    /// > the upper byte of the write data from the FIFO entry, and write that single byte to the write
+    /// > target, using the current incremented command address register, which will then be incremented
+    /// > afterwards."
+    ///
+    /// …followed by the advance every DMA mode shares — "add 1 to the lower 2 DMA source address registers,
+    /// then subtract 1 from the DMA length counter register", and "if the resulting DMA length counter is 0,
+    /// clear CD5 in the command code register".
+    ///
+    /// **Data and target come from the FIFO ring, never from a copy of the trigger word.** For VRAM: the
+    /// high byte of the **newest** entry, written to `address ^ 1` (A3b / P3, F-COPYXOR's sibling lane swap
+    /// — Mask of Destiny: "MSB of the word in the FIFO is written DMA length times to address ^ 1"). For
+    /// CRAM/VSRAM: the **next-available** entry, the word written four writes ago — Nemesis's documented
+    /// latch bug, "instead of using the data in the last written FIFO slot, it uses the data in the next
+    /// available FIFO slot". With an instant fill the trigger word and the newest entry could not differ; a
+    /// fill that runs over time makes them differ the moment a mid-fill write lands, and VDPFIFOTesting
+    /// tests 31/32/33 side with the FIFO.
+    ///
+    /// **A5 / F-FILLTGT still holds, read off the same entry**: a step whose entry's code names no write
+    /// target ([`Vdp::code_names_a_write_target`]) writes nowhere but still walks the address, counts the
+    /// length down and advances registers 21/22 — VDPFIFOTesting test 34 group 3, whose `$8000-$800F` reads
+    /// back completely unchanged while group 4 proves the counter still reached 0.
+    fn fill_step(&mut self, t: u64) {
+        self.now_mclk = t; // R2: a fill stamps every step with its own slot instant (C-6 stands for Mem DMA)
+        let newest = self.fifo[(self.fifo_write.wrapping_sub(1) & 3) as usize];
+        let next_available = self.fifo[self.fifo_write as usize];
+        if Self::code_names_a_write_target(newest.code) {
+            self.in_dma = true; // watchpoints v2: a fill step's write is a DMA write (`via = Dma`)
+            match Self::target_of(newest.code) {
+                VdpTarget::Vram => {
+                    let a = (self.addr ^ 1) as usize & (VRAM_SIZE - 1);
+                    self.write_vram_byte(a, (newest.data >> 8) as u8);
+                }
+                _ => {
+                    // `write_target` resolves the target from the live code, so the entry's own low nibble
+                    // is put in place for the one call: the step writes where the FIFO entry says, not
+                    // where a command word written since may have pointed the CPU.
+                    let live = self.code;
+                    self.code = (live & !0x0F) | (newest.code & 0x0F);
+                    self.write_target(next_available.data);
+                    self.code = live;
+                }
+            }
+            self.in_dma = false;
+        }
+        self.autoinc();
+        // A3: the source counter steps although a fill never reads its source (VDPFIFOTesting test 28) —
+        // incrementally now, ending where the whole-transfer advance used to leave it.
+        let source = ((self.regs[0x16] as u16) << 8) | self.regs[0x15] as u16;
+        self.advance_dma_source_low16(source, 1);
+        let left = (((self.regs[0x14] as u16) << 8) | self.regs[0x13] as u16).wrapping_sub(1);
+        self.regs[0x13] = (left & 0xFF) as u8;
+        self.regs[0x14] = (left >> 8) as u8;
+        if left == 0 {
+            // RD2's "a length of 0 means 65,536" needs no special case: the counter wraps, so a fill armed
+            // with 0 stops on the step that brings it back to 0, one whole turn later.
+            self.code &= !0x20; // CD5 clears with the last step, which is also what ends DMA-busy (A4)
+            self.dma_pending = None;
+        }
+    }
+
+    /// **Attribute a just-triggered fill to the instruction that triggered it** (hub ruling R1), called by
+    /// the run loop at the boundary of the step that has just committed. A no-op unless that step armed a
+    /// fill, and it never overwrites an attribution: a fill keeps its own trigger's pc for its whole life,
+    /// which is what makes a watch hit for a fill step's write name the trigger rather than whichever later
+    /// instruction's port access caught the fill up.
+    ///
+    /// Writes made *during* the triggering step need nothing from it: they drain to the sink paired with
+    /// that same step's boundary pc. This exists for the steps after.
+    #[inline]
+    pub fn attribute_running_fill(&mut self, pc: u32) {
+        if let Some(DmaRequest::FillRunning { pc: slot @ None }) = &mut self.dma_pending {
+            *slot = Some(pc);
+        }
+    }
+
+    /// **The instant fill engine is gone** (M1-FILL-RUN, 2026-09-15). `Vdp::run_fill` used to write every
+    /// byte inside the trigger's own bus access and open a flat-rate busy window over it; the fill is now a
+    /// process the VDP steps on the slot clock ([`Vdp::fill_catch_up`] / `Vdp::fill_step`, which carry the
+    /// rules it documented: A3's source advance, A5's shared write-target decode and test 34 group 3's
+    /// "runs but writes nowhere", the `address ^ 1` VRAM lane and the CRAM/VSRAM next-available entry).
+    /// [`DmaRequest::Fill`] survives it as a **reserved discriminant** — removing it would renumber `Copy`
+    /// and make every old snapshot decode into a different machine — and nothing constructs it.
+    ///
     /// Execute a VRAM copy (recon R4(c) / RD2): `len` byte read+write steps within VRAM from `source` to the
     /// live address, **bypassing the FIFO**, at half the fill byte rate (one byte read + one byte write per
     /// step = 2 slots/byte). 68k keeps running (the bus returns no wait); the busy window models the elapsed
@@ -1600,7 +1837,7 @@ impl Vdp {
     /// opposite of what the 68K sees". Because each two-step pair swaps lanes on both sides, an even-aligned
     /// copy (even source, even destination, even length, autoincrement 1) leaves exactly the image a plain
     /// byte copy would; the models part only at an odd source, destination or length, or an autoincrement
-    /// other than 1 (2 included). The fill engine's write takes the same lane swap (`run_fill`, VRAM arm).
+    /// other than 1 (2 included). The fill engine's write takes the same lane swap (`fill_step`, VRAM arm).
     pub fn run_copy(&mut self, source: u16, len: u16, now: u64) {
         self.now_mclk = now; // C-6: every step of the copy carries the transfer's own instant (slice 1)
         let count = if len == 0 { 0x1_0000u32 } else { len as u32 };
@@ -1668,8 +1905,16 @@ impl Vdp {
     pub fn data_write_at(&mut self, w: u16, now: u64) -> u32 {
         // Slice 1: the write choke points read the instant from here.
         self.now_mclk = now;
-        // A DMA command's data write is not FIFO-timed here (the DMA slices own it); no stall, apply as before.
-        if self.code & 0x20 != 0 {
+        // M1-FILL-RUN: catch a running fill up before this write, so the FIFO entry this write makes is
+        // newer than every step the fill has already taken — which is what puts the mid-fill write's data
+        // in front of the steps that follow it, and never behind them.
+        self.fill_catch_up(now);
+        // A DMA command's data write is not FIFO-timed here (the DMA slices own it); no stall, apply as
+        // before. **Except a fill's** (M1-FILL-RUN): a fill's data-port write — the trigger and every
+        // mid-fill write alike — is an ordinary FIFO-timed write, because it is an ordinary FIFO write
+        // (Nemesis: "that data port write is completed as normal"). Before M1 the fill trigger returned
+        // here without ever advancing the drain clock, so a fill was not FIFO-timed at all.
+        if self.code & 0x20 != 0 && self.regs[0x17] & 0xC0 != 0x80 {
             self.apply_data_write(w);
             return 0;
         }
@@ -1751,6 +1996,7 @@ impl Vdp {
     /// Returns the value plus the CPU wait cycles for the `Bus68k` channel (`FlatBus` never reaches here → the
     /// SST corpus is untouched).
     pub fn data_read_at(&mut self, open_bus: u16, now: u64) -> (u16, u32) {
+        self.fill_catch_up(now); // M1-FILL-RUN: a read sees the fill as far as it has got by `now`
         self.fifo_drain(now);
         let mut wait_mclk = 0u64;
         // C2, same rule as `data_write_at`: measure from the already-charged mark, not from the caller's
@@ -2113,6 +2359,27 @@ pub enum DmaRequest {
     /// VRAM copy: `len` byte read+write steps within VRAM from `source`, FIFO-bypass, 68k runs (recon R4(c));
     /// each read and each write takes the opposite byte lane (`^ 1`, F-COPYXOR — see [`Vdp::run_copy`]).
     Copy { source: u16, len: u16 },
+    /// **A fill that has taken its trigger and is running over time** (M1-FILL-RUN,
+    /// `docs/2026-09-14-m1-fill-over-time-design.md`). Not a request the bus executes — the VDP owns it and
+    /// advances it itself, one external access slot at a time, in [`Vdp::fill_catch_up`]. It is the design's
+    /// **one new bit** of state: everything else a running fill needs is machine state that already exists
+    /// (the length in registers 19/20 counting down, the address register walking, the source in registers
+    /// 21/22, the fill data in the FIFO ring, and `fifo_slot_clock` as the progress clock).
+    ///
+    /// **Why it is the LAST variant.** An old build decodes discriminant 3 as
+    /// `UnexpectedVariant { allowed: 0..=2 }` — a clean refusal of a new mid-fill snapshot (hub ruling R3) —
+    /// while every old snapshot, which holds `None` here at its instruction boundary, decodes unchanged.
+    /// Re-shaping [`DmaRequest::Fill`] instead would have been decode-*unsafe*: an old build would read the
+    /// new payload as `Fill { len, fill }` and misalign the rest of the stream.
+    ///
+    /// `pc` is the **triggering** instruction's program counter (hub ruling R1): a watch hit for a fill
+    /// step's write attributes to the instruction that started the fill, not to the one whose port access
+    /// happened to catch it up, which is what `pc` meant before a fill took time. `None` means no
+    /// instruction was identified — a fill driven through the untimed [`Vdp::data_write`] by a hand-built
+    /// fixture, or one stepped through [`crate::system::System::step_cpu`] directly; such a hit falls back
+    /// to `protocol.md`'s "the accessing instruction's pc". [`crate::system::System`]'s run loop is what
+    /// fills it in, from the step boundary it already stamps.
+    FillRunning { pc: Option<u32> },
 }
 
 /// A completed DMA, for the `frame_report` introspection surface (design §4; recon R4).
@@ -3871,6 +4138,160 @@ mod tests {
         s
     }
 
+    /// **F-SLOTTABLE's condition: the table asserts its own derivation, entry by entry.** The published
+    /// access indices stay in the source (that is what `active_slot_gaps_follow_the_published_pattern`
+    /// checks against Kabuto's pattern strings); this checks that the compile-time instants really are
+    /// `index × MCLK_PER_LINE / accesses` for those indices and that access count — so a hand-edited table
+    /// entry, or a table that stopped tracking a changed index, fails here instead of silently shifting
+    /// every drain in every ROM.
+    #[test]
+    fn slot_offsets_match_the_access_grid() {
+        for (i, &k) in Vdp::H40_ACTIVE_SLOTS.iter().enumerate() {
+            assert_eq!(
+                Vdp::H40_SLOT_MCLK[i],
+                k * MCLK_PER_LINE / Vdp::H40_ACCESSES_PER_LINE,
+                "H40 slot {i} (access index {k})"
+            );
+        }
+        for (i, &k) in Vdp::H32_ACTIVE_SLOTS.iter().enumerate() {
+            assert_eq!(
+                Vdp::H32_SLOT_MCLK[i],
+                k * MCLK_PER_LINE / Vdp::H32_ACCESSES_PER_LINE,
+                "H32 slot {i} (access index {k})"
+            );
+        }
+        assert_eq!(
+            Vdp::H40_SLOT_MCLK.len(),
+            Vdp::H40_ACTIVE_SLOTS.len(),
+            "one instant per published index"
+        );
+        assert_eq!(Vdp::H32_SLOT_MCLK.len(), Vdp::H32_ACTIVE_SLOTS.len());
+    }
+
+    /// **…and the lookup answers what the arithmetic answered, at every mclk of a line.** The table is an
+    /// optimisation, so what has to hold is not "the numbers look right" but "no probe anywhere in a line
+    /// moves". This walks all 3,420 mclk of a line in both widths and compares `next_active_slot` against
+    /// the divide-per-probe form F-SLOTTABLE retired, wrap-around included.
+    #[test]
+    fn the_slot_table_and_the_arithmetic_agree_at_every_mclk_of_a_line() {
+        for h40 in [false, true] {
+            let mut v = fresh();
+            v.regs[0x0C] = if h40 { 0x81 } else { 0x00 };
+            let (indices, accesses): (&[u64], u64) = if h40 {
+                (&Vdp::H40_ACTIVE_SLOTS, Vdp::H40_ACCESSES_PER_LINE)
+            } else {
+                (&Vdp::H32_ACTIVE_SLOTS, Vdp::H32_ACCESSES_PER_LINE)
+            };
+            let line = 7 * MCLK_PER_LINE; // any line: the answer is line-relative by construction
+            for pos in 0..MCLK_PER_LINE {
+                let at = line + pos;
+                let arithmetic = indices
+                    .iter()
+                    .map(|&k| k * MCLK_PER_LINE / accesses)
+                    .find(|&t| t > pos)
+                    .map(|t| line + t)
+                    .unwrap_or_else(|| {
+                        line + MCLK_PER_LINE + indices[0] * MCLK_PER_LINE / accesses
+                    });
+                assert_eq!(
+                    v.next_active_slot(at),
+                    arithmetic,
+                    "h40={h40}, mclk offset {pos}"
+                );
+            }
+        }
+    }
+
+    /// **The blanked grids are the blanked slot RATE, not a number that happens to match it.** A blanked
+    /// line's slots are modelled as a uniform grid (F-BLANKSLOT), so the grid must have exactly
+    /// `slots_per_line` entries at `k × MCLK_PER_LINE / slots` — the same rate `entry_drain_cost` charges a
+    /// FIFO entry there. Sized from `slots_per_line` itself so the two cannot drift apart: change the rate
+    /// and this fails rather than leaving the fill walking a grid of the old width.
+    #[test]
+    fn the_blank_grids_are_sized_by_the_blanked_slot_rate() {
+        let vblank = u64::from(ACTIVE_LINES) * MCLK_PER_LINE; // a blanked line, display state aside
+        for h40 in [false, true] {
+            let mut v = fresh();
+            v.regs[1] = 0x44; // display on, so `vblank` is what makes the line blanked
+            v.regs[0x0C] = if h40 { 0x81 } else { 0x00 };
+            let rate = v.slots_per_line(vblank);
+            let grid: &[u64] = if h40 {
+                &Vdp::H40_BLANK_SLOT_MCLK
+            } else {
+                &Vdp::H32_BLANK_SLOT_MCLK
+            };
+            assert_eq!(grid.len() as u64, rate, "h40={h40}: one entry per slot");
+            for (k, &t) in grid.iter().enumerate() {
+                assert_eq!(t, k as u64 * MCLK_PER_LINE / rate, "h40={h40}, slot {k}");
+            }
+            // And the walk really uses it: from the line's start the next slot is grid entry 1, and the
+            // walk is strictly increasing, so a fill always makes progress.
+            let mut t = vblank;
+            for _ in 0..rate {
+                let next = v.next_external_slot(t);
+                assert!(next > t, "h40={h40}: the slot walk must advance");
+                t = next;
+            }
+        }
+    }
+
+    /// **The M1 mechanism at unit scale: a data-port write during a running fill changes what the rest of
+    /// the fill writes, and consumes no length count.** VDPFIFOTesting tests 31/32/33 are the hardware
+    /// tables for this (and they pass), but they reach it through 122 tests of ROM; this states it directly.
+    ///
+    /// The no-count half is the one the prose does not say and the ROM does (design §1.3): test 31 group 2's
+    /// tail reads `5656 5656 0056 0000` on hardware, and only a write that consumes no count produces that
+    /// trailing `0056` — with a count consumed it would read `5656 5656 0000 0000`.
+    #[test]
+    fn a_data_port_write_during_a_fill_changes_the_fill_byte_and_consumes_no_length() {
+        const LEN: u16 = 400; // longer than a blanked line's 167 slots, so one line leaves it mid-flight
+        let mut v = fresh();
+        v.vram[0x8000..0x8200].fill(0);
+        arm_and_trigger_vram_fill(&mut v, 0x8000, LEN, 0x1234);
+        // Let a line's worth of steps run, then write a new word through the data port, as the ROM does.
+        let t = v.now_mclk + MCLK_PER_LINE;
+        v.fill_catch_up(t);
+        let (steps_left, addr_before) =
+            (((v.regs[0x14] as u16) << 8) | v.regs[0x13] as u16, v.addr);
+        assert!(
+            steps_left > 0 && steps_left < LEN,
+            "the fill is mid-flight: {steps_left} of {LEN} steps left"
+        );
+        v.data_write_at(0x5678, t);
+        assert_eq!(
+            ((v.regs[0x14] as u16) << 8) | v.regs[0x13] as u16,
+            steps_left,
+            "the mid-fill write consumes no length count (test 31 group 2's `0056` tail)"
+        );
+        assert_eq!(
+            v.addr,
+            addr_before.wrapping_add(1),
+            "…but it does land at the fill's current address and step it once"
+        );
+        assert_eq!(
+            (
+                v.vram[addr_before as usize],
+                v.vram[(addr_before ^ 1) as usize]
+            ),
+            (0x56, 0x78),
+            "the write itself is completed as a normal word write"
+        );
+        let finished_at = catch_fill_up_to_completion(&mut v);
+        assert!(finished_at > t, "the rest of the fill ran after the write");
+        // Every remaining step writes the NEW word's high byte, not the trigger's.
+        let tail: Vec<u8> = (addr_before + 2..addr_before + 8)
+            .map(|a| v.vram[a as usize])
+            .collect();
+        assert!(
+            tail.iter().all(|&b| b == 0x56),
+            "the fill continued with a byte from the new word (Mask of Destiny), got {tail:02X?}"
+        );
+        assert!(
+            v.vram[0x8002] == 0x12,
+            "…and the bytes it wrote BEFORE the write still hold the old fill byte"
+        );
+    }
+
     #[test]
     fn active_slot_gaps_follow_the_published_pattern() {
         // T16/S1, and the guard on the whole slice: the slot-index tables are transcribed from Kabuto's
@@ -4324,11 +4745,12 @@ mod tests {
     #[test]
     fn copy_runs_at_half_the_fill_byte_rate() {
         // Recon R4(c): a copy step is one byte read + one byte write = 2 slots/byte, half the fill's 1 slot/byte.
+        // cause: M1 FILL-RUN — a fill no longer opens a busy window at all (its busy IS its progress), so
+        // the fill side of the comparison is the *rate* it used to bill at, `dma_cost` for 8 slots. The
+        // claim is unchanged and is about the copy: 2 slots per byte against a fill's 1.
         let mut f = fresh();
-        f.regs[1] = 0x40; // display on → active line, exact slot arithmetic
-        f.code = 0x01; // VRAM target
-        f.run_fill(8, 0xEE00, 0);
-        let fill_window = f.dma_busy_until;
+        f.regs[1] = 0x40; // display on → active line, exact slot arithmetic (as the copy below runs)
+        let fill_window = f.dma_cost(8, 0);
         let mut c = fresh();
         c.regs[1] = 0x40;
         c.code = 0x01;
@@ -4437,8 +4859,8 @@ mod tests {
     }
 
     /// Arm a VRAM DMA fill of `len` bytes at `addr` with autoinc 1, and return the armed request's
-    /// `(len, fill)` after the trigger data-port write of `fill`.
-    fn arm_and_trigger_vram_fill(v: &mut Vdp, addr: u16, len: u16, fill: u16) -> (u16, u16) {
+    /// and leave it **running** (M1-FILL-RUN: the trigger starts a fill, it does not complete one).
+    fn arm_and_trigger_vram_fill(v: &mut Vdp, addr: u16, len: u16, fill: u16) {
         v.regs[1] = 0x10; // M1 (DMA enable) — CD5 only latches while it is set
         v.regs[0x0F] = 1; // autoinc 1
         v.regs[0x13] = (len & 0xFF) as u8;
@@ -4446,10 +4868,34 @@ mod tests {
         v.regs[0x17] = 0x80; // fill mode
         command(v, 0x21, addr); // VRAM write + CD5
         v.data_write(fill);
-        match v.take_dma_request() {
-            Some(DmaRequest::Fill { len, fill }) => (len, fill),
-            other => panic!("the data-port write must arm a fill, got {other:?}"),
+        assert!(
+            matches!(v.dma_pending, Some(DmaRequest::FillRunning { .. })),
+            "the data-port write must START the fill, got {:?}",
+            v.dma_pending
+        );
+        assert_eq!(
+            v.take_dma_request(),
+            None,
+            "…and a running fill is never handed to the bus"
+        );
+    }
+
+    /// **Run the clock until the fill that is in flight finishes**, and return the instant it finished at.
+    ///
+    /// The unit-test stand-in for what a real run does: a fill advances only when something catches it up
+    /// (a port access, a line render, the end of a run), so a test that wants a *finished* fill has to let
+    /// time pass. A line's worth at a time, bounded by the longest fill RD2 allows (a length of 0 = 65,536
+    /// steps), so a fill that cannot finish fails here instead of hanging.
+    fn catch_fill_up_to_completion(v: &mut Vdp) -> u64 {
+        let mut t = v.now_mclk;
+        for _ in 0..=0x1_0000 {
+            if v.dma_pending.is_none() {
+                return t;
+            }
+            t += MCLK_PER_LINE;
+            v.fill_catch_up(t);
         }
+        panic!("the fill never finished: {:?}", v.dma_pending);
     }
 
     #[test]
@@ -4460,16 +4906,28 @@ mod tests {
         // *VDP Internals* (SpritesMind): "When a DMA Fill operation is pending, and you perform a data port
         // write, that data port write is completed as normal". Observed by VDPFIFOTesting test 4 (expected
         // table ROM $DC54): only a full word write can put the trigger's LSB $34 at $8001.
+        //
+        // cause: M1 FILL-RUN (docs/2026-09-14-m1-fill-over-time-design.md §2): the trigger no longer hands
+        // the bus a `DmaRequest::Fill { len, fill }` to execute on the spot — it starts a fill that runs on
+        // the slot clock, so the request is `FillRunning` and the length lives in registers 19/20. What the
+        // trigger WRITE does is unchanged, which is what this test is about, so the assertions on VRAM and
+        // the address stand as they were; only the arming and the "and now run it" step moved.
         let mut v = fresh();
-        let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
-        assert_eq!((len, fill), (10, 0x1234), "the armed fill request");
+        arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
+        assert_eq!(
+            (v.regs[0x14], v.regs[0x13]),
+            (0, 10),
+            "the fill's length is the registers', counting down (no copy is taken)"
+        );
         assert_eq!(v.vram[0x8000], 0x12, "trigger MSB → address");
         assert_eq!(v.vram[0x8001], 0x34, "trigger LSB → address ^ 1");
         assert_eq!(v.addr, 0x8001, "the trigger auto-incremented the address");
         // I-4: `DmaRecord.dest` is the address the fill engine starts from, which since A3b is one
         // autoincrement step past the armed command address. Introspection only, in neither currency, but
         // it is what a debugger shows as "where the fill went" — pinned so the offset cannot drift silently.
-        v.run_fill(len, fill, 0);
+        // Since M1 it is recorded at the trigger rather than at the end of the transfer; the value is the
+        // same post-trigger address, and it is readable while the fill is still running.
+        catch_fill_up_to_completion(&mut v);
         assert_eq!(
             v.last_dma().expect("the fill recorded a DmaRecord").dest,
             0x8001,
@@ -4522,11 +4980,30 @@ mod tests {
             "code $22 names no write target (the premise of test 34 group 3)"
         );
         v.data_write(0x68AC); // ROM $48EE
-        let Some(DmaRequest::Fill { len, fill }) = v.take_dma_request() else {
-            panic!("the trigger must still arm the fill — the fill runs, it just writes nowhere");
-        };
-        assert_eq!((len, fill), (4, 0x68AC), "a 4-byte fill of $68");
-        v.run_fill(len, fill, 0);
+        assert!(
+            matches!(v.dma_pending, Some(DmaRequest::FillRunning { .. })),
+            "the trigger must still start the fill — the fill runs, it just writes nowhere"
+        );
+        assert_eq!(
+            (v.regs[0x14], v.regs[0x13]),
+            (0, 4),
+            "a 4-byte fill, its length still in the registers it counts down"
+        );
+        // cause: M1 FILL-RUN (§1.2, Nemesis's "pull the write target … from the FIFO entry"): the step now
+        // takes its write-target decision from the FIFO entry the trigger made, not from the live code. For
+        // this group they are the same code $22 — the register write at $48E6 came BEFORE the trigger — so
+        // A5's verdict is unchanged, and the fill still walks its address, counts its length down and
+        // advances 21/22 while writing nowhere. It also now takes TIME, which is why the fill is run by the
+        // clock here instead of in the trigger's own instant.
+        assert!(
+            v.dma_busy(v.now_mclk),
+            "busy while the fill is running (A4: live CD5 + register 23 naming Fill)"
+        );
+        let finished_at = catch_fill_up_to_completion(&mut v);
+        assert!(
+            finished_at > 0,
+            "the fill took real slots to run, not zero time"
+        );
 
         assert_eq!(
             v.vram[0x8000..0x8010],
@@ -4544,10 +5021,15 @@ mod tests {
             0x00FE,
             "A3: source registers 21/22 still advance by the length (tests 28/29)"
         );
+        // cause: M1 FILL-RUN (§1.5 / A4): busy is no longer a separate window laid over the transfer — it is
+        // the fill's own CD5, set from the control write and cleared by the last step. So the poll at ROM
+        // $48F6 now reads busy for exactly as long as the fill is really running, and clear the moment it is
+        // not; asserted from both sides here, where it used to be "the window opened".
         assert!(
-            v.dma_busy(0),
-            "the busy window still opens — group 3's `btst #1` poll at ROM $48F6 waits on it"
+            !v.dma_busy(finished_at),
+            "the last step cleared CD5, so the `btst #1` poll at ROM $48F6 falls through"
         );
+        assert_eq!(v.code & 0x20, 0, "CD5 clears with the final step (A4/RD2)");
         assert_eq!(
             v.addr, 0x800C,
             "the engine still walked its address: $8002 + 2 for the suppressed trigger + 2 × 4 steps"
@@ -4573,10 +5055,13 @@ mod tests {
         v.regs[0x17] = 0x80;
         command(&mut v, 0x21, 0x8002);
         v.data_write(0x68AC);
-        let Some(DmaRequest::Fill { len, fill }) = v.take_dma_request() else {
-            panic!("the trigger must arm the fill");
-        };
-        v.run_fill(len, fill, 0);
+        // cause: M1 FILL-RUN (§2): the trigger starts the fill; the clock runs it. The image is the same
+        // one test 34 groups 5-8 read, because nothing touches the VDP while it runs.
+        assert!(
+            matches!(v.dma_pending, Some(DmaRequest::FillRunning { .. })),
+            "the trigger must start the fill"
+        );
+        catch_fill_up_to_completion(&mut v);
         assert_eq!(
             (v.vram[0x8002], v.vram[0x8003]),
             (0x68, 0xAC),
@@ -4634,10 +5119,15 @@ mod tests {
         // $8001..$800A and therefore write $8000, $8003, $8002, $8005, $8004, $8007, $8006, $8009, $8008,
         // $800B — skipping $800A and reaching one byte past the naive end. That exact image is the second
         // half of VDPFIFOTesting test 4's expected table (ROM $DC54).
+        //
+        // cause: M1 FILL-RUN (§1.2): the byte is the high byte of the NEWEST FIFO entry, read at each step,
+        // rather than a copy of the trigger word taken once. Nothing writes the data port while this fill
+        // runs, so the newest entry stays the trigger and the image is byte-identical; the tests that make
+        // the two differ are VDPFIFOTesting 31/32/33, through the ROM.
         let mut v = fresh();
         v.vram[0x8000..0x8010].fill(0); // as the ROM does: eight zeroing data writes before the fill
-        let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
-        v.run_fill(len, fill, 0);
+        arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
+        catch_fill_up_to_completion(&mut v);
         assert_eq!(
             &v.vram[0x8000..0x800C],
             &[0x12, 0x34, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x00, 0x12],
@@ -4667,8 +5157,10 @@ mod tests {
         for _ in 0..8 {
             v.data_write(0x0000);
         }
-        let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
-        v.run_fill(len, fill, 0);
+        // cause: M1 FILL-RUN (§2): the fill runs on the clock now, and still pushes nothing into the ring —
+        // which is the whole claim here, and is what lets a running fill read its data back out of it.
+        arm_and_trigger_vram_fill(&mut v, 0x8000, 10, 0x1234);
+        catch_fill_up_to_completion(&mut v);
         assert_eq!(
             v.fifo_snoop_word(),
             0x0000,
@@ -4685,20 +5177,42 @@ mod tests {
     fn cram_fill_uses_the_four_writes_ago_entry() {
         // Recon R4(b): a CRAM (or VSRAM) fill takes its data from the next-available FIFO entry ("4 writes
         // ago"), NOT the trigger word — the documented hardware bug.
+        //
+        // cause: M1 FILL-RUN (§1.3's test 32 derivation): the entry is read at each STEP, out of the live
+        // ring, rather than snooped once when the fill was set up — so the fixture is now the ROM's own
+        // shape. Test 32 loads the ring with four VRAM writes `0222 0444 0666 0888`, arms a CRAM fill and
+        // triggers it with `$0AAA`; the trigger takes the oldest slot, leaving the ring `0444 0666 0888
+        // 0AAA` with **`0444`** next-available, and group 1's read at `$38` is `0444 0444 0000 0000`.
         let mut v = fresh();
         v.regs[1] = 0x10; // DMA enable
+        v.regs[0x0F] = 2; // autoinc 2 (one CRAM entry per step's address walk)
+                          // Four ordinary VRAM writes load the ring, exactly as the ROM does before its fill.
+        command(&mut v, 0x01, 0x8000);
+        for word in [0x0222u16, 0x0444, 0x0666, 0x0888] {
+            v.data_write(word);
+        }
+        v.regs[0x13] = 2; // a 2-step fill
+        v.regs[0x14] = 0;
         v.regs[0x17] = 0x80; // fill mode
-        v.fifo[v.fifo_write as usize].data = 0x0ABC; // the next-available (4-writes-ago) entry
-        v.code = 0x23; // CRAM write + CD5
-        v.addr = 0x0000;
-        v.run_fill(2, 0x0EEE, 0); // trigger word 0x0EEE — must be IGNORED for CRAM
-        let cram_word = ((v.cram[0] as u16) << 8) | v.cram[1] as u16;
+        command(&mut v, 0x23, 0x0000); // CRAM write + CD5 @ entry 0
         assert_eq!(
-            cram_word,
-            0x0ABC & 0x0EEE,
-            "CRAM fill used the snooped entry, not the trigger word"
+            v.fifo_snoop_word(),
+            0x0222,
+            "before the trigger, next-available is the oldest of the four"
         );
-        assert_ne!(cram_word, 0x0EEE, "the trigger word did NOT fill CRAM");
+        v.data_write(0x0AAA); // the trigger — its own word must be IGNORED as fill data
+        assert_eq!(
+            v.fifo_snoop_word(),
+            0x0444,
+            "the trigger took a ring slot, so next-available is now `0444` (design §1.3)"
+        );
+        catch_fill_up_to_completion(&mut v);
+        let cram_word = ((v.cram[2] as u16) << 8) | v.cram[3] as u16; // entry 1: the first STEP's target
+        assert_eq!(
+            cram_word, 0x0444,
+            "CRAM fill used the next-available entry, not the trigger word"
+        );
+        assert_ne!(cram_word, 0x0AAA, "the trigger word did NOT fill CRAM");
     }
 
     /// Issue a two-word VDP command through the control port (first word CD1-CD0 + A13-A0, second word
@@ -4773,8 +5287,11 @@ mod tests {
             let mut v = fresh();
             set_source_low16(&mut v, start);
             // Armed and triggered through the ports, as the ROM does: the helper writes register 23 = $80.
-            let (len, fill) = arm_and_trigger_vram_fill(&mut v, 0x8000, len, 0x1234);
-            v.run_fill(len, fill, 0);
+            // cause: M1 FILL-RUN (§2): registers 21/22 reach the same end state, but one step at a time
+            // rather than in one jump — including the length-0 case, which is 65,536 single steps and is
+            // why this row is the one that proves the incremental advance really wraps the counter.
+            arm_and_trigger_vram_fill(&mut v, 0x8000, len, 0x1234);
+            catch_fill_up_to_completion(&mut v);
             assert_eq!(
                 source_low16(&v),
                 end,
@@ -4897,15 +5414,29 @@ mod tests {
         // then expires. This is the ROM's `0202 4e02 | 0200 4e00` tail, and it is also what keeps test 34
         // group 3's `btst #1` poll loop (ROM $48F6) from spinning for ever. Note the ROM triggers with
         // DMA-enable already cleared — the trigger does not re-check it.
+        //
+        // cause: M1 FILL-RUN (§1.5 / §2): busy is no longer "CD5 until the trigger, then a flat-rate window
+        // laid over the transfer" — it is the fill's own live CD5 for the whole fill, which the last step
+        // clears. `dma_busy_until` is untouched by a fill now (it stays for copies and 68k DMA), so probe 4
+        // reads the fill's real end rather than the end of a modelled window. Probes 3 and 4 still read
+        // `$0202` then `$0200`, which is all the ROM sees.
         v.data_write(0x1234); // ROM $C89A
-        let Some(DmaRequest::Fill { len, fill }) = v.take_dma_request() else {
-            panic!("the data-port write must arm a fill");
-        };
-        v.run_fill(len, fill, 0);
-        assert!(v.dma_busy(0), "mid-transfer the window is open (probe 3)");
         assert!(
-            !v.dma_busy(v.dma_busy_until),
-            "the window closes and nothing keeps busy set (probe 4: hardware reads $0200)"
+            matches!(v.dma_pending, Some(DmaRequest::FillRunning { .. })),
+            "the data-port write must start the fill"
+        );
+        assert!(
+            v.dma_busy(v.now_mclk),
+            "mid-transfer busy still reads set (probe 3)"
+        );
+        let finished_at = catch_fill_up_to_completion(&mut v);
+        assert!(
+            !v.dma_busy(finished_at),
+            "the last step clears CD5 and nothing keeps busy set (probe 4: hardware reads $0200)"
+        );
+        assert_eq!(
+            v.dma_busy_until, 0,
+            "a fill opens no flat-rate window any more: its busy IS its progress"
         );
     }
 
@@ -5031,12 +5562,16 @@ mod tests {
             "the Fill control write arms nothing (armed by the data trigger)"
         );
 
-        // The data-port write is the fill trigger — it must still see CD5 set and arm the Fill.
+        // The data-port write is the fill trigger — it must still see CD5 set and start the Fill.
+        // cause: M1 FILL-RUN (§2): the trigger starts a fill the VDP owns, so what proves CD5 survived is
+        // `dma_pending = FillRunning`, not a request the bus takes — `take_dma_request` returns `None` for a
+        // running fill on purpose, because taking one would clear the CD5 the fill still needs.
         v.data_write(0xEEEE);
         assert!(
-            v.take_dma_request().is_some(),
-            "CD5 survived the control write, so the data trigger arms the Fill"
+            matches!(v.dma_pending, Some(DmaRequest::FillRunning { .. })),
+            "CD5 survived the control write, so the data trigger starts the Fill"
         );
+        assert_ne!(v.code & 0x20, 0, "…and CD5 stays set while it runs");
     }
 
     #[test]
@@ -5171,7 +5706,8 @@ mod tests {
                 new: 0xBE,
                 size: 1,
                 via: VdpVia::Direct,
-                mclk: 0, // this fixture drives every port at mclk 0
+                mclk: 0,  // this fixture drives every port at mclk 0
+                pc: None, // a direct CPU write attributes to the accessing instruction (R1's default)
             }
         );
         assert_eq!(
@@ -5184,6 +5720,7 @@ mod tests {
                 size: 1,
                 via: VdpVia::Direct,
                 mclk: 0,
+                pc: None,
             }
         );
         assert!(
@@ -5213,7 +5750,8 @@ mod tests {
                 new: 0x0EEE,
                 size: 2,
                 via: VdpVia::Direct,
-                mclk: 0, // this fixture drives every port at mclk 0
+                mclk: 0,  // this fixture drives every port at mclk 0
+                pc: None, // a direct CPU write attributes to the accessing instruction (R1's default)
             }
         );
     }
@@ -5221,18 +5759,32 @@ mod tests {
     /// Armed, a VRAM fill DMA attributes each byte write to `via = Dma`. Fill byte $AB over 4 bytes at $0200.
     #[test]
     fn armed_captures_a_dma_fill_with_via_dma() {
+        // A3b: the captured addresses are the *written* bytes, `address ^ 1` at each step (P3), so with
+        // autoinc 1 from $0200 they come out pair-swapped. One capture per filled byte, `via = Dma`, byte
+        // size and the pre-write value are all unchanged by M1.
+        //
+        // cause: M1 FILL-RUN — the fill is armed and triggered through the ports and then STEPPED, so the
+        // capture is armed after the trigger (whose own word write is a `Direct` capture, not the fill's),
+        // and each captured write carries the **trigger's pc** (hub ruling R1): a fill's steps outlive the
+        // instruction that catches them up, so the hit names the instruction that started the fill. A
+        // hand-driven fixture like this one has no instruction until `attribute_running_fill` gives it one,
+        // which is what the run loop does at its step boundary.
         let mut v = fresh();
+        v.regs[1] = 0x10; // DMA enable, so CD5 latches
         v.regs[0x0F] = 1;
+        v.regs[0x13] = 4; // a 4-byte fill
+        v.regs[0x14] = 0;
+        v.regs[0x17] = 0x80; // fill mode
         v.control_write(0x4200, 0); // VRAM write (code 0x01), A13-A0 = 0x0200
         v.control_write(0x0080, 0); // CD5..CD2 high nibble = 0b1000 → code 0x21 (VRAM write + CD5); disarm
-                                    // A3b: the captured addresses are the *written* bytes, `address ^ 1` at each step (P3), so with
-                                    // autoinc 1 from $0200 they come out pair-swapped. Everything else the test pins — one capture per
-                                    // filled byte, `via = Dma`, byte size, the pre-write value — is unchanged. This test calls
-                                    // `run_fill` directly, so the trigger-write change (P2) does not reach it.
-        let addrs = [0x0201u32, 0x0200, 0x0203, 0x0202];
+        v.data_write(0xAB00); // the trigger: fill byte = top byte = $AB
+        v.attribute_running_fill(0x00FF_1234); // the run loop's step-boundary stamp (R1)
+                                               // The trigger word landed at $0200/$0201 and stepped the address to $0201 (A3b), so the four fill
+                                               // steps run at $0201..$0204 and write `address ^ 1`: $0200, $0203, $0202, $0205.
+        let addrs = [0x0200u32, 0x0203, 0x0202, 0x0205];
         let old: Vec<u8> = addrs.iter().map(|&a| v.vram()[a as usize]).collect();
         v.set_write_capture(true);
-        v.run_fill(4, 0xAB00, 0); // fill byte = top byte = $AB, len 4
+        catch_fill_up_to_completion(&mut v);
         let caps = v.take_write_captures();
         assert_eq!(caps.len(), 4, "one capture per filled byte");
         for (i, cap) in caps.iter().enumerate() {
@@ -5242,6 +5794,19 @@ mod tests {
             assert_eq!(cap.new, 0xAB);
             assert_eq!(cap.size, 1);
             assert_eq!(cap.via, VdpVia::Dma, "fill writes attribute to DMA");
+            assert_eq!(
+                cap.pc,
+                Some(0x00FF_1234),
+                "R1: every step attributes to the instruction that TRIGGERED the fill"
+            );
+        }
+        // Each step carries its own slot instant (R2), and they are strictly increasing.
+        for pair in caps.windows(2) {
+            assert!(
+                pair[1].mclk > pair[0].mclk,
+                "per-step stamps advance: {:?}",
+                caps.iter().map(|c| c.mclk).collect::<Vec<_>>()
+            );
         }
     }
 
@@ -5399,9 +5964,23 @@ mod tests {
         v.control_write(0x8F02, 11_111);
         assert_eq!(v.now_mclk(), 11_111, "control_write stamps");
 
-        arm_vram_write(&mut v, 0x0200);
-        v.run_fill(4, 0xAB00, 22_222);
-        assert_eq!(v.now_mclk(), 22_222, "run_fill stamps");
+        // cause: M1 FILL-RUN — a fill's body is no longer one timed entry point taking the caller's `now`:
+        // each STEP stamps its own slot instant (hub ruling R2), so what must hold is that catching a fill
+        // up to `t` leaves the clock on a real slot at or before `t`, never on a stale one.
+        v.regs[1] = 0x10;
+        v.regs[0x0F] = 1;
+        v.regs[0x13] = 4;
+        v.regs[0x14] = 0;
+        v.regs[0x17] = 0x80;
+        command(&mut v, 0x21, 0x0200);
+        v.data_write(0xAB00);
+        let before = v.now_mclk();
+        v.fill_catch_up(22_222);
+        assert!(
+            v.now_mclk() > before && v.now_mclk() <= 22_222,
+            "a fill step stamps its own slot instant, in ({before}, 22222]: {}",
+            v.now_mclk()
+        );
 
         v.run_copy(0x0200, 4, 33_333);
         assert_eq!(v.now_mclk(), 33_333, "run_copy stamps");
