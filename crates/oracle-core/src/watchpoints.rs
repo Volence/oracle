@@ -1053,7 +1053,13 @@ impl BusEventSink for Watchpoints {
                 VdpVia::Direct => WatchVia::Direct,
                 VdpVia::Dma => WatchVia::Dma,
             },
-            pc: self.cur_pc,
+            // R1: `protocol.md` says a hit carries "the accessing instruction's pc", and for every write
+            // the VDP performs inside the access that caused it that is `cur_pc`, the step boundary this
+            // drain runs under. A write the VDP performed for an EARLIER instruction carries that
+            // instruction with it (`VdpWrite::pc`) — since M1-FILL-RUN a DMA fill's steps do, because a
+            // fill outlives its trigger. Either way the key is `pc` and the meaning is "the instruction
+            // this write is attributable to", so no `triggerPc` key joins the wire.
+            pc: w.pc.unwrap_or(self.cur_pc),
             frame: self.cur_frame,
             // The write's own instant, carried down from the VDP entry point that performed it
             // (F-TRACE-VDPWRITE-MCLK, slice 1b) — NOT `self.cur_mclk`, which is the draining step's clock.
@@ -2293,6 +2299,7 @@ mod tests {
             size,
             via,
             mclk,
+            pc: None,
         }
     }
 

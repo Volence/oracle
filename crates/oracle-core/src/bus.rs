@@ -1487,6 +1487,13 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                 self.vdp.run_copy(source, len, self.now_mclk);
                 0
             }
+            // M1-FILL-RUN: a running fill is never handed over — `Vdp::take_dma_request` keeps it, because
+            // it is the VDP's own work and its CD5 must stay set until the last step. This arm is therefore
+            // unreachable; it exists because the enum is exhaustive, and it costs the 68k nothing.
+            DmaRequest::FillRunning { .. } => {
+                debug_assert!(false, "a running fill is never taken from the VDP");
+                0
+            }
         }
     }
 
@@ -3173,7 +3180,25 @@ mod tests {
             ctrl(&mut bus, 0x4000);
             ctrl(&mut bus, 0x0082);
             data(&mut bus, 0x1234);
+        }
 
+        // cause: M1 FILL-RUN (docs/2026-09-14-m1-fill-over-time-design.md §2). The fill runs over time now,
+        // and this replay drives every port at ONE frozen mclk, so unless the clock moves the fill takes no
+        // step at all. **The ROM's own busy-poll goes exactly here**, and this is it: disassembled at
+        // `$DD64..$DD6E`, `move.w $C00004,d5 / btst #1,d5 / bne $DD64`, between the `$1234` trigger
+        // (`$DD5C`) and the `$8F02` autoincrement restore (`$DD7A`). Its position is load-bearing, not
+        // decorative: with autoinc 2 already in place the ten steps would walk $8001, $8003, … and write
+        // $8000, $8002, … — the table's `1212 1212 1212 1212 0012` would come back as `1234 1200 1200 …`.
+        poll_until_dma_idle(&mut mem, &mut sink);
+
+        {
+            let mut bus = mem.bus(&mut sink);
+            let ctrl = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0004, 5, w);
+            };
+            let data = |bus: &mut MegaDriveBus<'_, Vec<BusEvent>>, w: u16| {
+                bus.write16(0xC0_0000, 5, w);
+            };
             ctrl(&mut bus, 0x8F02); // ROM $DD7A: reg 15 back to autoinc 2
 
             // Four groups of 2 VSRAM reads @0, each separated by one ring-advancing CRAM write of $FFFF.
@@ -3329,6 +3354,28 @@ mod tests {
         bus.write16(0xC0_0000, 5, fill) // data-port write triggers the fill; returns its wait
     }
 
+    /// **A 68000 busy-poll on the DMA-busy bit**, written in the harness's terms: read the status port,
+    /// test bit 1, and if it is still set let time pass and read again. Returns the instant busy cleared.
+    ///
+    /// M1-FILL-RUN is why the tests below need it. A fill runs over time, on the VDP's external access
+    /// slots, so "the fill has happened" is no longer true the instant the trigger write returns — it is
+    /// true when the poll every real ROM writes (`move.w (a0),d0 / btst #1,d0 / bne`) falls through. The
+    /// clock moves a line at a time, bounded by the longest fill RD2 allows (65,536 steps), so a fill that
+    /// cannot finish fails here instead of spinning for ever.
+    fn poll_until_dma_idle(mem: &mut MdMem, sink: &mut Vec<BusEvent>) -> u64 {
+        for _ in 0..=0x1_0000 {
+            let busy = {
+                let mut bus = mem.bus(sink);
+                bus.read16(0xC0_0004, 5).0 & 0x0002 != 0
+            };
+            if !busy {
+                return mem.now_mclk;
+            }
+            mem.now_mclk += crate::vdp::MCLK_PER_LINE;
+        }
+        panic!("the DMA-busy bit never cleared");
+    }
+
     #[test]
     fn vram_fill_fills_the_target_with_the_top_byte() {
         // A3b rewrite (was: "$0100..$0108 are all $EE"). Two behaviors move the image, both pinned by
@@ -3344,6 +3391,10 @@ mod tests {
             let mut bus = mem.bus(&mut sink);
             run_vram_fill(&mut bus, 0x0100, 8, 0xEEAA); // fill 8 bytes of $EE
         }
+        // cause: M1 FILL-RUN (docs/2026-09-14-m1-fill-over-time-design.md §2): the trigger starts the fill,
+        // it no longer completes it, so the image is read after the busy-poll every real ROM writes. The
+        // image itself is unchanged — nothing touches the VDP while this fill runs.
+        poll_until_dma_idle(&mut mem, &mut sink);
         assert_eq!(
             &mem.vdp.vram()[0x0100..0x0108],
             &[0xEE, 0xAA, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE],
@@ -3366,6 +3417,7 @@ mod tests {
         let mut mem = MdMem::new(vec![0u8; 0x1000]);
         mem.now_mclk = 250 * crate::vdp::MCLK_PER_LINE;
         let mut sink = Vec::new();
+        let trigger_at = mem.now_mclk;
         let wait = {
             let mut bus = mem.bus(&mut sink);
             run_vram_fill(&mut bus, 0x0100, 8, 0xEEAA)
@@ -3375,9 +3427,19 @@ mod tests {
             mem.vdp.dma_busy(mem.now_mclk),
             "DMA-busy set at trigger time"
         );
+        // cause: M1 FILL-RUN (§1.5 / §2): busy is the fill's own live CD5 now, cleared by its last step,
+        // not a flat-rate window opened at the trigger. So "it clears" is no longer something a distant
+        // `now` shows on its own — a peek that does not catch the fill up sees it still running, which is
+        // the lazy model working, and the poll is what advances it. `dma_busy_until` stays 0 throughout: a
+        // fill opens no window any more.
+        let idle_at = poll_until_dma_idle(&mut mem, &mut sink);
         assert!(
-            !mem.vdp.dma_busy(mem.now_mclk + 1_000_000),
-            "DMA-busy clears after the coarse transfer window"
+            !mem.vdp.dma_busy(idle_at),
+            "DMA-busy clears when the fill's last step runs"
+        );
+        assert!(
+            idle_at > trigger_at,
+            "…and that took real time: the 8 fill steps are 8 external access slots"
         );
     }
 
@@ -3392,6 +3454,10 @@ mod tests {
             bus.write16(0xC0_0004, 5, 0x8500); // reg 5 = 0 → SAT base $0000
             run_vram_fill(&mut bus, 0x0000, 12, 0x77AA); // fill 12 bytes of $77 from $0000
         }
+        // cause: M1 FILL-RUN (§3): the fill's steps reach the SAT write-through one slot at a time instead
+        // of all inside the trigger, so the cache is read after the busy-poll. Every byte still routes
+        // through `write_vram_byte`, which is the claim.
+        poll_until_dma_idle(&mut mem, &mut sink);
         // A3b rewrite (was: 4 bytes, asserting `[$77; 4]`). The point of the test is unchanged — every byte
         // the fill path writes still routes through the SAT write-through — but the image moved: the
         // trigger word $77AA is now applied as a normal write ($77 → $0000, $AA → $0001, P2) and the fill
@@ -3995,6 +4061,7 @@ mod tests {
             size: 1,
             via: crate::vdp::VdpVia::Direct,
             mclk: 0,
+            pc: None,
         }
     }
 
