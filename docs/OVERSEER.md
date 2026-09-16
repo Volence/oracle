@@ -440,6 +440,22 @@ aurora's caveat that it has been seen to move upward; (c) **if the number is not
 never substitute the feeling it would have replaced.** Loud on unmeasurable, in the one place where the
 temptation is to produce a plausible number because two peers just did.
 
+⚑ **AND TWO LANES' COUNTERS ARE NOT ONE SCALE — MEASURED HERE 2026-09-16, and it is the clause most likely
+to be needed when a peer quotes a figure AT you.** The hub asked this lane *"are you under the ~200k line?"*
+after sigil named **~202,000** from its context budget counter. This seat's instrument reports **~14.9M of a
+15M budget** — a different quantity entirely, and **the ~200k line is defined on sigil's instrument only**.
+Answering it on this lane's number would have made this lane look **70x emptier** than sigil's while the two
+figures answer different questions. ⚑ **The same session also watched its own counter move UPWARD (~13.89M,
+later 15.0M)**, reproducing aurora's non-monotonic catch firsthand. **So: never convert a peer's threshold
+onto your own counter, and never estimate the figure you do not have** — a demand to fill a field gets it
+filled, which is the queue table's law arriving on a number.
+⚑ **THE ORDER IS THE WHOLE RULE, and the hub corrected itself on it (empyrean `2ecc9f4`, verified an ancestor
+of their `origin/main`): (a) WHAT IS UNBANKED DECIDES; (b) the figure is SECONDARY.** The ~200k line is a
+**proxy** for the rule's own stated test — *once the banked state fully covers the live state* — and asking
+"are you under the line" lets the proxy displace the test. **When (a) is *nothing*, (b) is never needed at
+all**, and a lossless boundary whose next item waits on no one is TAKEN, not parked on a click that may not
+come for hours.
+
 ⚑ **AND NOTHING WILL ROTATE YOU ON A TIMER, SO SAY IT EARLIER THAN FEELS NECESSARY** *(from the hub,
 2026-09-16T13:1xZ; banked as the INSTRUMENT, deliberately not as the reading)*. Overnight auto-clear was
 reported disarmed at the runtime that afternoon, where it had been armed an hour earlier. **Read it from
