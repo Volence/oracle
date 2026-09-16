@@ -3408,6 +3408,65 @@ mod tests {
         }
     }
 
+    /// **H22 landing 1 (E1), the key-space gate.** [`MicroState::from_buf`] states a precondition it
+    /// cannot check: the slots past `len` in the array handed to it are already the inert
+    /// `Internal { cycles: 0 }` padding [`MicroState::from_ops`] writes. Every decoded recipe arrives
+    /// through `from_buf` (via [`RecipeBuf::finish`](super::ea::RecipeBuf::finish)), so E1's static
+    /// filler is what upholds it — for all 65 536 opcodes, in both privilege modes, including the
+    /// cascade's fallbacks and the decode-time exception recipes.
+    ///
+    /// This is the *whole key space*, not a sample: the claim is about a filler shared by every arm, so
+    /// the cheapest honest quantifier is "every opcode". It lives here rather than beside the decoder
+    /// because `MicroState::ops` is private to this module, and reading the slots BEYOND `len` — the
+    /// ones no accessor exposes and no execution reaches — is the point.
+    ///
+    /// Red-first evidence: with the static set to `Internal { cycles: 7 }` this fails on the first
+    /// opcode it reaches (recorded in the landing's commit body).
+    #[test]
+    fn every_decoded_recipe_pads_with_the_inert_filler() {
+        let mut r = regs();
+        // Fixed, non-zero registers: the seven register-reading builders (Bcc, DBcc, Scc, TRAPV, the
+        // `pos >= 16` bit ops, the Dn-count shifts, MOVEM) would otherwise all see the same zero and
+        // take one branch each. The exact values do not matter — the filler claim is register-blind —
+        // but a spread reaches more arms for the same cost.
+        r.d = [
+            0x8000_0001,
+            1,
+            0xFFFF_0000,
+            0x0000_FFFF,
+            33,
+            0,
+            15,
+            0x1234_5678,
+        ];
+        r.a = [0x0004_0000; 7];
+        r.prefetch[1] = 0x00F0;
+        let filler = MicroOp::Internal { cycles: 0 };
+        let mut checked = 0u32;
+        for sup in [false, true] {
+            r.sr = if sup { SR_SUPERVISOR } else { 0 };
+            for op in 0..=0xFFFFu32 {
+                r.prefetch[0] = op as u16;
+                let st = crate::m68000::decode::decode(&r);
+                for (i, slot) in st.ops.iter().enumerate().skip(st.len as usize) {
+                    assert_eq!(
+                        *slot, filler,
+                        "opcode {op:#06x} (supervisor={sup}): slot {i} past len {} is not the inert \
+                         filler from_buf's precondition requires",
+                        st.len
+                    );
+                }
+                checked += 1;
+            }
+        }
+        // Loud on unmeasurable: a loop that decoded nothing would otherwise pass in silence.
+        assert_eq!(
+            checked,
+            2 * 65_536,
+            "the whole opcode space, both privilege modes"
+        );
+    }
+
     /// **M48.** `from_buf`'s `MAX_OPS` bound used to be a `debug_assert!`, standing behind two
     /// *release* `assert!`s that already made its trigger unreachable in-tree:
     /// [`MicroState::from_ops`]'s `assert!(ops.len() <= MAX_OPS)` and

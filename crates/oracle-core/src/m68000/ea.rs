@@ -137,12 +137,27 @@ pub struct RecipeBuf {
     len: usize,
 }
 
+/// The inert filler every staging buffer starts from: `MAX_OPS` copies of `Internal { cycles: 0 }` — the
+/// exact padding [`MicroState::from_ops`] writes beyond a recipe's length, and the precondition
+/// [`MicroState::from_buf`] asserts in prose.
+///
+/// **Why it is a `static` and not the repeat expression it replaces** (H22 landing 1, E1). This is one
+/// `[MicroOp; MAX_OPS]` of finished bytes, so `RecipeBuf::new` becomes a copy of a known 40-element
+/// blob rather than a construction of one. It is not a `memset`: `MicroOp::Internal` is not the first
+/// variant and `cycles: 0` is not an all-zero bit pattern, so the repeat expression
+/// `[MicroOp::Internal { cycles: 0 }; MAX_OPS]` gave the compiler 40 element writes to emit at every
+/// call site — and `RecipeBuf::new` is on the decode path of EVERY instruction, plus every cascade
+/// fallback and every decode-time exception recipe. Naming the array once hands the same bytes to the
+/// same field with one move. The VALUE is unchanged by construction, and
+/// `the_static_filler_is_the_repeat_expression_it_replaced` (below) is the gate that says so.
+static EMPTY_OPS: [MicroOp; MAX_OPS] = [MicroOp::Internal { cycles: 0 }; MAX_OPS];
+
 impl RecipeBuf {
     /// An empty buffer (filler slots are inert `Internal { cycles: 0 }`, identical to what
     /// [`MicroState::from_ops`] pads with, so a built recipe compares equal to the literal one).
     pub fn new() -> Self {
         Self {
-            ops: [MicroOp::Internal { cycles: 0 }; MAX_OPS],
+            ops: EMPTY_OPS,
             len: 0,
         }
     }
@@ -1866,6 +1881,26 @@ pub fn ea_read_word_operand(buf: &mut RecipeBuf, mode: u16, reg: u8) -> bool {
 mod tests {
     use super::*;
     use crate::m68000::microop::{AluOp, Dest, Fc, MicroState, Size};
+
+    /// **H22 landing 1 (E1).** The `static EMPTY_OPS` filler is the repeat expression it replaced, slot
+    /// for slot — the whole correctness claim of that landing, since `push` writes only the prefix and
+    /// `finish` moves the array out untouched, so a buffer that STARTS equal can only FINISH equal.
+    ///
+    /// The comparison is against the literal `[MicroOp::Internal { cycles: 0 }; MAX_OPS]` written out
+    /// here rather than against `EMPTY_OPS` itself: a test that read the static would agree with any
+    /// value the static happened to hold, which is exactly the question. Red-first evidence: with the
+    /// static set to `cycles: 7`, this fails on slot 0 (recorded in the landing's commit body).
+    #[test]
+    fn the_static_filler_is_the_repeat_expression_it_replaced() {
+        let buf = RecipeBuf::new();
+        assert_eq!(buf.len, 0, "a new buffer holds no ops");
+        assert_eq!(
+            buf.ops,
+            [MicroOp::Internal { cycles: 0 }; MAX_OPS],
+            "RecipeBuf::new's filler must be MAX_OPS inert Internal(0) ops — the padding \
+             MicroState::from_ops writes and MicroState::from_buf asserts as its precondition"
+        );
+    }
 
     /// The opcode's ALU as a literal, for the regression fixtures. `<ea>,Dn` form: `Dn` is the minuend
     /// (`a`), the source EA supplies `b`, the result lands back in `Dn`.
