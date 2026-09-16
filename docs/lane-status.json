@@ -1,6 +1,12 @@
 {
-  "focus": "Done and published: the video chip's test ROM now scores a perfect 122 of 122, and your saves are untouched.",
-  "inFlight": [],
+  "focus": "Speed piece built and merged locally; I am checking it before it goes out. Real gain ~4.8%, not the 7.5% predicted.",
+  "inFlight": [
+    {
+      "what": "Checking the speed change myself on the merged code before pushing",
+      "where": "main, merged locally, not pushed",
+      "agent": false
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,8 +14,16 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. Nothing is running and everything is pushed.",
+  "nextBoundary": "When this push is green: everything banked, nothing in my head, a clear costs nothing.",
   "queue": [
+    {
+      "id": "TESTROM-SPRITE-MASKING",
+      "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Next, straight off your words about the test ROMs: the sprite test ROM's last 2 failures. Both are one known cause -- we budget sprite pixels per whole sprite, the real chip cuts mid-sprite."
+    },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
       "state": "open",
@@ -25,14 +39,6 @@
       "blockedBy": "your ear: card d-51",
       "project": "LENS-PASS",
       "title": "The sound chip's interrupt signal should last one line, not until taken. It changes what a real driver hears, so card d-51 asks whether you want to listen first."
-    },
-    {
-      "id": "H22-68000-DECODE",
-      "state": "next",
-      "size": "L",
-      "blockedBy": null,
-      "project": "LENS-PASS",
-      "title": "Next unless you say otherwise: the first speed piece (~7%), already answered and needing no decision from you."
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
@@ -115,7 +121,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "Nothing from you on this. d-51 (hearing the sound-chip change before it lands) is still open whenever you want it.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-16T03:26:41Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-16T05:50:06Z"
 }
