@@ -1314,10 +1314,25 @@ impl Loop {
                     //
                     // > *"If multiple are open it's really hard as well"*
                     //
-                    // `egui_dock` gives each leaf THREE chrome controls beyond the tab titles — the
-                    // collapse arrow at the strip's left, the per-tab `x` on the active tab, and this
-                    // close-all at the strip's right. On his layout that is four strips' worth, and the
-                    // clutter he is describing is partly ours to stop drawing.
+                    // `egui_dock` gives each leaf THREE KINDS of chrome control beyond the tab titles —
+                    // the collapse arrow at the strip's left, a `x` on the tabs, and this close-all at
+                    // the strip's right. On his layout that is four strips' worth, and the clutter he is
+                    // describing is partly ours to stop drawing.
+                    //
+                    // ⚑ **"a `x` on the tabs" was written here as "the per-tab `x` on the ACTIVE tab",
+                    // and that was wrong; corrected 2026-09-16 with a screenshot as the witness**
+                    // (`docs/2026-09-16-window-chrome-after-the-09-09-fixes.md`, shot 1). `show/leaf.rs`
+                    // computes `show_close_button = self.show_close_buttons && closeable` at `:431`,
+                    // INSIDE `for tab_index in 0..tabs_len` (`:402`), with no reference to `is_active`.
+                    // `crate::nav`'s header had it right the whole time — *"`egui_dock` draws a ✕ on
+                    // every tab"* — so the crate said both things and the wrong one sat at the decision.
+                    //
+                    // **The error is not cosmetic, because it is the number the owner's remaining look
+                    // call turns on.** Read as written, removing close-all left `1 arrow + 1 x` per leaf
+                    // — four leaves, EIGHT controls. What the default layout actually draws is one arrow
+                    // per LEAF and one `x` per TAB: `initial_dock()` is 4 leaves and 11 tabs, so FIFTEEN,
+                    // and eleven of them are the `x`. Anyone costing "is the remaining chrome worth
+                    // another parcel?" off this sentence was costing it at roughly half.
                     //
                     // **This is the one of the three that goes, and the choice is not a taste call:**
                     //

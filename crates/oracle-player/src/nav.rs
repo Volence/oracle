@@ -93,8 +93,14 @@
 //! empty dock is recoverable, and the nav that recovers it is drawn in the top bar, outside the dock, so
 //! it cannot be one of the things that got closed.
 //!
-//! ⚑ It also closes the *practical* half of `F-NAV-COLLAPSED-LEAF`. That defect is **real and still
-//! open** — `Tree::node_update_collapsed`, `set_collapsed` and `is_collapsed` are all `pub(crate)` in
+//! ⚑ It also closes the *practical* half of `F-NAV-COLLAPSED-LEAF`. The LIMITATION is real and stands;
+//! ⚑ **the BOOKING does not, and the two had drifted apart.** `docs/decisions.jsonl` d-31 was answered
+//! `leave-it` on 2026-09-09T23:18:15Z — *"Closed as a theory that did not describe what happened … Reopen
+//! if the owner ever hits a collapsed group the menu cannot reopen"* — and the id is absent from
+//! `docs/lane-status.json`'s queue. So a reader who goes looking for the row finds nothing, which is the
+//! one outcome that makes them doubt the paragraph rather than the row. Said once here and at
+//! [`ARRANGE_COLLAPSE`]; the mechanism below is unchanged and still true —
+//! `Tree::node_update_collapsed`, `set_collapsed` and `is_collapsed` are all `pub(crate)` in
 //! `egui_dock-0.21.1` (re-verified for this row), so a collapsed leaf still cannot be expanded from here
 //! and a panel revealed into one is still behind a collapsed pane. What the reset row adds is a way out
 //! that does not need the upstream `pub`: `initial_dock()` has no collapsed leaves, so one click returns
@@ -204,7 +210,8 @@ pub const ARRANGE_DRAG: &str = "Drag a tab by its name onto another pane. Icons 
 ///
 /// ⚑ Note what this line does **not** say: it does not tell him to use the panel menu to get a folded
 /// strip back, because [`reveal`] cannot do that. `Tree::set_collapsed` is `pub(crate)` in this version —
-/// the still-open `F-NAV-COLLAPSED-LEAF` this module's header records — so the arrow is its own and only
+/// the `F-NAV-COLLAPSED-LEAF` limitation this module's header records, whose BOOKING d-31 closed as
+/// `leave-it` while the limitation itself stands — so the arrow is its own and only
 /// undo, and saying "click it again" is both the true instruction and the only one that works.
 pub const ARRANGE_COLLAPSE: &str =
     "The arrow at a strip's left edge folds that strip down to its title \
