@@ -1,12 +1,6 @@
 {
-  "focus": "Speed piece built and merged locally; I am checking it before it goes out. Real gain ~4.8%, not the 7.5% predicted.",
-  "inFlight": [
-    {
-      "what": "Checking the speed change myself on the merged code before pushing",
-      "where": "main, merged locally, not pushed",
-      "agent": false
-    }
-  ],
+  "focus": "Two things done and checked: the video test ROM is perfect, and the emulator runs ~5% faster.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When this push is green: everything banked, nothing in my head, a clear costs nothing.",
+  "nextBoundary": "Now. Everything is published and checked; nothing is running and nothing is in my head.",
   "queue": [
     {
       "id": "TESTROM-SPRITE-MASKING",
@@ -121,7 +115,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-16T05:50:06Z"
+  "awaiting": "A clear whenever convenient -- this session has run 6+ hours. Everything is published and the build checks passed. Next session starts on the sprite test ROM; it needs nothing from you.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-16T06:19:50Z"
 }
