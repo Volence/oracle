@@ -523,6 +523,32 @@ true until the work is done. **A charge a global sweep could close should never 
 `LANE_STATUS.md` line 136 — this lane's own clause). The rest of `DATA-DISPLAY-AUDIT` (items 6-11) reuses the
 same furniture; re-derive each from the TREE, never from §4.
 
+**`F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL` LANDED AND CLOSED 2026-09-16** (agent tip `51bf1f1`, branch
+`parcel/outline-witness`, base `d8bb9cc`; merge message corrected before push, landing addendum after it).
+**Test-only: 495 lines added, 0 removed, both hunks inside `mod tests`** — the shipped player is unchanged.
+**The control established the gap exactly as booked:** the byte-for-byte differential stayed green under all four
+mutations to `covered_edges`, and the fourth (down neighbour read at `x + 1`) was **caught by nothing in the
+tree**. Reproduced at this seat with `--no-fail-fast` across all 4 legs: the new witness is the SOLE failure.
+The rectangle test is **not** a fourth misnamed lock — the agent checked rather than pattern-matched: its body
+tests a rectangle, which is all its name claims.
+⚑ **ONE OF THE PARCEL'S DERIVED CLAIMS DID NOT REPRODUCE, AND I HAD ALREADY COPIED IT INTO MY MERGE MESSAGE.**
+The shares reproduce within a point (61.9 / 49.2 / 66.4 %, null arms 1.00x). But *"widening the display costs
+more than doubling the plane"* was a **+2.3 pp** gap in the agent's run that went **−0.3 pp** in mine — **it
+changed sign, so it is noise.** What reproduces is the ratio beneath it: per unit of growth the display term is
+**~4x** the plane term (4.5x, 3.9x), which supports the same optimisation pointer on firmer evidence. **The rule:
+a comparison between two measured differences needs its own noise estimate** — each figure had a null arm, the
+difference between them did not. **I wrote the noisy claim into a commit message before re-measuring it**, which
+is today's recurring class committed by the seat banking it; caught because the merge was still unpushed, and
+corrected at the source rather than left standing in history, since nothing ever checks a commit message.
+⚑ **OPS: THE WORKSPACE RELEASE RUN WAS REAPED THREE TIMES FOR MEMORY AND NEVER PRODUCED A VERDICT** — the last
+reached **0 of 90 legs**, dying in compilation. Release was verified on `oracle-player` alone (4/4 legs, 482/0/2),
+**and the reduced scope is stated with its basis rather than glossed**: since `161d6f4` (workspace release verified
+at 90 / 2968) the only code change anywhere is these test lines. **A scope reduction is sound when you can name
+what is unchanged; otherwise it is a skipped check.** Every kill today hit a release build while other lanes were
+also compiling; KDE's file indexer held 6.3 GB — the owner's system, observed and not touched.
+**NEXT: the rest of `DATA-DISPLAY-AUDIT`** (items 6-11: Registers, Memory, Planes legend, Screen strip, Objects,
+the sweeps). ⚑ Per **`L-16`**, §4's line numbers and P10 charges are dead letters; re-derive each from the TREE.
+
 ## ⚑ `next` COEXISTS WITH `doing`. THIS LANE WROTE THAT RULE INTO THE CONTRACT AND THEN BROKE IT TWICE IN ONE DAY
 
 *(2026-09-16, after the hub flagged `0 next rows` for the second time in ninety minutes. Governing text:

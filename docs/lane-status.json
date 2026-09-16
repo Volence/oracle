@@ -1,12 +1,6 @@
 {
-  "focus": "Proving the outline on the plane picture can be checked at all, before anyone tries to make it faster.",
-  "inFlight": [
-    {
-      "what": "An independent proof for the plane outline, which today's check cannot see, plus a measurement of what it costs",
-      "where": "branch parcel/outline-witness (worktree ../oracle-outline)",
-      "agent": true
-    }
-  ],
+  "focus": "The plane outline now has a check that can actually catch it breaking; the next panel job is ready to start.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the agent returns and its work is verified and landed. Not before: an agent is holding a branch.",
+  "nextBoundary": "Now, once CI is read. Nothing running, everything pushed, next job needs no decision from you.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -23,14 +17,6 @@
       "blockedBy": "a contract ruling (the hub's)",
       "project": "ORACLE-DEFAULT",
       "title": "Found by today's fix: in its first moment a window tells a connected program 'there is no window'. What it should say is a ruling for the hub."
-    },
-    {
-      "id": "F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The outline over the plane picture costs about half that view, and the check that proved the last speed-up correct is blind to it by construction. It needs its own proof before anyone speeds it up."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -105,7 +91,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-16T17:44:13Z"
+  "awaiting": "nothing from you. Note only: CI is still running on this landing and I will read it to completion before calling it done.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-16T18:43:09Z"
 }
