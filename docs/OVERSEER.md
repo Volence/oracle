@@ -125,7 +125,7 @@ Verified firsthand on the merged tree: clippy clean in BOTH shapes, debug 90 leg
 reproduced red-first with the mutation on disk then restored. **It CORRECTED ITS OWN DESIGN'S CLAIM: −4.71 %/−4.88 % measured against the stated
 −7.5 %**, with a byte-identical null arm validating the instrument at ±0.5 %; recorded at the design's canonical site (`b6410dd`), the original left
 standing as the spike's record. **Landings 2-3 STAY HELD**, and this is evidence FOR the hold: the one figure this parcel could check was overstated
-by a third. **NEXT: `TESTROM-SPRITE-MASKING`** — ⚑ *re-derive before proposing it; this clause names its SOURCES and deliberately carries no count and no
+by a third. **TESTROM-SPRITE-MASKING (the clause below) LANDED 2026-09-16 as merge `25d9b4a`; the paragraph after this one carries the live NEXT.** It is kept whole, stale pointer included, because its lessons are about itself. **THEN-NEXT was: `TESTROM-SPRITE-MASKING`** — ⚑ *re-derive before proposing it; this clause names its SOURCES and deliberately carries no count and no
 cause*: the scorecard row in `docs/2026-07-25-testrom-conformance.md`, ledger row P1 in `docs/2026-07-16-vdp-pixel-known-differences.md`, and
 **`F-POSTHOC-STALE-CARRY` in `docs/OVERSEER-REFERENCE.md`, which any reading of the first two without the third will get wrong.**
 ⚑ **THIS POINTER LINE IS THE ARTIFACT CLASS THAT BIT THE HUB TONIGHT** (they proposed M1 hours after acknowledging it closed, off their own boot-read
@@ -143,6 +143,42 @@ empyrean `docs/OVERSEER.md:85`): the `119/122` was **true when written and rotte
 2026-08-15 because the artifact and a real failure are **identical in the output** — both a `FAIL` glyph. A rotted claim is fixed by naming sources; an
 absence rendered as a positive finding is fixed only by **making the instrument fire on purpose**. Control arm here, one line, never run because the
 harness is non-gating and the glyph "worked": **render a frame both ways and require them to agree.**
+
+**SPRITE-MID-CUT LANDED 2026-09-16, merge `25d9b4a`** (agent tip `4a692ca`, lane files `9ddd5b7`; pushed, origin confirmed moved).
+The per-line sprite pixel budget now cuts MID-SPRITE; `vdp_sprite_masking` test 3 flips, test 6 does not move, confirming
+`F-POSTHOC-STALE-CARRY` owns test 6 and P1 owned exactly one of the two. Verified firsthand on the merged tree by the landing seat:
+debug 90 legs / 2925 / 0 / 6, release 90 / 2928 / 0 / 3 (baseline 2917, +8 = 6 unit + 2 golden), red-first reproduced with the
+mutation quoted off disk. ⚑ **Its transferable finding is a THIRD class beside the two above, and it is the strongest of the three:
+`scene_no_mid_sprite_cut` was the ledger's NAMED LOCK for this defect and could never have detected it** — 256 is an exact multiple
+of 32, so its ninth sprite straddled nothing. Proven, not argued: under the mutation reinstating the defect, the new fixture goes
+red and that one stays GREEN. **A fixture can stand for years looking like coverage while testing nothing, and its NAME is what
+stops anyone checking.** The control arm that catches it is one line and almost nobody runs it, because the new test going red
+*feels* like the proof: **run the mutation against the EXISTING lock and watch what it does.** Copying that rule needs both halves —
+the mutation AND a named prior fixture to run it against — or it collapses into an ordinary red-first check.
+
+⚑ **AND THE `NEXT:` CLAUSE ROTTED AGAIN WITHIN THREE HOURS, WHICH IS WHY THIS PARAGRAPH EXISTS AND WHY THE ONE ABOVE IS LEFT
+STALE RATHER THAN EDITED.** This is not either of the two classes it names. The sentence was **true when written**, and it rotted
+**because the work it named SUCCEEDED** — success itself was the rotting agent. Note what does NOT reach it: *name your sources,
+never the figure* is no help, because that clause **does** name its sources and names no figure. **The fix that fits is the
+boot-file sibling of rule 8 (a `next` row is CONSUMED by being started): the same edit that starts or lands a row refreshes this
+clause.** Booked as a habit, not a bar. Measured cost of the gap: the boot file pointed at a landed row for six hours while the
+board and the memory frontier were both correct, so the exposure was outward — a peer or a fresh session taking a finished row as
+the front. *(Class named by this seat 2026-09-16; adopted by the hub as a third sub-class, banked empyrean `70077e2`.)*
+
+**NEXT, and it is IN FLIGHT rather than a proposal: `F-PLANES-RASTER-EVERY-FRAME`** (worktree `../oracle-planes`, branch
+`parcel/planes-raster`, base `9ddd5b7`; go from the hub under his delegation, anchors verified firsthand at empyrean `70077e2`,
+an ancestor of their `origin/main`: `docs/OVERSEER.md:149` *"Do not boot into a stop and wait for a pick"* and `:156` *a lane
+rebooted mid-project does NOT stop at its boot stop waiting for a pick*). ⚑ **THE BOARD'S OWN TITLE FOR THIS ROW WAS FALSE AND WAS
+RE-DERIVED AT DISPATCH** — a fourth instance in one night, this one in a queue row rather than a pointer. It read *"redraws the
+whole picture every frame even when nothing changed"*; the fingerprint gate has existed since `230ff33` (2026-09-05) and the panel
+was BORN with it, so unchanged inputs are already skipped. The row's ORIGINAL 2026-09-06 booking (recovered from the board's own
+git history, `3de47e4`) says the real thing: the saving *"never applies"* on rows whose picture changes every frame **by design**.
+**A title restated from a booking drifts into its own negation, and the restatement is what everyone reads.** The parcel asks two
+separable questions: **(A)** does `gather` (`crates/oracle-player/src/planes.rs:202`) mix scroll and spans into the fingerprint for
+any non-Window plane **regardless of `want_scroll`**, so an unscrolled outline-off view re-rasters to a byte-identical image every
+frame a game scrolls; **(B)** `dot`/`nibble` re-derive the cell and the tile base **once per pixel**, 64 times per 8x8 tile, which
+is where the booking's half a million lookups live. Byte-identical output is the hard constraint, and the measurement ships with a
+null control arm per the lesson above.
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

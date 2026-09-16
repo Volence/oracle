@@ -1,6 +1,12 @@
 {
-  "focus": "Sprites now cut off mid-way at the line limit, like real hardware. Landed and checked.",
-  "inFlight": [],
+  "focus": "An agent is making the plane picture cheaper to draw. Nothing needed from you.",
+  "inFlight": [
+    {
+      "what": "Making the plane viewer's picture cheaper to draw, and checking whether it redraws on data the picture never uses",
+      "where": "branch parcel/planes-raster",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. The parcel is landed, pushed and verified; nothing is running.",
+  "nextBoundary": "When the agent returns and I have checked its work on the merged tree.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -52,7 +58,7 @@
     },
     {
       "id": "OWNER-UX-GROUP-B",
-      "state": "open",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -92,11 +98,11 @@
     },
     {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The plane viewer redraws the whole picture every frame even when nothing changed. Cleared as the cause of your lag; still a real waste the moment you open that tab. Startable cold. Anchors: OVERSEER-LOG.md 09-08, the register."
+      "title": "The plane picture may redraw on data it never uses, and when it really does change every frame it is drawn the slow way. Not your lag. The old title said it redraws when nothing changed; re-derived at dispatch, that was wrong."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -107,7 +113,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "A clear whenever convenient. Everything is banked; the next session starts on the plane viewer and needs nothing from you.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-16T08:01:18Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-16T08:09:22Z"
 }
