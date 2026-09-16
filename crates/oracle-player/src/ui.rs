@@ -2283,29 +2283,7 @@ impl Panels<'_> {
     fn breakpoints(&mut self, ui: &mut egui::Ui) {
         let view = stopping::breakpoints(self.bus.read_breakpoints(), self.symbols);
 
-        Self::live_head(
-            ui,
-            view.live,
-            &format!(
-                "{} of {} breakpoint{} armed, so the machine will halt at {}",
-                view.armed,
-                view.rows.len(),
-                if view.rows.len() == 1 { "" } else { "s" },
-                if view.armed == 1 { "it" } else { "them" }
-            ),
-            &if view.rows.is_empty() {
-                "No breakpoint has been armed, so nothing here will stop the machine.".to_owned()
-            } else {
-                format!(
-                    "{} breakpoint{} held and every one of them disabled, carrying {} hit{} between them \
-                     from when they were armed.",
-                    view.rows.len(),
-                    if view.rows.len() == 1 { "" } else { "s" },
-                    view.retained_hits,
-                    if view.retained_hits == 1 { "" } else { "s" },
-                )
-            },
-        );
+        Self::live_head(ui, view.live, &view.armed_sentence, &view.retained_sentence);
 
         // ⚑ **What the set has already DONE to this machine** — the half [`Live`] cannot express.
         // `live_head` above says whether these rows can stop the machine; this says whether one of them
@@ -2324,16 +2302,22 @@ impl Panels<'_> {
             )
         };
         if let Some(head) = halting.headline() {
-            let colour = if halting.halted_here() {
-                ui.visuals().error_fg_color
-            } else {
-                ui.visuals().warn_fg_color
-            };
-            ui.colored_label(colour, head);
-            if let Some(advice) = halting.advice() {
-                ui.small(advice);
-            }
-            ui.separator();
+            // ⚑ **In a card, because it is the same KIND of thing as the Screen tab's standing readout**
+            // and was a bare `colored_label` in a stack of them. An alarm that draws with the same weight
+            // as the four sentences around it is an alarm a reader scrolls past; the colour is still what
+            // says which alarm it is.
+            card(ui, |ui| {
+                let colour = if halting.halted_here() {
+                    ui.visuals().error_fg_color
+                } else {
+                    ui.visuals().warn_fg_color
+                };
+                ui.colored_label(colour, head);
+                if let Some(advice) = halting.advice() {
+                    ui.small(advice);
+                }
+            });
+            ui.add_space(SECTION_GAP);
         }
 
         // --- add ---
@@ -2386,91 +2370,85 @@ impl Panels<'_> {
         // --- the table ---
         if view.live.has_rows() {
             ui.separator();
-            ui.monospace(format!(
-                "{:<5} {:<10} {:<8} {:>9}",
-                "id", "addr", "state", "hits"
-            ));
+            section(
+                ui,
+                stopping::BREAKPOINTS_HEAD,
+                None,
+                stopping::BREAKPOINT_LIST,
+            );
             // The armed-for-removal handle is read out here and written back after the closure, so the
             // scroll area borrows neither `self` nor a field of it. `confirm` is the handle the human has
             // already pressed `remove` on; `next_confirm` is `Some(new value)` only when this frame moved
             // it, which keeps "nothing happened" distinguishable from "cleared".
             let confirm = self.stopping.confirm_remove.clone();
             let mut next_confirm: Option<Option<String>> = None;
+            let lead = row_controls_w(ui, true);
+            let rows: Vec<TableRow> = view.rows.iter().map(|r| break_row(ui, r)).collect();
             egui::ScrollArea::vertical()
                 .id_salt("breakpoint-rows")
                 .max_height(220.0)
                 .show(ui, |ui| {
-                    for r in &view.rows {
-                        ui.horizontal(|ui| {
-                            // The checkbox is `breakpoint_set_enabled`, the ONE writer of this field on
-                            // this bus. Its value is read from the row, never from a local mirror, so a
-                            // refused toggle simply leaves the box where the server left it.
-                            let mut on = r.enabled;
+                    control_table(ui, &stopping::BREAK_COLS, &rows, lead, |ui, i| {
+                        let r = &view.rows[i];
+                        // The checkbox is `breakpoint_set_enabled`, the ONE writer of this field on
+                        // this bus. Its value is read from the row, never from a local mirror, so a
+                        // refused toggle simply leaves the box where the server left it.
+                        let mut on = r.enabled;
+                        if ui
+                            .checkbox(&mut on, "")
+                            .on_hover_text(
+                                "emulator/breakpoint_set_enabled. `hits` is carried ACROSS the \
+                                 toggle: this surface never resets a count; a fresh one means \
+                                 clear and re-add.",
+                            )
+                            .changed()
+                        {
+                            gesture = Some((
+                                stopping::BREAKPOINT_SET_ENABLED,
+                                stopping::breakpoint_enable_params(&r.handle, on),
+                            ));
+                        }
+                        // ⚑ **Two presses, and a word.** This is the control that destroyed a
+                        // breakpoint under a UX seat who thought it was the tick-box: it drew as a
+                        // hollow box (see [`REMOVE_LABEL`]) 36 px from a real one, and it took effect
+                        // on the first click with no tooltip, no confirmation and no undo. Both halves
+                        // are fixed here, because a legible label on a control that still fires
+                        // instantly only narrows the accident.
+                        if stopping::confirming(confirm.as_deref(), &r.handle) {
                             if ui
-                                .checkbox(&mut on, "")
-                                .on_hover_text(
-                                    "emulator/breakpoint_set_enabled. `hits` is carried ACROSS the \
-                                     toggle: this surface never resets a count; a fresh one means \
-                                     clear and re-add.",
+                                .small_button(
+                                    egui::RichText::new(REMOVE_CONFIRM_LABEL)
+                                        .color(ui.visuals().error_fg_color),
                                 )
-                                .changed()
-                            {
-                                gesture = Some((
-                                    stopping::BREAKPOINT_SET_ENABLED,
-                                    stopping::breakpoint_enable_params(&r.handle, on),
-                                ));
-                            }
-                            // ⚑ **Two presses, and a word.** This is the control that destroyed a
-                            // breakpoint under a UX seat who thought it was the tick-box: it drew as a
-                            // hollow box (see [`REMOVE_LABEL`]) 36 px from a real one, and it took effect
-                            // on the first click with no tooltip, no confirmation and no undo. Both halves
-                            // are fixed here, because a legible label on a control that still fires
-                            // instantly only narrows the accident.
-                            if stopping::confirming(confirm.as_deref(), &r.handle) {
-                                if ui
-                                    .small_button(
-                                        egui::RichText::new(REMOVE_CONFIRM_LABEL)
-                                            .color(ui.visuals().error_fg_color),
-                                    )
-                                    .on_hover_text(
-                                        "emulator/breakpoint_clear on this handle alone. It does not \
-                                         come back: re-arming the same address makes a NEW breakpoint, \
-                                         with a new handle and `hits` at zero. To keep the row and stop \
-                                         it halting the machine, untick it instead.",
-                                    )
-                                    .clicked()
-                                {
-                                    gesture = Some((
-                                        stopping::BREAKPOINT_CLEAR,
-                                        stopping::breakpoint_clear_params(&r.handle),
-                                    ));
-                                    next_confirm = Some(None);
-                                }
-                                if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
-                                    next_confirm = Some(None);
-                                }
-                            } else if ui
-                                .small_button(REMOVE_LABEL)
                                 .on_hover_text(
-                                    "Clear this breakpoint. Asks once more before it does, because it \
-                                     cannot be undone. The tick-box to the left is the one that turns a \
-                                     breakpoint OFF and keeps it.",
+                                    "emulator/breakpoint_clear on this handle alone. It does not \
+                                     come back: re-arming the same address makes a NEW breakpoint, \
+                                     with a new handle and `hits` at zero. To keep the row and stop \
+                                     it halting the machine, untick it instead.",
                                 )
                                 .clicked()
                             {
-                                next_confirm = Some(Some(r.handle.clone()));
+                                gesture = Some((
+                                    stopping::BREAKPOINT_CLEAR,
+                                    stopping::breakpoint_clear_params(&r.handle),
+                                ));
+                                next_confirm = Some(None);
                             }
-                            let text = egui::RichText::new(r.summary()).monospace();
-                            // A disabled row is dimmed, from `enabled` — the same field the word in the
-                            // row says. Two encodings of one fact, but the fact is the one a reader is
-                            // most likely to skim past, and neither is derived from the other's string.
-                            if r.enabled {
-                                ui.label(text);
-                            } else {
-                                ui.label(text.weak());
+                            if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
+                                next_confirm = Some(None);
                             }
-                        });
-                    }
+                        } else if ui
+                            .small_button(REMOVE_LABEL)
+                            .on_hover_text(
+                                "Clear this breakpoint. Asks once more before it does, because it \
+                                 cannot be undone. The tick-box to the left is the one that turns a \
+                                 breakpoint OFF and keeps it.",
+                            )
+                            .clicked()
+                        {
+                            next_confirm = Some(Some(r.handle.clone()));
+                        }
+                    });
                 });
             if let Some(v) = next_confirm {
                 self.stopping.confirm_remove = v;
@@ -2588,17 +2566,13 @@ impl Panels<'_> {
         });
 
         ui.separator();
-        ui.monospace(format!(
-            "seen {}   matched {}   dropped {}",
-            view.seen, view.matched, view.dropped
-        ));
-        ui.small(
-            "`seen` counts every access the instrument was handed. seen > 0 with matched == 0 is a real \
-             negative finding about those accesses (the range was watched and nothing it was handed \
-             touched it), and it is only distinguishable from a watch that never armed because both \
-             numbers are here. The Z80's accesses are not handed to it, apart from its FM/PSG register \
-             writes; a warning below says so when a watch covers memory the Z80 can reach.",
-        );
+        // The three numbers the tab is opened to read, side by side and large, sharing one card and each
+        // without a box of its own: look call 4, settled as bare (`d-39-answered`). They used to be one
+        // `ui.monospace("seen {}   matched {}   dropped {}")` line, which is three labelled counts glued
+        // into a sentence in the face reserved for machine numbers, with the columns hand-spaced.
+        card(ui, |ui| stat_row(ui, &view.headline));
+        ui.add_space(SECTION_GAP);
+        ui.small(stopping::HANDED_CAVEAT);
         for c in &view.caveats {
             ui.colored_label(ui.visuals().warn_fg_color, c);
         }
@@ -2606,76 +2580,64 @@ impl Panels<'_> {
         // --- the armed watches ---
         if !view.watches.is_empty() {
             ui.separator();
+            section(
+                ui,
+                stopping::ARMED_WATCHES_HEAD,
+                None,
+                stopping::WATCHPOINT_LIST,
+            );
             // Read out and written back after the closure, exactly as in `breakpoints` above. The two tabs
-            // share the field and cannot collide: the handles are the server's own `b…`/`w…` spellings.
+            // share the field and cannot collide: the handles are the server's own `b`/`w` spellings.
             let confirm = self.stopping.confirm_remove.clone();
             let mut next_confirm: Option<Option<String>> = None;
+            let lead = row_controls_w(ui, false);
+            let rows: Vec<TableRow> = view.watches.iter().map(|r| watch_row(ui, r)).collect();
             egui::ScrollArea::vertical()
                 .id_salt("watch-rows")
                 .max_height(160.0)
                 .show(ui, |ui| {
-                    for row in &view.watches {
-                        let w = &row.report;
-                        ui.horizontal(|ui| {
-                            // ⚑ **The same word, the same two presses, as Breakpoints.** This control was
-                            // the *first* thing in the row and there is no tick-box here at all, so the
-                            // hollow box it used to draw read as this tab's on/off switch while it was in
-                            // fact this tab's delete. The remedy for that is a word, not a font.
-                            if stopping::confirming(confirm.as_deref(), &row.handle) {
-                                if ui
-                                    .small_button(
-                                        egui::RichText::new(REMOVE_CONFIRM_LABEL)
-                                            .color(ui.visuals().error_fg_color),
-                                    )
-                                    .on_hover_text(
-                                        "emulator/watchpoint_clear. The watch goes and does not come \
-                                         back; its recorded HITS stay, deliberately, because a \
-                                         destructive clear would let one client erase another's \
-                                         evidence. The headline above changes to STOPPED.",
-                                    )
-                                    .clicked()
-                                {
-                                    gesture = Some((
-                                        stopping::WATCHPOINT_CLEAR,
-                                        stopping::watch_clear_params(&row.handle),
-                                    ));
-                                    next_confirm = Some(None);
-                                }
-                                if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
-                                    next_confirm = Some(None);
-                                }
-                            } else if ui
-                                .small_button(REMOVE_LABEL)
+                    control_table(ui, &stopping::WATCH_COLS, &rows, lead, |ui, i| {
+                        let row = &view.watches[i];
+                        // ⚑ **The same word, the same two presses, as Breakpoints.** This control was
+                        // the *first* thing in the row and there is no tick-box here at all, so the
+                        // hollow box it used to draw read as this tab's on/off switch while it was in
+                        // fact this tab's delete. The remedy for that is a word, not a font.
+                        if stopping::confirming(confirm.as_deref(), &row.handle) {
+                            if ui
+                                .small_button(
+                                    egui::RichText::new(REMOVE_CONFIRM_LABEL)
+                                        .color(ui.visuals().error_fg_color),
+                                )
                                 .on_hover_text(
-                                    "Clear this watch. Asks once more before it does, because it cannot \
-                                     be undone. This tab has no off switch: a watch is armed or it is \
-                                     gone, which is why the word here is the same one Breakpoints uses \
-                                     for its destructive control and not for its tick-box.",
+                                    "emulator/watchpoint_clear. The watch goes and does not come \
+                                     back; its recorded HITS stay, deliberately, because a \
+                                     destructive clear would let one client erase another's \
+                                     evidence. The headline above changes to STOPPED.",
                                 )
                                 .clicked()
                             {
-                                next_confirm = Some(Some(row.handle.clone()));
+                                gesture = Some((
+                                    stopping::WATCHPOINT_CLEAR,
+                                    stopping::watch_clear_params(&row.handle),
+                                ));
+                                next_confirm = Some(None);
                             }
-                            ui.monospace(format!(
-                                "{:<4} {:?} {}..={}  {:?}  matched {}{}{}",
-                                row.handle,
-                                w.space,
-                                oracle_aether::hex::addr(*w.range.start()),
-                                oracle_aether::hex::addr(*w.range.end()),
-                                w.op,
-                                w.matched,
-                                match w.stop_after {
-                                    Some(n) => format!("  stopAfter {n}"),
-                                    None => String::new(),
-                                },
-                                if w.label.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("  ({})", w.label)
-                                }
-                            ));
-                        });
-                    }
+                            if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
+                                next_confirm = Some(None);
+                            }
+                        } else if ui
+                            .small_button(REMOVE_LABEL)
+                            .on_hover_text(
+                                "Clear this watch. Asks once more before it does, because it cannot \
+                                 be undone. This tab has no off switch: a watch is armed or it is \
+                                 gone, which is why the word here is the same one Breakpoints uses \
+                                 for its destructive control and not for its tick-box.",
+                            )
+                            .clicked()
+                        {
+                            next_confirm = Some(Some(row.handle.clone()));
+                        }
+                    });
                 });
             if let Some(v) = next_confirm {
                 self.stopping.confirm_remove = v;
@@ -2685,59 +2647,80 @@ impl Panels<'_> {
         // --- the hit log ---
         if !view.hits.is_empty() {
             ui.separator();
-            ui.strong(format!(
-                "hit log: {} retained{}",
-                view.hits.len(),
-                if view.dropped > 0 {
-                    format!(", {} dropped (a gap in `seq` marks them)", view.dropped)
-                } else {
-                    String::new()
-                }
-            ));
-            // ⚑ **`show_rows`, not `show` — the log is virtualised, and it has to be.** The ring holds
+            ui.strong(&view.hit_log_head);
+            // ⚑ **`show_rows`, not `show` -- the log is virtualised, and it has to be.** The ring holds
             // `EngineConfig::watch_ring_cap` = 4096 hits and a 64 KB write watch fills it in well under a
             // second; a plain `show` formats and lays out **every** retained hit on every repaint to fill
-            // a 220 px viewport that displays about ten of them. Measured at 15.220 ms of `ui-build` —
-            // 91 % of a frame budget — in design §5.7.1. `show_rows` draws only the visible slice.
+            // a 220 px viewport that displays about ten of them. Measured at 15.220 ms of `ui-build` --
+            // 91 % of a frame budget -- in design §5.7.1. `show_rows` draws only the visible slice.
+            //
+            // ⚑ **The columns are laid out per row INSIDE the closure, and the widths are measured ONCE
+            // outside it.** That is the whole of what this parcel had to get right: the row is seven
+            // cells now rather than one `"#{:<7} f{:<6} …"` format string, and sizing those cells from
+            // the widest of 4096 rows every repaint would be the same whole-log walk `show_rows` exists
+            // to avoid. [`stopping::hit_width_candidates`] hands over bounds instead -- see it for why
+            // each column's bound is the bound it is.
             //
             // It is sound here for one reason and would not be sound without it: **every row is exactly
-            // one `ui.monospace` line**, so the rows are uniform and the height below describes them. A
+            // one [`table_body_row`]**, so the rows are uniform and [`table_row_h`] describes them. A
             // `row_height` that disagrees with what is drawn misaligns the scrollbar silently, which is a
             // wrong answer traded for speed. The height is asked of the style rather than typed, and is
-            // passed **sans spacing** — `show_rows` adds `item_spacing.y` itself (egui 0.36.1
+            // passed **sans spacing** -- `show_rows` adds `item_spacing.y` itself (egui 0.36.1
             // `scroll_area.rs:991`), so adding it here would double-count it and skew the scrollbar.
             //
             // `stick_to_bottom` survives: `show_rows` calls `ui.set_height` for the whole virtual list, so
             // the `content_size` the stick-to-end arithmetic uses (`scroll_area.rs:1284`) is the full
             // height and not the drawn slice's.
             //
-            // ⚠ **The one thing this DID change, so it is not re-found as a bug.** A vertical `ScrollArea`
-            // has `auto_shrink.x = true` by default (`scroll_area.rs:397`, applied at `:1186`), so its
-            // width follows its content — and its content is now the visible rows rather than all 4096.
-            // Row widths vary by a few characters (`{:#X}` on the value, `{:?}` on op and size), so this
-            // box's scrollbar can sit a few characters further left or right as the log is scrolled, where
-            // before it was pinned by the widest row in the whole ring. The rows themselves are identical.
-            // `auto_shrink([false, true])` would pin the scrollbar to the panel's right edge instead —
-            // a LARGER departure from what shipped, which is why it was not taken. Design §5.7.2.
-            let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-            egui::ScrollArea::vertical()
-                .id_salt("watch-hits")
-                .max_height(220.0)
-                .stick_to_bottom(true)
-                .show_rows(ui, row_height, view.hits.len(), |ui, rows| {
-                    for h in &view.hits[rows] {
-                        ui.monospace(format!(
-                            "#{:<7} f{:<6} {} {:?} {:?} {:#X} pc {}",
-                            h.seq,
-                            h.frame,
-                            oracle_aether::hex::addr(h.addr),
-                            h.op,
-                            h.size,
-                            h.value,
-                            oracle_aether::hex::addr(h.pc),
-                        ));
-                    }
-                });
+            // ⚑ **The header is drawn OUTSIDE the scroll area**, which is the one thing a virtualised
+            // table cannot do inside it: a header scrolled with the rows would leave the column names off
+            // the top of the box the moment the log moved.
+            let text = ui.visuals().text_color();
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing = table_spacing();
+                let candidates = &view.hit_widths;
+                let texts: Vec<Vec<&str>> = candidates
+                    .iter()
+                    .map(|c| c.iter().map(String::as_str).collect())
+                    .collect();
+                let widths =
+                    column_widths_from(ui, &stopping::HIT_COLS, &texts, ui.available_width());
+                table_head(ui, &stopping::HIT_COLS, &widths, 0.0);
+                let row_h = table_row_h(ui);
+                egui::ScrollArea::vertical()
+                    .id_salt("watch-hits")
+                    .max_height(220.0)
+                    .stick_to_bottom(true)
+                    .show_rows(ui, row_h, view.hits.len(), |ui, rows| {
+                        // ⚑ `i` is the index in the WHOLE log, not in the visible slice: the zebra band
+                        // is `i % 2`, and numbering from the slice would make the banding flip as the
+                        // log scrolled.
+                        let first = rows.start;
+                        for (k, h) in view.hits[rows].iter().enumerate() {
+                            let row = TableRow {
+                                cells: stopping::hit_cells(h)
+                                    .into_iter()
+                                    .map(|t| Cell {
+                                        text: t,
+                                        colour: text,
+                                        hover: None,
+                                    })
+                                    .collect(),
+                                id: None,
+                                selected: false,
+                            };
+                            table_body_row(
+                                ui,
+                                &stopping::HIT_COLS,
+                                &widths,
+                                &row,
+                                first + k,
+                                "watch-hit",
+                                None,
+                            );
+                        }
+                    });
+            });
         }
 
         if let Some((method, params)) = gesture {
@@ -3913,18 +3896,238 @@ fn head_face(ui: &egui::Ui) -> egui::FontId {
 /// ⚑ **The gutter is NOT folded in here any more.** See [`fit_columns`], which is where the arithmetic
 /// and the reason both live.
 fn column_widths(ui: &egui::Ui, cols: &[table::Col], rows: &[TableRow]) -> Vec<f32> {
+    let texts: Vec<Vec<&str>> = (0..cols.len())
+        .map(|i| {
+            rows.iter()
+                .filter_map(|r| r.cells.get(i).map(|c| c.text.as_str()))
+                .collect()
+        })
+        .collect();
+    column_widths_from(ui, cols, &texts, ui.available_width())
+}
+
+/// [`column_widths`], with the **candidate strings and the available width both supplied**.
+///
+/// Two callers need this rather than the convenience above, and each for a stated reason:
+///
+/// * The **hit log** cannot hand over its rows. It is virtualised because measuring and laying out all
+///   4096 of them cost 15.220 ms of `ui-build`, and measuring all 4096 to size the columns would put that
+///   walk straight back. It supplies bounds instead ([`stopping::hit_width_candidates`]).
+/// * A **table with per-row controls** does not get the whole panel: the control gutter is taken off the
+///   available width first, or the last column runs off the right edge by exactly the controls' width.
+///
+/// `texts` is one candidate list per column; a column's natural width is the widest of its header and its
+/// candidates.
+fn column_widths_from(
+    ui: &egui::Ui,
+    cols: &[table::Col],
+    texts: &[Vec<&str>],
+    avail: f32,
+) -> Vec<f32> {
     if cols.is_empty() {
         return Vec::new();
     }
     let head = head_face(ui);
-    let faces: Vec<egui::FontId> = cols.iter().map(|c| cell_face(ui, c)).collect();
     let mut w: Vec<f32> = cols.iter().map(|c| text_w(ui, &head, c.head)).collect();
-    for row in rows {
-        for (i, cell) in row.cells.iter().enumerate().take(cols.len()) {
-            w[i] = w[i].max(text_w(ui, &faces[i], &cell.text));
+    for (i, c) in cols.iter().enumerate() {
+        let face = cell_face(ui, c);
+        for t in texts.get(i).into_iter().flatten() {
+            w[i] = w[i].max(text_w(ui, &face, t));
         }
     }
-    fit_columns(&w, ui.available_width(), COL_GUTTER, NAME_COL_FLOOR)
+    fit_columns(&w, avail, COL_GUTTER, NAME_COL_FLOOR)
+}
+
+/// **The height of one drawn table row, without the gap that follows it.**
+///
+/// One function because two places have to agree about it and one of them cannot see the other: a
+/// virtualised log hands this number to `ScrollArea::show_rows`, which uses it to decide *which* rows are
+/// on screen and how tall the whole virtual list is. A number that disagrees with what a row actually
+/// draws misaligns the scrollbar silently, which is a wrong answer traded for speed.
+///
+/// It is [`table_cell`]'s own allocation height, asked of the style rather than typed, and it is **sans
+/// spacing** because `show_rows` adds `item_spacing.y` itself (egui 0.36.1 `scroll_area.rs:991`).
+fn table_row_h(ui: &egui::Ui) -> f32 {
+    ui.spacing().interact_size.y
+}
+
+/// The spacing a table's rows are laid out under: the column gutter across, a hairline gap down.
+///
+/// Applied by [`table`] to its own scope and by every caller that drives [`table_head`] and
+/// [`table_body_row`] itself, so a hand-driven table cannot end up with a different gutter from the one
+/// [`fit_columns`] charged the last column for.
+fn table_spacing() -> egui::Vec2 {
+    egui::vec2(COL_GUTTER, 1.0)
+}
+
+/// **A table's header row**, followed by the hairline that separates it from the body.
+///
+/// Split out of [`table`] so a virtualised body can draw its header **outside** the scroll area, where it
+/// stays put while the rows move under it. `lead` is the width reserved ahead of the first column for
+/// per-row controls, and is `0.0` for a table that has none.
+fn table_head(ui: &mut egui::Ui, cols: &[table::Col], widths: &[f32], lead: f32) {
+    let weak = ui.visuals().weak_text_color();
+    ui.horizontal(|ui| {
+        if lead > 0.0 {
+            ui.add_space(lead);
+        }
+        for (c, w) in cols.iter().zip(widths) {
+            // [`header_cell`], not [`table_cell`]: a header is drawn in the face it was measured in.
+            header_cell(ui, c, *w, weak);
+        }
+    });
+    let y = ui.cursor().top();
+    ui.painter().hline(
+        ui.max_rect().x_range(),
+        y,
+        ui.visuals().widgets.noninteractive.bg_stroke,
+    );
+    ui.add_space(3.0);
+}
+
+/// **One banded body row.** Returns the row's id if it was clicked this frame.
+///
+/// `i` is the row's index **in the whole table**, not in the slice being drawn: the zebra band is
+/// `i % 2`, and a virtualised body that numbered from the visible slice would make the banding flip as
+/// the log scrolled.
+///
+/// `lead` draws the row's own controls into a fixed-width gutter ahead of the first column. Fixed rather
+/// than natural, because a row whose controls grow when it is pressed would shift every column on the tab
+/// under the reader's eye.
+fn table_body_row(
+    ui: &mut egui::Ui,
+    cols: &[table::Col],
+    widths: &[f32],
+    row: &TableRow,
+    i: usize,
+    salt: &str,
+    lead: Option<RowControls<'_>>,
+) -> Option<u32> {
+    // Reserved BEFORE the cells so the band paints behind them. `Painter::add(Shape::Noop)` then
+    // `Painter::set` is egui's own idiom for painting under content that has not been laid out yet; there
+    // is no z-order to fight and no second pass.
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let h = table_row_h(ui);
+    let inner = ui.horizontal(|ui| {
+        if let Some((w, draw)) = lead {
+            ui.allocate_ui_with_layout(
+                egui::vec2(w, h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| draw(ui),
+            );
+        }
+        for ((c, w), cell) in cols.iter().zip(widths).zip(&row.cells) {
+            table_cell(ui, c, *w, cell);
+        }
+    });
+    // Full panel width, not the width of the text: a click target that stops where the last column's
+    // glyphs stop is a click target a person misses.
+    let band = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), inner.response.rect.y_range())
+        .expand2(egui::vec2(0.0, 1.0));
+
+    let resp = row
+        .id
+        .map(|id| ui.interact(band, ui.id().with((salt, id)), egui::Sense::click()));
+    let fill = row_fill(
+        ui,
+        row.selected,
+        resp.as_ref().is_some_and(egui::Response::hovered),
+        i,
+    );
+    ui.painter()
+        .set(bg, egui::Shape::rect_filled(band, 0.0, fill));
+
+    match (resp, row.id) {
+        (Some(resp), Some(id)) => resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+            .then_some(id),
+        _ => None,
+    }
+}
+
+/// **A row's own controls**: the width reserved for them, and the closure that draws them.
+///
+/// A named type rather than the tuple it is, because the tuple carries a `&mut dyn FnMut` and reads as
+/// noise at every call site that passes `None`.
+type RowControls<'a> = (f32, &'a mut dyn FnMut(&mut egui::Ui));
+
+/// **A table whose rows carry their own controls**: the same columns and the same banding, with a
+/// fixed-width gutter at the head of every row for the widgets that act on it.
+///
+/// ⚑ **Why the gutter is reserved rather than laid out naturally.** Both tabs that need this draw a
+/// destructive control per row, and the control changes shape when it is armed (`remove` becomes `confirm
+/// remove` beside `cancel`). Laid out naturally, arming one row would move every column on the tab
+/// sideways mid-gesture -- on the one control whose history here is somebody pressing the wrong thing.
+/// [`row_controls_w`] measures the widest state instead, and every row reserves that.
+///
+/// `controls(ui, i)` draws row `i`'s widgets into that gutter.
+fn control_table(
+    ui: &mut egui::Ui,
+    cols: &[table::Col],
+    rows: &[TableRow],
+    lead: f32,
+    mut controls: impl FnMut(&mut egui::Ui, usize),
+) {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = table_spacing();
+        let texts: Vec<Vec<&str>> = (0..cols.len())
+            .map(|i| {
+                rows.iter()
+                    .filter_map(|r| r.cells.get(i).map(|c| c.text.as_str()))
+                    .collect()
+            })
+            .collect();
+        let widths = column_widths_from(
+            ui,
+            cols,
+            &texts,
+            (ui.available_width() - lead - COL_GUTTER).max(0.0),
+        );
+        table_head(ui, cols, &widths, lead);
+        for (i, r) in rows.iter().enumerate() {
+            let mut draw = |ui: &mut egui::Ui| controls(ui, i);
+            table_body_row(
+                ui,
+                cols,
+                &widths,
+                r,
+                i,
+                "control-row",
+                Some((lead, &mut draw)),
+            );
+        }
+    });
+}
+
+/// **The width reserved at the head of a controlled row**, taken over every state the controls can be in.
+///
+/// Measured from the labels and the style's own metrics rather than typed as a number, so a reworded
+/// button cannot silently overrun its gutter -- and deliberately generous where it rounds, because the
+/// failure it prevents is a control drawn over a column and the cost of a few points of slack is a few
+/// points of slack. `with_toggle` adds the Breakpoints tab's per-row tick-box, which Watchpoints has not
+/// got (a watch is armed or it is gone).
+fn row_controls_w(ui: &egui::Ui, with_toggle: bool) -> f32 {
+    let face = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Body)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(13.0));
+    let pad = ui.spacing().button_padding.x * 2.0;
+    let gap = ui.spacing().item_spacing.x.max(COL_GUTTER);
+    let quiet = text_w(ui, &face, REMOVE_LABEL) + pad;
+    let armed = text_w(ui, &face, REMOVE_CONFIRM_LABEL)
+        + pad
+        + gap
+        + text_w(ui, &face, REMOVE_CANCEL_LABEL)
+        + pad;
+    let toggle = if with_toggle {
+        ui.spacing().icon_width + gap
+    } else {
+        0.0
+    };
+    toggle + quiet.max(armed) + gap
 }
 
 /// **Natural widths in, drawn widths out** — the whole column arithmetic, with no `Ui` in it so the rule
@@ -4421,9 +4624,7 @@ pub struct TableRow {
 /// a column's `field` is. Those are now in the [`Cell`]s the caller hands over, so the Profiler, the
 /// Watch log and the Breakpoint list reach the same furniture without `objects::Field` coming with them.
 fn table(ui: &mut egui::Ui, cols: &[table::Col], rows: &[TableRow], salt: &str) -> Option<u32> {
-    let widths = column_widths(ui, cols, rows);
     let mut hit = None;
-
     ui.scope(|ui| {
         // Table rows sit tighter than a panel's default flow; the y half is the row gap, and the zebra
         // band below is what separates rows rather than whitespace.
@@ -4433,59 +4634,116 @@ fn table(ui: &mut egui::Ui, cols: &[table::Col], rows: &[TableRow], salt: &str) 
         // far end of a column instead of at the seam between two, so a right-aligned column's digits and
         // the next left-aligned column's glyphs were drawn touching. Here it is a real gap between every
         // pair of columns, whatever either one's alignment is.
-        ui.spacing_mut().item_spacing = egui::vec2(COL_GUTTER, 1.0);
-
-        let weak = ui.visuals().weak_text_color();
-        ui.horizontal(|ui| {
-            for (c, w) in cols.iter().zip(&widths) {
-                // [`header_cell`], not [`table_cell`]: a header is drawn in the face it was measured in.
-                header_cell(ui, c, *w, weak);
-            }
-        });
-        let y = ui.cursor().top();
-        ui.painter().hline(
-            ui.max_rect().x_range(),
-            y,
-            ui.visuals().widgets.noninteractive.bg_stroke,
-        );
-        ui.add_space(3.0);
-
+        ui.spacing_mut().item_spacing = table_spacing();
+        let widths = column_widths(ui, cols, rows);
+        table_head(ui, cols, &widths, 0.0);
         for (i, r) in rows.iter().enumerate() {
-            // Reserved BEFORE the cells so the band paints behind them. `Painter::add(Shape::Noop)` then
-            // `Painter::set` is egui's own idiom for painting under content that has not been laid out
-            // yet; there is no z-order to fight and no second pass.
-            let bg = ui.painter().add(egui::Shape::Noop);
-            let inner = ui.horizontal(|ui| {
-                for ((c, w), cell) in cols.iter().zip(&widths).zip(&r.cells) {
-                    table_cell(ui, c, *w, cell);
-                }
-            });
-            // Full panel width, not the width of the text: a click target that stops where the last
-            // column's glyphs stop is a click target a person misses.
-            let band =
-                egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), inner.response.rect.y_range())
-                    .expand2(egui::vec2(0.0, 1.0));
-
-            let resp =
-                r.id.map(|id| ui.interact(band, ui.id().with((salt, id)), egui::Sense::click()));
-            let fill = row_fill(
-                ui,
-                r.selected,
-                resp.as_ref().is_some_and(egui::Response::hovered),
-                i,
-            );
-            ui.painter()
-                .set(bg, egui::Shape::rect_filled(band, 0.0, fill));
-
-            if let (Some(resp), Some(id)) = (resp, r.id) {
-                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                if resp.clicked() {
-                    hit = Some(id);
-                }
-            }
+            hit = table_body_row(ui, cols, &widths, r, i, salt, None).or(hit);
         }
     });
     hit
+}
+
+/// **One breakpoint as a [`TableRow`]**, with every colour and hover decided from the breakpoint itself.
+///
+/// ⚑ **Never from the cell text**, for [`watch_row`]'s reason: the projection spells a missing symbol as
+/// [`stopping::NO_SYMBOL`] and a missing label as [`stopping::NO_LABEL`], and a renderer matching on those
+/// strings would be a second encoding of a judgement already made.
+///
+/// **Two colour rules, and the second is the point of keeping a disabled row at all.** A disabled row
+/// recedes, which is the fact its `state` cell says in a word and the old row said by dimming the whole
+/// monospace line. `hits` is the exception: a non-zero count on a disabled row is the **evidence that
+/// breakpoint ever fired**, which is the only reason the row is still there, and dimming it would hide
+/// the one thing a person came back to read. So `hits` takes its colour from whether it is evidence, not
+/// from whether the row is armed.
+fn break_row(ui: &egui::Ui, r: &stopping::BreakRow) -> TableRow {
+    let (plain, weak, strong) = (
+        ui.visuals().text_color(),
+        ui.visuals().weak_text_color(),
+        ui.visuals().strong_text_color(),
+    );
+    let row = if r.enabled { plain } else { weak };
+    // In [`stopping::BREAK_COLS`] order.
+    let decided: [(egui::Color32, Option<&'static str>); 6] = [
+        (row, None),
+        (row, None),
+        (if r.enabled { strong } else { weak }, None),
+        (if r.hits > 0 { plain } else { weak }, None),
+        if r.symbol.is_none() {
+            (weak, Some(stopping::NO_SYMBOL_WHY))
+        } else {
+            (row, None)
+        },
+        if r.label.is_empty() {
+            (weak, Some(stopping::NO_LABEL_WHY))
+        } else {
+            (row, None)
+        },
+    ];
+    TableRow {
+        cells: r
+            .cells()
+            .into_iter()
+            .zip(decided)
+            .map(|(text, (colour, hover))| Cell {
+                text,
+                colour,
+                hover,
+            })
+            .collect(),
+        id: None,
+        selected: false,
+    }
+}
+
+/// **One armed watch as a [`TableRow`]**, with every colour and hover decided from the watch itself.
+///
+/// ⚑ **Never from the cell text.** [`stopping::WatchRow::cells`] spells a missing `stopAfter` as
+/// [`stopping::STOP_NEVER`] and a missing label as [`stopping::NO_LABEL`], and a renderer that matched on
+/// those strings would be a second encoding of a judgement the projection already made -- one that agrees
+/// until somebody labels a watch `(no label)`, which is a thing a person may do. The facts are
+/// `stop_after.is_none()` and `label.is_empty()`, and they are read here.
+fn watch_row(ui: &egui::Ui, row: &stopping::WatchRow) -> TableRow {
+    let (plain, weak, strong) = (
+        ui.visuals().text_color(),
+        ui.visuals().weak_text_color(),
+        ui.visuals().strong_text_color(),
+    );
+    let w = &row.report;
+    // In [`stopping::WATCH_COLS`] order. `matched` is the number this table is read for -- it is what
+    // says whether an armed watch is catching anything -- so it is the one that carries emphasis, and
+    // only when it is evidence rather than a zero.
+    let decided: [(egui::Color32, Option<&'static str>); 7] = [
+        (plain, None),
+        (plain, None),
+        (plain, None),
+        (plain, None),
+        (if w.matched > 0 { strong } else { plain }, None),
+        if w.stop_after.is_none() {
+            (weak, Some(stopping::STOP_NEVER_WHY))
+        } else {
+            (plain, None)
+        },
+        if w.label.is_empty() {
+            (weak, Some(stopping::NO_LABEL_WHY))
+        } else {
+            (plain, None)
+        },
+    ];
+    TableRow {
+        cells: row
+            .cells()
+            .into_iter()
+            .zip(decided)
+            .map(|(text, (colour, hover))| Cell {
+                text,
+                colour,
+                hover,
+            })
+            .collect(),
+        id: None,
+        selected: false,
+    }
 }
 
 /// **The Objects tab's adapter onto [`table`]**: the object-specific half, and nothing else.
@@ -9425,5 +9683,267 @@ mod table_tests {
             (a.left() - b.left()).abs() < 0.6,
             "a proportional column is not left-aligned: {a:?} vs {b:?}"
         );
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------
+// ⚑ The Watchpoints tab's DRAWING gates (DATA-DISPLAY-AUDIT parcel 4)
+//
+// The tab's text gates live in `stopping::watch_text`, because the exemplar's first lesson is that a
+// panel's correctness belongs in its projection. These three cannot: each is a fact about a laid-out
+// frame with the real theme installed, and each guards something the hit log's virtualisation depends on.
+// -------------------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod watch_draw_tests {
+    use super::*;
+
+    /// The width the gates lay out at. Wider than the tab's dock column, so a failure is a failure of the
+    /// arithmetic and not of a cramped panel.
+    const PANEL_W: f32 = 760.0;
+
+    fn raw() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(PANEL_W, 420.0),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Every text run a frame painted, as `(rect, string)`.
+    fn runs(out: &egui::FullOutput) -> Vec<(egui::Rect, String)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, String)>) {
+            match s {
+                egui::Shape::Text(t) => out.push((
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                    t.galley.text().into(),
+                )),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, &mut acc);
+        }
+        acc
+    }
+
+    /// A hit log with values at both ends of every column's range, so the bounds are actually exercised:
+    /// the last entry carries the largest `seq` and `frame` (they are monotonic), and one entry carries a
+    /// full-width address and value.
+    fn hits() -> Vec<oracle_core::watchpoints::WatchHit> {
+        use oracle_core::bus::BusOp;
+        use oracle_core::m68000::microop::Size;
+        use oracle_core::watchpoints::{WatchHit, WatchId, WatchSpace, WatchVia};
+        let one = |seq: u64, frame: u64, addr: u32, value: u32, op, size| WatchHit {
+            watch: WatchId(1),
+            space: WatchSpace::Bus,
+            addr,
+            old: 0,
+            value,
+            size,
+            op,
+            fc: 5,
+            via: WatchVia::Bus,
+            pc: 0x0000_0400,
+            frame,
+            mclk: 0,
+            seq,
+        };
+        vec![
+            one(1, 0, 0x00FF_0000, 0x1, BusOp::Read, Size::Byte),
+            one(2, 7, 0xFFFF_FFFF, 0xFFFF_FFFF, BusOp::Tas, Size::Long),
+            // Last, and therefore the bound for both monotonic columns.
+            one(
+                9_999_999,
+                123_456,
+                0x00FF_0010,
+                0xABCD,
+                BusOp::Write,
+                Size::Word,
+            ),
+        ]
+    }
+
+    /// ★ **The hit log's columns are wide enough for every row it can draw.**
+    ///
+    /// This is the gate the whole virtualisation rests on. The widths are measured **once**, outside
+    /// `show_rows`, from [`stopping::hit_width_candidates`]' bounds rather than from the 4096 rows the
+    /// ring can hold -- so if a bound is taken from the wrong end of a series, or a column's candidate
+    /// list is short a word, the cells that overrun are silently truncated by [`table_cell`] and the log
+    /// quietly stops showing the number it is read for.
+    ///
+    /// Measured in pixels against the face the theme actually installed, which is the reading that
+    /// matters: `stopping`'s companion gate can only compare character counts, and a proportional column
+    /// ("read and write" against "test and set") is not ordered the same way by the two.
+    #[test]
+    fn the_hit_logs_columns_are_wide_enough_for_every_row_it_can_draw() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let log = hits();
+        let candidates = stopping::hit_width_candidates(&log);
+        let mut failures: Vec<String> = Vec::new();
+        let mut measured = 0usize;
+        let mut out = ctx.run_ui(raw(), |ui| {
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing = table_spacing();
+                let texts: Vec<Vec<&str>> = candidates
+                    .iter()
+                    .map(|c| c.iter().map(String::as_str).collect())
+                    .collect();
+                let widths =
+                    column_widths_from(ui, &stopping::HIT_COLS, &texts, ui.available_width());
+                for h in &log {
+                    for (i, cell) in stopping::hit_cells(h).into_iter().enumerate() {
+                        let face = cell_face(ui, &stopping::HIT_COLS[i]);
+                        let w = text_w(ui, &face, &cell);
+                        measured += 1;
+                        if w > widths[i] {
+                            failures.push(format!(
+                                "{:?} column: {cell:?} needs {w:.1} and was given {:.1}",
+                                stopping::HIT_COLS[i].head,
+                                widths[i]
+                            ));
+                        }
+                    }
+                }
+            });
+        });
+        out.textures_delta.clear();
+        // Loud on unmeasurable: a run that laid nothing out must not read as a pass.
+        assert_eq!(
+            measured,
+            log.len() * stopping::HIT_COLS.len(),
+            "the gate measured {measured} cells, so it did not lay the log out and witnesses nothing"
+        );
+        assert!(
+            failures.is_empty(),
+            "cells the log's precomputed widths cannot hold, so `table_cell` truncates them every frame \
+             the log holds that row: {failures:?}"
+        );
+    }
+
+    /// ★ **The height the hit log virtualises on is the height a row actually draws.**
+    ///
+    /// `ScrollArea::show_rows` decides which rows are on screen, and how tall the whole virtual list is,
+    /// from the number it is handed. A number that disagrees with the drawn row misaligns the scrollbar
+    /// and the stick-to-bottom arithmetic **silently** -- a wrong answer traded for speed, which is the
+    /// one trade this log must not make. It was safe before this parcel because a row was one
+    /// `ui.monospace` line; it is a seven-cell layout now, so the claim has to be re-proven.
+    ///
+    /// Derived, not pinned: two rows are drawn and the gate asserts the pitch between them is
+    /// [`table_row_h`] plus the `item_spacing.y` `show_rows` adds itself, whatever the theme makes those.
+    #[test]
+    fn the_height_the_hit_log_virtualises_on_is_the_height_a_row_draws() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let cell = |t: &str| Cell {
+            text: t.to_owned(),
+            colour: egui::Color32::WHITE,
+            hover: None,
+        };
+        let row = |t: &str| TableRow {
+            cells: stopping::HIT_COLS.iter().map(|_| cell(t)).collect(),
+            id: None,
+            selected: false,
+        };
+        let (mut want_h, mut want_gap) = (0.0f32, 0.0f32);
+        let mut out = ctx.run_ui(raw(), |ui| {
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing = table_spacing();
+                want_h = table_row_h(ui);
+                want_gap = ui.spacing().item_spacing.y;
+                let widths = vec![60.0f32; stopping::HIT_COLS.len()];
+                for (i, t) in ["alpha", "bravo"].into_iter().enumerate() {
+                    table_body_row(ui, &stopping::HIT_COLS, &widths, &row(t), i, "h", None);
+                }
+            });
+        });
+        out.textures_delta.clear();
+        let painted = runs(&out);
+        let top = |t: &str| {
+            painted
+                .iter()
+                .find(|(_, s)| s == t)
+                .unwrap_or_else(|| panic!("{t:?} was never painted: {painted:?}"))
+                .0
+                .top()
+        };
+        let pitch = top("bravo") - top("alpha");
+        assert!(
+            (pitch - (want_h + want_gap)).abs() < 0.5,
+            "a drawn row's pitch is {pitch}, and `show_rows` is handed {want_h} plus the {want_gap} it \
+             adds itself. The scrollbar and the visible slice are computed from the second number, so \
+             they are wrong by {} per row",
+            pitch - (want_h + want_gap)
+        );
+        assert!(want_h > 0.0, "the gate measured a zero row height");
+    }
+
+    /// ★ **The control gutter is wide enough for the widest state its controls can be in.**
+    ///
+    /// The gutter is reserved rather than laid out naturally so that arming one row's destructive control
+    /// cannot shift every column on the tab sideways mid-gesture. The price of reserving is that the
+    /// reservation can be too small, and a control drawn past its gutter lands on the first column --
+    /// which is the handle a person is about to press `remove` against.
+    ///
+    /// Measured against the buttons as they actually lay out under the real theme, in **both** states and
+    /// with and without the Breakpoints tab's tick-box, so a reworded label fails here rather than on the
+    /// glass.
+    #[test]
+    fn the_control_gutter_is_wide_enough_for_the_widest_state_of_its_controls() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let mut got: Vec<(&str, bool, f32, f32)> = Vec::new();
+        let mut out = ctx.run_ui(raw(), |ui| {
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing = table_spacing();
+                for with_toggle in [false, true] {
+                    let reserved = row_controls_w(ui, with_toggle);
+                    for (state, armed) in [("quiet", false), ("confirming", true)] {
+                        let r = ui
+                            .horizontal(|ui| {
+                                let mut on = true;
+                                if with_toggle {
+                                    ui.checkbox(&mut on, "");
+                                }
+                                if armed {
+                                    let _ = ui.small_button(REMOVE_CONFIRM_LABEL);
+                                    let _ = ui.small_button(REMOVE_CANCEL_LABEL);
+                                } else {
+                                    let _ = ui.small_button(REMOVE_LABEL);
+                                }
+                            })
+                            .response
+                            .rect
+                            .width();
+                        got.push((state, with_toggle, r, reserved));
+                    }
+                }
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(
+            got.len(),
+            4,
+            "the gate laid out no controls and witnesses nothing"
+        );
+        for (state, toggle, drawn, reserved) in got {
+            assert!(
+                drawn > 0.0,
+                "the {state} controls measured zero, so this gate is blind"
+            );
+            assert!(
+                drawn <= reserved,
+                "the {state} controls (tick-box: {toggle}) draw {drawn:.1} points into a gutter \
+                 reserved for {reserved:.1}, so they land on the first column"
+            );
+        }
     }
 }
