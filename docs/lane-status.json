@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now, once CI is read. Nothing is running, everything is pushed, and the next panel job starts from the landed table code.",
+  "nextBoundary": "Now. CI is read and green, nothing is running, everything is pushed, and the next panel job starts from the landed table code.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -99,7 +99,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing from you. Note only: CI is still running on this landing and I will read it to completion before calling the work done.",
+  "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-16T14:17:36Z"
+  "updatedAt": "2026-09-16T15:01:44Z"
 }

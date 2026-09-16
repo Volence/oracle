@@ -275,9 +275,10 @@ confirmed moved (agent tip `3c3c94a`, branch `parcel/data-display-1`, base `6128
 Verified firsthand on the merged tree by this seat, not taken from the agent: fmt clean, clippy 0 in BOTH shapes,
 **debug 90 legs / 2946 / 0 / 7 and release 90 / 2949 / 0 / 4**, +12 in each reconciled BY NAME against the twelve
 `#[test]` attributes the diff adds. Red-first reproduced here with the mutation quoted off disk and restored from the
-committed baseline (`git checkout beed8d9 --`, tree clean before and after). ⚑ **CI was QUEUED at landing and is NOT
-part of this verification** — read it to completion before treating the landing as closed; a waiter that times out
-exits 0.
+committed baseline (`git checkout beed8d9 --`, tree clean before and after). ⚑ **CI READ TO COMPLETION AND GREEN** at `82eddc8` (and `75a76e8`), re-read from `gh run list` rather than taken
+from the waiter's exit: all three jobs `success` — Determinism gate, Replay playthroughs (release), and
+Build/test/clippy/fmt, the last running 14:19:49Z → 14:59:18Z. **Duration 41 min, inside this file's own measured
+35-45 min band**, checked because a fast completion would have meant a job that did not run.
 ⚑ **THE FINDING, AND IT IS THE SECOND INSTANCE IN TWO DAYS OF THE SAME CLASS, WHICH MAKES IT A PATTERN ABOUT NAMED
 LOCKS RATHER THAN A COINCIDENCE.** Under a restored catch-all dump, four new gates go red while
 **`ui::json_tests::no_served_value_can_put_raw_json_on_the_screen` prints `ok`** — a lock named for exactly this
