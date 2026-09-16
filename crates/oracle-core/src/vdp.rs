@@ -983,7 +983,11 @@ impl Vdp {
         loop {
             let candidate = at + 1;
             let line_start = candidate / MCLK_PER_LINE * MCLK_PER_LINE;
-            if !(self.vblank(line_start) || !self.display_enabled()) {
+            // An ACTIVE line is one that is neither in vblank nor blanked by the display bit; any other
+            // line uses the blanked grid below. Written in this minimal form because CI's clippy
+            // (`nonminimal_bool`, rust 1.96) rejects the negated-disjunction spelling while the newer
+            // clippy on this machine accepts it -- CI is the gate.
+            if !self.vblank(line_start) && self.display_enabled() {
                 return self.next_active_slot(at);
             }
             let grid: &[u64] = if self.h40() {
