@@ -1,12 +1,6 @@
 {
-  "focus": "Rebuilding the Watchpoints and Breakpoints tabs on the table code the last job landed.",
-  "inFlight": [
-    {
-      "what": "The Watchpoints and Breakpoints tabs rebuilt on the shared table code",
-      "where": "branch parcel/data-display-2 (worktree ../oracle-datadisplay2)",
-      "agent": true
-    }
-  ],
+  "focus": "The Watchpoints and Breakpoints tabs are rebuilt and landed; four of the eleven panel jobs are done.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the agent returns and its work is verified and landed. Not before: an agent is holding a branch.",
+  "nextBoundary": "Now, once CI is read. Nothing running, everything pushed, and the next panel job starts from what landed.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -82,11 +76,11 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "doing",
+      "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Continuing: the Watchpoints and Breakpoints tabs are being rebuilt on the table code that landed today. Needs no decision from you. Two items further down are still for your eyes."
+      "title": "Four of eleven panels done: Pacing, Profiler, Watchpoints, Breakpoints. The rest reuse the same table code. Needs no decision from you; two items in it are still for your eyes."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -105,7 +99,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-16T15:42:52Z"
+  "awaiting": "nothing from you. Note only: CI is still running on this landing and I will read it to completion before calling it done.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-16T16:26:25Z"
 }

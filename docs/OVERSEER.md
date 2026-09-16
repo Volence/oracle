@@ -470,6 +470,43 @@ reported *"started 13h ago"* after five of them had been cleared. The hub was ab
 *nobody rebooted*. What saw it was `rotation_advice`'s `upMs`/working-now field. **Same family as the
 no-fetch finding: an instrument answering confidently about a question it does not measure.**
 
+**DATA-DISPLAY-AUDIT PARCELS 4-5 (Watchpoints, Breakpoints) LANDED 2026-09-16, merge `161d6f4`** (agent tip
+`55d3540`, branch `parcel/data-display-2`, base `e13a3ce`; landing addendum follows). Verified firsthand on the
+MERGED tree: fmt clean, clippy 0 in both shapes, **debug 90 legs / 2965 / 0 / 7, release 90 / 2968 / 0 / 4**,
++19 each reconciled BY NAME against the nineteen `#[test]` attributes the diff adds.
+⚑ **THIRD NAMED-LOCK INSTANCE IN THREE DAYS, CONFIRMED AT THIS SEAT, AND IT IS NOW A PATTERN WITH A SHAPE.**
+Under a constant `BreakRow` address cell, **exactly one test fails — the parcel's new one** — while
+`the_armed_set_the_window_names_is_the_one_breakpoint_list_serves` prints `ok`. **That lock is NOT vacuous: it
+carries the R1 third assertion.** It compares `Halting::armed_handles`, the ALARM's handle set, against the
+served list and never touches a cell the table draws. **So the three instances are not "bad tests" — all three
+are sound tests whose NAME claims ground their BODY never covers**, and in all three the name is what stopped
+anyone checking. `scene_no_mid_sprite_cut`, `no_served_value_can_put_raw_json_on_the_screen`, this.
+⚑ **AND AN 8(e) GAP IN THE AGENT'S REPORT, CLOSED HERE, WITH A BETTER ANSWER THAN THE REPORT GAVE.** It changed
+its restore method mid-parcel (`git checkout --` on a dirty tree destroyed an uncommitted edit — invariant 8(b)
+hit live) and did not say which earlier claims it re-established. **Reds are self-evidencing and need nothing;
+M6's claim was that a mutation stayed GREEN, which is exactly what an unapplied mutation looks like.** Re-run
+here with the second spelling on disk: the old lock does stay `ok`, so the blindness is real — **and the
+parcel's own new `every_enum_the_watch_tab_draws_is_a_word_and_never_a_debug_spelling` FAILS on it**, which the
+report never says. **The rule to carry: under 8(e), audit the claims whose evidence is an ABSENCE, not the ones
+whose evidence is a failure.**
+⚑ **OPS, AGAINST THIS SEAT: I AGGREGATED A PARTIAL LOG AND NEARLY BOOKED IT.** First debug aggregate read
+**63 legs / 1796** against an expected 90; a `for`-loop waiter had **expired rather than succeeded**, printing
+no marker, and `cargo test` was still running. This is the landing checklist's own CI clause (*a wait-for-CI
+loop that times out EXITS 0 and reads exactly like success*) arriving on a test run — **the checklist names the
+instrument, not the class.** What caught it was the **leg count**, not the waiting: prove completeness, never
+infer it. Corrected form used after: `until ! pgrep -f "^cargo test"; do sleep 20; done`.
+**P10 zero for a THIRD and FOURTH time**, measured here: `fn breakpoints` two em dashes, `fn watchpoints` eight,
+**all in comments, none in a runtime string**, and §4's four cited Watchpoints lines are in the spawn picker and
+the planes readout. **Four bogus P10 charges from this page.**
+⚑ **THE DURABLE FINDING IS THE AGENT'S AND IT IS ABOUT HOW STALENESS LOOKS:** `ui.rs` citations are off by
+**1013-1091** lines while **`stopping.rs:150` is EXACT** — still landing on the padded `format!` in
+`BreakRow::summary`, because `stopping.rs` barely moved while `ui.rs` grew a thousand lines beneath it. **A page
+whose citations all rot at ONE RATE is a page nobody checked file by file; the uniform rate is the tell, not the
+staleness.**
+**NEXT: `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`** (named as successor in the same write that closed this row, per
+`LANE_STATUS.md` line 136 — this lane's own clause). The rest of `DATA-DISPLAY-AUDIT` (items 6-11) reuses the
+same furniture; re-derive each from the TREE, never from §4.
+
 ## ⚑ `next` COEXISTS WITH `doing`. THIS LANE WROTE THAT RULE INTO THE CONTRACT AND THEN BROKE IT TWICE IN ONE DAY
 
 *(2026-09-16, after the hub flagged `0 next rows` for the second time in ninety minutes. Governing text:
