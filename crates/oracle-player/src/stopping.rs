@@ -3304,19 +3304,65 @@ mod watch_text {
     /// every cell a hit draws is no longer than the candidate its column was measured from.
     ///
     /// Character length is a weaker reading than the pixel width `ui.rs` checks, and it is the one that
-    /// catches the bound being taken from the wrong end of a monotonic series -- `hits.first()` instead
-    /// of `hits.last()` -- without a font. The pixel gate is
+    /// catches a bound taken from the wrong end of a monotonic series -- `hits.first()` instead of
+    /// `hits.last()` -- without a font. The pixel gate is
     /// `the_hit_logs_columns_are_wide_enough_for_every_row_it_can_draw` in `ui.rs`.
+    ///
+    /// ⚑ **The log here is synthetic, and that is the point.** The first draft walked the served capture
+    /// from [`watched`] and was **vacuous on the two columns the bound is actually load-bearing for**:
+    /// the fixture's `seq` and `frame` never reach two digits, so taking the bound from the first entry
+    /// instead of the last drew an identical string and the gate printed `ok` under exactly the mutation
+    /// it is named for. A bound over a monotonic series can only be witnessed by a series whose width
+    /// changes along it.
     #[test]
     fn no_hit_cell_is_longer_than_the_candidate_its_column_was_measured_from() {
-        let v = watched();
-        let widest: Vec<usize> = v
-            .hit_widths
+        use oracle_core::bus::BusOp;
+        use oracle_core::watchpoints::{WatchId, WatchVia};
+        let one = |seq: u64, frame: u64, addr: u32, value: u32, op, size| WatchHit {
+            watch: WatchId(1),
+            space: WatchSpace::Bus,
+            addr,
+            old: 0,
+            value,
+            size,
+            op,
+            fc: 5,
+            via: WatchVia::Bus,
+            pc: 0x0000_0400,
+            frame,
+            mclk: 0,
+            seq,
+        };
+        let log = vec![
+            one(1, 0, 0x00FF_0000, 0x1, BusOp::Read, Size::Byte),
+            one(2, 7, 0xFFFF_FFFF, 0xFFFF_FFFF, BusOp::Tas, Size::Long),
+            one(
+                9_999_999,
+                123_456,
+                0x00FF_0010,
+                0xABCD,
+                BusOp::Write,
+                Size::Word,
+            ),
+        ];
+        let widest: Vec<usize> = hit_width_candidates(&log)
             .iter()
             .map(|cands| cands.iter().map(String::len).max().unwrap_or(0))
             .collect();
         assert_eq!(widest.len(), HIT_COLS.len());
-        for h in &v.hits {
+        // Anti-vacuity, stated rather than hoped for: the two monotonic columns must actually CHANGE
+        // width along this log, or the bound could be read off either end and this gate would witness
+        // nothing. This is the clause whose absence made the first draft green under its own mutation.
+        for (i, head) in [(0usize, "seq"), (1, "frame")] {
+            let lens: std::collections::BTreeSet<usize> =
+                log.iter().map(|h| hit_cells(h)[i].len()).collect();
+            assert!(
+                lens.len() > 1,
+                "the {head} column is one width all the way down this log, so a bound taken from either \
+                 end is the same string and this gate cannot see the mutation it exists for: {lens:?}"
+            );
+        }
+        for h in &log {
             for (i, cell) in hit_cells(h).into_iter().enumerate() {
                 assert!(
                     cell.len() <= widest[i],
