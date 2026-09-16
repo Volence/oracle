@@ -108,6 +108,21 @@ M1 fills = the last 3 of vdp_port_access 119/122"*. **`git grep "keep fixing the
 the oracle-specific sentence is still relay-only. Do not upgrade it to verbatim on this evidence. **The general shape, and it is new: a hub that pushes
 its own summary of his words satisfies the push rule while leaving the quoted sentence exactly as unverifiable as before.** A relay flag comes off when
 the WORDS are at a committed revision, never when a record of the relay is.
+**P1 FILL-RUN LANDED 2026-09-15, merge `549f020` (agent tip `569439d`, branch `parcel/m1-fill-run`), PUSHED and origin confirmed moved.
+M1-FILL-OVER-TIME CLOSED; `vdp_port_access` 119/122 → 122/122, `PORT_ACCESS_FAILING` empty.** Verified firsthand on the MERGED tree by this
+seat, not taken from the agent: fmt clean, clippy 0, **debug 90 legs / 2915 / 0 / 6 and release 90 legs / 2918 / 0 / 3** (both profiles, per the
+two-profile rule), the 122 rows aggregated from the ROM's own output (`ROWS=122 PASS=122 FAIL=0`), and red-first M-F reproduced here (mutation
+quoted from disk, hit named `$3010` against `$32BC`, restored from committed `569439d`, green again). **R1's tripwire NOT tripped, re-measured
+with this seat's own probe on both trees**: `layout_fingerprint` `dff350afa2eb3e1d`, snapshot 140,072 B, identical — so the hub needs no CR.
+⚑ **The limit of that instrument, stated rather than glossed: the fingerprint hashes a POWER-ON snapshot, where no fill is running, so a trailing
+variant cannot move it BY CONSTRUCTION.** It is the right instrument for the owner-facing claim (his saves load) and it is near-vacuous for
+"the layout cannot have moved"; the load tests and R3's clean `UnexpectedVariant{allowed:0..=2,found:3}` refusal are what carry that half.
+Two agent deviations ACCEPTED and banked in the design's landed note: the three fixtures need **display-off as well as** R4's busy-poll (a 64 KiB
+fill is ~6.6 frames displayed against ~1.5 blanked), and the watchpoints doc's `[0,0,0,0]` "status arm entirely dead" row was false — `build_pad_poll`
+drives 6,849 status reads in 2 frames. **THREE LIVE-LOOK TAGS ARE THIS SEAT'S, NOT AN AGENT'S** (no emulator from a background agent): §1.5 FIFO
+EMPTY/FULL during a running fill, §1.6 a non-DMA command word and a data-port read mid-fill, §1.1 the per-line deficit. **NEXT: H22 landing 1**
+(static-copy filler, ~7%, ruled takeable) unless he says otherwise; `vdp_sprite_masking`'s 2 residuals (ledger P1, the mid-sprite pixel-budget cut)
+are the only other test-ROM rows still red and are the natural read of his *"keep fixing the issues with the test rom"* once H22 lands.
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

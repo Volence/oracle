@@ -1,5 +1,5 @@
 {
-  "focus": "Landed: the written design for fills that take time. No save you have changes. Stopped for a clear.",
+  "focus": "Done and published: the video chip's test ROM now scores a perfect 122 of 122, and your saves are untouched.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. The next session builds the fill change under the hub's rulings; nothing needs asking first.",
+  "nextBoundary": "Now. Nothing is running and everything is pushed.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -17,14 +17,6 @@
       "blockedBy": "a contract ruling (the hub's)",
       "project": "ORACLE-DEFAULT",
       "title": "Found by today's fix: in its first moment a window tells a connected program 'there is no window'. What it should say is a ruling for the hub."
-    },
-    {
-      "id": "M1-FILL-OVER-TIME",
-      "state": "next",
-      "size": "L",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Next: build fills that take time. The design is landed, the hub has ruled on its four points, and no save you have changes."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -36,11 +28,11 @@
     },
     {
       "id": "H22-68000-DECODE",
-      "state": "open",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "LENS-PASS",
-      "title": "Answered: the processor should remember its instruction decoding, in a careful form, for 15-22% speed. The first small piece (~7%) can be built now; the rest waits on one more measurement."
+      "title": "Next unless you say otherwise: the first speed piece (~7%), already answered and needing no decision from you."
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
@@ -123,7 +115,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "A clear, please: 186,670 tokens at 02:05Z, near your 200k line. The fill design is landed and pushed; nothing is running.",
+  "awaiting": "Nothing from you on this. d-51 (hearing the sound-chip change before it lands) is still open whenever you want it.",
   "atBoundary": true,
-  "updatedAt": "2026-09-14T02:09:35Z"
+  "updatedAt": "2026-09-16T03:26:41Z"
 }
