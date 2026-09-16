@@ -1,6 +1,12 @@
 {
-  "focus": "The Watchpoints and Breakpoints tabs are rebuilt and landed; four of the eleven panel jobs are done.",
-  "inFlight": [],
+  "focus": "Proving the outline on the plane picture can be checked at all, before anyone tries to make it faster.",
+  "inFlight": [
+    {
+      "what": "An independent proof for the plane outline, which today's check cannot see, plus a measurement of what it costs",
+      "where": "branch parcel/outline-witness (worktree ../oracle-outline)",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now, and it is the cheapest moment today: nothing running, everything pushed and green, next job needs no decision.",
+  "nextBoundary": "When the agent returns and its work is verified and landed. Not before: an agent is holding a branch.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -20,7 +26,7 @@
     },
     {
       "id": "F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -76,7 +82,7 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "open",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -99,7 +105,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "Nothing blocking. One choice if you want it: I am holding the next job rather than starting it, so this lane stays clearable while you decide about sleep mode. Say the word and I start it instead.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-16T17:35:08Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-16T17:44:13Z"
 }
