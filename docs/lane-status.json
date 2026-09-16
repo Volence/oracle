@@ -30,7 +30,7 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Ready to start and needs no decision from you, and it is the pick even while the panel job runs: the outline drawn over the plane picture is about half what that view costs, and the check that proved the last speed-up correct is structurally blind to it. It needs a proof of its own first."
+      "title": "Ready to start and needs no decision from you: the outline over the plane picture costs about half that view, and the check that proved the last speed-up correct is blind to it by construction. It needs its own proof first."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -107,5 +107,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-16T13:42:57Z"
+  "updatedAt": "2026-09-16T13:43:58Z"
 }
