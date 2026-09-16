@@ -228,6 +228,20 @@ sentence that was wrong by half, and only a picture settled it** — the same in
 own figures. Second correction in the same parcel: `nav.rs` called `F-NAV-COLLAPSED-LEAF` *"real and still open"*; the
 LIMITATION stands, the BOOKING closed as `d-31` `leave-it` 2026-09-09T23:18:15Z (verified in `decisions.jsonl`), and the id
 is in no queue — so a reader who went looking would doubt the paragraph rather than the row.
+⚑ **BOTH CARDS ANSWERED 2026-09-16, BY THE OWNER, AND THE ROW IS CLOSED WITH NO CODE CHANGE.** **d-52
+`keep-it`** (the per-tab `x` stays) and **d-53 `leave-it`** (`ui::initial_dock` stays 4 leaves / 11 tabs at
+0.68/0.45/0.5) — **both AGAINST this seat's recommendations** (`remove-the-x`, `you-show-me`). Entries
+`d-52-answered` / `d-53-answered` in `docs/decisions.jsonl`. **So OWNER-UX-GROUP-B closes as DECIDED, never
+as FIXED, and the distinction is load-bearing here**: his original complaint (*"if multiple are open it's
+really hard as well"*, and the clutter) **is still true of the window** — he accepted each option's stated
+cost rather than having it removed. A later reader finding the strips crowded is meeting a ruling, not a
+regression, and should re-ask him rather than re-open the parcel.
+⚑ **PROVENANCE, flagged because this repo's own rule makes it matter: BOTH ARRIVED AS OPTION SELECTIONS
+THROUGH THE CONSOLE, WITH NO WORDS ATTACHED.** `said` is `null` in both entries rather than the option's
+name dressed as a quote. A selection is a witnessed granting act and is strong; it is **not** verbatim
+text, and the two must not be allowed to blur — the failure mode this file keeps recording is a paraphrase
+hardening into a quotation one reader at a time.
+
 ⚑ **What the captures CANNOT say, stated rather than glossed:** all three shots are X11 on a private Xvfb and his desktop is
 Wayland, `xdotool` is not installed so no gesture was synthesised, and §1.7's Wayland-safety is an argument from `egui_dock`'s
 source (pointer drag, in-viewport `egui::Window`) rather than a measurement on his compositor. Tab drag does NOT inherit the
