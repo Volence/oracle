@@ -1477,9 +1477,13 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
         };
         match req {
             DmaRequest::Mem { source, len } => self.run_mem_dma(source, len),
-            DmaRequest::Fill { len, fill } => {
-                // VRAM fill: 68k keeps running (recon R4(b)) — the VDP fills + opens the busy window; 0 wait.
-                self.vdp.run_fill(len, fill, self.now_mclk);
+            // M1-FILL-RUN: nothing arms `Fill` any more — a fill trigger starts a `FillRunning` the VDP
+            // owns and steps itself, and `Vdp::take_dma_request` never hands that one over. The variant is
+            // kept only as a reserved discriminant (renumbering `Copy` would make every old snapshot decode
+            // into a different machine), and `System::restore`'s door check refuses a snapshot holding it,
+            // so this arm cannot be reached in a machine that ran.
+            DmaRequest::Fill { .. } => {
+                debug_assert!(false, "nothing arms DmaRequest::Fill since M1-FILL-RUN");
                 0
             }
             DmaRequest::Copy { source, len } => {

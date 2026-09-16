@@ -249,7 +249,7 @@ const BASELINE: &[(&str, &str)] = &[
         // trigger — `Vdp::dma_busy` is now "a fill is armed (CD5 + register 23 = Fill) OR the transfer window
         // is open". Tests 36 and 38 flip; on the pre-A2 branch all 22 pages went **114/8 → 116/6**, failing
         // 20 27 31 32 33 34. Pages 1 and 2 unchanged, and no other scorecard row moved.
-        // A5 (2026-09-12, FILL-TGT): `Vdp::run_fill`'s body now shares `code_names_a_write_target` with the
+        // A5 (2026-09-12, FILL-TGT; the body is `Vdp::fill_step` since M1): `Vdp::run_fill`'s body shares `code_names_a_write_target` with the
         // two data-port write paths, so a fill armed on a code that names no write target runs — address,
         // length, source registers 21/22, busy window — and writes nowhere. Test 34 flips; on the pre-A2
         // branch all 22 pages went **116/6 → 117/5**, failing 20 27 31 32 33. Tests 4, 28, 29 and 72-95
@@ -1247,7 +1247,7 @@ fn vdp_port_access_copy_dma_matches_the_roms_own_tables() {
 ///   triggered. Tests 36 and 38. **Fixed 2026-09-12 (FILL-BUSY-ARM)**: `Vdp::dma_busy` is now "a fill is
 ///   armed OR the transfer window is open"; both pass and are no longer listed.
 /// * **A5, a fill whose code names no write target writes nothing** (it closes follow-up F-FILLTGT). Test 34.
-///   **Fixed 2026-09-12 (FILL-TGT)**: `Vdp::run_fill`'s body shares `code_names_a_write_target` with the two
+///   **Fixed 2026-09-12 (FILL-TGT)**: the fill body (`Vdp::run_fill` then; `Vdp::fill_step` since M1) shares `code_names_a_write_target` with the two
 ///   port-write paths; the fill still walks its address, consumes its length and advances registers 21/22.
 ///   It passes and is no longer listed.
 /// * **M1, a fill that runs over time.** Ours completed inside its trigger write, so a data-port write made
