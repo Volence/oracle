@@ -26,11 +26,11 @@
     },
     {
       "id": "F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Found by today's fix: the outline drawn over the plane picture is now about half of what that view costs, and the check that proved today's work correct cannot see it. It needs a proof of its own before anyone speeds it up."
+      "title": "Ready to start and needs no decision from you, and it is the pick even while the panel job runs: the outline drawn over the plane picture is about half what that view costs, and the check that proved the last speed-up correct is structurally blind to it. It needs a proof of its own first."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -107,5 +107,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-16T13:16:23Z"
+  "updatedAt": "2026-09-16T13:42:57Z"
 }
