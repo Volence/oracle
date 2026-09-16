@@ -252,6 +252,26 @@ defined.
 
 ### 7.1 The shape
 
+> **LANDING 1 (E1) LANDED 2026-09-16** (merge `a663ccf`, agent tip `737c7fa`, branch `parcel/h22-landing1`).
+> **⛑ ITS SPEED CLAIM IS CORRECTED BY ITS OWN LANDING: the measured gain is −4.71 % and −4.88 %, not the
+> −7.5 % this section states.** Same two playthroughs, this tree, 21 reps per arm, counterbalanced across
+> slots, and — the part that makes the number usable — **a third arm that is a byte-identical copy of the
+> base binary**, so the instrument had to demonstrate it could report "no difference": it read −0.12 % and
+> +0.53 %, which is the zero. Excluding one load-spike outlier the slowest E1 run beats the fastest base
+> run in both workloads, so the gain is real and comfortably outside the noise; it is about two thirds of
+> what this document claimed. **Where −7.5 % DOES reproduce: decode-only ns on the SST HEAVY mix** — a
+> decode-share-100 % microbenchmark, not a frame. §7.3 anticipated the figure moving with workload, but
+> this is the same workload CLASS, so the likelier explanation is the spike's baseline or its 3-5 rep
+> medians rather than the workload. **The −7.5 % above is left standing as the spike's faithful record**;
+> this note is the correction, at the site a reader meets the claim. Recipes byte-identical across the
+> change: 393,216 recipes (whole opcode space × both privilege modes × 3 register bases), FNV-1a
+> `0x2dd0af32a68009c0` on both sides, with the digest shown non-blind (filler at `cycles: 7` moves it while
+> the byte count holds). Two standing gates carry it in-tree, both verified red-first by this seat with the
+> mutation on disk. **Landings 2 and 3 remain HELD** on the same re-measurement condition as before — and
+> this correction is evidence for the hold, not against it: the one number this parcel could check was
+> overstated by a third.
+
+
 1. **E1, the static-copy filler** (landing 1, standalone). `RecipeBuf::new` copies its filler from a
    `static [MicroOp; MAX_OPS]` instead of the repeat expression. Byte-identical recipes; −7.5 %; about
    five lines. It also speeds every cascade fallback and every exception recipe.
