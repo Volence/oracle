@@ -380,6 +380,12 @@ pub enum SpriteOutcome {
     DroppedLineLimit,
     /// On-line but the per-line pixel budget (320 H40 / 256 H32) was already exhausted — dot overflow.
     DroppedPixelBudget,
+    /// On-line and admitted, but the per-line pixel budget ran out **inside** it: the dots that fit were
+    /// drawn and every later dot of the same sprite discarded (recon R10 / RR8 — the mid-sprite cut,
+    /// ledger row P1). `drawn_px` is how many of the sprite's own dots survived, `1..width_cells*8`; the
+    /// surviving dots are the sprite's **leftmost on screen** (see [`Vdp::sprite_line`] on the cut order).
+    /// A cut sprite has already consumed its sprite-count slot, and it sets the dot-overflow flag.
+    CutPixelBudget { drawn_px: u16 },
     /// On-line, in budget, but R10 x=0 masking suppressed its pixel output — the brief's "masking"
     /// (produced at render time when X is fetched, push-4 slice 3).
     Masked,
@@ -1925,6 +1931,36 @@ impl Vdp {
     /// (first-come-wins in link order), and detect collision. Reads **only the SAT cache** for Y/size/link
     /// (X/tile are VRAM at the current base). Pure — the carry is not written back here (that is
     /// [`Vdp::render_scanline`]). `width` is the active pixel width for the buffer.
+    ///
+    /// ## The pixel budget cuts **mid-sprite** (ledger row P1)
+    ///
+    /// The budget is spent dot by dot, not sprite by sprite: a sprite that straddles the 320/256-px limit
+    /// draws exactly the `max_px − px_used` dots that still fit and discards the rest
+    /// ([`SpriteOutcome::CutPixelBudget`]). Three decisions, each stated where a future reader will look:
+    ///
+    /// * **Which dots survive — screen order, interim.** The surviving dots are the sprite's **leftmost on
+    ///   screen**, h-flipped or not. No permitted source discriminates screen order from *fetch* order (RR8
+    ///   pins that a multi-cell sprite's patterns are addressed column-major and that hflip mirrors the cell
+    ///   columns, but that is the screen→source *mapping*, never a statement about the temporal order of the
+    ///   fetches); Nemesis's own masking/overflow ROM cannot discriminate them either — **measured**: its
+    ///   only budget-straddling sprite is slot 35, `x=216`, 4 cells, **`hflip=false`** (`CUTS=1` in
+    ///   `examples/testrom_probe.rs`), and building the fetch-order variant leaves the entire 17-row
+    ///   conformance scorecard identical, `3=TICK/TICK` included. So this is the consistent extension of the
+    ///   rule RR8 *does* pin: the
+    ///   sprite is a screen-ordered scan with mirrored source addressing (exactly what [`Vdp::draw_sprite`]
+    ///   is), and the budget is spent in the order that scan emits. Flagged interim in ledger row P1.
+    /// * **A cut sprite still costs a sprite-count slot.** The 20/16 per-line count is settled in the
+    ///   *evaluation* phase, which reads only the SAT cache and never sees X (R5/RR8) — it is decided before
+    ///   the render phase can run out of dots, so the arms below keep the count test strictly above the
+    ///   budget test.
+    /// * **A cut sets dot overflow.** The cut *is* the line ending in a sprite-pixel overflow (R10's carry
+    ///   condition): dots were wanted and the budget could not pay for them. An exact fill with nothing left
+    ///   to draw is still not an overflow, as before.
+    ///
+    /// The walk **continues** past an exhausted budget (R10: "parsing of the rest of the line continues"),
+    /// which is pixel- and status-identical to stopping — every later sprite is `DroppedPixelBudget`, so
+    /// nothing more draws, nothing more collides, and `overflow`/`dot_overflow` are already set — and it is
+    /// what keeps the per-sprite report able to say *which* sprites the budget cost.
     fn sprite_line(&self, line: u16, h40: bool, width: usize) -> SpriteLine {
         let (max_sprites, max_px, cap) = sprite_limits(h40);
         let cache = self.sat_cache();
@@ -1964,9 +2000,19 @@ impl Vdp {
                 dot_overflow = true;
                 SpriteOutcome::DroppedPixelBudget
             } else {
-                // Admitted: it consumes a slot + its pixel budget even if masked (recon R10).
+                // Admitted: it consumes a slot + its pixel budget even if masked (recon R10). The budget is
+                // spent per dot, so a sprite that straddles `max_px` keeps only the dots that still fit
+                // (`room > 0` here — the arm above is `>=`). See the mid-sprite-cut section above.
                 on_line_count += 1;
-                px_used += w as usize * 8;
+                let want = w as usize * 8;
+                let room = max_px - px_used;
+                let draw_px = want.min(room);
+                px_used += draw_px;
+                let cut = draw_px < want;
+                if cut {
+                    overflow = true;
+                    dot_overflow = true;
+                }
                 if masking_active {
                     SpriteOutcome::Masked
                 } else if x_field == 0 && seen_nonzero {
@@ -1988,9 +2034,16 @@ impl Vdp {
                         h,
                         line,
                         width,
+                        draw_px,
                         &mut collision,
                     );
-                    SpriteOutcome::Rendered
+                    if cut {
+                        SpriteOutcome::CutPixelBudget {
+                            drawn_px: draw_px as u16,
+                        }
+                    } else {
+                        SpriteOutcome::Rendered
+                    }
                 }
             };
             sprites.push(SpriteEval {
@@ -2021,6 +2074,12 @@ impl Vdp {
     /// Draw one admitted sprite into the sprite line buffer (recon RR8): column-major multi-cell tile
     /// addressing with flips, first-come-wins (an already-set pixel is not overwritten), and collision on any
     /// opaque-over-opaque overlap. `x_field` is the raw 9-bit X (screen X = `x_field − 128`).
+    ///
+    /// `draw_px` is how many of the sprite's `w*8` dots the per-line pixel budget could still pay for
+    /// ([`Vdp::sprite_line`]'s mid-sprite cut, ledger row P1). It clips the **screen-order** scan, so the
+    /// dots that survive a cut are the leftmost on screen whether the sprite is h-flipped or not; and it
+    /// clips *before* the off-screen test, because a dot the budget paid for is spent whether or not it
+    /// lands on the visible line (the budget counts declared width, exactly as `px_used` does).
     #[allow(clippy::too_many_arguments)]
     fn draw_sprite(
         &self,
@@ -2033,13 +2092,14 @@ impl Vdp {
         h: u8,
         line: u16,
         width: usize,
+        draw_px: usize,
         collision: &mut bool,
     ) {
         let screen_x0 = x_field as i32 - 128;
         let sy = (line as i32 - screen_y as i32) as usize; // 0..h*8 (on-line guaranteed)
         let wpx = w as usize * 8;
         let hpx = h as usize * 8;
-        for sx in 0..wpx {
+        for sx in 0..wpx.min(draw_px) {
             let screen_x = screen_x0 + sx as i32;
             if screen_x < 0 || screen_x >= width as i32 {
                 continue; // off the left/right edge
@@ -3728,6 +3788,219 @@ mod tests {
         );
         assert_eq!(r.sprites[8].outcome, SpriteOutcome::DroppedPixelBudget);
         assert!(r.sprite_overflow, "the pixel budget sets overflow");
+    }
+
+    // --- the mid-sprite pixel-budget cut (ledger row P1) -------------------------------------------------
+
+    /// A line that spends `spent` px on stacked sprites and then puts ONE straddling sprite, `cells` wide,
+    /// alone at screen x `at` where nothing can overlap it. `hflip` sets the straddler's h-flip bit.
+    ///
+    /// The stack is deliberately all at screen x 0: overlapping sprites still spend their **declared** width
+    /// (recon R10), so the budget arithmetic is exact while every dot the straddler draws is unambiguously
+    /// its own — `SpritePixel::index` names it, and nothing else can have got there first.
+    fn straddle_fixture(widths: &[u8], cells: u8, at: u16, hflip: bool) -> (Vdp, usize) {
+        assert!(
+            (1..=4).contains(&cells) && widths.iter().all(|w| (1..=4).contains(w)),
+            "the RR8 size field is 2 bits per axis — a width outside 1..=4 would spill into the link byte"
+        );
+        let mut v = fresh();
+        v.vram_mut().fill(0);
+        set_reg(&mut v, 0x0F, 2);
+        set_reg(&mut v, 0x05, 0x10); // SAT base 0x2000
+
+        // Tiles 1..=8 all opaque: a W-cell-wide sprite based at tile 1 reaches tile W (column-major, 1 cell
+        // high — RR8), so filling only tile 1 would make every cell but the first transparent and silently
+        // undercount the drawn dots.
+        for t in 1..=8 {
+            fill_tile(&mut v, t, 5);
+        }
+        let n = widths.len();
+        for (i, wc) in widths.iter().enumerate() {
+            let size = ((wc - 1) as u16) << 2; // width cells−1 in bits 3-2, height 1 cell
+            write_sprite(
+                &mut v,
+                i,
+                0x0080,
+                (size << 8) | (i + 1) as u16,
+                0x0001,
+                0x0080,
+            );
+        }
+        let attr = 0x0001 | if hflip { 0x0800 } else { 0 };
+        write_sprite(
+            &mut v,
+            n,
+            0x0080,
+            (((cells - 1) as u16) << 2) << 8, // link 0 = end of list
+            attr,
+            0x0080 + at,
+        );
+        (v, widths.iter().map(|w| *w as usize * 8).sum())
+    }
+
+    /// **The cut itself.** The straddling sprite draws exactly the dots the budget can still pay for —
+    /// `max_px − spent`, derived from [`sprite_limits`] and the fixture's own widths, never a literal — and
+    /// not one dot more.
+    #[test]
+    fn a_straddling_sprite_draws_exactly_the_remaining_pixel_budget() {
+        let (_, max_px, _) = sprite_limits(false); // H32
+        let widths = [2u8, 4, 4, 4, 4, 4, 4, 4]; // 16 + 7×32 = 240 px
+        let (v, spent) = straddle_fixture(&widths, 4, 100, false);
+        assert!(
+            spent < max_px && spent + 32 > max_px,
+            "the fixture straddles"
+        );
+        let expect = max_px - spent;
+
+        let sl = v.sprite_line(0, false, 256);
+        let drawn: Vec<usize> = sl
+            .buffer
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.map(|q| q.index) == Some(widths.len() as u8))
+            .map(|(x, _)| x)
+            .collect();
+        assert_eq!(
+            drawn.len(),
+            expect,
+            "the straddler must draw max_px − spent = {expect} dots, not its full 32"
+        );
+        assert_eq!(
+            sl.sprites[widths.len()].outcome,
+            SpriteOutcome::CutPixelBudget {
+                drawn_px: expect as u16
+            }
+        );
+    }
+
+    /// **Which dots survive: screen order (interim — see [`Vdp::sprite_line`]).** The surviving dots are the
+    /// sprite's leftmost ON SCREEN, and h-flip does not move them. Under the fetch-order candidate the same
+    /// h-flipped sprite would keep its rightmost screen dots instead, so this range IS the discriminator.
+    #[test]
+    fn a_cut_keeps_the_leftmost_screen_dots_even_when_hflipped() {
+        let (_, max_px, _) = sprite_limits(false);
+        let widths = [2u8, 4, 4, 4, 4, 4, 4, 4];
+        let at = 100usize;
+        for hflip in [false, true] {
+            let (v, spent) = straddle_fixture(&widths, 4, at as u16, hflip);
+            let expect = max_px - spent;
+            let sl = v.sprite_line(0, false, 256);
+            let drawn: Vec<usize> = sl
+                .buffer
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.map(|q| q.index) == Some(widths.len() as u8))
+                .map(|(x, _)| x)
+                .collect();
+            assert_eq!(
+                drawn,
+                (at..at + expect).collect::<Vec<_>>(),
+                "hflip={hflip}: the surviving dots are the leftmost on screen"
+            );
+        }
+    }
+
+    /// **The cut sets dot overflow.** Under the whole-sprite model the straddler drew in full and only a
+    /// LATER sprite could raise the flag; here the straddler is the last sprite on the line and the flag
+    /// must still be set, because dots were wanted that the budget could not pay for.
+    #[test]
+    fn a_mid_sprite_cut_sets_dot_overflow_with_no_later_sprite() {
+        let widths = [2u8, 4, 4, 4, 4, 4, 4, 4];
+        let (v, _) = straddle_fixture(&widths, 4, 100, false);
+        let sl = v.sprite_line(0, false, 256);
+        assert!(sl.dot_overflow, "the cut is the line's dot overflow");
+        assert!(sl.overflow, "and it is a sprite overflow");
+        assert_eq!(sl.sprites.len(), widths.len() + 1, "no later sprite exists");
+    }
+
+    /// **An exact fill is still not an overflow.** The same fixture with a straddler that fits exactly
+    /// spends the budget to the last dot, draws in full, and raises nothing — the cut must not fire one
+    /// sprite early.
+    #[test]
+    fn an_exact_fill_draws_fully_and_sets_no_overflow() {
+        let (_, max_px, _) = sprite_limits(false);
+        let widths = [4u8, 4, 4, 4, 4, 4, 4]; // 7 × 32 = 224
+        let (v, spent) = straddle_fixture(&widths, 4, 100, false); // 4 cells = 32 = 256 − 224
+        assert_eq!(
+            spent + 32,
+            max_px,
+            "the last sprite fills the budget exactly"
+        );
+        let sl = v.sprite_line(0, false, 256);
+        assert_eq!(sl.sprites[widths.len()].outcome, SpriteOutcome::Rendered);
+        assert!(!sl.dot_overflow && !sl.overflow);
+        let drawn = sl
+            .buffer
+            .iter()
+            .filter(|p| p.map(|q| q.index) == Some(widths.len() as u8))
+            .count();
+        assert_eq!(drawn, 32, "all 32 dots drawn");
+    }
+
+    /// **A cut sprite still costs a sprite-count slot**, and the count limit is settled above the budget:
+    /// the 16th sprite is the one that gets cut, so the 17th is a COUNT drop, not a budget drop.
+    #[test]
+    fn a_cut_sprite_still_spends_its_per_line_sprite_slot() {
+        let (max_sprites, max_px, _) = sprite_limits(false);
+        let widths = vec![2u8; max_sprites - 1]; // 15 × 16 = 240 px
+        let (mut v, spent) = straddle_fixture(&widths, 4, 100, false);
+        assert!(spent < max_px && spent + 32 > max_px);
+        // Re-link the straddler to a 17th sprite so there is something past the count limit.
+        let n = widths.len();
+        write_sprite(
+            &mut v,
+            n,
+            0x0080,
+            (0x0C << 8) | (n + 1) as u16,
+            0x0001,
+            0x0080,
+        );
+        write_sprite(&mut v, n + 1, 0x0080, 0x0C00, 0x0001, 0x0080);
+        let sl = v.sprite_line(0, false, 256);
+        assert_eq!(
+            sl.sprites[n].outcome,
+            SpriteOutcome::CutPixelBudget {
+                drawn_px: (max_px - spent) as u16
+            },
+            "sprite {n} is admitted and cut — it holds the {max_sprites}th slot"
+        );
+        assert_eq!(
+            sl.sprites[n + 1].outcome,
+            SpriteOutcome::DroppedLineLimit,
+            "the count limit outranks the budget for the sprite after a cut"
+        );
+    }
+
+    /// **The walk continues past an exhausted budget** (R10: parsing of the rest of the line continues).
+    /// Every sprite after the cut is still reported, and every one of them is a budget drop.
+    #[test]
+    fn the_link_walk_continues_past_a_mid_sprite_cut() {
+        let widths = [2u8, 4, 4, 4, 4, 4, 4, 4];
+        let (mut v, _) = straddle_fixture(&widths, 4, 100, false);
+        let n = widths.len();
+        write_sprite(
+            &mut v,
+            n,
+            0x0080,
+            (0x0C << 8) | (n + 1) as u16,
+            0x0001,
+            0x0080,
+        );
+        write_sprite(
+            &mut v,
+            n + 1,
+            0x0080,
+            (0x0C << 8) | (n + 2) as u16,
+            0x0001,
+            0x0080,
+        );
+        write_sprite(&mut v, n + 2, 0x0080, 0x0C00, 0x0001, 0x0080);
+        let sl = v.sprite_line(0, false, 256);
+        assert_eq!(sl.sprites.len(), n + 3, "the walk did not stop at the cut");
+        assert_eq!(sl.walk_end, SpriteWalkEnd::LinkZero);
+        for s in &sl.sprites[n + 1..] {
+            assert_eq!(s.outcome, SpriteOutcome::DroppedPixelBudget);
+        }
     }
 
     #[test]

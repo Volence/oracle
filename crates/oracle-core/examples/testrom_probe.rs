@@ -16,6 +16,7 @@
 //! | `TILES=<hex>,<count>` | decode `count` tiles from `hex` as 4-bit colour-index art (8 rows) |
 //! | `SCREEN=<step>` (+ `SCRX0=<x>`) | framebuffer as luminance ASCII, every `step`-th pixel/line from `x` |
 //! | `BLOCKS=1` | FNV-1a of the 32x8 rect at x 216..248 for cell rows 6..14 — the `vdp_sprite_masking` verdict glyphs |
+//! | `CUTS=1` | one FNV-1a per line (diff two builds to name the lines a model change moved) + any sprite the per-line pixel budget cut in half on that line |
 //! | `PRESS=<start\|a\|b\|c>` + `PRESS_AT=<f>` + `PRESS_LEN=<f>` | hold a button on port 1 for `PRESS_LEN` frames starting at frame `PRESS_AT` |
 //!
 //! Documented in `docs/2026-07-25-testrom-conformance.md` ("How to amend a row").
@@ -160,6 +161,47 @@ fn main() {
                 }
             }
             println!("BLOCK row {row} = 0x{bh:016x}");
+        }
+    }
+
+    // `CUTS=1` — the attribution instrument for the mid-sprite pixel-budget cut (ledger row P1). Prints one
+    // hash per line (so two builds can be diffed line by line, naming exactly which lines a model change
+    // moved) and, on any line where the budget ran out inside a sprite, the sprite that got cut. Both come
+    // from the POST-HOC `render_line*` path, which is the path `frame_hash`/`block_hash` read.
+    if std::env::var_os("CUTS").is_some() {
+        for line in 0..224u16 {
+            let mut lh = 0xcbf2_9ce4_8422_2325u64;
+            for (r, g, b) in sys.vdp().render_line(line) {
+                for byte in [r, g, b] {
+                    lh ^= byte as u64;
+                    lh = lh.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            let rep = sys.vdp().render_line_report(line);
+            // `hflip` is the field the P1 ledger row turns on: screen order and fetch order differ ONLY for
+            // an h-flipped straddler, so a ROM whose cut sprites are all unflipped cannot discriminate them.
+            let decoded = sys.vdp().sprites_decoded();
+            let cuts: Vec<String> = rep
+                .sprites
+                .iter()
+                .filter_map(|s| match s.outcome {
+                    oracle_core::render::SpriteOutcome::CutPixelBudget { drawn_px } => {
+                        Some(format!(
+                            "idx={} x={} w={}cells drawn={drawn_px} hflip={}",
+                            s.index, s.x, s.width_cells, decoded[s.index as usize].hflip
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect();
+            println!(
+                "LINE {line:3} 0x{lh:016x}{}",
+                if cuts.is_empty() {
+                    String::new()
+                } else {
+                    format!("  CUT[{}]", cuts.join("; "))
+                }
+            );
         }
     }
 

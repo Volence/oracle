@@ -286,8 +286,17 @@ const BASELINE: &[(&str, &str)] = &[
         //
         // **Do not "fix" the emulator until the post-hoc render says PASS** — that would mean breaking the
         // correct live carry-seeding to satisfy a broken instrument.
+        //
+        // **2026-09-16 (SPRITE-MID-CUT, ledger row P1): test 3 flips `TICK/CROSS` → `TICK/TICK`.** The
+        // per-line pixel budget now cuts **inside** the sprite that straddles it (`Vdp::sprite_line`), so
+        // test 3's second sub-case MAX SPRITE DOTS – COMPLEX — the one the row credited to P1 — passes. This
+        // is the ROM's own verdict on its own subject, re-derived from the run, not a re-pin: the glyph hash
+        // matched the ALREADY-PINNED `TICK_TICK` constant, so **no glyph constant was re-derived** and the
+        // F-POSTHOC-STALE-CARRY trap was never entered. `6=FAIL` is deliberately unchanged and is still the
+        // instrument artefact above — it was not touched and must not be. The other 16 rows of this
+        // scorecard are byte-identical across the parcel.
         "vdp_sprite_masking",
-        "H32: 1=TICK/TICK 2=TICK/TICK 3=TICK/CROSS 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK",
+        "H32: 1=TICK/TICK 2=TICK/TICK 3=TICK/TICK 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK",
     ),
     (
         "vdp_test_register",

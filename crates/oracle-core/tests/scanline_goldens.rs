@@ -189,8 +189,16 @@ const BASELINE: &[(&str, &str)] = &[
         // pure path does not. The divergence is squarely on this ROM's own subject matter, and the harness's
         // glyph classifier reads a different verdict for test 6 through the two paths (post-hoc FAIL, live
         // PASS). `conformance_roms.rs`'s pinned row is deliberately NOT touched — see F-POSTHOC-STALE-CARRY.
+        //
+        // **2026-09-16 (SPRITE-MID-CUT, ledger row P1): hash re-derived, 0xce1c5a0559088d5d →
+        // 0x3f1249dcdab2e0ed.** The per-line pixel budget now cuts inside the straddling sprite instead of
+        // dropping the next one whole, and this is the one vendored ROM that draws a line over the budget on
+        // purpose. Mechanism measured, not assumed: on the post-hoc path this ROM's frame differs from the
+        // pre-parcel build on **lines 64-71 only**, which is exactly the MAX SPRITE DOTS - COMPLEX band, and
+        // on those lines the walk reports a `CutPixelBudget` sprite. `vdp_sprite_masking` is the ONLY row of
+        // this scorecard that moved; the other 16 are byte-identical.
         "vdp_sprite_masking",
-        "LIVE-DIFFERS frame_hash=0xce1c5a0559088d5d",
+        "LIVE-DIFFERS frame_hash=0x3f1249dcdab2e0ed",
     ),
     ("vdp_test_register", "IDENTICAL-TO-POST-HOC"),
     (

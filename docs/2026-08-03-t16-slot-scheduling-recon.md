@@ -601,7 +601,11 @@ Reasoning:
   under the arc's existing ground rules unchanged.
 * It buys a real asset beyond the test: a slot *schedule* is the prerequisite for S3, for the
   mid-sprite pixel-budget cut (ledger row **P1**, which the sprite-masking row's two failures are
-  attributed to), and for the mid-line display-disable budget (`docs/2026-07-16-vdp-recon.md:382`,
+  attributed to — **2026-09-16: both halves of that parenthesis are now wrong.** P1 owned at most ONE of
+  the two, per the 2026-08-15 correction in `docs/2026-07-25-testrom-conformance.md`; and the cut needed no
+  slot schedule at all. Every sprite width is a multiple of 8 dots and both budgets are too, so the cut
+  always lands on a cell boundary and a dot counter suffices — it shipped as ~10 lines in `Vdp::sprite_line`
+  with no scheduler, and flipped test 3), and for the mid-line display-disable budget (`docs/2026-07-16-vdp-recon.md:382`,
   Mickey Mania). It converts a "Phase 3" abstraction into a table with citations.
 * It closes design question Q1 with evidence instead of leaving it open across two slices.
 
