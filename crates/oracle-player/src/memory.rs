@@ -593,7 +593,10 @@ pub fn resolve_address(bus: &mut Bus, sys: &mut System, space: Space, text: &str
                     Ok(a) => Resolved::Symbol { addr: a, reply: v },
                     Err(e) => Resolved::Rejected(format!("{s:?}: {e}")),
                 },
-                None => Resolved::Rejected(format!("the reply carried no `addr`: {v}")),
+                None => Resolved::Rejected(format!(
+                    "the reply carried no `addr`: {}",
+                    crate::bus::describe_reply(&v)
+                )),
             },
         };
     }
@@ -607,7 +610,8 @@ pub fn resolve_address(bus: &mut Bus, sys: &mut System, space: Space, text: &str
             // A prefix search answers `matches`, not `addr` — a real reply shape, not an error, and the
             // panel says which one it got instead of showing nothing.
             None => Resolved::Rejected(format!(
-                "{t:?} is not an exact name; the server answered a search instead: {v}"
+                "{t:?} is not an exact name; the server answered a search instead: {}",
+                crate::bus::describe_reply(&v)
             )),
         },
     }
@@ -828,8 +832,21 @@ impl MemoryPanel {
 /// and a renderer that decided by looking for a `"REFUSED"` prefix would be a second encoding of a fact
 /// the [`Answer`] already carries — the kind that agrees until someone rewords the string.
 ///
-/// The text itself is the reply's own JSON, or the refusal's own code, reason and message. Nothing here
-/// paraphrases the server.
+/// The text carries the reply's own facts, or the refusal's own code, reason and message. **Nothing here
+/// rewrites what the server said** — but it is no longer the reply's JSON either.
+///
+/// ⚑ **Corrected 2026-09-16, and the sentence this replaces was the reason it needed correcting.** It
+/// said *"the text itself is the reply's own JSON … nothing here paraphrases the server"*, which read as
+/// a ruling that the raw `Value` was deliberate. It was written at `9c4908f`, this panel's original
+/// authoring, and two days later `docs/2026-09-05-debug-window-audit.md` §0.3 read the same line and made
+/// it the highest-value fix in the window: `ok: {"breakpoint":"b3","addr":"0x00001234"}`, in the
+/// monospace face reserved for machine numbers, on five surfaces. So the audit had already seen this
+/// rationale and adjudicated against it, and doing so overturns nothing.
+///
+/// The distinction the old sentence was reaching for survives intact and is the one that matters:
+/// [`crate::bus::describe_reply`] spells **every** fact the reply carried, in the server's own keys and
+/// the server's own values, and invents none. What it drops is the punctuation, which was never the
+/// server's message.
 pub struct Line {
     pub text: String,
     pub refused: bool,
@@ -839,7 +856,7 @@ pub fn answer_line(a: &Answer) -> Line {
     Line {
         refused: a.is_err(),
         text: match a {
-            Answer::Ok(v) => format!("ok: {v}"),
+            Answer::Ok(v) => format!("ok: {}", crate::bus::describe_reply(v)),
             Answer::Err(e) => match a.reason() {
                 Some(r) => format!("REFUSED {} {r}: {}", e.code, e.message),
                 None => format!("REFUSED {}: {}", e.code, e.message),
@@ -1689,5 +1706,152 @@ mod bus_parity {
         // …and the window is bounded at BOTH ends, refused whole rather than wrapped.
         let e = read(Space::Z80, &sys, 0x3FFF, 2).expect_err("this runs past the window");
         assert_eq!(e.code, code::ADDRESS_OUT_OF_RANGE);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ The raw-JSON echo gate — the SHIPPED path, not the helper
+// ---------------------------------------------------------------------------------------------------
+
+/// **No gesture this window makes can put JSON punctuation on the glass.**
+///
+/// [`crate::bus::describe_reply`] has its own gates beside it, and they walk every `serde_json::Value`
+/// variant. This module asks a different and harder question: **do the five surfaces the audit named
+/// actually go through it?** A helper can be perfect and unreached — the defect it replaced was reached
+/// eight times, from six files — so these legs make the real calls on a real machine and read the line
+/// [`answer_line`] hands the panel, which is the string `note_label` draws.
+#[cfg(test)]
+mod json_echo {
+    use super::*;
+    use crate::stopping;
+    use oracle_aether::host::MachineInfo;
+    use oracle_core::system::System;
+
+    fn booted() -> System {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        sys.run_frames(7);
+        sys
+    }
+
+    /// The five characters `serde_json` emits for structure, re-derived rather than typed, with the count
+    /// asserted so this cannot quietly start measuring a smaller set.
+    fn structural() -> Vec<char> {
+        let encoded = json!({"a": [1, "b"]}).to_string();
+        let punctuation: Vec<char> = "{}[]\"".chars().filter(|c| encoded.contains(*c)).collect();
+        assert_eq!(
+            punctuation.len(),
+            5,
+            "serde_json's structure changed: {encoded}"
+        );
+        punctuation
+    }
+
+    /// ★ **Item 1 of `docs/2026-09-05-debug-window-audit.md`'s build order, gated at the surface.**
+    ///
+    /// Every gesture the audit's §0.3 names — Breakpoints, Watchpoints, Profiler, the Memory write cell
+    /// and `memory_hash` — is made for real through [`crate::bus::Bus`], and the line the panel would
+    /// draw is read back. The assertion is on the **shipped** string rather than on `describe_reply`, so
+    /// a site that stopped routing through it fails here even while the helper's own gates stay green.
+    ///
+    /// **Anti-vacuity, two ways.** A refusal never carried JSON, and neither did an empty reply, so
+    /// either would pass this walk while proving nothing. So every leg must answer `Ok`, and at least one
+    /// reply must be a composite whose raw `Display` *would* have carried punctuation — checked against
+    /// the raw value, not assumed.
+    #[test]
+    fn the_gesture_surfaces_echo_no_json_punctuation() {
+        let punctuation = structural();
+        let mut sys = booted();
+        let mut b = Bus::new(&mut sys, MachineInfo::default(), true, None);
+
+        let write = write_params(Space::Bus, 0x00FF_0000, "4E71").expect("hex bytes parse");
+        let gestures: Vec<(&str, Answer)> = vec![
+            (
+                stopping::BREAKPOINT_ADD,
+                b.call(
+                    &mut sys,
+                    stopping::BREAKPOINT_ADD,
+                    &stopping::breakpoint_add_params("0x00000100", "")
+                        .expect("a hex target parses"),
+                ),
+            ),
+            (
+                stopping::BREAKPOINT_CLEAR,
+                b.call(
+                    &mut sys,
+                    stopping::BREAKPOINT_CLEAR,
+                    &stopping::breakpoint_clear_all_params(),
+                ),
+            ),
+            (
+                stopping::WATCHPOINT_ADD,
+                b.call(
+                    &mut sys,
+                    stopping::WATCHPOINT_ADD,
+                    &stopping::watch_add_params("0x00FF0000", "2", "bus", true, true, "", "")
+                        .expect("a hex target parses"),
+                ),
+            ),
+            (
+                stopping::WATCHPOINT_CLEAR,
+                b.call(
+                    &mut sys,
+                    stopping::WATCHPOINT_CLEAR,
+                    &stopping::watch_clear_all_params(),
+                ),
+            ),
+            (
+                stopping::SET_PROFILER,
+                b.call(
+                    &mut sys,
+                    stopping::SET_PROFILER,
+                    &stopping::set_profiler_params(true, true, true),
+                ),
+            ),
+            (
+                "emulator/write_memory",
+                b.call(&mut sys, "emulator/write_memory", &write),
+            ),
+            (
+                "emulator/memory_hash",
+                hash(&mut b, &mut sys, 0x00FF_0000, 16),
+            ),
+        ];
+
+        let mut saw_a_composite_reply = false;
+        for (method, answer) in &gestures {
+            let Answer::Ok(raw) = answer else {
+                panic!(
+                    "{method} was REFUSED on a paused test machine, so this leg walks a refusal and \
+                     proves nothing about the success path: {}",
+                    answer_line(answer).text
+                );
+            };
+            // Would the old `format!("ok: {v}")` have put punctuation on the screen for this reply? If
+            // not, this leg is decoration, and the flag below is what stops all seven being decoration.
+            let dumped = raw.to_string();
+            if punctuation.iter().any(|c| dumped.contains(*c)) {
+                saw_a_composite_reply = true;
+            }
+            let line = answer_line(answer);
+            assert!(
+                !line.refused,
+                "{method}: an Ok answer produced a refused line"
+            );
+            for c in &punctuation {
+                assert!(
+                    !line.text.contains(*c),
+                    "{method} put the JSON character {c:?} on the glass: {:?} (raw reply {dumped})",
+                    line.text
+                );
+            }
+        }
+        assert!(
+            saw_a_composite_reply,
+            "not one of the {} gestures answered a reply whose raw Display carried punctuation, so \
+             this gate would pass with the defect fully restored",
+            gestures.len()
+        );
     }
 }

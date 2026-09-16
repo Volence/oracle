@@ -518,8 +518,10 @@ impl RomOpen {
                     text: match &answer {
                         // The reply whole: it carries the absolutised path the engine actually loaded,
                         // `symbolsDropped` (D7) and `hitsDropped` (§11.39), and every one of the three is
-                        // something a person swapping a cartridge wants to see.
-                        Answer::Ok(v) => format!("ok {v}"),
+                        // something a person swapping a cartridge wants to see. `describe_reply` keeps
+                        // all three — it spells every key the reply carried and drops only the JSON
+                        // punctuation, which was never one of the facts.
+                        Answer::Ok(v) => format!("ok {}", crate::bus::describe_reply(v)),
                         Answer::Err(e) => format!("{} {}", e.code, e.message),
                     },
                 });

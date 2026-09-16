@@ -1818,7 +1818,10 @@ impl Panels<'_> {
                     }
                     memory::Resolved::Symbol { addr, reply } => {
                         self.mem.base = addr;
-                        memory::Line::plain(format!("ok: {reply}"))
+                        memory::Line::plain(format!(
+                            "ok: {}",
+                            crate::bus::describe_reply(&reply)
+                        ))
                     }
                     memory::Resolved::Refused(e) => {
                         memory::answer_line(&crate::bus::Answer::Err(e))
@@ -5068,7 +5071,9 @@ pub const APP_NAME: &str = "oracle-player";
 pub struct Echo {
     /// The method that was called. Shown so a human can tell which button produced the line.
     pub method: &'static str,
-    /// `"<code> <message>"` for a refusal, or the compact reply for a success. Verbatim either way.
+    /// `"<code> <message>"` for a refusal, or the reply's own facts for a success. The server's own
+    /// words either way: a success goes through [`crate::bus::describe_reply`], which spells every key
+    /// and value the reply carried and drops only its JSON punctuation.
     pub text: String,
     /// `error.data.reason` — the machine-readable discriminant, shown *as* a discriminant. `None` on
     /// success, and also on a refusal that carried no reason, which is a distinction worth seeing.
@@ -5383,7 +5388,9 @@ impl Transport {
                 refused,
                 reason: answer.reason().map(str::to_string),
                 text: match &answer {
-                    crate::bus::Answer::Ok(v) => format!("ok {v}"),
+                    crate::bus::Answer::Ok(v) => {
+                        format!("ok {}", crate::bus::describe_reply(v))
+                    }
                     crate::bus::Answer::Err(e) => format!("{} {}", e.code, e.message),
                 },
             });
@@ -5410,9 +5417,11 @@ impl Transport {
             refused: answer.is_err(),
             reason: answer.reason().map(str::to_string),
             text: match &answer {
-                // The reply bodies here are small (`emulator/step` carries the new pc); shown compactly
-                // rather than summarised, so nothing of the server's answer is dropped on the way.
-                crate::bus::Answer::Ok(v) => format!("ok {v}"),
+                // The reply bodies here are small (`emulator/step` carries the new pc); every fact of
+                // them is spelled rather than summarised, so nothing of the server's answer is dropped
+                // on the way — see [`crate::bus::describe_reply`], which drops the punctuation and
+                // nothing else.
+                crate::bus::Answer::Ok(v) => format!("ok {}", crate::bus::describe_reply(v)),
                 crate::bus::Answer::Err(e) => format!("{} {}", e.code, e.message),
             },
         });

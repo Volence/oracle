@@ -605,6 +605,277 @@ impl Answer {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// ⚑ A reply as a sentence — the one spelling of "what did the server just say"
+// ---------------------------------------------------------------------------------------------------
+
+/// **A reply rendered as words, never as JSON.**
+///
+/// [`Answer::Ok`] carries a whole `serde_json::Value`, and until this existed every surface that echoed
+/// one rendered it with `Display`. The Memory panel's write cell, its hash button, the Breakpoints,
+/// Watchpoints and Profiler notes, the transport bar and the cartridge-swap modal all put literal
+/// `ok: {"breakpoint":"b3","addr":"0x00001234"}` on the glass, in the monospace face reserved for machine
+/// numbers. That is the style page's **P1** (raw JSON on the screen) and **P3** (a blob in the register
+/// face) in one expression, on eight sites.
+///
+/// The model is [`crate::ui`]'s `render`, which closed the same defect on the Memory panel's value
+/// column: **exhaustive over every `Value` variant**, with the composite arms *stating what arrived*
+/// rather than dumping it, so a new composite on the wire cannot fall through a catch-all onto the glass.
+///
+/// # Where it deliberately differs from `render`, and why
+///
+/// `render` draws **one served value in one cell**, so a composite there is a shape the cell cannot hold
+/// and the honest answer is to say a shape arrived. Here the composite **is** the whole reply: a line
+/// reading `2 keys in a nested record` at somebody who just armed a breakpoint would delete the only
+/// feedback the gesture has. So an object is spelled key by key, and a nested object is spelled **under
+/// its parent's key** — which is what lets this carry every fact the raw dump carried while carrying none
+/// of its punctuation.
+///
+/// # A string value is the server's payload and passes through as it stands
+///
+/// Quotes included, if the server put any there. That is `render`'s call for `render`'s reason: a string
+/// is the payload, not a container, and a `"` inside one is the server's character rather than this
+/// function's JSON. The gates below exempt bare strings from the punctuation walk for exactly that
+/// reason, and say so.
+///
+/// Guarded by [`reply_prose::no_reply_can_put_raw_json_on_the_screen`], which walks every `Value`
+/// variant, and by `memory::json_echo::the_gesture_surfaces_echo_no_json_punctuation`, which drives the
+/// real methods through this bus and reads the shipped line.
+pub fn describe_reply(v: &Value) -> String {
+    match v {
+        // Scalars spell identically in JSON and in prose, so there is no punctuation to leak.
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        // P6: `null` on the wire means the server had nothing there, and a reader is owed that in words
+        // rather than the four characters `null`.
+        Value::Null => NO_VALUE.to_owned(),
+        Value::Array(a) => describe_list(a),
+        Value::Object(m) if m.is_empty() => NO_DETAIL.to_owned(),
+        Value::Object(m) => {
+            let mut out = Vec::new();
+            describe_fields("", m, &mut out);
+            out.join(FIELD_SEP)
+        }
+    }
+}
+
+/// One `key value` phrase per leaf of `m`, with a nested record's keys spelled under their parent's.
+///
+/// Flattened rather than bracketed because brackets are the punctuation this function exists to keep off
+/// the glass: `pool base 0x00FF8000` says what `{"pool":{"base":"0x00FF8000"}}` says, in the reader's
+/// terms, and a reply nests at most a level or two.
+fn describe_fields(prefix: &str, m: &Map<String, Value>, out: &mut Vec<String>) {
+    for (k, v) in m {
+        let key = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix} {k}")
+        };
+        match v {
+            Value::Object(inner) if !inner.is_empty() => describe_fields(&key, inner, out),
+            _ => out.push(format!("{key} {}", describe_reply(v))),
+        }
+    }
+}
+
+/// What a list of values reads as: how many arrived, then up to [`LIST_PREVIEW`] of them.
+///
+/// **Bounded here rather than by the width of the box it lands in.** A reply's list has no length limit —
+/// `emulator/lookup_symbol`'s prefix search answers every match it found — and these lines are single
+/// lines beneath a control. The count is always exact, so a truncated preview never hides how much was
+/// left out.
+fn describe_list(a: &[Value]) -> String {
+    if a.is_empty() {
+        return NO_VALUES.to_owned();
+    }
+    let shown: Vec<String> = a.iter().take(LIST_PREVIEW).map(describe_reply).collect();
+    let rest = a.len() - shown.len();
+    let head = format!(
+        "{} value{}: {}",
+        a.len(),
+        if a.len() == 1 { "" } else { "s" },
+        shown.join(FIELD_SEP)
+    );
+    if rest == 0 {
+        head
+    } else {
+        format!("{head} and {rest} more")
+    }
+}
+
+/// What [`describe_reply`] prints for a served `null`. A stated absence, never the token `null` and never
+/// a zero.
+pub const NO_VALUE: &str = "no value";
+
+/// What [`describe_reply`] prints for a reply body with nothing in it.
+///
+/// Most handlers answer `{}` on success, and `ok: ` followed by nothing reads as a line that failed to
+/// render rather than as one saying the gesture carried no detail back.
+pub const NO_DETAIL: &str = "no detail (the gesture carried none back)";
+
+/// What [`describe_reply`] prints for an empty list. A stated absence, for [`NO_VALUE`]'s reason.
+pub const NO_VALUES: &str = "no values";
+
+/// What separates two facts in a described reply. A comma and a space, because that is what separates two
+/// facts in a sentence.
+const FIELD_SEP: &str = ", ";
+
+/// How many of a list's values [`describe_list`] spells before it counts the rest.
+pub const LIST_PREVIEW: usize = 6;
+
+/// **The raw-JSON gates for [`describe_reply`].**
+///
+/// Deliberately a walk over every `serde_json::Value` variant rather than over the replies this bus
+/// happens to send today: the defect this function closed was a catch-all that was correct *by luck about
+/// the wire*, and a gate keyed to today's wire would be correct by the same luck.
+#[cfg(test)]
+mod reply_prose {
+    use super::*;
+    use serde_json::json;
+
+    /// The five characters `serde_json` actually emits for structure, re-derived rather than typed, with
+    /// the count asserted so a gate cannot quietly start measuring a smaller set. `ui.rs`'s
+    /// `json_tests::structural` is the same derivation for the same reason; this is a second *reading* of
+    /// one rule, not a second rule.
+    fn structural() -> Vec<char> {
+        let encoded = json!({"a": [1, "b"]}).to_string();
+        let punctuation: Vec<char> = "{}[]\"".chars().filter(|c| encoded.contains(*c)).collect();
+        assert_eq!(
+            punctuation.len(),
+            5,
+            "serde_json no longer emits all five structural characters, so this gate is measuring a \
+             smaller set than it thinks: {encoded}"
+        );
+        punctuation
+    }
+
+    /// Every `Value` variant, the composite ones included, described without one character of JSON
+    /// punctuation reaching the string a panel draws.
+    ///
+    /// The composite assertions are **two-sided** for `ui.rs`'s reason: an output that merely filed the
+    /// braces off would pass a punctuation walk while still being a dump, so it must also differ from
+    /// `Value::to_string()` and must carry the facts the dump carried.
+    #[test]
+    fn no_reply_can_put_raw_json_on_the_screen() {
+        let punctuation = structural();
+        let cases: Vec<Value> = vec![
+            Value::Null,
+            json!(true),
+            json!(false),
+            json!(0),
+            json!(-42),
+            json!(1.5),
+            json!("plain"),
+            json!([]),
+            json!([1, 2, 3]),
+            json!({}),
+            json!({"breakpoint": "b3", "addr": "0x00001234"}),
+            json!({"pool": {"base": "0x00FF8000", "stride": 64}}),
+            json!({"matches": ["Obj01", "Obj02"], "count": 2}),
+            json!({"nothing": Value::Null, "deep": {"a": {"b": 1}}}),
+        ];
+        for v in &cases {
+            // A string is the server's payload rather than a container, so its own quotes are its
+            // characters and not this function's JSON. Same exemption `ui.rs`'s gate makes, same reason.
+            if v.is_string() {
+                continue;
+            }
+            let out = describe_reply(v);
+            for c in &punctuation {
+                assert!(
+                    !out.contains(*c),
+                    "describe_reply({v}) put the JSON character {c:?} on the screen: {out:?}"
+                );
+            }
+        }
+
+        // A string is the payload with its quotes off, which is why the `String` arm exists at all.
+        assert_eq!(describe_reply(&json!("plain")), "plain");
+
+        // A reply is spelled fact by fact rather than described as a count: the count is what the
+        // Memory panel's cell renderer says, and it is the wrong answer here.
+        let reply = json!({"breakpoint": "b3", "addr": "0x00001234"});
+        let out = describe_reply(&reply);
+        assert_ne!(
+            out,
+            reply.to_string(),
+            "the reply is being dumped, not described"
+        );
+        for fact in ["breakpoint", "b3", "addr", "0x00001234"] {
+            assert!(
+                out.contains(fact),
+                "describing the reply dropped {fact:?}, which the raw dump carried: {out:?}"
+            );
+        }
+
+        // A nested record is spelled under its parent's key, so nothing is lost to a count.
+        let nested = describe_reply(&json!({"pool": {"base": "0x00FF8000", "stride": 64}}));
+        assert!(
+            nested.contains("pool base 0x00FF8000") && nested.contains("pool stride 64"),
+            "a nested record lost its parent key or its facts: {nested:?}"
+        );
+    }
+
+    /// **P6 twice over**: a served `null`, an empty reply body and an empty list are three stated
+    /// absences, and none of them is a zero or a blank.
+    ///
+    /// Separate from the walk above because none of these three carries any punctuation at all — the
+    /// catch-all this replaced would have passed that walk while printing `null` and `{}` at a person.
+    #[test]
+    fn the_three_empty_replies_are_stated_absences_and_not_blanks() {
+        for (v, expect) in [
+            (Value::Null, NO_VALUE),
+            (json!({}), NO_DETAIL),
+            (json!([]), NO_VALUES),
+        ] {
+            let out = describe_reply(&v);
+            assert_eq!(out, expect);
+            assert!(!out.is_empty(), "an absence rendered as a blank");
+            assert!(
+                out != "0" && out != "null",
+                "an absence rendered as a token"
+            );
+        }
+        // ...and a null *inside* a reply is the same absence, not a dropped key.
+        let out = describe_reply(&json!({"addr": Value::Null}));
+        assert_eq!(out, format!("addr {NO_VALUE}"));
+    }
+
+    /// A list is capped at [`LIST_PREVIEW`] spelled values and **says how many it left out**, so a
+    /// truncated preview can never be read as a complete one.
+    ///
+    /// The expectations are derived from `LIST_PREVIEW` rather than pinned to today's 6: retuning the
+    /// constant must not need this test edited, and a test that pinned the number would go green on a
+    /// cap that had silently changed.
+    #[test]
+    fn a_long_list_is_capped_and_counts_what_it_left_out() {
+        let n = LIST_PREVIEW * 3 + 1;
+        let all: Vec<Value> = (0..n).map(|i| json!(format!("sym{i}"))).collect();
+        let out = describe_reply(&Value::Array(all));
+        assert!(
+            out.starts_with(&format!("{n} values:")),
+            "the exact count must lead, got {out:?}"
+        );
+        assert!(
+            out.contains(&format!("and {} more", n - LIST_PREVIEW)),
+            "the cap did not say how many it left out: {out:?}"
+        );
+        assert!(
+            out.contains(&format!("sym{}", LIST_PREVIEW - 1)),
+            "fewer than LIST_PREVIEW values were spelled: {out:?}"
+        );
+        assert!(
+            !out.contains(&format!("sym{LIST_PREVIEW} "))
+                && !out.ends_with(&format!("sym{LIST_PREVIEW}")),
+            "more than LIST_PREVIEW values were spelled: {out:?}"
+        );
+        // A list that fits is spelled whole, with no "and 0 more" tail.
+        let short = describe_reply(&json!(["a", "b"]));
+        assert_eq!(short, "2 values: a, b");
+    }
+}
+
 impl Bus {
     /// Build the hosted bus around `sys`, tell it about the cartridge, and land the initial pause mirror.
     ///
