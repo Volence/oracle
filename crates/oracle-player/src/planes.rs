@@ -465,12 +465,7 @@ pub fn scroll_note(inp: &Inputs) -> ScrollNote {
 /// 128-by-64-cell plane is 524288 pixels.
 pub fn raster(vdp: &Vdp, inp: &Inputs, ink: Ink, outline: bool) -> egui::ColorImage {
     let (pw, ph) = inp.pixels();
-    let paint = Paint {
-        inp,
-        vram: vdp.vram(),
-        cram: vdp.cram_decoded(),
-        ink,
-    };
+    let paint = Paint::new(inp, vdp.vram(), &vdp.cram_decoded(), ink);
     let (w, h) = inp.raster_size();
     let mut pixels = Vec::with_capacity(w * h);
 
@@ -528,11 +523,31 @@ fn run_from(sc: &PlaneScroll, x: usize, sx: usize, w: usize) -> usize {
 struct Paint<'a> {
     inp: &'a Inputs,
     vram: &'a [u8],
-    cram: [(u8, u8, u8); 64],
-    ink: Ink,
+    /// **Every colour the raster can paint, as eight 16-entry tables**: one per palette line per checker
+    /// phase, indexed `line * 2 + phase`, with **entry 0 holding that phase's checker colour** and entries
+    /// 1 to 15 the line's decoded CRAM.
+    ///
+    /// Folding the transparent case into index 0 is what makes the inner loop a lookup with no branch in
+    /// it: a nibble is a nibble, and *which* colour a 0 means is settled here, once, instead of at every
+    /// one of up to 524288 dots. It is 512 bytes and it is built once per raster.
+    lut: [[Color32; 16]; 8],
 }
 
-impl Paint<'_> {
+impl<'a> Paint<'a> {
+    /// Build the tables. `cram` is the renderer's decode, `ink` this panel's three colours.
+    fn new(inp: &'a Inputs, vram: &'a [u8], cram: &[(u8, u8, u8); 64], ink: Ink) -> Self {
+        let mut lut = [[Color32::BLACK; 16]; 8];
+        for (i, table) in lut.iter_mut().enumerate() {
+            let (line, phase) = (i / 2, i % 2);
+            table[0] = if phase == 0 { ink.empty_a } else { ink.empty_b };
+            for (n, slot) in table.iter_mut().enumerate().skip(1) {
+                let (r, g, b) = cram[line * 16 + n];
+                *slot = Color32::from_rgb(r, g, b);
+            }
+        }
+        Paint { inp, vram, lut }
+    }
+
     /// **Paint a run of at most eight pixels of one plane row**, starting at plane pixel (`sx`, `sy`).
     ///
     /// The cell, its tile row and its palette line are resolved **once for the run**. The shape this
@@ -551,21 +566,13 @@ impl Paint<'_> {
     fn run(&self, out: &mut Vec<Color32>, sx: usize, sy: usize, n: usize) {
         let cell = &self.inp.cells[(sy / 8) * self.inp.cols as usize + (sx / 8)];
         let row = cell_row(self.vram, cell, (sy % 8) as u8);
-        let line = (cell.palette as usize & 3) * 16;
+        let line = (cell.palette as usize & 3) * 2;
+        let down = sy / CHECKER;
         let tx = sx % 8;
         let mut painted = [Color32::BLACK; 8];
         for (i, slot) in painted.iter_mut().enumerate().take(n) {
-            let nibble = row[tx + i] as usize;
-            *slot = if nibble == 0 {
-                if ((sx + i) / CHECKER + sy / CHECKER).is_multiple_of(2) {
-                    self.ink.empty_a
-                } else {
-                    self.ink.empty_b
-                }
-            } else {
-                let (r, g, b) = self.cram[line + nibble];
-                Color32::from_rgb(r, g, b)
-            };
+            let phase = ((sx + i) / CHECKER + down) & 1;
+            *slot = self.lut[line + phase][row[(tx + i) & 7] as usize];
         }
         out.extend_from_slice(&painted[..n]);
     }
