@@ -1405,6 +1405,24 @@ pub const WATCHPOINT_ADD: &str = "emulator/watchpoint_add";
 pub const WATCHPOINT_CLEAR: &str = "emulator/watchpoint_clear";
 pub const SET_PROFILER: &str = "emulator/set_profiler";
 
+/// ⚑ **The two served rows the stopping tables are direct reads of**, named in their section heads.
+///
+/// Not gestures -- nothing here calls them -- which is exactly why they are constants and why
+/// [`crate::ui`] does not spell them inline. A section head naming a method the server does not carry is
+/// a believable wrong answer on the glass, and the only thing that can catch it is a gate that reads the
+/// string the head draws. `every_method_a_stopping_section_head_names_is_served` is that gate;
+/// `every_gesture_names_a_served_method` cannot be, because a section head is not a gesture and that
+/// lock's body is a list of the six methods a click sends.
+pub const BREAKPOINT_LIST: &str = "emulator/breakpoint_list";
+/// See [`BREAKPOINT_LIST`].
+pub const WATCHPOINT_LIST: &str = "emulator/watchpoint_list";
+
+/// The Breakpoints table's section head.
+pub const BREAKPOINTS_HEAD: &str = "breakpoints";
+/// The armed-watch table's section head. The hit log has its own head ([`WatchView::hit_log_head`]),
+/// which carries a count and so cannot be a constant.
+pub const ARMED_WATCHES_HEAD: &str = "armed watches";
+
 /// The four spaces `emulator/watchpoint_add` accepts, in the handler's own spelling.
 ///
 /// Read from nowhere but this list, and checked against `parse_watch_space`'s accepted set by the test
@@ -3162,6 +3180,8 @@ mod watch_text {
             STOP_NEVER_WHY.to_owned(),
             NO_LABEL.to_owned(),
             NO_LABEL_WHY.to_owned(),
+            ARMED_WATCHES_HEAD.to_owned(),
+            WATCHPOINT_LIST.to_owned(),
         ];
         for s in &v.headline {
             out.push(s.label.to_owned());
@@ -3556,6 +3576,8 @@ mod break_text {
             RELEASE_LABEL.to_owned(),
             DISARM_LABEL.to_owned(),
             HALTING_LABEL.to_owned(),
+            BREAKPOINTS_HEAD.to_owned(),
+            BREAKPOINT_LIST.to_owned(),
         ];
         out.extend(BREAK_COLS.iter().map(|c| c.head.to_owned()));
         out.extend(v.rows.iter().flat_map(BreakRow::cells));
@@ -3758,6 +3780,33 @@ mod break_text {
         assert!(
             states.contains(&STATE_ARMED.to_owned()) && states.contains(&STATE_DISABLED.to_owned()),
             "the fixture must show both states or the word is untested: {states:?}"
+        );
+    }
+
+    /// ★ **Every method a stopping section head names is one the server actually serves.**
+    ///
+    /// Both tables grew a section head in these parcels, and `section`'s own hover promises the reader
+    /// that the name beside it is *"the served row this section is a direct read of, so the panel and a
+    /// client asking the same question see the same answer"*. A head naming a method the registry does
+    /// not carry keeps that promise on the glass and breaks it on the wire, which is a believable wrong
+    /// answer rather than a missing one.
+    ///
+    /// ⚑ `every_gesture_names_a_served_method` cannot cover this and does not claim to: its body is the
+    /// six methods a click sends, and a section head is not a gesture. This is the gate for the strings
+    /// the heads draw, with the same anti-vacuity clause, because `is_served` answering true for
+    /// everything would pass the loop above it.
+    #[test]
+    fn every_method_a_stopping_section_head_names_is_served() {
+        for m in [BREAKPOINT_LIST, WATCHPOINT_LIST] {
+            assert!(
+                crate::memory::is_served(m),
+                "a stopping section head names {m} as the row it is a direct read of, and the METHODS \
+                 registry does not carry it"
+            );
+        }
+        assert!(
+            !crate::memory::is_served("emulator/breakpoint_list_but_spelled_wrong"),
+            "`is_served` answered true for a method that cannot exist, so the loop above witnesses nothing"
         );
     }
 }

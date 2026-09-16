@@ -2370,7 +2370,12 @@ impl Panels<'_> {
         // --- the table ---
         if view.live.has_rows() {
             ui.separator();
-            section(ui, "breakpoints", None, "emulator/breakpoint_list");
+            section(
+                ui,
+                stopping::BREAKPOINTS_HEAD,
+                None,
+                stopping::BREAKPOINT_LIST,
+            );
             // The armed-for-removal handle is read out here and written back after the closure, so the
             // scroll area borrows neither `self` nor a field of it. `confirm` is the handle the human has
             // already pressed `remove` on; `next_confirm` is `Some(new value)` only when this frame moved
@@ -2575,7 +2580,12 @@ impl Panels<'_> {
         // --- the armed watches ---
         if !view.watches.is_empty() {
             ui.separator();
-            section(ui, "armed watches", None, "emulator/watchpoint_list");
+            section(
+                ui,
+                stopping::ARMED_WATCHES_HEAD,
+                None,
+                stopping::WATCHPOINT_LIST,
+            );
             // Read out and written back after the closure, exactly as in `breakpoints` above. The two tabs
             // share the field and cannot collide: the handles are the server's own `b`/`w` spellings.
             let confirm = self.stopping.confirm_remove.clone();
