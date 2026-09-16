@@ -1152,3 +1152,43 @@ fields of every `^test result:` line summed with `awk`. The 481 `oracle-player` 
 `test result:` lines of one run summed (472 + 4 + 4 + 1). The 10811 outline pixels and the shape counts:
 printed by the witness itself. The timing: the instrument's own output, best rep of 25, with its null arm
 quoted beside it.
+
+
+---
+
+## Addendum, 2026-09-16 (landing, outline witness): verified at the merge, and one derived comparison does not reproduce
+
+*Appended under the standing rule; nothing above is edited. Written by the overseer seat at the outline-witness
+merge, re-running the parcel's proofs and its measurement rather than transcribing them.*
+
+**M4 reproduced here across EVERY leg of the crate** (`--no-fail-fast`, 4 of 4 legs, 481 passed): with the down
+neighbour read at `x + 1` (quoted from disk at `planes.rs:674`), **the sole failure is the new
+`covered_edges_equals_the_boundary_the_viewport_intervals_predict`**; the differential and
+`a_uniform_scroll_outlines_a_rectangle` both print `ok`. ⚑ The first run of that proof reported **1 leg**, because
+cargo stops at the first failing binary — so "the sole failure" was unproven until `--no-fail-fast` ran the rest.
+**Scope checked, not assumed:** no other crate calls `covered_edges`, so crate scope is tree scope here.
+
+**Totals.** Debug workspace **90 legs / 2966 / 0 / 8** (+1 passed, +1 ignored: the witness and the timing
+instrument). ⚑ **The workspace RELEASE run was reaped three times for system memory pressure and never
+produced a verdict** — the last reached **0 of 90 legs**, dying in compilation before any test ran. Release was
+therefore verified on the changed crate alone: **`oracle-player` release, 4 of 4 legs, 482 / 0 / 2**, witness
+passing. **That scope is sound on a stated basis rather than a gloss:** since `161d6f4`, whose workspace release
+run this seat verified at 90 legs / 2968, the only code change anywhere is these 412 test-only lines in one file.
+CI is the independent workspace witness.
+
+**The timing reproduces to within a point**, null arms **1.00x** on all three machines, uptime 18h58m:
+**61.9 %** (agent 61.9), **49.2 %** (48.5), **66.4 %** (66.3), with essentially all of it in `covered_edges`.
+
+⚑ **ONE DERIVED CLAIM ABOVE DOES NOT REPRODUCE, and it is the sentence at "the cost is not where the source makes
+it look".** It says widening the display H32→H40 costs **+20 %** while doubling the plane costs **only +17 %**.
+Re-measured here: display **+21.2 %**, plane **+21.5 %**. **The gap was +2.3 points in the parcel's run and
+−0.3 in this one — it changed SIGN, so it is run-to-run noise and not a finding.** Nothing about which absolute
+growth costs more survives.
+**What DOES reproduce is the ratio underneath, and it supports the same conclusion on firmer ground:** per unit
+of growth, the display term costs **4.5x** the plane term in the parcel's run and **3.9x** in this one. So the
+pointer stands — **start the optimisation at the `dw * dh` forward scatter in `covered_mask`** — but its evidence
+is the normalised ratio, never the absolute comparison. ⚑ **The parcel hedged its own sentence** (*"should measure
+before believing this sentence too"*), which is exactly the instinct that made this correction cheap.
+**The general shape: a comparison between two measured differences needs its own noise estimate.** Each figure
+here came with a null arm; the difference BETWEEN them did not, and two small differences can each be real
+while their ordering is noise.
