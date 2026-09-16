@@ -105,6 +105,13 @@ for row 11. The ROM makes **zero** VDP accesses after frame 7, so no mid-frame e
 `docs/2026-07-16-vdp-pixel-known-differences.md`. On this evidence P1 owns **at most one** of them (test 3's
 second sub-case). Test 6 appears to be a measurement artefact of the instrument, not an emulator inaccuracy.
 
+> **2026-09-16 — this finding was right, and the follow-up parcel proved it from the other side.** The
+> mid-sprite cut is now implemented; test 3's second sub-case flips to `TICK/TICK` and **test 6 does not
+> move**. So P1 owned exactly one of the two failures, the one that is now closed, and `6=FAIL` remains the
+> artefact this survey identified. The scorecard row and the P1 ledger row are amended at last (they were
+> deliberately left standing here); F-POSTHOC-STALE-CARRY is untouched and still open — no glyph constant
+> was re-derived, because the flipped test-3 hash matched the already-pinned `TICK_TICK`.
+
 That reframes the priority of the P1 follow-up work itself, which is worth more than the row flip.
 
 ### Why nothing was changed
