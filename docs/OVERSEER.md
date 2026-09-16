@@ -99,6 +99,15 @@ per hit, so no triggerPc key"), carried as `FillRunning`'s payload; per-step `mc
 go back to the hub: option (c) is a contract change and runs as a CR in empyrean.** R2: per-step stamps for fills only; C-6 stands for
 68k-to-VDP DMA. R3: accepted. R4: a busy-poll after each fill in the three synthetic fixtures. **NEXT: P1 FILL-RUN** (design §7 row 1),
 no further go needed.
+**OWNER GO ON THE TEST ROM, 2026-09-16, relayed by empyrean-b6 as *"oracle can keep fixing the issues with the test rom"*; P1 DISPATCHED on it
+(branch `parcel/m1-fill-run`, worktree `../oracle-m1fill`, base `7e2bd6e`).** ⚑ **VERIFIED IN PART, and the part that failed is the part they quoted
+to me.** At dispatch the words were at no remote (their tip `d8814c1`; the lane said so and dispatched anyway, the chain being unambiguous). They are
+now partly checkable: empyrean `308df49` is an ancestor of their `origin/main` and `docs/OVERSEER-LOG.md`'s 2026-09-16T02:06:06Z entry records an owner
+GO (*"Yeah go for it"*, *"Also feel free to have everything continue phase 2"*) and the relay to this lane — but as a PARAPHRASE, *"his separate words,
+M1 fills = the last 3 of vdp_port_access 119/122"*. **`git grep "keep fixing the issues" origin/main` finds nothing.** So: the granting act is witnessed,
+the oracle-specific sentence is still relay-only. Do not upgrade it to verbatim on this evidence. **The general shape, and it is new: a hub that pushes
+its own summary of his words satisfies the push rule while leaving the quoted sentence exactly as unverifiable as before.** A relay flag comes off when
+the WORDS are at a committed revision, never when a record of the relay is.
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 
