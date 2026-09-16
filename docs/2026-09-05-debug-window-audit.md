@@ -687,3 +687,119 @@ of it. **13 `monospace(format!)` draws remain in `ui.rs`**, which is the crude s
 **Not re-measured here:** items 6-11. They are not what a first parcel would touch, and a figure
 re-derived now would be the same eleven days stale by the time anyone reads it — **name the source, not
 the figure.** Re-derive each at the moment it is proposed, the same way this one was.
+
+---
+
+## Addendum, 2026-09-16 (evening): items 1 and 3 are built, the prerequisite is landed, and three of this page's own counts were wrong
+
+*Appended under this document's standing rule: nothing before this heading is edited, so every stamp above
+keeps meaning what it says. Written by the `DATA-DISPLAY-AUDIT` parcel that did the work, on
+`parcel/data-display-1` off `61288ff`.*
+
+**Nothing here was seen on a screen either.** The window still cannot be opened from an agent seat, so
+every claim below about *appearance* is a prediction, and they are collected under "what a frame still has
+to answer" at the end.
+
+### Item 1 (§0.3) is closed, and it was **eight sites in six files**, not three
+
+§0.3 names three, and the 2026-09-16 morning addendum re-derived those three from the tree and corrected
+their line numbers. Both were still counting from the citation rather than from a sweep. Grepping the crate
+for the expression itself finds five more, and **one of them is twelve lines from a site §0.3 does cite**:
+
+| site | booked? | what it is |
+|---|---|---|
+| `memory.rs` `answer_line` | yes | the five surfaces §0.3 names |
+| `memory.rs` `resolve_address` ×2 | yes | the address box; the second fires on every prefix search |
+| `ui.rs` `Panels::memory`, `Resolved::Symbol` arm | **no** | the address box's *success* arm, `ok: {reply}` |
+| `ui.rs` `Transport::issue` | **no** | the transport bar, which is always drawn |
+| `ui.rs` `Transport::issue_all` | **no** | same bar; its text is published for `emulator/screen_text` |
+| `rom_open.rs` | **no** | the cartridge-swap modal |
+
+All eight now go through `bus::describe_reply`. It is `ui.rs`'s `render` treatment with one deliberate
+difference, argued at the function: `render` draws **one served value in one cell**, so a composite there
+is a shape the cell cannot hold and *"2 keys in a nested record"* is the honest answer; here the composite
+**is** the reply, and that sentence would delete the only feedback an arming gesture has. So an object is
+spelled key by key and a nested one under its parent's key.
+
+**Left alone deliberately, and flagged rather than settled:** `palette.rs`'s echo. The command palette is a
+raw RPC console whose documented job is showing what a method actually returns, and the wire *shape* is
+what its user came for. Every other site echoes a reply at somebody who pressed a button. If that reading
+is wrong it is a one-line change.
+
+**Found and not touched, because it is latent rather than live:** `objects.rs`'s `Row::cell` ends
+`Some(v) => v.to_string()` — the identical catch-all `render` replaced, safe today only because
+`DecodedRecord::to_json` emits scalars. Same class as the defect the style page called latent; it belongs
+with parcel 10, not here.
+
+### The parcels 3-5 prerequisite is landed, and **the set of four functions was not the four that were booked**
+
+Read from the signatures rather than from the note:
+
+* **`text_w` does not take an `objects::Col`.** §2 and the morning addendum both list it among the four
+  that do. It takes `(&Ui, &FontId, &str)` and was already generic.
+* **`header_cell` does take one**, and neither §2 nor the addendum names it.
+
+So the count of four was right and two of its members were wrong, in opposite directions — the same shape
+of error the morning addendum found in §2's item 1, from the same cause.
+
+What landed: `table.rs` holds `Col { head, numeric, mono }` and no `egui` type; `objects::Col` **composes**
+it rather than restating it; `ui.rs` gains `Cell`/`TableRow` and a generic `table`, and `slot_table`
+survives as the Objects adapter. The colour and the hover are now decided by the panel and carried in the
+`Cell` — `table_cell` used to contain a literal `if text == objects::NO_NAME`, which is the object-specific
+line §2 did not know was in there.
+
+**The "renders identically" constraint was measured, not asserted:** a temporary capture walked every
+painted shape of three Objects tables (pool with a selection, pool without, player section) at a fixed
+760×420 with the real theme installed — text rects, strings, galley **section** colours and font ids, plus
+the zebra and selection rects and the header hairline. 110 shapes, byte-for-byte identical before and
+after. The capture is not kept: a golden of font metrics fails on a font update and says nothing about the
+seam. Three gates on the seam are kept instead (`ui::table_tests`).
+
+### Parcel 3 (Profiler) is built, and two of §4's five charges against it were already closed
+
+* **P2 stands and is fixed.** Two format strings carrying the same five widths, kept in step by hand. Now
+  one `stopping::PROFILER_COLS`, and `the_table_and_its_header_cannot_disagree_about_the_columns` asserts
+  the agreement from the column list's own length rather than from a pinned six.
+* **P3 stands and is fixed.** The prose clause in monospace is gone; the divisor is a headline stat and
+  the clause is its hover.
+* **P9 stands and is fixed.** `§11.16` and `§11.18` moved into doc comments; the facts they carried stay,
+  in the reader's terms.
+* **P10 was ALREADY CLOSED.** §4 names four runtime em dashes at `1695, 1718, 1752, 1784`. There were
+  **zero** em dashes anywhere in the Profiler body at `61288ff` — swept at `7e16748`, the same unrelated
+  parcel that closed §0.3's P10 third. Measured with a positive control (243 in `ui.rs` overall).
+* **P6-adjacent stands and is fixed.** `None => String::new()` is now a stated absence.
+
+**Where the code disagreed with §4's "Becomes" paragraph, the code won and it is said here.** §4 proposes
+`calls` as *numeric* without the monospace face. It is monospace. The proposal was made from source and
+never seen; the window's own precedent is unanimous the other way — every numeric column in the Objects
+table (`slot`, `x`, `y`) is monospace, because a right-aligned column of proportional digits does not
+line up, which is the entire reason the column is right-aligned.
+
+**Also dropped as second spellings**, which §4 does not mention because it was not looking for them:
+`ProfilerView`'s `frames`, `open_frames`, `per_frame_armed` and `callers_armed`, and `RoutineRow`'s
+`symbol`. Each had exactly one reader — the renderer, which formatted it — and each is now stated once, in
+the form the panel draws.
+
+**The armed and retained sentences no longer restate the headline numbers.** They used to say *"N frames in
+the sample so far, M routines, K frames open"* immediately above a card that now says the same three
+numbers. That is the Registers tab's rule (*a panel that silently shows one number twice is a new wrong
+answer*) and it only became a defect when the card arrived.
+
+### Measured here, because the next reader will look
+
+**`ui.rs` holds 10 `monospace(format!)` draws**, down from the 13 the morning addendum measured. Three were
+this tab's.
+
+### What a frame still has to answer (parked look calls 14-16, same rule: none of these were seen)
+
+14. **The Profiler headline at the tab's width.** Three bare stats share one card. §6's parked call 2 asks
+    the same question of Pacing's four and is still parked; this is the same question one tab over, and
+    the Profiler sits in the same dock column.
+15. **The table inside its `ScrollArea`.** `column_widths` reads `ui.available_width()`, and inside a
+    vertical `ScrollArea` that is the width minus whatever the scrollbar takes. The Objects pool table has
+    always been drawn this way, so the behaviour is not new — but the Profiler's `name` column is the one
+    that pays for it, and nobody has looked at whether it still reads as a name at a realistic width.
+16. **`(unnamed)` sixty rows deep.** On a ROM with no listing loaded, *every* row's name column is the
+    stated absence, recessed. Objects has the same property and it was judged acceptable there on a table
+    of sixty-four slots. *Question: on the profiler's twenty-four, does a column of identical recessed
+    markers read as an answer or as a broken column?*

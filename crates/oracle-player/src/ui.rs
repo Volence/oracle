@@ -54,6 +54,7 @@ use crate::pacing::{self, Governor};
 use crate::screen;
 use crate::screen_pick;
 use crate::stopping::{self, Live};
+use crate::table;
 use oracle_core::io::Pad;
 use oracle_core::symbols::SymbolTable;
 use serde_json::{json, Value};
@@ -1818,7 +1819,10 @@ impl Panels<'_> {
                     }
                     memory::Resolved::Symbol { addr, reply } => {
                         self.mem.base = addr;
-                        memory::Line::plain(format!("ok: {reply}"))
+                        memory::Line::plain(format!(
+                            "ok: {}",
+                            crate::bus::describe_reply(&reply)
+                        ))
                     }
                     memory::Resolved::Refused(e) => {
                         memory::answer_line(&crate::bus::Answer::Err(e))
@@ -2764,34 +2768,7 @@ impl Panels<'_> {
             stopping::profiler(p, armed, self.symbols)
         };
 
-        Self::live_head(
-            ui,
-            view.live,
-            &format!(
-                "the accountant is armed. {} frame{} in the sample so far, {} routine{}, {} frame{} open \
-                 on the shadow stack",
-                view.frames,
-                if view.frames == 1 { "" } else { "s" },
-                view.routine_count,
-                if view.routine_count == 1 { "" } else { "s" },
-                view.open_frames,
-                if view.open_frames == 1 { "" } else { "s" },
-            ),
-            &if matches!(view.live, Live::Never) {
-                "The profiler has never been armed in this session, so there is no sample to show. This \
-                 is not `no hot code`. It is `nothing was measured`. Arm it below."
-                    .to_owned()
-            } else {
-                format!(
-                    "The sample of {} frame{} and {} routine{} below was retained when the accountant was \
-                     disarmed (§11.16: arming resets, disarming retains, reading never clears).",
-                    view.frames,
-                    if view.frames == 1 { "" } else { "s" },
-                    view.routine_count,
-                    if view.routine_count == 1 { "" } else { "s" },
-                )
-            },
-        );
+        Self::live_head(ui, view.live, &view.armed_sentence, &view.retained_sentence);
 
         // --- arm / disarm ---
         let mut gesture: Option<Value> = None;
@@ -2801,12 +2778,7 @@ impl Panels<'_> {
             ui.checkbox(&mut st.prof_callers, "callers");
             if ui
                 .button(if view.armed { "disarm" } else { "arm" })
-                .on_hover_text(
-                    "emulator/set_profiler. ⚑ ARMING RESETS THE SAMPLE: every arming flag resets \
-                     together (§11.18), so ticking `callers` on a running measurement and re-arming \
-                     starts a FRESH sample under the lenses this click names, and the one you were \
-                     watching is gone. Disarming keeps it.",
-                )
+                .on_hover_text(stopping::ARM_HOVER)
                 .clicked()
             {
                 gesture = Some(stopping::set_profiler_params(
@@ -2815,67 +2787,76 @@ impl Panels<'_> {
                     st.prof_callers,
                 ));
             }
-            ui.weak(format!(
-                "lenses on the retained sample: perFrame {}   callers {}",
-                view.per_frame_armed, view.callers_armed
-            ));
+            ui.label(
+                egui::RichText::new(&view.lenses)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
+            );
         });
 
-        // --- the rows ---
+        // --- the sample ---
         if view.live.has_rows() {
-            ui.separator();
-            ui.monospace(format!(
-                "frames in sample (the divisor `emulator/get_profiler_frames` uses)   {}",
-                view.frames
-            ));
-            ui.small(
-                "Every figure below is the UNDIVIDED sample total. The per-frame view is the server's \
-                 (`emulator/get_profiler_frames`), which divides these by the count above and reports \
-                 `perFrameExact` beside them; this panel shows what it divides rather than dividing a \
-                 second time.",
+            ui.add_space(SECTION_GAP);
+            // The numbers the tab is opened to read, side by side and large, sharing one card and each
+            // without a box of its own: look call 4, settled as bare (`d-39-answered`).
+            card(ui, |ui| stat_row(ui, &view.headline));
+            ui.add_space(SECTION_GAP);
+            ui.label(
+                egui::RichText::new(stopping::UNDIVIDED)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
             );
-            ui.separator();
-            ui.strong(format!(
-                "hottest routines: top {} of {}",
-                view.top.len(),
-                view.routine_count
-            ));
-            ui.monospace(format!(
-                "{:<10} {:>13} {:>13} {:>11} {:>9}  name",
-                "addr", "cycles", "self", "stall", "calls"
-            ));
+            ui.add_space(SECTION_GAP);
+
+            // Three weights on one line, which is what `section` exists for: what this is, how much of
+            // it there is, and the served row it is a direct read of.
+            section(
+                ui,
+                "hottest routines",
+                Some(format!("top {} of {}", view.top.len(), view.routine_count)),
+                "emulator/get_profiler_frames",
+            );
+            let rows: Vec<TableRow> = view
+                .top
+                .iter()
+                .map(|r| {
+                    let cells = r.cells();
+                    TableRow {
+                        cells: stopping::PROFILER_COLS
+                            .iter()
+                            .zip(cells)
+                            .map(|(_, text)| Cell {
+                                // Health is decided beside the fact, and a routine row carries none: a
+                                // hot routine is not a fault, it is the answer. What recedes is the
+                                // stated absence, for the Objects table's reason — sixty of them at
+                                // full weight would be the loudest thing on the tab.
+                                colour: if text == stopping::NO_NAME {
+                                    ui.visuals().weak_text_color()
+                                } else {
+                                    ui.visuals().text_color()
+                                },
+                                hover: (text == stopping::NO_NAME).then_some(stopping::NO_NAME_WHY),
+                                text,
+                            })
+                            .collect(),
+                        id: None,
+                        selected: false,
+                    }
+                })
+                .collect();
             egui::ScrollArea::vertical()
                 .id_salt("profiler-rows")
                 .max_height(280.0)
                 .show(ui, |ui| {
-                    for r in &view.top {
-                        let name = match &r.symbol {
-                            Some((n, 0)) => format!("  {n}"),
-                            Some((n, d)) => format!("  {n}+0x{d:X}"),
-                            None => String::new(),
-                        };
-                        ui.monospace(format!(
-                            "{:<10} {:>13} {:>13} {:>11} {:>9}{name}",
-                            r.addr_text,
-                            r.counts.cycles,
-                            r.counts.self_cycles,
-                            r.counts.stall_cycles,
-                            r.counts.calls
-                        ));
-                    }
+                    table(ui, &stopping::PROFILER_COLS, &rows, "profiler-row");
                 });
-            if view.routine_count > view.top.len() {
-                ui.small(format!(
-                    "{} further routine{} in the sample are not drawn. The full list is \
-                     `emulator/get_profiler_frames`, whose `top` refuses a request above its cap rather \
-                     than clamping, so a client can always tell a full list from a clipped one.",
-                    view.routine_count - view.top.len(),
-                    if view.routine_count - view.top.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ));
+            if let Some(note) = &view.not_drawn {
+                ui.add_space(SECTION_GAP);
+                ui.label(
+                    egui::RichText::new(note)
+                        .text_style(egui::TextStyle::Small)
+                        .color(ui.visuals().weak_text_color()),
+                );
             }
         }
 
@@ -3931,16 +3912,16 @@ fn head_face(ui: &egui::Ui) -> egui::FontId {
 ///
 /// ⚑ **The gutter is NOT folded in here any more.** See [`fit_columns`], which is where the arithmetic
 /// and the reason both live.
-fn column_widths(ui: &egui::Ui, cols: &[objects::Col], cells: &[Vec<String>]) -> Vec<f32> {
+fn column_widths(ui: &egui::Ui, cols: &[table::Col], rows: &[TableRow]) -> Vec<f32> {
     if cols.is_empty() {
         return Vec::new();
     }
     let head = head_face(ui);
     let faces: Vec<egui::FontId> = cols.iter().map(|c| cell_face(ui, c)).collect();
     let mut w: Vec<f32> = cols.iter().map(|c| text_w(ui, &head, c.head)).collect();
-    for row in cells {
-        for (i, cell) in row.iter().enumerate().take(cols.len()) {
-            w[i] = w[i].max(text_w(ui, &faces[i], cell));
+    for row in rows {
+        for (i, cell) in row.cells.iter().enumerate().take(cols.len()) {
+            w[i] = w[i].max(text_w(ui, &faces[i], &cell.text));
         }
     }
     fit_columns(&w, ui.available_width(), COL_GUTTER, NAME_COL_FLOOR)
@@ -3984,7 +3965,8 @@ fn fit_columns(natural: &[f32], avail: f32, gutter: f32, floor: f32) -> Vec<f32>
 /// Right alignment is not a nicety on a numeric column: it is the whole reason a column of coordinates can
 /// be compared down the page at all, and it is exactly what a padded `{:>7}` was reaching for and could
 /// only approximate.
-fn table_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, text: &str, colour: egui::Color32) {
+fn table_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, cell: &Cell) {
+    let (text, colour) = (cell.text.as_str(), cell.colour);
     let rich = egui::RichText::new(text).color(colour);
     let rich = if c.mono { rich.monospace() } else { rich };
     let layout = if c.numeric {
@@ -3999,10 +3981,12 @@ fn table_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, text: &str, colour: e
     let cut = text_w(ui, &cell_face(ui, c), text) > w;
     ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
         let r = ui.add(egui::Label::new(rich).truncate());
-        // The short cell says the object has no name; the sentence saying *why* is a fact about the
-        // listing and belongs on the hover, not in a column six characters wide.
-        if text == objects::NO_NAME {
-            r.on_hover_text(objects::NO_NAME_WHY);
+        // ⚑ **The panel's note wins over the table's.** A short cell like `(unnamed)` says an answer is
+        // absent; the sentence saying *why* is a fact about that panel's data, not about tables, so the
+        // panel supplies it and this function no longer knows what `objects::NO_NAME` is. The truncation
+        // hover below stays here, because *that* one is a fact about drawing.
+        if let Some(why) = cell.hover {
+            r.on_hover_text(why);
         } else if cut {
             // A truncated cell is unreadable, not merely tidy, so the whole of it is one hover away.
             r.on_hover_text(text);
@@ -4017,7 +4001,7 @@ fn table_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, text: &str, colour: e
 /// the face [`column_widths`] measured it in, and it carries none of that function's hovers — a header
 /// is never `objects::NO_NAME` and never truncated, because its own width is one of the terms its
 /// column's width is the maximum of.
-fn header_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, colour: egui::Color32) {
+fn header_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, colour: egui::Color32) {
     let layout = if c.numeric {
         egui::Layout::right_to_left(egui::Align::Center)
     } else {
@@ -4035,7 +4019,7 @@ fn header_cell(ui: &mut egui::Ui, c: &objects::Col, w: f32, colour: egui::Color3
 
 /// The face a cell of `c` is drawn in. One function, so the width measurement and the `RichText` cannot
 /// disagree about which font is about to be used.
-fn cell_face(ui: &egui::Ui, c: &objects::Col) -> egui::FontId {
+fn cell_face(ui: &egui::Ui, c: &table::Col) -> egui::FontId {
     let want = if c.mono {
         egui::TextStyle::Monospace
     } else {
@@ -4399,21 +4383,45 @@ fn select_list(
     hit
 }
 
-/// A table of slots: a header row, hairline-separated, then one banded row per slot.
+/// **One cell as the table draws it**: the text, the colour the *panel* chose for it, and the panel's own
+/// note about why it reads as it does.
 ///
-/// `selected` is `None` for a table whose rows are not clickable (the player section, which is a list of
-/// two) and `Some(current)` for one whose rows are (the pool table, where a click opens the expansion).
-/// Returns the slot clicked this frame, if any -- the caller owns the selection, because a table that
+/// ⚑ **The colour is decided beside the fact and carried here, never re-derived at the draw site.** That
+/// is the Pacing exemplar's second lesson generalised off health: a table that looked at a cell's text to
+/// decide its colour would be a second encoding of a judgement the panel already made, and the two agree
+/// only until somebody rewords a marker string.
+pub struct Cell {
+    pub text: String,
+    pub colour: egui::Color32,
+    /// The sentence behind this cell, or `None`. A short marker like `(unnamed)` is an answer whose
+    /// *reason* is a fact about that panel's data, so the panel supplies it; the table adds its own
+    /// truncation hover only where there is none.
+    pub hover: Option<&'static str>,
+}
+
+/// **One row a [`table`] draws.**
+///
+/// `id` is what a click on this row reports and `None` makes the row inert, which is how the player
+/// section (a list of two, not a selector) and the pool table (a selector) share one function without a
+/// second flag saying which is which.
+pub struct TableRow {
+    pub cells: Vec<Cell>,
+    pub id: Option<u32>,
+    pub selected: bool,
+}
+
+/// **The window's column table**: a header row, hairline-separated, then one banded row per entry.
+///
+/// Returns the row id clicked this frame, if any -- the caller owns the selection, because a table that
 /// decided its own selection would need a second copy of it.
-fn slot_table(
-    ui: &mut egui::Ui,
-    cols: &[objects::Col],
-    rows: &[objects::Row],
-    selected: Option<Option<u32>>,
-    salt: &str,
-) -> Option<u32> {
-    let cells: Vec<Vec<String>> = rows.iter().map(|r| r.cells(cols)).collect();
-    let widths = column_widths(ui, cols, &cells);
+///
+/// ⚑ **Generalised off the Objects tab, 2026-09-16** (the audit's prerequisite for its parcels 3 to 5).
+/// This body is the Objects table's body unchanged; what moved out of it is every decision that was
+/// about objects rather than about tables — which colour a cell takes, which hover it carries, and what
+/// a column's `field` is. Those are now in the [`Cell`]s the caller hands over, so the Profiler, the
+/// Watch log and the Breakpoint list reach the same furniture without `objects::Field` coming with them.
+fn table(ui: &mut egui::Ui, cols: &[table::Col], rows: &[TableRow], salt: &str) -> Option<u32> {
+    let widths = column_widths(ui, cols, rows);
     let mut hit = None;
 
     ui.scope(|ui| {
@@ -4442,14 +4450,14 @@ fn slot_table(
         );
         ui.add_space(3.0);
 
-        for (i, (r, cs)) in rows.iter().zip(&cells).enumerate() {
+        for (i, r) in rows.iter().enumerate() {
             // Reserved BEFORE the cells so the band paints behind them. `Painter::add(Shape::Noop)` then
             // `Painter::set` is egui's own idiom for painting under content that has not been laid out
             // yet; there is no z-order to fight and no second pass.
             let bg = ui.painter().add(egui::Shape::Noop);
             let inner = ui.horizontal(|ui| {
-                for ((c, w), text) in cols.iter().zip(&widths).zip(cs) {
-                    table_cell(ui, c, *w, text, cell_colour(ui, c, text, r.active));
+                for ((c, w), cell) in cols.iter().zip(&widths).zip(&r.cells) {
+                    table_cell(ui, c, *w, cell);
                 }
             });
             // Full panel width, not the width of the text: a click target that stops where the last
@@ -4458,27 +4466,62 @@ fn slot_table(
                 egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), inner.response.rect.y_range())
                     .expand2(egui::vec2(0.0, 1.0));
 
-            let chosen = selected == Some(Some(r.slot));
-            let resp = selected
-                .map(|_| ui.interact(band, ui.id().with((salt, r.slot)), egui::Sense::click()));
+            let resp =
+                r.id.map(|id| ui.interact(band, ui.id().with((salt, id)), egui::Sense::click()));
             let fill = row_fill(
                 ui,
-                chosen,
+                r.selected,
                 resp.as_ref().is_some_and(egui::Response::hovered),
                 i,
             );
             ui.painter()
                 .set(bg, egui::Shape::rect_filled(band, 0.0, fill));
 
-            if let Some(resp) = resp {
+            if let (Some(resp), Some(id)) = (resp, r.id) {
                 let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                 if resp.clicked() {
-                    hit = Some(r.slot);
+                    hit = Some(id);
                 }
             }
         }
     });
     hit
+}
+
+/// **The Objects tab's adapter onto [`table`]**: the object-specific half, and nothing else.
+///
+/// `selected` is `None` for a table whose rows are not clickable (the player section, which is a list of
+/// two) and `Some(current)` for one whose rows are (the pool table, where a click opens the expansion).
+fn slot_table(
+    ui: &mut egui::Ui,
+    cols: &[objects::Col],
+    rows: &[objects::Row],
+    selected: Option<Option<u32>>,
+    salt: &str,
+) -> Option<u32> {
+    let shape: Vec<table::Col> = cols.iter().map(|c| c.col).collect();
+    let drawn: Vec<TableRow> = rows
+        .iter()
+        .map(|r| TableRow {
+            // [`objects::Row::cells`] stays the one place a served key becomes display text, and the
+            // colour and the note are zipped on here rather than decided inside the table.
+            cells: cols
+                .iter()
+                .zip(r.cells(cols))
+                .map(|(c, text)| Cell {
+                    colour: cell_colour(ui, c, &text, r.active),
+                    // The short cell says the object has no name; the sentence saying *why* is a fact
+                    // about the listing rather than about the object, and it does not fit in a column
+                    // six characters wide.
+                    hover: (text == objects::NO_NAME).then_some(objects::NO_NAME_WHY),
+                    text,
+                })
+                .collect(),
+            id: selected.map(|_| r.slot),
+            selected: selected == Some(Some(r.slot)),
+        })
+        .collect();
+    table(ui, &shape, &drawn, salt)
 }
 
 /// What colour a cell is drawn in, and every branch of it is a fact rather than a taste.
@@ -5068,7 +5111,9 @@ pub const APP_NAME: &str = "oracle-player";
 pub struct Echo {
     /// The method that was called. Shown so a human can tell which button produced the line.
     pub method: &'static str,
-    /// `"<code> <message>"` for a refusal, or the compact reply for a success. Verbatim either way.
+    /// `"<code> <message>"` for a refusal, or the reply's own facts for a success. The server's own
+    /// words either way: a success goes through [`crate::bus::describe_reply`], which spells every key
+    /// and value the reply carried and drops only its JSON punctuation.
     pub text: String,
     /// `error.data.reason` — the machine-readable discriminant, shown *as* a discriminant. `None` on
     /// success, and also on a refusal that carried no reason, which is a distinction worth seeing.
@@ -5383,7 +5428,9 @@ impl Transport {
                 refused,
                 reason: answer.reason().map(str::to_string),
                 text: match &answer {
-                    crate::bus::Answer::Ok(v) => format!("ok {v}"),
+                    crate::bus::Answer::Ok(v) => {
+                        format!("ok {}", crate::bus::describe_reply(v))
+                    }
                     crate::bus::Answer::Err(e) => format!("{} {}", e.code, e.message),
                 },
             });
@@ -5410,9 +5457,11 @@ impl Transport {
             refused: answer.is_err(),
             reason: answer.reason().map(str::to_string),
             text: match &answer {
-                // The reply bodies here are small (`emulator/step` carries the new pc); shown compactly
-                // rather than summarised, so nothing of the server's answer is dropped on the way.
-                crate::bus::Answer::Ok(v) => format!("ok {v}"),
+                // The reply bodies here are small (`emulator/step` carries the new pc); every fact of
+                // them is spelled rather than summarised, so nothing of the server's answer is dropped
+                // on the way — see [`crate::bus::describe_reply`], which drops the punctuation and
+                // nothing else.
+                crate::bus::Answer::Ok(v) => format!("ok {}", crate::bus::describe_reply(v)),
                 crate::bus::Answer::Err(e) => format!("{} {}", e.code, e.message),
             },
         });
@@ -9165,9 +9214,9 @@ mod slot_table_tests {
             .iter()
             .map(|c| {
                 runs.iter()
-                    .find(|(_, t)| t == c.head)
+                    .find(|(_, t)| t == c.col.head)
                     .unwrap_or_else(|| {
-                        panic!("the header {:?} was never painted: {runs:?}", c.head)
+                        panic!("the header {:?} was never painted: {runs:?}", c.col.head)
                     })
                     .clone()
             })
@@ -9182,5 +9231,199 @@ mod slot_table_tests {
                 pair[1].1
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    /// A table of columns the Objects tab never had, so these legs cannot pass on `objects::Col`.
+    fn cols() -> Vec<table::Col> {
+        vec![
+            table::Col {
+                head: "addr",
+                numeric: false,
+                mono: true,
+            },
+            table::Col {
+                head: "cycles",
+                numeric: true,
+                mono: true,
+            },
+            table::Col {
+                head: "routine",
+                numeric: false,
+                mono: false,
+            },
+        ]
+    }
+
+    fn row(texts: &[&str], colours: &[egui::Color32]) -> TableRow {
+        TableRow {
+            cells: texts
+                .iter()
+                .zip(colours)
+                .map(|(t, c)| Cell {
+                    text: (*t).to_owned(),
+                    colour: *c,
+                    hover: None,
+                })
+                .collect(),
+            id: None,
+            selected: false,
+        }
+    }
+
+    fn painted(rows: Vec<TableRow>) -> Vec<(egui::Rect, String, Option<egui::Color32>)> {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let cols = cols();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(700.0, 300.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                table(ui, &cols, &rows, "table-test");
+            },
+        );
+        out.textures_delta.clear();
+        fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, String, Option<egui::Color32>)>) {
+            match s {
+                egui::Shape::Text(t) => out.push((
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                    t.galley.text().into(),
+                    t.galley.job.sections.first().map(|sec| sec.format.color),
+                )),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut runs = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, &mut runs);
+        }
+        runs
+    }
+
+    /// ★ **The generalisation actually generalises.** Every header and every cell of a three-column
+    /// table that shares no type with the Objects tab is drawn.
+    ///
+    /// This is the leg the prerequisite exists for: before the split, this table could not be expressed
+    /// at all without an `objects::Field` for each column, so a green here is a fact about the seam and
+    /// not about objects.
+    #[test]
+    fn a_table_of_columns_the_objects_tab_never_had_draws_every_header_and_cell() {
+        let white = egui::Color32::WHITE;
+        let runs = painted(vec![
+            row(&["0x00001234", "998877", "ObjSonic"], &[white; 3]),
+            row(&["0x00005678", "42", "(unnamed)"], &[white; 3]),
+        ]);
+        for want in [
+            "addr",
+            "cycles",
+            "routine",
+            "0x00001234",
+            "998877",
+            "ObjSonic",
+            "0x00005678",
+            "42",
+            "(unnamed)",
+        ] {
+            assert!(
+                runs.iter().any(|(_, t, _)| t == want),
+                "{want:?} was never painted: {runs:?}"
+            );
+        }
+    }
+
+    /// ★ **The colour is the caller's, and the table re-derives none.**
+    ///
+    /// The whole point of lifting the colour decision out: the panel that owns the fact decides, and the
+    /// draw site carries. Three cells, three colours nothing in this file could have invented, checked on
+    /// the galley section rather than on the fallback — a `Label` that dropped the `RichText` colour
+    /// would still carry a plausible fallback and would pass a weaker reading.
+    #[test]
+    fn the_table_draws_the_colour_the_caller_decided_and_never_re_derives_one() {
+        let chosen = [
+            egui::Color32::from_rgb(0xAB, 0x12, 0x34),
+            egui::Color32::from_rgb(0x12, 0xCD, 0x56),
+            egui::Color32::from_rgb(0x78, 0x9A, 0xEF),
+        ];
+        let runs = painted(vec![row(&["one", "two", "three"], &chosen)]);
+        for (text, want) in ["one", "two", "three"].iter().zip(chosen) {
+            let (_, _, got) = runs
+                .iter()
+                .find(|(_, t, _)| t == text)
+                .unwrap_or_else(|| panic!("{text:?} was never painted: {runs:?}"));
+            assert_eq!(
+                *got,
+                Some(want),
+                "{text:?} was drawn in a colour the caller did not choose"
+            );
+        }
+        // ...and the three are actually distinct, so a table that painted them all one colour could not
+        // have passed the loop above by luck.
+        assert_eq!(
+            chosen
+                .iter()
+                .map(|c| c.to_array())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    /// **A numeric column is right-aligned and a proportional one is not**, derived from what alignment
+    /// *means* rather than pinned to a measured x.
+    ///
+    /// Two rows of ONE render, so the column's width is the same term for both cells and cannot be what
+    /// moves an edge. Under right alignment the two cells' RIGHT edges coincide however differently wide
+    /// they are; under left alignment their LEFT edges do. A table that aligned every column the same way
+    /// fails one of the two halves whichever way it chose.
+    #[test]
+    fn a_numeric_column_holds_its_right_edge_and_a_text_column_holds_its_left() {
+        let white = egui::Color32::WHITE;
+        let runs = painted(vec![
+            row(&["0x00001234", "7", "Obj"], &[white; 3]),
+            row(
+                &["0x00005678", "7777777", "ObjectWithAVeryLongName"],
+                &[white; 3],
+            ),
+        ]);
+        let find = |t: &str| {
+            runs.iter()
+                .find(|(_, s, _)| s == t)
+                .unwrap_or_else(|| panic!("{t:?} not painted: {runs:?}"))
+                .0
+        };
+        // The numeric column: two cells of very different widths, right edges together.
+        let (a, b) = (find("7"), find("7777777"));
+        assert!(
+            (b.width() - a.width()).abs() > 1.0,
+            "the fixture's two numeric cells are the same width, so this proves nothing"
+        );
+        assert!(
+            (a.right() - b.right()).abs() < 0.6,
+            "a numeric column is not right-aligned: {a:?} vs {b:?}"
+        );
+        // The proportional column beside it holds its LEFT edge instead.
+        let (a, b) = (find("Obj"), find("ObjectWithAVeryLongName"));
+        assert!(
+            (b.width() - a.width()).abs() > 1.0,
+            "the fixture's two name cells are the same width, so this proves nothing"
+        );
+        assert!(
+            (a.left() - b.left()).abs() < 0.6,
+            "a proportional column is not left-aligned: {a:?} vs {b:?}"
+        );
     }
 }
