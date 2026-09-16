@@ -1959,6 +1959,7 @@ impl System {
 mod tests {
     use super::*;
     use crate::bus::{BusEvent, BusOp, Size};
+    use crate::vdp::DmaRequest; // M1-FILL-RUN's door check bends `Vdp::dma_pending`
 
     /// A booted machine: the test ROM loaded and the power-on reset driven (prefetch primed at the ROM's
     /// entry point), ready to run real code.
@@ -4633,6 +4634,62 @@ mod tests {
             RegionBound::AtMost(FIFO_SLOTS),
             FIFO_SLOTS + 1,
         );
+    }
+
+    /// **M1-FILL-RUN's door check, half one: an untaken DMA request.** A `Mem`, `Fill` or `Copy` request is
+    /// armed by a trigger write and consumed by the bus inside the same bus access, so none can survive to
+    /// a snapshot — but a **running fill** can and must, which is the state the whole parcel adds. Both
+    /// sides are asserted here: `FillRunning` restores, the three the bus owns do not.
+    #[test]
+    fn restore_refuses_an_untaken_vdp_dma_request_but_admits_a_running_fill() {
+        let running = restore_bent(|s| {
+            let r = s.vdp.regions_mut();
+            *r.dma_pending = Some(DmaRequest::FillRunning { pc: Some(0x200) });
+            *r.code |= 0x20; // …with the CD5 a running fill implies (the other half of the door check)
+        });
+        assert_restores(running, "a fill that is running across instructions");
+        for (what, req) in [
+            (
+                "a fill the bus never took",
+                DmaRequest::Fill { len: 4, fill: 0 },
+            ),
+            (
+                "a 68k transfer the bus never took",
+                DmaRequest::Mem { source: 0, len: 4 },
+            ),
+            (
+                "a copy the bus never took",
+                DmaRequest::Copy { source: 0, len: 4 },
+            ),
+        ] {
+            let got = restore_bent(|s| *s.vdp.regions_mut().dma_pending = Some(req));
+            assert_refused(
+                got,
+                SnapshotRegion::VdpDmaPending,
+                RegionBound::Exactly(0),
+                1,
+            );
+            let _ = what;
+        }
+    }
+
+    /// **…and half two: a running fill whose CD5 is clear.** The engine tests live CD5 at every step and the
+    /// last step clears it, so the two are one fact. A snapshot where they disagree restores a fill that can
+    /// neither step nor finish, and this refusal is not a size, so it has its own named variant.
+    #[test]
+    fn restore_refuses_a_running_fill_without_cd5() {
+        let got = restore_bent(|s| {
+            let r = s.vdp.regions_mut();
+            *r.dma_pending = Some(DmaRequest::FillRunning { pc: None });
+            *r.code &= !0x20;
+        });
+        match got {
+            Err(RestoreError::Malformed(MalformedSnapshot::VdpFillRunningWithoutCd5 { code })) => {
+                assert_eq!(code & 0x20, 0, "the refusal carries the offending code");
+            }
+            Err(e) => panic!("the wrong refusal: {e}"),
+            Ok(_) => panic!("a running fill with CD5 clear was accepted"),
+        }
     }
 
     #[test]

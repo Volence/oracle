@@ -449,6 +449,10 @@ pub(crate) struct VdpRegionsMut<'a> {
     pub write_captures: &'a mut Vec<VdpWrite>,
     pub fifo_len: &'a mut u8,
     pub fifo_write: &'a mut u8,
+    /// M1-FILL-RUN's door check: the pending-DMA field, and the command code its `FillRunning` value has
+    /// to agree with. Both are bent by `system::tests` to prove the two refusals fire.
+    pub dma_pending: &'a mut Option<DmaRequest>,
+    pub code: &'a mut u8,
 }
 
 impl Vdp {
@@ -586,6 +590,8 @@ impl Vdp {
     #[cfg(test)]
     pub(crate) fn regions_mut(&mut self) -> VdpRegionsMut<'_> {
         VdpRegionsMut {
+            dma_pending: &mut self.dma_pending,
+            code: &mut self.code,
             vram: &mut self.vram,
             cram: &mut self.cram,
             vsram: &mut self.vsram,
@@ -4207,6 +4213,160 @@ mod tests {
             s.push('~');
         }
         s
+    }
+
+    /// **F-SLOTTABLE's condition: the table asserts its own derivation, entry by entry.** The published
+    /// access indices stay in the source (that is what `active_slot_gaps_follow_the_published_pattern`
+    /// checks against Kabuto's pattern strings); this checks that the compile-time instants really are
+    /// `index × MCLK_PER_LINE / accesses` for those indices and that access count — so a hand-edited table
+    /// entry, or a table that stopped tracking a changed index, fails here instead of silently shifting
+    /// every drain in every ROM.
+    #[test]
+    fn slot_offsets_match_the_access_grid() {
+        for (i, &k) in Vdp::H40_ACTIVE_SLOTS.iter().enumerate() {
+            assert_eq!(
+                Vdp::H40_SLOT_MCLK[i],
+                k * MCLK_PER_LINE / Vdp::H40_ACCESSES_PER_LINE,
+                "H40 slot {i} (access index {k})"
+            );
+        }
+        for (i, &k) in Vdp::H32_ACTIVE_SLOTS.iter().enumerate() {
+            assert_eq!(
+                Vdp::H32_SLOT_MCLK[i],
+                k * MCLK_PER_LINE / Vdp::H32_ACCESSES_PER_LINE,
+                "H32 slot {i} (access index {k})"
+            );
+        }
+        assert_eq!(
+            Vdp::H40_SLOT_MCLK.len(),
+            Vdp::H40_ACTIVE_SLOTS.len(),
+            "one instant per published index"
+        );
+        assert_eq!(Vdp::H32_SLOT_MCLK.len(), Vdp::H32_ACTIVE_SLOTS.len());
+    }
+
+    /// **…and the lookup answers what the arithmetic answered, at every mclk of a line.** The table is an
+    /// optimisation, so what has to hold is not "the numbers look right" but "no probe anywhere in a line
+    /// moves". This walks all 3,420 mclk of a line in both widths and compares `next_active_slot` against
+    /// the divide-per-probe form F-SLOTTABLE retired, wrap-around included.
+    #[test]
+    fn the_slot_table_and_the_arithmetic_agree_at_every_mclk_of_a_line() {
+        for h40 in [false, true] {
+            let mut v = fresh();
+            v.regs[0x0C] = if h40 { 0x81 } else { 0x00 };
+            let (indices, accesses): (&[u64], u64) = if h40 {
+                (&Vdp::H40_ACTIVE_SLOTS, Vdp::H40_ACCESSES_PER_LINE)
+            } else {
+                (&Vdp::H32_ACTIVE_SLOTS, Vdp::H32_ACCESSES_PER_LINE)
+            };
+            let line = 7 * MCLK_PER_LINE; // any line: the answer is line-relative by construction
+            for pos in 0..MCLK_PER_LINE {
+                let at = line + pos;
+                let arithmetic = indices
+                    .iter()
+                    .map(|&k| k * MCLK_PER_LINE / accesses)
+                    .find(|&t| t > pos)
+                    .map(|t| line + t)
+                    .unwrap_or_else(|| {
+                        line + MCLK_PER_LINE + indices[0] * MCLK_PER_LINE / accesses
+                    });
+                assert_eq!(
+                    v.next_active_slot(at),
+                    arithmetic,
+                    "h40={h40}, mclk offset {pos}"
+                );
+            }
+        }
+    }
+
+    /// **The blanked grids are the blanked slot RATE, not a number that happens to match it.** A blanked
+    /// line's slots are modelled as a uniform grid (F-BLANKSLOT), so the grid must have exactly
+    /// `slots_per_line` entries at `k × MCLK_PER_LINE / slots` — the same rate `entry_drain_cost` charges a
+    /// FIFO entry there. Sized from `slots_per_line` itself so the two cannot drift apart: change the rate
+    /// and this fails rather than leaving the fill walking a grid of the old width.
+    #[test]
+    fn the_blank_grids_are_sized_by_the_blanked_slot_rate() {
+        let vblank = u64::from(ACTIVE_LINES) * MCLK_PER_LINE; // a blanked line, display state aside
+        for h40 in [false, true] {
+            let mut v = fresh();
+            v.regs[1] = 0x44; // display on, so `vblank` is what makes the line blanked
+            v.regs[0x0C] = if h40 { 0x81 } else { 0x00 };
+            let rate = v.slots_per_line(vblank);
+            let grid: &[u64] = if h40 {
+                &Vdp::H40_BLANK_SLOT_MCLK
+            } else {
+                &Vdp::H32_BLANK_SLOT_MCLK
+            };
+            assert_eq!(grid.len() as u64, rate, "h40={h40}: one entry per slot");
+            for (k, &t) in grid.iter().enumerate() {
+                assert_eq!(t, k as u64 * MCLK_PER_LINE / rate, "h40={h40}, slot {k}");
+            }
+            // And the walk really uses it: from the line's start the next slot is grid entry 1, and the
+            // walk is strictly increasing, so a fill always makes progress.
+            let mut t = vblank;
+            for _ in 0..rate {
+                let next = v.next_external_slot(t);
+                assert!(next > t, "h40={h40}: the slot walk must advance");
+                t = next;
+            }
+        }
+    }
+
+    /// **The M1 mechanism at unit scale: a data-port write during a running fill changes what the rest of
+    /// the fill writes, and consumes no length count.** VDPFIFOTesting tests 31/32/33 are the hardware
+    /// tables for this (and they pass), but they reach it through 122 tests of ROM; this states it directly.
+    ///
+    /// The no-count half is the one the prose does not say and the ROM does (design §1.3): test 31 group 2's
+    /// tail reads `5656 5656 0056 0000` on hardware, and only a write that consumes no count produces that
+    /// trailing `0056` — with a count consumed it would read `5656 5656 0000 0000`.
+    #[test]
+    fn a_data_port_write_during_a_fill_changes_the_fill_byte_and_consumes_no_length() {
+        const LEN: u16 = 400; // longer than a blanked line's 167 slots, so one line leaves it mid-flight
+        let mut v = fresh();
+        v.vram[0x8000..0x8200].fill(0);
+        arm_and_trigger_vram_fill(&mut v, 0x8000, LEN, 0x1234);
+        // Let a line's worth of steps run, then write a new word through the data port, as the ROM does.
+        let t = v.now_mclk + MCLK_PER_LINE;
+        v.fill_catch_up(t);
+        let (steps_left, addr_before) =
+            (((v.regs[0x14] as u16) << 8) | v.regs[0x13] as u16, v.addr);
+        assert!(
+            steps_left > 0 && steps_left < LEN,
+            "the fill is mid-flight: {steps_left} of {LEN} steps left"
+        );
+        v.data_write_at(0x5678, t);
+        assert_eq!(
+            ((v.regs[0x14] as u16) << 8) | v.regs[0x13] as u16,
+            steps_left,
+            "the mid-fill write consumes no length count (test 31 group 2's `0056` tail)"
+        );
+        assert_eq!(
+            v.addr,
+            addr_before.wrapping_add(1),
+            "…but it does land at the fill's current address and step it once"
+        );
+        assert_eq!(
+            (
+                v.vram[addr_before as usize],
+                v.vram[(addr_before ^ 1) as usize]
+            ),
+            (0x56, 0x78),
+            "the write itself is completed as a normal word write"
+        );
+        let finished_at = catch_fill_up_to_completion(&mut v);
+        assert!(finished_at > t, "the rest of the fill ran after the write");
+        // Every remaining step writes the NEW word's high byte, not the trigger's.
+        let tail: Vec<u8> = (addr_before + 2..addr_before + 8)
+            .map(|a| v.vram[a as usize])
+            .collect();
+        assert!(
+            tail.iter().all(|&b| b == 0x56),
+            "the fill continued with a byte from the new word (Mask of Destiny), got {tail:02X?}"
+        );
+        assert!(
+            v.vram[0x8002] == 0x12,
+            "…and the bytes it wrote BEFORE the write still hold the old fill byte"
+        );
     }
 
     #[test]
