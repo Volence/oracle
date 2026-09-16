@@ -1,6 +1,12 @@
 {
-  "focus": "Fresh session, booted with the others. Nothing running; waiting on your word before I start anything.",
-  "inFlight": [],
+  "focus": "On the sprite test ROM. An agent is out fixing how sprites get cut off at the line limit.",
+  "inFlight": [
+    {
+      "what": "The mid-sprite pixel cut: hardware stops a sprite mid-way through when the line's sprite budget runs out; we draw it whole or not at all.",
+      "where": "branch parcel/sprite-mid-cut, worktree ../oracle-spritecut",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,11 +14,11 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. Nothing is running and nothing is in my head that isn't written down.",
+  "nextBoundary": "When the agent returns and I have either landed its work or rejected it. Not before -- it holds a branch.",
   "queue": [
     {
       "id": "TESTROM-SPRITE-MASKING",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -100,11 +106,11 @@
     },
     {
       "id": "F-PLANES-RASTER-EVERY-FRAME",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Cleared as the cause of your lag and you owe me no test. Still a real defect -- the plane viewer redraws every frame while hidden -- and it will bite when you bring that tab forward."
+      "title": "The plane viewer redraws the whole picture every frame even when nothing changed. Startable cold: no decision from you, no look needed. Grounded in the 09-08 measurement (OVERSEER-LOG.md) and the register entry; the code is the plane panel in oracle-frontend. Cleared as the cause of your lag -- still a real waste the moment you open that tab."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -115,7 +121,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "Your pick between two directions: the sprite test ROM (one real defect, one false alarm in our own test kit) or the three debug-window items you raised that you can actually see.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-16T06:22:35Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-16T06:44:14Z"
 }
