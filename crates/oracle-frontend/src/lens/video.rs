@@ -132,7 +132,7 @@ pub struct SpriteBox {
 ///   on the sampled line is simply not on *that* line; it is a real sprite drawing elsewhere on the
 ///   frame and it must keep its box. Narrowing to `Rendered` would make nearly every box vanish
 ///   the moment you sampled a line the sprite does not touch, and `DroppedLineLimit` /
-///   `DroppedPixelBudget` are per-line facts in exactly the same way.
+///   `DroppedPixelBudget` / `CutPixelBudget` are per-line facts in exactly the same way.
 /// * the parse cap needs no filtering here: the walk itself stops at 80 (H40) / 64 (H32) and says
 ///   so with `SpriteWalkEnd::MaxCount`, so the old `parsed_max` argument would now be a second,
 ///   redundant place for the same rule to be got wrong.
@@ -546,6 +546,7 @@ mod tests {
             SpriteOutcome::OffLine,
             SpriteOutcome::DroppedLineLimit,
             SpriteOutcome::DroppedPixelBudget,
+            SpriteOutcome::CutPixelBudget { drawn_px: 8 },
             SpriteOutcome::Masked,
         ] {
             let mut e = walked(4, 100, 50, 2, 2);

@@ -4,7 +4,7 @@
 //! constants. Their purpose is to **lock every accumulated interim model** so a refinement can never silently
 //! change a frame: the priority/shadow-highlight output stage (RR9/R11), the R8 partial-column extent, the R9
 //! sub-tile alignment, the mode-01/10 h-scroll offsets, the R5 cache-window remainders, and the push-4
-//! no-mid-sprite-cut budget approximation. Which model each scene pins is enumerated in
+//! mid-sprite pixel-budget cut. Which model each scene pins is enumerated in
 //! `docs/2026-07-16-vdp-pixel-known-differences.md` (the frame-level analogue of `known_differences.py`).
 //!
 //! A pinned hash is a *self-consistency* pin: it captures what the current model produces. Changing one is a
@@ -259,11 +259,19 @@ fn scene_r5_cache_window() -> Vdp {
     v
 }
 
-// --- Scene 6: no-mid-sprite-cut pixel-budget approximation --------------------------------------------------
+// --- Scene 6: the per-line pixel budget, filled EXACTLY -----------------------------------------------------
 
-/// H32 (256 px / 16 sprites / 256 px budget): nine 4-cell-wide sprites on one line = 288 px > 256. The sprite
-/// that overshoots the budget draws FULLY (no mid-sprite cut); the next is dropped. Pins the push-4 model.
-fn scene_no_mid_sprite_cut() -> Vdp {
+/// H32 (256 px / 16 sprites / 256 px budget): nine 4-cell-wide sprites on one line = 288 px > 256, so the
+/// ninth is dropped whole and the frame shows eight.
+///
+/// **Renamed 2026-09-16 (SPRITE-MID-CUT), and the rename IS the finding.** This scene was
+/// `scene_no_mid_sprite_cut` and was the ledger's named lock for row P1 — "hardware cuts mid-sprite, we do
+/// not". It never locked that, and `288 > 256` is what hid it: 256 is an exact multiple of 32, so the eighth
+/// sprite ends *on* the budget and the ninth straddles nothing. Its hash is **byte-identical** across the
+/// parcel that implemented the mid-sprite cut, which is the proof. What it actually pins — an exact fill
+/// draws in full and the next sprite is dropped whole — is still worth pinning, so the hash stands and the
+/// name now says it. The straddle it was named for is scene 7.
+fn scene_pixel_budget_exact_fill() -> Vdp {
     let mut v = fresh();
     set_reg(&mut v, 0x01, 0x44);
     set_reg(&mut v, 0x05, 0x58); // SAT base $B000
@@ -280,6 +288,60 @@ fn scene_no_mid_sprite_cut() -> Vdp {
             (0x0C << 8) | link,
             0x0004,
             128 + i * 28,
+        );
+    }
+    v
+}
+
+// --- Scene 7: the mid-sprite pixel-budget cut (ledger row P1) -----------------------------------------------
+
+/// H32, two bands, each spending 240 of the 256-px budget on a stack of sprites and then putting ONE 4-cell
+/// (32-px) sprite alone at screen x 100 with **16 px of budget left**. That sprite is cut in half.
+///
+/// * **band at line 20** — the straddler is not flipped, so it shows cells 1,2 (white, red) at x 100..116.
+/// * **band at line 40** — the straddler is h-flipped. Under the model this scene pins (screen order) it
+///   occupies the SAME dots, x 100..116, showing cells 4,3 (blue, green); under the fetch-order candidate it
+///   would instead occupy x 116..132 showing cells 1,2. The two bands therefore pin both halves of the
+///   interim decision recorded on `Vdp::sprite_line`: how many dots survive, and which ones.
+///
+/// The budget stack is stacked at screen x 0 on purpose: overlapping sprites still spend their declared
+/// width (recon R10), so the arithmetic is exact and the straddler is the only sprite anywhere near x 100.
+fn scene_mid_sprite_cut() -> Vdp {
+    let mut v = fresh();
+    set_reg(&mut v, 0x01, 0x44);
+    set_reg(&mut v, 0x05, 0x58); // SAT base $B000
+    set_reg(&mut v, 0x0F, 0x02);
+    base_palette(&mut v);
+    for (t, n) in [(1usize, 1u8), (2, 2), (3, 3), (4, 4)] {
+        fill_tile(&mut v, t, n); // a 4-cell sprite based at tile 1 reads 1,2,3,4 left→right (RR8)
+    }
+    for (band, (y, hflip)) in [(20u16, 0x0000u16), (40u16, 0x0800u16)]
+        .into_iter()
+        .enumerate()
+    {
+        let first = band * 9;
+        for i in 0..8usize {
+            // 2 cells then seven 4-cell: 16 + 7×32 = 240 px of the 256-px budget, all at screen x 0.
+            let size = if i == 0 { 0x04u16 } else { 0x0C };
+            let idx = first + i;
+            write_sprite(
+                &mut v,
+                idx,
+                y + 128,
+                (size << 8) | (idx + 1) as u16,
+                0x0001,
+                128,
+            );
+        }
+        let last = first + 8;
+        let link = if band == 0 { (last + 1) as u16 } else { 0 };
+        write_sprite(
+            &mut v,
+            last,
+            y + 128,
+            (0x0C << 8) | link,
+            0x0001 | hflip,
+            128 + 100,
         );
     }
     v
@@ -317,10 +379,40 @@ fn golden_frame_scene_5_r5_cache_window() {
 }
 
 #[test]
-fn golden_frame_scene_6_no_mid_sprite_cut() {
+fn golden_frame_scene_6_pixel_budget_exact_fill() {
+    // UNCHANGED across the 2026-09-16 mid-sprite-cut parcel — see the scene's own comment: the fixture fills
+    // the H32 budget exactly and never straddles it, so both models draw this frame identically.
     assert_eq!(
-        frame_hash(&scene_no_mid_sprite_cut()),
+        frame_hash(&scene_pixel_budget_exact_fill()),
         0xd749_dfdf_587d_0d25
+    );
+}
+
+#[test]
+fn golden_frame_scene_7_mid_sprite_cut() {
+    assert_eq!(frame_hash(&scene_mid_sprite_cut()), 0xba72_573b_55ac_9a25);
+}
+
+/// **What scene 7's hash MEANS**, asserted in pixels rather than left to a 64-bit number: the straddler
+/// covers exactly the 16 dots the budget could pay for, at the same screen dots flipped or not, and the
+/// h-flip mirrors its CONTENT there. A hash alone could not tell a cut from a sprite that simply moved.
+#[test]
+fn scene_7_cuts_the_straddler_in_half_at_the_same_dots_either_way() {
+    let v = scene_mid_sprite_cut();
+    let plain = v.render_line(24); // band 1, not flipped
+    let flipped = v.render_line(44); // band 2, h-flipped
+    let backdrop = plain[200];
+    for (label, px) in [("plain", &plain), ("hflip", &flipped)] {
+        for (x, dot) in px.iter().enumerate().take(116).skip(100) {
+            assert_ne!(*dot, backdrop, "{label}: dot {x} is inside the 16 that fit");
+        }
+        for (x, dot) in px.iter().enumerate().take(132).skip(116) {
+            assert_eq!(*dot, backdrop, "{label}: dot {x} is past the budget — cut");
+        }
+    }
+    assert_ne!(
+        plain[100], flipped[100],
+        "h-flip mirrors the surviving dots' content (cells 1,2 vs cells 4,3) while keeping their position"
     );
 }
 
