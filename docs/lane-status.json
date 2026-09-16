@@ -99,7 +99,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing from you. Note only: CI is still running on this landing and I will read it to completion before calling it done.",
+  "awaiting": "nothing from you. Note only: CI is still running on this landing (commit f1d9179) and is UNREAD -- the checks I ran myself all passed, and a fresh session should read that run before calling it done.",
   "atBoundary": true,
-  "updatedAt": "2026-09-16T16:26:25Z"
+  "updatedAt": "2026-09-16T16:30:00Z"
 }

@@ -503,6 +503,12 @@ the planes readout. **Four bogus P10 charges from this page.**
 `BreakRow::summary`, because `stopping.rs` barely moved while `ui.rs` grew a thousand lines beneath it. **A page
 whose citations all rot at ONE RATE is a page nobody checked file by file; the uniform rate is the tell, not the
 staleness.**
+⚑ **CI ON `f1d9179` WAS STILL RUNNING WHEN THIS WAS BANKED AND IS UNREAD BY THIS SEAT — read it before treating
+the landing as closed.** Every preceding commit is green (`7c87e12`, `3794a7a`, `03db573`, `e13a3ce`). Two
+background waiters were **KILLED for system memory pressure**, not expired and not answered: ⚑ **a killed waiter,
+an expired waiter and a green run all produce the same silence in a notification, and only the run list
+distinguishes them** — the reap notice is not a verdict any more than a timeout is. Machine had 40 GB of 60 free
+minutes later, so the kills were transient spikes while two cargo suites overlapped, not a standing condition.
 **NEXT: `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`** (named as successor in the same write that closed this row, per
 `LANE_STATUS.md` line 136 — this lane's own clause). The rest of `DATA-DISPLAY-AUDIT` (items 6-11) reuses the
 same furniture; re-derive each from the TREE, never from §4.
