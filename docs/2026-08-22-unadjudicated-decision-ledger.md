@@ -762,3 +762,42 @@ and nothing in the code records that scope.
 **Also booked and NOT ruled here:** `objects.rs`'s `Row::cell` ends `Some(v) => v.to_string()`, the
 identical catch-all, safe today only because `DecodedRecord::to_json` emits scalars. Latent rather than
 live; it belongs with parcel 10 and is not covered by this verdict.
+
+
+## L-16 — the debug-window audit is neither RETIRED nor CORRECTED; it is split by what rots · `SELF-RULED`
+
+**Verdict: KEEP the page, and demote two classes of claim inside it to non-authoritative.** The hub raised
+retire-or-correct after the page produced a fourth bogus P10 charge and a fifth stale-citation finding, and
+left the call here. **Reviewer: none — substituted-reviewer rule, seat on HOLD.**
+
+**Neither option is right, and the tally across four landed parcels is why.** Measured, not argued:
+
+| class | outcome over parcels 1, 3, 4, 5 |
+|---|---|
+| P2 padded columns, P3 prose in mono, P6 blank absences, P9 spec citations | **held every time** |
+| P1 raw JSON | held, and **understated** — 3 booked, 7 real |
+| the per-panel *"Becomes"* designs | held, with named exceptions the code won |
+| **P10 em dashes** | **bogus 4 times out of 4** |
+| **line numbers** | **rotted uniformly** in `ui.rs` (+1013…+1091); exact in `stopping.rs` |
+| prerequisite membership | wrong in **both** directions |
+
+**So the page's JUDGEMENTS are at 100 % and its LOCATIONS are at 0 %.** Retiring it would throw away the
+only thing in the repo that says what each panel should become — the part four parcels have now confirmed.
+Correcting it re-derives a thousand line numbers that will rot again the next time `ui.rs` grows.
+
+**The rule the split encodes, and it generalises past this page: a claim about WHERE something is, or about
+a property a global sweep can close, rots on its own; a claim about what a design SHOULD BE does not.** This
+document grants both the same authority, in the same sentences, and that is the defect — not its age.
+Operationally: **§4's line numbers and every P10 charge are dead letters and briefs must not carry them**;
+§4's readings and "Becomes" paragraphs stay authoritative and are cited as before.
+
+**Why P10 specifically rots and P2 does not, since the distinction is the load-bearing half:** an em dash is
+mechanically sweepable, so an unrelated parcel can close it repo-wide and nothing updates this page. A padded
+column cannot be swept — it needs a designed replacement — so it stays true until someone does the work this
+page is asking for. **A charge that a global sweep could close should never have been booked per-panel.**
+
+**What would have to be true for this to be wrong:** that a future reader treats "keep the page" as "trust
+the page", which is the failure the demotion exists to prevent — so the demotion has to reach the brief, not
+only this ledger. **Discharged that way:** `OVERSEER.md`'s NEXT pointer now carries it. **The audit should
+re-run** if items 6-11 start producing bogus P2/P3 charges too, which would mean the judgements have begun
+rotting as well and the retire option comes back.

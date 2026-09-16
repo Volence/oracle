@@ -510,6 +510,15 @@ taken from a waiter. Every preceding commit green too. Getting there cost two ba
 an expired waiter and a green run all produce the same silence in a notification, and only the run list
 distinguishes them** — the reap notice is not a verdict any more than a timeout is. Machine had 40 GB of 60 free
 minutes later, so the kills were transient spikes while two cargo suites overlapped, not a standing condition.
+⚑ **RULED `L-16`, and it binds every brief composed from the audit page: §4's LINE NUMBERS and every P10
+CHARGE are DEAD LETTERS — do not carry them into a brief.** The page is neither retired nor corrected but
+**split by what rots**, on the tally across four landed parcels: its judgements (P2/P3/P6/P9/P1 and the
+per-panel *"Becomes"*) are at **100 %**, its locations at **0 %**, and P10 was bogus **4 of 4**. **A claim
+about WHERE something is, or about a property a global sweep can close, rots on its own; a claim about what a
+design SHOULD BE does not** — and the page grants both the same authority in the same sentences, which is the
+defect rather than its age. *(Why P10 and not P2: an em dash is mechanically sweepable, so an unrelated parcel
+closes it repo-wide and nothing updates the page. A padded column needs a designed replacement, so it stays
+true until the work is done. **A charge a global sweep could close should never have been booked per-panel.**)*
 **NEXT: `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`** (named as successor in the same write that closed this row, per
 `LANE_STATUS.md` line 136 — this lane's own clause). The rest of `DATA-DISPLAY-AUDIT` (items 6-11) reuses the
 same furniture; re-derive each from the TREE, never from §4.
