@@ -131,30 +131,106 @@ pub struct BreakRow {
     pub label: String,
 }
 
+/// What a breakpoint's `symbol` cell says when the loaded listing cannot name its address.
+///
+/// **P6: one spelling of the marker across the window**, taken from [`crate::objects::NO_NAME`] rather
+/// than typed again, so a reader who learns what `(unnamed)` means on the Objects tab meets the same four
+/// syllables here. The old row omitted the name entirely when there was none, which is the one thing a
+/// name column must never do: a blank where a listing could not name an address is indistinguishable from
+/// a naming bug.
+pub const NO_SYMBOL: &str = crate::objects::NO_NAME;
+
+/// Why a breakpoint's address has no name, for the hover on [`NO_SYMBOL`].
+///
+/// ⚑ **Not [`NO_NAME_WHY`], deliberately.** That sentence ends *"facts about the listing, not about the
+/// routine"*, and a breakpoint sits at an address a person typed, which need not be a routine at all.
+/// Same marker, different reason, which is the rule [`NO_NAME`] already states one instrument over.
+pub const NO_SYMBOL_WHY: &str =
+    "no symbol in the loaded listing covers this address, or no listing is \
+                                 loaded. Both are facts about the listing, not about the address.";
+
+/// The `state` cell of an armed breakpoint, and of a disabled one.
+///
+/// ⚑ **Lower case, and the emphasis is the colour.** The word used to be `ARMED` in capitals, shouting
+/// out of a monospace blob because nothing else in the row could carry the distinction. In a table the
+/// colour carries it (`strong_text_color` armed, `weak_text_color` disabled) and the capitals would be a
+/// second encoding of the same fact, in the one style the window has no other use for. Every other cell
+/// and every header on this tab is lower case.
+pub const STATE_ARMED: &str = "armed";
+/// See [`STATE_ARMED`].
+pub const STATE_DISABLED: &str = "disabled";
+
+/// **The breakpoint table's columns.**
+///
+/// `hits` is monospace for [`PROFILER_COLS`]' reason, and it is the number that should pop: it is the
+/// evidence a **disabled** breakpoint ever fired, which is the whole reason a disabled row is kept.
+pub const BREAK_COLS: [crate::table::Col; 6] = [
+    crate::table::Col {
+        head: "id",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "addr",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "state",
+        numeric: false,
+        mono: false,
+    },
+    crate::table::Col {
+        head: "hits",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "symbol",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "label",
+        numeric: false,
+        mono: false,
+    },
+];
+
 impl BreakRow {
-    /// The row as one monospace line.
+    /// This row's cells for [`BREAK_COLS`], in order. **The single place a breakpoint becomes display
+    /// text**, so the panel is a table of facts rather than a table of format strings.
     ///
-    /// **The arm state is a word, not a checkbox alone**, and it sits beside `hits` on purpose: those two
-    /// columns together are the whole armed-versus-retained distinction at row scale, and `disabled` next
-    /// to a five-figure count is the pairing a reader has to be able to see.
-    pub fn summary(&self) -> String {
-        let sym = match &self.symbol {
-            Some((n, 0)) => format!("  {n}"),
-            Some((n, d)) => format!("  {n}+0x{d:X}"),
-            None => String::new(),
-        };
-        let label = if self.label.is_empty() {
-            String::new()
-        } else {
-            format!("  ({})", self.label)
-        };
-        format!(
-            "{:<5} {:<10} {:<8} {:>9} hits{sym}{label}",
-            self.handle,
-            self.addr_text,
-            if self.enabled { "ARMED" } else { "disabled" },
-            self.hits,
-        )
+    /// It replaces `summary`, which was `"{:<5} {:<10} {:<8} {:>9} hits{sym}{label}"` -- a padded body
+    /// line that had to be kept in step by hand with a padded fake header written in `ui.rs`, and which
+    /// mixed an address (legitimately monospace) with the state word, the symbol name and the caller's
+    /// free text (all prose) in one blob.
+    ///
+    /// **The arm state and `hits` are still neighbours**, which was `summary`'s one deliberate choice and
+    /// survives as column order: those two together are the whole armed-versus-retained distinction at row
+    /// scale, and `disabled` next to a five-figure count is the pairing a reader has to be able to see.
+    pub fn cells(&self) -> Vec<String> {
+        vec![
+            self.handle.clone(),
+            self.addr_text.clone(),
+            if self.enabled {
+                STATE_ARMED
+            } else {
+                STATE_DISABLED
+            }
+            .to_owned(),
+            self.hits.to_string(),
+            match &self.symbol {
+                Some((n, 0)) => n.clone(),
+                Some((n, d)) => format!("{n}+0x{d:X}"),
+                None => NO_SYMBOL.to_owned(),
+            },
+            if self.label.is_empty() {
+                NO_LABEL.to_owned()
+            } else {
+                self.label.clone()
+            },
+        ]
     }
 }
 
@@ -162,11 +238,22 @@ impl BreakRow {
 pub struct BreakView {
     pub rows: Vec<BreakRow>,
     /// How many rows are `enabled` — the count that decides whether anything here can halt the machine.
+    ///
+    /// ⚑ Kept although the renderer no longer reads it, unlike `retained_hits`, which was dropped beside
+    /// it: this one has readers that are **not** the drawing of the number. `main.rs`'s measurement
+    /// fixture and `stopping`'s own gates assert on the panel's derivation of `armed` directly, which is
+    /// what makes "the fixture armed sixteen rows and none of them can halt the player" a checked fact.
+    #[allow(dead_code)]
     pub armed: usize,
-    /// Hits held on rows that are **not** armed. Non-zero is the exact case this panel must not render as
-    /// though it were live.
-    pub retained_hits: u64,
     pub live: Live,
+    /// The sentence [`Live::Yes`] draws, and the one [`Live::Retained`] and [`Live::Never`] draw.
+    ///
+    /// Composed here rather than at the draw site, which is the exemplar's first lesson and the Profiler
+    /// tab's precedent: a panel whose correctness lives in its draw calls is a panel nothing can check,
+    /// and this window cannot be opened from an agent seat. Both used to be `format!`s inline in
+    /// `ui.rs`, where no gate could walk them for P2, P9 or P10.
+    pub armed_sentence: String,
+    pub retained_sentence: String,
 }
 
 /// Read the armed set. **A shared borrow of the `Host`'s own list** — there is no second copy (R2).
@@ -183,11 +270,28 @@ pub fn breakpoints(set: &Breakpoints, symbols: Option<&SymbolTable>) -> BreakVie
         })
         .collect();
     let armed = rows.iter().filter(|r| r.enabled).count();
-    let retained_hits = rows.iter().filter(|r| !r.enabled).map(|r| r.hits).sum();
+    let retained_hits: u64 = rows.iter().filter(|r| !r.enabled).map(|r| r.hits).sum();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
     BreakView {
         live: breakpoints_live(set),
+        armed_sentence: format!(
+            "{armed} of {} breakpoint{} armed, so the machine will halt at {}",
+            rows.len(),
+            plural(rows.len()),
+            if armed == 1 { "it" } else { "them" }
+        ),
+        retained_sentence: if rows.is_empty() {
+            "No breakpoint has been armed, so nothing here will stop the machine.".to_owned()
+        } else {
+            format!(
+                "{} breakpoint{} held and every one of them disabled, carrying {retained_hits} hit{} \
+                 between them from when they were armed.",
+                rows.len(),
+                plural(rows.len()),
+                if retained_hits == 1 { "" } else { "s" },
+            )
+        },
         armed,
-        retained_hits,
         rows,
     }
 }
@@ -3375,5 +3479,285 @@ mod watch_text {
                 );
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ The Breakpoints tab's own gates (DATA-DISPLAY-AUDIT parcel 5)
+// ---------------------------------------------------------------------------------------------------
+
+/// **Every string the Breakpoints tab can draw, under the rules that bind them.**
+///
+/// The two sentences above the table moved into [`BreakView`] for this module to be able to walk them:
+/// before this parcel they were `format!`s inline in `ui.rs` and no gate could reach them.
+#[cfg(test)]
+mod break_text {
+    use super::*;
+    use crate::bus::Bus;
+    use crate::machine::Machine;
+    use oracle_aether::host::MachineInfo;
+    use serde_json::json;
+
+    /// A real set, armed the served way through `Host::call`, with one row disabled and one labelled.
+    ///
+    /// Three rows rather than one, and deliberately mixed: an armed row, a **disabled** row that has
+    /// been hit, and a labelled one. Every colour rule and every stated absence on this tab needs both
+    /// arms of its condition on one table, or a gate passes on a panel that hard-coded the case it saw.
+    fn armed_set() -> BreakView {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut bus = Bus::new(machine.system_mut(), MachineInfo::default(), false, None);
+        let mut handles = Vec::new();
+        for (target, label) in [("0x20E", ""), ("0x204", "entry"), ("0x218", "")] {
+            let a = bus.call(
+                machine.system_mut(),
+                BREAKPOINT_ADD,
+                &breakpoint_add_params(target, label).expect("a hex target"),
+            );
+            handles.push(ok(&a)["breakpoint"].as_str().expect("a handle").to_owned());
+        }
+        // The third is disabled, so the `state` column and the disabled-row colour rule both have a row.
+        let a = bus.call(
+            machine.system_mut(),
+            BREAKPOINT_SET_ENABLED,
+            &breakpoint_enable_params(&handles[2], false),
+        );
+        assert!(!a.is_err(), "the toggle was refused");
+        let v = breakpoints(bus.read_breakpoints(), None);
+        // The anti-vacuity clause, checked before anything below leans on it.
+        assert_eq!(v.rows.len(), 3, "the fixture must arm three rows");
+        assert_eq!(
+            v.armed, 2,
+            "the fixture must leave exactly one row disabled"
+        );
+        v
+    }
+
+    fn ok(a: &crate::bus::Answer) -> &Value {
+        match a {
+            crate::bus::Answer::Ok(v) => v,
+            crate::bus::Answer::Err(e) => {
+                panic!("expected a reply, got REFUSED {} {}", e.code, e.message)
+            }
+        }
+    }
+
+    /// Every string this tab can put on the glass, the constants the renderer draws verbatim included.
+    fn every_string(v: &BreakView) -> Vec<String> {
+        let mut out = vec![
+            v.armed_sentence.clone(),
+            v.retained_sentence.clone(),
+            v.live.sentence(&v.armed_sentence, &v.retained_sentence),
+            STATE_ARMED.to_owned(),
+            STATE_DISABLED.to_owned(),
+            NO_SYMBOL.to_owned(),
+            NO_SYMBOL_WHY.to_owned(),
+            NO_LABEL.to_owned(),
+            NO_LABEL_WHY.to_owned(),
+            RELEASE_LABEL.to_owned(),
+            DISARM_LABEL.to_owned(),
+            HALTING_LABEL.to_owned(),
+        ];
+        out.extend(BREAK_COLS.iter().map(|c| c.head.to_owned()));
+        out.extend(v.rows.iter().flat_map(BreakRow::cells));
+        out
+    }
+
+    /// **P2, on the rendered value rather than on the source.**
+    ///
+    /// The published check does see this tab's old body: `BreakRow::summary` was
+    /// `"{:<5} {:<10} {:<8} {:>9} hits{sym}{label}"` and `ui.rs` wrote a padded fake header
+    /// (`"{:<5} {:<10} {:<8} {:>9}"`) that had to agree with it by hand. This is the widened check from
+    /// the audit's 0.1: no string this tab draws contains a run of two spaces or a tab.
+    #[test]
+    fn no_string_the_breakpoints_tab_draws_pads_itself_into_a_column() {
+        for s in every_string(&armed_set()) {
+            assert!(
+                !s.contains("  "),
+                "a run of spaces is a column being drawn inside a string, which is the pseudo-table P2 \
+                 outlaws. The table draws the columns: {s:?}"
+            );
+            assert!(
+                !s.contains('\t'),
+                "a tab is the same defect with a different character: {s:?}"
+            );
+        }
+    }
+
+    /// **P10.** The owner's 2026-09-05 ruling, over every string this tab can draw.
+    ///
+    /// ⚑ Section 4 charges this tab with **eleven** runtime em dashes, seven of them from
+    /// `Live::sentence` and `Halting::headline`. Measured at this base: **zero**, in either function and
+    /// in `fn breakpoints` itself, where all the dashes that remain are in comments. This is a standing
+    /// check rather than a fix, and the workspace lexer in `tests/p10_no_dashes_in_shipped_text.rs` is
+    /// what actually closed it.
+    #[test]
+    fn nothing_the_breakpoints_tab_draws_carries_an_em_or_en_dash() {
+        for s in every_string(&armed_set()) {
+            for bad in ['\u{2014}', '\u{2013}'] {
+                assert!(
+                    !s.contains(bad),
+                    "user-facing text carries {bad:?}, which the owner's ruling bars: {s:?}"
+                );
+            }
+        }
+    }
+
+    /// **P9.** No runtime string on this tab cites a specification section.
+    #[test]
+    fn nothing_the_breakpoints_tab_draws_cites_a_specification_section() {
+        for s in every_string(&armed_set()) {
+            assert!(
+                !s.contains('§'),
+                "a runtime string cites a specification section at somebody looking at a game: {s:?}"
+            );
+        }
+    }
+
+    /// ★ **P2's structural half: a header and a body cannot disagree about the columns.**
+    ///
+    /// This is the case the style page named, and the one the brief's *"header and body disagree"* claim
+    /// was true of a second time: two padded format strings in two files, kept in step by hand. Asserted
+    /// from [`BREAK_COLS`]' own length rather than from a pinned six, so adding a column without teaching
+    /// [`BreakRow::cells`] about it is a failure rather than a silently short row.
+    #[test]
+    fn the_breakpoint_table_and_its_header_cannot_disagree_about_the_columns() {
+        let v = armed_set();
+        for r in &v.rows {
+            let cells = r.cells();
+            assert_eq!(
+                cells.len(),
+                BREAK_COLS.len(),
+                "a breakpoint answers a different number of columns than its header names"
+            );
+            for (c, cell) in BREAK_COLS.iter().zip(cells) {
+                assert!(
+                    !cell.trim().is_empty(),
+                    "the {:?} column drew a blank, which is never an answer",
+                    c.head
+                );
+            }
+        }
+    }
+
+    /// ★ **The row the window NAMES carries the address and the handle the server serves.**
+    ///
+    /// ⚑ Written because the existing lock whose name claims this ground does not cover it.
+    /// `the_armed_set_the_window_names_is_the_one_breakpoint_list_serves` compares
+    /// [`Halting::armed_handles`] against `emulator/breakpoint_list`, and [`Halting`] is the alarm, not
+    /// the table: emptying [`BreakRow::addr_text`] leaves that lock green while every row on the tab
+    /// loses its address. Its name describes the class and its body covers a corner, which is the exact
+    /// shape this document keeps re-finding.
+    ///
+    /// So this one reads the **cells the table draws** and requires each row's handle and address to be
+    /// the ones the served row carries, taken out of the reply rather than spelled a second time here.
+    #[test]
+    fn every_cell_the_breakpoint_table_draws_is_the_served_rows_own_spelling() {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut bus = Bus::new(machine.system_mut(), MachineInfo::default(), false, None);
+        for target in ["0x20E", "0x204"] {
+            let a = bus.call(
+                machine.system_mut(),
+                BREAKPOINT_ADD,
+                &breakpoint_add_params(target, "").expect("a hex target"),
+            );
+            assert!(!a.is_err(), "the breakpoint was refused");
+        }
+        let a = bus.call(machine.system_mut(), "emulator/breakpoint_list", &json!({}));
+        let reply = ok(&a).clone();
+        let served = reply["breakpoints"]
+            .as_array()
+            .expect("breakpoint_list serves an array");
+        let v = breakpoints(bus.read_breakpoints(), None);
+        assert_eq!(served.len(), 2, "the fixture must serve two rows: {reply}");
+        assert_eq!(
+            v.rows.len(),
+            served.len(),
+            "the table and the served list differ in length"
+        );
+        for (row, s) in v.rows.iter().zip(served) {
+            let cells = row.cells();
+            let handle = s["breakpoint"].as_str().expect("a handle");
+            let addr = s["addr"].as_str().expect("an address");
+            assert_eq!(
+                cells[0], handle,
+                "the id cell is not the handle the server serves, so `remove` on this row sends a \
+                 string the server never issued"
+            );
+            assert_eq!(
+                cells[1], addr,
+                "the addr cell is not the address the server serves: {cells:?} against {s}"
+            );
+            // ...and the cells are not empty, which is the failure the equality above would pass if the
+            // served value were somehow empty too.
+            assert!(!cells[0].is_empty() && !cells[1].is_empty());
+        }
+    }
+
+    /// **P6, twice, and the pairing that makes each one witnessed.** A breakpoint the listing cannot name
+    /// says so, and one with no label says so, and the fixture carries a labelled row beside them.
+    #[test]
+    fn an_unnamed_or_unlabelled_breakpoint_states_its_absence_rather_than_omitting_it() {
+        let v = armed_set();
+        let sym: Vec<String> = v.rows.iter().map(|r| r.cells()[4].clone()).collect();
+        let label: Vec<String> = v.rows.iter().map(|r| r.cells()[5].clone()).collect();
+        assert!(
+            sym.iter().all(|s| s == NO_SYMBOL),
+            "this fixture loads no listing, so every row should carry the stated absence: {sym:?}"
+        );
+        assert!(
+            label.contains(&NO_LABEL.to_owned()),
+            "the row armed with no label did not state it: {label:?}"
+        );
+        assert!(
+            label.iter().any(|s| s == "entry"),
+            "the row armed WITH a label did not show it: {label:?}"
+        );
+        assert_eq!(
+            NO_SYMBOL,
+            crate::objects::NO_NAME,
+            "the window now has two spellings of `no name`, which is what a reader learns twice"
+        );
+        assert_ne!(
+            NO_SYMBOL_WHY, NO_NAME_WHY,
+            "a breakpoint sits at an address a person typed, which need not be a routine, so the reason \
+             cannot be the profiler's"
+        );
+        assert!(
+            NO_SYMBOL_WHY.contains("address") && NO_SYMBOL_WHY.contains("listing"),
+            "the reason must say the absence is a fact about the LISTING, and about an address"
+        );
+    }
+
+    /// ★ **The state word and `hits` are neighbours, and the state word is not the only thing carrying
+    /// the arm state.**
+    ///
+    /// `summary` put them side by side on purpose: `disabled` next to a five-figure count is the whole
+    /// armed-versus-retained distinction at row scale. That survives as column ORDER, which is a fact
+    /// about [`BREAK_COLS`] and is checked here rather than remembered.
+    #[test]
+    fn the_state_word_and_the_hit_count_stay_neighbours_in_the_column_order() {
+        let state = BREAK_COLS.iter().position(|c| c.head == "state");
+        let hits = BREAK_COLS.iter().position(|c| c.head == "hits");
+        assert_eq!(
+            (state, hits),
+            (Some(2), Some(3)),
+            "the state word and the hit count are no longer adjacent, which is the pairing the row was \
+             ordered for: {BREAK_COLS:?}"
+        );
+        assert!(
+            BREAK_COLS[3].numeric && BREAK_COLS[3].mono,
+            "`hits` is a count read down the column against its neighbours, so it is right-aligned and \
+             monospace"
+        );
+        assert!(
+            !BREAK_COLS[2].mono,
+            "`state` is a word a person reads, not a machine number"
+        );
+        let v = armed_set();
+        let states: Vec<String> = v.rows.iter().map(|r| r.cells()[2].clone()).collect();
+        assert!(
+            states.contains(&STATE_ARMED.to_owned()) && states.contains(&STATE_DISABLED.to_owned()),
+            "the fixture must show both states or the word is untested: {states:?}"
+        );
     }
 }

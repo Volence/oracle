@@ -2283,29 +2283,7 @@ impl Panels<'_> {
     fn breakpoints(&mut self, ui: &mut egui::Ui) {
         let view = stopping::breakpoints(self.bus.read_breakpoints(), self.symbols);
 
-        Self::live_head(
-            ui,
-            view.live,
-            &format!(
-                "{} of {} breakpoint{} armed, so the machine will halt at {}",
-                view.armed,
-                view.rows.len(),
-                if view.rows.len() == 1 { "" } else { "s" },
-                if view.armed == 1 { "it" } else { "them" }
-            ),
-            &if view.rows.is_empty() {
-                "No breakpoint has been armed, so nothing here will stop the machine.".to_owned()
-            } else {
-                format!(
-                    "{} breakpoint{} held and every one of them disabled, carrying {} hit{} between them \
-                     from when they were armed.",
-                    view.rows.len(),
-                    if view.rows.len() == 1 { "" } else { "s" },
-                    view.retained_hits,
-                    if view.retained_hits == 1 { "" } else { "s" },
-                )
-            },
-        );
+        Self::live_head(ui, view.live, &view.armed_sentence, &view.retained_sentence);
 
         // ⚑ **What the set has already DONE to this machine** — the half [`Live`] cannot express.
         // `live_head` above says whether these rows can stop the machine; this says whether one of them
@@ -2324,16 +2302,22 @@ impl Panels<'_> {
             )
         };
         if let Some(head) = halting.headline() {
-            let colour = if halting.halted_here() {
-                ui.visuals().error_fg_color
-            } else {
-                ui.visuals().warn_fg_color
-            };
-            ui.colored_label(colour, head);
-            if let Some(advice) = halting.advice() {
-                ui.small(advice);
-            }
-            ui.separator();
+            // ⚑ **In a card, because it is the same KIND of thing as the Screen tab's standing readout**
+            // and was a bare `colored_label` in a stack of them. An alarm that draws with the same weight
+            // as the four sentences around it is an alarm a reader scrolls past; the colour is still what
+            // says which alarm it is.
+            card(ui, |ui| {
+                let colour = if halting.halted_here() {
+                    ui.visuals().error_fg_color
+                } else {
+                    ui.visuals().warn_fg_color
+                };
+                ui.colored_label(colour, head);
+                if let Some(advice) = halting.advice() {
+                    ui.small(advice);
+                }
+            });
+            ui.add_space(SECTION_GAP);
         }
 
         // --- add ---
@@ -2386,91 +2370,80 @@ impl Panels<'_> {
         // --- the table ---
         if view.live.has_rows() {
             ui.separator();
-            ui.monospace(format!(
-                "{:<5} {:<10} {:<8} {:>9}",
-                "id", "addr", "state", "hits"
-            ));
+            section(ui, "breakpoints", None, "emulator/breakpoint_list");
             // The armed-for-removal handle is read out here and written back after the closure, so the
             // scroll area borrows neither `self` nor a field of it. `confirm` is the handle the human has
             // already pressed `remove` on; `next_confirm` is `Some(new value)` only when this frame moved
             // it, which keeps "nothing happened" distinguishable from "cleared".
             let confirm = self.stopping.confirm_remove.clone();
             let mut next_confirm: Option<Option<String>> = None;
+            let lead = row_controls_w(ui, true);
+            let rows: Vec<TableRow> = view.rows.iter().map(|r| break_row(ui, r)).collect();
             egui::ScrollArea::vertical()
                 .id_salt("breakpoint-rows")
                 .max_height(220.0)
                 .show(ui, |ui| {
-                    for r in &view.rows {
-                        ui.horizontal(|ui| {
-                            // The checkbox is `breakpoint_set_enabled`, the ONE writer of this field on
-                            // this bus. Its value is read from the row, never from a local mirror, so a
-                            // refused toggle simply leaves the box where the server left it.
-                            let mut on = r.enabled;
+                    control_table(ui, &stopping::BREAK_COLS, &rows, lead, |ui, i| {
+                        let r = &view.rows[i];
+                        // The checkbox is `breakpoint_set_enabled`, the ONE writer of this field on
+                        // this bus. Its value is read from the row, never from a local mirror, so a
+                        // refused toggle simply leaves the box where the server left it.
+                        let mut on = r.enabled;
+                        if ui
+                            .checkbox(&mut on, "")
+                            .on_hover_text(
+                                "emulator/breakpoint_set_enabled. `hits` is carried ACROSS the \
+                                 toggle: this surface never resets a count; a fresh one means \
+                                 clear and re-add.",
+                            )
+                            .changed()
+                        {
+                            gesture = Some((
+                                stopping::BREAKPOINT_SET_ENABLED,
+                                stopping::breakpoint_enable_params(&r.handle, on),
+                            ));
+                        }
+                        // ⚑ **Two presses, and a word.** This is the control that destroyed a
+                        // breakpoint under a UX seat who thought it was the tick-box: it drew as a
+                        // hollow box (see [`REMOVE_LABEL`]) 36 px from a real one, and it took effect
+                        // on the first click with no tooltip, no confirmation and no undo. Both halves
+                        // are fixed here, because a legible label on a control that still fires
+                        // instantly only narrows the accident.
+                        if stopping::confirming(confirm.as_deref(), &r.handle) {
                             if ui
-                                .checkbox(&mut on, "")
-                                .on_hover_text(
-                                    "emulator/breakpoint_set_enabled. `hits` is carried ACROSS the \
-                                     toggle: this surface never resets a count; a fresh one means \
-                                     clear and re-add.",
+                                .small_button(
+                                    egui::RichText::new(REMOVE_CONFIRM_LABEL)
+                                        .color(ui.visuals().error_fg_color),
                                 )
-                                .changed()
-                            {
-                                gesture = Some((
-                                    stopping::BREAKPOINT_SET_ENABLED,
-                                    stopping::breakpoint_enable_params(&r.handle, on),
-                                ));
-                            }
-                            // ⚑ **Two presses, and a word.** This is the control that destroyed a
-                            // breakpoint under a UX seat who thought it was the tick-box: it drew as a
-                            // hollow box (see [`REMOVE_LABEL`]) 36 px from a real one, and it took effect
-                            // on the first click with no tooltip, no confirmation and no undo. Both halves
-                            // are fixed here, because a legible label on a control that still fires
-                            // instantly only narrows the accident.
-                            if stopping::confirming(confirm.as_deref(), &r.handle) {
-                                if ui
-                                    .small_button(
-                                        egui::RichText::new(REMOVE_CONFIRM_LABEL)
-                                            .color(ui.visuals().error_fg_color),
-                                    )
-                                    .on_hover_text(
-                                        "emulator/breakpoint_clear on this handle alone. It does not \
-                                         come back: re-arming the same address makes a NEW breakpoint, \
-                                         with a new handle and `hits` at zero. To keep the row and stop \
-                                         it halting the machine, untick it instead.",
-                                    )
-                                    .clicked()
-                                {
-                                    gesture = Some((
-                                        stopping::BREAKPOINT_CLEAR,
-                                        stopping::breakpoint_clear_params(&r.handle),
-                                    ));
-                                    next_confirm = Some(None);
-                                }
-                                if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
-                                    next_confirm = Some(None);
-                                }
-                            } else if ui
-                                .small_button(REMOVE_LABEL)
                                 .on_hover_text(
-                                    "Clear this breakpoint. Asks once more before it does, because it \
-                                     cannot be undone. The tick-box to the left is the one that turns a \
-                                     breakpoint OFF and keeps it.",
+                                    "emulator/breakpoint_clear on this handle alone. It does not \
+                                     come back: re-arming the same address makes a NEW breakpoint, \
+                                     with a new handle and `hits` at zero. To keep the row and stop \
+                                     it halting the machine, untick it instead.",
                                 )
                                 .clicked()
                             {
-                                next_confirm = Some(Some(r.handle.clone()));
+                                gesture = Some((
+                                    stopping::BREAKPOINT_CLEAR,
+                                    stopping::breakpoint_clear_params(&r.handle),
+                                ));
+                                next_confirm = Some(None);
                             }
-                            let text = egui::RichText::new(r.summary()).monospace();
-                            // A disabled row is dimmed, from `enabled` — the same field the word in the
-                            // row says. Two encodings of one fact, but the fact is the one a reader is
-                            // most likely to skim past, and neither is derived from the other's string.
-                            if r.enabled {
-                                ui.label(text);
-                            } else {
-                                ui.label(text.weak());
+                            if ui.small_button(REMOVE_CANCEL_LABEL).clicked() {
+                                next_confirm = Some(None);
                             }
-                        });
-                    }
+                        } else if ui
+                            .small_button(REMOVE_LABEL)
+                            .on_hover_text(
+                                "Clear this breakpoint. Asks once more before it does, because it \
+                                 cannot be undone. The tick-box to the left is the one that turns a \
+                                 breakpoint OFF and keeps it.",
+                            )
+                            .clicked()
+                        {
+                            next_confirm = Some(Some(r.handle.clone()));
+                        }
+                    });
                 });
             if let Some(v) = next_confirm {
                 self.stopping.confirm_remove = v;
@@ -4659,6 +4632,58 @@ fn table(ui: &mut egui::Ui, cols: &[table::Col], rows: &[TableRow], salt: &str) 
         }
     });
     hit
+}
+
+/// **One breakpoint as a [`TableRow`]**, with every colour and hover decided from the breakpoint itself.
+///
+/// ⚑ **Never from the cell text**, for [`watch_row`]'s reason: the projection spells a missing symbol as
+/// [`stopping::NO_SYMBOL`] and a missing label as [`stopping::NO_LABEL`], and a renderer matching on those
+/// strings would be a second encoding of a judgement already made.
+///
+/// **Two colour rules, and the second is the point of keeping a disabled row at all.** A disabled row
+/// recedes, which is the fact its `state` cell says in a word and the old row said by dimming the whole
+/// monospace line. `hits` is the exception: a non-zero count on a disabled row is the **evidence that
+/// breakpoint ever fired**, which is the only reason the row is still there, and dimming it would hide
+/// the one thing a person came back to read. So `hits` takes its colour from whether it is evidence, not
+/// from whether the row is armed.
+fn break_row(ui: &egui::Ui, r: &stopping::BreakRow) -> TableRow {
+    let (plain, weak, strong) = (
+        ui.visuals().text_color(),
+        ui.visuals().weak_text_color(),
+        ui.visuals().strong_text_color(),
+    );
+    let row = if r.enabled { plain } else { weak };
+    // In [`stopping::BREAK_COLS`] order.
+    let decided: [(egui::Color32, Option<&'static str>); 6] = [
+        (row, None),
+        (row, None),
+        (if r.enabled { strong } else { weak }, None),
+        (if r.hits > 0 { plain } else { weak }, None),
+        if r.symbol.is_none() {
+            (weak, Some(stopping::NO_SYMBOL_WHY))
+        } else {
+            (row, None)
+        },
+        if r.label.is_empty() {
+            (weak, Some(stopping::NO_LABEL_WHY))
+        } else {
+            (row, None)
+        },
+    ];
+    TableRow {
+        cells: r
+            .cells()
+            .into_iter()
+            .zip(decided)
+            .map(|(text, (colour, hover))| Cell {
+                text,
+                colour,
+                hover,
+            })
+            .collect(),
+        id: None,
+        selected: false,
+    }
 }
 
 /// **One armed watch as a [`TableRow`]**, with every colour and hover decided from the watch itself.
