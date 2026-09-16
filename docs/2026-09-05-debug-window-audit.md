@@ -1069,3 +1069,86 @@ either tab. Four bogus P10 charges from this page so far.
 `BreakRow::summary`. `stopping.rs` barely moved while `ui.rs` grew a thousand lines beneath it. **A page
 whose citations all rot at one rate is a page nobody checked file by file**, and the uniform rate is the
 tell, not the staleness.
+
+## Addendum, 2026-09-16 (outline witness): the Planes differential cannot see the outline, and one mutation of it is caught by nothing
+
+Parcel `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`, on branch `parcel/outline-witness`, base `d8bb9cc`. This
+page's 2026-09-06 addendum says the Planes reading is derived from `planes::covered_mask`, *"the same mask
+the viewport outline is drawn from, so the words and the outline in front of a person cannot disagree"*.
+That sentence is still true and it is the reason this addendum exists: **sharing one derivation is what
+makes the two agree, and it is also what makes a proof built on it blind.**
+
+### The control, first, because it is the reason the parcel exists
+
+`planes::covered_edges` is called in three places: the live raster (`raster`, in the `if outline` block),
+the frozen reference raster inside the test module, and the differential
+`the_cell_raster_draws_the_pixel_raster_byte_for_byte`, which asserts the outline **by calling it again**.
+Both arms and the judge are the same function, so a mutation moves all three together.
+
+Four mutations, each applied from disk on the pristine tree and each run against the whole `oracle-player`
+crate:
+
+| mutation | what it changes | `the_cell_raster_...byte_for_byte` | anything else in the tree |
+|---|---|---|---|
+| every edge index `+1` | the outline moves one pixel | **green** | `a_uniform_scroll_outlines_a_rectangle` |
+| `out.pop()` | the last edge pixel vanishes | **green** | `a_uniform_scroll_outlines_a_rectangle` |
+| left neighbour clamped, not wrapped | the left side vanishes on a band at x 0 | **green** | `a_uniform_scroll_outlines_a_rectangle` |
+| down neighbour read at `x + 1` | the outline is wrong on any **sheared** band | **green** | **nothing** |
+
+The fourth is the finding. It leaves a rectangle's outline byte-identical, so the one existing lock does not
+see it, and on a per-line-scrolled band it draws **2066 edge pixels where 1844 are correct** — a wrong
+picture, in the tab whose whole job is to show the region the screen is reading, with 481 `oracle-player`
+tests green and exit 0.
+
+`a_uniform_scroll_outlines_a_rectangle` is not at fault and is **not** a case of the name-claims-more-than-
+the-body defect this repo found three times last week: its name says rectangle, its body tests a rectangle,
+and it does that well. It is simply not a proof about the outline in general, and nothing else was.
+
+### The witness
+
+`covered_edges_equals_the_boundary_the_viewport_intervals_predict` (in `planes.rs`, run by
+`cargo test --workspace` in both profiles) derives the expected edge set from the viewport instead: **one
+modular interval per plane row**, computed arithmetically from the display size, the per-line h-scroll and
+the v-scroll — or, for the window, from the spans — and then the boundary taken by endpoint algebra on
+those intervals. No `pw * ph` grid, no four-neighbour test, no wrapping index arithmetic. That is precisely
+the code the differential cannot see. Eight machines, 10811 outline pixels compared, and the shapes the
+corpus must contain (wrapped in x, wrapped in y, a band wider than the plane, a shear, the window) are
+**counted off the derived region rather than declared beside each fixture**.
+
+⚑ **What it is not independent of, stated here and in the source.** The sampling contract itself —
+`sx = x - hscroll`, `sy = line + vscroll`, both modulo the plane — is a **second spelling**, not second
+evidence. The witness is independent evidence for the boundary extraction, which is the thing under test.
+Where the one-interval-per-row model does not hold (per-column v-scroll, or two display lines landing on
+one plane row) it **refuses by name** rather than answering, and the refusal is asserted; `covered_edges`
+does not branch on the v-scroll mode, so that refusal is a gap in mask coverage and not in outline coverage.
+
+### And the outline is not half the cost of the default view. It is about two thirds of it
+
+`Panel::default` is plane A, scroll off, outline **on**, so the default picture is one
+`raster(.., outline = true)` per changed frame. `outline_share_timing` (an ignored instrument;
+`cargo test -p oracle-player --release -- --ignored --nocapture outline_share_timing`) measures it with a
+null control arm that came out at **1.00x on all three machines**. Best of 25 alternating reps, release,
+this box, 2026-09-16 14:08, uptime 18h25m:
+
+| machine | outline off | outline on | the outline | share of the default view |
+|---|---|---|---|---|
+| 64 by 32 cells (512 by 256), H32 | 0.185 ms | 0.486 ms | 0.301 ms | **61.9%** |
+| 64 by 64 cells (512 by 512), H32 | 0.378 ms | 0.734 ms | 0.356 ms | **48.5%** |
+| 64 by 32 cells (512 by 256), H40 | 0.185 ms | 0.548 ms | 0.363 ms | **66.3%** |
+
+⚑ **And the cost is not where the source makes it look.** Essentially all of it is `covered_edges` itself
+(0.300 of 0.301 ms, 0.352 of 0.356, 0.361 of 0.363) — painting the edge pixels is free — but inside that,
+the figure tracks the **display** area and not the plane area. Holding the plane at 512 by 256 and widening
+the display from H32 to H40 (256 to 320 dots, +25%) costs **+20%** (0.300 to 0.361 ms), while **doubling**
+the plane (131072 to 262144 pixels) costs only **+17%** (0.300 to 0.352 ms). The `pw * ph` neighbour scan is
+the loop a reader sees; the `dw * dh` forward scatter in `covered_mask` is where the time goes. Anyone who
+opens the optimisation row should start there, and should measure before believing this sentence too.
+
+**Nothing was optimised in this parcel**, by instruction: the deliverable is the proof and the measurement.
+
+**How everything above was counted.** Suite legs: `grep -cE '^\s+(Running|Doc-tests)'` over the run log,
+cross-checked against `grep -c '^test result:'` (both 90, on both profiles). Passed/failed/ignored: the
+fields of every `^test result:` line summed with `awk`. The 481 `oracle-player` tests: the four
+`test result:` lines of one run summed (472 + 4 + 4 + 1). The 10811 outline pixels and the shape counts:
+printed by the witness itself. The timing: the instrument's own output, best rep of 25, with its null arm
+quoted beside it.
