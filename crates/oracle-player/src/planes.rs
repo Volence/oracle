@@ -1396,6 +1396,333 @@ mod tests {
         assert_eq!(rows[100], shifted, "row 100 is row 0 moved by 100 pixels");
     }
 
+    // -----------------------------------------------------------------------------------------------
+    // The outline's own witness: a second derivation that never calls `covered_edges`
+    // -----------------------------------------------------------------------------------------------
+
+    /// **What one plane row of the viewport covers**, as a modular interval: `w` pixels starting at `x0`,
+    /// wrapping at `pw`. `w >= pw` means the whole row.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    struct Band {
+        x0: usize,
+        w: usize,
+    }
+
+    /// **The covered region derived a second way: one interval per plane row, from the numbers, with no
+    /// raster and no mask.**
+    ///
+    /// ⚑ **What this is and is not independent of.** [`covered_mask`] *scatters forward*: it walks every
+    /// one of `dw * dh` display dots and marks the plane dot that dot samples. This walks the other way and
+    /// never builds a grid at all — for each display line it computes, arithmetically, the plane row that
+    /// line lands on and the interval of plane columns it spans. It is therefore a **second spelling of the
+    /// sampling contract** (`sx = x - hscroll`, `sy = line + vscroll`, both modulo the plane) — it is NOT
+    /// independent evidence for that, and this comment is the place that says so. What it *is* independent
+    /// of is everything [`covered_edges`] does on top: the materialised `pw * ph` boolean grid, the
+    /// four-neighbour test, the wrapping index arithmetic and the order of the output. That is the code the
+    /// panel's byte-for-byte differential cannot see, because both of its arms and its judge all call the
+    /// one function.
+    ///
+    /// Returns `Err` rather than a wrong answer whenever the one-interval-per-row model does not hold, so
+    /// an unmeasurable case is loud instead of silently green.
+    fn viewport_bands(inp: &Inputs, pw: usize, ph: usize) -> Result<Vec<Option<Band>>, String> {
+        let mut rows: Vec<Option<Band>> = vec![None; ph];
+        let (dw, dh) = (inp.display.0 as usize, inp.display.1 as usize);
+        if inp.plane == Plane::Window {
+            for (line, span) in inp.spans.iter().enumerate().take(dh.min(ph)) {
+                let Some(s) = span else { continue };
+                let (x0, end) = (s.start_x as usize, (s.end_x as usize).min(pw));
+                if end <= x0 {
+                    continue;
+                }
+                put(&mut rows, line, Band { x0, w: end - x0 })?;
+            }
+            return Ok(rows);
+        }
+        for line in 0..dh {
+            let sc = inp
+                .scroll
+                .get(line)
+                .ok_or_else(|| format!("no scroll reported for display line {line} of {dh}"))?;
+            let v = match &sc.vscroll {
+                VScroll::Full(v) => *v as usize,
+                // Under two-cell v-scroll one display line reads a different plane row in every
+                // 16-pixel column, so a line is not a row and this derivation has nothing to say.
+                VScroll::TwoCell(_) => {
+                    return Err(format!(
+                        "display line {line} has per-column vertical scroll: one line is not one plane row"
+                    ))
+                }
+            };
+            let row = (line + v) % ph;
+            let x0 = (pw - (sc.hscroll as usize % pw)) % pw;
+            put(&mut rows, row, Band { x0, w: dw })?;
+        }
+        Ok(rows)
+    }
+
+    /// One row of [`viewport_bands`]' answer, refusing rather than overwriting when two display lines
+    /// claim the same plane row with different spans.
+    fn put(rows: &mut [Option<Band>], row: usize, b: Band) -> Result<(), String> {
+        match rows[row] {
+            None => {
+                rows[row] = Some(b);
+                Ok(())
+            }
+            Some(had) if had == b => Ok(()),
+            Some(had) => Err(format!(
+                "plane row {row} is reached twice with different spans, {had:?} then {b:?}: the \
+                 one-interval-per-row model this witness derives from does not hold here"
+            )),
+        }
+    }
+
+    /// **The plane columns of `[a, a + w)` that `other` does NOT cover**, by endpoint arithmetic on the two
+    /// modular intervals — never by asking a grid.
+    ///
+    /// `(d + i) mod pw >= other.w` for `i` in `0 .. w`, with `d` the offset between the two starts, splits
+    /// into at most two runs of `i`, and those two runs are what this returns.
+    fn uncovered_by(a: usize, w: usize, other: Option<Band>, pw: usize) -> Vec<usize> {
+        let Some(o) = other else {
+            return (0..w).map(|i| (a + i) % pw).collect();
+        };
+        if o.w >= pw {
+            return Vec::new();
+        }
+        let d = (a + pw - o.x0 % pw) % pw;
+        let mut out = Vec::new();
+        for i in o.w.saturating_sub(d)..w.min(pw - d) {
+            out.push((a + i) % pw);
+        }
+        for i in (pw + o.w - d).min(w)..w {
+            out.push((a + i) % pw);
+        }
+        out
+    }
+
+    /// **The outline the bands predict**, in the raster order [`covered_edges`] emits.
+    ///
+    /// A covered pixel is on the outline when one of its four neighbours is uncovered, and on a stack of
+    /// row intervals that resolves into three arithmetic statements rather than a scan: the interval's two
+    /// ends are always on it (a row shorter than the plane has an uncovered pixel either side of it), and
+    /// the rest of it is on the outline exactly where the row above or the row below fails to cover it.
+    fn edges_from_bands(bands: &[Option<Band>], pw: usize, ph: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        for (y, this) in bands.iter().enumerate() {
+            let Some(b) = *this else { continue };
+            let mut set = std::collections::BTreeSet::new();
+            let (a, w) = if b.w >= pw { (0, pw) } else { (b.x0 % pw, b.w) };
+            if b.w < pw {
+                set.insert(a);
+                set.insert((a + w - 1) % pw);
+            }
+            for x in uncovered_by(a, w, bands[(y + ph - 1) % ph], pw) {
+                set.insert(x);
+            }
+            for x in uncovered_by(a, w, bands[(y + 1) % ph], pw) {
+                set.insert(x);
+            }
+            out.extend(set.into_iter().map(|x| y * pw + x));
+        }
+        out
+    }
+
+    /// ⚑ **THE OUTLINE'S OWN PROOF, and the reason it had to be written.**
+    ///
+    /// `the_cell_raster_draws_the_pixel_raster_byte_for_byte` compares two rasters and then asserts the
+    /// outline — but the fast raster, the frozen reference raster and the assertion itself all obtain the
+    /// edge list by calling [`covered_edges`]. Mutate that function and all three move together: the
+    /// pictures still match each other, the assertion still finds the outline where it looked for it, and
+    /// the differential stays green while the drawn outline changes. Measured, four ways, in the parcel
+    /// that added this test.
+    ///
+    /// So this row derives the expected edge set from the viewport instead — see [`viewport_bands`] for
+    /// exactly which part of that is a second derivation and which part is only a second spelling — and
+    /// compares the whole list, in order.
+    #[test]
+    fn covered_edges_equals_the_boundary_the_viewport_intervals_predict() {
+        // (name, machine, plane) — built for what the OUTLINE branches on, not for what the raster does:
+        // a band that wraps in x, a band that wraps in y, a band as wide as the plane, a sheared band, a
+        // window band, and the ordinary rectangle.
+        let mut cases: Vec<(String, Vdp, Plane)> = Vec::new();
+
+        // 1. The plain rectangle, 64 by 32 cells: 512 by 256, a 256 by 224 display, no scroll.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01);
+        cases.push(("64x32, no scroll".into(), v, Plane::A));
+
+        // 2. Wrapped in x: h-scroll 112 puts the band's left edge at plane x 400, so it runs off the right
+        //    of a 512-wide plane and back on at the left.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01);
+        for line in 0..224usize {
+            put_cell(&mut v, 0x8000 + line * 4, 112);
+        }
+        set_reg(&mut v, 0x0B, 0x03);
+        cases.push(("64x32, band wrapped in x".into(), v, Plane::A));
+
+        // 3. Wrapped in y: v-scroll 100 on a 256-tall plane with a 224-tall display.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01);
+        write_vsram(&mut v, 0, 100);
+        cases.push(("64x32, band wrapped in y".into(), v, Plane::A));
+
+        // 4. A band as wide as the plane: 32 cells across is 256 pixels, and an H40 display is 320, so
+        //    every covered row is the whole row and the outline has no left or right side at all.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x00);
+        set_reg(&mut v, 0x0C, 0x81);
+        cases.push(("32x32 under an H40 display".into(), v, Plane::A));
+
+        // 5. The shear: a different h-scroll on every line.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01);
+        set_reg(&mut v, 0x0B, 0x03);
+        for line in 0..224usize {
+            put_cell(&mut v, 0x8000 + line * 4, (line as u16 * 3) & 0x03FF);
+        }
+        cases.push(("64x32, per-line h-scroll".into(), v, Plane::A));
+
+        // 6. A sawtooth on a 512-tall plane, so consecutive rows step both ways rather than always
+        //    the same way, and the band's offset against its neighbour changes sign down the picture.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x11);
+        set_reg(&mut v, 0x0B, 0x03);
+        for line in 0..224usize {
+            let z = line as u16 % 64;
+            put_cell(
+                &mut v,
+                0x8000 + line * 4,
+                if z < 32 { z * 7 } else { (63 - z) * 7 },
+            );
+        }
+        cases.push(("64x64, sawtooth h-scroll".into(), v, Plane::A));
+
+        // 7. The window band: whole lines at the top and a left band below them.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01);
+        set_reg(&mut v, 0x0C, 0x81);
+        set_reg(&mut v, 0x11, 0x05);
+        set_reg(&mut v, 0x12, 0x08);
+        cases.push(("window band, H40".into(), v, Plane::Window));
+
+        // 8. Plane B, so the row is not a statement about plane A's registers.
+        let mut v = fixture();
+        set_reg(&mut v, 0x10, 0x01);
+        write_vsram(&mut v, 1, 37);
+        cases.push(("64x32, plane B with its own v-scroll".into(), v, Plane::B));
+
+        // ⚑ The shapes the corpus must still contain, COUNTED OFF THE DERIVED REGION rather than
+        // declared beside each machine: a counter incremented by hand beside a fixture goes on counting
+        // after the fixture stops producing the shape, which is how a corpus quietly empties out.
+        let (mut compared, mut edges_seen) = (0usize, 0usize);
+        let (mut wrapped_x, mut wrapped_y, mut full_rows, mut sheared, mut windowed) =
+            (0, 0, 0, 0, 0);
+        for (name, v, plane) in &cases {
+            let inp = gathered(v, *plane, false);
+            let (pw, ph) = inp.pixels();
+            let bands = viewport_bands(&inp, pw, ph)
+                .unwrap_or_else(|e| panic!("{name}: the witness could not derive the region: {e}"));
+            let want = edges_from_bands(&bands, pw, ph);
+            let got = covered_edges(&inp, pw, ph);
+            assert!(
+                !want.is_empty(),
+                "{name}: the witness predicted no outline at all, so it is asserting nothing"
+            );
+            if want != got {
+                let first = want
+                    .iter()
+                    .zip(&got)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(want.len().min(got.len()));
+                panic!(
+                    "{name} ({pw} by {ph}): the outline is not the one the viewport predicts. \
+                     {} edge pixels predicted, {} drawn; first difference at position {first}: \
+                     predicted {:?}, drawn {:?}",
+                    want.len(),
+                    got.len(),
+                    want.get(first).map(|i| (i % pw, i / pw)),
+                    got.get(first).map(|i| (i % pw, i / pw)),
+                );
+            }
+            // Two properties of the list itself, which the set comparison above cannot make: it is in
+            // raster order and it names no pixel twice.
+            assert!(
+                got.windows(2).all(|p| p[0] < p[1]),
+                "{name}: not in raster order, or repeated"
+            );
+            // ⚑ And, where the geometry is a plain rectangle, the count in closed form from the
+            // constants: a `dw` by `dh` rectangle's perimeter is `2dw + 2dh - 4`, corners counted once.
+            let seen: Vec<Band> = bands.iter().flatten().copied().collect();
+            let (dw, dh) = (inp.display.0 as usize, inp.display.1 as usize);
+            if seen.len() == dh && dw < pw && dh < ph && seen.windows(2).all(|p| p[0] == p[1]) {
+                assert_eq!(
+                    got.len(),
+                    2 * dw + 2 * dh - 4,
+                    "{name}: a rectangle's outline is its perimeter"
+                );
+            }
+            wrapped_x += usize::from(seen.iter().any(|b| b.w < pw && b.x0 + b.w > pw));
+            wrapped_y += usize::from(bands[0].is_some() && bands[ph - 1].is_some());
+            full_rows += usize::from(seen.iter().any(|b| b.w >= pw));
+            sheared += usize::from(seen.windows(2).any(|p| p[0] != p[1]));
+            windowed += usize::from(*plane == Plane::Window);
+            compared += 1;
+            edges_seen += got.len();
+        }
+
+        // ⚑ The control on the measurement. A witness that agreed about nothing would pass every line
+        // above, which is this lane's most repeated failure.
+        println!(
+            "outline witness: {compared} machines, {edges_seen} outline pixels compared; shapes seen: \
+             wrapped in x {wrapped_x}, wrapped in y {wrapped_y}, full rows {full_rows}, sheared \
+             {sheared}, window {windowed}"
+        );
+        assert_eq!(compared, cases.len(), "every case compared");
+        assert!(compared >= 8, "only {compared} cases");
+        assert!(
+            edges_seen > 5_000,
+            "only {edges_seen} outline pixels compared"
+        );
+        for (n, what) in [
+            (
+                wrapped_x,
+                "a band that runs off the right of the plane and back on at the left",
+            ),
+            (
+                wrapped_y,
+                "a band that runs off the bottom and back on at the top",
+            ),
+            (
+                full_rows,
+                "a band at least as wide as the plane, whose outline has no left or right side",
+            ),
+            (sheared, "a band whose rows do not line up"),
+            (
+                windowed,
+                "the window, whose region comes from the spans and not from a scroll",
+            ),
+        ] {
+            assert!(n > 0, "the corpus no longer contains {what}");
+        }
+
+        // ⚑ And the refusal is loud rather than green. Under per-column vertical scroll one display line
+        // is not one plane row, this derivation has nothing to say, and it must SAY so.
+        let mut two_cell = fixture();
+        set_reg(&mut two_cell, 0x10, 0x01);
+        set_reg(&mut two_cell, 0x0B, 0x04);
+        let inp = gathered(&two_cell, Plane::A, false);
+        let (pw, ph) = inp.pixels();
+        assert!(
+            matches!(inp.scroll[0].vscroll, VScroll::TwoCell(_)),
+            "the fixture must actually be two-cell"
+        );
+        let refused = viewport_bands(&inp, pw, ph);
+        assert!(
+            refused.is_err(),
+            "per-column v-scroll must be refused by name, not answered wrongly"
+        );
+    }
+
     /// ⚑ **THE TRAP.** With an H-interrupt armed, one read of reg $0B cannot establish the mode the frame
     /// was drawn with, and the panel says so by name and by line. Without one it says nothing, because a
     /// caveat on every reply is a caveat nobody reads.
@@ -2441,6 +2768,91 @@ mod tests {
                 },
             );
             report(what, REPS, dots, old, new);
+        }
+    }
+
+    /// **What the viewport outline costs the view the panel opens on**, with a null control arm.
+    ///
+    /// [`Panel::default`] is plane A, scroll off, outline **on**, so the default picture is one
+    /// `raster(.., outline = true)` per changed frame and the question this answers is what share of it the
+    /// outline is. The row that booked this parcel guessed *about half*; a guess is what this replaces.
+    ///
+    /// `#[ignore]`d for [`raster_timing`]'s reason: a wall-clock ratio asserted on a shared machine is a
+    /// flake generator. Run it with
+    /// `cargo test -p oracle-player --release -- --ignored --nocapture outline_share_timing`.
+    ///
+    /// ⚑ **The null arm is printed first and it is the part that matters.** It times the outline-off raster
+    /// against itself. Anything but about 1.00 there means the instrument is measuring the machine, and
+    /// every figure under it is worth nothing.
+    #[test]
+    #[ignore = "timing instrument; run with --release -- --ignored --nocapture"]
+    fn outline_share_timing() {
+        use std::hint::black_box;
+        const REPS: usize = 25;
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+
+        for (what, seed, reg10, h40) in [
+            (
+                "64 by 32 cells (512 by 256), H32 display",
+                101u64,
+                0x01u8,
+                false,
+            ),
+            ("64 by 64 cells (512 by 512), H32 display", 101, 0x11, false),
+            ("64 by 32 cells (512 by 256), H40 display", 202, 0x01, true),
+        ] {
+            let v = dense(seed, reg10, h40);
+            let inp = gathered(&v, Plane::A, false);
+            let (pw, ph) = inp.pixels();
+            let dots = pw * ph;
+
+            let (a, b) = race(
+                REPS,
+                || {
+                    black_box(raster(&v, &inp, ink(), false));
+                },
+                || {
+                    black_box(raster(&v, &inp, ink(), false));
+                },
+            );
+            println!(
+                "\n{what}: {dots} dots, {REPS} reps each, alternating\n  \
+                 NULL CONTROL  outline off against itself: {:8.3} / {:8.3} ms best -> {:.2}x \
+                 (anything but ~1.00 invalidates the rest)",
+                ms(a.best),
+                ms(b.best),
+                ms(a.best) / ms(b.best),
+            );
+
+            let (off, on) = race(
+                REPS,
+                || {
+                    black_box(raster(&v, &inp, ink(), false));
+                },
+                || {
+                    black_box(raster(&v, &inp, ink(), true));
+                },
+            );
+            let mut edges_best = std::time::Duration::MAX;
+            for _ in 0..REPS {
+                let t = std::time::Instant::now();
+                black_box(covered_edges(&inp, pw, ph));
+                edges_best = edges_best.min(t.elapsed());
+            }
+            println!(
+                "  outline off:  {:8.3} ms best, {:9.3} ms total\n  \
+                 outline on:   {:8.3} ms best, {:9.3} ms total\n  \
+                 the outline costs {:.3} ms, {:.1}% of the default view, {:.2}x the picture without it\n  \
+                 of which `covered_edges` alone is {:.3} ms best",
+                ms(off.best),
+                ms(off.total),
+                ms(on.best),
+                ms(on.total),
+                ms(on.best) - ms(off.best),
+                100.0 * (ms(on.best) - ms(off.best)) / ms(on.best),
+                ms(on.best) / ms(off.best),
+                ms(edges_best),
+            );
         }
     }
 }
