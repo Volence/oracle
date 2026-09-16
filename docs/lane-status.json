@@ -1,12 +1,6 @@
 {
-  "focus": "Rebuilding how the debug panels show data: the raw-JSON line, the shared table, and the Profiler tab.",
-  "inFlight": [
-    {
-      "what": "The panel data-display parcel: the raw-JSON line on screen, the shared table furniture, and the Profiler tab rebuilt in the card shape",
-      "where": "branch parcel/data-display-1 (worktree ../oracle-datadisplay)",
-      "agent": true
-    }
-  ],
+  "focus": "The Profiler tab and the raw-JSON line are rebuilt and landed; the rest of the panels reuse what it built.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the agent returns and its work is verified and landed. Not before: an agent is holding a branch.",
+  "nextBoundary": "Now, once CI is read. Nothing is running, everything is pushed, and the next panel job starts from the landed table code.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -26,11 +20,11 @@
     },
     {
       "id": "F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL",
-      "state": "next",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Ready to start and needs no decision from you: the outline over the plane picture costs about half that view, and the check that proved the last speed-up correct is blind to it by construction. It needs its own proof first."
+      "title": "The outline over the plane picture costs about half that view, and the check that proved the last speed-up correct is blind to it by construction. It needs its own proof before anyone speeds it up."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -82,11 +76,11 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "doing",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Started. An agent has the first three pieces: the raw-JSON line, the shared table, and the Profiler tab. Two bits in it are still for your eyes."
+      "title": "Three pieces landed: the raw-JSON line, the shared table code, and the Profiler tab. The next panels reuse that table directly, which is the cheapest work in this queue and needs no decision from you."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -105,7 +99,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-16T13:43:58Z"
+  "awaiting": "nothing from you. Note only: CI is still running on this landing and I will read it to completion before calling the work done.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-16T14:17:36Z"
 }

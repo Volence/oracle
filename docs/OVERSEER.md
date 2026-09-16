@@ -270,6 +270,45 @@ highest-value fix.** So it is prior art the audit already overruled, not a later
 nothing. **A rationale sitting at the decision site outranks nothing by being there**, and a reader meeting it
 cold would reasonably have stopped.
 
+**DATA-DISPLAY-AUDIT ITEMS 1 + 3 AND THE PREREQUISITE LANDED 2026-09-16, merge `beed8d9`, pushed and origin
+confirmed moved (agent tip `3c3c94a`, branch `parcel/data-display-1`, base `61288ff`; landing docs `75a76e8`).**
+Verified firsthand on the merged tree by this seat, not taken from the agent: fmt clean, clippy 0 in BOTH shapes,
+**debug 90 legs / 2946 / 0 / 7 and release 90 / 2949 / 0 / 4**, +12 in each reconciled BY NAME against the twelve
+`#[test]` attributes the diff adds. Red-first reproduced here with the mutation quoted off disk and restored from the
+committed baseline (`git checkout beed8d9 --`, tree clean before and after). ⚑ **CI was QUEUED at landing and is NOT
+part of this verification** — read it to completion before treating the landing as closed; a waiter that times out
+exits 0.
+⚑ **THE FINDING, AND IT IS THE SECOND INSTANCE IN TWO DAYS OF THE SAME CLASS, WHICH MAKES IT A PATTERN ABOUT NAMED
+LOCKS RATHER THAN A COINCIDENCE.** Under a restored catch-all dump, four new gates go red while
+**`ui::json_tests::no_served_value_can_put_raw_json_on_the_screen` prints `ok`** — a lock named for exactly this
+defect class, standing while seven production sites committed it. `scene_no_mid_sprite_cut` was the same shape a day
+earlier. **Both were found by the same one-line control: run the mutation against the EXISTING lock, not only against
+the new test.** The lock is not vacuous — it walks `render`'s variants and that is all it ever claimed — but **its
+NAME describes the defect class and its BODY covers one function**, and the name is what stops anyone checking. Twice
+now the name has been the thing standing between a real gap and the person who could have seen it.
+⚑ **AND THE PARCEL PUBLISHED THREE WRONG COUNTS IN THE ADDENDUM ANNOUNCING THAT A BOOKING'S COUNT WAS WRONG.**
+Re-derived at the merge and corrected at the audit's own site (`75a76e8`): `describe_reply` has **seven** production
+call sites in **three** files, not *"eight in six"* — **six is the addendum's own table ROW count read as a file
+count**, and the eighth is `palette.rs`, which the next paragraph says was deliberately left, so the sentence
+contradicts its own page. The P10 positive control of *"243 em dashes"* reproduces at **no** revision (267 at base,
+271 merged). **Not one of the three reaches the code**, which is the point: **a count in prose has nothing checking
+it.** Fourth consecutive parcel here to correct its own brief, and the first to need correcting in the direction it
+was correcting. The load-bearing halves all held and were re-verified: zero em dashes in the Profiler body at base,
+and §4's four cited P10 lines land in `pacing`, so that charge was mis-addressed as well as closed.
+⚑ **Corrections to THIS SEAT's own brief, both from the agent and both right:** `text_w` never took an
+`objects::Col` (I flagged that one at dispatch), and **`header_cell` did and is named by neither §2 nor the morning
+addendum** — so the prerequisite set was right in count and wrong in membership, in both directions, from the same
+cause as §2's item 1. §4's eight Profiler citations are stale by ~1,080 lines (`fn profiler` was `:2761`; `:1674` is
+inside `fn pacing`).
+**`palette.rs`'s echo RULED to stay raw — `L-15` in the ledger**, delegated design call, no reviewer (seat on HOLD).
+The command palette is a raw RPC console whose user typed a method name and came for the wire shape; P1/P3 do not
+reach a surface whose subject is the wire. **Banked in the ledger rather than as a comment at the site**, because
+this lane found twelve hours earlier that a rationale sitting at a decision site outranks nothing by being there.
+`objects.rs`'s `Row::cell` catch-all booked as latent, for parcel 10.
+**NEXT: the rest of `DATA-DISPLAY-AUDIT`** — parcels 4 (Watchpoints) and 5 (Breakpoints) reuse the landed
+`table`/`Cell`/`TableRow` furniture directly. ⚑ Re-derive each from the TREE at the moment it is proposed, never from
+§4, whose citations this landing has just measured as ~1,080 lines stale.
+
 **SEQUENCING, this seat's, 2026-09-16, after the hub's nudge and recorded as a REASON rather than a wait.** The
 hub observed — correctly — that this lane sat at a boundary with `awaiting` saying *"waiting on your pick"* while
 its own `next` row needs no pick, which is the **inflating** direction of sigil's finding (*a row that manufactures
