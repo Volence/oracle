@@ -165,7 +165,7 @@ clause.** Booked as a habit, not a bar. Measured cost of the gap: the boot file 
 board and the memory frontier were both correct, so the exposure was outward — a peer or a fresh session taking a finished row as
 the front. *(Class named by this seat 2026-09-16; adopted by the hub as a third sub-class, banked empyrean `70077e2`.)*
 
-**NEXT, and it is IN FLIGHT rather than a proposal: `F-PLANES-RASTER-EVERY-FRAME`** (worktree `../oracle-planes`, branch
+**LANDED 2026-09-16, merge `2428966`, pushed and origin confirmed moved (agent tip `1d736cc`): `F-PLANES-RASTER-EVERY-FRAME`, CLOSED** (worktree `../oracle-planes`, branch
 `parcel/planes-raster`, base `9ddd5b7`; go from the hub under his delegation, anchors verified firsthand at empyrean `70077e2`,
 an ancestor of their `origin/main`: `docs/OVERSEER.md:149` *"Do not boot into a stop and wait for a pick"* and `:156` *a lane
 rebooted mid-project does NOT stop at its boot stop waiting for a pick*). ⚑ **THE BOARD'S OWN TITLE FOR THIS ROW WAS FALSE AND WAS
@@ -179,6 +179,35 @@ any non-Window plane **regardless of `want_scroll`**, so an unscrolled outline-o
 frame a game scrolls; **(B)** `dot`/`nibble` re-derive the cell and the tile base **once per pixel**, 64 times per 8x8 tile, which
 is where the booking's half a million lookups live. Byte-identical output is the hard constraint, and the measurement ships with a
 null control arm per the lesson above.
+
+**PLANES-RASTER's result, and the dispatch hypothesis was CONFIRMED AND TOO NARROW.** Finding A held and reached further than
+`scroll`: `gather` also mixed the plane base, regs `$0B`/`$0D` and the armed H-interrupt (`$00`/`$0A` — a *sentence* beside the
+picture, never a pixel in it) into the texture's key, and `refresh` XOR'd the outline toggle in unconditionally, so toggling the
+outline on the **scrolled** view — which ignores the flag — also bought a full re-raster of an unchangeable picture. `Inputs` now
+carries `content` and `viewport` apart and `Inputs::fingerprint(outline)` folds the viewport in only where the raster reads it.
+Finding B landed as a per-cell raster plus a per-raster colour LUT. Verified firsthand on the merged tree: fmt clean, clippy 0 in
+both shapes, debug 90 legs / 2934 / 0 / 7, release 90 / 2937 / 0 / 4, **+9 passed and +1 ignored in both profiles reconciled BY
+NAME** against the ten `#[test]` attributes the diff adds; two red-firsts reproduced here with the mutation quoted off disk and
+every exit read unpiped; timing re-run by this seat (null control **1.00x**, then 1.73x / 1.39x / 2.67x).
+⚑ **THE AGENT CORRECTED THE BOOKING'S PREMISE, AND THAT IS THE FINDING WORTH MORE THAN THE SPEEDUP.** The row was booked on *"up to
+half a million pixel lookups per frame"* — and the per-cell raster, which removes exactly those lookups, was worth **1.10x**. LLVM
+already hoists most of the per-pixel address derivation out of that loop. What it cannot hoist is the per-dot transparency branch
+and the CRAM tuple load, and settling those once per raster is what earned 1.73x. **A cost model read off the SOURCE can be wrong
+by the whole optimiser**, and the only thing that separated the two stories was a measurement with a null arm. Second instance in
+two days of a parcel correcting its own design's figure (H22 landing 1 was the first, −4.71 % against a stated −7.5 %); **both were
+caught by the same instrument and neither by a review.**
+⚑ **A THIRD SUB-CLASS ARRIVED INSIDE THE PROOF ITSELF, AND IT IS BOOKED RATHER THAN FIXED.** The differential runs both arms through
+the same `covered_edges`, so a change to the outline moves both arms together and the comparison stays green while the picture
+moves — **the parity-pair bar, arriving as a limit on a proof this seat accepted.** The agent named it unprompted instead of
+quietly relying on it, which is the behaviour the bars exist to produce. Registered as `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`; it
+matters now because the outline is roughly **half the cost of the panel's default view**, so the next parcel in this area is aimed
+at code this parcel's instrument cannot see.
+
+**NEXT: `OWNER-UX-GROUP-B`** — ⚑ *re-derive before starting, from the sources and not from this clause*: the three remaining rows of
+the owner's own ten, in `docs/OVERSEER-REFERENCE.md`'s follow-up register, and his 2026-09-03 ruling on what gets a tab (same file).
+The board's one-line reason for their being takeable — that this seat had wrongly parked them as things the window rebuild would
+fix — is itself a restatement and is exactly the shape that was wrong twice tonight. **Check it against the register before acting
+on it.**
 
 The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
 

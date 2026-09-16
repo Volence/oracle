@@ -1005,6 +1005,34 @@ the four-pane table and the baseline caveat moved whole to `OVERSEER-LOG.md` 202
 
 ⚑ **The live rule: an ask parked on the owner should be RE-PRICED before it is re-sent.** Before putting a
 *look at this* question to him, ask what the program already writes down.
+## ⚑ FROM PLANES-RASTER, 2026-09-16 — read before DISPATCHING into a worktree, and before accepting a differential as a proof
+
+⚑ **A FRESH WORKTREE HAS NO `vendor/`, SO THE BASELINE COUNTS IN A BRIEF CANNOT REPRODUCE THERE — AND THIS SEAT'S BRIEF HANDED OVER
+COUNTS THAT COULD NOT.** `vendor/` is gitignored, so `git worktree add` creates a tree without it; `oracle-core`'s
+`color_1536_gradient_guard` then fails with `GUARD BLOCKED: …/vendor/TestRoms/color_1536.bin not present` and **`cargo test` stops
+there**, so the run is not merely red, it is INCOMPLETE. The agent found it, symlinked `vendor -> ../oracle/vendor` (gitignored,
+never staged) and both profiles then matched to the test. **Remedy: symlink `vendor` as part of creating the worktree, and say so in
+the brief.** ⚑ The shape, and it is the C5 lesson one turn over: **a brief's baseline is a claim about the environment the AGENT will
+have, not about the one the overseer measured in.** The guard behaved perfectly — loud, named, refusing to run rather than reporting
+a green — which is why this cost one detour instead of a wrong number.
+
+⚑ **A DIFFERENTIAL PROVES ONLY WHAT THE TWO ARMS DO NOT SHARE, AND THE SHARED PART IS INVISIBLE FROM INSIDE IT.** The byte-for-byte
+proof here compares a new per-cell raster against a frozen copy of the old per-pixel one — genuinely independent below the tile
+fetch, and it caught a one-line checker-phase mutation by naming the exact dot. But both arms call the same `covered_edges`, the
+same `sample`, the same `CHECKER`: **change any of those and both arms move together and the comparison stays green while the
+picture changes.** This is the parity-pair bar (*a sweep comparing two paths stays green when both are wrong the same way*) arriving
+as a **limit on an accepted proof** rather than as a defect in one. Two consequences: state a differential's shared surface when you
+accept it, and treat the shared surface as UNGATED until something else covers it. Booked here as `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`,
+and it is not academic — the outline is about half the cost of the panel's default view, so the obvious next parcel in this area is
+aimed squarely at what this instrument cannot see. *(The agent named its own proof's limit unprompted; that is the behaviour bar 8
+is for, and it is worth more than the proof.)*
+
+⚑ **AND A SHARED PRIMITIVE UNDERNEATH BOTH ARMS IS THE SAME SHAPE ONE LAYER DOWN.** `tile_row` and `tile_pixel` now share
+`tile_byte`/`tile_nibbles`, so the gate that compares them (`tile_row_is_tile_pixel_eight_at_a_time`) cannot see a mutation in the
+address itself. Accepted, with the reason stated rather than glossed: the renderer's own scanline goldens pin `tile_pixel`
+independently, so the tree has a witness even though that gate does not. **The rule is to NAME the outside witness when you accept a
+shared-primitive gate — an unnamed one is indistinguishable from none.**
+
 ## OPS 2026-09-10: a commit message composed through a command substitution is SHELL INPUT
 
 **Never put backquotes in a commit message written as `git commit -m "$(cat <<EOF ...)"` in this harness.** Measured tonight: a backquoted word inside that construct was executed as a command and DELETED from the message, leaving `8d says in terms that  supplies the CONTENT` in a pushed commit, with `command not found` printed into a stream nobody was reading. The heredoc delimiter was quoted and it happened anyway.

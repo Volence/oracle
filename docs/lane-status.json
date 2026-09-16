@@ -1,12 +1,6 @@
 {
-  "focus": "An agent is making the plane picture cheaper to draw. Nothing needed from you.",
-  "inFlight": [
-    {
-      "what": "Making the plane viewer's picture cheaper to draw, and checking whether it redraws on data the picture never uses",
-      "where": "branch parcel/planes-raster",
-      "agent": true
-    }
-  ],
+  "focus": "The plane picture stopped redrawing itself to produce the same image. Landed and checked.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the agent returns and I have checked its work on the merged tree.",
+  "nextBoundary": "Now. Landed, pushed, verified; nothing is running.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -23,6 +17,14 @@
       "blockedBy": "a contract ruling (the hub's)",
       "project": "ORACLE-DEFAULT",
       "title": "Found by today's fix: in its first moment a window tells a connected program 'there is no window'. What it should say is a ruling for the hub."
+    },
+    {
+      "id": "F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Found by today's fix: the outline drawn over the plane picture is now about half of what that view costs, and the check that proved today's work correct cannot see it. It needs a proof of its own before anyone speeds it up."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -97,14 +99,6 @@
       "title": "The reason I keep asking you to look at panels instead of reading them myself: the window can report its top bar to a connected program but not any panel."
     },
     {
-      "id": "F-PLANES-RASTER-EVERY-FRAME",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "The plane picture may redraw on data it never uses, and when it really does change every frame it is drawn the slow way. Not your lag. The old title said it redraws when nothing changed; re-derived at dispatch, that was wrong."
-    },
-    {
       "id": "LIVE-EFFECTS-NUDGES",
       "state": "open",
       "size": "M",
@@ -113,7 +107,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-16T08:09:22Z"
+  "awaiting": "Nothing. The next row is three of your own ten UX items and needs no decision from you; say the word or let it start.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-16T09:29:06Z"
 }
