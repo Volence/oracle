@@ -178,14 +178,17 @@ fn main() {
                 }
             }
             let rep = sys.vdp().render_line_report(line);
+            // `hflip` is the field the P1 ledger row turns on: screen order and fetch order differ ONLY for
+            // an h-flipped straddler, so a ROM whose cut sprites are all unflipped cannot discriminate them.
+            let decoded = sys.vdp().sprites_decoded();
             let cuts: Vec<String> = rep
                 .sprites
                 .iter()
                 .filter_map(|s| match s.outcome {
                     oracle_core::render::SpriteOutcome::CutPixelBudget { drawn_px } => {
                         Some(format!(
-                            "idx={} x={} w={}cells drawn={drawn_px}",
-                            s.index, s.x, s.width_cells
+                            "idx={} x={} w={}cells drawn={drawn_px} hflip={}",
+                            s.index, s.x, s.width_cells, decoded[s.index as usize].hflip
                         ))
                     }
                     _ => None,

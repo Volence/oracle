@@ -1942,8 +1942,11 @@ impl Vdp {
     ///   screen**, h-flipped or not. No permitted source discriminates screen order from *fetch* order (RR8
     ///   pins that a multi-cell sprite's patterns are addressed column-major and that hflip mirrors the cell
     ///   columns, but that is the screen→source *mapping*, never a statement about the temporal order of the
-    ///   fetches); Nemesis's own masking/overflow ROM does not discriminate them either — measured, both
-    ///   orders score `3=TICK/TICK`. So this is the consistent extension of the rule RR8 *does* pin: the
+    ///   fetches); Nemesis's own masking/overflow ROM cannot discriminate them either — **measured**: its
+    ///   only budget-straddling sprite is slot 35, `x=216`, 4 cells, **`hflip=false`** (`CUTS=1` in
+    ///   `examples/testrom_probe.rs`), and building the fetch-order variant leaves the entire 17-row
+    ///   conformance scorecard identical, `3=TICK/TICK` included. So this is the consistent extension of the
+    ///   rule RR8 *does* pin: the
     ///   sprite is a screen-ordered scan with mirrored source addressing (exactly what [`Vdp::draw_sprite`]
     ///   is), and the budget is spent in the order that scan emits. Flagged interim in ledger row P1.
     /// * **A cut sprite still costs a sprite-count slot.** The 20/16 per-line count is settled in the
@@ -3804,9 +3807,10 @@ mod tests {
         v.vram_mut().fill(0);
         set_reg(&mut v, 0x0F, 2);
         set_reg(&mut v, 0x05, 0x10); // SAT base 0x2000
-                                     // Tiles 1..=8 all opaque: a W-cell-wide sprite based at tile 1 reaches tile W (column-major, 1 cell
-                                     // high — RR8), so filling only tile 1 would make every cell but the first transparent and silently
-                                     // undercount the drawn dots.
+
+        // Tiles 1..=8 all opaque: a W-cell-wide sprite based at tile 1 reaches tile W (column-major, 1 cell
+        // high — RR8), so filling only tile 1 would make every cell but the first transparent and silently
+        // undercount the drawn dots.
         for t in 1..=8 {
             fill_tile(&mut v, t, 5);
         }
