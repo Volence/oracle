@@ -840,3 +840,189 @@ need correcting in the same direction it was correcting.
 about 1,080 lines; `fn profiler` was at `:2761` at `61288ff` and `:1674` is inside `fn pacing`. §2's
 prerequisite set is right in count and wrong in membership: `text_w` never took an `objects::Col`, and
 `header_cell` did and is named nowhere.
+
+---
+
+## Addendum, 2026-09-16 (parcel 4+5): both tabs are built, and section 4's third and fourth P10 charges are also zero
+
+*Appended under this document's standing rule: nothing before this heading is edited, so every stamp above
+keeps meaning what it says. Written by the `DATA-DISPLAY-AUDIT` parcel that did the work, on
+`parcel/data-display-2` off `e13a3ce`.*
+
+**Nothing here was seen on a screen.** The window still cannot be opened from an agent seat, so every claim
+below about *appearance* is a prediction, and they are collected under "what a frame still has to answer"
+at the end.
+
+**How every count below was made**, stated because the addendum immediately above this one published three
+wrong ones and the one above that published one: a Python pass over the file's own lines at the revision
+named, counting occurrences (not lines) for character counts, and classifying each hit as `CODE` or
+`COMMENT` by whether its stripped line starts with `//`. Function bodies are delimited by brace-counting
+from the `fn` line, not by eye. Line numbers are `grep -n` at the base `e13a3ce` unless another revision is
+named.
+
+### Section 4's line numbers, re-derived: stale by about 1,050 lines, with one exact survivor
+
+| section 4 says | actually at `e13a3ce` | what it is |
+|---|---|---|
+| `fn breakpoints` `ui.rs:1271` | **`ui.rs:2283`** | the tab |
+| the padded fake header `ui.rs:1377` | **`ui.rs:2390`** | `"{:<5} {:<10} {:<8} {:>9}"` |
+| `BreakRow::summary` `stopping.rs:150` | **`stopping.rs:150`** | **exact** |
+| `fn watchpoints` `ui.rs:1444` | **`ui.rs:2501`** | the tab |
+| the three glued counts `ui.rs:1535` | **`ui.rs:2592`** | `"seen {}   matched {}   dropped {}"` |
+| the armed-watch row `ui.rs:1572` | **`ui.rs:2660`** | `"{:<4} {:?} {}..={}  {:?}  matched {}{}{}"` |
+| the hit row `ui.rs:1639` | **`ui.rs:2730`** | `"#{:<7} f{:<6} {} {:?} {:?} {:#X} pc {}"` |
+
+**`stopping.rs:150` is exact and that is the point of the table**, not an aside: `stopping.rs` barely moved
+while `ui.rs` grew a thousand lines under it, so a page whose citations all rot at one rate is a page
+nobody checked file by file. The four `ui.rs` deltas are +1013, +1057, +1088 and +1091.
+
+### The P10 charges are zero for a third and fourth time, and one of the four cited lines is in another tab
+
+Section 4 charges Watchpoints with **four** runtime em dashes (`ui.rs:1503, 1540, 1561, 1598`) and
+Breakpoints with **eleven**, *"seven from `stopping.rs`'s `Live::sentence` and `Halting::headline`"*.
+Measured at `e13a3ce`:
+
+* **`fn watchpoints`** (body 2501-2750) holds six em dashes, **every one in a comment** (2697, 2700, 2701,
+  2707, 2716, 2720). Zero in any string it draws.
+* **`fn breakpoints`** (body 2283-2487) holds two, both comments (2310, 2464).
+* **`Live::sentence`** (body 89-98) holds **none at all**. **`Halting::headline`** (body 767-832) holds
+  two, both comments (780, 797).
+* The four lines section 4 cites for Watchpoints are not on the tab: `1503` and `1540` are in the spawn
+  picker, `1561` and `1598` in the planes readout.
+
+**Positive control, so a zero here is a finding rather than a broken detector:** 271 em dashes and 0 en
+dashes in `ui.rs` at `e13a3ce`, 128 and 0 in `stopping.rs`. At this parcel's tip, 264 and 131 (this parcel
+wrote its own comments with `--`).
+
+**All three of section 4's P10 charges against the three stopping tabs have now measured zero**, all closed
+by `7e16748`, a workspace dash sweep that had no idea these rows existed, and all held closed by
+`tests/p10_no_dashes_in_shipped_text.rs`, which lexes string literals outside `cfg(test)` rather than
+grepping. The rule this keeps proving is the one the morning addendum stated: **a rule-by-rule charge can
+be closed entirely by a sweep keyed to one of its rules**, and the audit will keep reporting it as open
+because nothing re-reads the tree on its behalf.
+
+### Two gates were blind, and one of them was this parcel's own
+
+**The existing lock.** `the_armed_set_the_window_names_is_the_one_breakpoint_list_serves` is the lock whose
+name claims exactly the ground parcel 5 changed. It compares `Halting::armed_handles` against
+`emulator/breakpoint_list` -- and `Halting` is the **alarm**, not the table. Mutating `BreakRow::cells` so
+that every row's `addr` cell draws a constant left **the entire pre-existing suite green (470 passed)**.
+Its name describes the class; its body covers a corner. Third consecutive day this repo has recorded that
+shape. The new lock that covers what the name claims is
+`every_cell_the_breakpoint_table_draws_is_the_served_rows_own_spelling`, which reads the cells the table
+draws and takes the expected handle and address out of the **reply**.
+
+**This parcel's own.** The first draft of
+`no_hit_cell_is_longer_than_the_candidate_its_column_was_measured_from` walked the served capture, and
+printed `ok` under the exact mutation it is named for (`hits.last()` to `hits.first()`, a monotonic
+column's bound taken from the wrong end) because that fixture's `seq` and `frame` never reach two digits,
+so both ends of the series spell a same-width string. Fixed with a synthetic log and an **anti-vacuity
+clause inside the gate** asserting those two columns change width along it. Recorded rather than quietly
+fixed, because it is the same defect the paragraph above it is about, committed by the person writing that
+paragraph.
+
+### Parcel 4 (Watchpoints) is built, and the hit log's virtualisation survived the change
+
+* **P2 stands and is fixed, three times.** The hit log, the armed-watch row and the three glued counters
+  were all hand-spaced. Now `HIT_COLS`, `WATCH_COLS` and a headline `stat_row` on one `card`.
+* **P3 stands and is fixed.** `seen / matched / dropped` was three labelled counts in the face reserved for
+  machine numbers.
+* **The `{:?}` enums stand and are fixed**, and section 4 named only two of the **four**: it charges
+  `WatchSpace` and `WatchOp` on the armed row, and does not mention `BusOp` and `Size` on the hit row,
+  though the format string it quotes contains both. A reader met `Vram`, `Any`, `Tas` and `Long`.
+  `space_word` **indexes into `WATCH_SPACES`** rather than spelling the word a second time, so the table's
+  word for a space and the selector's cannot drift.
+* **P6 is new work section 4 did not ask for on this tab**: `stopAfter` states `never` and an unlabelled
+  watch states `(no label)`, because a blank and a `stopAfter` of zero read the same and one of them means
+  *halt immediately*.
+
+**The constraint that shaped it.** Section 6's own note is that `show_rows` exists because the naive `show`
+measured 15.220 ms. Laying seven cells out per row inside the closure is fine; **sizing** them is not,
+because `column_widths` measures the widest cell in each column and the ring holds 4096. So
+`stopping::hit_width_candidates` hands over **bounds** in `O(1)`: `seq` and `frame` are monotonic and the
+log is newest-last, so the last entry carries both maxima; `addr` and `pc` are `hex::addr`, which is `0x`
+plus exactly eight digits for every `u32`; `value` is `{:#X}` of at most `0xFFFFFFFF`; and `op` and `size`
+are closed word lists, so **every** word is a candidate and the caller measures the widest -- because the
+longest by character count is not the widest in a proportional face.
+
+Two gates in `ui.rs` hold that: the columns are wide enough **in pixels** for every row the log can draw,
+and **the height `show_rows` virtualises on is the height a row actually draws**, derived from
+`table_row_h` plus the spacing `show_rows` adds itself rather than pinned. The second is new risk this
+parcel created: it was safe before because a row was one `ui.monospace` line, and a `row_height` that
+disagrees with the drawn row misaligns the scrollbar **silently**.
+
+### Parcel 5 (Breakpoints) is built
+
+* **P2's structural half stands and is fixed.** Two padded format strings in two files, kept in step by
+  hand -- the case the style page named, and the second place in the crate where the brief's *"header and
+  body disagree"* claim is genuinely true (the Profiler was the first).
+* **P3 stands and is fixed.** The body blob mixed an address with the state word, the symbol and the
+  caller's free text.
+* **P6-adjacent stands and is fixed**, and the reason is its own constant: `NO_NAME_WHY` ends *"not about
+  the routine"*, and a breakpoint sits at an address a person typed, which need not be a routine.
+* **The halting alarm is in a `card`**, as section 4 asks.
+
+### Where the code disagreed with section 4's "Becomes" paragraphs, the code won
+
+Three, and each is a thing the audit could not have seen because nothing in it was ever on a screen.
+
+1. **The per-row controls are not a column and section 4 does not mention them.** Both tabs draw a
+   destructive control per row, and it changes shape when armed (`remove` becomes `confirm remove` beside
+   `cancel`). Laid out naturally it would move every column on the tab sideways mid-gesture, on the one
+   control whose history here is somebody pressing the wrong thing. It goes in a **fixed-width gutter**
+   measured over both states by `row_controls_w`, gated against the widest state as actually drawn.
+2. **`state` is lower case.** Section 4 says the fact is carried by colour *rather than by the word alone*
+   and says nothing about the word, which was `ARMED` in capitals -- a second encoding of the same fact in
+   the one style the window has no other use for.
+3. **`stopAfter` is monospace.** Section 4 gives it no face. It takes `PROFILER_COLS`' ruling: the cells
+   that matter are numbers read against `matched` one column over, and a right-aligned column of
+   proportional digits does not line up. The stated absence is the rare cell, not the column's shape.
+
+And one split that is a judgement rather than a correction: the Watchpoints caveat sentence. The half about
+what the instrument is **handed** (the Z80 exclusion) stays on the glass, because a reader cannot recover
+it from the numbers; the half explaining `seen > 0, matched == 0` moves to the `matched` stat's hover. The
+instrument's stated requirement is that both **numbers** are in front of the reader, and they are, side by
+side and large.
+
+### Second spellings dropped, in the Profiler parcel's habit
+
+`WatchView::matched` and `::dropped`, and `BreakView::retained_hits`: each had exactly one reader, the
+renderer that formatted it, and each is stated once now in the form the panel draws. `WatchView::seen` and
+`BreakView::armed` are **kept**, and the test is the same one: each has a reader that is not the drawing of
+the number (`Live::Retained`'s sentence branches on `seen`; `main.rs`'s measurement fixture and
+`stopping`'s gates assert on `armed`).
+
+The two `live_head` sentences on Breakpoints moved out of inline `format!`s in `ui.rs` into `BreakView`.
+Before this parcel **no gate could reach them at all**.
+
+### Measured here, because the next reader will look
+
+At this parcel's tip: **`ui.rs` holds 6 `monospace(format!)` draws**, down from the 10 the parcel-3
+addendum measured; four of those were these two tabs'. **Three width-padded specifiers remain in `ui.rs`
+code** (`1719`, `1883`, `1966`) and every one is on a tab this parcel did not touch: `1719` is the
+Registers status strip (build order item 6) and the other two are the Memory tab's hex dump and gate table
+(item 7). Every remaining padded specifier in `stopping.rs` is in a comment quoting a format string this
+parcel deleted.
+
+### What a frame still has to answer (parked look calls 17-20, same rule: none of these were seen)
+
+**And one that is not a look call at all.** Section 6's call 9 -- *does per-cell layout inside the
+`show_rows` closure stay under budget?* -- is a **profiled frame**, and it is now live rather than
+hypothetical: the closure lays out seven cells where it laid out one line. It cannot be answered from an
+agent seat and is **TAGGED for the owner's foreground follow-up**. What can be said from here is that the
+part `show_rows` exists to prevent is still prevented: nothing walks the whole ring, per frame or at all.
+
+17. **The control gutter's width.** It is reserved for the widest state, so an unarmed row carries the
+    slack of `confirm remove` + `cancel` it is not drawing. *Question: does a column of `remove` buttons
+    with a gap after them read as deliberate, or as a table that failed to close up?*
+18. **Seven columns at the Watchpoints tab's width.** The hit log has seven and the armed table seven, and
+    the armed table also pays the control gutter. §6's call 2 and call 15 ask the same question of Pacing
+    and the Profiler. *Question: does the `label` column survive as a label, or is the hover the only
+    place it exists?*
+19. **The state word without its capitals.** `armed` in `strong_text_color` beside `disabled` in
+    `weak_text_color`. *Question: at a glance down a list of twelve, is the colour difference enough, or
+    were the capitals doing work the colour does not?*
+20. **`hits` bright on a dimmed row.** A disabled row recedes except for its hit count, which stays at
+    full weight when it is non-zero, because it is the evidence the row is kept for. *Question: does that
+    read as the point being made, or as a rendering bug?*
+
