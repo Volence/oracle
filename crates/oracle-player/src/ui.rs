@@ -2768,34 +2768,7 @@ impl Panels<'_> {
             stopping::profiler(p, armed, self.symbols)
         };
 
-        Self::live_head(
-            ui,
-            view.live,
-            &format!(
-                "the accountant is armed. {} frame{} in the sample so far, {} routine{}, {} frame{} open \
-                 on the shadow stack",
-                view.frames,
-                if view.frames == 1 { "" } else { "s" },
-                view.routine_count,
-                if view.routine_count == 1 { "" } else { "s" },
-                view.open_frames,
-                if view.open_frames == 1 { "" } else { "s" },
-            ),
-            &if matches!(view.live, Live::Never) {
-                "The profiler has never been armed in this session, so there is no sample to show. This \
-                 is not `no hot code`. It is `nothing was measured`. Arm it below."
-                    .to_owned()
-            } else {
-                format!(
-                    "The sample of {} frame{} and {} routine{} below was retained when the accountant was \
-                     disarmed (§11.16: arming resets, disarming retains, reading never clears).",
-                    view.frames,
-                    if view.frames == 1 { "" } else { "s" },
-                    view.routine_count,
-                    if view.routine_count == 1 { "" } else { "s" },
-                )
-            },
-        );
+        Self::live_head(ui, view.live, &view.armed_sentence, &view.retained_sentence);
 
         // --- arm / disarm ---
         let mut gesture: Option<Value> = None;
@@ -2805,12 +2778,7 @@ impl Panels<'_> {
             ui.checkbox(&mut st.prof_callers, "callers");
             if ui
                 .button(if view.armed { "disarm" } else { "arm" })
-                .on_hover_text(
-                    "emulator/set_profiler. ⚑ ARMING RESETS THE SAMPLE: every arming flag resets \
-                     together (§11.18), so ticking `callers` on a running measurement and re-arming \
-                     starts a FRESH sample under the lenses this click names, and the one you were \
-                     watching is gone. Disarming keeps it.",
-                )
+                .on_hover_text(stopping::ARM_HOVER)
                 .clicked()
             {
                 gesture = Some(stopping::set_profiler_params(
@@ -2819,67 +2787,76 @@ impl Panels<'_> {
                     st.prof_callers,
                 ));
             }
-            ui.weak(format!(
-                "lenses on the retained sample: perFrame {}   callers {}",
-                view.per_frame_armed, view.callers_armed
-            ));
+            ui.label(
+                egui::RichText::new(&view.lenses)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
+            );
         });
 
-        // --- the rows ---
+        // --- the sample ---
         if view.live.has_rows() {
-            ui.separator();
-            ui.monospace(format!(
-                "frames in sample (the divisor `emulator/get_profiler_frames` uses)   {}",
-                view.frames
-            ));
-            ui.small(
-                "Every figure below is the UNDIVIDED sample total. The per-frame view is the server's \
-                 (`emulator/get_profiler_frames`), which divides these by the count above and reports \
-                 `perFrameExact` beside them; this panel shows what it divides rather than dividing a \
-                 second time.",
+            ui.add_space(SECTION_GAP);
+            // The numbers the tab is opened to read, side by side and large, sharing one card and each
+            // without a box of its own: look call 4, settled as bare (`d-39-answered`).
+            card(ui, |ui| stat_row(ui, &view.headline));
+            ui.add_space(SECTION_GAP);
+            ui.label(
+                egui::RichText::new(stopping::UNDIVIDED)
+                    .text_style(egui::TextStyle::Small)
+                    .color(ui.visuals().weak_text_color()),
             );
-            ui.separator();
-            ui.strong(format!(
-                "hottest routines: top {} of {}",
-                view.top.len(),
-                view.routine_count
-            ));
-            ui.monospace(format!(
-                "{:<10} {:>13} {:>13} {:>11} {:>9}  name",
-                "addr", "cycles", "self", "stall", "calls"
-            ));
+            ui.add_space(SECTION_GAP);
+
+            // Three weights on one line, which is what `section` exists for: what this is, how much of
+            // it there is, and the served row it is a direct read of.
+            section(
+                ui,
+                "hottest routines",
+                Some(format!("top {} of {}", view.top.len(), view.routine_count)),
+                "emulator/get_profiler_frames",
+            );
+            let rows: Vec<TableRow> = view
+                .top
+                .iter()
+                .map(|r| {
+                    let cells = r.cells();
+                    TableRow {
+                        cells: stopping::PROFILER_COLS
+                            .iter()
+                            .zip(cells)
+                            .map(|(_, text)| Cell {
+                                // Health is decided beside the fact, and a routine row carries none: a
+                                // hot routine is not a fault, it is the answer. What recedes is the
+                                // stated absence, for the Objects table's reason — sixty of them at
+                                // full weight would be the loudest thing on the tab.
+                                colour: if text == stopping::NO_NAME {
+                                    ui.visuals().weak_text_color()
+                                } else {
+                                    ui.visuals().text_color()
+                                },
+                                hover: (text == stopping::NO_NAME).then_some(stopping::NO_NAME_WHY),
+                                text,
+                            })
+                            .collect(),
+                        id: None,
+                        selected: false,
+                    }
+                })
+                .collect();
             egui::ScrollArea::vertical()
                 .id_salt("profiler-rows")
                 .max_height(280.0)
                 .show(ui, |ui| {
-                    for r in &view.top {
-                        let name = match &r.symbol {
-                            Some((n, 0)) => format!("  {n}"),
-                            Some((n, d)) => format!("  {n}+0x{d:X}"),
-                            None => String::new(),
-                        };
-                        ui.monospace(format!(
-                            "{:<10} {:>13} {:>13} {:>11} {:>9}{name}",
-                            r.addr_text,
-                            r.counts.cycles,
-                            r.counts.self_cycles,
-                            r.counts.stall_cycles,
-                            r.counts.calls
-                        ));
-                    }
+                    table(ui, &stopping::PROFILER_COLS, &rows, "profiler-row");
                 });
-            if view.routine_count > view.top.len() {
-                ui.small(format!(
-                    "{} further routine{} in the sample are not drawn. The full list is \
-                     `emulator/get_profiler_frames`, whose `top` refuses a request above its cap rather \
-                     than clamping, so a client can always tell a full list from a clipped one.",
-                    view.routine_count - view.top.len(),
-                    if view.routine_count - view.top.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ));
+            if let Some(note) = &view.not_drawn {
+                ui.add_space(SECTION_GAP);
+                ui.label(
+                    egui::RichText::new(note)
+                        .text_style(egui::TextStyle::Small)
+                        .color(ui.visuals().weak_text_color()),
+                );
             }
         }
 

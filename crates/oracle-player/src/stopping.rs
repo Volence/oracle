@@ -292,9 +292,84 @@ pub fn watches_live(w: &Watchpoints) -> Live {
 /// difference that is not one.
 pub struct RoutineRow {
     pub addr_text: String,
-    pub symbol: Option<(String, u32)>,
     pub counts: Counts,
+    /// The `name` cell, **including the stated absence**. The column used to be silently empty when
+    /// `symbol` was `None`, which is the one thing a name column must never be: a blank where a listing
+    /// could not name a routine is indistinguishable from a naming bug, and from a routine that has no
+    /// name to give. See [`NO_NAME`], whose reason is [`NO_NAME_WHY`] and belongs on the hover.
+    pub name: String,
 }
+
+/// What a routine's `name` cell shows when the listing cannot name it.
+///
+/// **One spelling of the marker across the window**, taken from [`crate::objects::NO_NAME`] rather than
+/// typed a second time: a reader who learns what `(unnamed)` means on the Objects tab meets the same
+/// four syllables here. The *reason* is not shared, because it is not the same reason.
+pub const NO_NAME: &str = crate::objects::NO_NAME;
+
+/// Why a routine has no name, for the hover on [`NO_NAME`].
+///
+/// A fact about the **listing**, not about the routine — which is the thing a reader would otherwise
+/// assume, and the reason a blank cell was the wrong answer.
+pub const NO_NAME_WHY: &str =
+    "no symbol in the loaded listing covers this address, or no listing is loaded. Both are facts \
+     about the listing, not about the routine.";
+
+impl RoutineRow {
+    /// This row's cells for [`PROFILER_COLS`], in order. **The single place a routine's counts become
+    /// display text**, so the panel is a table of facts rather than a table of format strings.
+    pub fn cells(&self) -> Vec<String> {
+        vec![
+            self.addr_text.clone(),
+            self.counts.cycles.to_string(),
+            self.counts.self_cycles.to_string(),
+            self.counts.stall_cycles.to_string(),
+            self.counts.calls.to_string(),
+            self.name.clone(),
+        ]
+    }
+}
+
+/// **The hottest-routines table's columns.**
+///
+/// `cycles`, `self` and `stall` keep the monospace face because they are machine cycle counts read digit
+/// by digit down the column, which is what P3 reserves the face for. ⚑ `calls` keeps it too, and the
+/// audit's section 4 proposed otherwise (*"`calls` (numeric)"*, with the face only on the three cycle
+/// columns). That proposal was made from source and never seen on a screen; the code's own precedent
+/// wins, and it is unanimous — every numeric column in the window's other table (`slot`, `x`, `y`) is
+/// monospace, because a right-aligned column of proportional digits does not actually line up.
+pub const PROFILER_COLS: [crate::table::Col; 6] = [
+    crate::table::Col {
+        head: "addr",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "cycles",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "self",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "stall",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "calls",
+        numeric: true,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "name",
+        numeric: false,
+        mono: false,
+    },
+];
 
 /// Everything the Profiler tab draws for one repaint.
 ///
@@ -308,18 +383,67 @@ pub struct RoutineRow {
 pub struct ProfilerView {
     /// `enabled`, from the flag beside the instrument. **Not derivable from anything below it.**
     pub armed: bool,
-    /// Whole frames in the sample — `get_profiler`'s `framesRecorded`, and `get_profiler_frames`' divisor.
-    pub frames: u64,
-    /// Rows the accumulator holds, whether or not anything is still recording.
+    /// Rows the accumulator holds, whether or not anything is still recording. Kept raw as well as in
+    /// [`ProfilerView::headline`] because the section head counts the drawn rows *against* it.
     pub routine_count: usize,
-    /// Frames open on the shadow stack right now.
-    pub open_frames: usize,
-    pub per_frame_armed: bool,
-    pub callers_armed: bool,
     /// The hottest routines by inclusive cycles, longest first, capped at [`TOP_ROUTINES`].
     pub top: Vec<RoutineRow>,
     pub live: Live,
+    /// **The three numbers the tab is opened to read**, in the shared big-number shape: frames in the
+    /// sample, routines in it, frames open on the shadow stack.
+    ///
+    /// The divisor leads because every other figure on the tab is relative to it. It used to be a
+    /// `ui.monospace` line reading *"frames in sample (the divisor `emulator/get_profiler_frames` uses)
+    /// &nbsp; &nbsp; 42"* — a whole prose clause in the face reserved for machine numbers, with three
+    /// hand-counted spaces doing a column's work. The clause is the stat's hover now.
+    pub headline: Vec<crate::pacing::Stat>,
+    /// The sentence [`Live::Yes`] draws, and the one [`Live::Retained`] and [`Live::Never`] draw.
+    ///
+    /// Composed here rather than at the draw site, which is the exemplar's first lesson: a panel whose
+    /// correctness lives in its draw calls is a panel nothing can check, and this window cannot be opened
+    /// from an agent seat. **Neither sentence restates a headline number**, for the Registers tab's
+    /// reason: a panel that silently shows one number twice is a new wrong answer.
+    pub armed_sentence: String,
+    pub retained_sentence: String,
+    /// The lens line: which optional measurements the retained sample was taken under.
+    pub lenses: String,
+    /// What the cap left out, or `None` when the table is the whole sample.
+    pub not_drawn: Option<String>,
 }
+
+/// What the tab says about the figures being undivided, in the reader's terms.
+///
+/// ⚑ **P9.** This used to cite `§11.16` at somebody looking at a game. A specification section number is
+/// a fact about a document the reader is not holding; the *fact* it was carrying — that the division
+/// happens in the server and this panel declines to do it a second time — is what they can act on, and is
+/// what is left. The citation now lives in [`ProfilerView`]'s own doc comment, where the reader IS
+/// holding the specification.
+pub const UNDIVIDED: &str = "Every figure below is the whole sample's total, undivided. The per-frame \
+                             view is the server's own (`emulator/get_profiler_frames`), which divides \
+                             these by the frame count above; this panel shows what it divides rather \
+                             than dividing a second time.";
+
+/// What the arm button's hover says. **The reset is the surprise, so it leads.**
+///
+/// ⚑ **P9 again.** The `§11.18` this used to cite is now in [`set_profiler_params`]'s doc comment. The
+/// fact a person clicking the button needs is that ticking a lens on a running measurement does not add
+/// it: it starts a fresh sample and the one they were watching is gone.
+pub const ARM_HOVER: &str = "emulator/set_profiler. ARMING RESETS THE SAMPLE: every arming flag resets \
+                             together, so ticking `callers` on a running measurement and re-arming \
+                             starts a FRESH sample under the lenses this click names, and the one you \
+                             were watching is gone. Disarming keeps it.";
+
+/// The hover behind `frames in sample`, which is the number every other figure on the tab is relative to.
+const FRAMES_HOVER: &str = "Whole frames recorded into this sample. It is the divisor \
+                            `emulator/get_profiler_frames` uses, so a per-frame figure is any total \
+                            below divided by this.";
+
+const ROUTINES_HOVER: &str =
+    "Distinct routine addresses the accumulator holds. The table below shows \
+                              the hottest of them, not all of them.";
+
+const OPEN_HOVER: &str = "Calls entered and not yet returned from, right now. A running game normally \
+                          has a few; this is a depth, not a backlog, and a healthy run is not a zero.";
 
 /// How many routine rows the panel draws. A cap rather than a scroll over the whole map, because the
 /// accumulator can hold thousands and a panel body is on the 60 Hz path; the count it is a subset of is
@@ -363,10 +487,20 @@ fn top_routines(sample: &BTreeMap<u32, Counts>, symbols: Option<&SymbolTable>) -
     ranked.sort_unstable_by(|a, b| hotter(*a, *b));
     ranked
         .into_iter()
-        .map(|(addr, counts)| RoutineRow {
-            addr_text: hex::addr(addr),
-            symbol: symbols.and_then(|t| symbol_at(t, addr)),
-            counts,
+        .map(|(addr, counts)| {
+            RoutineRow {
+                addr_text: hex::addr(addr),
+                // ⚑ One spelling of the name, as `addr_text` is one spelling of the address and for the
+                // identical reason: the raw `Option<(String, u32)>` beside it had exactly one reader,
+                // the renderer, which formatted it — and a second spelling is how a reader ends up
+                // comparing a panel against a tool and seeing a difference that is not one.
+                name: match symbols.and_then(|t| symbol_at(t, addr)) {
+                    Some((n, 0)) => n,
+                    Some((n, d)) => format!("{n}+0x{d:X}"),
+                    None => NO_NAME.to_owned(),
+                },
+                counts,
+            }
         })
         .collect()
 }
@@ -374,16 +508,84 @@ fn top_routines(sample: &BTreeMap<u32, Counts>, symbols: Option<&SymbolTable>) -
 /// Read the profiler. The `armed` flag comes from
 /// [`Bus::read_instruments`](crate::bus::Bus::read_instruments)' third element and **nowhere else**.
 pub fn profiler(p: &Profiler, armed: bool, symbols: Option<&SymbolTable>) -> ProfilerView {
+    use crate::pacing::{Health, Stat};
     let top = top_routines(p.sample_routines(), symbols);
+    let (frames, routine_count, open_frames) = (p.frames(), p.routine_count(), p.open_frames());
+    let live = profiler_live(p, armed);
+    let not_drawn = (routine_count > top.len()).then(|| {
+        let n = routine_count - top.len();
+        format!(
+            "{n} further routine{} in the sample are not drawn. The full list is \
+             `emulator/get_profiler_frames`, whose `top` refuses a request above its cap rather than \
+             clamping, so a client can always tell a full list from a clipped one.",
+            if n == 1 { "" } else { "s" }
+        )
+    });
+    // ⚑ `frames`, `open_frames` and the two lens flags are NOT carried raw beside the derived forms
+    // below. Each would be a second spelling of a number this view already states, which is how a panel
+    // and its own projection come to disagree; the instrument is one `read_instruments` away for
+    // anything that wants the bare figure.
     ProfilerView {
         armed,
-        frames: p.frames(),
-        routine_count: p.routine_count(),
-        open_frames: p.open_frames(),
-        per_frame_armed: p.per_frame_armed(),
-        callers_armed: p.callers_armed(),
+        routine_count,
+        headline: vec![
+            Stat {
+                label: "frames in sample",
+                value: frames.to_string(),
+                unit: None,
+                // A sample of no frames is `nothing was measured`, not `nothing happened`, which is the
+                // same distinction `Live::Never` draws one line above and the same rule the Pacing tab
+                // applies to a counter that has never moved.
+                health: if frames == 0 {
+                    Health::Unmeasured
+                } else {
+                    Health::Good
+                },
+                hover: FRAMES_HOVER,
+            },
+            Stat {
+                label: "routines",
+                value: routine_count.to_string(),
+                unit: None,
+                health: if routine_count == 0 {
+                    Health::Unmeasured
+                } else {
+                    Health::Good
+                },
+                hover: ROUTINES_HOVER,
+            },
+            Stat {
+                label: "frames open",
+                value: open_frames.to_string(),
+                unit: None,
+                // ⚑ **Never a warning, however large.** An open frame is a call the ROM has entered and
+                // not left, which is what a call stack IS; this is the counter whose health rule differs
+                // from its neighbours', and the Pacing exemplar's second lesson is that exactly such a
+                // judgement must be made here and never re-derived at the draw site. Zero is not
+                // `unmeasured` either: it is a real depth.
+                health: Health::Good,
+                hover: OPEN_HOVER,
+            },
+        ],
+        armed_sentence: "the accountant is armed and recording. The figures below are moving."
+            .to_owned(),
+        retained_sentence: if matches!(live, Live::Never) {
+            "The profiler has never been armed in this session, so there is no sample to show. This is \
+             not `no hot code`. It is `nothing was measured`. Arm it below."
+                .to_owned()
+        } else {
+            "The sample below was retained when the accountant was disarmed: arming resets the sample, \
+             disarming keeps it, and reading it never clears it."
+                .to_owned()
+        },
+        lenses: format!(
+            "lenses on the retained sample: perFrame {}, callers {}",
+            p.per_frame_armed(),
+            p.callers_armed()
+        ),
+        not_drawn,
         top,
-        live: profiler_live(p, armed),
+        live,
     }
 }
 
@@ -2262,5 +2464,177 @@ mod tests {
             Answer::Ok(v) => v.to_string(),
             Answer::Err(e) => format!("{} {}", e.code, e.message),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ⚑ The Profiler tab's own gates (DATA-DISPLAY-AUDIT parcel 3)
+// ---------------------------------------------------------------------------------------------------
+
+/// **Every string the Profiler tab can draw, under the four rules that bind them.**
+///
+/// The exemplar's first lesson, applied: the tab's correctness lives in [`ProfilerView`] and in the
+/// constants beside it rather than in `ui.rs`'s draw calls, so it can be checked without a window — and
+/// this window cannot be opened from an agent seat.
+#[cfg(test)]
+mod profiler_text {
+    use super::*;
+    use crate::bus::Bus;
+    use crate::machine::Machine;
+    use oracle_aether::host::MachineInfo;
+    use serde_json::json;
+
+    /// A real sample, taken the served way: arm, pause, run frames, read the instrument the panel reads.
+    ///
+    /// `symbols: None` is not a shortcut — it is the reachable case that produces the stated absence
+    /// these gates are about (no listing loaded), and it is what the window shows on a bare ROM.
+    fn sampled() -> ProfilerView {
+        let mut machine = Machine::new(oracle_core::testrom::build(), None);
+        let mut bus = Bus::new(machine.system_mut(), MachineInfo::default(), false, None);
+        for (method, params) in [
+            (SET_PROFILER, set_profiler_params(true, true, true)),
+            ("emulator/pause", json!({})),
+            ("emulator/run_frames", json!({"frames": 4})),
+        ] {
+            let a = bus.call(machine.system_mut(), method, &params);
+            assert!(!a.is_err(), "{method} was refused, so no sample was taken");
+        }
+        let (_, p, armed) = bus.read_instruments();
+        let v = profiler(p, armed, None);
+        // The anti-vacuity clause, checked before anything below leans on it: an empty sample would make
+        // every walk here pass over three sentences and no rows at all.
+        assert!(
+            !v.top.is_empty() && v.routine_count > 0,
+            "the sample is EMPTY, so these gates walk no table rows and witness nothing"
+        );
+        v
+    }
+
+    /// Every string this tab can put on the glass, the constants the renderer draws verbatim included.
+    fn every_string(v: &ProfilerView) -> Vec<String> {
+        let mut out = vec![
+            v.armed_sentence.clone(),
+            v.retained_sentence.clone(),
+            v.lenses.clone(),
+            v.live.sentence(&v.armed_sentence, &v.retained_sentence),
+            UNDIVIDED.to_owned(),
+            ARM_HOVER.to_owned(),
+            NO_NAME.to_owned(),
+            NO_NAME_WHY.to_owned(),
+            format!("top {} of {}", v.top.len(), v.routine_count),
+        ];
+        for s in &v.headline {
+            out.push(s.label.to_owned());
+            out.push(s.value.clone());
+            out.push(s.hover.to_owned());
+            out.extend(s.unit.map(str::to_owned));
+        }
+        out.extend(PROFILER_COLS.iter().map(|c| c.head.to_owned()));
+        out.extend(v.top.iter().flat_map(RoutineRow::cells));
+        out.extend(v.not_drawn.clone());
+        out
+    }
+
+    /// **P2, on the rendered value rather than on the source.**
+    ///
+    /// The published check (`grep -cE '\{:[<>^][0-9]+'`) does see this tab's old body, because it drew
+    /// its rows with `{:<10} {:>13} {:>13} {:>11} {:>9}` twice over — a header string and a body string
+    /// that had to be kept in step by hand. But the audit's 0.1 established that the source check is the
+    /// narrower rule, so this is the widened one: no string this tab draws contains a run of two spaces
+    /// or a tab, because the columns are the table's job now.
+    #[test]
+    fn no_string_the_profiler_tab_draws_pads_itself_into_a_column() {
+        for s in every_string(&sampled()) {
+            assert!(
+                !s.contains("  "),
+                "a run of spaces is a column being drawn inside a string, which is the pseudo-table P2 \
+                 outlaws. The table draws the columns: {s:?}"
+            );
+            assert!(
+                !s.contains('\t'),
+                "a tab is the same defect with a different character: {s:?}"
+            );
+        }
+    }
+
+    /// **P9.** Two of the crate's three genuine runtime specification citations were on this tab
+    /// (`§11.16` in the retained sentence, `§11.18` in the arm hover). A section number is a fact about
+    /// a document the reader is not holding; both facts survive, in the reader's terms, and both
+    /// citations moved into doc comments where the reader IS holding it.
+    #[test]
+    fn nothing_the_profiler_tab_draws_cites_a_specification_section() {
+        for s in every_string(&sampled()) {
+            assert!(
+                !s.contains('§'),
+                "a runtime string cites a specification section at somebody looking at a game: {s:?}"
+            );
+        }
+    }
+
+    /// **P10.** The owner's 2026-09-05 ruling, over every string this tab can draw.
+    #[test]
+    fn nothing_the_profiler_tab_draws_carries_an_em_or_en_dash() {
+        for s in every_string(&sampled()) {
+            for bad in ['\u{2014}', '\u{2013}'] {
+                assert!(
+                    !s.contains(bad),
+                    "user-facing text carries {bad:?}, which the owner's ruling bars: {s:?}"
+                );
+            }
+        }
+    }
+
+    /// ★ **P2's structural half: a header and a body cannot disagree about the columns.**
+    ///
+    /// The defect this replaces was two separate format strings carrying the same five widths, which is
+    /// where the brief's *"header and body disagree"* claim was genuinely true. Now there is one
+    /// [`PROFILER_COLS`] and every row answers it, and this asserts the agreement **derivably** — from
+    /// the length of the column list, never from a pinned 6 — so adding a column without teaching
+    /// [`RoutineRow::cells`] about it is a failure rather than a silently short row.
+    #[test]
+    fn the_table_and_its_header_cannot_disagree_about_the_columns() {
+        let v = sampled();
+        for r in &v.top {
+            assert_eq!(
+                r.cells().len(),
+                PROFILER_COLS.len(),
+                "a row answers a different number of columns than the header names"
+            );
+        }
+        // ...and no cell is blank, which is the other half: a table whose rows are the right length and
+        // empty is the failure a length check alone would pass.
+        for cells in v.top.iter().map(RoutineRow::cells) {
+            for (c, cell) in PROFILER_COLS.iter().zip(cells) {
+                assert!(
+                    !cell.trim().is_empty(),
+                    "the {:?} column drew a blank, which is never an answer",
+                    c.head
+                );
+            }
+        }
+    }
+
+    /// **P6.** A routine the listing cannot name says so, and the column is never silently empty.
+    ///
+    /// The old body wrote `None => String::new()`, so an unnamed routine and a naming bug looked the
+    /// same. The marker is the window's one spelling of it and the reason rides on the hover.
+    #[test]
+    fn an_unnamed_routine_states_its_absence_rather_than_drawing_a_blank() {
+        let v = sampled();
+        let names: Vec<String> = v.top.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            names.iter().all(|n| n == NO_NAME),
+            "this fixture loads no listing, so every row should carry the stated absence: {names:?}"
+        );
+        assert!(!NO_NAME.trim().is_empty(), "the stated absence is a blank");
+        assert_eq!(
+            NO_NAME,
+            crate::objects::NO_NAME,
+            "the window now has two spellings of `no name`, which is what a reader learns twice"
+        );
+        assert!(
+            NO_NAME_WHY.contains("listing"),
+            "the reason must say the absence is a fact about the LISTING, not about the routine"
+        );
     }
 }
