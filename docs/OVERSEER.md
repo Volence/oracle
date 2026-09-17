@@ -371,3 +371,10 @@ green — discarded, redone on the right line, red. The empty diff is what showe
 **CR-W Q3 SPIKE DISPATCHED 2026-09-17** (branch `parcel/crw-spike`, worktree `../oracle-spike`, base `ef2b06d`; test code + a findings doc only,
 nothing wired to the wire or contract). Pass → implementing parcel in lockstep with the hub's contract text; name aurora as reviewer. Fail in
 both forms → back to the hub, no substitute seam. **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.
+**CR-W Q3 SPIKE LANDED 2026-09-17, merge `5a51da1`: PASS IN FORM 1** (agent tip `5b21d11`; test-only; land.sh GREEN; M5 reproduced here).
+In-pass paint-list span in `TabViewer::ui`, read after `build_ui` and before the pass ends, is exact for all eleven tabs in every arrangement
+measured. **Form 2 FAILS** (a floating window over a body leaks 28 foreign runs), so it is not a fallback. Eight corrections to CR-W §2/§5/§10
+and the W-rows are in `docs/2026-09-17-cr-w-q3-spike.md` (spans reset per PASS; read each span from its own layer; floating windows are drawn
+bodies; `Context::graphics` takes the write lock). Reported to the hub with aurora named reviewer.
+**NEXT: the CR-W implementing parcel, in lockstep with the hub's §11.50 + schema** — compose the brief from the CR §10 AND the spike doc's
+corrections, never the CR alone.

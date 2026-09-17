@@ -1,12 +1,6 @@
 {
-  "focus": "Save slots now refresh on click. An agent is testing whether panel text can be read from what the window drew.",
-  "inFlight": [
-    {
-      "what": "Test build: can panel text be read from what the window drew",
-      "where": "branch parcel/crw-spike",
-      "agent": true
-    }
-  ],
+  "focus": "Proved the debug panels can be read from what the window draws. Next: building that, with the hub.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the panel-reading test returns: a pass goes to building it with the contract text, a fail goes back to the hub.",
+  "nextBoundary": "Now: nothing running, everything pushed.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -50,7 +44,7 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "next",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -82,11 +76,11 @@
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "doing",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Letting a program read what the debug panels say. The hub approved the shape if a test build proves it works; an agent is running that test now."
+      "title": "Letting a program read what the debug panels say. The test build proved it works; next is building it, landing together with the hub's contract wording."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -98,6 +92,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-17T10:36:54Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-17T11:18:01Z"
 }
