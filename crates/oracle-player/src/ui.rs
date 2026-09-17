@@ -254,6 +254,12 @@ impl egui_dock::TabViewer for Panels<'_> {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        // CR-W Q3 spike (test builds only): note the layer and paint-list index around the body. See
+        // `crate::crw_q3_spike`. Compiled out of every non-test build.
+        #[cfg(test)]
+        let Some(q3) = crate::crw_q3_spike::probe::enter(ui, *tab) else {
+            return;
+        };
         match tab {
             Tab::Screen => {
                 // Controls first, then the picture with whatever is left — the order is the layout, and
@@ -274,6 +280,8 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Watchpoints => self.watchpoints(ui),
             Tab::Profiler => self.profiler(ui),
         }
+        #[cfg(test)]
+        crate::crw_q3_spike::probe::leave(ui, q3);
     }
 }
 
