@@ -11194,9 +11194,14 @@ mod slot_cells_tests {
         }
     }
 
-    /// **The cells hold their places**: one row, left to right in slot order, none overlapping. A cell
-    /// that reserved only its text's width would pull the next one onto it, which is the table
-    /// furniture's own defect from the parcel 6-8 addendum.
+    /// **The cells hold their places**: one row, left to right in slot order, none overlapping, and each
+    /// number inside its own cell. A cell that reserved only its text's width would pull the next one
+    /// onto it, which is the table furniture's own defect from the parcel 6-8 addendum.
+    ///
+    /// ⚑ **The containment clause was missing from the first version, and a mutation found it.** With
+    /// every cell allocated one point wide, the cells still ran left to right without overlapping and
+    /// were all one width, so this gate stayed green while ten numbers were painted on top of each other.
+    /// Now each number's painted rect must sit inside its cell.
     #[test]
     fn the_cells_run_left_to_right_in_slot_order_without_overlapping() {
         let cells = cells(4);
@@ -11209,7 +11214,15 @@ mod slot_cells_tests {
                     .iter()
                     .find(|r| r.1 == c.slot.to_string())
                     .expect("painted");
-                cell_of(&d, run.0.center()).0
+                let cell = cell_of(&d, run.0.center()).0;
+                assert!(
+                    cell.expand(0.5).contains_rect(run.0),
+                    "slot {}'s number {:?} is painted outside its cell {:?}",
+                    c.slot,
+                    run.0,
+                    cell
+                );
+                cell
             })
             .collect();
         for w in rects.windows(2) {
