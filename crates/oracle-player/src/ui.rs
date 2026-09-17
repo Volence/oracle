@@ -10816,12 +10816,17 @@ mod planes_legend_tests {
         }
     }
 
-    /// Panes where the height binds, where the width binds and the legend wraps, and a roomy one, at the
-    /// scales the window is drawn at.
+    /// Panes where the height binds, where the width binds and the legend wraps, where the legend wraps
+    /// AND the height binds, and a roomy one, at the scales the window is drawn at.
+    ///
+    /// ⚑ The third is the one that matters and it was missing from this gate's first draft, which stayed
+    /// green when the height taken off was one line's rather than the wrapped legend's: in the only pane
+    /// that wrapped, the width bound the picture, so no height accounting could be seen.
     fn panes() -> Vec<egui::Vec2> {
         vec![
             egui::vec2(1400.0, 300.0),
             egui::vec2(180.0, 500.0),
+            egui::vec2(180.0, 110.0),
             egui::vec2(700.0, 700.0),
         ]
     }
@@ -10836,7 +10841,7 @@ mod planes_legend_tests {
     /// at least one case wraps the legend onto more than one line.
     #[test]
     fn the_legend_sits_directly_above_a_drawn_picture_and_the_picture_still_fits_the_pane() {
-        let mut wrapped = 0;
+        let (mut wrapped, mut wrapped_and_tall_enough_to_bind) = (0, 0);
         for ppp in [1.0, 1.25, 2.0] {
             for pane in panes() {
                 let Laid {
@@ -10870,10 +10875,19 @@ mod planes_legend_tests {
                 );
                 if legend.height() > 1.5 * line {
                     wrapped += 1;
+                    // The picture touches the pane's bottom: the height, not the width, bound the fit.
+                    if pane.y - pic.bottom() < 1.0 {
+                        wrapped_and_tall_enough_to_bind += 1;
+                    }
                 }
             }
         }
         assert!(wrapped > 0, "COULD NOT MEASURE: the legend never wrapped");
+        assert!(
+            wrapped_and_tall_enough_to_bind > 0,
+            "COULD NOT MEASURE: the legend never wrapped in a pane whose height bound the picture, so the \
+             wrapped height taken off before the fit is untested"
+        );
     }
 
     /// **No picture, no legend.** A pane with no room says so (the owner's sentence), and a legend under
