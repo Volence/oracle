@@ -157,6 +157,9 @@ pub(crate) mod probe {
         pub plant: Option<String>,
         /// Form 2's per-pass result, written by [`Form2`] from `output_hook`.
         pub form2: Vec<(Tab, Vec<Key>)>,
+        /// Record indices and clip only, no text read at `leave`: the cost arms' probe, which must cost
+        /// what the shipped hook would.
+        pub lean: bool,
     }
 
     thread_local! {
@@ -170,6 +173,7 @@ pub(crate) mod probe {
                 spans: Vec::new(),
                 plant: None,
                 form2: Vec::new(),
+                lean: false,
             })
         });
     }
@@ -233,10 +237,15 @@ pub(crate) mod probe {
                 egui::Color32::WHITE,
             );
         }
+        let lean = PROBE.with(|p| p.borrow().as_ref().is_some_and(|p| p.lean));
         let (end, at_leave) = ui.ctx().graphics(|g| {
             let l = g.get(layer).expect("the body's layer has a paint list");
             let end = l.next_idx().0;
-            (end, texts(l.all_entries().skip(start).take(end - start)))
+            if lean {
+                (end, Vec::new())
+            } else {
+                (end, texts(l.all_entries().skip(start).take(end - start)))
+            }
         });
         let span = Span {
             tab,
@@ -253,6 +262,77 @@ pub(crate) mod probe {
             }
         });
     }
+}
+
+/// **What the implementing parcel's harvest would compute for one run, per CR §10**: the source with its
+/// own TAB/LF folded, the glyphs whose logical rectangles meet the clip, and whether the galley is elided.
+/// Rows are grouped by glyph-row top and runs sorted by left edge; runs on a row joined by TAB, rows by
+/// LF. Here for the cost measurement, so it does the work the real one would; its output is not a
+/// contract.
+pub(crate) fn harvest_runs<'a>(
+    shapes: impl IntoIterator<Item = &'a ClippedShape>,
+) -> (String, String) {
+    struct Run {
+        top: i64,
+        left: f32,
+        source: String,
+        rendered: String,
+    }
+    fn walk(s: &Shape, clip: Rect, out: &mut Vec<Run>) {
+        match s {
+            Shape::Text(t) => {
+                let mut rendered = String::new();
+                let mut top = None;
+                let mut left = f32::INFINITY;
+                for row in &t.galley.rows {
+                    for g in &row.glyphs {
+                        let r = g
+                            .logical_rect()
+                            .translate(t.pos.to_vec2() + row.pos.to_vec2());
+                        if r.intersects(clip) {
+                            rendered.push(if g.chr == '\t' || g.chr == '\n' {
+                                ' '
+                            } else {
+                                g.chr
+                            });
+                            top.get_or_insert((r.min.y * 4.0).round() as i64);
+                            left = left.min(r.min.x);
+                        }
+                    }
+                }
+                if let Some(top) = top {
+                    let source = t.galley.text().replace(['\t', '\n'], " ");
+                    let _elided = t.galley.elided;
+                    out.push(Run {
+                        top,
+                        left,
+                        source,
+                        rendered,
+                    });
+                }
+            }
+            Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
+            _ => {}
+        }
+    }
+    let mut runs = Vec::new();
+    for c in shapes {
+        walk(&c.shape, c.clip_rect, &mut runs);
+    }
+    runs.sort_by(|a, b| a.top.cmp(&b.top).then(a.left.total_cmp(&b.left)));
+    let (mut text, mut rendered) = (String::new(), String::new());
+    let mut row = None;
+    for r in &runs {
+        if let Some(prev) = row {
+            let sep = if prev == r.top { '\t' } else { '\n' };
+            text.push(sep);
+            rendered.push(sep);
+        }
+        row = Some(r.top);
+        text.push_str(&r.source);
+        rendered.push_str(&r.rendered);
+    }
+    (text, rendered)
 }
 
 /// **Form 2**: attribute each text shape of the finished `FullOutput` to the tab whose recorded body clip
@@ -408,6 +488,10 @@ pub(crate) struct Setup {
     pub tooltip_now: bool,
     /// See [`probe::Probe::plant`]. Applied only in the recording arm.
     pub plant: Option<String>,
+    /// Rebuild the dock at the start of every arm. A floating window's position is handed to egui once
+    /// and then lives in the context's memory, so a dock reused across fresh contexts puts the window
+    /// somewhere else on the second arm (measured: 28 runs moved).
+    pub dock: Option<fn() -> egui_dock::DockState<Tab>>,
 }
 
 pub(crate) fn settled_with(
@@ -421,6 +505,9 @@ pub(crate) fn settled_with(
     // the same loop would differ by that count alone. Each arm starts the panel from its default, which
     // every arm then advances by the same `warm + 1` presents.
     lp.planes = crate::planes::Panel::default();
+    if let Some(dock) = setup.dock {
+        lp.dock = dock();
+    }
     let ctx = context();
     if setup.tooltip_now {
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
@@ -966,5 +1053,235 @@ mod tests {
             !got.iter().any(|k| k.text == "0xFF0000 / symbol"),
             "the target box shows its hint although it holds text, so the fixture did not type"
         );
+    }
+
+    /// ★ **A tab dragged out into a floating window, over another tab's body: form 1 stays exact, form 2
+    /// does not.** `egui_dock` draws a window surface's body in the window's own `Middle` layer, so form
+    /// 1's span is in a different paint list and nothing crosses. Form 2 has only rectangles: every run of
+    /// the window's body, and the window's own tab title, has a clip rectangle inside the body clip of the
+    /// Screen tab beneath it, so all of them are attributed to Screen as well. Reachable in the shipped
+    /// window: `draggable_tabs(true)`, `TabViewer::allowed_in_windows` is not overridden, and
+    /// `crate::layout` stores window surfaces.
+    #[test]
+    fn a_floating_window_over_a_body_is_exact_in_form_1_and_leaks_into_that_body_in_form_2() {
+        fn dock() -> egui_dock::DockState<Tab> {
+            let mut dock = crate::ui::initial_dock();
+            let w = dock.add_window(vec![Tab::Profiler]);
+            dock.get_window_state_mut(w)
+                .expect("the window just added")
+                .set_position(egui::pos2(100.0, 150.0))
+                .set_size(egui::vec2(500.0, 400.0));
+            dock
+        }
+        let setup = Setup {
+            dock: Some(dock),
+            ..Setup::default()
+        };
+        let m = measure_with(
+            "window over Screen",
+            dock(),
+            WARM,
+            &|_| Vec::new(),
+            &mut |_| {},
+            &setup,
+        );
+        check_controls("window over Screen", &m);
+        let spans = &m.full.spans;
+        let screen = spans
+            .iter()
+            .find(|s| s.tab == Tab::Screen)
+            .expect("Screen drawn");
+        let window = spans
+            .iter()
+            .find(|s| s.tab == Tab::Profiler)
+            .expect("the window's body drawn");
+        // Controls: the window really is a separate layer, and really does sit over Screen's body.
+        assert_ne!(
+            window.layer, screen.layer,
+            "the window body shares the main layer"
+        );
+        assert!(
+            screen.body_clip.contains_rect(window.body_clip),
+            "the window is not over Screen's body, so form 2 was never tested: {:?} {:?}",
+            window.body_clip,
+            screen.body_clip
+        );
+        for (tab, truth, f1, _) in &m.rows {
+            assert!(*truth > 0, "{tab:?}: vacuous");
+            assert!(f1.pass(), "form 1, {tab:?}: {f1:?}");
+        }
+        let (_, profiler_truth, _, f2_profiler) = row(&m, Tab::Profiler);
+        assert!(
+            f2_profiler.pass(),
+            "form 2, the window's own body: {f2_profiler:?}"
+        );
+        let (_, _, _, f2_screen) = row(&m, Tab::Screen);
+        assert!(f2_screen.missing.is_empty(), "{:?}", f2_screen.missing);
+        let leaked: Vec<&str> = f2_screen.foreign.iter().map(|k| k.text.as_str()).collect();
+        assert_eq!(
+            f2_screen.foreign.len(),
+            profiler_truth + 1,
+            "form 2 should take the window's whole body and its title into Screen: {leaked:?}"
+        );
+        assert!(
+            leaked.contains(&Tab::Profiler.title()),
+            "the window's tab title: {leaked:?}"
+        );
+    }
+
+    /// **The Screen tab's picture overlay, painted through `Painter::with_clip_rect(picture)`, is the
+    /// tab's in both forms** even when the pane is narrower than the picture. `with_clip_rect` intersects
+    /// with the painter's own clip (`egui-0.36.1/src/painter.rs:73`), so the overlay's clip cannot leave
+    /// the body. Control: the armed notice's clip is cut at the body clip's right edge, so the picture
+    /// really was wider than the pane.
+    #[test]
+    fn the_screen_overlay_in_a_pane_narrower_than_the_picture_is_attributed_in_both_forms() {
+        fn dock() -> egui_dock::DockState<Tab> {
+            let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
+            dock.main_surface_mut().split_right(
+                egui_dock::NodeIndex::root(),
+                0.12,
+                vec![Tab::Registers],
+            );
+            dock
+        }
+        let m = measure_with(
+            "narrow Screen, ring placement armed",
+            dock(),
+            WARM,
+            &|_| Vec::new(),
+            &mut |lp| lp.screen.arm_rings(),
+            &Setup::default(),
+        );
+        check_controls("narrow Screen", &m);
+        for (tab, truth, f1, f2) in &m.rows {
+            assert!(
+                *truth > 0 && f1.pass() && f2.pass(),
+                "{tab:?}: {f1:?} {f2:?}"
+            );
+        }
+        let screen = m.full.spans.iter().find(|s| s.tab == Tab::Screen).unwrap();
+        let notice = lp_notice(&m);
+        assert_eq!(
+            notice.clip[2],
+            (screen.body_clip.max.x * 100.0).round() as i64,
+            "the overlay was not cut by the pane edge, so this is not the narrow case: {notice:?}"
+        );
+        assert!(
+            notice.clip[0] > (screen.body_clip.min.x * 100.0).round() as i64,
+            "the overlay's clip is the pane's rather than the picture's: {notice:?}"
+        );
+    }
+
+    fn lp_notice(m: &Measured) -> Key {
+        span_texts(&m.full, Tab::Screen)
+            .iter()
+            .find(|k| k.text.starts_with("ring placement armed"))
+            .cloned()
+            .expect("the armed chip on the picture")
+    }
+
+    /// **The harvest's cost per present**, form 1 and form 2 against a null arm, under the default dock
+    /// and `--dock every-tab`'s. Ignored: it is a measurement, run in release:
+    /// `cargo test --release -p oracle-player harvest_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement; run in release with --ignored --nocapture"]
+    fn harvest_cost_per_present() {
+        use std::time::Duration;
+        let rounds: usize = std::env::var("Q3_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600);
+        for (name, dock) in [
+            ("default", crate::ui::initial_dock()),
+            ("every-tab", crate::ui::every_tab_dock()),
+        ] {
+            let mut lp = fixture(dock);
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+            // [null, form 1, form 2]: whole present, and the harvest alone.
+            let mut whole: [Vec<Duration>; 3] = Default::default();
+            let mut part: [Vec<Duration>; 3] = Default::default();
+            let mut bytes = [0usize; 3];
+            for i in 0..(rounds + 30) {
+                for k in 0..3 {
+                    let arm = (i + k) % 3;
+                    if arm > 0 {
+                        probe::install(Mode::Record);
+                        probe::with(|p| p.lean = true);
+                    }
+                    let t0 = Instant::now();
+                    let mut spent = Duration::ZERO;
+                    let mut made = 0usize;
+                    let mut out = ctx.run_ui(raw(i as u32, Vec::new()), |root| {
+                        if arm > 0 {
+                            probe::with(|p| p.spans.clear());
+                        }
+                        let _ = lp.build_ui(root);
+                        if arm == 1 {
+                            let t = Instant::now();
+                            let spans = probe::with(|p| std::mem::take(&mut p.spans));
+                            let got: Vec<(Tab, String, String)> = root.ctx().graphics(|g| {
+                                spans
+                                    .iter()
+                                    .map(|s| {
+                                        let l = g.get(s.layer).expect("paint list");
+                                        let (a, b) = harvest_runs(
+                                            l.all_entries().skip(s.start).take(s.end - s.start),
+                                        );
+                                        (s.tab, a, b)
+                                    })
+                                    .collect()
+                            });
+                            made = got.iter().map(|(_, a, b)| a.len() + b.len()).sum();
+                            spent = t.elapsed();
+                        }
+                    });
+                    if arm == 2 {
+                        let t = Instant::now();
+                        let spans = probe::with(|p| std::mem::take(&mut p.spans));
+                        let got: Vec<(Tab, String, String)> = spans
+                            .iter()
+                            .map(|s| {
+                                let (a, b) = harvest_runs(out.shapes.iter().filter(|c| {
+                                    s.body_clip.expand(0.01).contains_rect(c.clip_rect)
+                                }));
+                                (s.tab, a, b)
+                            })
+                            .collect();
+                        made = got.iter().map(|(_, a, b)| a.len() + b.len()).sum();
+                        spent = t.elapsed();
+                    }
+                    let dt = t0.elapsed();
+                    out.textures_delta.clear();
+                    probe::uninstall();
+                    if i >= 30 {
+                        whole[arm].push(dt);
+                        part[arm].push(spent);
+                        bytes[arm] = made;
+                    }
+                }
+            }
+            let stat = |v: &mut Vec<Duration>| {
+                v.sort();
+                let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+                (ms(v[v.len() / 2]), ms(v[v.len() * 95 / 100]), v.len())
+            };
+            for (arm, label) in [
+                "null (harvest off)",
+                "form 1 (in-pass span)",
+                "form 2 (FullOutput by clip)",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let w = stat(&mut whole[arm]);
+                let h = stat(&mut part[arm]);
+                println!(
+                    "COST {name:<9} {label:<28} present median {:.3} ms p95 {:.3} ms | harvest median {:.4} ms p95 {:.4} ms | n {} | {} bytes of text+rendered",
+                    w.0, w.1, h.0, h.1, w.2, bytes[arm]
+                );
+            }
+        }
     }
 }
