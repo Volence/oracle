@@ -1669,21 +1669,80 @@ mod tests {
         out
     }
 
+    /// **Tab `t` in a pane a fifth of the window wide**, beside the Screen tab: the arrangement that makes
+    /// the stopping tables and the fact grids too narrow for their own text, so something is really cut.
+    fn narrow_dock(t: Tab) -> egui_dock::DockState<Tab> {
+        let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
+        dock.main_surface_mut()
+            .split_right(egui_dock::NodeIndex::root(), 0.8, vec![t]);
+        dock
+    }
+
+    /// ★ **The whole of a truncated panel line is one hover away.**
+    ///
+    /// The mark says a line was cut; this says the reader can still read it. The treatment is
+    /// [`crate::ui::fitted_label`]'s half of what `table_cell` does for a cut cell, and without this row
+    /// the hover is an absence nothing measures — the mark could ship with the text unreachable and every
+    /// other gate would stay green.
+    ///
+    /// Real, not planted: the Registers strip's `aether` fact in a fifth-width pane, which is the line the
+    /// owner reported. The controls come first — the fact is painted, and the toolkit really elided it —
+    /// so a green run cannot mean the pane simply had room.
+    #[test]
+    fn the_whole_of_a_truncated_panel_line_is_on_its_hover() {
+        let mut lp = fixture(narrow_dock(Tab::Registers));
+        let first = one(&mut lp, &Setup::default());
+        let cut = painted_of(&first, Tab::Registers)
+            .iter()
+            .find(|g| g.galley.text().starts_with("not serving. No --aether"))
+            .expect("control: the Registers strip painted no `aether` fact")
+            .clone();
+        assert!(
+            cut.galley.elided,
+            "control: the pane is wide enough for the whole fact, so nothing here is truncated"
+        );
+        let whole = cut.galley.text().to_owned();
+        let hover = at(&first, Tab::Registers, &whole) + egui::vec2(4.0, 4.0);
+        let script = move |i: u32| {
+            if i >= 2 {
+                vec![egui::Event::PointerMoved(hover)]
+            } else {
+                Vec::new()
+            }
+        };
+        let mut lp = fixture(narrow_dock(Tab::Registers));
+        let p = settled_with(
+            &mut lp,
+            Mode::Record,
+            WARM,
+            &script,
+            &Setup {
+                tooltip_now: true,
+                ..Setup::default()
+            },
+        );
+        let tip: Vec<String> = p
+            .other_layers
+            .iter()
+            .flat_map(|(_, t)| t.iter().map(|k| k.text.clone()))
+            .collect();
+        assert!(
+            tip.iter().any(|t| *t == whole),
+            "the cut line's hover does not carry the whole of it. On the glass: {:?}. In other layers: \
+             {tip:?}",
+            crate::screen::glass_run(&cut).map(|r| r.rendered)
+        );
+    }
+
     /// Every arrangement the cut sweep drives: the default dock, every-tab, the eleven focus layouts, a
     /// narrow pane per tab, and the two scales the attribution gate uses.
     fn cut_arrangements() -> Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> {
-        let narrow = |t: Tab| {
-            let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
-            dock.main_surface_mut()
-                .split_right(egui_dock::NodeIndex::root(), 0.8, vec![t]);
-            dock
-        };
         let mut v: Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> = arrangements()
             .into_iter()
             .map(|(n, d)| (n, d, None))
             .collect();
         for t in Tab::ALL {
-            v.push((format!("narrow {}", t.title()), narrow(t), None));
+            v.push((format!("narrow {}", t.title()), narrow_dock(t), None));
         }
         for ppp in [1.25f32, 2.0] {
             v.push((
