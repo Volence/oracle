@@ -1,10 +1,10 @@
 {
-  "focus": "Building the panel-reading feature; it lands together with the hub's contract wording.",
+  "focus": "Panel reading is built and waiting for the hub's contract wording. Looking at the next job.",
   "inFlight": [
     {
-      "what": "Building panel reading for connected programs",
+      "what": "Panel reading, built and parked until the hub's contract wording",
       "where": "branch parcel/crw-panel",
-      "agent": true
+      "agent": false
     }
   ],
   "blockedOnOwner": [
@@ -14,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the panel-reading build returns and the hub's contract text is ready; both land together.",
+  "nextBoundary": "Now: nothing running; the panel-reading branch is parked, committed, and needs no memory from this session.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -82,11 +82,11 @@
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "doing",
+      "state": "open",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "the hub's contract text for CR-W",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Letting a program read what the debug panels say. An agent is building it now; it lands together with the hub's contract wording."
+      "title": "Letting a program read what the debug panels say. Built and green on a branch; it waits for the hub's contract wording so both land together."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -98,6 +98,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-17T11:18:52Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-17T12:24:33Z"
 }

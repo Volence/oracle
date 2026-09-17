@@ -381,3 +381,9 @@ corrections, never the CR alone.
 **CR-W IMPLEMENTING PARCEL DISPATCHED 2026-09-17** (branch `parcel/crw-panel`, worktree `../oracle-crw`, base `774b4ba`), composed from CR §5/§6/§9/§10
 AND the spike's corrections. Schema re-vendor is the LAST step and BLOCKED until the hub sends the SHA carrying §11.50 + schema (vendored bytes are
 pinned by `PROVENANCE.md`, so no hand patch). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`.**
+**CR-W IMPLEMENTATION BUILT AND PARKED 2026-09-17** at `parcel/crw-panel` tip `4585bf1` (worktree `../oracle-crw`; agent's figures: debug 91/3013/0/11,
+release 91/3016/0/8; W10 ≈ +0.04-0.08 ms/present, nothing when unserved). **HOLD at re-vendor: do NOT merge before the hub's SHA carrying §11.50
++ schema** (a fresh hub session writes it, booked empyrean `CRW-CONTRACT-TEXT`). At that SHA: re-vendor per `docs/2026-09-17-cr-w-landing.md` §6,
+un-ignore `the_cr_w_vectors_validate_the_way_the_file_says_they_do`, replace vector cases 1-4 with `capture_cr_w_vector_replies` output, drop R1
+cases 12-16, move both pins; STOP if the hub's schema needs a key beyond kind/panel/text/rendered/truncated/unrenderable. Then verify firsthand
+(nothing about this parcel is verified by this seat yet), land, message aurora (reviewer) and sigil. Four Q2 look calls for him in the note.
