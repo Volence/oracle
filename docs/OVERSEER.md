@@ -341,3 +341,8 @@ strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
 **OVERSEER-RECUT LANDED 2026-09-17, merge `345f385`** (docs only: 69,869 → 26,914 B; lessons and holds to `docs/OVERSEER-REFERENCE.md`, closed history to `docs/OVERSEER-LOG.md`, both under "Moved from OVERSEER.md 2026-09-17"). **NEXT: `DATA-DISPLAY-AUDIT` items 9-11** (Screen strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
 **DATA-DISPLAY-AUDIT items 9 + 11 DISPATCHED 2026-09-17** (branch `parcel/data-display-4`, worktree `../oracle-dd4`, base `b0d569e`);
 item 10 (Objects) is a look call for him, not a build. **Successor, named in the same write: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`.**
+**DATA-DISPLAY-AUDIT items 9 + 11 LANDED 2026-09-17, merge `07352f1`** (agent tip `5a572b2`; `tools/land.sh` GREEN, release 91/91 legs
+2992/0/5; debug 91/2989/0/8 and a red-first reproduced here). The slot re-read timing was the parcel's BLOCKED sub-item: **ruled `L-17`
+(re-probe on gesture)**, booked `F-SLOT-REPROBE-ON-GESTURE`. What remains of the audit is the owner's eyes (look calls 1-33) plus
+`objects.rs`'s latent raw-JSON catch-all (not covered by `L-15`). **NEXT: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`** — re-derive its premise
+from the tree first, and check whether it needs a contract change (a hub CR) before dispatching.

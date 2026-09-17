@@ -1,12 +1,6 @@
 {
-  "focus": "An agent is making the Screen tab show which save slots are full, plus two small tidy-up sweeps.",
-  "inFlight": [
-    {
-      "what": "Screen tab save slots and the tidy-up sweeps",
-      "where": "branch parcel/data-display-4",
-      "agent": true
-    }
-  ],
+  "focus": "Save-slot display and the panel tidy-ups landed. Deciding what the next job needs before starting it.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,8 +8,16 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the save-slot parcel returns, is checked here and lands.",
+  "nextBoundary": "Now: nothing running, everything pushed. Online tests for this landing still being read.",
   "queue": [
+    {
+      "id": "F-SLOT-REPROBE-ON-GESTURE",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Save slots filled by the other window show as empty until you reopen. Ruled: re-check the disk whenever you click a slot or save/load."
+    },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
       "state": "open",
@@ -74,11 +76,11 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "doing",
+      "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Seven of eleven items done. An agent is on the Screen tab's save slots and the two tidy-up sweeps. The Objects item is a look for you, not a build."
+      "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -98,6 +100,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-17T08:37:53Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-17T09:40:29Z"
 }

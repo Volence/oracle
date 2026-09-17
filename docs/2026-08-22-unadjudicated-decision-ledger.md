@@ -801,3 +801,29 @@ the page", which is the failure the demotion exists to prevent — so the demoti
 only this ledger. **Discharged that way:** `OVERSEER.md`'s NEXT pointer now carries it. **The audit should
 re-run** if items 6-11 start producing bogus P2/P3 charges too, which would mean the judgements have begun
 rotting as well and the retire option comes back.
+
+## L-17 — when the Screen tab re-reads the disk for save-slot occupancy · `SELF-RULED`
+
+**Verdict: option (b), re-probe the ten slot files on a slot GESTURE** (a cell click, a stepper, save, load), and
+nothing else for now. Raised as a BLOCKED sub-item by the `DATA-DISPLAY-AUDIT` items 9+11 parcel (merge
+`07352f1`, addendum "parcels 9 and 11"), which drew all ten slots' occupancy from `States::on_disk` — filled at
+open, at a cartridge swap and by this window's own save — and found nothing re-reads the disk after that, so a
+slot written by the other window or a script stays shown empty. **Reviewer: none — substituted-reviewer rule,
+seat on HOLD.** Delegated design call (internal, reversible, no look).
+
+**Options as the parcel priced them:** (a) every frame, ~600 file checks a second, misses nothing; (b) on a
+gesture, at most 10 checks per click, misses changes between gestures; (c) a timer, 10 checks a second plus a
+clock, misses up to a period; (d) on window focus regain, needs focus wiring, misses a script writing while
+focused; (e) leave it, misses everything after the last probe (loading a deleted slot already refuses cleanly).
+
+**Why (b):** the moment occupancy matters is the moment a person is choosing a slot, and every such moment is a
+gesture, so (b) is correct exactly when it is read, at a cost bounded by clicks rather than by time. (a) and (c)
+spend I/O on frames nobody is choosing a slot in. (d) is additive and can join later if (b) is seen to be stale
+in practice; it is not taken now because its wiring is the costly half and its gain is the glance *before* the
+first click. (e) leaves a known lie on screen for a case the code's own comment names.
+
+**What would have to be true for this to be wrong:** that people read slot occupancy without touching the
+strip — e.g. watching it while a script fills slots — in which case the glance is the use and (c) or (d) is
+right. Or that a gesture-time probe stalls a click on a slow filesystem (ten `stat`s on a network home dir).
+
+**Booked, not built:** `F-SLOT-REPROBE-ON-GESTURE` (S), a follow-up parcel.
