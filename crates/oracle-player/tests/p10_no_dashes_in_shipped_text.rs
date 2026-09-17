@@ -53,11 +53,17 @@
 //! * **Anything inside a `#[cfg(test)]` module, and everything under `tests/`.** An assertion message is
 //!   read by a developer when a test fails, which is not "in the tool"; and in this repo those messages
 //!   carry dense recon provenance whose punctuation is doing real work.
-//! * **Escaped forms.** `'\u{2014}'` as a *character value* is not text: the bitmap font in
-//!   `oracle-frontend` must keep an em-dash glyph so that a dash arriving from elsewhere renders as a dash
-//!   rather than a missing-glyph box, and the existing P10 guards spell their needle that way too. The
-//!   lexer sees the source bytes `\`,`u`,`{`,… and not a dash, so it passes them without special-casing,
-//!   which is the behaviour we want.
+//! * **Escaped forms as a character value.** `'\u{2014}'` in a character literal is not text: the bitmap
+//!   font in `oracle-frontend` must keep an em-dash glyph so that a dash arriving from elsewhere renders as
+//!   a dash rather than a missing-glyph box, and the existing P10 guards spell their needle that way too.
+//!
+//!   ⚑ **An escape inside a STRING literal is text, and until 2026-09-17 this gate could not see it.**
+//!   `"a \u{2014} b"` compiles to a string holding a real em dash, but the lexer sees the source bytes
+//!   `\`,`u`,`{`,… and not a dash, so the gate passed it. Measured on the tree that day there were no such
+//!   escapes in production strings, so the hole was empty; [`offences_in`] now reports one anyway, so a
+//!   zero stays a zero. A backslash that is itself escaped (`"\\u{2014}"`, which prints the six
+//!   characters and no dash) is not an offence, and a raw string cannot tell the lexer which it is, so a
+//!   raw string's `\u{2014}` is reported too and would need rewording.
 //! * **`crates/oracle-aether/tests/contract/`.** Byte-equality with a peer's vendored copy is what the
 //!   conformance gate exists to prove. It is under `tests/`, so it is already outside the walk; this note
 //!   records that the exclusion is intentional and not an oversight.
@@ -165,7 +171,36 @@ struct Offence {
     text: String,
 }
 
-/// Scan one file and return the dashes that sit in production string literals.
+/// Whether an unescaped `\u{2014}` or `\u{2013}` escape (hex in either case, leading zeros allowed)
+/// starts at `idx`: the source spelling of a dash that a string literal compiles into a real one.
+fn escaped_dash_at(chars: &[char], idx: usize) -> bool {
+    if chars.get(idx) != Some(&'\\') {
+        return false;
+    }
+    // An odd run of backslashes before this one means this one is itself escaped.
+    let before = chars[..idx]
+        .iter()
+        .rev()
+        .take_while(|c| **c == '\\')
+        .count();
+    if before % 2 == 1 {
+        return false;
+    }
+    let rest: String = chars[idx + 1..].iter().take(12).collect();
+    let Some(body) = rest.strip_prefix("u{") else {
+        return false;
+    };
+    let Some(end) = body.find('}') else {
+        return false;
+    };
+    matches!(
+        u32::from_str_radix(&body[..end], 16).ok().and_then(char::from_u32),
+        Some(c) if is_dash(c)
+    )
+}
+
+/// Scan one file and return the dashes that sit in production string literals, whether written as the
+/// character or as its `\u{…}` escape.
 fn offences_in(path: &Path, src: &str) -> Vec<Offence> {
     let chars: Vec<char> = src.chars().collect();
     let kinds = classify(&chars);
@@ -178,7 +213,7 @@ fn offences_in(path: &Path, src: &str) -> Vec<Offence> {
         if c == '\n' {
             line += 1;
         }
-        if !is_dash(c) || kinds[idx] != Kind::Str {
+        if kinds[idx] != Kind::Str || !(is_dash(c) || escaped_dash_at(&chars, idx)) {
             continue;
         }
         if spans.iter().any(|&(a, b)| idx >= a && idx < b) {
@@ -289,6 +324,38 @@ fn f() {
             ('g', Kind::Str),
         ],
         "the lexer mis-attributed at least one dash; the gate's scope is only as good as this"
+    );
+}
+
+/// **An escaped dash in a production string is an offence; the same escape as a character value, an
+/// escaped backslash, and anything in a test module are not.**
+///
+/// Every line is a spelling the lexer alone reads as dash-free, which is why this row exists: the gate
+/// used to see only the literal character.
+#[test]
+fn an_escaped_dash_in_a_shipped_string_is_an_offence() {
+    let sample = "\
+fn f() {
+    let a = \"em \\u{2014} a\";
+    let b = \"en \\u{2013} b\";
+    let c = \"zero-padded \\u{02014} c\";
+    let d = '\\u{2014}';
+    let e = \"escaped backslash \\\\u{2014} e\";
+    let g = \"arrow \\u{2192} g\";
+}
+#[cfg(test)]
+mod tests {
+    const T: &str = \"test \\u{2014} t\";
+}
+";
+    let lines: Vec<usize> = offences_in(Path::new("sample.rs"), sample)
+        .iter()
+        .map(|o| o.line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![2, 3, 4],
+        "expected the em, en and zero-padded escapes on lines 2 to 4 and nothing else"
     );
 }
 
