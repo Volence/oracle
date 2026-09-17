@@ -169,3 +169,70 @@ fn the_cr_h_vectors_validate_the_way_the_file_says_they_do() {
         "the vectors must exercise both directions: {passes} pass, {fails} fail"
     );
 }
+
+/// **The CR-W (§11.50) vectors, run against the vendored fragment the way the file says they go.**
+///
+/// The CR-H row above's bar, for the next kind. Two things differ, both from the hub's ruling (empyrean
+/// `629bf21f`, *CR-W RULED*): **rider R1 was DROPPED**, so the five cases tagged `[CR-W rider R1]` are not
+/// contract and are skipped by tag, never by index; and the populated cases 1-4 are replaced with real
+/// replies in the re-vendor commit, which is also when this row is un-ignored.
+///
+/// ⚑ **Ignored until the §11.50 re-vendor.** Against today's vendored fragment cases 1, 3 and 4 are refused
+/// (`'panel' is not one of` the five-value enum), which is the CR's own "upstream" column.
+#[test]
+#[ignore = "awaiting CR-W contract re-vendor"]
+fn the_cr_w_vectors_validate_the_way_the_file_says_they_do() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/proposed/2026-09-17-cr-w-panel-screen-text-vectors.json"
+    );
+    let doc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(path).expect("read the CR-W vectors beside this crate"),
+    )
+    .expect("the vectors file parses");
+    let cases = doc["cases"].as_array().expect("`cases` is an array");
+    assert_eq!(
+        cases.len(),
+        16,
+        "the vectors file holds 16 cases; if that changed, change this number deliberately"
+    );
+    let (mut passes, mut fails, mut skipped) = (0, 0, 0);
+    for (i, c) in cases.iter().enumerate() {
+        let why = c["why"].as_str().expect("each case says why");
+        if why.starts_with("[CR-W rider R1]") {
+            skipped += 1;
+            println!("  case {} SKIPPED: rider R1, dropped by the ruling", i + 1);
+            continue;
+        }
+        let method = c["method"].as_str().expect("each case names its method");
+        let expect = c["expect"].as_str().expect("each case declares expect");
+        let line = match c["kind"].as_str().expect("kind") {
+            "result" => json!({"jsonrpc": "2.0", "id": 1, "result": c["doc"].clone()}),
+            "error" => json!({"jsonrpc": "2.0", "id": 1, "error": c["doc"].clone()}),
+            other => panic!("case {}: unknown kind {other:?}", i + 1),
+        };
+        match (
+            expect,
+            common::schema::check_incoming_strict(&line, Some(method)),
+        ) {
+            ("pass", Ok(())) => passes += 1,
+            ("fail", Err(errs)) => {
+                fails += 1;
+                println!("  case {} REFUSED as declared: {}", i + 1, errs.join(" | "));
+            }
+            ("pass", Err(errs)) => panic!(
+                "case {} is declared passing and the schema REFUSED it: {}",
+                i + 1,
+                errs.join(" | ")
+            ),
+            ("fail", Ok(())) => panic!(
+                "case {} is declared failing and the schema ACCEPTED it",
+                i + 1
+            ),
+            (e, _) => panic!("case {}: expect {e:?}", i + 1),
+        }
+    }
+    println!("  => {passes} accepted, {fails} refused, {skipped} skipped (R1)");
+    assert_eq!(skipped, 5, "R1 carried five cases (12-16)");
+    assert!(passes > 0 && fails > 0, "{passes} pass, {fails} fail");
+}
