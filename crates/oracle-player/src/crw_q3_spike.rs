@@ -492,6 +492,8 @@ pub(crate) struct Setup {
     /// and then lives in the context's memory, so a dock reused across fresh contexts puts the window
     /// somewhere else on the second arm (measured: 28 runs moved).
     pub dock: Option<fn() -> egui_dock::DockState<Tab>>,
+    /// Device pixels per point for every present of the arm; `None` is egui's default of 1.0.
+    pub ppp: Option<f32>,
 }
 
 pub(crate) fn settled_with(
@@ -513,10 +515,27 @@ pub(crate) fn settled_with(
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
     }
     PLANT.with(|p| *p.borrow_mut() = setup.plant.clone());
+    let raw_at = |i: u32| {
+        let mut r = raw(i, script(i));
+        if let Some(ppp) = setup.ppp {
+            // The screen stays SIZE device pixels, so it is SIZE / ppp points.
+            r.screen_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, SIZE / ppp));
+            let id = r.viewport_id;
+            r.viewports
+                .get_mut(&id)
+                .expect("RawInput::default carries the root viewport")
+                .native_pixels_per_point = Some(ppp);
+        }
+        r
+    };
     for i in 0..warm {
-        let _ = present(lp, &ctx, raw(i, script(i)), mode);
+        let _ = present(lp, &ctx, raw_at(i), mode);
     }
-    present(lp, &ctx, raw(warm, script(warm)), mode)
+    let p = present(lp, &ctx, raw_at(warm), mode);
+    if let Some(ppp) = setup.ppp {
+        assert_eq!(ctx.pixels_per_point(), ppp, "the arm did not run at {ppp}");
+    }
+    p
 }
 
 /// **A listing that names an object pool**, so the Objects tab draws its table instead of its no-symbols
@@ -1320,6 +1339,47 @@ mod tests {
                 stray.is_empty(),
                 "{tab:?}: harvested text egui did not keep: {stray:?}"
             );
+        }
+    }
+
+    /// **The verdict does not depend on the display scale.** The owner's display is not at 1.0
+    /// (`no_room_tests::SCALES`), and glyph rows are laid out and rounded in device pixels, so the gate's
+    /// default and every-tab arrangements are repeated at 1.25 and 2.0 device pixels per point.
+    #[test]
+    fn attribution_holds_at_the_scales_the_panel_is_drawn_at() {
+        fn every_tab() -> egui_dock::DockState<Tab> {
+            crate::ui::every_tab_dock()
+        }
+        fn default() -> egui_dock::DockState<Tab> {
+            crate::ui::initial_dock()
+        }
+        for ppp in [1.25_f32, 2.0] {
+            for (name, dock) in [("default", default as fn() -> _), ("every-tab", every_tab)] {
+                let setup = Setup {
+                    ppp: Some(ppp),
+                    dock: Some(dock),
+                    ..Setup::default()
+                };
+                let name = format!("{name} at {ppp}");
+                let m = measure_with(&name, dock(), WARM, &|_| Vec::new(), &mut |_| {}, &setup);
+                check_controls(&name, &m);
+                assert_eq!(
+                    m.rows.len(),
+                    active_tabs(&dock()).len(),
+                    "{name}: drawn set"
+                );
+                let text: usize = m.rows.iter().map(|r| r.1).sum();
+                assert!(text > 0, "{name}: vacuous");
+                for (tab, truth, f1, f2) in &m.rows {
+                    println!(
+                        "{name} {:<12} truth {truth:>3} form1 {} form2 {}",
+                        tab.title(),
+                        f1.pass(),
+                        f2.pass()
+                    );
+                    assert!(f1.pass() && f2.pass(), "{name} {tab:?}: {f1:?} {f2:?}");
+                }
+            }
         }
     }
 }
