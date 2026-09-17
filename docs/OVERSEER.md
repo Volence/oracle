@@ -357,7 +357,7 @@ kind named by its tab, harvested from egui's PAINTED output (one hook for every 
 `screen.rs`'s module-doc refusal and answers it (§1.1). Sent to the hub for ruling; `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` is blocked on it. Its
 Q3 (a short build spike proving each tab's text is harvestable from the paint list) is the first build step once ruled. Q6 (reading a hidden
 tab) is his only if the hub wants it pursued.
-**CR-W RULED BY THE HUB 2026-09-17, VERIFIED at empyrean `629bf21f`** (an ancestor of their `origin/main`; `docs/OVERSEER-LOG.md` entry `2026-09-17T09:59:40Z — CR-W RULED`).
+**CR-W RULED BY THE HUB 2026-09-17, VERIFIED at empyrean `629bf21f`** (an ancestor of their `origin/main`; `docs/OVERSEER-LOG.md` entry `2026-09-17T09:59:40Z — CR-W RULED`). Hub's own work, not under delegation.
 Q1 **option (a) ADOPTED IN SHAPE** (new `panel` kind, REQUIRED `panel` key; (d1)/(d2) ruled out: the kind is where a client learns how to
 read `text`). §3's CR boundary ADOPTED (palette-as-`palette`, `F-PLAYER-SCREENTEXT-CLIP`, paint-list harvest are oracle's, no CR).
 **GATE: no contract text or schema lands until the Q3 SPIKE passes** (per-tab text contiguous in `ui.layer_id()`'s paint list read before
