@@ -4,6 +4,17 @@
   "title": "Empyrean / Aether Bus Protocol (Phase 1 thin slice)",
   "description": "Source-of-truth message schema for the Aether bus (the Empyrean suite's shared protocol). PARTIAL, and precisely so as of 2026-08-15 (protocol.md §11.5/§11.6): the envelope, the handshake, every event, the symbol primitive, and a growing subset of §6's catalogued methods are schematized here. THE COUNT IS DELIBERATELY NOT STATED IN THIS PROSE (2026-08-22): it was hand-maintained across six recounts and was STILL wrong, this sentence reading '37' while the file held 58, which is the very defect its own later clause names, that a count carried forward is a count nobody checked. Repairing the number would only reset that clock, so the number is gone instead. The gate at schema/tests/validate_contract_schema.py derives every count BY PARSING this file and prints them on each run; that output is the only authority, and the BLOCKED rows print there too. Every fragment is written FROM ITS §6 ROW and none from a server's replies, which is §8's required direction) — which covers every method the reference server advertises, both params and result, plus the rows schematized AHEAD OF BEING SERVED, because §8 item 20 makes the fragment the precondition for the handler and not its record: emulator/read_cram and emulator/write_cram (the CRAM pair), and since 2026-08-26 the whole BREAKPOINT family, whose four fragments were rewritten to §11.21 (CR-BP) — handle-identified, with emulator/breakpoint_set_enabled added as the one writer of `enabled`. NO SERVER SERVES THAT SHAPE TODAY and that is the intended order: the successor serves capabilities.breakpoints false, the legacy server serves the pre-amendment ADDRESS-named rows and §11.21 freezes rather than migrates it, so this file describes the surface a server implements against rather than one it has already shipped. FOUR §6 ROWS REMAIN UNSCHEMATIZED AND DELIBERATELY SO — z80_registers, read_vsram, call_stack, log_tail — because each states its result too loosely to transcribe without inventing (a literal `…` in a key set, an array with no item type, or, for log_tail, a question §10 leaves openly undecided). The set was EIGHT until 2026-08-26, when object_slot, object_list and player_state left it under §11.25, and FIVE until 2026-09-05, when read_vdp_registers left it under §11.41 (CR-R) by STRIKING its ellipses rather than enumerating them: they are schematized as a CLOSED ENVELOPE over a typed-open `fields` payload with a REQUIRED `layout` discriminant, which is the audit's own D-27 unblock condition and the reason the partial-fragment objection does not reach them — a typed-open map declares its incompleteness as a type, where a partial fragment asserts a completeness it does not have. That objection stands undiminished for the four above: a PARTIAL fragment would be worse than none, because item 20's closure would then refuse the conformant server that emits the keys the fragment omitted, while §2.5 already reads an ABSENT fragment correctly as 'not yet transcribed'. Each remaining row is itemized, with what would unblock it, in docs/2026-08-22-protocol-schema-audit.md, and the gate at schema/tests/validate_contract_schema.py DERIVES the blocked set by diffing §6 against `methods` and prints it on every run so none goes quiet — that output is the authority for the count, exactly as it is for the fragment count, and this prose is not. The authoritative live method set is whatever `initialize` advertises. REQUEST PARAMS ARE CLOSED HERE (protocol.md §2.5, §8 item 22, added 2026-08-19 by §11.17): every methods.<name>.params object declares `unevaluatedProperties: false`, and unlike item 20's RESULT closure — which is deliberately kept out of this file, so a stale copy cannot reject a conformant server — that keyword IS published, because on the request path the party validating is the party publishing what it supports. handshake.initialize.params is deliberately exempt: closing the handshake would make a version-skewed negotiation fail at the one step whose job is to survive it. PRECEDENCE (protocol.md D14): this file is NORMATIVE for wire shapes — which keys exist, their JSON types and ranges, whether they are required — while protocol.md is normative for semantics and behaviour. A disagreement between the two is a spec bug to be fixed by amendment in the pass that finds it; until amended, this file governs what goes on the wire. It is not a place to introduce behaviour: a shape here with no counterpart in protocol.md is an un-specced field, and §8's ban on unilateral invention applies. The two are amended together.",
   "$defs": {
+    "screenTextKind": {
+      "enum": [
+        "statusLine",
+        "toast",
+        "palette",
+        "lens",
+        "titleBar",
+        "panel"
+      ],
+      "description": "The closed set of emulator/screen_text surface kinds (§11.29, widened by §11.50 CR-W). Referenced by the surface item; §11.50's rider R1 (initialize.capabilities.screenTextKinds) was DROPPED, so this definition has exactly one referent today and must not be described as shared."
+    },
     "hex": {
       "type": "string",
       "pattern": "^0x[0-9A-Fa-f]+$",
@@ -7038,7 +7049,7 @@
       }
     },
     "emulator/screen_text": {
-      "$comment": "protocol.md §6 (window text) and §11.29 (CR-H, oracle d907fae, ADOPT WITH CHANGES). Reads the text a human can read on the PLAYER window: status line, toasts, palette/lens readouts, the window-manager title bar. Serves the SOURCE string and the RENDERED prefix both, because rendered-only reports a message's shadow and source-only is structurally blind to truncation. A pure read of a snapshot the frontend already composed for drawing (pushed once per present); never composes on demand, touches no Vdp or System, sits outside state_hash. REFUSES with -32005 and error.data.reason 'noDisplay' when no window exists: an empty list is FORBIDDEN because 'a window showing no text' is the default launch state and already means something else. NO number inside any text corresponds to a bus field: the status line's F is a UI counter, not the machine's frame (F-WINDOW-BUS-FRAME-OFFBYONE, diagnosed 2026-08-30). SCHEMATIZED AHEAD OF BEING SERVED: vectors are owed by oracle, derived from a real reply and run against this fragment before the method is advertised.",
+      "$comment": "protocol.md §6 (window text) and §11.29 (CR-H, oracle d907fae, ADOPT WITH CHANGES). Reads the text a human can read on the PLAYER window: status line, toasts, palette/lens readouts, the window-manager title bar, and the debug window's drawn panels (§11.50). Serves the SOURCE string and the RENDERED prefix both, because rendered-only reports a message's shadow and source-only is structurally blind to truncation. A pure read of a snapshot the frontend already composed for drawing (pushed once per present); never composes on demand, touches no Vdp or System, sits outside state_hash. REFUSES with -32005 and error.data.reason 'noDisplay' when no window exists: an empty list is FORBIDDEN because 'a window showing no text' is the default launch state and already means something else. NO number inside any text corresponds to a bus field: the status line's F is a UI counter, not the machine's frame (F-WINDOW-BUS-FRAME-OFFBYONE, diagnosed 2026-08-30). SCHEMATIZED AHEAD OF BEING SERVED: vectors are owed by oracle, derived from a real reply and run against this fragment before the method is advertised.",
       "params": {
         "type": "object",
         "unevaluatedProperties": false,
@@ -7087,22 +7098,21 @@
               ],
               "properties": {
                 "kind": {
-                  "enum": [
-                    "statusLine",
-                    "toast",
-                    "palette",
-                    "lens",
-                    "titleBar"
-                  ],
-                  "description": "Which surface. `titleBar` is drawn by the window manager, not the overlay, which is why the method is not named overlay_*."
+                  "$ref": "#/$defs/screenTextKind",
+                  "description": "Which surface. `titleBar` is drawn by the window manager, not the overlay, which is why the method is not named overlay_*. `panel` (§11.50, CR-W) is one debug-window panel whose body was drawn this present; its `panel` key names it. A client that meets a value it does not know MUST keep the other surfaces and MAY show the unknown one's `rendered` as plain text (§11.50)."
+                },
+                "panel": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Present if and only if `kind` is `panel`: the panel's name as its own tab bar draws it (itself text on the glass). Free text, NOT an enum: the contract does not carry one window's tab vocabulary (§11.50, CR-W)."
                 },
                 "text": {
                   "type": "string",
-                  "description": "The SOURCE string the player composed."
+                  "description": "The SOURCE string the player composed. For `panel`: the sources of the runs with at least one glyph on the glass (an empty text shape is not a run), runs on one visual row joined by U+0009 and rows by U+000A, a run's own TAB/LF folded to a space. NOT the panel's whole content: the served row the panel renders is (§11.50)."
                 },
                 "rendered": {
                   "type": "string",
-                  "description": "What is actually on the glass after the player's fit/truncation; a prefix of `text` today. Compare to `text` for the honest reading; `truncated` is a convenience, not the guard."
+                  "description": "What is actually on the glass after the player's fit, elision or clipping. Not necessarily a prefix of `text`: an elided run ends in the toolkit's elision mark. Compare to `text` for the honest reading; `truncated` is a convenience, not the guard. For `panel`, row k / run j of `rendered` is the glass rendering of row k / run j of `text`, and a wrapped run stays one run (§11.50)."
                 },
                 "truncated": {
                   "type": "boolean",
@@ -7115,6 +7125,28 @@
                     "minLength": 1
                   },
                   "description": "Characters in `text` for which the player has no glyph (it draws a hollow box). Empty array when none; REQUIRED so absence and 'none' are not the same artifact. Measured 2026-08-30: backtick and em dash have no glyph and the player's own first toast contains a backtick."
+                }
+              },
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "panel"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "panel"
+                ]
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "panel"
+                  ]
                 }
               }
             }
