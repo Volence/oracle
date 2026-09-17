@@ -1,12 +1,6 @@
 {
   "focus": "Four things landed today and panel reading is built, waiting on the hub's contract wording. Ready for a clear.",
-  "inFlight": [
-    {
-      "what": "Panel reading, built and parked until the hub's contract wording",
-      "where": "branch parcel/crw-panel",
-      "agent": false
-    }
-  ],
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running; the panel-reading branch is parked, committed, and needs no memory from this session.",
+  "nextBoundary": "Now: nothing running. Panel reading is committed and parked on branch parcel/crw-panel until the hub's contract wording.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -99,5 +93,5 @@
   ],
   "awaiting": "nothing from you. This lane is clearable: everything is committed and pushed, and the only open work is a parked branch the notes describe.",
   "atBoundary": true,
-  "updatedAt": "2026-09-17T12:24:54Z"
+  "updatedAt": "2026-09-17T12:41:37Z"
 }
