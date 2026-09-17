@@ -2858,9 +2858,26 @@ const PLANE_ASPECT: oracle_frontend::present::Aspect = oracle_frontend::present:
 ///
 /// Free rather than inline in [`Panels::plane_picture`] for the reason `plane_split` is: a headless test
 /// can then drive the Planes tab's own give-up through the real split, without a `Machine`.
+///
+/// ⚑ **The legend goes above the picture, and its line is taken off the room before the fit.** The picture
+/// checkers every transparent pixel and nothing else on the tab says so ([`crate::planes::TRANSPARENT_LEGEND`]
+/// has the argument). It is drawn *here* rather than in the facts card because [`plane_split`] stacks the
+/// card under the picture on a narrow pane, where a legend in it could be a scroll away from what it
+/// explains. Above rather than below, because the picture is fitted to all the height it is given: a line
+/// under it would be pushed off the bottom of the pane. It is drawn only when there is a picture, since a
+/// legend for a picture that is not there explains nothing.
 fn plane_image(ui: &mut egui::Ui, tex: &egui::TextureHandle) -> Option<egui::Response> {
     let src = tex.size_vec2();
-    let avail = ui.available_size();
+    // Laid out once, at the width it will be drawn at, so the height taken off is the height of the
+    // lines it really wraps to in a narrow pane, not of one line.
+    let legend = ui.painter().layout(
+        crate::planes::TRANSPARENT_LEGEND.to_owned(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        ui.visuals().weak_text_color(),
+        ui.available_width(),
+    );
+    let legend_h = legend.size().y + ui.spacing().item_spacing.y;
+    let avail = ui.available_size() - egui::vec2(0.0, legend_h);
     let ppp = ui.pixels_per_point();
     let size = fit_or_say(
         ui,
@@ -2871,6 +2888,7 @@ fn plane_image(ui: &mut egui::Ui, tex: &egui::TextureHandle) -> Option<egui::Res
         PLANE_ASPECT,
         None,
     )?;
+    ui.label(legend);
     let hit = egui::ScrollArea::both()
         .id_salt("planes_picture")
         .show(ui, |ui| {
@@ -10742,5 +10760,142 @@ mod memory_tab_tests {
             found >= 10,
             "COULD NOT MEASURE: only {found} ScrollArea constructors found"
         );
+    }
+}
+
+/// **The Planes tab's legend** (audit build-order item 8): the picture checkers every transparent pixel,
+/// and one line directly above it says so, without costing the picture its fit.
+#[cfg(test)]
+mod planes_legend_tests {
+    use super::*;
+
+    /// One frame of the real [`plane_image`] in a `pane` at `ppp`, with a real texture of a 64 by 32 cell
+    /// plane: every text run painted, and the rect the picture was laid out in if one was drawn.
+    /// Also the themed `Small` line height and item spacing, read inside the frame.
+    struct Laid {
+        runs: Vec<(egui::Rect, String)>,
+        pic: Option<egui::Rect>,
+        line: f32,
+        spacing: f32,
+    }
+
+    fn laid(pane: egui::Vec2, ppp: f32) -> Laid {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let tex = ctx.load_texture(
+            "legend",
+            egui::ColorImage::filled([512, 256], egui::Color32::BLACK),
+            egui::TextureOptions::NEAREST,
+        );
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pane)),
+            ..Default::default()
+        };
+        let id = raw.viewport_id;
+        raw.viewports
+            .get_mut(&id)
+            .expect("the root viewport")
+            .native_pixels_per_point = Some(ppp);
+        let (mut hit, mut line, mut spacing) = (None, 0.0, 0.0);
+        let mut out = ctx.run_ui(raw, |ui| {
+            line = ui.text_style_height(&egui::TextStyle::Small);
+            spacing = ui.spacing().item_spacing.y;
+            hit = plane_image(ui, &tex).map(|r| r.rect);
+        });
+        out.textures_delta.clear();
+        assert_eq!(
+            ctx.pixels_per_point(),
+            ppp,
+            "COULD NOT MEASURE: ran at another scale"
+        );
+        Laid {
+            runs: super::subtype_list_tests::text_runs(&out.shapes),
+            pic: hit,
+            line,
+            spacing,
+        }
+    }
+
+    /// Panes where the height binds, where the width binds and the legend wraps, and a roomy one, at the
+    /// scales the window is drawn at.
+    fn panes() -> Vec<egui::Vec2> {
+        vec![
+            egui::vec2(1400.0, 300.0),
+            egui::vec2(180.0, 500.0),
+            egui::vec2(700.0, 700.0),
+        ]
+    }
+
+    /// **Whenever the picture is drawn, the legend is drawn once, directly above it, and the picture still
+    /// ends inside the pane.**
+    ///
+    /// "Directly above" is derived from the layout's own spacing rather than a pixel count: the legend ends
+    /// at or above the picture's top, by no more than the item spacing plus a point. "Inside the pane" is
+    /// the pane's own bottom: a legend whose height was not taken off before the fit pushes the picture
+    /// past it in every pane where the height binds. Anti-vacuity: the picture is drawn in every case, and
+    /// at least one case wraps the legend onto more than one line.
+    #[test]
+    fn the_legend_sits_directly_above_a_drawn_picture_and_the_picture_still_fits_the_pane() {
+        let mut wrapped = 0;
+        for ppp in [1.0, 1.25, 2.0] {
+            for pane in panes() {
+                let Laid {
+                    runs,
+                    pic,
+                    line,
+                    spacing,
+                } = laid(pane, ppp);
+                let pic =
+                    pic.unwrap_or_else(|| panic!("COULD NOT MEASURE: no picture in {pane:?}"));
+                let legends: Vec<egui::Rect> = runs
+                    .iter()
+                    .filter(|(_, t)| t == crate::planes::TRANSPARENT_LEGEND)
+                    .map(|(r, _)| *r)
+                    .collect();
+                assert_eq!(
+                    legends.len(),
+                    1,
+                    "{pane:?} at {ppp}: the legend was painted {} times",
+                    legends.len()
+                );
+                let legend = legends[0];
+                assert!(
+                    legend.bottom() <= pic.top() + 0.5 && pic.top() - legend.bottom() <= spacing + 1.0,
+                    "{pane:?} at {ppp}: the legend {legend:?} is not directly above the picture {pic:?}"
+                );
+                assert!(
+                    pic.bottom() <= pane.y + 0.5,
+                    "{pane:?} at {ppp}: the picture {pic:?} runs past the pane's bottom, so the legend's \
+                     height was not taken off before the fit"
+                );
+                if legend.height() > 1.5 * line {
+                    wrapped += 1;
+                }
+            }
+        }
+        assert!(wrapped > 0, "COULD NOT MEASURE: the legend never wrapped");
+    }
+
+    /// **No picture, no legend.** A pane with no room says so (the owner's sentence), and a legend under
+    /// that sentence would be explaining a picture that is not there.
+    #[test]
+    fn a_pane_with_no_room_for_the_picture_draws_no_legend() {
+        for ppp in [1.0, 1.25, 2.0] {
+            let Laid { runs, pic, .. } = laid(egui::vec2(600.0, 0.5 / ppp), ppp);
+            assert!(
+                pic.is_none(),
+                "COULD NOT MEASURE: a picture fitted into half a device pixel"
+            );
+            assert!(
+                runs.iter().any(|(_, t)| t == NO_ROOM_FOR_PICTURE),
+                "precondition: the give-up was said"
+            );
+            assert!(
+                !runs
+                    .iter()
+                    .any(|(_, t)| t == crate::planes::TRANSPARENT_LEGEND),
+                "at {ppp}: a legend drawn for a picture that is not there"
+            );
+        }
     }
 }
