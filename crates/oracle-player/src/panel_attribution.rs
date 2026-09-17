@@ -1,0 +1,1859 @@
+//! **CR-W's conformance gates for `emulator/screen_text`'s `panel` surfaces** (§11.50), driven through the
+//! shipped harvest: the spans `TabViewer::ui` records ([`crate::screen::PanelMark`]), the in-pass read
+//! ([`crate::screen::painted`]), the surfaces ([`crate::screen::panels`]) and the reply the bus serves
+//! (`Loop::publish_screen_text`, then `emulator/screen_text` through `Bus::call`).
+//!
+//! This file began as the CR-W Q3 spike (`crw_q3_spike.rs`, landed at `5a51da1`,
+//! `docs/2026-09-17-cr-w-q3-spike.md`), which recorded spans through a test-only probe. **That probe is
+//! gone.** The recording is production code now, and the spike's ground-truth gates run against it
+//! unchanged in method. What is still test-only is exactly what a ground truth needs and production must
+//! never do — [`hook`]: run no body, or only one, and plant extra text into a body.
+//!
+//! # Ground truth, and why it is independent of the harvest
+//!
+//! The truth for tab `T` is a **multiset difference of two whole `FullOutput`s**, taken after `end_pass`
+//! has flattened every layer:
+//!
+//! `truth(T) = text(FullOutput with ONLY T's body executed) - text(FullOutput with NO body executed)`
+//!
+//! Both runs use the same `Loop`, the same dock, the same window size, the same input, the same number of
+//! warm-up presents, each in a fresh `egui::Context`. [`hook`] suppresses a body by returning before its
+//! `match` (the leaf, its tab strip, its frame and its scroll area are still drawn by `egui_dock`). That
+//! instrument never looks at a layer id, a paint-list index or a clip rectangle, so it cannot agree with
+//! the harvest by sharing a mistake with it. What it does share is egui and the bodies, which is the thing
+//! under test. Two controls make the difference meaningful: **determinism** (two independent full runs
+//! paint the identical text multiset) and **additivity** (the full run minus the no-body run equals the sum
+//! of every `truth(T)`), so no body's text depends on another body having run.
+//!
+//! A text key is the galley's source string, its origin and its clip rectangle, quantised to 1/100 point,
+//! so two equal labels in different places are two keys.
+//!
+//! # What replaced each spike test
+//!
+//! | Spike test (`5a51da1`) | Here |
+//! |---|---|
+//! | `every_drawn_tab_body_is_attributed_completely_and_exclusively_in_both_forms` | [`tests::every_drawn_tab_body_is_attributed_completely_and_exclusively`] — form 1 only, through the production spans; the drawn-set, disjointness, drain and anti-vacuity controls kept; W2 (names) added. The two controls that compared the probe's own read inside the body (`at_leave`, `layer_at_leave`) have no production counterpart and went with the probe. |
+//! | `a_planted_interleaving_is_reported_foreign_in_both_forms` | `a_planted_interleaving_is_reported_foreign` |
+//! | `an_open_combo_box_list_lands_in_its_own_layer_and_is_not_attributed` | same name, form 1 |
+//! | `a_tooltip_lands_in_its_own_layer_and_is_not_attributed` | same name, form 1 |
+//! | `text_edit_contents_and_hint_text_are_attributed_to_their_tab` | same name, form 1 |
+//! | `a_floating_window_over_a_body_is_exact_in_form_1_and_leaks_into_that_body_in_form_2` | `a_floating_window_over_a_body_is_attributed_exactly_and_reported_after_the_main_surface` |
+//! | `the_screen_overlay_in_a_pane_narrower_than_the_picture_is_attributed_in_both_forms` | `the_screen_overlay_in_a_pane_narrower_than_the_picture_is_attributed` |
+//! | `a_discarded_first_pass_is_harvested_from_the_pass_that_is_kept` | same name; the kept-pass witness is now `FullOutput` itself rather than form 2 |
+//! | `attribution_holds_at_the_scales_the_panel_is_drawn_at` | same name, form 1 |
+//! | `harvest_cost_per_present` (ignored) | `w10_publish_cost_per_present` (ignored): the whole `publish_screen_text`, glyph probe and push included, plus one reply's serialisation |
+//!
+//! **Form 2** (attributing `FullOutput` shapes by clip rectangle) is not production and is not re-tested:
+//! the spike measured it non-exclusive under a floating window, and its record stays at `5a51da1`.
+
+use crate::screen::{Painted, PanelSpan};
+use crate::ui::Tab;
+use crate::{arm_for_measurement, symbols, Loop, Machine};
+use egui::epaint::{ClippedShape, Shape};
+use egui::{LayerId, Rect};
+use std::collections::BTreeMap;
+use std::time::Instant;
+
+/// One painted text run, identified by what it says and exactly where and under which clip it was painted.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct Key {
+    pub text: String,
+    pub pos: (i64, i64),
+    pub clip: [i64; 4],
+}
+
+fn q(v: f32) -> i64 {
+    (v * 100.0).round() as i64
+}
+
+fn key_of(text: &str, pos: egui::Pos2, clip: Rect) -> Key {
+    Key {
+        text: text.to_owned(),
+        pos: (q(pos.x), q(pos.y)),
+        clip: [q(clip.min.x), q(clip.min.y), q(clip.max.x), q(clip.max.y)],
+    }
+}
+
+/// Every `Shape::Text` in `shapes`, `Shape::Vec` walked, keyed. The ground truth's reader: it walks the
+/// flattened `FullOutput`, never a paint list.
+pub(crate) fn texts<'a>(shapes: impl IntoIterator<Item = &'a ClippedShape>) -> Vec<Key> {
+    fn walk(s: &Shape, clip: Rect, out: &mut Vec<Key>) {
+        match s {
+            Shape::Text(t) => out.push(key_of(t.galley.text(), t.pos, clip)),
+            Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in shapes {
+        walk(&c.shape, c.clip_rect, &mut out);
+    }
+    out
+}
+
+/// The production harvest's shapes, keyed the same way as [`texts`].
+fn keys_of(painted: &[Painted]) -> Vec<Key> {
+    painted
+        .iter()
+        .map(|p| key_of(p.galley.text(), p.pos, p.clip))
+        .collect()
+}
+
+/// Multiset `a - b`: what `a` holds that `b` does not, with multiplicity. Negative counts (in `b`, not
+/// in `a`) are returned separately.
+pub(crate) fn diff(a: &[Key], b: &[Key]) -> (Vec<Key>, Vec<Key>) {
+    let mut m: BTreeMap<&Key, i64> = BTreeMap::new();
+    for k in a {
+        *m.entry(k).or_default() += 1;
+    }
+    for k in b {
+        *m.entry(k).or_default() -= 1;
+    }
+    let (mut more, mut less) = (Vec::new(), Vec::new());
+    for (k, n) in m {
+        for _ in 0..n.max(0) {
+            more.push(k.clone());
+        }
+        for _ in 0..(-n).max(0) {
+            less.push(k.clone());
+        }
+    }
+    (more, less)
+}
+
+/// **The attribution verdict for one tab.** `missing` is truth the harvest did not find (incomplete);
+/// `foreign` is harvest the truth does not hold (not exclusive).
+#[derive(Debug, Default)]
+pub(crate) struct Verdict {
+    pub missing: Vec<Key>,
+    pub foreign: Vec<Key>,
+}
+
+impl Verdict {
+    pub fn of(harvest: &[Key], truth: &[Key]) -> Self {
+        let (foreign, missing) = diff(harvest, truth);
+        Verdict { missing, foreign }
+    }
+    pub fn pass(&self) -> bool {
+        self.missing.is_empty() && self.foreign.is_empty()
+    }
+}
+
+/// The `Tab` whose title is `name`. Every span's name comes from `Tab::title`.
+pub(crate) fn tab_of(name: &str) -> Tab {
+    *Tab::ALL
+        .iter()
+        .find(|t| t.title() == name)
+        .unwrap_or_else(|| panic!("no tab is titled {name:?}"))
+}
+
+/// **The only test-only code on the production path**: `TabViewer::ui` asks [`hook::suppressed`] before a
+/// body and calls [`hook::plant`] after it, both under `cfg(test)`. Thread-local, so tests running in
+/// parallel never see one another's hook, and a test that installs none gets the shipped behaviour.
+pub(crate) mod hook {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        /// Every body runs (the shipped behaviour, and the harvest's arm).
+        Record,
+        /// Only this tab's body runs (the ground-truth arm).
+        Only(Tab),
+        /// No body runs (the ground-truth baseline).
+        NoBodies,
+    }
+
+    /// Extra text a recorded body paints just before its span closes. Only ever in [`Mode::Record`].
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum Plant {
+        /// A painter string at the centre of the body's clip: the planted interleaving.
+        Centre(String),
+        /// A wrapping `ui.label` in a box `width` points wide.
+        Label { text: String, width: f32 },
+        /// A `Label::truncate` squeezed into a box `width` points wide, so the toolkit elides it.
+        Truncated { text: String, width: f32 },
+        /// A painter string starting `inside` points left of the clip's right edge, so it straddles it.
+        Straddle { text: String, inside: f32 },
+        /// A painter string wholly right of the clip.
+        Outside(String),
+    }
+
+    struct Hook {
+        mode: Mode,
+        plant: Option<(Option<Tab>, Plant)>,
+    }
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static CURRENT: RefCell<Option<Tab>> = const { RefCell::new(None) };
+    }
+
+    pub fn install(mode: Mode, plant: Option<(Option<Tab>, Plant)>) {
+        HOOK.with(|h| *h.borrow_mut() = Some(Hook { mode, plant }));
+    }
+
+    pub fn uninstall() {
+        HOOK.with(|h| *h.borrow_mut() = None);
+    }
+
+    /// `true`: do not run this body. Also notes which body is running, for [`plant`].
+    pub fn suppressed(tab: Tab) -> bool {
+        CURRENT.with(|c| *c.borrow_mut() = Some(tab));
+        HOOK.with(|h| match h.borrow().as_ref().map(|h| h.mode) {
+            None | Some(Mode::Record) => false,
+            Some(Mode::NoBodies) => true,
+            Some(Mode::Only(t)) => t != tab,
+        })
+    }
+
+    pub fn plant(ui: &mut egui::Ui) {
+        let tab = CURRENT.with(|c| *c.borrow());
+        let plant = HOOK.with(|h| {
+            h.borrow()
+                .as_ref()
+                .filter(|h| h.mode == Mode::Record)
+                .and_then(|h| h.plant.clone())
+        });
+        let Some((only, plant)) = plant else {
+            return;
+        };
+        if only.is_some() && only != tab {
+            return;
+        }
+        let clip = ui.clip_rect();
+        fn paint(ui: &egui::Ui, at: egui::Pos2, align: egui::Align2, s: String) {
+            ui.painter().text(
+                at,
+                align,
+                s,
+                egui::FontId::monospace(12.0),
+                egui::Color32::WHITE,
+            );
+        }
+        match plant {
+            Plant::Centre(s) => paint(ui, clip.center(), egui::Align2::CENTER_CENTER, s),
+            Plant::Straddle { text, inside } => paint(
+                ui,
+                egui::pos2(clip.max.x - inside, clip.center().y),
+                egui::Align2::LEFT_CENTER,
+                text,
+            ),
+            Plant::Outside(s) => paint(
+                ui,
+                egui::pos2(clip.max.x + 50.0, clip.center().y),
+                egui::Align2::LEFT_CENTER,
+                s,
+            ),
+            Plant::Label { text, width } => {
+                ui.allocate_ui(egui::vec2(width, 200.0), |ui| {
+                    ui.add(egui::Label::new(text).wrap());
+                });
+            }
+            Plant::Truncated { text, width } => {
+                ui.allocate_ui(egui::vec2(width, 20.0), |ui| {
+                    ui.add(egui::Label::new(text).truncate());
+                });
+            }
+        }
+    }
+}
+
+/// What one measured present produced.
+pub(crate) struct Present {
+    /// Every text run in the finished `FullOutput`.
+    pub out: Vec<Key>,
+    /// The spans `build_ui` returned — the production recording.
+    pub spans: Vec<PanelSpan>,
+    /// The production in-pass read of each span, keyed.
+    pub in_pass: Vec<(Tab, Vec<Key>)>,
+    /// The same read, unkeyed, for the rows that inspect glyphs.
+    pub painted: Vec<Vec<Painted>>,
+    /// **The reply a client reads**: `Loop::publish_screen_text` in the pass, then `emulator/screen_text`
+    /// through `Bus::call`.
+    pub reply: serde_json::Value,
+    /// Text living in layers other than the spans' own, read in the same place: where popups, tooltips
+    /// and windows went.
+    pub other_layers: Vec<(LayerId, Vec<Key>)>,
+    /// The first span's layer's paint-list length read after `run_ui` returned, i.e. after `end_pass`.
+    pub after_pass_len: Option<usize>,
+    pub passes: u32,
+}
+
+impl Present {
+    /// The reply's `panel` surfaces as `(name, text, rendered, truncated)`.
+    pub fn panel_surfaces(&self) -> Vec<(String, String, String, bool)> {
+        self.reply["surfaces"]
+            .as_array()
+            .expect("surfaces")
+            .iter()
+            .filter(|s| s["kind"] == "panel")
+            .map(|s| {
+                (
+                    s["panel"]
+                        .as_str()
+                        .expect("a panel names itself")
+                        .to_owned(),
+                    s["text"].as_str().unwrap().to_owned(),
+                    s["rendered"].as_str().unwrap().to_owned(),
+                    s["truncated"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn surface(&self, tab: Tab) -> serde_json::Value {
+        self.reply["surfaces"]
+            .as_array()
+            .expect("surfaces")
+            .iter()
+            .find(|s| s["kind"] == "panel" && s["panel"] == tab.title())
+            .unwrap_or_else(|| panic!("no panel surface for {tab:?}: {}", self.reply))
+            .clone()
+    }
+}
+
+pub(crate) const SIZE: egui::Vec2 = egui::vec2(1600.0, 1000.0);
+
+pub(crate) fn raw(i: u32, events: Vec<egui::Event>) -> egui::RawInput {
+    egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, SIZE)),
+        time: Some(f64::from(i) / 60.0),
+        events,
+        ..Default::default()
+    }
+}
+
+pub(crate) fn context() -> egui::Context {
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+    ctx
+}
+
+/// One present of the real `build_ui` under `mode`, harvested by the production path.
+pub(crate) fn present(
+    lp: &mut Loop,
+    ctx: &egui::Context,
+    raw: egui::RawInput,
+    mode: hook::Mode,
+    plant: Option<(Option<Tab>, hook::Plant)>,
+) -> Present {
+    hook::install(mode, plant);
+    let mut spans = Vec::new();
+    let mut in_pass = Vec::new();
+    let mut painted = Vec::new();
+    let mut other_layers = Vec::new();
+    let mut reply = serde_json::Value::Null;
+    let mut out = ctx.run_ui(raw, |root| {
+        let c = root.ctx().clone();
+        // Exactly `Loop::iterate`'s sequence: build, then publish in the same pass.
+        let (drew, drawn) = lp.build_ui(root, true);
+        painted = crate::screen::painted(&c, &drawn);
+        in_pass = drawn
+            .iter()
+            .zip(&painted)
+            .map(|(s, p)| (tab_of(s.name), keys_of(p)))
+            .collect();
+        lp.publish_screen_text(&c, &drew, &drawn);
+        reply = match lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/screen_text",
+            &serde_json::json!({}),
+        ) {
+            crate::bus::Answer::Ok(v) => v,
+            crate::bus::Answer::Err(e) => panic!("screen_text refused after a publish: {e:?}"),
+        };
+        let layers: Vec<LayerId> = c.memory(|m| m.layer_ids().collect());
+        other_layers = layers
+            .into_iter()
+            .filter(|l| !drawn.iter().any(|s| s.layer == *l))
+            .map(|l| {
+                let t = c.graphics(|g| {
+                    g.get(l)
+                        .map(|pl| texts(pl.all_entries()))
+                        .unwrap_or_default()
+                });
+                (l, t)
+            })
+            .filter(|(_, t)| !t.is_empty())
+            .collect();
+        spans = drawn;
+    });
+    out.textures_delta.clear();
+    let after_pass_len = spans
+        .first()
+        .and_then(|s| ctx.graphics(|g| g.get(s.layer).map(|l| l.all_entries().len())));
+    hook::uninstall();
+    Present {
+        out: texts(&out.shapes),
+        spans,
+        in_pass,
+        painted,
+        reply,
+        other_layers,
+        after_pass_len,
+        passes: out.platform_output.num_completed_passes as u32,
+    }
+}
+
+/// What an arm changes about its context or its hook, identically in every arm of one measurement.
+#[derive(Default, Clone)]
+pub(crate) struct Setup {
+    /// Show a tooltip as soon as the pointer rests, instead of after egui's 0.5 s.
+    pub tooltip_now: bool,
+    /// See [`hook::Plant`]; `Some(tab)` plants into that body only. Applied only in the recording arm.
+    pub plant: Option<(Option<Tab>, hook::Plant)>,
+    /// Rebuild the dock at the start of every arm. A floating window's position is handed to egui once
+    /// and then lives in the context's memory, so a dock reused across fresh contexts puts the window
+    /// somewhere else on the second arm (measured by the spike: 28 runs moved).
+    pub dock: Option<fn() -> egui_dock::DockState<Tab>>,
+    /// Device pixels per point for every present of the arm; `None` is egui's default of 1.0.
+    pub ppp: Option<f32>,
+}
+
+pub(crate) fn settled_with(
+    lp: &mut Loop,
+    mode: hook::Mode,
+    warm: u32,
+    script: &dyn Fn(u32) -> Vec<egui::Event>,
+    setup: &Setup,
+) -> Present {
+    // The Planes tab counts its own repaints and prints the count, so an arm that followed another on
+    // the same loop would differ by that count alone. Each arm starts the panel from its default, which
+    // every arm then advances by the same `warm + 1` presents.
+    lp.planes = crate::planes::Panel::default();
+    if let Some(dock) = setup.dock {
+        lp.dock = dock();
+    }
+    let ctx = context();
+    if setup.tooltip_now {
+        ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
+    }
+    let raw_at = |i: u32| {
+        let mut r = raw(i, script(i));
+        if let Some(ppp) = setup.ppp {
+            // The screen stays SIZE device pixels, so it is SIZE / ppp points.
+            r.screen_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, SIZE / ppp));
+            let id = r.viewport_id;
+            r.viewports
+                .get_mut(&id)
+                .expect("RawInput::default carries the root viewport")
+                .native_pixels_per_point = Some(ppp);
+        }
+        r
+    };
+    let plant = || setup.plant.clone();
+    for i in 0..warm {
+        let _ = present(lp, &ctx, raw_at(i), mode, plant());
+    }
+    let p = present(lp, &ctx, raw_at(warm), mode, plant());
+    if let Some(ppp) = setup.ppp {
+        assert_eq!(ctx.pixels_per_point(), ppp, "the arm did not run at {ppp}");
+    }
+    p
+}
+
+/// **A listing that names an object pool**, so the Objects tab draws its table instead of its no-symbols
+/// refusal (one paragraph, which would make its verdict a verdict about one run). The shape is
+/// `objects::tests::pool_rows`': aeon's `Object_RAM` block, 2 player, 40 dynamic, 8 system and 16 effect
+/// slots of `$50` bytes at `$FF8000`, and `ObjCodeBase` at `$10000`.
+fn object_listing() -> oracle_core::symbols::SymbolTable {
+    let (base, stride) = (0x00FF_8000u32, 0x50u32);
+    let dynamic = base + 2 * stride;
+    let system = dynamic + 40 * stride;
+    let effect = system + 8 * stride;
+    let rows = [
+        ("Object_RAM", base),
+        ("Player_1", base),
+        ("Player_2", base + stride),
+        ("Dynamic_Slots", dynamic),
+        ("System_Slots", system),
+        ("Effect_Slots", effect),
+        ("Object_RAM_End", effect + 16 * stride),
+        ("ObjCodeBase", 0x0001_0000),
+    ];
+    let mut s = String::from("  Symbol Table (* = unused):\n\n");
+    for (name, addr) in rows {
+        s.push_str(&format!(" {name} : {addr:X} C |\n"));
+    }
+    s.push_str(&format!("\n{:>4} symbols\n", rows.len()));
+    oracle_core::symbols::SymbolTable::parse(&s).expect("a parsable listing")
+}
+
+/// The loop every gate measures: the fixture ROM, sixteen breakpoints, a RAM watch and the profiler armed,
+/// and eight real iterations run so the panels have rows.
+pub(crate) fn fixture(dock: egui_dock::DockState<Tab>) -> Loop {
+    let mut machine = Machine::new(oracle_core::testrom::build(), None);
+    machine.system_mut().set_pad(
+        oracle_core::io::PadPort::P1,
+        oracle_core::io::Pad::default(),
+    );
+    let mut lp = Loop::new(
+        machine,
+        Instant::now(),
+        Some(0.0),
+        String::from("(fixture)"),
+        symbols::Loaded {
+            table: Some(object_listing()),
+            path: None,
+            fatal: None,
+        },
+        None,
+    );
+    arm_for_measurement(&mut lp);
+    let ctx = egui::Context::default();
+    for i in 0..8 {
+        let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
+            let c = root.ctx().clone();
+            lp.iterate(&c, root, Instant::now());
+        });
+        out.textures_delta.clear();
+    }
+    lp.dock = dock;
+    lp
+}
+
+/// **Tab `t` in a leaf of 55% of the window, and every other tab in a leaf of its own, stacked in the
+/// remaining column**: all eleven bodies run, and the one under test has room to draw its tables, its
+/// inner scroll areas and its text boxes.
+pub(crate) fn focus_dock(t: Tab) -> egui_dock::DockState<Tab> {
+    let rest: Vec<Tab> = Tab::ALL.iter().copied().filter(|x| *x != t).collect();
+    let mut dock = egui_dock::DockState::new(vec![t]);
+    let s = dock.main_surface_mut();
+    let [_, mut at] = s.split_right(egui_dock::NodeIndex::root(), 0.55, vec![rest[0]]);
+    for (i, tab) in rest[1..].iter().enumerate() {
+        // `at` holds one tab and must end up with an equal share of what is left below it.
+        let below = (rest.len() - 1 - i) as f32;
+        let [_, next] = s.split_below(at, 1.0 / (below + 1.0), vec![*tab]);
+        at = next;
+    }
+    dock
+}
+
+/// The tabs whose bodies `egui_dock` will run for `dock`: the active tab of every leaf that is not
+/// collapsed, main surface first. Derived from the dock, independently of the recording.
+pub(crate) fn active_tabs(dock: &egui_dock::DockState<Tab>) -> Vec<Tab> {
+    let mut out = Vec::new();
+    for surface in dock.iter_surfaces() {
+        for node in surface.iter_nodes() {
+            if let egui_dock::Node::Leaf(leaf) = node {
+                if !leaf.collapsed {
+                    if let Some(t) = leaf.tabs.get(leaf.active.0) {
+                        out.push(*t);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The active tabs of the MAIN surface alone, in its own node order.
+pub(crate) fn active_tabs_of_main(dock: &egui_dock::DockState<Tab>) -> Vec<Tab> {
+    let mut out = Vec::new();
+    for node in dock.main_surface().iter() {
+        if let egui_dock::Node::Leaf(leaf) = node {
+            if !leaf.collapsed {
+                if let Some(t) = leaf.tabs.get(leaf.active.0) {
+                    out.push(*t);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One arrangement's measurement: the production harvest against the truth, for every drawn tab.
+pub(crate) struct Measured {
+    pub name: String,
+    pub full: Present,
+    pub rows: Vec<(Tab, usize, Verdict)>,
+    pub determinism: (Vec<Key>, Vec<Key>),
+    pub additivity: (Vec<Key>, Vec<Key>),
+    pub base_minus_full: Vec<Key>,
+}
+
+pub(crate) fn measure(name: &str, dock: egui_dock::DockState<Tab>, warm: u32) -> Measured {
+    measure_with(
+        name,
+        dock,
+        warm,
+        &|_| Vec::new(),
+        &mut |_| {},
+        &Setup::default(),
+    )
+}
+
+pub(crate) fn measure_with(
+    name: &str,
+    dock: egui_dock::DockState<Tab>,
+    warm: u32,
+    script: &dyn Fn(u32) -> Vec<egui::Event>,
+    prepare: &mut dyn FnMut(&mut Loop),
+    setup: &Setup,
+) -> Measured {
+    let mut lp = fixture(dock);
+    prepare(&mut lp);
+    let full = settled_with(&mut lp, hook::Mode::Record, warm, script, setup);
+    let again = settled_with(&mut lp, hook::Mode::Record, warm, script, setup);
+    let base = settled_with(&mut lp, hook::Mode::NoBodies, warm, script, setup);
+    let determinism = diff(&full.out, &again.out);
+    let mut rows = Vec::new();
+    let mut sum = Vec::new();
+    for s in &full.spans {
+        let tab = tab_of(s.name);
+        let only = settled_with(&mut lp, hook::Mode::Only(tab), warm, script, setup);
+        let (truth, _) = diff(&only.out, &base.out);
+        let harvest = full
+            .in_pass
+            .iter()
+            .find(|(t, _)| *t == tab)
+            .map(|(_, k)| k.clone())
+            .unwrap_or_default();
+        rows.push((tab, truth.len(), Verdict::of(&harvest, &truth)));
+        sum.extend(truth);
+    }
+    let (full_minus_base, base_minus_full) = diff(&full.out, &base.out);
+    let additivity = diff(&full_minus_base, &sum);
+    Measured {
+        name: name.to_owned(),
+        full,
+        rows,
+        determinism,
+        additivity,
+        base_minus_full,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hook::{Mode, Plant};
+    use super::*;
+    use crate::screen::glass_run;
+
+    /// Warm-up presents before the measured one. **Twelve, not four, and measured** (the spike): at four,
+    /// the focus arrangement for Watchpoints painted its body clip at y max 991.2 with every body running
+    /// and 992.5 with only its own, a scroll bar still animating in `egui_dock`'s outer `ScrollArea`; at
+    /// eight 989.5 against 989.6; at twelve both 989.5. Every clip-based row below warms up by this much.
+    const WARM: u32 = 12;
+
+    fn arrangements() -> Vec<(String, egui_dock::DockState<Tab>)> {
+        let mut v = vec![
+            ("default".to_owned(), crate::ui::initial_dock()),
+            ("every-tab".to_owned(), crate::ui::every_tab_dock()),
+        ];
+        for t in Tab::ALL {
+            v.push((format!("focus {}", t.title()), focus_dock(t)));
+        }
+        v
+    }
+
+    /// The controls every measurement must pass before its verdicts mean anything.
+    fn check_controls(name: &str, m: &Measured) {
+        assert!(
+            m.determinism.0.is_empty() && m.determinism.1.is_empty(),
+            "{name}: two identical full runs painted different text: {:?}",
+            m.determinism
+        );
+        assert!(
+            m.additivity.0.is_empty() && m.additivity.1.is_empty() && m.base_minus_full.is_empty(),
+            "{name}: the bodies' text is not the sum of each body alone: {:?} / {:?}",
+            m.additivity,
+            m.base_minus_full
+        );
+        assert_eq!(
+            m.full.passes, 1,
+            "{name}: the measured present was multi-pass"
+        );
+        assert!(!m.full.spans.is_empty(), "{name}: no body was recorded");
+    }
+
+    fn row(m: &Measured, tab: Tab) -> &(Tab, usize, Verdict) {
+        m.rows
+            .iter()
+            .find(|r| r.0 == tab)
+            .unwrap_or_else(|| panic!("{}: {tab:?} was not drawn", m.name))
+    }
+
+    fn span_texts(p: &Present, tab: Tab) -> &[Key] {
+        &p.in_pass.iter().find(|(t, _)| *t == tab).expect("a span").1
+    }
+
+    fn painted_of(p: &Present, tab: Tab) -> &[Painted] {
+        let i = p
+            .spans
+            .iter()
+            .position(|s| s.name == tab.title())
+            .unwrap_or_else(|| panic!("{tab:?} was not drawn"));
+        &p.painted[i]
+    }
+
+    fn at(p: &Present, tab: Tab, text: &str) -> egui::Pos2 {
+        let k = span_texts(p, tab)
+            .iter()
+            .find(|k| k.text == text)
+            .unwrap_or_else(|| panic!("{tab:?} painted no {text:?}"));
+        egui::pos2(k.pos.0 as f32 / 100.0, k.pos.1 as f32 / 100.0)
+    }
+
+    fn short(v: &Verdict) -> String {
+        if v.pass() {
+            "pass".into()
+        } else {
+            format!(
+                "FAIL (missing {}, foreign {})",
+                v.missing.len(),
+                v.foreign.len()
+            )
+        }
+    }
+
+    /// **W3's check on one reply**: every panel surface has as many rows in `rendered` as in `text`, and
+    /// the same number of runs on each row. Returns how many panel surfaces it checked.
+    fn assert_aligned(what: &str, p: &Present) -> usize {
+        let surfaces = p.panel_surfaces();
+        for (name, text, rendered, _) in &surfaces {
+            let (t, r): (Vec<&str>, Vec<&str>) =
+                (text.split('\n').collect(), rendered.split('\n').collect());
+            assert_eq!(
+                t.len(),
+                r.len(),
+                "{what} {name}: rows differ between text and rendered\n{text:?}\n{rendered:?}"
+            );
+            for (k, (a, b)) in t.iter().zip(&r).enumerate() {
+                assert_eq!(
+                    a.matches('\t').count(),
+                    b.matches('\t').count(),
+                    "{what} {name}: row {k} has different run counts\n{a:?}\n{b:?}"
+                );
+            }
+        }
+        surfaces.len()
+    }
+
+    /// ★ **The attribution gate (the spike's Q3 gate, on the production path).** For the default dock,
+    /// `--dock every-tab`'s arrangement and one focus arrangement per tab: every drawn body's text, as the
+    /// production spans and in-pass read collect it, equals that tab's ground truth exactly.
+    ///
+    /// **Controls, each asserted before the verdict it makes meaningful:** determinism, additivity, the
+    /// drawn set (the spans are exactly the leaves' active tabs, in draw order — W1's drawn-set half),
+    /// one layer on the main surface, disjoint spans, the drain (the layer's paint list is empty once
+    /// `run_ui` has returned, so the read MUST be in the pass), and anti-vacuity (every tab has text in its
+    /// own focus arrangement). **W2**: the reply's panel names are exactly the drawn tabs' titles, in the
+    /// same order. **W3**: every panel surface of every reply is aligned.
+    #[test]
+    fn every_drawn_tab_body_is_attributed_completely_and_exclusively() {
+        let mut table: Vec<(Tab, usize, bool)> = Vec::new();
+        let mut failures = Vec::new();
+        let mut aligned = 0;
+        for (name, dock) in arrangements() {
+            let expect = active_tabs(&dock);
+            let m = measure(&name, dock, WARM);
+            check_controls(&name, &m);
+            let got: Vec<Tab> = m.full.spans.iter().map(|s| tab_of(s.name)).collect();
+            assert_eq!(got, expect, "{name}: the spans are a different drawn set");
+            let names: Vec<String> = m.full.panel_surfaces().into_iter().map(|s| s.0).collect();
+            let titles: Vec<&str> = expect.iter().map(|t| t.title()).collect();
+            assert_eq!(
+                names, titles,
+                "{name}: W2, the reply's panel names are not the drawn tabs' titles in draw order"
+            );
+            aligned += assert_aligned(&name, &m.full);
+            for s in &m.full.spans {
+                assert_eq!(
+                    s.layer, m.full.spans[0].layer,
+                    "{name}: {} drew into a different layer from the first body",
+                    s.name
+                );
+            }
+            for w in m.full.spans.windows(2) {
+                assert!(w[0].end <= w[1].start, "{name}: overlapping spans {w:?}");
+            }
+            assert_eq!(
+                m.full.after_pass_len,
+                Some(0),
+                "{name}: the layer still held shapes after the pass, so the in-pass requirement is not \
+                 what this gate says it is"
+            );
+            println!("--- {name}: {} bodies drawn", m.rows.len());
+            for (tab, truth, v) in &m.rows {
+                println!("  {:<12} truth {:>3}  {}", tab.title(), truth, short(v));
+                if !v.pass() {
+                    failures.push(format!("{name} {tab:?}: {v:?}"));
+                }
+                if name == format!("focus {}", tab.title()) {
+                    table.push((*tab, *truth, v.pass()));
+                }
+            }
+        }
+        for t in Tab::ALL {
+            let (_, truth, _) = table
+                .iter()
+                .find(|(x, _, _)| *x == t)
+                .expect("a focus row per tab");
+            assert!(
+                *truth > 0,
+                "{t:?} painted no text even with 55% of the window, so its verdict is vacuous"
+            );
+        }
+        assert!(aligned > 100, "W3 checked only {aligned} panel surfaces");
+        assert!(
+            failures.is_empty(),
+            "attribution failed:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// ★ **The instrument can see an interleaving.** Every "nothing foreign" verdict above rests on an
+    /// absence, so here one is planted: each recorded body paints one extra string into its own painter
+    /// just before its span closes, and the ground-truth arms do not. The harvest must report it as
+    /// foreign on every drawn tab, and as nothing else — and the reply's panel text must carry it.
+    #[test]
+    fn a_planted_interleaving_is_reported_foreign() {
+        const PLANT: &str = "PLANTED CR-W INTERLOPER";
+        let setup = Setup {
+            plant: Some((None, Plant::Centre(PLANT.into()))),
+            ..Setup::default()
+        };
+        let m = measure_with(
+            "planted",
+            crate::ui::initial_dock(),
+            WARM,
+            &|_| Vec::new(),
+            &mut |_| {},
+            &setup,
+        );
+        assert_eq!(m.rows.len(), 4, "the default dock draws four bodies");
+        for (tab, truth, v) in &m.rows {
+            assert!(*truth > 0, "{tab:?}: nothing to plant beside");
+            assert!(v.missing.is_empty(), "{tab:?}: {:?}", v.missing);
+            let foreign: Vec<&str> = v.foreign.iter().map(|k| k.text.as_str()).collect();
+            assert_eq!(
+                foreign,
+                [PLANT],
+                "{tab:?}: the plant was not reported foreign"
+            );
+            let s = m.full.surface(*tab);
+            assert!(
+                s["text"].as_str().unwrap().contains(PLANT),
+                "{tab:?}: the planted run is not in the served text: {s}"
+            );
+        }
+    }
+
+    /// ★ **A combo box's open list is its own layer, and the harvest does not attribute it to the tab.**
+    #[test]
+    fn an_open_combo_box_list_lands_in_its_own_layer_and_is_not_attributed() {
+        let dock = || focus_dock(Tab::Watchpoints);
+        let mut lp = fixture(dock());
+        let first = settled_with(
+            &mut lp,
+            Mode::Record,
+            WARM,
+            &|_| Vec::new(),
+            &Setup::default(),
+        );
+        let combo =
+            at(&first, Tab::Watchpoints, crate::stopping::WATCH_SPACES[0]) + egui::vec2(4.0, 4.0);
+        let click = move |i: u32| match i {
+            2 => vec![egui::Event::PointerMoved(combo)],
+            3 | 4 => vec![egui::Event::PointerButton {
+                pos: combo,
+                button: egui::PointerButton::Primary,
+                pressed: i == 3,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            _ => Vec::new(),
+        };
+        let m = measure_with(
+            "combo open",
+            dock(),
+            WARM,
+            &click,
+            &mut |_| {},
+            &Setup::default(),
+        );
+        check_controls("combo open", &m);
+        let popup: Vec<Key> = m
+            .full
+            .other_layers
+            .iter()
+            .flat_map(|(_, t)| t.iter().cloned())
+            .collect();
+        let items: Vec<&str> = popup.iter().map(|k| k.text.as_str()).collect();
+        for want in crate::stopping::WATCH_SPACES {
+            assert!(
+                items.contains(&want),
+                "the combo list did not open into another layer (control): {items:?}"
+            );
+        }
+        let (_, _, v) = row(&m, Tab::Watchpoints);
+        assert!(v.foreign.is_empty(), "{:?}", v.foreign);
+        let (a, b) = diff(&v.missing, &popup);
+        assert!(
+            a.is_empty() && b.is_empty(),
+            "what the harvest missed is not exactly the popup: extra {a:?}, popup not missed {b:?}"
+        );
+        for (tab, _, v) in &m.rows {
+            if *tab != Tab::Watchpoints {
+                assert!(v.pass(), "{tab:?}: {v:?}");
+            }
+        }
+    }
+
+    /// ★ **A tooltip is its own layer too.**
+    #[test]
+    fn a_tooltip_lands_in_its_own_layer_and_is_not_attributed() {
+        let dock = || focus_dock(Tab::Watchpoints);
+        let mut lp = fixture(dock());
+        let first = settled_with(
+            &mut lp,
+            Mode::Record,
+            WARM,
+            &|_| Vec::new(),
+            &Setup::default(),
+        );
+        let hover = at(&first, Tab::Watchpoints, "write") + egui::vec2(4.0, 4.0);
+        let rest = move |i: u32| {
+            if i == 2 {
+                vec![egui::Event::PointerMoved(hover)]
+            } else {
+                Vec::new()
+            }
+        };
+        let setup = Setup {
+            tooltip_now: true,
+            ..Setup::default()
+        };
+        let m = measure_with("tooltip", dock(), WARM, &rest, &mut |_| {}, &setup);
+        check_controls("tooltip", &m);
+        let tip: Vec<Key> = m
+            .full
+            .other_layers
+            .iter()
+            .flat_map(|(_, t)| t.iter().cloned())
+            .collect();
+        assert!(
+            tip.iter().any(|k| k.text.contains("BOOLEANS")),
+            "no tooltip was shown, so this test measures nothing: {tip:?}"
+        );
+        let (_, _, v) = row(&m, Tab::Watchpoints);
+        assert!(v.foreign.is_empty(), "{:?}", v.foreign);
+        let (a, b) = diff(&v.missing, &tip);
+        assert!(
+            a.is_empty() && b.is_empty(),
+            "what the harvest missed is not exactly the tooltip: extra {a:?}, tooltip not missed {b:?}"
+        );
+    }
+
+    /// ★ **A text box's contents and its hint text are the tab's**, and both reach the served text.
+    #[test]
+    fn text_edit_contents_and_hint_text_are_attributed_to_their_tab() {
+        const TYPED: &str = "crw typed into the watch target";
+        let m = measure_with(
+            "text edit",
+            focus_dock(Tab::Watchpoints),
+            WARM,
+            &|_| Vec::new(),
+            &mut |lp| lp.stopping.w_target = TYPED.into(),
+            &Setup::default(),
+        );
+        check_controls("text edit", &m);
+        let (_, _, v) = row(&m, Tab::Watchpoints);
+        assert!(v.pass(), "{v:?}");
+        let got = span_texts(&m.full, Tab::Watchpoints);
+        for want in [TYPED, "∞"] {
+            assert!(
+                got.iter().any(|k| k.text == want),
+                "{want:?} is not in the Watchpoints span"
+            );
+        }
+        assert!(
+            !got.iter().any(|k| k.text == "0xFF0000 / symbol"),
+            "the target box shows its hint although it holds text, so the fixture did not type"
+        );
+        let text = m.full.surface(Tab::Watchpoints)["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            text.contains(TYPED) && text.contains('∞'),
+            "the served panel text lacks the box contents or its hint: {text:?}"
+        );
+        // Spike correction 5: a TextEdit paints EMPTY galleys too, and they are not runs.
+        assert!(
+            got.iter().any(|k| k.text.is_empty()),
+            "control: no empty galley was painted, so the exclusion below is untested"
+        );
+        let empty_runs = painted_of(&m.full, Tab::Watchpoints)
+            .iter()
+            .filter(|p| p.galley.text().is_empty())
+            .filter_map(glass_run)
+            .count();
+        assert_eq!(empty_runs, 0, "an empty galley became a run");
+    }
+
+    /// ★ **Floating windows: attributed exactly, IN the drawn set, and reported main surface first, then
+    /// the windows in the order the window drew them** — §11.50's three normative corrections, two of them
+    /// here (the third, "an empty text shape is not a run", is in the TextEdit row).
+    ///
+    /// `egui_dock` draws a window surface's body in the window's own `Middle` layer; the span records that
+    /// layer and the reader reads it. The spike measured that attributing by clip rectangle instead takes
+    /// the window's whole body into the tab beneath it.
+    ///
+    /// **Two windows, not one**, because one window cannot tell "windows after the main surface" from
+    /// "this window last": the served order is asserted against the dock's own surface order, which is
+    /// derived independently of the recording (`active_tabs`), and the main-surface count is asserted so
+    /// the partition itself is checked rather than inferred.
+    #[test]
+    fn a_floating_window_over_a_body_is_attributed_exactly_and_reported_after_the_main_surface() {
+        fn dock() -> egui_dock::DockState<Tab> {
+            let mut dock = crate::ui::initial_dock();
+            for (tab, at) in [
+                (Tab::Profiler, egui::pos2(100.0, 150.0)),
+                (Tab::Objects, egui::pos2(700.0, 500.0)),
+            ] {
+                let w = dock.add_window(vec![tab]);
+                dock.get_window_state_mut(w)
+                    .expect("the window just added")
+                    .set_position(at)
+                    .set_size(egui::vec2(500.0, 400.0));
+            }
+            dock
+        }
+        let setup = Setup {
+            dock: Some(dock),
+            ..Setup::default()
+        };
+        let m = measure_with(
+            "two windows over the dock",
+            dock(),
+            WARM,
+            &|_| Vec::new(),
+            &mut |_| {},
+            &setup,
+        );
+        check_controls("two windows over the dock", &m);
+        let spans = &m.full.spans;
+        let screen = spans
+            .iter()
+            .find(|s| s.name == "Screen")
+            .expect("Screen drawn");
+        for name in ["Profiler", "Objects"] {
+            let w = spans.iter().find(|s| s.name == name).unwrap_or_else(|| {
+                panic!(
+                    "{name}'s window body was not drawn, so it is not in the \
+                     drawn set — §11.50 says it must be"
+                )
+            });
+            assert_ne!(
+                w.layer, screen.layer,
+                "control: {name}'s window body shares the main layer, so the per-layer read is untested"
+            );
+        }
+        // Control: a window really does cover part of Screen's body, so "nothing foreign" below is a
+        // verdict about an overlap. Measured from the clip rectangles the runs were painted under, since
+        // a production span carries no rectangle of its own.
+        let area = |tab: Tab| {
+            painted_of(&m.full, tab)
+                .iter()
+                .map(|p| p.clip)
+                .reduce(|a, b| a.union(b))
+                .unwrap_or_else(|| panic!("{tab:?} painted nothing"))
+        };
+        let (under, over) = (area(Tab::Screen), area(Tab::Profiler));
+        assert!(
+            under.intersects(over),
+            "control: the window at {over:?} does not overlap Screen's body at {under:?}, so \
+             exclusivity under a window is untested"
+        );
+        for (tab, truth, v) in &m.rows {
+            assert!(*truth > 0, "{tab:?}: vacuous");
+            assert!(v.pass(), "{tab:?}: {v:?}");
+        }
+        // The served order, against the dock's own surfaces (main first, then windows) — derived
+        // independently of the spans.
+        let names: Vec<String> = m.full.panel_surfaces().into_iter().map(|s| s.0).collect();
+        let expect: Vec<String> = active_tabs(&dock())
+            .iter()
+            .map(|t| t.title().to_owned())
+            .collect();
+        assert_eq!(
+            names, expect,
+            "§11.50: main surface's panels, then the windows"
+        );
+        let main_count = active_tabs_of_main(&dock()).len();
+        assert_eq!(
+            main_count, 4,
+            "the default dock draws four bodies on the main surface"
+        );
+        assert_eq!(
+            names.len(),
+            main_count + 2,
+            "…and the two windows follow them: {names:?}"
+        );
+        assert_eq!(
+            &names[main_count..],
+            ["Profiler", "Objects"],
+            "the windows follow in the order they were added and drawn, not tab order: {names:?}"
+        );
+    }
+
+    /// **The Screen tab's picture overlay, painted through `Painter::with_clip_rect(picture)`, is the
+    /// tab's** even when the pane is narrower than the picture.
+    #[test]
+    fn the_screen_overlay_in_a_pane_narrower_than_the_picture_is_attributed() {
+        fn dock() -> egui_dock::DockState<Tab> {
+            let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
+            dock.main_surface_mut().split_right(
+                egui_dock::NodeIndex::root(),
+                0.12,
+                vec![Tab::Registers],
+            );
+            dock
+        }
+        let m = measure_with(
+            "narrow Screen, ring placement armed",
+            dock(),
+            WARM,
+            &|_| Vec::new(),
+            &mut |lp| lp.screen.arm_rings(),
+            &Setup::default(),
+        );
+        check_controls("narrow Screen", &m);
+        for (tab, truth, v) in &m.rows {
+            assert!(*truth > 0 && v.pass(), "{tab:?}: {v:?}");
+        }
+        let notice = span_texts(&m.full, Tab::Screen)
+            .iter()
+            .find(|k| k.text.starts_with("ring placement armed"))
+            .cloned()
+            .expect("the armed chip on the picture");
+        assert!(
+            notice.clip[2] - notice.clip[0] > 0,
+            "control: the notice has a clip: {notice:?}"
+        );
+    }
+
+    /// **A present egui runs twice is harvested from the pass it keeps.** A fresh context's first present
+    /// is two passes (the spike measured `[2, 1, 1, ...]`). The span list is a local of `build_ui`, so the
+    /// discarded pass's spans cannot ride along; here the spans are the drawn set once, and every span's
+    /// in-pass text is text egui kept.
+    #[test]
+    fn a_discarded_first_pass_is_harvested_from_the_pass_that_is_kept() {
+        let dock = crate::ui::initial_dock();
+        let expect = active_tabs(&dock);
+        let mut lp = fixture(dock);
+        lp.planes = crate::planes::Panel::default();
+        let ctx = context();
+        let p = present(&mut lp, &ctx, raw(0, Vec::new()), Mode::Record, None);
+        assert_eq!(p.passes, 2, "control: the first present was not multi-pass");
+        let got: Vec<Tab> = p.spans.iter().map(|s| tab_of(s.name)).collect();
+        assert_eq!(got, expect, "spans from more than the kept pass");
+        assert_eq!(
+            p.panel_surfaces().len(),
+            expect.len(),
+            "the reply carries panels from more than the kept pass"
+        );
+        for (tab, keys) in &p.in_pass {
+            assert!(!keys.is_empty(), "{tab:?}: vacuous");
+            let (stray, _) = diff(keys, &p.out);
+            assert!(
+                stray.is_empty(),
+                "{tab:?}: harvested text egui did not keep: {stray:?}"
+            );
+        }
+    }
+
+    /// **The verdict does not depend on the display scale** (1.25 and 2.0 device pixels per point).
+    #[test]
+    fn attribution_holds_at_the_scales_the_panel_is_drawn_at() {
+        fn every_tab() -> egui_dock::DockState<Tab> {
+            crate::ui::every_tab_dock()
+        }
+        fn default() -> egui_dock::DockState<Tab> {
+            crate::ui::initial_dock()
+        }
+        for ppp in [1.25_f32, 2.0] {
+            for (name, dock) in [("default", default as fn() -> _), ("every-tab", every_tab)] {
+                let setup = Setup {
+                    ppp: Some(ppp),
+                    dock: Some(dock),
+                    ..Setup::default()
+                };
+                let name = format!("{name} at {ppp}");
+                let m = measure_with(&name, dock(), WARM, &|_| Vec::new(), &mut |_| {}, &setup);
+                check_controls(&name, &m);
+                assert_eq!(
+                    m.rows.len(),
+                    active_tabs(&dock()).len(),
+                    "{name}: drawn set"
+                );
+                let text: usize = m.rows.iter().map(|r| r.1).sum();
+                assert!(text > 0, "{name}: vacuous");
+                assert_aligned(&name, &m.full);
+                for (tab, _, v) in &m.rows {
+                    assert!(v.pass(), "{name} {tab:?}: {v:?}");
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // CR-W §9 conformance rows W1, W4-W8 (W2 and W3 are asserted by the attribution gate above; W9 was
+    // rider R1, DROPPED by the hub's ruling; W10 is the ignored cost harness at the bottom)
+    // ---------------------------------------------------------------------------------------------------
+
+    /// One settled present of `lp` under its own dock, no ground truth: the rows below assert on the
+    /// reply, not on attribution.
+    fn one(lp: &mut Loop, setup: &Setup) -> Present {
+        settled_with(lp, Mode::Record, WARM, &|_| Vec::new(), setup)
+    }
+
+    fn leaf_with(dock: &mut egui_dock::DockState<Tab>, tab: Tab) -> &mut egui_dock::LeafNode<Tab> {
+        dock.main_surface_mut()
+            .iter_mut()
+            .find_map(|n| match n {
+                egui_dock::Node::Leaf(l) if l.tabs.contains(&tab) => Some(l),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no leaf holds {tab:?}"))
+    }
+
+    /// ★ **W1, the drawn set** (§8 item 31's recipe, in-process). Registers, Memory and Objects share a
+    /// leaf in the default dock: exactly the active one has a surface; making another active swaps them;
+    /// collapsing the leaf removes all three and the reply still succeeds, with the other leaves' panels.
+    ///
+    /// *Anti-vacuity* (item 31's): the first read carries a non-empty panel text, or the host reports no
+    /// panels at all and the swap proves nothing.
+    #[test]
+    fn w1_a_panel_surface_exists_exactly_when_its_body_is_drawn() {
+        let mut lp = fixture(crate::ui::initial_dock());
+        let shared = [Tab::Registers, Tab::Memory, Tab::Objects];
+        let names =
+            |p: &Present| -> Vec<String> { p.panel_surfaces().into_iter().map(|s| s.0).collect() };
+        let first = one(&mut lp, &Setup::default());
+        let n1 = names(&first);
+        assert!(
+            first.panel_surfaces().iter().any(|s| !s.1.is_empty()),
+            "anti-vacuity: no panel text in the first read"
+        );
+        let in_leaf = |n: &[String]| -> Vec<String> {
+            n.iter()
+                .filter(|x| shared.iter().any(|t| t.title() == x.as_str()))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            in_leaf(&n1),
+            ["Registers"],
+            "exactly the active tab: {n1:?}"
+        );
+
+        let leaf = leaf_with(&mut lp.dock, Tab::Memory);
+        let memory = leaf.tabs.iter().position(|t| *t == Tab::Memory).unwrap();
+        leaf.set_active_tab(memory).expect("Memory is in this leaf");
+        let second = one(&mut lp, &Setup::default());
+        let n2 = names(&second);
+        assert_eq!(in_leaf(&n2), ["Memory"], "the names swap: {n2:?}");
+        assert_eq!(n1.len(), n2.len(), "and nothing else moves");
+
+        leaf_with(&mut lp.dock, Tab::Memory).collapsed = true;
+        let third = one(&mut lp, &Setup::default());
+        let n3 = names(&third);
+        assert!(
+            in_leaf(&n3).is_empty(),
+            "a collapsed pane has no panel surface: {n3:?}"
+        );
+        assert_eq!(
+            n3.len(),
+            n1.len() - 1,
+            "the other leaves still report: {n3:?}"
+        );
+        assert_eq!(
+            third.reply["total"],
+            serde_json::json!(2 + n3.len()),
+            "the reply succeeded and counts the bar's two surfaces plus the drawn panels"
+        );
+    }
+
+    /// ★ **W4, no false truncation, on every run of every real body**, plus a planted wrapped label and a
+    /// planted TAB. A run whose galley is not elided and whose glyphs ALL meet the clip must have
+    /// `rendered == text`. *Anti-vacuity:* the wrapped label occupies at least two glyph rows, and the
+    /// sweep covers hundreds of runs.
+    #[test]
+    fn w4_an_unelided_unclipped_run_renders_exactly_its_source() {
+        const WRAPPED: &str =
+            "a label long enough that the pane it is planted in has to wrap it onto \
+                               a second glyph row, and wrapping is not truncation";
+        const TABBED: &str = "a\trun\twith\ttabs";
+        let mut checked = 0usize;
+        let mut wrapped_rows = 0usize;
+        let mut tabbed_seen = false;
+        for (name, dock, plant) in [
+            (
+                "focus Spawn + wrapped label",
+                focus_dock(Tab::Spawn),
+                Some((
+                    Some(Tab::Spawn),
+                    Plant::Label {
+                        text: WRAPPED.into(),
+                        width: 160.0,
+                    },
+                )),
+            ),
+            (
+                "focus Spawn + tabbed label",
+                focus_dock(Tab::Spawn),
+                Some((
+                    Some(Tab::Spawn),
+                    Plant::Label {
+                        text: TABBED.into(),
+                        width: 400.0,
+                    },
+                )),
+            ),
+            ("every-tab", crate::ui::every_tab_dock(), None),
+            ("default", crate::ui::initial_dock(), None),
+        ] {
+            let mut lp = fixture(dock);
+            let p = one(
+                &mut lp,
+                &Setup {
+                    plant,
+                    ..Setup::default()
+                },
+            );
+            for (span, painted) in p.spans.iter().zip(&p.painted) {
+                for g in painted {
+                    let Some(run) = glass_run(g) else { continue };
+                    let all_visible = g.galley.rows.iter().all(|row| {
+                        row.glyphs.iter().all(|gl| {
+                            let r = gl
+                                .logical_rect()
+                                .translate(g.pos.to_vec2() + row.pos.to_vec2());
+                            g.clip.contains_rect(r)
+                        })
+                    });
+                    if run.elided || !all_visible {
+                        continue;
+                    }
+                    checked += 1;
+                    assert_eq!(
+                        run.rendered, run.text,
+                        "{name} {}: a whole, unelided run is reported cut",
+                        span.name
+                    );
+                    if g.galley.text() == WRAPPED {
+                        wrapped_rows = g.galley.rows.len();
+                    }
+                    if g.galley.text() == TABBED {
+                        tabbed_seen = true;
+                        assert_eq!(run.text, "a run with tabs", "the TAB fold");
+                    }
+                }
+            }
+            assert_aligned(name, &p);
+        }
+        assert!(
+            wrapped_rows >= 2,
+            "anti-vacuity: the planted label occupied {wrapped_rows} glyph row(s), so no wrap was tested"
+        );
+        assert!(
+            tabbed_seen,
+            "anti-vacuity: the tabbed run was never checked"
+        );
+        assert!(checked > 300, "anti-vacuity: only {checked} runs checked");
+        println!("W4: {checked} whole unelided runs, rendered == text; wrapped label on {wrapped_rows} rows");
+    }
+
+    /// ★ **W5, elision.** A label squeezed until `Galley::elided` is true yields `truncated: true`, and its
+    /// run in `rendered` ends in the elision mark. The oracle is the galley's own `elided`, never a
+    /// width predicted before drawing. Also swept over every real body: every elided run ends in `…` and
+    /// differs from its source.
+    #[test]
+    fn w5_an_elided_run_is_truncated_and_ends_in_the_elision_mark() {
+        const LONG: &str = "a cell whose text is far wider than the forty points it is given";
+        let mut lp = fixture(focus_dock(Tab::Registers));
+        let p = one(
+            &mut lp,
+            &Setup {
+                plant: Some((
+                    Some(Tab::Registers),
+                    Plant::Truncated {
+                        text: LONG.into(),
+                        width: 40.0,
+                    },
+                )),
+                ..Setup::default()
+            },
+        );
+        let g = painted_of(&p, Tab::Registers)
+            .iter()
+            .find(|g| g.galley.text() == LONG)
+            .expect("the planted cell was painted");
+        assert!(
+            g.galley.elided,
+            "control: the toolkit did not elide the squeezed cell"
+        );
+        let run = glass_run(g).expect("on the glass");
+        assert!(run.rendered.ends_with('…'), "{:?}", run.rendered);
+        assert_ne!(run.rendered, run.text);
+        assert_eq!(run.text, LONG, "text carries the whole source");
+        let s = p.surface(Tab::Registers);
+        assert_eq!(s["truncated"], serde_json::json!(true), "{s}");
+        let (text, rendered) = (s["text"].as_str().unwrap(), s["rendered"].as_str().unwrap());
+        let ti = text
+            .split('\n')
+            .position(|r| r.split('\t').any(|x| x == LONG));
+        let ri = ti.map(|k| rendered.split('\n').nth(k).unwrap());
+        assert!(
+            ri.is_some_and(|r| r.split('\t').any(|x| x.ends_with('…'))),
+            "the cut run is found at the same row in rendered: {text:?} / {rendered:?}"
+        );
+
+        // The real half: the stopping tables' cells are `Label::truncate`d (`ui.rs` `table_cell`), so a
+        // narrow pane elides them. Measured while writing this row: the every-tab and default docks at
+        // 1600x1000 elide NO run at all, so a sweep of those alone asserted nothing; hence the narrow
+        // panes, and the count is asserted rather than printed.
+        let narrow = |t: Tab| {
+            let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
+            dock.main_surface_mut()
+                .split_right(egui_dock::NodeIndex::root(), 0.8, vec![t]);
+            dock
+        };
+        let mut elided = 0;
+        for (name, dock) in [
+            ("narrow Breakpoints", narrow(Tab::Breakpoints)),
+            ("narrow Watchpoints", narrow(Tab::Watchpoints)),
+            ("narrow Profiler", narrow(Tab::Profiler)),
+            ("every-tab", crate::ui::every_tab_dock()),
+        ] {
+            let mut lp = fixture(dock);
+            let p = one(&mut lp, &Setup::default());
+            for painted in &p.painted {
+                for g in painted {
+                    let Some(run) = glass_run(g).filter(|r| r.elided) else {
+                        continue;
+                    };
+                    let whole = g
+                        .galley
+                        .rows
+                        .iter()
+                        .flat_map(|row| {
+                            row.glyphs.iter().map(move |gl| {
+                                gl.logical_rect()
+                                    .translate(g.pos.to_vec2() + row.pos.to_vec2())
+                            })
+                        })
+                        .all(|r| g.clip.contains_rect(r));
+                    if whole {
+                        elided += 1;
+                        assert!(
+                            run.rendered.ends_with('\u{2026}'),
+                            "{name}: an elided, unclipped run does not end in the mark: {run:?}"
+                        );
+                        assert_ne!(run.rendered, run.text, "{name}: {run:?}");
+                    }
+                }
+            }
+            assert_aligned(name, &p);
+        }
+        assert!(
+            elided > 0,
+            "anti-vacuity: no real body elided an unclipped run, so the real half measured nothing"
+        );
+        println!("W5: {elided} real elided, unclipped runs in narrow stopping panes");
+    }
+
+    /// ★ **W6, clipping.** A run half outside its clip appears in `text` whole and in `rendered` as the
+    /// glyphs on the glass; a run wholly outside appears in neither.
+    #[test]
+    fn w6_a_clipped_run_is_whole_in_text_and_cut_in_rendered_and_an_unseen_run_is_absent() {
+        const STRADDLE: &str = "STRADDLING THE RIGHT EDGE OF THE PANE";
+        const OUTSIDE: &str = "WHOLLY OUTSIDE THE PANE";
+        let mut lp = fixture(crate::ui::initial_dock());
+        let straddle = one(
+            &mut lp,
+            &Setup {
+                plant: Some((
+                    Some(Tab::Pacing),
+                    Plant::Straddle {
+                        text: STRADDLE.into(),
+                        inside: 40.0,
+                    },
+                )),
+                ..Setup::default()
+            },
+        );
+        let g = painted_of(&straddle, Tab::Pacing)
+            .iter()
+            .find(|g| g.galley.text() == STRADDLE)
+            .expect("control: the straddling run was painted into the span");
+        let run = glass_run(g).expect("part of it is on the glass");
+        assert_eq!(run.text, STRADDLE);
+        assert!(
+            !run.rendered.is_empty()
+                && STRADDLE.starts_with(&run.rendered)
+                && run.rendered != STRADDLE,
+            "rendered is the visible prefix: {:?}",
+            run.rendered
+        );
+        let s = straddle.surface(Tab::Pacing);
+        assert!(s["text"].as_str().unwrap().contains(STRADDLE));
+        assert!(!s["rendered"].as_str().unwrap().contains(STRADDLE));
+        assert_eq!(s["truncated"], serde_json::json!(true));
+
+        let outside = one(
+            &mut lp,
+            &Setup {
+                plant: Some((Some(Tab::Pacing), Plant::Outside(OUTSIDE.into()))),
+                ..Setup::default()
+            },
+        );
+        assert!(
+            painted_of(&outside, Tab::Pacing)
+                .iter()
+                .any(|g| g.galley.text() == OUTSIDE),
+            "control: the outside run WAS painted into the span, so its absence below is the rule"
+        );
+        let s = outside.surface(Tab::Pacing);
+        assert!(!s["text"].as_str().unwrap().contains(OUTSIDE), "{s}");
+        assert!(!s["rendered"].as_str().unwrap().contains(OUTSIDE), "{s}");
+    }
+
+    /// ★ **W7, boxes.** A TextEdit holding U+6F22 names it in `unrenderable`; the same panel holding `A`
+    /// names nothing (the control `screen.rs`'s own glyph test uses).
+    #[test]
+    fn w7_a_character_the_window_cannot_draw_is_named_and_a_drawable_one_is_not() {
+        let mut lp = fixture(focus_dock(Tab::Watchpoints));
+        lp.stopping.w_target = "A".into();
+        let control = one(&mut lp, &Setup::default());
+        let s = control.surface(Tab::Watchpoints);
+        assert!(s["text"].as_str().unwrap().contains('A'));
+        assert_eq!(s["unrenderable"], serde_json::json!([]), "control: {s}");
+
+        lp.stopping.w_target = "\u{6F22}".into();
+        let boxed = one(&mut lp, &Setup::default());
+        let s = boxed.surface(Tab::Watchpoints);
+        assert!(s["text"].as_str().unwrap().contains('\u{6F22}'), "{s}");
+        assert_eq!(s["unrenderable"], serde_json::json!(["\u{6F22}"]), "{s}");
+    }
+
+    /// ★ **W8, blank.** A drawn panel with no text on the glass is present with `""`, never omitted.
+    ///
+    /// **Real panels, not a fake one.** `--dock every-tab`'s arrangement halves the leaves as it goes, so
+    /// at 1600x1000 its last two bodies are slivers. Measured while writing this row (a scratch sweep of
+    /// that dock at four window sizes, not committed): **Profiler's body runs and paints no text shape at
+    /// all**, and **Watchpoints' body paints two text shapes, neither with a glyph on the glass**. Both are
+    /// the blank case, reached two different ways, and both are asserted — with the control that each body
+    /// really ran (it has a span), so an absent surface cannot pass as a blank one.
+    #[test]
+    fn w8_a_drawn_panel_with_no_text_on_the_glass_is_present_and_empty() {
+        let mut lp = fixture(crate::ui::every_tab_dock());
+        let p = one(&mut lp, &Setup::default());
+        for (tab, shapes_painted) in [(Tab::Profiler, false), (Tab::Watchpoints, true)] {
+            assert!(
+                p.spans.iter().any(|s| s.name == tab.title()),
+                "control: {tab:?}'s body did not run, so no surface is owed"
+            );
+            assert_eq!(
+                !painted_of(&p, tab).is_empty(),
+                shapes_painted,
+                "control: {tab:?} is no longer the case this row names (text shapes painted: {})",
+                painted_of(&p, tab).len()
+            );
+            let s = p.surface(tab);
+            assert_eq!(s["text"], serde_json::json!(""), "{s}");
+            assert_eq!(s["rendered"], serde_json::json!(""), "{s}");
+            assert_eq!(s["truncated"], serde_json::json!(false), "{s}");
+            assert_eq!(s["unrenderable"], serde_json::json!([]), "{s}");
+        }
+        assert!(
+            p.panel_surfaces().iter().any(|s| !s.1.is_empty()),
+            "anti-vacuity: every panel is blank, so the harvest may be reading nothing at all"
+        );
+    }
+
+    /// **The `is_serving` gate, observed**: a window no client can reach runs `Loop::iterate` — the
+    /// production caller, not `publish_screen_text` directly — and publishes nothing, so
+    /// `emulator/screen_text` still refuses `noDisplay` in-process. Control: the same loop's bodies really
+    /// drew (a direct `build_ui(root, true)` returns spans), so the silence is the gate and not an empty
+    /// dock.
+    #[test]
+    fn a_window_no_client_can_reach_publishes_no_panels() {
+        let mut lp = fixture(crate::ui::every_tab_dock());
+        assert!(!lp.bus.is_serving(), "control: the fixture binds no socket");
+        let ctx = context();
+        let mut spans = 0;
+        for i in 0..3 {
+            let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+        }
+        let mut out = ctx.run_ui(raw(3, Vec::new()), |root| {
+            spans = lp.build_ui(root, true).1.len();
+        });
+        out.textures_delta.clear();
+        assert_eq!(spans, Tab::ALL.len(), "control: every body draws");
+        let answer = lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/screen_text",
+            &serde_json::json!({}),
+        );
+        assert_eq!(
+            answer.reason(),
+            Some("noDisplay"),
+            "a window that serves no client published its screen text anyway"
+        );
+    }
+
+    /// **Real replies for the CR-W vector file's cases 1-4, captured OVER A REAL SOCKET** (CR-H's bar:
+    /// hand-built populated vectors are replaced by replies the implementation produced). Ignored: a
+    /// capture, not a gate. `cargo test -p oracle-player --bin oracle-player capture_cr_w_vector_replies --
+    /// --ignored --nocapture` prints one `CRW-VECTOR <case> <reply>` line per case.
+    ///
+    /// ⚑ **The socket, not `Bus::call`.** The first version of this capture read the reply through
+    /// `Bus::call` in-process, and the replies it produced were REFUSED by the vendored fragment: the D11
+    /// stamp (`frame`, `mclk`, `running`, `droppedEvents`) is added by the serving path
+    /// (`server::render`), not by `Engine::dispatch`, and `droppedEvents` is per connection. A vector is a
+    /// whole wire document, so it is captured from a whole wire document — a `Loop` bound to a private
+    /// socket, a real NDJSON client, `initialize`, then the read.
+    ///
+    /// 1. two leaves of the default dock expanded, the other two collapsed, with a cut cell;
+    /// 2. every leaf collapsed: the bar's two surfaces and no panel;
+    /// 3. `--dock every-tab`: two panels drawn with nothing on the glass (W8's case);
+    /// 4. U+6F22 typed into the Watchpoints add box (W7's case).
+    #[test]
+    #[ignore = "capture for the CR-W vector file; run with --ignored --nocapture"]
+    fn capture_cr_w_vector_replies() {
+        let collapse_all_but = |dock: &mut egui_dock::DockState<Tab>, keep: &[Tab]| {
+            for node in dock.main_surface_mut().iter_mut() {
+                if let egui_dock::Node::Leaf(l) = node {
+                    l.collapsed = !l.tabs.iter().any(|t| keep.contains(t));
+                }
+            }
+        };
+        let mut case1 = crate::ui::initial_dock();
+        collapse_all_but(&mut case1, &[Tab::Registers, Tab::Breakpoints]);
+        let mut case2 = crate::ui::initial_dock();
+        collapse_all_but(&mut case2, &[]);
+        let mut case4 = focus_dock(Tab::Watchpoints);
+        collapse_all_but(&mut case4, &[Tab::Watchpoints]);
+        let cases: [(egui_dock::DockState<Tab>, &str); 4] = [
+            (case1, ""),
+            (case2, ""),
+            (crate::ui::every_tab_dock(), ""),
+            (case4, "\u{6F22}"),
+        ];
+        for (n, (dock, typed)) in cases.into_iter().enumerate() {
+            let reply = capture_over_socket(dock, typed);
+            if n == 0 {
+                assert!(
+                    reply["surfaces"]
+                        .as_array()
+                        .expect("surfaces")
+                        .iter()
+                        .any(|s| s["kind"] == "panel" && s["truncated"] == true),
+                    "case 1 must carry a cut panel: {reply}"
+                );
+            }
+            println!("CRW-VECTOR {} {reply}", n + 1);
+        }
+    }
+
+    /// One `emulator/screen_text` reply, read by a real client over a real socket from a `Loop` running
+    /// `dock`. The window drives presents until the client has finished; the client waits for
+    /// `status.display` and then reads several times, keeping the last, so the reply it keeps is from a
+    /// settled window (`egui_dock`'s outer scroll bar animates the body clip over the first presents).
+    fn capture_over_socket(dock: egui_dock::DockState<Tab>, typed: &str) -> serde_json::Value {
+        use std::io::{BufRead as _, Write as _};
+        let tag = format!("{}-{}", std::process::id(), line!());
+        let socket = std::env::temp_dir().join(format!("crw-{tag}.sock"));
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: Some(object_listing()),
+                path: None,
+                fatal: None,
+            },
+            Some(Some(socket.clone())),
+        );
+        assert!(lp.bus.is_serving(), "the fixture did not bind {socket:?}");
+        arm_for_measurement(&mut lp);
+        lp.dock = dock;
+        lp.stopping.w_target = typed.to_owned();
+        let path = socket.clone();
+        let client = std::thread::spawn(move || {
+            let deadline = Instant::now() + std::time::Duration::from_secs(20);
+            let stream = loop {
+                match std::os::unix::net::UnixStream::connect(&path) {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut id = 0i64;
+            let mut call = |reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+                            method: &str,
+                            params: serde_json::Value| {
+                id += 1;
+                writeln!(
+                    writer,
+                    "{}",
+                    serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                )
+                .unwrap();
+                writer.flush().unwrap();
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).expect("read") > 0, "hung up");
+                    let v: serde_json::Value = serde_json::from_str(&line).expect("bad JSON");
+                    if v.get("id").is_some_and(|i| !i.is_null()) {
+                        assert!(v.get("error").is_none(), "{method}: {}", v["error"]);
+                        return v["result"].clone();
+                    }
+                }
+            };
+            call(
+                &mut reader,
+                "initialize",
+                serde_json::json!({"clientId":"crw-capture","clientName":"crw","clientVersion":"0",
+                    "protocolVersion":1,"clientCapabilities":{"events":false}}),
+            );
+            let deadline = Instant::now() + std::time::Duration::from_secs(20);
+            while call(&mut reader, "emulator/status", serde_json::json!({}))["display"] != true {
+                assert!(Instant::now() < deadline, "the window never presented");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let mut last = serde_json::Value::Null;
+            for _ in 0..16 {
+                last = call(&mut reader, "emulator/screen_text", serde_json::json!({}));
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+            last
+        });
+        let ctx = context();
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        let mut i = 0;
+        while !client.is_finished() {
+            assert!(Instant::now() < deadline, "the client never finished");
+            i += 1;
+            let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+        }
+        let reply = client.join().expect("the client thread");
+        drop(lp);
+        let _ = std::fs::remove_file(&socket);
+        reply
+    }
+
+    /// **W10, the cost of publishing per present** — ignored: a measurement, run in release:
+    /// `CRW_ROUNDS=2000 cargo test --release -p oracle-player w10_publish_cost -- --ignored --nocapture`.
+    ///
+    /// Four arms on one context and one loop, per dock:
+    /// * **null** — `build_ui(root, false)` and nothing published: a window no client can reach, which is
+    ///   what the `is_serving` gate gives;
+    /// * **bar only** — `build_ui(root, false)` then `Loop::publish_screen_text` with no spans: the
+    ///   pre-CR-W publish (title bar and top bar), so the panels' increment is read off this arm, not null;
+    /// * **bar + panels** — `build_ui(root, true)` then `publish_screen_text`: the production call, spans,
+    ///   in-pass read, glyph probe, joins and push;
+    /// * **bar + panels + one reply** — the same plus one `emulator/screen_text` dispatch serialised to a
+    ///   string, which a client pays only when it asks (an upper bound: one read per present).
+    ///
+    /// ⚑ **Blocks, not per-present interleaving, and the reason was measured.** The first version of this
+    /// harness rotated the arms present by present, and the publish arm came out BIMODAL: ~0.26 ms after a
+    /// present that had not published, ~0.06 ms after one that had. `Glyphs` lays out each character it
+    /// probes, and egui keeps a galley in its layout cache only while the previous pass used it, so an arm
+    /// that follows a non-publishing present pays the layouts again. A serving window publishes EVERY
+    /// present, so the steady state is the warm one, and interleaving measured a cold cache the product
+    /// never has. So each arm runs in blocks of [`BLOCK`] consecutive presents, blocks rotating across arms
+    /// (so load drift is still shared), and the first [`SETTLE`] presents of every block are discarded.
+    #[test]
+    #[ignore = "measurement; run in release with --ignored --nocapture"]
+    fn w10_publish_cost_per_present() {
+        use std::time::Duration;
+        const BLOCK: usize = 20;
+        const SETTLE: usize = 5;
+        const ARMS: [&str; 4] = ["null", "bar only", "bar + panels", "bar + panels + reply"];
+        let rounds: usize = std::env::var("CRW_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600);
+        for (name, dock) in [
+            ("default", crate::ui::initial_dock()),
+            ("every-tab", crate::ui::every_tab_dock()),
+        ] {
+            let mut lp = fixture(dock);
+            let ctx = context();
+            let mut whole: [Vec<Duration>; 4] = Default::default();
+            let mut part: [Vec<Duration>; 4] = Default::default();
+            let mut bytes = [0usize; 4];
+            let mut i = 0u32;
+            // Two warm-up blocks per arm, discarded whole.
+            let blocks = (rounds / (BLOCK - SETTLE)).max(1) * ARMS.len() + 2 * ARMS.len();
+            for block in 0..blocks {
+                let arm = block % ARMS.len();
+                for n in 0..BLOCK {
+                    i += 1;
+                    let t0 = Instant::now();
+                    let mut spent = Duration::ZERO;
+                    let mut made = 0usize;
+                    let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
+                        let c = root.ctx().clone();
+                        let (drew, drawn) = lp.build_ui(root, arm >= 2);
+                        if arm >= 1 {
+                            let t = Instant::now();
+                            lp.publish_screen_text(&c, &drew, &drawn);
+                            if arm == 3 {
+                                if let crate::bus::Answer::Ok(v) = lp.bus.call(
+                                    lp.machine.system_mut(),
+                                    "emulator/screen_text",
+                                    &serde_json::json!({}),
+                                ) {
+                                    made = serde_json::to_string(&v).expect("serialise").len();
+                                }
+                            }
+                            spent = t.elapsed();
+                        }
+                    });
+                    let dt = t0.elapsed();
+                    out.textures_delta.clear();
+                    if block >= 2 * ARMS.len() && n >= SETTLE {
+                        whole[arm].push(dt);
+                        part[arm].push(spent);
+                        bytes[arm] = made;
+                    }
+                }
+            }
+            let stat = |v: &mut Vec<Duration>| {
+                v.sort();
+                let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+                (ms(v[v.len() / 2]), ms(v[v.len() * 95 / 100]), v.len())
+            };
+            for (arm, label) in ARMS.iter().enumerate() {
+                let w = stat(&mut whole[arm]);
+                let h = stat(&mut part[arm]);
+                println!(
+                    "W10 {name:<9} {label:<21} present median {:.3} ms p95 {:.3} ms | publish median {:.4} ms p95 {:.4} ms | n {} | reply {} bytes",
+                    w.0, w.1, h.0, h.1, w.2, bytes[arm]
+                );
+            }
+        }
+    }
+}

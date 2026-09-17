@@ -169,3 +169,99 @@ fn the_cr_h_vectors_validate_the_way_the_file_says_they_do() {
         "the vectors must exercise both directions: {passes} pass, {fails} fail"
     );
 }
+
+/// **The CR-W (§11.50) vectors, run against the vendored fragment the way the file says they go.**
+///
+/// The CR-H row above's bar, for the next kind, and the same reason: *"these conform"* is not evidence.
+/// Every case is judged by the suite's own `check_incoming_strict`, and a case that stops matching its own
+/// `expect` turns this red rather than being noticed at the hub.
+///
+/// **Keyed by method AND kind.** The envelope a case is wrapped in comes from its `kind`, so an `error`
+/// document is judged against the error shape and a `result` against the method's result fragment. §11.50
+/// records the instrument note behind that: the hub's first run of this same check routed an error case at
+/// the result fragment and reported three failures that were the harness's, not the schema's.
+///
+/// **Eleven cases, and the file no longer holds sixteen.** Rider R1's five `initialize` cases were dropped
+/// at the landing: R1 is dropped, and §11.50 states that its three declared-failure cases do NOT go red
+/// against the schema as landed, because `initialize.capabilities` is not a closed object. A fail-vector
+/// the schema cannot refuse is coverage theatre. The count is pinned here so restoring them, or losing a
+/// real case, is a deliberate edit.
+///
+/// **Cases 1-4 are real replies**, captured from the player's own `emulator/screen_text` (see the file's
+/// `$comment`), which is CR-H's rule that hand-built populated vectors are replaced before the kind serves.
+#[test]
+fn the_cr_w_vectors_validate_the_way_the_file_says_they_do() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/proposed/2026-09-17-cr-w-panel-screen-text-vectors.json"
+    );
+    let doc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(path).expect("read the CR-W vectors beside this crate"),
+    )
+    .expect("the vectors file parses");
+    let cases = doc["cases"].as_array().expect("`cases` is an array");
+    assert_eq!(
+        cases.len(),
+        11,
+        "the vectors file holds 11 cases since R1's five were dropped (§11.50); if that changed, change \
+         this number deliberately"
+    );
+    assert!(
+        !cases.iter().any(|c| c["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("rider R1"))),
+        "a rider R1 case is back in the file: §11.50 dropped them because the schema cannot refuse the \
+         declared-failure ones"
+    );
+    let mut passes = 0;
+    let mut fails = 0;
+    println!("--- CR-W vectors against the vendored contract fragment ---");
+    for (i, c) in cases.iter().enumerate() {
+        let n = i + 1;
+        let method = c["method"].as_str().expect("each case names its method");
+        let expect = c["expect"].as_str().expect("each case declares expect");
+        let kind = c["kind"].as_str().expect("each case declares its kind");
+        // The envelope the validator checks, exactly as the line arrives on the wire — chosen by `kind`,
+        // never by position in the file.
+        let line = match kind {
+            "result" => json!({"jsonrpc": "2.0", "id": 1, "result": c["doc"].clone()}),
+            "error" => json!({"jsonrpc": "2.0", "id": 1, "error": c["doc"].clone()}),
+            other => panic!("case {n}: unknown kind {other:?}"),
+        };
+        match (
+            expect,
+            common::schema::check_incoming_strict(&line, Some(method)),
+        ) {
+            ("pass", Ok(())) => {
+                passes += 1;
+                println!("  case {n} [{kind}] expect=pass  -> PASS");
+            }
+            ("fail", Err(errs)) => {
+                fails += 1;
+                println!(
+                    "  case {n} [{kind}] expect=fail  -> REFUSED: {}",
+                    errs.join(" | ")
+                );
+            }
+            ("pass", Err(errs)) => panic!(
+                "case {n} is declared passing and the schema REFUSED it: {}\n{}",
+                errs.join(" | "),
+                serde_json::to_string_pretty(&line).unwrap()
+            ),
+            ("fail", Ok(())) => panic!(
+                "case {n} is declared failing and the schema ACCEPTED it — the fragment does not \
+                 constrain what this case claims it does:\n{}",
+                serde_json::to_string_pretty(&line).unwrap()
+            ),
+            (e, _) => panic!("case {n}: expect must be \"pass\" or \"fail\", got {e:?}"),
+        }
+    }
+    println!(
+        "  => {passes} accepted, {fails} refused, {} total",
+        cases.len()
+    );
+    // Both halves must be exercised: a file of nothing but passing cases proves the fragment accepts, and
+    // only the refusals prove it rejects.
+    assert_eq!(passes, 5, "five `pass` cases");
+    assert_eq!(fails, 6, "six `fail` cases — the load-bearing half");
+}

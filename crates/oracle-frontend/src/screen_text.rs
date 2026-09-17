@@ -19,9 +19,10 @@
 //!
 //! # What is deliberately NOT here yet, said out loud
 //!
-//! The contract's `kind` enum has five values. This module produces **three** — `titleBar`, `statusLine`,
+//! The contract's `kind` enum has six values. This module produces **three** — `titleBar`, `statusLine`,
 //! `toast` — and does **not** yet produce `palette` or `lens`. That is a scope decision, recorded here
-//! rather than left for a reader to infer from an absent match arm:
+//! rather than left for a reader to infer from an absent match arm. The sixth, **`panel`** (§11.50, CR-W),
+//! is not a scope decision: it names a docked debug-window panel, and this frontend has no dock.
 //!
 //! * The **lens** panels (CPU chip, watch ticker, profiler, hover callout) are renderings of data this bus
 //!   already serves structurally — `emulator/registers`, `emulator/watchpoint_hits`,

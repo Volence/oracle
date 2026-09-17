@@ -70,7 +70,7 @@ mod report;
 // **Opening a ROM without leaving the window** — a browsable listing, a pasted path and a dropped file,
 // all through one pause/reload/restore sequence. A CONTROL, not a `ui::Tab`.
 #[cfg(test)]
-mod crw_q3_spike;
+mod panel_attribution;
 mod rom_open;
 mod screen;
 mod screen_pick;
@@ -972,7 +972,10 @@ impl Loop {
             self.governor.rebases()
         );
         let t = Instant::now();
-        let drew = self.build_ui(root);
+        // Panel spans are recorded only when something will read them: the same `is_serving` gate as the
+        // push below, decided once so the two cannot disagree within an iteration.
+        let serving = self.bus.is_serving();
+        let (drew, drawn) = self.build_ui(root, serving);
         let ui_ms = ms(t.elapsed());
 
         // --- ⚑ What the window says, published for `emulator/screen_text` (§11.29, CR-H). ---
@@ -1010,11 +1013,13 @@ impl Loop {
         // draws both — 26 invented hollow boxes on this bar. What it actually answers is *"is this char
         // owned by the same face as `◻`?"*. The atlas rectangle a glyph samples cannot lie that way,
         // because it IS what the renderer reads, so that is what is compared.
-        if self.bus.is_serving() {
-            let mut glyphs = screen::Glyphs::new(ctx);
-            let surfaces =
-                screen::snapshot(ui::APP_NAME, &drew, &mut |c, mono| glyphs.drawable(c, mono));
-            self.bus.set_screen_text(surfaces);
+        //
+        // ⚑ **The panels (§11.50, CR-W) ride the same push, after the bar's two surfaces**, read off the
+        // paint-list spans `build_ui` just returned. **Here, inside the pass**: `end_pass` drains every
+        // layer's list, so the spans are only readable before this closure returns (measured, Q3 spike).
+        // See `screen`'s module doc for the whole reading rule.
+        if serving {
+            self.publish_screen_text(ctx, &drew, &drawn);
         }
         // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
         // deliberately NOT a drain and applies neither pending change (host.rs) — so a pause or resume it
@@ -1114,7 +1119,29 @@ impl Loop {
     /// The `DockArea` below contributes **nothing**, and that is the parcel's central decision rather
     /// than an omission — `egui_dock` draws only each leaf's active tab, and what an active body reveals
     /// depends on a scroll offset computed inside egui's paint. `crate::screen`'s header argues it.
-    fn build_ui(&mut self, root: &mut egui::Ui) -> Vec<screen::Run> {
+    /// **Publish what this present put on the glass**: the title bar, the top bar, then one `panel`
+    /// surface per drawn body in draw order. `Loop::iterate`'s push, split out so the W10 cost harness
+    /// measures this function rather than a copy of it. Must run in the pass that drew `drawn`.
+    fn publish_screen_text(
+        &mut self,
+        ctx: &egui::Context,
+        drew: &[screen::Run],
+        drawn: &[screen::PanelSpan],
+    ) {
+        let mut glyphs = screen::Glyphs::new(ctx);
+        let mut probe = |c: char, mono: bool| glyphs.drawable(c, mono);
+        let mut surfaces = screen::snapshot(ui::APP_NAME, drew, &mut probe);
+        surfaces.extend(screen::panels(ctx, drawn, &mut probe));
+        self.bus.set_screen_text(surfaces);
+    }
+
+    /// Returns the bar's runs, and — when `record_panels` — one [`screen::PanelSpan`] per panel body the
+    /// dock drew this pass, in draw order.
+    fn build_ui(
+        &mut self,
+        root: &mut egui::Ui,
+        record_panels: bool,
+    ) -> (Vec<screen::Run>, Vec<screen::PanelSpan>) {
         // Disjoint field borrows: the dock, the machine, the bus and the Memory panel's state mutably
         // (`Host::call` lends the machine to the engine and takes it back), everything else immutably.
         let Loop {
@@ -1143,6 +1170,7 @@ impl Loop {
             ..
         } = self;
         let mut drew = Vec::new();
+        let mut drawn: Vec<screen::PanelSpan> = Vec::new();
         // ⚑ The palette's chord, consumed before anything can take focus. `consume_shortcut` so the
         // keystroke does not also reach a text field that happens to be focused.
         let ctx = root.ctx().clone();
@@ -1297,6 +1325,7 @@ impl Loop {
                     status: status.as_str(),
                     rom_path: rom_path.as_str(),
                     symbols: symbols.as_ref(),
+                    drawn: record_panels.then_some(&mut drawn),
                 };
                 // The dock takes its whole look from the theme (`Style::from_egui`) plus the three
                 // overrides CHROME_SPEC names and `from_egui` cannot infer. See `theme::dock_style`.
@@ -1369,7 +1398,7 @@ impl Loop {
         // outside the `CentralPanel` closure because that closure holds the `machine`/`bus` borrows this
         // control's own `Host::call` needs. Its runs join the bar's for the same readback reason.
         drew.append(&mut rom_open.show(&ctx, machine, bus));
-        drew
+        (drew, drawn)
     }
 }
 
@@ -2510,9 +2539,39 @@ mod loop_tests {
         // client's barrier above, which cannot exit any other way.)
 
         // --- the shape of the answer ---
+        //
+        // ⚑ **Two bar surfaces, then one `panel` per body the dock drew** (§11.50, CR-W). This row pinned
+        // `total: 2` until the panels were served; the count is now derived from the dock the fixture
+        // drew, never restated, and the bar's two stay first.
+        let drawn: Vec<&str> = crate::panel_attribution::active_tabs(&lp.dock)
+            .iter()
+            .map(|t| t.title())
+            .collect();
+        assert!(
+            !drawn.is_empty(),
+            "control: the fixture's dock draws no panel, so the panel half below is vacuous"
+        );
         for (what, v) in [("running", &running), ("paused", &paused)] {
-            assert_eq!(v["total"], serde_json::json!(2), "{what}: two surfaces");
-            assert_eq!(v["returned"], serde_json::json!(2), "{what}: none elided");
+            let total = 2 + drawn.len();
+            assert_eq!(v["total"], serde_json::json!(total), "{what}: {v}");
+            assert_eq!(
+                v["returned"],
+                serde_json::json!(total),
+                "{what}: none elided"
+            );
+            let panels: Vec<&str> = v["surfaces"].as_array().unwrap()[2..]
+                .iter()
+                .map(|s| {
+                    assert_eq!(s["kind"], serde_json::json!("panel"), "{what}: {s}");
+                    s["panel"]
+                        .as_str()
+                        .expect("a panel surface names its panel")
+                })
+                .collect();
+            assert_eq!(
+                panels, drawn,
+                "{what}: the served panels are the drawn bodies, in draw order"
+            );
             assert_eq!(v["surfaces"][0]["kind"], serde_json::json!("titleBar"));
             assert_eq!(
                 v["surfaces"][0]["text"],
@@ -2802,7 +2861,7 @@ mod loop_tests {
                 )),
                 ..Default::default()
             },
-            |root| drew = lp.build_ui(root),
+            |root| drew = lp.build_ui(root, false).0,
         );
         let mut d = out.textures_delta;
         d.clear();

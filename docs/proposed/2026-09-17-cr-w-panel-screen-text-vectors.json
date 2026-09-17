@@ -1,643 +1,504 @@
 {
- "$comment": "CR-W (proposed protocol.md §11.50) wire vectors for emulator/screen_text's `panel` kind and its initialize.capabilities.screenTextKinds rider, authored by the oracle lane against empyrean origin/main 610d0c70 (contract/ unchanged from fedb881a). Tags: [CR-W core] is the kind, the `panel` key and the if/then that ties them; [CR-W rider R1] is droppable, and its reds PASS without its patch (measured, CR section 8). PROVENANCE, STATED PLAINLY: every screen_text document here is HAND-BUILT. The drafting parcel was barred from running an emulator or opening the window, so no panel reply exists to capture; the column heads come from crates/oracle-player/src/stopping.rs:169-194, the no-label marker from stopping.rs:346, the tab titles from ui.rs Tab::title, the refusal from CR-H's live capture. CR-H's bar applies: the implementing parcel replaces cases 1-4 with real replies before the method serves the kind. RESIDUE a document schema cannot see, all SERVER BEHAVIOUR and all conformance rows in the CR (section 9, W1-W10): that a panel surface exists exactly when its body was drawn, that `text` and `rendered` share joins at the same run boundaries, that `rendered` is the toolkit's glyphs rather than a restated fit, that an unclipped unelided run has rendered == text, and that `unrenderable` names real hollow boxes. RUN: each case was judged against the upstream fragment and two patched variants (core, core+R1) with the upstream validator's own closure composition, and appended to the upstream vectors for a whole-gate run per variant; verdicts in the CR, section 8. Case 5 is an error document, which empyrean G3 has no arm for; it was judged against $defs/errorObject and is for oracle's harness (check_incoming_strict), as CR-H's refusal was.",
- "cases": [
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "pass",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "panel": "Registers",
-      "text": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "rendered": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "panel": "Breakpoints",
-      "text": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic lands after the spring\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "rendered": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic la…\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "truncated": true,
-      "unrenderable": []
-     }
-    ],
-    "total": 4,
-    "returned": 4,
-    "truncated": false
-   },
-   "why": "[CR-W core] §11.50 - THE POPULATED REPLY. Two leaves are expanded, so two panel bodies were drawn this present, each one surface named by its tab title; the hidden tabs sharing those leaves are absent because their bodies did not run (egui_dock-0.21.1 leaf.rs:1330). Breakpoints' last column was squeezed by fit_columns and the toolkit elided one cell: `rendered` carries the elision mark, so `truncated` derives true, and because both strings share their TAB/LF joins at the same run boundaries, row 4 run 6 is the cell that was cut. The cell's hover (ui.rs table_cell) is NOT a surface: it is on the glass only while hovered, and `text` already carries the full source. Hand-built (see the file's $comment); the implementing parcel replaces it with a real reply."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "pass",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     }
-    ],
-    "total": 2,
-    "returned": 2,
-    "truncated": false
-   },
-   "why": "[CR-W core] §11.50 - EVERY LEAF COLLAPSED (reachable: layout.rs records fully_collapsed). No panel body ran, so no panel surface, and the reply is a valid pre-CR-W reply byte for byte. This is exactly the ambiguity rider R1 exists for: without `capabilities.screenTextKinds` a client cannot tell this reply from one by a server that never reports panels. Hand-built (see the file's $comment); the implementing parcel replaces it with a real reply."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "pass",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "panel": "Screen",
-      "text": "",
-      "rendered": "",
-      "truncated": false,
-      "unrenderable": []
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] §11.50 - A PANEL WHOSE BODY WAS DRAWN WITH NO TEXT ON THE GLASS is PRESENT with empty strings, never omitted. Per-panel granularity is chosen over per-line surfaces for this case: 'the panel is on screen and says nothing' and 'the panel is not on screen' must not be the same artifact (§11.29's refusal argument, one level down). Hand-built (see the file's $comment); the implementing parcel replaces it with a real reply."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "pass",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "panel": "Breakpoints",
-      "text": "no breakpoints armed\nat\t漢\tadd",
-      "rendered": "no breakpoints armed\nat\t漢\tadd",
-      "truncated": false,
-      "unrenderable": [
-       "漢"
-      ]
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] §11.50 - A TYPED CHARACTER THE WINDOW HAS NO GLYPH FOR. The add box's contents are a run like any label (a TextEdit galley). U+6F22 is screen::GLYPH_REFERENCES[0], a hollow box in both egui families, so it is named in `unrenderable`: the same rule §11.29 set, measured from the atlas rectangle the glyph samples. Hand-built (see the file's $comment); the implementing parcel replaces it with a real reply."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "error",
-   "expect": "pass",
-   "doc": {
-    "code": -32005,
-    "data": {
-     "droppedEvents": 0,
-     "frame": 0,
-     "mclk": 0,
-     "reason": "noDisplay",
-     "running": false
+  "$comment": "CR-W (protocol.md §11.50, ADOPTED at empyrean 265efaa7) wire vectors for emulator/screen_text's `panel` kind. ELEVEN cases: five `expect: pass` and six `expect: fail`. PROVENANCE: cases 1-4 are REAL REPLIES captured from oracle-player's own emulator/screen_text through Bus::call (the ignored test panel_attribution::tests::capture_cr_w_vector_replies, oracle 95bf549: a Loop bound to a private socket, a real NDJSON client, initialize, then the read - so each carries the D11 stamp the serving path adds), replacing the hand-built documents this file shipped while the kind was unserved - CR-H's bar, met. Case 5 is CR-H's live refusal capture, unchanged. Cases 6-11 are the declared-failure half and are hand-built by construction: they are documents a well-meaning implementer would produce and the fragment must refuse. RIDER R1's FIVE initialize CASES (the file's 12-16, 0-indexed 11-15) WERE DROPPED at the landing, not lost: R1 (initialize.capabilities.screenTextKinds) was DROPPED by the ruling, and §11.50 records that its three DECLARED-FAILURE cases do not go red against the schema as landed, because initialize.capabilities is not a closed object, so an unknown key passes. A fail-vector the schema cannot refuse is coverage theatre, and shipping it would report a green a reader takes for coverage. RESIDUE a document schema cannot see, all SERVER BEHAVIOUR and all conformance rows in the CR (section 9, W1-W10), each now tested in oracle: that a panel surface exists exactly when its body was drawn (W1), that the name is its tab title (W2), that `text` and `rendered` share joins at the same run boundaries (W3), that an unclipped unelided run has rendered == text (W4), that elision is read from the toolkit's own Galley::elided (W5), clipping (W6), hollow boxes (W7), and the blank panel (W8). RUN: crates/oracle-aether/tests/screen_text.rs::the_cr_w_vectors_validate_the_way_the_file_says_they_do judges every case here against the VENDORED fragment with the suite's own check_incoming_strict, keyed by method AND kind (a harness that ignores either measures the wrong fragment, which is the instrument note §11.50 records).",
+  "cases": [
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 18,
+        "mclk": 16128784,
+        "returned": 4,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "oracle-player",
+            "text": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "text": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Registers",
+            "rendered": "romPath\t(fixture)\nrom bytes\t768\nframe (emulated)\t17\nframes run (player)\t17\nsymbols\t8 loaded\nsymbol at pc\tthe listing names no symbol at or before pc\naether\tserving on /tmp/crw-3094702-1607.sock (mode 0600, 62 methods,\nD0\t0000EEBD\nD1\t000024AC\nD2\t00000000\nD3\t00000000\nD4\t00000000\nD5\t00000000\nD6\t00000000\nD7\t00000000\nA0\t00FF36A6\nA1\t00000000\nA2\t00000000",
+            "text": "romPath\t(fixture)\nrom bytes\t768\nframe (emulated)\t17\nframes run (player)\t17\nsymbols\t8 loaded\nsymbol at pc\tthe listing names no symbol at or before pc\naether\tserving on /tmp/crw-3094702-1607.sock (mode 0600, 62 methods, protocol version 1), with a client attached\nD0\t0000EEBD\nD1\t000024AC\nD2\t00000000\nD3\t00000000\nD4\t00000000\nD5\t00000000\nD6\t00000000\nD7\t00000000\nA0\t00FF36A6\nA1\t00000000\nA2\t00000000",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Breakpoints",
+            "rendered": "STOPPED: nothing is armed. 16 breakpoints held and every one of them disabled, carrying 0 hits between them from when they were armed. These figures are what was recorded before it stopped; they will not move.\nat\t0x400 or a symbol\tlabel\tarm\tclear all\nbreakpoints\temulator/breakpoint_list\nid\taddr\tstate\thits\tsymbol\nremove\tb0\t0x00000200\tdisabled\t0\t(unnamed)\tbench0\nremove\tb1\t0x00000204\tdisabled\t0\t(unnamed)\tbench1\nremove\tb2\t0x00000208\tdisabled\t0\t(unnamed)\tbench2\nremove\tb3\t0x0000020C\tdisabled\t0\t(unnamed)\tbench3\nremove\tb4\t0x00000210\tdisabled\t0\t(unnamed)\tbench4\nremove\tb5\t0x00000214\tdisabled\t0\t(unnamed)\tbench5\nremove\tb6\t0x00000218\tdisabled\t0\t(unnamed)\tbench6\nremove\tb7\t0x0000021C\tdisabled\t0\t(unnamed)\tbench7\nremove\tb8\t0x00000220\tdisabled\t0\t(unnamed)\tbench8",
+            "text": "STOPPED: nothing is armed. 16 breakpoints held and every one of them disabled, carrying 0 hits between them from when they were armed. These figures are what was recorded before it stopped; they will not move.\nat\t0x400 or a symbol\tlabel\tarm\tclear all\nbreakpoints\temulator/breakpoint_list\nid\taddr\tstate\thits\tsymbol\nremove\tb0\t0x00000200\tdisabled\t0\t(unnamed)\tbench0\nremove\tb1\t0x00000204\tdisabled\t0\t(unnamed)\tbench1\nremove\tb2\t0x00000208\tdisabled\t0\t(unnamed)\tbench2\nremove\tb3\t0x0000020C\tdisabled\t0\t(unnamed)\tbench3\nremove\tb4\t0x00000210\tdisabled\t0\t(unnamed)\tbench4\nremove\tb5\t0x00000214\tdisabled\t0\t(unnamed)\tbench5\nremove\tb6\t0x00000218\tdisabled\t0\t(unnamed)\tbench6\nremove\tb7\t0x0000021C\tdisabled\t0\t(unnamed)\tbench7\nremove\tb8\t0x00000220\tdisabled\t0\t(unnamed)\tbench8",
+            "truncated": false,
+            "unrenderable": []
+          }
+        ],
+        "total": 4,
+        "truncated": false
+      },
+      "why": "[CR-W core] §11.50 - THE POPULATED REPLY, and it is a REAL one: captured from `oracle-player`'s own `emulator/screen_text` through `Bus::call`, by the ignored test `panel_attribution::tests::capture_cr_w_vector_replies` at oracle 95bf549 (the re-vendor commit), schema empyrean 265efaa7. Two leaves of the default dock are expanded and two collapsed, so two panel bodies were drawn this present and each is one surface named by its tab title; the hidden tabs sharing those leaves are absent because their bodies did not run (egui_dock-0.21.1 leaf.rs:1330). The Registers panel's `aether` row is CUT BY THE PANE EDGE: `rendered` stops at \"...nothing can attach to this window\" where `text` continues, so `truncated` derives true, and because both strings share their TAB/LF joins at the same run boundaries a client finds the cut run by comparing row for row. No elision mark on that run, because it was clipped rather than elided - the two cases the CR distinguishes, seen here in one reply."
     },
-    "message": "this server has no window; screen text exists only in a hosted player"
-   },
-   "why": "[CR-W core] §11.29, unchanged by §11.50 - THE REFUSAL. A server with no window has no panels either; CR-W adds no second refusal and no panel-specific reason. Copied from CR-H's end-to-end capture (docs/proposed/2026-08-30-cr-h-vectors.json case 3)."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "fail",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "text": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic lands after the spring\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "rendered": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic la…\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "truncated": true,
-      "unrenderable": []
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] RED - a `panel` surface with no `panel` name. A client could only learn which panel it is by reading the text, which is the parse §2.4 rule 3 forbids for caveats and §11.29's no-join clause forbids for values."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "fail",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": [],
-      "panel": "Breakpoints"
-     },
-     {
-      "kind": "panel",
-      "panel": "Registers",
-      "text": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "rendered": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "truncated": false,
-      "unrenderable": []
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] RED - `panel` on a non-panel kind. Present if and only if kind is panel, so the key cannot come to mean two things."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "fail",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "panel": "",
-      "text": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "rendered": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "truncated": false,
-      "unrenderable": []
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] RED - an empty panel name. Every tab bar draws a non-empty title (ui.rs Tab::title)."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "fail",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panelBreakpoints",
-      "panel": "Breakpoints",
-      "text": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic lands after the spring\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "rendered": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic la…\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "truncated": true,
-      "unrenderable": []
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] RED - option (b), one kind per tab, as a server that took it would spell it. The enum stays closed and names no tab: the tab vocabulary is one window's, and changes with a layout version, not a contract amendment."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "fail",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "panel": "Registers",
-      "text": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "rendered": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
-      "truncated": false,
-      "unrenderable": [],
-      "rows": [
-       [
-        "pc",
-        "0x000003F2",
-        "VInt_Handler"
-       ],
-       [
-        "sr",
-        "0x2700"
-       ]
-      ]
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] RED - option (c) smuggled in: structured rows on a surface. Red upstream too (the item is closed), kept so the rejection of (c) is pinned rather than implied."
-  },
-  {
-   "method": "emulator/screen_text",
-   "kind": "result",
-   "expect": "fail",
-   "doc": {
-    "droppedEvents": 0,
-    "frame": 4,
-    "mclk": 3584196,
-    "running": true,
-    "surfaces": [
-     {
-      "kind": "titleBar",
-      "text": "oracle-player",
-      "rendered": "oracle-player",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "statusLine",
-      "text": "oracle-player | ⏸ pause  step | AETHER ON",
-      "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
-      "truncated": false,
-      "unrenderable": []
-     },
-     {
-      "kind": "panel",
-      "panel": "Breakpoints",
-      "text": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic lands after the spring\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "rendered": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic la…\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
-      "unrenderable": []
-     }
-    ],
-    "total": 3,
-    "returned": 3,
-    "truncated": false
-   },
-   "why": "[CR-W core] RED - §11.29's REQUIRED-even-when-derivable `truncated` holds for panel surfaces too, and a panel is where it is most likely to be true."
-  },
-  {
-   "method": "initialize",
-   "kind": "result",
-   "group": "handshake",
-   "expect": "pass",
-   "doc": {
-    "serverName": "oracle",
-    "serverVersion": "0.0.0",
-    "implementation": "oracle-rs",
-    "serverBuild": {
-     "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
-     "source": "vcs",
-     "dirty": false
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 18,
+        "mclk": 16128784,
+        "returned": 2,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "oracle-player",
+            "text": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "text": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "truncated": false,
+            "unrenderable": []
+          }
+        ],
+        "total": 2,
+        "truncated": false
+      },
+      "why": "[CR-W core] §11.50 - EVERY LEAF COLLAPSED: no panel body ran, so no panel surface, and the reply is a valid pre-CR-W reply byte for byte. REAL, captured as case 1 was, with every leaf of the default dock collapsed (reachable: layout.rs records fully_collapsed). Rider R1 would have disambiguated this from a server that never reports panels; R1 was DROPPED (§11.50), so this reply is deliberately ambiguous on the wire and the section says why."
     },
-    "protocolVersion": 1,
-    "methods": [
-     "emulator/ping",
-     "emulator/screen_text"
-    ],
-    "limits": {
-     "maxRunFrames": 3600,
-     "maxReadLen": 4096,
-     "maxLineBytes": 1048576
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 18,
+        "mclk": 16128784,
+        "returned": 13,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "oracle-player",
+            "text": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "text": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Screen",
+            "rendered": "layers:\tplaneB\tplaneA\twindow\tsprites\n4:3\tsquare\tinteger\t0 armed by this panel\nstate:\t0\t1\t2\t3\t4\t5\t6\t7\t8\t9\t◀\t▶\tsave\tload",
+            "text": "layers:\tplaneB\tplaneA\twindow\tsprites\n4:3\tsquare\tinteger\t0 armed by this panel\nstate:\t0\t1\t2\t3\t4\t5\t6\t7\t8\t9\t◀\t▶\tsave\tload",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Planes",
+            "rendered": "plane A\tplane B\twindow\tviewport\tapply live scroll\nCheckered squares are transparent: colour 0 of a tile, where this plane draws nothing.\nnametable at\t$0000\nmap\t32 by 32 cells\nplane\t256 by 256 pixels\ndrawn\t256 by 256 pixels\nscroll table at\t$0000\nrasterised\t1 times in 17 repaints\nhorizontal: one value for the whole screen\nvertical: one value for the whole screen",
+            "text": "plane A\tplane B\twindow\tviewport\tapply live scroll\nCheckered squares are transparent: colour 0 of a tile, where this plane draws nothing.\nnametable at\t$0000\nmap\t32 by 32 cells\nplane\t256 by 256 pixels\ndrawn\t256 by 256 pixels\nscroll table at\t$0000\nrasterised\t1 times in 17 repaints\nhorizontal: one value for the whole screen\nvertical: one value for the whole screen",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Pacing",
+            "rendered": "17\t17\t18.14\tfps\t0.00\tms\nframes emulated\tframes presented\tpresented fps\tworst late\ngovernor\tthe loop's own rate limite\nfps window\t937 ms\ntarget period\tnone, the governor is switched off for this run\nrebases\t0\nearly wakes\t0\nframe time\twall clock per presented frame, as a distributio\nmedian\t40.52 ms\np99\t323.65 ms\nsamples\t16\naudio\tthe clock everything else follow\nNo audio device opened, so the ring is not being drained and pacing here is unmeasured rather than healthy. The governor's numbers above are still real.",
+            "text": "17\t17\t18.14\tfps\t0.00\tms\nframes emulated\tframes presented\tpresented fps\tworst late\ngovernor\tthe loop's own rate limiter\nfps window\t937 ms\ntarget period\tnone, the governor is switched off for this run\nrebases\t0\nearly wakes\t0\nframe time\twall clock per presented frame, as a distribution\nmedian\t40.52 ms\np99\t323.65 ms\nsamples\t16\naudio\tthe clock everything else follows\nNo audio device opened, so the ring is not being drained and pacing here is unmeasured rather than healthy. The governor's numbers above are still real.",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Registers",
+            "rendered": "romPath\t(fixture)\nrom bytes\t768\nframe (emulated)\t17\nframes run (player)\t17\nsymbols\t8 loaded\nsymbol at pc\tthe listing names no symbol at or before pc\naether\tserving on /tmp/crw-3094702-1607.sock (mode",
+            "text": "romPath\t(fixture)\nrom bytes\t768\nframe (emulated)\t17\nframes run (player)\t17\nsymbols\t8 loaded\nsymbol at pc\tthe listing names no symbol at or before pc\naether\tserving on /tmp/crw-3094702-1607.sock (mode 0600, 62 methods, protocol version 1), with a client attached",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Memory",
+            "rendered": "space\nbus (ROM + work RAM)\nvram\tcram\nvsram\tz80\nreads reproduce emulator/read · writes go through emulator/write_memory\naddress\t0x00FF0000\nregion: work RAM",
+            "text": "space\nbus (ROM + work RAM)\nvram\tcram\nvsram\tz80\nreads reproduce emulator/read · writes go through emulator/write_memory\naddress\t0x00FF0000\nregion: work RAM",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Objects",
+            "rendered": "engine\taeon-sst\ntable at\t0x00FF8000\nslots\t66",
+            "text": "engine\taeon-sst\ntable at\t0x00FF8000\nslots\t66",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Spawn",
+            "rendered": "place rings…\nspawn mod\nSpawn mode is of",
+            "text": "place rings…\nspawn mode…\nSpawn mode is off, so this build's archetypes have not been read yet. Arm it above and the list appears here; the click that places one is on the Screen tab's picture, as it always was.",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Effects",
+            "rendered": "scene\tra",
+            "text": "scene\traster program",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Breakpoints",
+            "rendered": "STOPP",
+            "text": "STOPPED: nothing is armed. 16 breakpoints held and every one of them disabled, carrying 0 hits between them from when they were armed. These figures are what was recorded before it stopped; they will not move.",
+            "truncated": true,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Watchpoints",
+            "rendered": "",
+            "text": "",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Profiler",
+            "rendered": "",
+            "text": "",
+            "truncated": false,
+            "unrenderable": []
+          }
+        ],
+        "total": 13,
+        "truncated": false
+      },
+      "why": "[CR-W core] §11.50 - A DRAWN PANEL WITH NO TEXT ON THE GLASS is PRESENT with empty strings, never omitted. REAL, captured from `--dock every-tab`'s arrangement at 1600x1000, where two bodies reach the blank case two different ways: Profiler paints no text shape at all, and Watchpoints paints text shapes with no glyph on the glass (an empty text shape is not a run, §11.50). Per-panel granularity is chosen over per-line surfaces for exactly this case: 'the panel is on screen and says nothing' and 'the panel is not on screen' must not be the same artifact."
     },
-    "timingBasis": {
-     "standard": "ntsc",
-     "mclkPerFrame": 896040,
-     "linesPerFrame": 262
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 18,
+        "mclk": 16128784,
+        "returned": 3,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "rendered": "oracle-player",
+            "text": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "rendered": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "text": "oracle-player  build 95bf54946c66 · <1h | panels | ⏸ pause  ⏭ step | aether: serving, attached | recording: 1 watch · profiler on | ⌨ commands  📂 open ROM | GOVERNOR OFF (control) · 17 frames · 0 rebases",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Watchpoints",
+            "rendered": "RECORDING: 1 watch armed\nat\t漢\tlen\t1\tbus\tread\twrite\tstopAfter\t∞\tlabel\tarm\tclear all\n507753\t72531\t68435\nseen\tmatched\tdropped\nThe Z80's accesses are not handed to this instrument, apart from its FM/PSG register writes, so a range only the Z80 touches reads here as never touched. A warning below says so when a watch covers memory the Z80 can reach.\nwatch #0 'bench-ram': the Z80 can reach this range, and its accesses are not delivered to watchpoints (F-Z80-ACCESSES-UNWATCHED). Its opcode fetches, its reads and writes through the $8000 bank window and its own RAM traffic never reach this sink; only its FM/PSG register writes do, at their raw Z80 addresses. Every Z80 access to it is missing from the counts here, so zero Z80 hits is the instrument being absent, not a negative finding.\narmed watches\temulator/watchpoint_list\nhandle\tspace\trange\top\tmatched\tstopAfter\tlabel\nremove\tw0\tbus\t0x00FF0000..=0x00FFFFFF\twrite\t72531\tnever\tbench-ram\nhit log: 4096 retained, 68435 dropped (a gap in `seq` marks them)\nseq\tframe\taddr\top\tsize\tvalue\tpc\n72521\t16\t0x00FF3692\twrite\tword\t0x70BE\t0x00000212\n72522\t16\t0x00FF3694\twrite\tword\t0xA0E1\t0x00000212\n72523\t16\t0x00FF3696\twrite\tword\t0xBA91\t0x00000212\n72524\t16\t0x00FF3698\twrite\tword\t0x3DDF\t0x00000212\n72525\t16\t0x00FF369A\twrite\tword\t0x6136\t0x00000212\n72526\t16\t0x00FF369C\twrite\tword\t0x67FE\t0x00000212\n72527\t16\t0x00FF369E\twrite\tword\t0x75F1\t0x00000212\n72528\t16\t0x00FF36A0\twrite\tword\t0x2B7F\t0x00000212\n72529\t16\t0x00FF36A2\twrite\tword\t0x79E5\t0x00000212\n72530\t16\t0x00FF36A4\twrite\tword\t0xEEBD\t0x00000212",
+            "text": "RECORDING: 1 watch armed\nat\t漢\tlen\t1\tbus\tread\twrite\tstopAfter\t∞\tlabel\tarm\tclear all\n507753\t72531\t68435\nseen\tmatched\tdropped\nThe Z80's accesses are not handed to this instrument, apart from its FM/PSG register writes, so a range only the Z80 touches reads here as never touched. A warning below says so when a watch covers memory the Z80 can reach.\nwatch #0 'bench-ram': the Z80 can reach this range, and its accesses are not delivered to watchpoints (F-Z80-ACCESSES-UNWATCHED). Its opcode fetches, its reads and writes through the $8000 bank window and its own RAM traffic never reach this sink; only its FM/PSG register writes do, at their raw Z80 addresses. Every Z80 access to it is missing from the counts here, so zero Z80 hits is the instrument being absent, not a negative finding.\narmed watches\temulator/watchpoint_list\nhandle\tspace\trange\top\tmatched\tstopAfter\tlabel\nremove\tw0\tbus\t0x00FF0000..=0x00FFFFFF\twrite\t72531\tnever\tbench-ram\nhit log: 4096 retained, 68435 dropped (a gap in `seq` marks them)\nseq\tframe\taddr\top\tsize\tvalue\tpc\n72521\t16\t0x00FF3692\twrite\tword\t0x70BE\t0x00000212\n72522\t16\t0x00FF3694\twrite\tword\t0xA0E1\t0x00000212\n72523\t16\t0x00FF3696\twrite\tword\t0xBA91\t0x00000212\n72524\t16\t0x00FF3698\twrite\tword\t0x3DDF\t0x00000212\n72525\t16\t0x00FF369A\twrite\tword\t0x6136\t0x00000212\n72526\t16\t0x00FF369C\twrite\tword\t0x67FE\t0x00000212\n72527\t16\t0x00FF369E\twrite\tword\t0x75F1\t0x00000212\n72528\t16\t0x00FF36A0\twrite\tword\t0x2B7F\t0x00000212\n72529\t16\t0x00FF36A2\twrite\tword\t0x79E5\t0x00000212\n72530\t16\t0x00FF36A4\twrite\tword\t0xEEBD\t0x00000212",
+            "truncated": false,
+            "unrenderable": [
+              "漢"
+            ]
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      "why": "[CR-W core] §11.50 - A TYPED CHARACTER THE WINDOW HAS NO GLYPH FOR. REAL: U+6F22 was typed into the Watchpoints add box and the reply captured as above. The box's contents are a run like any label (a TextEdit galley), and U+6F22 is screen::GLYPH_REFERENCES[0], a hollow box in both egui families, so it is named in `unrenderable`: the same rule §11.29 set, measured from the atlas rectangle the glyph samples, never from epaint's own has_glyph."
     },
-    "frame": 0,
-    "mclk": 0,
-    "running": false,
-    "droppedEvents": 0,
-    "capabilities": {
-     "events": [
-      "emulator/stopped"
-     ],
-     "screenTextKinds": [
-      "titleBar",
-      "statusLine",
-      "panel"
-     ]
+    {
+      "method": "emulator/screen_text",
+      "kind": "error",
+      "expect": "pass",
+      "doc": {
+        "code": -32005,
+        "data": {
+          "droppedEvents": 0,
+          "frame": 0,
+          "mclk": 0,
+          "reason": "noDisplay",
+          "running": false
+        },
+        "message": "this server has no window; screen text exists only in a hosted player"
+      },
+      "why": "[CR-W core] §11.29, unchanged by §11.50 - THE REFUSAL. A server with no window has no panels either; CR-W adds no second refusal and no panel-specific reason. Copied from CR-H's end-to-end capture (docs/proposed/2026-08-30-cr-h-vectors.json case 3)."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "text": "oracle-player",
+            "rendered": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "text": "oracle-player | ⏸ pause  step | AETHER ON",
+            "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "text": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic lands after the spring\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
+            "rendered": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic la…\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
+            "truncated": true,
+            "unrenderable": []
+          }
+        ],
+        "total": 3,
+        "returned": 3,
+        "truncated": false
+      },
+      "why": "[CR-W core] RED - a `panel` surface with no `panel` name. A client could only learn which panel it is by reading the text, which is the parse §2.4 rule 3 forbids for caveats and §11.29's no-join clause forbids for values."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "text": "oracle-player",
+            "rendered": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "text": "oracle-player | ⏸ pause  step | AETHER ON",
+            "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
+            "truncated": false,
+            "unrenderable": [],
+            "panel": "Breakpoints"
+          },
+          {
+            "kind": "panel",
+            "panel": "Registers",
+            "text": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
+            "rendered": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
+            "truncated": false,
+            "unrenderable": []
+          }
+        ],
+        "total": 3,
+        "returned": 3,
+        "truncated": false
+      },
+      "why": "[CR-W core] RED - `panel` on a non-panel kind. Present if and only if kind is panel, so the key cannot come to mean two things."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "text": "oracle-player",
+            "rendered": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "text": "oracle-player | ⏸ pause  step | AETHER ON",
+            "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "",
+            "text": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
+            "rendered": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
+            "truncated": false,
+            "unrenderable": []
+          }
+        ],
+        "total": 3,
+        "returned": 3,
+        "truncated": false
+      },
+      "why": "[CR-W core] RED - an empty panel name. Every tab bar draws a non-empty title (ui.rs Tab::title)."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "text": "oracle-player",
+            "rendered": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "text": "oracle-player | ⏸ pause  step | AETHER ON",
+            "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panelBreakpoints",
+            "panel": "Breakpoints",
+            "text": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic lands after the spring\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
+            "rendered": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic la…\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
+            "truncated": true,
+            "unrenderable": []
+          }
+        ],
+        "total": 3,
+        "returned": 3,
+        "truncated": false
+      },
+      "why": "[CR-W core] RED - option (b), one kind per tab, as a server that took it would spell it. The enum stays closed and names no tab: the tab vocabulary is one window's, and changes with a layout version, not a contract amendment."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "text": "oracle-player",
+            "rendered": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "text": "oracle-player | ⏸ pause  step | AETHER ON",
+            "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Registers",
+            "text": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
+            "rendered": "pc\t0x000003F2\tVInt_Handler\nsr\t0x2700\nd0\t0x00000000\ta0\t0x00FFB000\nd1\t0x0000FFFF\ta1\t0x00FFD000",
+            "truncated": false,
+            "unrenderable": [],
+            "rows": [
+              [
+                "pc",
+                "0x000003F2",
+                "VInt_Handler"
+              ],
+              [
+                "sr",
+                "0x2700"
+              ]
+            ]
+          }
+        ],
+        "total": 3,
+        "returned": 3,
+        "truncated": false
+      },
+      "why": "[CR-W core] RED - option (c) smuggled in: structured rows on a surface. Red upstream too (the item is closed), kept so the rejection of (c) is pinned rather than implied."
+    },
+    {
+      "method": "emulator/screen_text",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "droppedEvents": 0,
+        "frame": 4,
+        "mclk": 3584196,
+        "running": true,
+        "surfaces": [
+          {
+            "kind": "titleBar",
+            "text": "oracle-player",
+            "rendered": "oracle-player",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "statusLine",
+            "text": "oracle-player | ⏸ pause  step | AETHER ON",
+            "rendered": "oracle-player | ⏸ pause  step | AETHER ON",
+            "truncated": false,
+            "unrenderable": []
+          },
+          {
+            "kind": "panel",
+            "panel": "Breakpoints",
+            "text": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic lands after the spring\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
+            "rendered": "2 breakpoints armed\nat\t0x400 or a symbol\tadd\nid\taddr\tstate\thits\tsymbol\tlabel\nb1\t0x0000041C\ton\t3\tObj_Sonic_Airborne\tstop when Sonic la…\nb2\t0x000003F2\toff\t0\tVInt_Handler\t(no label)",
+            "unrenderable": []
+          }
+        ],
+        "total": 3,
+        "returned": 3,
+        "truncated": false
+      },
+      "why": "[CR-W core] RED - §11.29's REQUIRED-even-when-derivable `truncated` holds for panel surfaces too, and a panel is where it is most likely to be true."
     }
-   },
-   "why": "[CR-W rider R1] §11.50 R1 - the player's deployment: the three kinds it can put on the glass. With this, case 2's panel-less reply reads as 'no panel is drawn', not 'panels are not reported'."
-  },
-  {
-   "method": "initialize",
-   "kind": "result",
-   "group": "handshake",
-   "expect": "pass",
-   "doc": {
-    "serverName": "oracle",
-    "serverVersion": "0.0.0",
-    "implementation": "oracle-rs",
-    "serverBuild": {
-     "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
-     "source": "vcs",
-     "dirty": false
-    },
-    "protocolVersion": 1,
-    "methods": [
-     "emulator/ping",
-     "emulator/screen_text"
-    ],
-    "limits": {
-     "maxRunFrames": 3600,
-     "maxReadLen": 4096,
-     "maxLineBytes": 1048576
-    },
-    "timingBasis": {
-     "standard": "ntsc",
-     "mclkPerFrame": 896040,
-     "linesPerFrame": 262
-    },
-    "frame": 0,
-    "mclk": 0,
-    "running": false,
-    "droppedEvents": 0,
-    "capabilities": {
-     "events": [
-      "emulator/stopped"
-     ],
-     "screenTextKinds": []
-    }
-   },
-   "why": "[CR-W rider R1] §11.50 R1 - a headless server: present and EMPTY, because it serves emulator/screen_text (and refuses it). Empty is a statement, absence means the server predates the key."
-  },
-  {
-   "method": "initialize",
-   "kind": "result",
-   "group": "handshake",
-   "expect": "fail",
-   "doc": {
-    "serverName": "oracle",
-    "serverVersion": "0.0.0",
-    "implementation": "oracle-rs",
-    "serverBuild": {
-     "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
-     "source": "vcs",
-     "dirty": false
-    },
-    "protocolVersion": 1,
-    "methods": [
-     "emulator/ping",
-     "emulator/screen_text"
-    ],
-    "limits": {
-     "maxRunFrames": 3600,
-     "maxReadLen": 4096,
-     "maxLineBytes": 1048576
-    },
-    "timingBasis": {
-     "standard": "ntsc",
-     "mclkPerFrame": 896040,
-     "linesPerFrame": 262
-    },
-    "frame": 0,
-    "mclk": 0,
-    "running": false,
-    "droppedEvents": 0,
-    "capabilities": {
-     "events": [
-      "emulator/stopped"
-     ],
-     "screenTextKinds": [
-      "panel",
-      "panel"
-     ]
-    }
-   },
-   "why": "[CR-W rider R1] RED - duplicate kinds."
-  },
-  {
-   "method": "initialize",
-   "kind": "result",
-   "group": "handshake",
-   "expect": "fail",
-   "doc": {
-    "serverName": "oracle",
-    "serverVersion": "0.0.0",
-    "implementation": "oracle-rs",
-    "serverBuild": {
-     "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
-     "source": "vcs",
-     "dirty": false
-    },
-    "protocolVersion": 1,
-    "methods": [
-     "emulator/ping",
-     "emulator/screen_text"
-    ],
-    "limits": {
-     "maxRunFrames": 3600,
-     "maxReadLen": 4096,
-     "maxLineBytes": 1048576
-    },
-    "timingBasis": {
-     "standard": "ntsc",
-     "mclkPerFrame": 896040,
-     "linesPerFrame": 262
-    },
-    "frame": 0,
-    "mclk": 0,
-    "running": false,
-    "droppedEvents": 0,
-    "capabilities": {
-     "events": [
-      "emulator/stopped"
-     ],
-     "screenTextKinds": [
-      "tooltip"
-     ]
-    }
-   },
-   "why": "[CR-W rider R1] RED - a kind the method's own enum does not have; the two lists cannot drift."
-  },
-  {
-   "method": "initialize",
-   "kind": "result",
-   "group": "handshake",
-   "expect": "fail",
-   "doc": {
-    "serverName": "oracle",
-    "serverVersion": "0.0.0",
-    "implementation": "oracle-rs",
-    "serverBuild": {
-     "id": "6fc3bd57b5d50a0fcdb39c088ddf546d896a5151",
-     "source": "vcs",
-     "dirty": false
-    },
-    "protocolVersion": 1,
-    "methods": [
-     "emulator/ping",
-     "emulator/screen_text"
-    ],
-    "limits": {
-     "maxRunFrames": 3600,
-     "maxReadLen": 4096,
-     "maxLineBytes": 1048576
-    },
-    "timingBasis": {
-     "standard": "ntsc",
-     "mclkPerFrame": 896040,
-     "linesPerFrame": 262
-    },
-    "frame": 0,
-    "mclk": 0,
-    "running": false,
-    "droppedEvents": 0,
-    "capabilities": {
-     "events": [
-      "emulator/stopped"
-     ],
-     "screenTextKinds": true
-    }
-   },
-   "why": "[CR-W rider R1] RED - a boolean `panels: true`-style flag in the list's place; it cannot say which kinds, and a second flag per future kind is the growth the list avoids."
-  }
- ]
+  ]
 }

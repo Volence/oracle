@@ -5,10 +5,15 @@
 //!
 //! `oracle-frontend` composes its snapshot from a title, an overlay and a status line, and this module
 //! does the same job for a window whose chrome is a different shape: a top bar and **eleven dockable
-//! panels** that are mostly text. The tempting answer is *all eleven panels' contents*. It is the wrong
-//! answer, and not marginally:
+//! panels** that are mostly text. It reports three kinds: `titleBar`, `statusLine`, and — since §11.50
+//! (CR-W, `docs/proposed/2026-09-17-cr-w-panel-screen-text.md`) — one **`panel`** surface per panel whose
+//! body was drawn on this present.
 //!
-//! * ⚑ **`egui_dock` draws only the ACTIVE tab of a leaf.** [`crate::ui::initial_dock`] puts
+//! This module used to refuse panels, in writing, on three arguments. CR-W §1.1 reversed that, and each
+//! argument is answered here rather than stepped past:
+//!
+//! * ⚑ **"A snapshot listing all eleven would report text nobody can see." Agreed, and kept.**
+//!   `egui_dock` draws only the ACTIVE tab of a leaf. [`crate::ui::initial_dock`] puts
 //!   Registers/Memory/Objects in one pane and Breakpoints/Watchpoints/Profiler in another, so **seven of
 //!   the eleven** panel bodies do not run on a given frame — that fact is load-bearing enough
 //!   that this crate grew `--dock every-tab` ([`crate::ui::every_tab_dock`]) to make a cost measurement
@@ -18,25 +23,46 @@
 //!   grows. Derived in
 //!   `nav::tests::the_default_layout_hides_one_body_per_shared_pane_and_the_count_is_measured`, which has
 //!   survived both drifts untouched, and these sentences are now pinned to `Tab::ALL` by
-//!   `nav::tests::panel_counts_in_prose_match_the_enum`. Lens finding H19. The argument below is
-//!   unchanged: a snapshot of all eleven would still report text nobody can see.)* A
-//!   snapshot listing all eleven would report text **nobody can see**, which is the exact class of wrong
-//!   answer `screen_text` exists to avoid: a caller reading it would be told the window says something it
-//!   does not say.
-//! * **The active tab is no better, only less obviously wrong.** What a panel body actually reveals
-//!   depends on the pane's pixel height and its scroll offset, and both are computed *inside* egui's
-//!   painting loop. Restating them here is precisely the drift `oracle-frontend`'s rule 2 forbids: a
-//!   restated copy agrees with itself while diverging from the drawing code. `oracle-frontend` refused
-//!   `palette` and `lens` for this reason in so many words, and its argument transfers unchanged.
-//! * **Six of the eleven panels have another reader anyway.** Registers, Memory, Objects, Breakpoints,
-//!   Watchpoints and Profiler are renderings of `emulator/registers`, `emulator/read_memory`,
-//!   `emulator/object_list`, `emulator/breakpoint_list`, `emulator/watchpoint_hits` and
-//!   `emulator/get_profiler`. Reading them back as *text* is the worst available way to get them, and the
-//!   surface this method exists for is the text with **no other reader**.
+//!   `nav::tests::panel_counts_in_prose_match_the_enum`. Lens finding H19.)* So the answer is **drawn
+//!   bodies only**: a panel surface exists exactly when `TabViewer::ui` ran that panel's body this pass.
+//!   A tab behind another in its pane and a collapsed pane have no surface; a tab floated into a window is
+//!   drawn, and is reported after the main surface's panels, in the order the window drew them.
+//! * **"What a panel body reveals depends on the pane's pixel height and scroll offset, computed inside
+//!   egui's painting loop; restating them is the drift `oracle-frontend`'s rule 2 forbids." True of
+//!   restating, and nothing here restates.** The harvest reads what egui PAINTED, after the fact: the
+//!   shapes each body appended to its layer's paint list, their clip rectangles, each galley's `elided`
+//!   flag and its laid-out glyphs. Those are the renderer's own inputs, so there is no second layout to
+//!   drift from the first. That seam did not exist in the design space the old paragraph considered, and
+//!   the CR-W Q3 spike (`docs/2026-09-17-cr-w-q3-spike.md`) measured it: every drawn body's text is
+//!   attributed completely and exclusively by the in-pass paint-list span ("form 1"), including under a
+//!   floating window, where attributing by clip rectangle ("form 2") is NOT exclusive and is not used.
+//! * **"Six of the eleven panels have another reader anyway." True of the values, and beside the point.**
+//!   What an agent is asked about a panel is how it READS: a cut cell, a hollow box, a wrong sentence, an
+//!   empty state. No served row carries that. The values stay on their rows, and §11.29's no-join clause
+//!   reaches panels with full force: a number read off a panel is a snapshot of a rendering, never a
+//!   source. Ask the bus.
 //!
-//! So the answer is the **top bar and the window title**, and it is smaller than the ambitious version on
-//! purpose. Both are drawn unconditionally, outside the dock, on every frame: no tab can hide them, no
-//! scroll offset can cut them, and nothing else on the bus reports either one.
+//! # How a panel surface is read off the paint list ([`PanelSpan`], [`panels`])
+//!
+//! * **Recording.** `TabViewer::ui` notes `ui.layer_id()` and that layer's `PaintList::next_idx()` before
+//!   and after the body's `match` ([`PanelMark`]). The shapes between are exactly that body's. The list is
+//!   a local of `build_ui`, so it is **per pass** by construction: `Context::run_ui` re-runs the whole
+//!   closure on a discarded pass, and a span kept from a discarded pass would index a drained list.
+//! * **Reading.** After `build_ui` returns and before the pass ends — the layer's list is drained by
+//!   `end_pass` — each span is read **from its own recorded layer** (a floating window's body is in a
+//!   `Middle` layer of its own). `Context::graphics` takes the context's WRITE lock, so the read clones the
+//!   galleys out in one call and nothing else runs inside it: [`Glyphs`] takes the fonts lock later.
+//! * **A run** is one `Shape::Text` with at least one glyph whose logical rectangle meets its clip
+//!   rectangle. A TextEdit's empty galley, and a label scrolled wholly out of view, are not runs.
+//!   `text` gets the galley's SOURCE (`Galley::text`); `rendered` gets the glyphs that meet the clip, the
+//!   elision mark included. A run's own TAB or LF is folded to a space in both.
+//! * **Rows.** Runs are grouped into visual rows by the band of their first visible glyph row, ordered
+//!   top to bottom, and left to right within a row; runs on a row are joined by TAB and rows by LF, in
+//!   both strings identically, so row *k* run *j* of `rendered` renders row *k* run *j* of `text`.
+//! * **Scrolled out is not truncation.** Rows off the view are in neither string. A panel surface is what
+//!   the panel shows, never its content.
+//! * **A drawn panel with no text is present, with `""`.** "Not on screen" and "on screen and blank" stay
+//!   different artifacts.
 //!
 //! # One derivation, two consumers — enforced by the return type
 //!
@@ -45,18 +71,25 @@
 //! That is stronger than a helper both sides happen to call: there is no second expression to drift, and
 //! the snapshot **cannot be composed before the bar draws it**, which is the ordering
 //! [`oracle_aether::host::Host::set_screen_text`] requires. Pushing text that describes a frame not yet
-//! presented is the trap that method's own doc names; here it is a type error rather than a rule.
+//! presented is the trap that method's own doc names; here it is a type error rather than a rule. The
+//! panel spans follow the same rule: `build_ui` returns them, so they cannot be read before the bodies
+//! ran.
 //!
 //! # Kinds this module does not produce, said out loud
 //!
-//! The contract's `kind` enum has five values; this module produces **two**, `titleBar` and `statusLine`.
+//! The contract's `kind` enum has six values; this module produces **three**, `titleBar`, `statusLine` and
+//! `panel`.
 //!
 //! * **`toast`** — the player has none. The nearest thing is the transport bar's [`crate::ui::Echo`], the
 //!   bus's verbatim answer to the last button click; it is persistent chrome inside the top bar rather
 //!   than a transient overlay, so it is reported as part of the `statusLine` run it is drawn in, not as a
 //!   toast it is not.
-//! * **`palette`**, **`lens`** — `oracle-frontend`'s reasons (`F-SCREEN-TEXT-PALETTE-LENS`), plus the dock
-//!   argument above. The player's lenses are its eleven panels.
+//! * **`palette`**, **`lens`** — `oracle-frontend`'s reasons (`F-SCREEN-TEXT-PALETTE-LENS`). The player's
+//!   command palette is still reported inside the `statusLine` run list (`build_ui` appends its runs);
+//!   serving it as `palette` needs no CR and is not done here.
+//! * **Tooltips, popups, combo lists** — each is its own `Area` layer, outside every body's span, so no
+//!   panel surface carries it (measured by the Q3 spike). They have no kind; booked
+//!   `F-SCREEN-TEXT-TRANSIENT-AREAS`.
 
 use oracle_aether::engine::{ScreenSurface, ScreenSurfaceKind};
 
@@ -304,6 +337,305 @@ pub fn snapshot(
     ]
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Panels (§11.50, CR-W): what each drawn body painted, read off its layer's paint list
+// ---------------------------------------------------------------------------------------------------------
+
+use oracle_aether::engine::PanelName;
+use std::sync::Arc;
+
+/// **One drawn panel body's slice of its layer's paint list**: the shapes at `[start, end)` of `layer`'s
+/// list are exactly the shapes that body painted (CR-W Q3, form 1).
+///
+/// Recorded by `TabViewer::ui` through [`PanelMark`], returned by `build_ui`, read by [`panels`] in the
+/// same pass. Never kept across passes: the indices name a list `end_pass` drains.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelSpan {
+    /// The title the panel's own tab bar draws (`Tab::title`), which is what `panel` reports.
+    pub name: &'static str,
+    /// The layer the body drew into — the main surface's, or a floating window's own `Middle` layer.
+    pub layer: egui::LayerId,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// **The half of a [`PanelSpan`] known before the body runs.** Taken at the top of `TabViewer::ui` and
+/// closed by [`PanelMark::leave`] at the bottom; the body's `match` sits between the two.
+#[derive(Clone, Copy, Debug)]
+pub struct PanelMark {
+    layer: egui::LayerId,
+    start: usize,
+}
+
+impl PanelMark {
+    /// Note the body's layer and the index the body's first shape will take.
+    ///
+    /// ⚑ `Context::graphics` takes the context's **write** lock (`egui-0.36.1/src/context.rs:1044`), so
+    /// this must not be called from inside another context closure. `TabViewer::ui` is a `Ui` callback,
+    /// not a context closure, which is why it is safe there.
+    pub fn enter(ui: &egui::Ui) -> Self {
+        let layer = ui.layer_id();
+        let start = ui
+            .ctx()
+            .graphics(|g| g.get(layer).map_or(0, |l| l.next_idx().0));
+        Self { layer, start }
+    }
+
+    /// Close the span: the body painted everything between `start` and the list's next index now.
+    pub fn leave(self, ui: &egui::Ui, name: &'static str) -> PanelSpan {
+        let end = ui
+            .ctx()
+            .graphics(|g| g.get(self.layer).map_or(self.start, |l| l.next_idx().0));
+        PanelSpan {
+            name,
+            layer: self.layer,
+            start: self.start,
+            end,
+        }
+    }
+}
+
+/// **One `Shape::Text` a body painted**, with what is needed to decide which of its glyphs reached the
+/// glass: where it was painted and the clip it was painted under.
+#[derive(Clone, Debug)]
+pub struct Painted {
+    pub galley: Arc<egui::Galley>,
+    pub pos: egui::Pos2,
+    pub clip: egui::Rect,
+}
+
+/// **Every text shape in each span, read from each span's own layer**, in paint order, one `Vec` per span.
+///
+/// One `Context::graphics` call for all spans, and nothing inside it but cloning `Arc`s: that call holds
+/// the context's write lock, and [`Glyphs`] needs the fonts afterwards. Must run **in the pass** that
+/// recorded the spans — after `end_pass` the lists are empty (measured by the Q3 spike) and a span that
+/// indexes past a list's end reads nothing rather than panicking.
+pub fn painted(ctx: &egui::Context, spans: &[PanelSpan]) -> Vec<Vec<Painted>> {
+    fn walk(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<Painted>) {
+        match shape {
+            egui::Shape::Text(t) => out.push(Painted {
+                galley: t.galley.clone(),
+                pos: t.pos,
+                clip,
+            }),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
+            _ => {}
+        }
+    }
+    ctx.graphics(|g| {
+        spans
+            .iter()
+            .map(|span| {
+                let mut out = Vec::new();
+                if let Some(list) = g.get(span.layer) {
+                    for c in list
+                        .all_entries()
+                        .skip(span.start)
+                        .take(span.end.saturating_sub(span.start))
+                    {
+                        walk(&c.shape, c.clip_rect, &mut out);
+                    }
+                }
+                out
+            })
+            .collect()
+    })
+}
+
+/// A run's TAB and LF, folded to a space (§11.50, Q7 adopted): without the fold, a label carrying its own
+/// line break would shift every row index after it, and row/run alignment would hold only "usually".
+fn fold(c: char) -> char {
+    if c == '\t' || c == '\n' {
+        ' '
+    } else {
+        c
+    }
+}
+
+/// Whether `r` meets `clip` — **on the glass, however little of it**. A zero-width rectangle (an empty
+/// row, a zero-advance glyph) meets the clip when its edge lies inside it, so it is not lost for having no
+/// area.
+fn meets(r: egui::Rect, clip: egui::Rect) -> bool {
+    let x = if r.width() > 0.0 {
+        r.min.x < clip.max.x && r.max.x > clip.min.x
+    } else {
+        r.min.x >= clip.min.x && r.min.x <= clip.max.x
+    };
+    let y = if r.height() > 0.0 {
+        r.min.y < clip.max.y && r.max.y > clip.min.y
+    } else {
+        r.min.y >= clip.min.y && r.min.y <= clip.max.y
+    };
+    x && y
+}
+
+/// **One run as the glass has it**: the source, the glyphs that reached the glass, and the vertical band
+/// and left edge of its first visible glyph row, which place it among the panel's visual rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlassRun {
+    pub text: String,
+    pub rendered: String,
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    /// `Galley::elided`, the toolkit's own answer. Carried for tests and for the record; the wire's
+    /// `truncated` is still derived from `rendered != text` by the handler.
+    pub elided: bool,
+}
+
+/// **The run one painted galley contributes, or `None` when none of its glyphs is on the glass** (a
+/// TextEdit's empty galley, a label scrolled wholly out of view).
+///
+/// `rendered` walks the glyph rows the toolkit laid out. A `\n` in the source ends a row and is not a
+/// glyph (`PlacedRow::ends_with_newline`), so its folded space is put back between the visible glyphs on
+/// either side of it — only when the row after it meets the clip, since a line cut off below the view is
+/// not on the glass. A row the toolkit WRAPPED inserts nothing: wrapping is not truncation, and a wrapped
+/// label that loses nothing has `rendered == text`.
+pub fn glass_run(p: &Painted) -> Option<GlassRun> {
+    let mut rendered = String::new();
+    let mut band: Option<(f32, f32, f32)> = None;
+    let mut newline_pending = false;
+    let origin = p.pos.to_vec2();
+    for row in &p.galley.rows {
+        let row_rect = row.rect().translate(origin);
+        if newline_pending && !rendered.is_empty() && meets(row_rect, p.clip) {
+            rendered.push(' ');
+        }
+        newline_pending = false;
+        for g in &row.glyphs {
+            let r = g.logical_rect().translate(origin + row.pos.to_vec2());
+            if meets(r, p.clip) {
+                rendered.push(fold(g.chr));
+                if band.is_none() {
+                    band = Some((row_rect.min.y, row_rect.max.y, r.min.x));
+                }
+            }
+        }
+        if row.ends_with_newline {
+            newline_pending = true;
+        }
+    }
+    let (top, bottom, left) = band?;
+    Some(GlassRun {
+        text: p.galley.text().chars().map(fold).collect(),
+        rendered,
+        top,
+        bottom,
+        left,
+        elided: p.galley.elided,
+    })
+}
+
+/// **Join a panel's runs into its two strings**, identically: visual rows top to bottom joined by LF,
+/// runs left to right within a row joined by TAB.
+///
+/// A run belongs to the current row when the vertical centre of its first visible glyph row lies inside
+/// the band of the row's topmost run — so a small label centred beside a large one is on its row, and a
+/// table row whose top touches the previous row's bottom is not. The joins are this function's, not text
+/// on the glass, and the same joins go into both strings, which is the whole of the alignment guarantee.
+pub fn join(mut runs: Vec<GlassRun>) -> (String, String) {
+    runs.sort_by(|a, b| a.top.total_cmp(&b.top).then(a.left.total_cmp(&b.left)));
+    let mut rows: Vec<Vec<GlassRun>> = Vec::new();
+    for run in runs {
+        let centre = (run.top + run.bottom) / 2.0;
+        match rows.last_mut() {
+            Some(row) if centre >= row[0].top && centre < row[0].bottom => row.push(run),
+            _ => rows.push(vec![run]),
+        }
+    }
+    let (mut text, mut rendered) = (String::new(), String::new());
+    for (k, mut row) in rows.into_iter().enumerate() {
+        if k > 0 {
+            text.push('\n');
+            rendered.push('\n');
+        }
+        row.sort_by(|a, b| a.left.total_cmp(&b.left));
+        for (j, run) in row.iter().enumerate() {
+            if j > 0 {
+                text.push('\t');
+                rendered.push('\t');
+            }
+            text.push_str(&run.text);
+            rendered.push_str(&run.rendered);
+        }
+    }
+    (text, rendered)
+}
+
+/// **The characters of a galley's source this window draws as a hollow box**, each asked of the family its
+/// section was laid out in, through the same three-state `probe` [`snapshot`] takes (only `Some(false)`
+/// counts). Over the SOURCE, so a box in an elided tail is still named — `oracle-frontend`'s choice
+/// (CR-W §6.2). A family other than proportional or monospace cannot be asked and is skipped, which is the
+/// `None` arm: nothing invented.
+fn boxes(
+    galley: &egui::Galley,
+    probe: &mut dyn FnMut(char, bool) -> Option<bool>,
+    out: &mut Vec<String>,
+) {
+    let job = &galley.job;
+    for section in &job.sections {
+        let mono = match section.format.font_id.family {
+            egui::FontFamily::Proportional => false,
+            egui::FontFamily::Monospace => true,
+            egui::FontFamily::Name(_) => continue,
+        };
+        let Some(slice) = job
+            .text
+            .get(section.byte_range.start.0..section.byte_range.end.0)
+        else {
+            continue;
+        };
+        for c in slice.chars() {
+            if probe(c, mono) == Some(false) {
+                let s = c.to_string();
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+}
+
+/// **One `panel` surface per drawn body, in the order the window drew them** (§11.50). Called after
+/// `build_ui` and before the pass ends; see the module doc for why each step is where it is.
+pub fn panels(
+    ctx: &egui::Context,
+    spans: &[PanelSpan],
+    probe: &mut dyn FnMut(char, bool) -> Option<bool>,
+) -> Vec<ScreenSurface> {
+    let shapes = painted(ctx, spans);
+    spans
+        .iter()
+        .zip(shapes)
+        .map(|(span, painted)| panel_surface(span.name, &painted, probe))
+        .collect()
+}
+
+/// [`panels`] for one span's shapes: the testable half, over shapes rather than a live paint list.
+pub fn panel_surface(
+    name: &'static str,
+    painted: &[Painted],
+    probe: &mut dyn FnMut(char, bool) -> Option<bool>,
+) -> ScreenSurface {
+    let mut runs = Vec::new();
+    let mut unrenderable = Vec::new();
+    for p in painted {
+        if let Some(run) = glass_run(p) {
+            boxes(&p.galley, probe, &mut unrenderable);
+            runs.push(run);
+        }
+    }
+    let (text, rendered) = join(runs);
+    ScreenSurface {
+        kind: ScreenSurfaceKind::Panel(
+            PanelName::new(name).expect("every tab bar draws a non-empty title (Tab::title)"),
+        ),
+        text,
+        rendered,
+        unrenderable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +790,160 @@ mod tests {
             "…while the run the player DID draw is measured, so the emptiness above is a decision \
              rather than a probe that is never called"
         );
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Panels (§11.50, CR-W): the reading rule over hand-laid galleys. The live gates, against the real
+    // bodies and the real dock, are `crate::panel_attribution`'s.
+    // -----------------------------------------------------------------------------------------------
+
+    /// A context that has run one frame, so its fonts exist.
+    fn fonts_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("x");
+        });
+        out.textures_delta.clear();
+        ctx
+    }
+
+    /// One galley painted at `pos` under `clip`, laid out from `job`.
+    fn painted_job(
+        ctx: &egui::Context,
+        job: egui::text::LayoutJob,
+        pos: egui::Pos2,
+        clip: egui::Rect,
+    ) -> Painted {
+        Painted {
+            galley: ctx.fonts_mut(|f| f.layout_job(job)),
+            pos,
+            clip,
+        }
+    }
+
+    fn simple(text: &str, size: f32, wrap: f32) -> egui::text::LayoutJob {
+        let mut job = egui::text::LayoutJob::simple(
+            text.to_owned(),
+            egui::FontId::proportional(size),
+            egui::Color32::WHITE,
+            wrap,
+        );
+        job.wrap.max_width = wrap;
+        job
+    }
+
+    const WIDE: egui::Rect = egui::Rect {
+        min: egui::pos2(-1000.0, -1000.0),
+        max: egui::pos2(1000.0, 1000.0),
+    };
+
+    /// **A source LF and TAB are folded to a space in BOTH strings**, and a LF — which the toolkit lays
+    /// out as a row break, not a glyph — is put back in `rendered` exactly where `text` has it, trailing
+    /// LF included. Without that, every multi-line label would read as truncated.
+    #[test]
+    fn a_runs_own_line_breaks_and_tabs_are_folded_identically_in_both_strings() {
+        let ctx = fonts_ctx();
+        for src in ["one\ntwo", "a\tb", "trailing\n", "two\n\nbreaks"] {
+            let p = painted_job(
+                &ctx,
+                simple(src, 14.0, f32::INFINITY),
+                egui::Pos2::ZERO,
+                WIDE,
+            );
+            let run = glass_run(&p).expect("on the glass");
+            let folded: String = src.replace(['\n', '\t'], " ");
+            assert_eq!(run.text, folded, "{src:?}");
+            assert_eq!(
+                run.rendered, folded,
+                "{src:?}: a whole run renders its whole source"
+            );
+        }
+    }
+
+    /// **A run below its clip is not a run; a run cut by its clip is whole in `text` and cut in
+    /// `rendered`.** Control: the same galley under a wide clip renders whole.
+    #[test]
+    fn a_clip_decides_which_glyphs_are_on_the_glass() {
+        let ctx = fonts_ctx();
+        let job = || simple("left right", 14.0, f32::INFINITY);
+        let whole = glass_run(&painted_job(&ctx, job(), egui::Pos2::ZERO, WIDE)).unwrap();
+        assert_eq!(whole.rendered, "left right", "control");
+        let right_edge = ctx
+            .fonts_mut(|f| f.layout_job(simple("left", 14.0, f32::INFINITY)))
+            .rect
+            .width();
+        let cut = egui::Rect::from_min_max(
+            egui::pos2(-10.0, -10.0),
+            egui::pos2(right_edge - 0.5, 100.0),
+        );
+        let run = glass_run(&painted_job(&ctx, job(), egui::Pos2::ZERO, cut)).unwrap();
+        assert_eq!(run.text, "left right");
+        assert_eq!(run.rendered, "left");
+        let below = egui::Rect::from_min_max(egui::pos2(-10.0, 500.0), egui::pos2(500.0, 600.0));
+        assert_eq!(
+            glass_run(&painted_job(&ctx, job(), egui::Pos2::ZERO, below)),
+            None
+        );
+    }
+
+    /// **The joins.** A small label centred beside a large one is on its row; the next table row, whose
+    /// top touches this row's bottom, is not; runs are left to right within a row whatever order they were
+    /// painted in; and both strings carry the same joins.
+    #[test]
+    fn runs_join_into_visual_rows_left_to_right_identically_in_both_strings() {
+        let run = |t: &str, top: f32, bottom: f32, left: f32| GlassRun {
+            text: t.into(),
+            rendered: format!("{t}!"),
+            top,
+            bottom,
+            left,
+            elided: false,
+        };
+        let (text, rendered) = join(vec![
+            run("small", 4.0, 14.0, 200.0),
+            run("next", 18.0, 36.0, 0.0),
+            run("big", 0.0, 18.0, 0.0),
+            run("right", 18.0, 36.0, 90.0),
+        ]);
+        assert_eq!(text, "big\tsmall\nnext\tright");
+        assert_eq!(rendered, "big!\tsmall!\nnext!\tright!");
+        assert_eq!(
+            join(Vec::new()),
+            (String::new(), String::new()),
+            "a blank panel is two empty strings"
+        );
+    }
+
+    /// **`unrenderable` is asked of the family each SECTION was laid out in**, over the source.
+    /// Control: an all-drawable probe names nothing.
+    #[test]
+    fn a_panel_box_is_attributed_to_the_family_of_its_section() {
+        let ctx = fonts_ctx();
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            "ab",
+            0.0,
+            egui::TextFormat::simple(egui::FontId::proportional(12.0), egui::Color32::WHITE),
+        );
+        job.append(
+            "ab",
+            0.0,
+            egui::TextFormat::simple(egui::FontId::monospace(12.0), egui::Color32::WHITE),
+        );
+        let p = painted_job(&ctx, job, egui::Pos2::ZERO, WIDE);
+        let s = panel_surface("Registers", std::slice::from_ref(&p), &mut all_drawable);
+        assert!(s.unrenderable.is_empty(), "control");
+        assert_eq!(s.kind.panel(), Some("Registers"));
+        let mut only_mono_lacks_b = |c: char, mono: bool| drawable_unless(mono && c == 'b');
+        let s = panel_surface(
+            "Registers",
+            std::slice::from_ref(&p),
+            &mut only_mono_lacks_b,
+        );
+        assert_eq!(s.unrenderable, vec!["b".to_string()]);
+        let mut only_prop_lacks_a = |c: char, mono: bool| drawable_unless(!mono && c == 'a');
+        let s = panel_surface("Registers", &[p], &mut only_prop_lacks_a);
+        assert_eq!(s.unrenderable, vec!["a".to_string()]);
     }
 
     /// ★ **The instrument, against the live toolkit** — and the upstream defect it exists instead of.

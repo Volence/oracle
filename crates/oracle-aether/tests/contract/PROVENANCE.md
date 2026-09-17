@@ -61,11 +61,11 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 09370798119d91bd5fcf582639e2525871e75c46
-    pin.blob     = d5ae1746d1da654aed96e0191c4126238e6b18df
-    pin.bytes    = 369963
+    pin.revision = 265efaa78b7ecf3a2ad014ce04a3faab79d7649d
+    pin.blob     = e18e65500e57a19e5fb6e4ecd8cc6a15c220a55b
+    pin.bytes    = 371964
 
-    pin.vectors.revision = 09370798119d91bd5fcf582639e2525871e75c46
+    pin.vectors.revision = 265efaa78b7ecf3a2ad014ce04a3faab79d7649d
     pin.vectors.blob     = a6bd0fb3ff4409a039fa707fcb26d69c13df3cd1
     pin.vectors.bytes    = 155581
 
@@ -74,12 +74,40 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`09370798119d91bd5fcf582639e2525871e75c46`** (2026-09-12) — the §11.49 adoption commit, *"protocol §11.49 RULED: CR-V adopted with changes; state_hash, screenshot and scanlines carry displayMask"*. The per-path recipe (`git log -1 --format=%H origin/main -- <path>`, empyrean `origin/main` at `92b0a19`) answered this **same** commit for **both** paths; `git merge-base --is-ancestor 0937079 origin/main` was **run** (exit 0); and `git rev-parse 0937079:<path>` resolves the two paths to `d5ae1746` and `a6bd0fb3`, which are what `git hash-object` returns on the written files. **70** method fragments (the `methods` object carries 71 keys, one a `$comment`); **20** `$defs` (+1, `displayMask`); **5** event fragments — every figure **re-derived by parsing this copy**. The delta from the copy this replaces is **19 leaf paths added, ZERO removed, 7 values changed**, derived by flattening both copies to leaf paths (3099 → 3118) and differencing. The fragments touched are exactly `$defs/displayMask`, `emulator/state_hash`, `emulator/screenshot`, `emulator/scanlines`, `emulator/read_vram` and `emulator/read`; `$schema`, `$id`, `title`, `description`, `anyMessage`, `handshake` and `events` are identical. |
-| Last commit that touched the schema | **`09370798119d91bd5fcf582639e2525871e75c46`**, the pin itself: the ruling commit wrote the protocol, the schema and the vectors together. |
-| Git blob | `d5ae1746d1da654aed96e0191c4126238e6b18df` |
-| SHA-256 | `1f95c00c056ca149b4925097e556dbe0f71021c5e82a04490ec44d5df5148548` |
-| Bytes | 369963 |
-| Vendored on | 2026-09-12 |
+| Contract repo revision | **`265efaa78b7ecf3a2ad014ce04a3faab79d7649d`** (2026-09-17) — the §11.50 adoption commit, *"CR-W lands: §11.50, the §6 panel bullets, §8 item 31, and the schema's panel kind"*. The per-path recipe (`git log -1 --format=%H origin/main -- <path>`, empyrean `origin/main` at **`0f7f1e9a`**, a tip that wrote neither file) answered **`265efaa7`** for the **schema** path and **`0937079`** for the **vectors** path, which did not move; both pins therefore carry `265efaa7`, the revision this copy was TAKEN FROM, and `git rev-parse 265efaa7:contract/schema/tests/vectors.json` resolves to the vectors blob we hold (`a6bd0fb3`, the object `0937079` left there). `git merge-base --is-ancestor 265efaa7 origin/main` was **run** (exit 0); `git rev-parse 265efaa7:<path>` resolves the two paths to `e18e6550` and `a6bd0fb3`, which are what `git hash-object` returns on the written files. **70** method fragments (the `methods` object carries 71 keys, one a `$comment`); **21** `$defs` (+1, `screenTextKind`); **5** event fragments — every figure **re-derived by parsing this copy**. The delta from the copy this replaces is **15 leaf paths added, 5 removed, 4 values changed**, derived by flattening both copies to leaf paths (3116 → 3126) and differencing. **Exactly one fragment is touched** (`methods["emulator/screen_text"]`) plus the new `$defs/screenTextKind`; `$schema`, `$id`, `title`, `description`, `anyMessage`, `handshake` and `events` are byte-identical as parsed structures. |
+| Last commit that touched the schema | **`265efaa78b7ecf3a2ad014ce04a3faab79d7649d`**, the pin itself: the adoption commit wrote `protocol.md` and the schema together (it wrote no vectors). |
+| Git blob | `e18e65500e57a19e5fb6e4ecd8cc6a15c220a55b` |
+| SHA-256 | `f976053aa4b839763c8485a4a302a47c983922db33ef608d2863ee7c4008cb5b` |
+| Bytes | 371964 |
+| Vendored on | 2026-09-17 |
+
+> **⚑ This copy (§11.50, CR-W): the `panel` surface kind, and the serve lands in the same commit.**
+> The 15 added leaves are `$defs/screenTextKind` (7: six enum members and a `description`), the surface
+> item's `kind` `$ref` (1), the `panel` key (3: `type`, `minLength`, `description`) and the
+> `if`/`then`/`else` that binds them (4). The 5 removed are the surface item's old inline `kind` enum,
+> which **moved** into `$defs` rather than vanishing — read as "5 removed" by a leaf-path set, which is why
+> the fragment-level statement above says one fragment changed shape. The 4 changed values are all prose:
+> the fragment's `$comment` (panels named), and the `kind`, `text` and `rendered` descriptions. `rendered`
+> loses the claim that it is *"a prefix of `text` today"*, which §11.50 retires by name.
+>
+> **What the added leaves mean for validation force.** `panel` is REQUIRED on a `panel` surface and
+> FORBIDDEN on every other kind (the `else`/`not`), and `minLength: 1` makes an empty name a refusal. The
+> enum widening is **not additive for a stale validator**: a copy closed over the old five refuses every
+> reply that carries a panel, which §11.50 states is item 20's closure working on a stale copy and not a
+> compatibility break.
+>
+> **There is no red-free ordering, in either direction.** With these bytes and the serve absent, nothing is
+> red (no reply carries a panel), but the CR-W vectors row in `tests/screen_text.rs` measures the fragment
+> against documents, and its populated cases are real replies this server produced — so the vectors and the
+> serve are one artifact. With the serve and the OLD bytes, `common::schema::check_incoming_strict` refuses
+> every reply carrying `kind: "panel"` (measured before this re-vendor: *"`panel` is not one of
+> `statusLine`, `toast` or 3 other candidates"*, plus *"Additional properties are not allowed (`panel` was
+> unexpected)"*). So the re-vendor and the serve are one commit.
+>
+> **Rider R1 (`initialize.capabilities.screenTextKinds`) was DROPPED by the ruling**, so `screenTextKind`
+> has exactly one referent and the definition's own text says so. The CR's five R1 vectors are dropped with
+> it; §11.50 records why (three of them were declared-failure cases the schema cannot refuse, because
+> `initialize.capabilities` is not closed).
 
 > **⚑ This copy (§11.49, CR-V): `displayMask`, REQUIRED on two reply fragments and demanded beside
 > `framebuffer` on a third, and the serve lands in the same commit.** The 19 added leaves are
@@ -257,11 +285,11 @@ until the vectors table describes `c5638e6e`, not the current copy.)*
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/tests/vectors.json` |
-| Contract repo revision | **`09370798119d91bd5fcf582639e2525871e75c46`** (2026-09-12) — the same revision as the schema's pin, which step 0 requires, and this time **the bytes moved**: `git rev-parse 0937079:contract/schema/tests/vectors.json` answers `a6bd0fb3`, written by the ruling commit itself. **313 cases** (up from 295), of which **187** are `expect: "fail"` and **126** `expect: "pass"`; naming **45** distinct methods (up from 42: `emulator/state_hash`, `emulator/screenshot` and `emulator/scanlines` had no vectors before, and the 18 new cases name only those three); **14** carry `group: "events"`, unchanged. The 295 previous cases are present, unchanged, and still the **leading prefix**, compared element by element; the 18 are §11.49's, appended as the CR drafted them (`docs/proposed/2026-09-12-cr-v-vectors.json`): 12 on `state_hash` (4 pass, 8 fail, two of the fails R1's), 3 on `screenshot` and 3 on `scanlines`. `$comment`, `envelope`, `eventEnvelope` and `specExamples` are identical. Every figure re-derived by parsing the bytes written in this commit. *(What the row said for the previous pin, `a186e4b`, follows.)* **Those bytes did not move**: `git rev-parse a186e4b:contract/schema/tests/vectors.json` answers `e045fac1`, the object `3f83c6c` left there; §11.48 changed three schema descriptions and, per the hub's notice, no vectors. (The pin before this was `59d29ac`, for §11.45, with the same answer, because §11.45 amended a fragment and added no vector.) The content figures below therefore still describe `3f83c6c`'s write and were re-derived by parsing the copy held here rather than carried over. in its own right and answered `3f83c6c`, the **same** commit the schema path answers, because the §11.42 adoption wrote both files. **295 cases** (`cases[]`, up from 285), of which **176** are `expect: "fail"` and **119** `expect: "pass"`; naming **42** distinct methods (up from 41), of which **10** are `emulator/lookup_equate` and **10** are the new `emulator/pacing`. **14** cases carry `group: "events"`, unchanged. All 285 previous cases are present, unchanged, and still the **leading prefix**: the ten new cases are APPENDED, which is not what §11.41's insertion at index 111 did and is therefore stated rather than assumed — the prefix was compared as whole documents, element by element, and is identical. The ten are §11.42's own: a `params` pass on `{}`, a `params` fail on a client-supplied `{"windowMs": 1000}`, two `result` passes (full, and `samples: 0` with the percentiles absent), and six `result` fails (`unmeasured` absent, a count beside `unmeasured: true`, a bare-number `fps`, half a percentile pair, percentiles over zero samples, `targetFps` absent). `$comment`, `envelope`, `eventEnvelope` and `specExamples` (9) are byte-identical. Every figure re-derived by parsing the bytes written in this commit. |
+| Contract repo revision | **`265efaa78b7ecf3a2ad014ce04a3faab79d7649d`** (2026-09-17) — the same revision as the schema's pin, which step 0 requires, and **these bytes did not move**: `git rev-parse 265efaa7:contract/schema/tests/vectors.json` answers `a6bd0fb3`, the object `0937079` left there, because §11.50 amended a fragment and added no case. Re-copied from `265efaa7`'s object store rather than left alone, so the file is provably the object at the revision both pins name. **313 cases**, of which **187** are `expect: "fail"` and **126** `expect: "pass"`; naming **45** distinct methods; **14** carry `group: "events"`. Every figure re-derived by parsing the bytes written in this commit. *(What the row said for the previous pin, `0937079`, follows.)* **313 cases** (up from 295), of which **187** are `expect: "fail"` and **126** `expect: "pass"`; naming **45** distinct methods (up from 42: `emulator/state_hash`, `emulator/screenshot` and `emulator/scanlines` had no vectors before, and the 18 new cases name only those three); **14** carry `group: "events"`, unchanged. |
 | Git blob | `a6bd0fb3ff4409a039fa707fcb26d69c13df3cd1` |
 | SHA-256 | `9f944939a3828d15712e7e2582699b3f0cde6b07c229b8515db236a62f67978e` |
 | Bytes | 155581 |
-| Vendored on | 2026-09-12 |
+| Vendored on | 2026-09-17 |
 
 > **⚑ Again these bytes did not move, and again only the pin's revision did.** `git rev-parse
 > 59d29ac:contract/schema/tests/vectors.json` answers `e045fac1fdd32624344bab20f062acf193d3b3d0`, which is

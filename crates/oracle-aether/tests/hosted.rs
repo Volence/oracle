@@ -9,7 +9,7 @@
 
 #![cfg(unix)]
 
-use oracle_aether::engine::{ScreenSurface, ScreenSurfaceKind};
+use oracle_aether::engine::{PanelName, ScreenSurface, ScreenSurfaceKind};
 use oracle_aether::host::{Host, HostConfig, MachineInfo, HOSTED_MAX_RUN_FRAMES};
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
@@ -1166,6 +1166,88 @@ fn the_truncated_flag_is_derived_from_the_two_strings_and_not_from_the_producer(
         json!(true),
         "nothing survived, which is truncation at its loudest: {}",
         s[2]
+    );
+}
+
+/// **§11.50 (CR-W): a player that published panels serves each as a `panel` surface carrying its name,
+/// after the bar's surfaces, in the order published.**
+///
+/// Asserted as the whole reply, as the row above is. The panel rows are the reading rule's two loud cases:
+/// a panel with a cut cell (TAB/LF-joined, `rendered` ending in the elision mark, so `truncated` derives
+/// true), and a drawn panel with nothing on the glass (present, `""`). What the player PRODUCES is
+/// `oracle-player`'s `panel_attribution` gates; this row is the hosted wire.
+///
+/// ⚑ **This harness does not validate replies against the vendored schema** — its `Client` is its own (see
+/// the module doc), not `common::Client`. That was checked, not assumed: drafted as ignored-until-re-vendor
+/// on the belief that the closed `kind` enum would refuse it, the row ran GREEN with `--ignored` against
+/// today's five-value enum. So it is not ignored, and the schema half of the `panel` shape is the CR-W
+/// vectors row in `tests/screen_text.rs`, which does validate and is red until the re-vendor.
+#[test]
+fn a_player_that_published_panels_serves_each_by_name_after_the_bar() {
+    let panel = |name: &str| ScreenSurfaceKind::Panel(PanelName::new(name).expect("non-empty"));
+    let p = Player::start_with(
+        "screentext-panels",
+        Some(vec![
+            ScreenSurface {
+                kind: ScreenSurfaceKind::TitleBar,
+                text: "oracle-player".into(),
+                rendered: "oracle-player".into(),
+                unrenderable: vec![],
+            },
+            ScreenSurface {
+                kind: ScreenSurfaceKind::StatusLine,
+                text: "oracle-player | pause  step".into(),
+                rendered: "oracle-player | pause  step".into(),
+                unrenderable: vec![],
+            },
+            ScreenSurface {
+                kind: panel("Breakpoints"),
+                text: "id\tlabel\nb1\tstop when Sonic lands".into(),
+                rendered: "id\tlabel\nb1\tstop when So\u{2026}".into(),
+                unrenderable: vec![],
+            },
+            ScreenSurface {
+                kind: panel("Profiler"),
+                text: String::new(),
+                rendered: String::new(),
+                unrenderable: vec![],
+            },
+        ]),
+    );
+    let mut c = Client::connect(&p);
+    c.handshake(false);
+    p.expect_progress(
+        2,
+        "the player must present at least once before its text exists",
+    );
+    let r = c.ok("emulator/screen_text", json!({}));
+    println!("REAL REPLY emulator/screen_text (panels) = {r}");
+    let mut body = r.clone();
+    let obj = body.as_object_mut().unwrap();
+    for k in ["frame", "mclk", "running", "droppedEvents"] {
+        assert!(
+            obj.remove(k).is_some(),
+            "the reply lost its stamp key `{k}`: {r}"
+        );
+    }
+    assert_eq!(
+        body,
+        json!({
+            "surfaces": [
+                {"kind": "titleBar", "text": "oracle-player", "rendered": "oracle-player",
+                 "truncated": false, "unrenderable": []},
+                {"kind": "statusLine", "text": "oracle-player | pause  step",
+                 "rendered": "oracle-player | pause  step", "truncated": false, "unrenderable": []},
+                {"kind": "panel", "panel": "Breakpoints", "text": "id\tlabel\nb1\tstop when Sonic lands",
+                 "rendered": "id\tlabel\nb1\tstop when So\u{2026}", "truncated": true, "unrenderable": []},
+                {"kind": "panel", "panel": "Profiler", "text": "", "rendered": "",
+                 "truncated": false, "unrenderable": []},
+            ],
+            "total": 4,
+            "returned": 4,
+            "truncated": false,
+        }),
+        "the whole reply: `panel` on exactly the panel surfaces, in the order published"
     );
 }
 

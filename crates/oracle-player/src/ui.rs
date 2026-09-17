@@ -227,6 +227,14 @@ pub struct Panels<'a> {
     /// The listing actually loaded, or `None`. The same table the bus resolves against — one
     /// `SymbolTable`, handed to `Host::set_machine_info` and borrowed here, never two.
     pub symbols: Option<&'a SymbolTable>,
+    /// ⚑ **Where each drawn body's paint-list span goes, for `emulator/screen_text`'s `panel` surfaces**
+    /// (§11.50, CR-W), or `None` when nothing will read them.
+    ///
+    /// `Some` exactly when the bus is serving (`Loop::iterate` decides, beside the push that consumes it),
+    /// so a window no client can reach pays nothing — not even the two `Context::graphics` calls per body.
+    /// The `Vec` is a local of `build_ui`, which is what makes the list **per pass**: a discarded pass's
+    /// spans index a paint list `end_pass` has drained, and they never survive into the pass that is kept.
+    pub drawn: Option<&'a mut Vec<crate::screen::PanelSpan>>,
 }
 
 impl egui_dock::TabViewer for Panels<'_> {
@@ -254,12 +262,23 @@ impl egui_dock::TabViewer for Panels<'_> {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
-        // CR-W Q3 spike (test builds only): note the layer and paint-list index around the body. See
-        // `crate::crw_q3_spike`. Compiled out of every non-test build.
+        // Ground-truth arms only (test builds): run no body, or only one. Compiled out of every non-test
+        // build. See `crate::panel_attribution`, which is where the production span below is proven to be
+        // exactly this body's text.
         #[cfg(test)]
-        let Some(q3) = crate::crw_q3_spike::probe::enter(ui, *tab) else {
+        if crate::panel_attribution::hook::suppressed(*tab) {
             return;
-        };
+        }
+        // ⚑ **The CR-W seam (§11.50): note this body's layer and paint-list index, before and after its
+        // `match`.** HERE and nowhere else: the Q3 spike measured this exact position — inside
+        // `egui_dock`'s `ScrollArea` and `Frame`, around the `match` — and a hook placed around
+        // `DockArea::show_inside` or inside a helper is a different seam the spike says nothing about. The
+        // shapes between the two marks are exactly this body's, in its own layer (a floating window's body
+        // has one of its own), and `screen::panels` reads them after `build_ui` returns.
+        let mark = self
+            .drawn
+            .is_some()
+            .then(|| crate::screen::PanelMark::enter(ui));
         match tab {
             Tab::Screen => {
                 // Controls first, then the picture with whatever is left — the order is the layout, and
@@ -281,7 +300,10 @@ impl egui_dock::TabViewer for Panels<'_> {
             Tab::Profiler => self.profiler(ui),
         }
         #[cfg(test)]
-        crate::crw_q3_spike::probe::leave(ui, q3);
+        crate::panel_attribution::hook::plant(ui);
+        if let (Some(drawn), Some(mark)) = (self.drawn.as_deref_mut(), mark) {
+            drawn.push(mark.leave(ui, tab.title()));
+        }
     }
 }
 
