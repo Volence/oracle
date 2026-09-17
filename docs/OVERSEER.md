@@ -338,3 +338,4 @@ The parcels 6-8 landing's history (orig lines 719-722) moved to docs/OVERSEER-LO
 
 **NEXT: `OVERSEER-RECUT`** (this file grew; move review bars to the reference), then `DATA-DISPLAY-AUDIT` items 9-11 (Screen
 strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
+**OVERSEER-RECUT LANDED 2026-09-17, merge `<pending>`** (docs only: 69,869 → 26,914 B; lessons and holds to `docs/OVERSEER-REFERENCE.md`, closed history to `docs/OVERSEER-LOG.md`, both under "Moved from OVERSEER.md 2026-09-17"). **NEXT: `DATA-DISPLAY-AUDIT` items 9-11** (Screen strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
