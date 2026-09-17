@@ -365,3 +365,9 @@ read `text`). §3's CR boundary ADOPTED (palette-as-`palette`, `F-PLAYER-SCREENT
 **Fail in both forms: the ruling REOPENS; do not build a different seam under it.** Q7 TAB/LF fold ADOPTED; R1 DROPPED; §8 item 31 ADOPTED;
 Q4 nothing now (booked `F-PANEL-SCROLL-UNSTATED`); Q5 booked `F-SCREEN-TEXT-TRANSIENT-AREAS`; Q2 and Q6 are HIS (Q6 out of scope).
 **Reviewer: aurora** — name it when the spike result returns. **NEXT after the slot parcel: the CR-W Q3 SPIKE** (not shipping).
+**`F-SLOT-REPROBE-ON-GESTURE` LANDED 2026-09-17, merge `ef2b06d`** (`L-17` built; land.sh GREEN, release 91/91 2993/0/5; debug 91/2990/0/8 here;
+M18 reproduced). ⚑ Ops, against this seat: my first reproduction's `sed` hit the wrong line, `git diff --stat` was EMPTY, and the run was
+green — discarded, redone on the right line, red. The empty diff is what showed it; read it before reading the result.
+**CR-W Q3 SPIKE DISPATCHED 2026-09-17** (branch `parcel/crw-spike`, worktree `../oracle-spike`, base `ef2b06d`; test code + a findings doc only,
+nothing wired to the wire or contract). Pass → implementing parcel in lockstep with the hub's contract text; name aurora as reviewer. Fail in
+both forms → back to the hub, no substitute seam. **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.

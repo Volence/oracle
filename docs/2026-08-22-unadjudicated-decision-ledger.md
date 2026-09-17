@@ -828,4 +828,4 @@ right. Or that a gesture-time probe stalls a click on a slow filesystem (ten `st
 
 **Booked, not built:** `F-SLOT-REPROBE-ON-GESTURE` (S), a follow-up parcel.
 
-**Built (2026-09-17), merge pending:** `F-SLOT-REPROBE-ON-GESTURE` on `parcel/slot-reprobe` (`8186d5c`, `e98d6f0`). `States::select`/`step`/`save`/`load` each end in `States::probe`, and that covers all nine gesture paths. One probe costs 1-4 µs warm on this machine's local disks; a network filesystem was not measured. See the debug-window audit's `L-17` addendum.
+**Built (2026-09-17), LANDED merge `ef2b06d`:** `F-SLOT-REPROBE-ON-GESTURE` on `parcel/slot-reprobe` (`8186d5c`, `e98d6f0`). `States::select`/`step`/`save`/`load` each end in `States::probe`, and that covers all nine gesture paths. One probe costs 1-4 µs warm on this machine's local disks; a network filesystem was not measured. See the debug-window audit's `L-17` addendum.
