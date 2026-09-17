@@ -1,6 +1,12 @@
 {
-  "focus": "Four things landed today and panel reading is built, waiting on the hub's contract wording. Ready for a clear.",
-  "inFlight": [],
+  "focus": "The hub's contract wording landed, so the panel-reading work is being finished and landed now.",
+  "inFlight": [
+    {
+      "what": "Finishing panel reading: matching the hub's landed contract wording",
+      "where": "branch parcel/crw-panel",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running. Panel reading is committed and parked on branch parcel/crw-panel until the hub's contract wording.",
+  "nextBoundary": "When panel reading lands; then this lane is clearable again.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -76,11 +82,11 @@
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "open",
+      "state": "doing",
       "size": "M",
-      "blockedBy": "the hub's contract text for CR-W",
+      "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Letting a program read what the debug panels say. Built and green on a branch; it waits for the hub's contract wording so both land together."
+      "title": "Letting a program read what the debug panels say. The hub's wording landed, so the last step is running and it lands today."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -91,7 +97,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing from you. This lane is clearable: everything is committed and pushed, and the only open work is a parked branch the notes describe.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-17T12:41:37Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-17T22:17:35Z"
 }

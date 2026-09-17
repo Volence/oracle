@@ -390,3 +390,9 @@ cases 12-16, move both pins; STOP if the hub's schema needs a key beyond kind/pa
 **BOUNDARY 2026-09-17 (session 28).** `F-BANKED-ADDR-AMBIGUITY` re-derived and NOT dispatched: it is a contract change (typed bank key /
 `romCrc32`) and its own design doc says no suite ROM banks, so nothing depends on it. A fresh session should weigh it against
 `LIVE-EFFECTS-NUDGES` and `F-Z80-ACCESSES-UNWATCHED` before taking it, not take it because it reads `next`. The live item is the CR-W re-vendor above.
+**CR-W CONTRACT TEXT LANDED at empyrean `265efaa7`, VERIFIED HERE** (ancestor of their `origin/main`; §11.50 + §6 bullets + §8 item 31 + schema).
+Three spike corrections are NORMATIVE (floating window in the drawn set; main surface then windows in draw order, never `Tab::ALL`; an empty text
+shape is not a run). **R1 dropped ⇒ vector cases 11-15 are RETIRED, not ignored**: the hub measured that their three declared-failure cases do NOT
+go red, because `initialize.capabilities` is open — a fail-vector the schema cannot refuse. Re-vendor dispatched to the parked agent (resumed with
+its context), with the hub's 11-case agreement to be re-measured here rather than taken. ⚑ **The hub CORRECTED its own morning ruling: sigil does
+NOT vendor `protocol.md`; this lane is the only vendor.**
