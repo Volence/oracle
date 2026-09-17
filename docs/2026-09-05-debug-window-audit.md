@@ -1686,3 +1686,114 @@ Every row of §2's build order except item 10 is now built. What is left:
 4. **§6 call 9:** a profiled frame of the Watchpoints hit log, tagged for the owner's foreground session.
 
 The look calls themselves (1-33, less the settled call 4) are the owner's.
+
+## Addendum, 2026-09-17 (`L-17`): slot occupancy is re-read on every slot gesture
+
+*Appended under this document's standing rule: nothing before this heading is edited. Written by the
+`F-SLOT-REPROBE-ON-GESTURE` parcel, on `parcel/slot-reprobe` off `793b50d`. Code at `8186d5c`, doc-comment
+fix `e98d6f0`.*
+
+**Nothing here was seen on a screen.** Appearance claims are predictions; the questions are look calls 34-36
+at the end.
+
+### What was built
+
+The parcels 9-11 addendum stopped on "when to re-read the disk"; ledger `L-17` ruled option (b), a gesture.
+`States::probe` (ten `Path::exists`) is now the one writer of `States::on_disk`. It runs at open and at a
+cartridge swap as before, and at the end of `select`, `step`, `save` and `load`. `save` no longer marks its
+own slot by hand: the probe after the write reports the file. `load` wraps its old body
+(`load_selected`) so the refusal's early return cannot skip the probe. A load of a slot deleted behind the
+window's back still refuses and names the slot, and the cell then shows empty. The `ui.rs` comment that
+called the choice open now states the rule.
+
+**Why inside the four methods and not at the call sites.** Every gesture path reaches the slots through one
+of them, so the probe cannot be forgotten by one of nine sites or by a tenth that arrives later.
+
+### Every gesture path, and how it was found
+
+`grep -rnE "\.(select|step|save|load|cells|after_replacement|announcement)\(|slot_cells|States::open|F2|F4|F6|F7" crates/oracle-player/src`,
+filtered to slot and state lines, then each hit read. `on_disk` and `slot` are private fields, so no other
+way in exists.
+
+| gesture | site | method |
+|---|---|---|
+| a cell click | `ui.rs`, `slot_cells(..)` returning `Some(slot)` | `select` |
+| `◀` stepper | `ui.rs` | `step(-1)` |
+| `▶` stepper | `ui.rs` | `step(1)` |
+| `save` button | `ui.rs` | `save` |
+| `load` button | `ui.rs` | `load` |
+| `F2` | `input.rs` `SaveState`, `main.rs` `machine_key` | `save` |
+| `F4` | `input.rs` `LoadState`, `main.rs` `machine_key` | `load` |
+| `F6` / `F7` | `input.rs` `SlotStep(∓1)`, `main.rs` `machine_key` | `step` |
+| `0`-`9` | `input.rs` `SlotSelect(n)`, `main.rs` `machine_key` | `select` |
+
+The hover mentions `F2`/`F4`; the digit keys were not in the brief and are covered the same way. Not
+gestures, unchanged: `States::open` (`main.rs`) and `after_replacement` (the drain's `rom_changed` arm).
+
+### Probe cost
+
+A standalone loop of the same ten `Path::exists` (`rom.with_extension("stateN")`, the container's rule),
+built `-O`, 20,000 probes per path, not kept. Measured at uptime 1 day 9:59 (load 5.3, a workspace build
+running) and again at 1 day 10:33 (load 3.5, idle apart from this).
+
+| path | first probe | median | p99 | worst |
+|---|---|---|---|---|
+| the owner's ROM dir (`aeon/s4.debug.bin`, ext4, 2 slots occupied) | 4.6-13.9 µs | 1.7 µs | 1.7-2.7 µs | 48 µs |
+| a temp cartridge (tmpfs, 1 occupied) | 5.0-14.7 µs | 3.4-3.8 µs | 7.2-11 µs | 2.6 ms, under the build |
+| a directory that does not exist | 1.9-2.2 µs | 1.2 µs | 1.2-1.6 µs | 1.4 ms, under the build |
+
+A 60 Hz frame is 16.7 ms, so a click costs about a ten-thousandth of one. **Not measured: a network
+filesystem**, the ledger's named way for `L-17` to be wrong. None is mounted here.
+
+### Proofs
+
+New test `states::tests::a_slot_file_written_behind_the_cache_shows_after_every_slot_gesture`. A second
+`States` on the same cartridge plays the other window and saves through the real container. Before each
+gesture the test asserts this window's cache is still wrong (anti-vacuity); after it, all ten cells must
+match `state_path_for(..).exists()`. Steps: `select`, `step(1)`, `step(-1)`, `save`, `load` loaded, and
+`load` refused on a slot whose file was deleted behind the window's back. The fixture is a temp directory:
+slot files sit beside the ROM, so the cartridge path redirects them.
+
+**Red first:** on `793b50d`'s `States`, the test failed at the first step: `after a cell click / digit key
+(select): slot 1 is drawn empty but the file on disk says true`.
+
+Mutations on `8186d5c`, each applied on disk, `git diff -U0` recorded, run over all of `oracle-player` with
+`--no-fail-fast` (5 of 5 legs), restored with `git checkout 8186d5c -- crates/oracle-player/src/states.rs`
+to a clean tree:
+
+| mutation | fails | stayed `ok` |
+|---|---|---|
+| M18 `-        self.probe();` in `step` | the new test, at `step +1`: slot 2 drawn empty | `every_slot_cell_reports_…`, `a_slot_round_trips_…` |
+| M19 the same line in `load` | the new test, at `load, loaded`: slot 7 drawn empty | the same two |
+| M20 the probe moved from `load` into `load_selected`'s success path, just above its `self.last = Some(Note {` | the new test, at `load, refused`: slot 1 drawn occupied, file gone | the same two |
+| M21 the same line in `select` | the new test, at `select`: slot 1 drawn empty | the same two |
+| M22 the same line in `save` | the new test, at `save`: slot 3 drawn empty; and `a_slot_round_trips_…` (`occupied(0)`) | `every_slot_cell_reports_…` |
+
+**An existing name that claims the class.** `every_slot_cell_reports_the_file_on_disk_and_only_one_is_selected`
+stayed `ok` under all five. It only checks slots this window saved itself, after a later `select`, and a
+fresh open. It never writes a file behind the cache's back, so it cannot see a missing re-probe. It was left
+as it is; the new test covers the class.
+
+### Totals
+
+| check | base `793b50d` | tip `8186d5c` |
+|---|---|---|
+| `cargo fmt --check` | clean | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean | clean |
+| `cargo test --workspace` (debug) | 91 legs / 2989 / 0 / 8 | **91 legs / 2990 / 0 / 8** |
+| `cargo test --workspace --release` | not run | **91 legs / 2993 / 0 / 5** |
+
+Legs were counted with `grep -cE '^\s+(Running|Doc-tests)'` and matched 91 `test result:` lines. The one
+extra test is the new one. `e98d6f0` only changes a doc comment. On it: `cargo fmt --check` clean, clippy
+clean, and the 7 `states::` tests passed. The full suites were not rerun.
+
+### What a frame still has to answer (look calls 34-36, none seen)
+
+34. **The click stays instant.** Predicted from the table above: no stall a hand can feel. *Question: on
+    the owner's machine, does a cell click or a stepper still land in the same frame?*
+35. **Stale until touched.** A slot saved by the other window stays drawn empty until this window's strip
+    is touched. That is the ruling, not a defect. *Question: does the owner ever watch the strip without
+    touching it, e.g. while a script fills slots? If so, the ledger's falsifier holds and (c) or (d) should
+    be added.*
+36. **A refused load of a deleted slot.** The error line and the cell turning empty change in the same
+    frame. *Question: do they read as one event, so the person understands the file is gone?*
