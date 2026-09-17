@@ -1,5 +1,5 @@
 {
-  "focus": "Panel reading is built and waiting for the hub's contract wording. Looking at the next job.",
+  "focus": "Four things landed today and panel reading is built, waiting on the hub's contract wording. Ready for a clear.",
   "inFlight": [
     {
       "what": "Panel reading, built and parked until the hub's contract wording",
@@ -54,7 +54,7 @@
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "On bank-switching games, an address no longer names one byte over time, and nothing shows which bank was live beside a symbol, a watch hit or a profiler line."
+      "title": "On bank-switching games an address no longer names one byte over time. Needs a contract change, and no current game needs it yet, so it's worth weighing against the other rows first."
     },
     {
       "id": "ROM-DROP-WAYLAND",
@@ -97,7 +97,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
+  "awaiting": "nothing from you. This lane is clearable: everything is committed and pushed, and the only open work is a parked branch the notes describe.",
   "atBoundary": true,
-  "updatedAt": "2026-09-17T12:24:33Z"
+  "updatedAt": "2026-09-17T12:24:54Z"
 }

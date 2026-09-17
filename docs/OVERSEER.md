@@ -387,3 +387,6 @@ release 91/3016/0/8; W10 ≈ +0.04-0.08 ms/present, nothing when unserved). **HO
 un-ignore `the_cr_w_vectors_validate_the_way_the_file_says_they_do`, replace vector cases 1-4 with `capture_cr_w_vector_replies` output, drop R1
 cases 12-16, move both pins; STOP if the hub's schema needs a key beyond kind/panel/text/rendered/truncated/unrenderable. Then verify firsthand
 (nothing about this parcel is verified by this seat yet), land, message aurora (reviewer) and sigil. Four Q2 look calls for him in the note.
+**BOUNDARY 2026-09-17 (session 28).** `F-BANKED-ADDR-AMBIGUITY` re-derived and NOT dispatched: it is a contract change (typed bank key /
+`romCrc32`) and its own design doc says no suite ROM banks, so nothing depends on it. A fresh session should weigh it against
+`LIVE-EFFECTS-NUDGES` and `F-Z80-ACCESSES-UNWATCHED` before taking it, not take it because it reads `next`. The live item is the CR-W re-vendor above.
