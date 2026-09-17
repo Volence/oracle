@@ -1281,6 +1281,14 @@ mod tests {
     /// planted TAB. A run whose galley is not elided and whose glyphs ALL meet the clip must have
     /// `rendered == text`. *Anti-vacuity:* the wrapped label occupies at least two glyph rows, and the
     /// sweep covers hundreds of runs.
+    ///
+    /// ⚑ **The floor was 300 and is 250, and the second assertion is why.** `F-PANEL-TEXT-CUT-UNMARKED`
+    /// put [`crate::ui::fitted_label`] under the panels' grid and row labels, and a label the toolkit now
+    /// truncates is ELIDED — which is exactly the population this row excludes. The runs did not go away:
+    /// measured, 322 unelided before and 270 unelided plus 57 whole elided after, 327 in all. So the whole
+    /// population a run is drawn from is counted too and held at the old floor, and only the unelided
+    /// share was allowed to fall. Without that second count, the fix could have hollowed this row out and
+    /// it would still have read green.
     #[test]
     fn w4_an_unelided_unclipped_run_renders_exactly_its_source() {
         const WRAPPED: &str =
@@ -1288,6 +1296,7 @@ mod tests {
                                a second glyph row, and wrapping is not truncation";
         const TABBED: &str = "a\trun\twith\ttabs";
         let mut checked = 0usize;
+        let mut elided_whole = 0usize;
         let mut wrapped_rows = 0usize;
         let mut tabbed_seen = false;
         for (name, dock, plant) in [
@@ -1335,7 +1344,13 @@ mod tests {
                             g.clip.contains_rect(r)
                         })
                     });
-                    if run.elided || !all_visible {
+                    if !all_visible {
+                        continue;
+                    }
+                    if run.elided {
+                        // The toolkit cut it and said so: not this row's business, but counted, so the
+                        // population below cannot shrink unnoticed.
+                        elided_whole += 1;
                         continue;
                     }
                     checked += 1;
@@ -1363,8 +1378,16 @@ mod tests {
             tabbed_seen,
             "anti-vacuity: the tabbed run was never checked"
         );
-        assert!(checked > 300, "anti-vacuity: only {checked} runs checked");
-        println!("W4: {checked} whole unelided runs, rendered == text; wrapped label on {wrapped_rows} rows");
+        assert!(checked > 250, "anti-vacuity: only {checked} runs checked");
+        assert!(
+            checked + elided_whole > 300,
+            "anti-vacuity: {checked} unelided + {elided_whole} elided whole runs, so the population this \
+             row draws from shrank rather than merely splitting"
+        );
+        println!(
+            "W4: {checked} whole unelided runs, rendered == text ({elided_whole} whole runs the toolkit \
+             elided, not this row's arm); wrapped label on {wrapped_rows} rows"
+        );
     }
 
     /// ★ **W5, elision.** A label squeezed until `Galley::elided` is true yields `truncated: true`, and its
@@ -1573,6 +1596,283 @@ mod tests {
             p.panel_surfaces().iter().any(|s| !s.1.is_empty()),
             "anti-vacuity: every panel is blank, so the harvest may be reading nothing at all"
         );
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // F-PANEL-TEXT-CUT-UNMARKED: no drawn run is cut at a pane's edge with nothing on the glass to say so
+    // ---------------------------------------------------------------------------------------------------
+
+    /// One glyph row of one painted galley, as the right edge of its clip left it.
+    #[derive(Debug)]
+    struct RowCut {
+        source: String,
+        visible: String,
+        /// How far past the clip's right edge the row's furthest non-blank glyph reached, in points.
+        over: f32,
+        wrap_max: f32,
+        rows: usize,
+        elided: bool,
+        clip_w: f32,
+        /// How far the galley's own layout BOX reaches past the clip's right edge.
+        box_over: f32,
+    }
+
+    /// The right edge of the BOX the toolkit laid this galley out in: the width it was told, placed by the
+    /// job's horizontal alignment (`Align::Max` anchors the box's right edge at the shape's position,
+    /// which is how a `right_to_left` row is drawn). Infinite when the galley was told to extend.
+    fn box_right(p: &Painted) -> f32 {
+        let w = p.galley.job.wrap.max_width;
+        match p.galley.job.halign {
+            egui::Align::Min => p.pos.x + w,
+            egui::Align::Center => p.pos.x + w / 2.0,
+            egui::Align::Max => p.pos.x,
+        }
+    }
+
+    /// Every glyph row of `p` that put glyphs on the glass AND ran past its clip's right edge.
+    ///
+    /// Geometry read straight off the galley, not through `glass_run`: the gate must be able to disagree
+    /// with the harvest rather than share a mistake with it. Blank glyphs are not counted as overrunning —
+    /// a trailing space whose advance crosses the edge is not a cut sentence.
+    fn row_cuts(p: &Painted) -> Vec<RowCut> {
+        let origin = p.pos.to_vec2();
+        let mut out = Vec::new();
+        for row in &p.galley.rows {
+            let o = origin + row.pos.to_vec2();
+            let (mut visible, mut over) = (String::new(), f32::NEG_INFINITY);
+            for g in &row.glyphs {
+                let r = g.logical_rect().translate(o);
+                let on = r.min.x < p.clip.max.x
+                    && r.max.x > p.clip.min.x
+                    && r.min.y < p.clip.max.y
+                    && r.max.y > p.clip.min.y;
+                if on {
+                    visible.push(g.chr);
+                }
+                if !g.chr.is_whitespace() {
+                    over = over.max(r.max.x - p.clip.max.x);
+                }
+            }
+            if !visible.trim().is_empty() && over > 0.0 {
+                out.push(RowCut {
+                    source: p.galley.text().to_owned(),
+                    visible,
+                    over,
+                    wrap_max: p.galley.job.wrap.max_width,
+                    rows: p.galley.rows.len(),
+                    elided: p.galley.elided,
+                    clip_w: p.clip.width(),
+                    box_over: box_right(p) - p.clip.max.x,
+                });
+            }
+        }
+        out
+    }
+
+    /// Every arrangement the cut sweep drives: the default dock, every-tab, the eleven focus layouts, a
+    /// narrow pane per tab, and the two scales the attribution gate uses.
+    fn cut_arrangements() -> Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> {
+        let narrow = |t: Tab| {
+            let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
+            dock.main_surface_mut()
+                .split_right(egui_dock::NodeIndex::root(), 0.8, vec![t]);
+            dock
+        };
+        let mut v: Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> = arrangements()
+            .into_iter()
+            .map(|(n, d)| (n, d, None))
+            .collect();
+        for t in Tab::ALL {
+            v.push((format!("narrow {}", t.title()), narrow(t), None));
+        }
+        for ppp in [1.25f32, 2.0] {
+            v.push((
+                format!("default @{ppp}"),
+                crate::ui::initial_dock(),
+                Some(ppp),
+            ));
+            v.push((
+                format!("every-tab @{ppp}"),
+                crate::ui::every_tab_dock(),
+                Some(ppp),
+            ));
+        }
+        v
+    }
+
+    /// **The button-like captions the sweep below still finds cut with no mark, and cannot fix.**
+    ///
+    /// Each is a `Button` or `selectable_label` caption in a control strip narrower than the strip needs,
+    /// so the WIDGET is half off the pane, not merely its text: an elision mark inside a control the
+    /// reader cannot click is not the cure, and the cure — letting the strip wrap, or bounding it — is a
+    /// layout change and the owner's half. Listed here so a NEW unmarked cut cannot hide among them.
+    const CONTROLS_LEFT_FOR_THE_OWNER: [&str; 5] = [
+        "raster program",
+        "place rings\u{2026}",
+        "spawn mode\u{2026}",
+        "load",
+        "\u{25c0}",
+    ];
+
+    /// The unmarked cut rows whose layout BOX the pane cannot show, as measured when this gate was
+    /// written: the owner's half (a body whose content is wider than its pane, scrolled horizontally).
+    /// A **ceiling**, not a pin — the owner's half may shrink, and this number comes down with it; it may
+    /// not grow, because growing means a new line was cut where none was.
+    const BOX_CUTS_BOOKED_FOR_THE_OWNER: usize = 58;
+
+    /// ★ **No drawn run is cut at a pane's edge without an elision mark** (`F-PANEL-TEXT-CUT-UNMARKED`).
+    ///
+    /// The CR-W harvest is the instrument: for every drawn panel body in every arrangement below, this
+    /// walks the galleys the body actually painted and finds each glyph row that put glyphs on the glass
+    /// AND ran past its clip's right edge. A row like that must carry the elision mark, or the reader
+    /// cannot tell it from a finished line — the defect §11.29 justifies serving `rendered` for, aimed at
+    /// the person at the window instead of at a client.
+    ///
+    /// **Two exits, and both are named rather than counted away:**
+    /// 1. the run was laid out at its NATURAL width (`wrap.max_width` infinite) — the toolkit was never
+    ///    told a width, so it never tried to fit. That is [`crate::ui::fitted_label`]'s job and the gate
+    ///    admits no such run except the control captions in [`CONTROLS_LEFT_FOR_THE_OWNER`];
+    /// 2. the run's own layout BOX already lies past the clip's right edge, so no truncation width would
+    ///    have brought it back: its container is wider than the pane. Those are the owner's half, held
+    ///    under a ceiling.
+    ///
+    /// **Loud when it cannot measure**: the sweep asserts it drove every arrangement, laid out thousands
+    /// of runs, saw runs the toolkit really elided (so a mark is a thing it can see), and saw rows really
+    /// cut (so a cut is a thing it can see). A green run that measured nothing would be the worst outcome
+    /// here, since the claim is an absence.
+    ///
+    /// `cargo test -p oracle-player --bin oracle-player -- --nocapture no_drawn_run_is_cut` prints every
+    /// remaining cut, widest first.
+    #[test]
+    fn no_drawn_run_is_cut_at_a_pane_edge_without_the_mark() {
+        let mut rows = 0usize;
+        let mut runs = 0usize;
+        let mut elided = 0usize;
+        let mut arrangements_driven = 0usize;
+        let mut offenders: Vec<(String, String, RowCut)> = Vec::new();
+        let mut marked = 0usize;
+        for (name, dock, ppp) in cut_arrangements() {
+            let mut lp = fixture(dock);
+            let p = one(
+                &mut lp,
+                &Setup {
+                    ppp,
+                    ..Setup::default()
+                },
+            );
+            arrangements_driven += 1;
+            assert!(
+                !p.spans.is_empty(),
+                "{name}: no body was drawn, so this arrangement witnesses nothing"
+            );
+            for (span, painted) in p.spans.iter().zip(&p.painted) {
+                for g in painted {
+                    runs += 1;
+                    if g.galley.elided {
+                        elided += 1;
+                    }
+                    for c in row_cuts(g) {
+                        rows += 1;
+                        if c.visible.trim_end().ends_with('\u{2026}') {
+                            marked += 1;
+                        } else {
+                            offenders.push((name.clone(), span.name.to_owned(), c));
+                        }
+                    }
+                }
+            }
+        }
+        offenders.sort_by(|a, b| b.2.over.total_cmp(&a.2.over));
+        for (arr, panel, c) in &offenders {
+            println!(
+                "CUT over={:8.2} wrap={:9.1} box_over={:9.2} rows={} elided={} clip_w={:7.1} {arr} / {panel} :: visible={:?} source={:?}",
+                c.over, c.wrap_max, c.box_over, c.rows, c.elided, c.clip_w, c.visible, c.source
+            );
+        }
+
+        // --- loud when it cannot measure ---
+        assert_eq!(
+            arrangements_driven,
+            cut_arrangements().len(),
+            "the sweep did not drive every arrangement"
+        );
+        assert!(
+            runs > 2000,
+            "anti-vacuity: only {runs} runs were laid out, so this sweep is not measuring the panels"
+        );
+        assert!(
+            elided > 0,
+            "anti-vacuity: the toolkit elided nothing anywhere, so this gate cannot see a mark at all"
+        );
+        assert!(
+            rows > 0,
+            "anti-vacuity: no row was cut anywhere, so this gate cannot see a cut at all and would pass \
+             on a window that draws no text"
+        );
+
+        // --- the fix: a run laid out at its natural width must not be cut without the mark ---
+        let mut natural: Vec<(&str, &str, &str)> = offenders
+            .iter()
+            .filter(|(_, _, c)| c.wrap_max.is_infinite())
+            .map(|(arr, panel, c)| (arr.as_str(), panel.as_str(), c.source.as_str()))
+            .collect();
+        let unlisted: Vec<_> = natural
+            .iter()
+            .filter(|(_, _, src)| !CONTROLS_LEFT_FOR_THE_OWNER.contains(src))
+            .collect();
+        assert!(
+            unlisted.is_empty(),
+            "text laid out at its natural width and then cut by the pane, with nothing on the glass to \
+             say so. Draw it through `ui::fitted_label`, or — if it cannot take the mark without a \
+             layout change — add it to CONTROLS_LEFT_FOR_THE_OWNER and say why: {unlisted:?}"
+        );
+        let natural_rows = natural.len();
+        natural.sort_unstable_by_key(|(_, _, src)| *src);
+        natural.dedup_by_key(|(_, _, src)| *src);
+        let seen: Vec<&str> = natural.iter().map(|(_, _, src)| *src).collect();
+        assert!(
+            seen.iter()
+                .any(|s| CONTROLS_LEFT_FOR_THE_OWNER.contains(s)),
+            "every control booked for the owner's half now fits: the waiver list is dead and must be \
+             deleted rather than left standing"
+        );
+
+        // --- the owner's half: the container, not the text, is what does not fit ---
+        let box_cuts: Vec<_> = offenders
+            .iter()
+            .filter(|(_, _, c)| !c.wrap_max.is_infinite())
+            .collect();
+        let inside: Vec<_> = box_cuts
+            .iter()
+            .filter(|(_, _, c)| c.box_over <= 0.0)
+            .collect();
+        assert!(
+            inside.is_empty(),
+            "a run was cut with no mark although its own layout box fits inside the pane, so a width was \
+             available that would have marked it: {inside:?}"
+        );
+        assert!(
+            box_cuts.len() <= BOX_CUTS_BOOKED_FOR_THE_OWNER,
+            "{} runs are cut because their container is wider than their pane; {BOX_CUTS_BOOKED_FOR_THE_OWNER} \
+             were booked for the owner's half. A new one is a new cut line, not an old one.",
+            box_cuts.len()
+        );
+
+        let mut by_panel: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, panel, _) in &offenders {
+            *by_panel.entry(panel.as_str()).or_default() += 1;
+        }
+        println!(
+            "CUTS: {arrangements_driven} arrangements, {runs} runs ({elided} elided by the toolkit), \
+             {rows} rows cut at a pane edge, {marked} of them marked; unmarked {} = {natural_rows} rows of \
+             {} control captions left for the owner + {} whose box the pane cannot show (ceiling \
+             {BOX_CUTS_BOOKED_FOR_THE_OWNER})",
+            offenders.len(),
+            seen.len(),
+            box_cuts.len()
+        );
+        println!("CUTS by panel: {by_panel:?}");
+        println!("CUTS controls left for the owner: {seen:?}");
     }
 
     /// **The `is_serving` gate, observed**: a window no client can reach runs `Loop::iterate` — the

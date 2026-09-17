@@ -834,7 +834,13 @@ impl Panels<'_> {
                 }
             }
             ui.separator();
-            ui.weak(format!("{} armed by this panel", self.screen.armed_count()));
+            // The strip is a horizontal row, which EXTENDS: at the pane's edge this is the line that runs
+            // off it, so it goes through [`fitted_label`].
+            fitted_label(
+                ui,
+                egui::RichText::new(format!("{} armed by this panel", self.screen.armed_count()))
+                    .weak(),
+            );
         });
         // ⚑ **The picker used to be drawn here and is now [`Tab::Spawn`]**, on the owner's own reversal
         // of the rule that put it here: *"the placement works well it seems! it just takes up a lot of
@@ -1484,7 +1490,9 @@ impl Panels<'_> {
             {
                 self.screen.arm_rings();
             }
-            ui.label(
+            // Beside the button in a horizontal row, which EXTENDS: through [`fitted_label`].
+            fitted_label(
+                ui,
                 egui::RichText::new(&l.armed_line)
                     .text_style(egui::TextStyle::Small)
                     .color(if l.armed {
@@ -2729,7 +2737,9 @@ impl Panels<'_> {
                     st.prof_callers,
                 ));
             }
-            ui.label(
+            // Beside the arm button in a horizontal row, which EXTENDS: through [`fitted_label`].
+            fitted_label(
+                ui,
                 egui::RichText::new(&view.lenses)
                     .text_style(egui::TextStyle::Small)
                     .color(ui.visuals().weak_text_color()),
@@ -3217,13 +3227,15 @@ fn fact_grid(ui: &mut egui::Ui, id: &str, facts: &[objects::Fact]) {
         .spacing([COL_GUTTER, 3.0])
         .show(ui, |ui| {
             for f in facts {
-                ui.label(
+                // A grid cell EXTENDS by default, so both of these are drawn through [`fitted_label`].
+                fitted_label(
+                    ui,
                     egui::RichText::new(&f.label)
                         .text_style(egui::TextStyle::Small)
                         .color(weak),
                 );
                 let v = egui::RichText::new(&f.value).color(strong);
-                ui.label(if f.mono { v.monospace() } else { v });
+                fitted_label(ui, if f.mono { v.monospace() } else { v });
                 ui.end_row();
             }
         });
@@ -3327,16 +3339,20 @@ fn stat(ui: &mut egui::Ui, s: &pacing::Stat) {
             // No item spacing between the number and its unit: "1.25 ms" is one reading, and the default
             // 4px gutter would make the unit look like a separate column.
             ui.spacing_mut().item_spacing.x = 3.0;
-            ui.label(egui::RichText::new(&s.value).font(big).color(colour));
+            // A horizontal row EXTENDS by default, so a stat squeezed against the pane's edge is drawn
+            // through [`fitted_label`]: a number cut with no mark is a WRONG number, not a short one.
+            fitted_label(ui, egui::RichText::new(&s.value).font(big).color(colour));
             if let Some(u) = s.unit {
-                ui.label(
+                fitted_label(
+                    ui,
                     egui::RichText::new(u)
                         .text_style(egui::TextStyle::Small)
                         .color(weak),
                 );
             }
         });
-        ui.label(
+        fitted_label(
+            ui,
             egui::RichText::new(s.label)
                 .text_style(egui::TextStyle::Small)
                 .color(weak),
@@ -3376,13 +3392,15 @@ fn health_grid(ui: &mut egui::Ui, id: &str, facts: &[pacing::Fact]) {
         .spacing([COL_GUTTER, 3.0])
         .show(ui, |ui| {
             for f in facts {
-                ui.label(
+                // A grid cell EXTENDS by default, so both of these are drawn through [`fitted_label`].
+                fitted_label(
+                    ui,
                     egui::RichText::new(f.label)
                         .text_style(egui::TextStyle::Small)
                         .color(weak),
                 );
                 let v = egui::RichText::new(&f.value).color(health_colour(ui, f.health));
-                ui.label(if f.mono { v.monospace() } else { v });
+                fitted_label(ui, if f.mono { v.monospace() } else { v });
                 ui.end_row();
             }
         });
@@ -3927,16 +3945,67 @@ fn section(ui: &mut egui::Ui, title: &str, scope: Option<String>, method: &str) 
     ui.horizontal(|ui| {
         ui.heading(egui::RichText::new(title).color(strong));
         if let Some(s) = scope {
-            ui.label(egui::RichText::new(s).color(weak));
+            // A horizontal row EXTENDS by default; both of these are drawn through [`fitted_label`].
+            fitted_label(ui, egui::RichText::new(s).color(weak));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(method).monospace().color(weak))
-                .on_hover_text(
-                    "the served row this section is a direct read of, so the panel and a client \
+            fitted_label(ui, egui::RichText::new(method).monospace().color(weak)).on_hover_text(
+                "the served row this section is a direct read of, so the panel and a client \
                          asking the same question see the same answer",
-                );
+            );
         });
     });
+}
+
+/// **A label that cannot be cut without saying so** — the one treatment for text drawn where the layout
+/// lets it EXTEND past the pane.
+///
+/// ⚑ **The defect this exists to stop** (`F-PANEL-TEXT-CUT-UNMARKED`, found by the CR-W panel harvest on
+/// its first outing). A `Grid` cell and a horizontal row both default to [`egui::TextWrapMode::Extend`]:
+/// egui lays the text out at its natural width, and the pane's clip rectangle then cuts it with **nothing
+/// on the glass to say so**. Measured at 1600 wide with only Registers and Breakpoints drawn, the
+/// Registers strip's `aether` fact read *"...nothing can attach to this window"* and stopped — a finished
+/// sentence, with the parenthesis that changes its meaning off the glass. A reader cannot tell that line
+/// from a complete one, which is the same defect class §11.29 justifies serving `rendered` for, aimed at
+/// the person at the window instead of at a client.
+///
+/// The treatment is the one [`table_cell`] already gives a cut cell, and is reused rather than reinvented:
+/// `Label::truncate`, so **the toolkit writes the elision mark itself** at the width the label really has,
+/// and the whole of it one hover away. Nothing about the layout changes: a label that fits is laid out and
+/// allocated exactly as `ui.label` laid it out before.
+///
+/// **In a wrapping context this IS `ui.label`.** Wrapping is not truncation, and a paragraph must not
+/// become a one-line stub for having passed through here.
+///
+/// The site's own hover, if it has one, is chained after this one by the caller, so a cut method name
+/// gives the reader both the name and what it is.
+fn fitted_label(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    let text: egui::WidgetText = text.into();
+    if ui.wrap_mode() != egui::TextWrapMode::Extend {
+        return ui.label(text);
+    }
+    // ⚑ Measured before it is drawn, for [`table_cell`]'s reason: `Label::truncate` allocates the width it
+    // was given either way, so the rect it hands back says nothing about whether a glyph was dropped.
+    // `Extend` at an infinite width is the natural width, in whatever face the `RichText` carries.
+    let room = ui.available_width();
+    let natural = text
+        .clone()
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+        .size()
+        .x;
+    let whole = text.text().to_owned();
+    let r = ui.add(egui::Label::new(text).truncate());
+    if natural > room {
+        // A truncated line is unreadable, not merely tidy, so the whole of it is one hover away.
+        r.on_hover_text(whole)
+    } else {
+        r
+    }
 }
 
 /// The width `text` needs in `face`, measured with the font the theme actually installed.
@@ -4296,7 +4365,12 @@ fn header_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, colour: egui::Color32)
         // The column's width, for [`table_cell`]'s reason: a header narrower than its column otherwise
         // pulls every header after it left of the cells it names.
         ui.set_min_width(w);
-        ui.label(
+        // Through [`fitted_label`] like every other label drawn where the layout EXTENDS. It should never
+        // fire — a header's own width is one of the terms its column's width is the maximum of — and that
+        // is exactly why it is here: if a header ever outgrows its column again, it now says so instead of
+        // running into its neighbour, which is the defect `head_face` was written for.
+        fitted_label(
+            ui,
             egui::RichText::new(c.head)
                 .text_style(egui::TextStyle::Small)
                 .color(colour),
