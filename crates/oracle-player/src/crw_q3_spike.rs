@@ -1284,4 +1284,42 @@ mod tests {
             }
         }
     }
+
+    /// **A present egui runs twice is harvested from the pass it keeps.** A fresh context's first
+    /// present is two passes (measured: `[2, 1, 1, ...]` under the default dock, `every-tab` and a focus
+    /// arrangement), because the first pass requests a discard. `Context::run_ui` re-runs the whole
+    /// closure, so a per-present span list must be reset at the start of each pass or the discarded
+    /// pass's spans, whose indices point into a paint list that no longer exists, ride along. Here the
+    /// spans are the drawn set once, and every span's in-pass text equals what form 2 found in the
+    /// `FullOutput` egui kept.
+    #[test]
+    fn a_discarded_first_pass_is_harvested_from_the_pass_that_is_kept() {
+        let dock = crate::ui::initial_dock();
+        let expect = active_tabs(&dock);
+        let mut lp = fixture(dock);
+        lp.planes = crate::planes::Panel::default();
+        let ctx = context();
+        let p = present(&mut lp, &ctx, raw(0, Vec::new()), Mode::Record);
+        assert_eq!(p.passes, 2, "control: the first present was not multi-pass");
+        let got: Vec<Tab> = p.spans.iter().map(|s| s.tab).collect();
+        assert_eq!(got, expect, "spans from more than the kept pass");
+        for (tab, keys) in &p.in_pass {
+            let f2 = &p
+                .form2
+                .iter()
+                .find(|(t, _)| t == tab)
+                .expect("form 2 row")
+                .1;
+            assert!(!keys.is_empty(), "{tab:?}: vacuous");
+            assert_eq!(
+                keys, f2,
+                "{tab:?}: the in-pass read is not the kept pass's text"
+            );
+            let (stray, _) = diff(keys, &p.out);
+            assert!(
+                stray.is_empty(),
+                "{tab:?}: harvested text egui did not keep: {stray:?}"
+            );
+        }
+    }
 }
