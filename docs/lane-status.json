@@ -1,6 +1,12 @@
 {
-  "focus": "Panels and the start-up notes trim both landed. Next is the last few panel items.",
-  "inFlight": [],
+  "focus": "An agent is making the Screen tab show which save slots are full, plus two small tidy-up sweeps.",
+  "inFlight": [
+    {
+      "what": "Screen tab save slots and the tidy-up sweeps",
+      "where": "branch parcel/data-display-4",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything pushed. Online tests for the panel landing still being read.",
+  "nextBoundary": "When the save-slot parcel returns, is checked here and lands.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -68,15 +74,15 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "next",
+      "state": "doing",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Seven of eleven panel items done (Registers, Memory, Planes landed today). Left: Screen strip, Objects, the two sweeps. Look questions for your eyes are listed."
+      "title": "Seven of eleven items done. An agent is on the Screen tab's save slots and the two tidy-up sweeps. The Objects item is a look for you, not a build."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -92,6 +98,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-17T08:37:18Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-17T08:37:53Z"
 }
