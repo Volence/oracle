@@ -3561,3 +3561,131 @@ visible from the source and was not visible from the board.)*
 ### HERMETIC GATE ruling: the "also carried" residue of its 2026-09-06 move (orig line 820)
 
 **Also carried in that same message and both banked; moved whole to `OVERSEER-LOG.md` 2026-09-06:** our landing recorded upstream with correct attribution (their number cited as *ours*, not re-derived), and **F-RESUME-STOP-RACE relayed to aurora** as the suite's outbound client, which is the right destination — no reply was requested and none is owed. With them, the content-addressed check that verified our vendored `bus-protocol.schema.json` against empyrean's blob id **in both trees, neither read from a working file**, which is why a relayed claim about our own tree was safe to accept.
+
+## Moved from OVERSEER.md 2026-09-17 — closed landings and superseded `NEXT:` clauses, verbatim (the recut, 69,869 → 26,553 B)
+
+*Moved verbatim out of `3e7a258:docs/OVERSEER.md` (row OVERSEER-RECUT). Each block is a landing narrative whose row is closed, or a `NEXT:` clause a later one superseded. The lessons that sat in the same paragraphs went to `docs/OVERSEER-REFERENCE.md` under the same dated heading. Orig line numbers are of `3e7a258:docs/OVERSEER.md`; a blank line separates fragments that were not adjacent there.*
+
+### The queue's order-of-work paragraph: closed landings and superseded `NEXT:` clauses (orig lines 52-57, 61-70, 76-87, 95-101, 111-116)
+
+**Order of work, 2026-09-13 (the HUB's ruling, not his; overturnable by one word from him).** Under the owner's
+goodnight delegation (empyrean `cdb8035`, verified an ancestor of their `origin/main`, a docs commit carrying his words:
+*"if you need any decisions you don't think I need to answwer feel free to confer yourself"*), the hub ruled this lane's
+pick by his 09-09 order of work (finish lens items first) and his 09-11 aim (*"oracle's cleaned up a bit"*):
+**H22-68000-DECODE (design doc first) → M24-NEEDS-A-CURRENCY → M1-FILL-OVER-TIME.** LENS-WAVE-1's two look questions
+stay his. If H22 needs a call that is his (look, or an irreversible bet), file the card and take M24.
+
+**Hub amendment (2a), 2026-09-13 (verified at empyrean `3bb082d`, docs commit carrying it; the hub's, overturnable by him):
+F-MACHINEREPLACED-EVENT-RACE goes AFTER M24 and AHEAD OF M1** (it reddens unrelated commits; may jump ahead of M24 if needed).
+**M24 design LANDED (merge `9a09adc`, docs only, `docs/2026-09-13-z80-timing-currency-design.md`) and RULED by this seat
+(delegated design call): the currency is in-tree Z80 timing probes (§1, §7), not an access-stream digest.** Order from here:
+**§7 parcels 1 (F-Z80 caveat, XS) then 2 (probes C1-C4, S; closes M24-NEEDS-A-CURRENCY)**, one agent after the other, no
+further ruling needed → **F-MACHINEREPLACED-EVENT-RACE** → **parcel 3 (EI delay, no ruling)** → M1.
+**Parcels 1-2 LANDED 2026-09-13 (merge `453aa96`, one agent; M24-NEEDS-A-CURRENCY CLOSED). F-MACHINEREPLACED-EVENT-RACE
+LANDED 2026-09-13 (merge `7ccd42d`, test harness only). F-PLAYER-SCREENTEXT-FIRST-READ
+LANDED 2026-09-13 (merge `70a83cd`, test barrier + comments). NEXT: parcel 3** —
+this seat's sequencing, (2a)'s own cause: a flake that reddens unrelated landings costs the signal every later one reads.
+
+**OWNER, 2026-09-13T21:53:38Z (heard by the hub, banked verbatim at empyrean `a449627`, a docs commit on their `origin/main`):**
+*"cut sounds good. I don't care about a or b they both look good, you can make the decision."* **d-39 CLOSED: the hub
+picked `a-shared-card`** (theirs, overturnable by one word); delete B in one move (STYLE-NUMBER-BAKEOFF). **The cut is GO:**
+this lane cuts its own OVERSEER.md to about 40 KB by the when-read rule (aeon's ~20 KB boot file the model), row OVERSEER-CUT.
+**OVERSEER-CUT LANDED 2026-09-13 (merge `e4b4bbf`): 97,771 → 26,517 B, fourteen blocks to the reference. Hub GO covers the
+next two in order (empyrean `492a2ac`): NEXT is delete B (STYLE-NUMBER-BAKEOFF), then parcel 3.**
+**Delete B LANDED 2026-09-13 (merge `f0f0a96`, agent tip `421b005`; STYLE-NUMBER-BAKEOFF CLOSED, DATA-DISPLAY-AUDIT
+unblocked). NEXT: M24 parcel 3 (EI delay), no further go needed (the hub, empyrean `579d485:docs/OVERSEER.md:173`).**
+**M24 parcel 3 LANDED 2026-09-14 (merge `d421f51`, agent tip `06bd27a`; go: the hub under his delegation, read at empyrean
+`f13feff:docs/OVERSEER.md:99`).** The EI delay: C1 `A`, C2a/C2b `HL` 0 → 1, nothing else moved; SST-z80 now grades the
+corpus's `ei` field. Saves from before `d421f51` are refused by the layout fingerprint (precedent `28e4587`). **NEXT: M1-FILL-OVER-TIME**
+(the hub's 09-13 order, H22 → M24 → M1). Parcel 4 (`/INT` level) needs his listen ruling when reached; no card filed yet.
+
+**HUB RULINGS R1-R4 on the M1 design, 2026-09-14T02:08:55Z (verified: empyrean `a3e2c42`, ancestor of their `origin/main`, the docs
+commit carrying it, `docs/OVERSEER.md:215`; the hub's under his delegation, overturnable by one word from him). All four are this seat's
+recommendations.** R1: a fill-write watch hit keeps today's `pc`, the TRIGGERING instruction (`protocol.md`: "the accessing instruction's pc
+per hit, so no triggerPc key"), carried as `FillRunning`'s payload; per-step `mclk` stands. **If P1 finds that moves the save layout, STOP and
+go back to the hub: option (c) is a contract change and runs as a CR in empyrean.** R2: per-step stamps for fills only; C-6 stands for
+68k-to-VDP DMA. R3: accepted. R4: a busy-poll after each fill in the three synthetic fixtures. **NEXT: P1 FILL-RUN** (design §7 row 1),
+no further go needed.
+
+**P1 FILL-RUN LANDED 2026-09-15, merge `549f020` (agent tip `569439d`, branch `parcel/m1-fill-run`), PUSHED and origin confirmed moved.
+M1-FILL-OVER-TIME CLOSED; `vdp_port_access` 119/122 → 122/122, `PORT_ACCESS_FAILING` empty.** Verified firsthand on the MERGED tree by this
+seat, not taken from the agent: fmt clean, clippy 0, **debug 90 legs / 2915 / 0 / 6 and release 90 legs / 2918 / 0 / 3** (both profiles, per the
+two-profile rule), the 122 rows aggregated from the ROM's own output (`ROWS=122 PASS=122 FAIL=0`), and red-first M-F reproduced here (mutation
+quoted from disk, hit named `$3010` against `$32BC`, restored from committed `569439d`, green again). **R1's tripwire NOT tripped, re-measured
+with this seat's own probe on both trees**: `layout_fingerprint` `dff350afa2eb3e1d`, snapshot 140,072 B, identical — so the hub needs no CR.
+
+### OWNER-UX-GROUP-B: the landing (orig lines 206-212)
+
+**OWNER-UX-GROUP-B LANDED 2026-09-16, merge `535f719`** (agent tip `6af2d30`, branch `parcel/owner-ux-chrome`, base `c13e97b`;
+`tools/land.sh` GREEN and pushed, origin confirmed moved by this seat: release 90 legs / 2937 / 0 / 4, byte-for-byte the
+baseline, which is the expected result for a diff whose only change to `crates/` is comments). **The row was NOT three open
+items and the parcel's output is the re-derivation, not the fix.** Verified firsthand here, not taken from the agent:
+`ad7bc78` and `4f31f0d` (2026-09-09) and `541c872` (09-04) are all ancestors of the base, so capture §1.7 (dragging) and the
+CHROME half of §1.4 and the navigation half of §1.1 were already done. What is genuinely left is the LAYOUT half of §1.4,
+and it is a look call: cards **d-52** (the per-tab `x`) and **d-53** (the right column's three stacked leaves) are filed.
+
+### The superseded `NEXT: DATA-DISPLAY-AUDIT` clause (orig lines 250-254)
+
+**NEXT: `DATA-DISPLAY-AUDIT`, and its premise is now RE-DERIVED rather than booked** — the derivation is
+banked at the audit's own canonical site (`docs/2026-09-05-debug-window-audit.md`, addendum 2026-09-16, written
+at `16eef9e`), so a brief is composed from that addendum and never from §2. Sources, no figures: that addendum,
+the per-panel build order it corrects, the style rules, and the 2026-09-03 tab ruling in `docs/OVERSEER-REFERENCE.md`.
+Unblocked since `f0f0a96`. **Two items in it are HIS eyes, not ours.**
+
+### DATA-DISPLAY-AUDIT items 1 + 3: the landing, its superseded `NEXT:`, and the 2026-09-16 sequencing hold (orig lines 273-281, 309-311, 313-323)
+
+**DATA-DISPLAY-AUDIT ITEMS 1 + 3 AND THE PREREQUISITE LANDED 2026-09-16, merge `beed8d9`, pushed and origin
+confirmed moved (agent tip `3c3c94a`, branch `parcel/data-display-1`, base `61288ff`; landing docs `75a76e8`).**
+Verified firsthand on the merged tree by this seat, not taken from the agent: fmt clean, clippy 0 in BOTH shapes,
+**debug 90 legs / 2946 / 0 / 7 and release 90 / 2949 / 0 / 4**, +12 in each reconciled BY NAME against the twelve
+`#[test]` attributes the diff adds. Red-first reproduced here with the mutation quoted off disk and restored from the
+committed baseline (`git checkout beed8d9 --`, tree clean before and after). ⚑ **CI READ TO COMPLETION AND GREEN** at `82eddc8` (and `75a76e8`), re-read from `gh run list` rather than taken
+from the waiter's exit: all three jobs `success` — Determinism gate, Replay playthroughs (release), and
+Build/test/clippy/fmt, the last running 14:19:49Z → 14:59:18Z. **Duration 41 min, inside this file's own measured
+35-45 min band**, checked because a fast completion would have meant a job that did not run.
+
+**NEXT: the rest of `DATA-DISPLAY-AUDIT`** — parcels 4 (Watchpoints) and 5 (Breakpoints) reuse the landed
+`table`/`Cell`/`TableRow` furniture directly. ⚑ Re-derive each from the TREE at the moment it is proposed, never from
+§4, whose citations this landing has just measured as ~1,080 lines stale.
+
+**SEQUENCING, this seat's, 2026-09-16, after the hub's nudge and recorded as a REASON rather than a wait.** The
+hub observed — correctly — that this lane sat at a boundary with `awaiting` saying *"waiting on your pick"* while
+its own `next` row needs no pick, which is the **inflating** direction of sigil's finding (*a row that manufactures
+an owner-wait is the kind nobody audits, because it looks like care*). `awaiting` was fixed on the spot. The
+licence not to wait is real and was verified firsthand rather than taken from the nudge: empyrean `70077e2` is an
+ancestor of their `origin/main` and carries both *"Do not boot into a stop and wait for a pick"* and *a lane
+rebooted mid-project does NOT stop at its boot stop*. **The dispatch is nevertheless HELD, on the hub's own
+asymmetry: a background agent does not survive the `/clear` this lane is queued for on his card**, and the
+protocol's rotation rule says to bank enough state to re-dispatch from the repo alone. That is exactly what the
+addendum above is. **So the hold is on the AGENT, not on the row**, and it costs nothing: a fresh session boots,
+reads the addendum, and dispatches without re-deriving anything.
+
+### DATA-DISPLAY-AUDIT parcels 4-5 and `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`: the landings and their superseded `NEXT:` clauses (orig lines 473-476, 522-533, 549-550)
+
+**DATA-DISPLAY-AUDIT PARCELS 4-5 (Watchpoints, Breakpoints) LANDED 2026-09-16, merge `161d6f4`** (agent tip
+`55d3540`, branch `parcel/data-display-2`, base `e13a3ce`; landing addendum follows). Verified firsthand on the
+MERGED tree: fmt clean, clippy 0 in both shapes, **debug 90 legs / 2965 / 0 / 7, release 90 / 2968 / 0 / 4**,
++19 each reconciled BY NAME against the nineteen `#[test]` attributes the diff adds.
+
+**NEXT: `F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL`** (named as successor in the same write that closed this row, per
+`LANE_STATUS.md` line 136 — this lane's own clause). The rest of `DATA-DISPLAY-AUDIT` (items 6-11) reuses the
+same furniture; re-derive each from the TREE, never from §4.
+
+**`F-OUTLINE-UNPROVABLE-BY-DIFFERENTIAL` LANDED AND CLOSED 2026-09-16** (agent tip `51bf1f1`, branch
+`parcel/outline-witness`, base `d8bb9cc`; merge message corrected before push, landing addendum after it).
+**Test-only: 495 lines added, 0 removed, both hunks inside `mod tests`** — the shipped player is unchanged.
+**The control established the gap exactly as booked:** the byte-for-byte differential stayed green under all four
+mutations to `covered_edges`, and the fourth (down neighbour read at `x + 1`) was **caught by nothing in the
+tree**. Reproduced at this seat with `--no-fail-fast` across all 4 legs: the new witness is the SOLE failure.
+The rectangle test is **not** a fourth misnamed lock — the agent checked rather than pattern-matched: its body
+tests a rectangle, which is all its name claims.
+
+**NEXT: the rest of `DATA-DISPLAY-AUDIT`** (items 6-11: Registers, Memory, Planes legend, Screen strip, Objects,
+the sweeps). ⚑ Per **`L-16`**, §4's line numbers and P10 charges are dead letters; re-derive each from the TREE.
+
+### DATA-DISPLAY-AUDIT parcels 6-8: the landing (orig lines 719-722)
+
+**DATA-DISPLAY-AUDIT PARCELS 6-8 (Registers, Memory, Planes) LANDED 2026-09-17, merge `9575b3e`** (agent tip `d6ad964`, via
+`tools/land.sh` GREEN and pushed: release 90/90 legs, 2983/0/5). Go: the hub, citing his 2026-09-02 words at empyrean `b010db4a`
+(verified an ancestor of their `origin/main`) — a decision-free next item is taken, not parked. Verified here on the merged tree:
+debug 90 legs 2980/0/8 (+14 = the diff's fourteen `#[test]`s), debug clippy 0, red-first reproduced with the mutation on disk.
