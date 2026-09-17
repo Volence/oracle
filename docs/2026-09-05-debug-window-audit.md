@@ -1420,3 +1420,269 @@ Counts from the Python pass above:
     read as its caption, and do `void` and `surface` look like a checker at the plane's fitted scale?*
 29. **The stopping tabs' notes in the body face.** `ok: breakpoint b3 addr 0x00001234` is now one
     proportional line. *Question: is the address inside it still easy to pick out?*
+
+---
+
+## Addendum, 2026-09-17 (parcels 9 and 11): the slot strip is built, the sweeps were nearly empty, and each zero now has a gate
+
+*Appended under this document's standing rule: nothing before this heading is edited. Written by the
+`DATA-DISPLAY-AUDIT` parcel that did the work, on `parcel/data-display-4` off `b0d569e`. Item 10 (Objects)
+is a look call for the owner and was not built.*
+
+**Nothing here was seen on a screen.** The window cannot be opened from an agent seat, so every claim about
+*appearance* below is a prediction from headless layout. The questions only a frame can answer are at the
+end, numbered on from 29.
+
+**How every count below was made.** Per `L-16`, nothing was carried from §4 or §5; every figure was
+re-derived from the tree.
+
+- **Strings, citations and scroll areas:** a Python port of the P10 gate's lexer (now
+  `crates/oracle-player/tests/source_lex/mod.rs`), not kept. It ran over `git show <rev>:<file>` for every
+  file under `crates/*/src/` plus each `crates/*/build.rs`: 114 files at both revisions, 28 of them in
+  `oracle-player`. It classifies each character as code, comment, string literal or character literal. It
+  holds out every `#[cfg(...)]` module whose predicate names `test`, matched by braces. Then it counts:
+  - em and en dash characters inside production string literals;
+  - `\u{2014}` and `\u{2013}` escapes inside production string literals;
+  - the P9 needles `§[0-9]`, `protocol\.md` and `\bD1[0-9]\b` inside production string literals;
+  - `{…:?}` specifiers inside production string literals;
+  - each `ScrollArea::` in production code, and whether `.id_salt(` appears before its next `.show`.
+- **`monospace(format!` in production `ui.rs`:** the parcel 6-8 method. Lines above the first
+  `#[cfg(test)]` followed by a `mod` line, not starting with `//`.
+- **Test totals:** legs are `grep -cE '^\s+(Running|Doc-tests)'`, checked against
+  `grep -c '^test result:'`, and the three fields of every `test result:` line added up.
+- **Every mutation run** covered all of `oracle-player` with `--no-fail-fast` (5 of 5 legs). The mutation
+  was applied on disk, its `git diff -U0` recorded, and the file restored with `git checkout <commit> --
+  <file>`, which left a clean tree. "Stayed `ok`" is only claimed for a run that also showed a failure, so
+  the mutation is known to have compiled.
+
+### Item 9: the Screen strip and the save slots
+
+**§4's judgements, checked against the tree at `b0d569e` first:**
+
+| §4 says | at `b0d569e` | now |
+|---|---|---|
+| nine of the ten slots' occupancy is invisible | **true.** `screen_controls` drew only the selected slot (`ui.rs:840`); `States::occupied` had that one production reader | closed |
+| `(occupied)` is prose in monospace (P3) | **true**, same line | closed |
+| the glass alarm has the spawn badge's weight, separated only by colour | **true.** `ui.rs:725` is `colored_label(error_fg_color, ..)` directly above the badge's `colored_label(warn_fg_color, ..)` | **not built.** Look call, §6 call 5 |
+| the pick readout is correct: do not touch it | **true, but it has moved.** §4 places it "in a `card`" in the strip. It is now an overlay on the picture (`readout_overlay`, `ui.rs:675`) | untouched |
+| the comment at the row says "the occupancy dots", plural | **worse than §4 says.** The same comment (`ui.rs:828`) says a slot file written by the other window "must show as it is". That was false: nothing re-reads the disk after the last probe | the comment now says what is true |
+
+**Where occupancy comes from, and why this was not a design stop.** `States::on_disk: [bool; SLOT_COUNT]`
+(`states.rs:86`). `rekey` fills it with one `Path::exists` per slot at open and at every cartridge swap
+(`states.rs:128`), and `save` sets its slot (`states.rs:168`). So all ten were already known, and drawing
+all ten costs no new I/O per frame. `States::cells` reads that array.
+
+**⛔ STOPPED on one sub-item: when to re-read the disk.** The cache misses a slot file written or deleted
+by anything else after the last probe. That was already true of the one slot the old line showed. Making
+the comment's old claim true needs a decision, so the options and costs are recorded here, not built:
+
+| option | cost | what it still misses |
+|---|---|---|
+| (a) probe every frame | 10 `stat` calls a frame, about 600 a second on the UI thread. Nothing else in the window does per-frame file I/O | nothing |
+| (b) probe on a gesture: a cell or stepper click, `save`, `load` | at most 10 `stat` calls per click; no new state | changes between gestures, until the person touches the row |
+| (c) probe on a timer, say once a second | 10 `stat` calls a second, plus a clock in `States` | up to one period |
+| (d) probe when the window regains focus | an `eframe` focus event wired into `States` | a script writing while this window has focus |
+| (e) leave it | none | everything after the last probe. A `load` of a deleted slot still refuses cleanly and names the file |
+
+(b) with (d) covers the case the old comment named (the other window wrote a slot) for a few syscalls per
+gesture. That is a recommendation, not a ruling.
+
+**What was built** (`ae0938a`, gate fix `bc02010`):
+
+- `States::cells` hands the strip every slot. `SlotCell::hover` states the occupancy in words.
+- `slot_cells` draws ten cells in one row: the slot number in monospace, fill `raised` for a slot with a
+  file and `surface` for an empty one, the number in the emphasis colour or recessed, and the selected slot
+  on `theme::selection()`. A click selects. The steppers, `save` and `load` stay beside it.
+- The `slot N (occupied)` line is gone. `States::occupied` and `States::slot` are now test-only, because
+  the window reads both through `cells`.
+
+**Where the code disagreed with §4's "Becomes", the code won:**
+
+1. **`text_faint` has no path to draw time.** `Visuals` has no slot for it, and every other recessed text
+   in the window is `weak_text_color`. An empty slot's number uses that.
+2. **Hover is a stroke, not a fill.** §4 does not say. `row_fill` lets hover replace a row's fill, which is
+   safe there because banding carries nothing. Here the fill is the fact, and a pointer on a cell must not
+   change what it says.
+3. **The selected cell keeps its occupancy colour on the number.** Otherwise the selection fill would hide
+   whether the slot F2 writes to already holds a state.
+
+### Item 11: P10, measured zero, and the gate had a hole
+
+**At `b0d569e`: 0 em or en dashes in production string literals, in all 114 files.** Positive control:
+8,470 dashes in those files overall, 1,888 of them in `oracle-player`. The existing gate
+(`tests/p10_no_dashes_in_shipped_text.rs`) was green on the base. So there was nothing to sweep, including
+§4's per-file charges against `nav.rs`, `identity.rs` and `battery.rs`, which this workspace count covers.
+Per `L-16` those charges were not re-derived one by one.
+
+**The hole:** the lexer sees `"a \u{2014} b"` as the source bytes `\`, `u`, `{` and passes it, but the
+string compiles to a real em dash. **At `b0d569e` there were 0 such escapes in production strings**, so the
+hole was empty. The gate now reports them (`0db7ad2`). The bitmap font's `'\u{2014}'` is a character
+literal and stays exempt, and an escaped backslash (`"\\u{2014}"`, which prints no dash) is not an offence.
+The gate's own doc records one limit: a raw string cannot tell the lexer which case it is, so a raw
+string's `\u{2014}` is reported too.
+
+### Item 11: P9, two citations reached the window, and §5 had counted one of them
+
+**At `b0d569e`, production string literals in `oracle-player` held one hit:** the palette headline's
+`(D15)` (`palette.rs:368`, the line §5 cites as `:309`). §5's other two (`§11.16`, `§11.18`) were closed by
+parcel 3.
+
+**The same scan over every crate found 9 hits, and one more of them reaches the window.**
+`emulator/wait_for_break`'s registry summary ended `see §6 D6` (`oracle-aether/src/engine.rs:445`), and
+the palette draws every row's summary. §5's grep was scoped to `crates/oracle-player/src/*.rs`, so it
+could not see a string in `oracle-aether` that `oracle-player` draws. That is item 1's undercount again
+(3 raw-JSON sites booked, 7 real). **The "P9 pair" is these two.** Both citations moved to comments beside
+their strings (`80fb8ec`). The summary also ships in `initialize.methodSummaries`, and nothing in the tree
+pins its wording.
+
+**The other 7 are out of P9's scope and were left alone:** 6 in `oracle-aether/build.rs` (a `cargo:warning`
+line and the comments of a generated source file) and a `debug_assert!` message in `engine.rs`. None of
+them reaches the window. P9 is about "a panel".
+
+### Item 11: P7, the two modal scroll areas
+
+**At `b0d569e`: 15 `ScrollArea` constructors in production, 2 unsalted:** `palette.rs:396` and
+`rom_open.rs:739`, the two the parcel 6-8 addendum named. Both are salted now (`6d30b74`).
+
+**The gate is now crate-wide, and the old one could not simply be widened.** The `ui.rs` gate cut
+production off at a file's first test module. `bus.rs` and `main.rs` have production code after theirs:
+with the same line rule, 9 top-level items follow the cut in `bus.rs` and 8 in `main.rs`.
+`tests/p7_every_scroll_area_names_its_id_salt.rs` reads every file under `src/` with the P10 gate's lexer.
+The lexer moved verbatim into `tests/source_lex/mod.rs` (only `pub` was added), so both gates use one
+copy. The `ui.rs`-only gate was deleted, because the new gate covers everything it checked (M10 below).
+
+### Item 11: the hash note's `len {:?}` quoting
+
+**The `{:?}` quoting is kept.** It is the crate's spelling for echoing typed input: 22 `{…:?}` specifiers
+in production string literals in `oracle-player` at `b0d569e`, among them the address box's `{t:?}: {e}`
+and the Watchpoints tab's own `len {len:?}` refusal. It makes an empty box visible as `""`.
+
+**Two things beside it were wrong, and both are fixed** (`bc41d65`):
+
+1. The parse trimmed, but the refusal quoted the untrimmed text, so `" 0x10 "` was refused as
+   `len " 0x10 "`, showing padding the parser never read.
+2. The hash box said less than the Watchpoints tab's `len` box about the same mistake. It did not say that
+   `len` is a decimal byte count, not hex.
+
+`memory::hash_len` and `stopping::len_refusal` now make one sentence for both boxes. The new gate takes
+its expected text from the Watchpoints tab's refusal, not from a pinned sentence.
+
+**Noticed and not charged:** the palette's `"      params: {}"` indents with spaces inside a string. It is
+an indent under a row, not a column (P2's subject), in the wire console `L-15` rules on.
+
+### Names that claimed more than their bodies checked
+
+- **`no_em_or_en_dash_in_shipped_strings`** is named for exactly the class. Run at `6d30b74`'s version of
+  its file, it stayed `ok` with `"slot {} {held} \u{2014} click to select it"` shipping in `states.rs`.
+  The same mutation fails it at `0db7ad2`.
+- `every_scroll_area_production_ui_rs_builds_names_its_id_salt` is named for `ui.rs`, and its name was
+  honest. In the control run with the palette's salt removed it stayed `ok`, and in the same run the new
+  crate gate failed.
+- Controls that stayed `ok` beside a red. None of their names claims the class:
+  - under M7, all 7 `screen_strip_tests`, which are about the strip's height, not what it says;
+  - under M1, `a_slot_round_trips_the_machine_and_the_load_flushes_the_battery_first`, which asserts
+    `occupied(0)`;
+  - under M13, `the_palette_offers_the_registry_and_nothing_else`;
+  - under M16 and M17, `the_hash_button_hashes_what_emulator_memory_hash_hashes`.
+
+### This parcel's own blind gate
+
+The first version of `the_cells_run_left_to_right_in_slot_order_without_overlapping` **stayed green (504
+passed, 0 failed) with every cell allocated one point wide** (M6 at `ae0938a`). The cells still ran left to
+right, did not overlap and were all one width, while ten numbers were painted on top of each other. Fixed at
+`bc02010`: each number's painted rect must sit inside its cell, and M6 is red there. That was the only test
+changed after the M1-M8 runs. The one other run it failed in (M4) also failed two tests that did not change.
+
+### Gate proofs
+
+| commit | mutation (quoted from disk) | fails | stayed `ok` in that run |
+|---|---|---|---|
+| `ae0938a` | M1 `occupied: slot == self.slot && self.on_disk[slot]` | `every_slot_cell_reports_the_file_on_disk_and_only_one_is_selected` | `a_slot_round_trips_…` |
+| `ae0938a` | M2 fill: `} else if false {` for the occupied arm | `every_slot_is_a_cell_whose_fill_and_number_say_whether_it_holds_a_state` | |
+| `ae0938a` | M3 `let ink = if true {` | the same fill-and-number gate | |
+| `ae0938a` | M4 only the selected cell drawn (`.filter(\|(c, _)\| c.selected)`) | fill-and-number, click, order | |
+| `ae0938a` | M5 `clicked = Some(0);` | `a_click_on_a_cell_returns_that_slot` | |
+| `ae0938a` | M6 cells allocated `egui::vec2(1.0, size.y)` | **nothing (blind, above)** | |
+| `bc02010` | M6 again | `the_cells_run_left_to_right_in_slot_order_without_overlapping` | |
+| `ae0938a` | M7 the `slot_cells` call replaced by `ui.monospace(format!("slot {} {}", 0, "(occupied)"))` | `the_screen_strip_draws_the_slot_cells_and_no_occupancy_prose` | 7 `screen_strip_tests` |
+| `ae0938a` | M8 hover `"holds a saved state"` made `"is empty"` | `every_slot_cell_reports_…` | |
+| `80fb8ec` | M9 `.id_salt("palette-methods")` removed | `every_scroll_area_the_crate_builds_in_production_names_its_id_salt` | |
+| `80fb8ec` + `bc02010`'s `ui.rs` | M9 with the old `ui.rs` gate present | the crate gate | `every_scroll_area_production_ui_rs_builds_names_its_id_salt` |
+| `80fb8ec` | M10 `.id_salt("memory-hex")` removed | the crate gate | |
+| `80fb8ec` | M11 an unsalted `fn p7_probe` after `bus.rs`'s last test module | the crate gate | |
+| `80fb8ec` | M12 `(D15)` put back | `nothing_the_palette_paints_cites_the_specification` | |
+| `80fb8ec` | M13 `see §6 D6` put back in the summary | the same | `the_palette_offers_the_registry_and_nothing_else` |
+| `0db7ad2` | M14 `\u{2014}` escape in the slot hover | `no_em_or_en_dash_in_shipped_strings` | |
+| `6d30b74`'s gate | M14 | **nothing** | `no_em_or_en_dash_in_shipped_strings` |
+| `bc41d65` | M15 backslash-parity check made `if false {` | `an_escaped_dash_in_a_shipped_string_is_an_offence` | `no_em_or_en_dash_in_shipped_strings` |
+| `bc41d65` | M16 `len_refusal(text, &e)` (untrimmed) | `a_hash_len_refusal_quotes_the_parsed_text_and_matches_the_watch_len_box` | `the_hash_button_hashes_…` |
+| `bc41d65` | M17 the old sentence `format!("len {t:?}: {e}")` | the same | `the_hash_button_hashes_…` |
+
+### Measured here, because the next reader will look
+
+- **`monospace(format!` in production `ui.rs`:** 2 at `b0d569e` (lines 837 and 4931), 1 at `bc41d65`. The
+  one left is the note's machine address.
+- **`{…:?}` in production string literals in `oracle-player`:** 22 at `b0d569e`, 21 at `bc41d65`.
+- **Across all 114 files at `bc41d65`:**
+  - 0 dashes in production strings;
+  - 0 escaped dashes in production strings;
+  - 7 P9 hits, all out of scope;
+  - 15 scroll areas, 0 unsalted;
+  - positive control: 8,470 dashes overall.
+
+### Totals
+
+Measured on `bc41d65`, the code tip, with a clean tree. On the base `b0d569e`: `cargo fmt --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, and debug **90 legs / 2980 passed / 0 failed
+/ 8 ignored**.
+
+| check | `bc41d65` |
+|---|---|
+| `cargo fmt --check` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean (exit 0, no warning or error lines) |
+| `cargo test --workspace` (debug) | **91 legs / 2989 / 0 / 8** |
+| `cargo test --workspace --release` | **91 legs / 2992 / 0 / 5** |
+
+The one extra leg is `tests/p7_every_scroll_area_names_its_id_salt.rs`. The extra 9 passed tests reconcile
+by name: 10 tests added, 1 deleted.
+
+- **Added:**
+  - `states`: 1;
+  - `ui::slot_cells_tests`: 4;
+  - `palette`: 1;
+  - `memory::hash_len_tests`: 1;
+  - the P7 file: 2;
+  - the P10 file: 1.
+- **Deleted:** `every_scroll_area_production_ui_rs_builds_names_its_id_salt`.
+
+### What a frame still has to answer (parked look calls 30-33, same rule: none of these were seen)
+
+§6's call 6 (do ten cells fit the strip without wrapping, and do they beat the stepper?) is now live rather
+than hypothetical. §6's call 5 (the glass alarm) is still parked and unbuilt.
+
+30. **Occupied against empty.** In the default family `raised` is `#442B66` and `surface` is `#2C1B46`, and
+    an empty cell is `surface` on a `surface` panel with no outline. *Question: can an occupied slot be told
+    from an empty one at a glance, and does an empty cell still read as a cell?*
+31. **Selection by fill alone.** The `slot N` text is gone, so the only mark on the slot F2 writes to is
+    the accent at 28% over the panel. *Question: can a person tell which slot is selected without
+    hovering?*
+32. **An empty selected cell.** A recessed number on the selection fill. *Question: is the number still
+    legible?*
+33. **Hover as a stroke.** *Question: does a row of flat cells read as clickable before the pointer
+    reaches one?*
+
+### What remains of the audit after this parcel, apart from look calls
+
+Every row of §2's build order except item 10 is now built. What is left:
+
+1. **Item 10, Objects:** a look call for the owner (§6 call 1, and call 27 on the moved headers). One
+   code item is booked to it and still live: `objects.rs:215`'s `Row::cell` ends
+   `Some(v) => v.to_string()`, the latent raw-JSON catch-all the 2026-09-16 (evening) addendum found.
+   `L-15` explicitly does not cover it.
+2. **When to re-read the disk for slot occupancy:** options (a)-(e) above, for a ruling.
+3. **§4's build chip paragraph** proposes the revision hash in monospace inside the hover's prose. It is
+   not a row in §2, it was not built (`identity::detail()` goes to `on_hover_text` as one plain string),
+   and this parcel did not take it up.
+4. **§6 call 9:** a profiled frame of the Watchpoints hit log, tagged for the owner's foreground session.
+
+The look calls themselves (1-33, less the settled call 4) are the owner's.

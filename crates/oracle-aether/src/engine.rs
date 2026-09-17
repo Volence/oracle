@@ -442,7 +442,9 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec {
         name: "emulator/wait_for_break",
         handler: Engine::wait_for_break,
-        summary: "poll where the machine halted (deprecated by the `stopped` event; see §6 D6)",
+        // Deprecated by §6 D6. The citation lives in this comment and not in the summary, which the
+        // debug window's command palette draws for a person who is not holding the specification (P9).
+        summary: "poll where the machine halted (deprecated: subscribe to the `stopped` event instead)",
         params: &["timeoutMs"],
     },
     MethodSpec {

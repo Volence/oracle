@@ -53,11 +53,17 @@
 //! * **Anything inside a `#[cfg(test)]` module, and everything under `tests/`.** An assertion message is
 //!   read by a developer when a test fails, which is not "in the tool"; and in this repo those messages
 //!   carry dense recon provenance whose punctuation is doing real work.
-//! * **Escaped forms.** `'\u{2014}'` as a *character value* is not text: the bitmap font in
-//!   `oracle-frontend` must keep an em-dash glyph so that a dash arriving from elsewhere renders as a dash
-//!   rather than a missing-glyph box, and the existing P10 guards spell their needle that way too. The
-//!   lexer sees the source bytes `\`,`u`,`{`,… and not a dash, so it passes them without special-casing,
-//!   which is the behaviour we want.
+//! * **Escaped forms as a character value.** `'\u{2014}'` in a character literal is not text: the bitmap
+//!   font in `oracle-frontend` must keep an em-dash glyph so that a dash arriving from elsewhere renders as
+//!   a dash rather than a missing-glyph box, and the existing P10 guards spell their needle that way too.
+//!
+//!   ⚑ **An escape inside a STRING literal is text, and until 2026-09-17 this gate could not see it.**
+//!   `"a \u{2014} b"` compiles to a string holding a real em dash, but the lexer sees the source bytes
+//!   `\`,`u`,`{`,… and not a dash, so the gate passed it. Measured on the tree that day there were no such
+//!   escapes in production strings, so the hole was empty; [`offences_in`] now reports one anyway, so a
+//!   zero stays a zero. A backslash that is itself escaped (`"\\u{2014}"`, which prints the six
+//!   characters and no dash) is not an offence, and a raw string cannot tell the lexer which it is, so a
+//!   raw string's `\u{2014}` is reported too and would need rewording.
 //! * **`crates/oracle-aether/tests/contract/`.** Byte-equality with a peer's vendored copy is what the
 //!   conformance gate exists to prove. It is under `tests/`, so it is already outside the walk; this note
 //!   records that the exclusion is intentional and not an oversight.
@@ -77,6 +83,9 @@
 //!   per-kind counts must sum to the raw character count, so a dash cannot escape by falling between two
 //!   categories.
 
+mod source_lex;
+
+use source_lex::{cfg_test_spans, classify, predicate_gates_on_test, Kind};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -84,303 +93,6 @@ use std::path::{Path, PathBuf};
 /// on 2026-09-05; this is set well below that so ordinary growth and pruning never trip it, while a root
 /// that resolves wrong (the failure this guards) collapses to single digits or zero.
 const MIN_FILES: usize = 60;
-
-/// What a character in a Rust source file belongs to.
-///
-/// Only [`Kind::Str`] is in P10's scope. The rest are named rather than lumped into "not a string" so the
-/// partition test can prove nothing falls between them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Kind {
-    Code,
-    LineComment,
-    DocComment,
-    BlockComment,
-    Str,
-    CharLit,
-}
-
-/// Classify every character of `src` by what it belongs to.
-///
-/// This is a deliberately small Rust lexer: it only needs to know where strings, comments and character
-/// literals begin and end, so it skips everything about the language that does not move those boundaries.
-///
-/// The subtleties that earn their lines here:
-///
-/// * **Raw strings** (`r"…"`, `r#"…"#`, `br#"…"#`) have no escape processing, so the terminator is the
-///   quote followed by exactly as many `#` as opened it. A scanner that stops at the first `"` truncates
-///   the literal and then reads its remainder as code.
-/// * **Char literals versus lifetimes.** `'a` in `&'a str` is not an unterminated character literal. The
-///   rule used here is that a `'` opens a character literal only when a closing `'` sits where a
-///   single-character (or escaped) literal would put it; anything else is a lifetime and is passed over.
-/// * **Escapes inside strings.** `\"` does not close a string and `\\` does not escape the quote after it,
-///   so the scan advances two characters at a backslash rather than one.
-fn classify(src: &[char]) -> Vec<Kind> {
-    let n = src.len();
-    let mut kinds = vec![Kind::Code; n];
-    let mut i = 0usize;
-
-    let paint = |kinds: &mut Vec<Kind>, from: usize, to: usize, k: Kind| {
-        for slot in kinds.iter_mut().take(to.min(n)).skip(from) {
-            *slot = k;
-        }
-    };
-
-    while i < n {
-        let c = src[i];
-
-        // `//`, `///`, `//!` — to end of line.
-        if c == '/' && i + 1 < n && src[i + 1] == '/' {
-            let mut j = i;
-            while j < n && src[j] != '\n' {
-                j += 1;
-            }
-            // `///` and `//!` are doc comments; `////` is an ordinary comment again.
-            let is_doc = i + 2 < n
-                && (src[i + 2] == '/' || src[i + 2] == '!')
-                && !(i + 3 < n && src[i + 2] == '/' && src[i + 3] == '/');
-            paint(
-                &mut kinds,
-                i,
-                j,
-                if is_doc {
-                    Kind::DocComment
-                } else {
-                    Kind::LineComment
-                },
-            );
-            i = j;
-            continue;
-        }
-
-        // `/* … */`, which nests in Rust.
-        if c == '/' && i + 1 < n && src[i + 1] == '*' {
-            let is_doc = i + 2 < n && (src[i + 2] == '*' || src[i + 2] == '!');
-            let mut depth = 1usize;
-            let mut j = i + 2;
-            while j < n && depth > 0 {
-                if src[j] == '/' && j + 1 < n && src[j + 1] == '*' {
-                    depth += 1;
-                    j += 2;
-                } else if src[j] == '*' && j + 1 < n && src[j + 1] == '/' {
-                    depth -= 1;
-                    j += 2;
-                } else {
-                    j += 1;
-                }
-            }
-            paint(
-                &mut kinds,
-                i,
-                j,
-                if is_doc {
-                    Kind::DocComment
-                } else {
-                    Kind::BlockComment
-                },
-            );
-            i = j;
-            continue;
-        }
-
-        // Raw strings, with the optional `b` byte prefix: `r"…"`, `r#"…"#`, `br##"…"##`.
-        {
-            let mut m = i;
-            if src[m] == 'b' && m + 1 < n && src[m + 1] == 'r' {
-                m += 1;
-            }
-            if src[m] == 'r' {
-                let mut h = m + 1;
-                let mut hashes = 0usize;
-                while h < n && src[h] == '#' {
-                    hashes += 1;
-                    h += 1;
-                }
-                if h < n && src[h] == '"' {
-                    let mut j = h + 1;
-                    let mut end = n;
-                    while j < n {
-                        if src[j] == '"' {
-                            let mut k = 0usize;
-                            while k < hashes && j + 1 + k < n && src[j + 1 + k] == '#' {
-                                k += 1;
-                            }
-                            if k == hashes {
-                                end = j + 1 + hashes;
-                                break;
-                            }
-                        }
-                        j += 1;
-                    }
-                    paint(&mut kinds, i, end, Kind::Str);
-                    i = end;
-                    continue;
-                }
-            }
-        }
-
-        // Ordinary and byte strings: `"…"`, `b"…"`.
-        {
-            let mut m = i;
-            if src[m] == 'b' && m + 1 < n && src[m + 1] == '"' {
-                m += 1;
-            }
-            if src[m] == '"' {
-                let mut j = m + 1;
-                while j < n {
-                    if src[j] == '\\' {
-                        j += 2;
-                        continue;
-                    }
-                    if src[j] == '"' {
-                        j += 1;
-                        break;
-                    }
-                    j += 1;
-                }
-                paint(&mut kinds, i, j, Kind::Str);
-                i = j;
-                continue;
-            }
-        }
-
-        // A character literal, or a lifetime that must not be mistaken for one.
-        if c == '\'' {
-            if i + 1 < n && src[i + 1] == '\\' {
-                let mut j = i + 2;
-                while j < n && src[j] != '\'' {
-                    j += 1;
-                }
-                j += 1;
-                paint(&mut kinds, i, j, Kind::CharLit);
-                i = j;
-                continue;
-            }
-            if i + 2 < n && src[i + 2] == '\'' {
-                paint(&mut kinds, i, i + 3, Kind::CharLit);
-                i += 3;
-                continue;
-            }
-            // A lifetime: step over the quote and read the name as ordinary code.
-            i += 1;
-            continue;
-        }
-
-        i += 1;
-    }
-
-    kinds
-}
-
-/// Does this `cfg` predicate gate its item on `test`?
-///
-/// ⚑ **This function exists because matching the literal string `#[cfg(test)]` is wrong, and quietly so.**
-/// The first version of this gate did exactly that, and it mis-scoped **101 of 480** apparent sites on the
-/// pre-sweep tree: `oracle-player` alone writes `#[cfg(all(test, unix))]` in eight places and
-/// `oracle-frontend` writes `#[cfg(all(test, feature = "aether"))]`, and every string in those modules was
-/// counted as shipped text. A sweep driven by that count would have rewritten a hundred test assertions
-/// for nothing, and the gate would then have stayed red against correctly-swept code.
-///
-/// The rule is a **bare `test` token anywhere in the predicate**, which admits `all(test, unix)`,
-/// `any(test, feature = "x")` and plain `test`. String contents are stripped first, so
-/// `feature = "test-utils"` is correctly *not* treated as test-gating: the word only appears there inside
-/// a quoted feature name.
-fn predicate_gates_on_test(pred: &str) -> bool {
-    // Drop quoted strings, so a feature *named* "test-…" cannot masquerade as the `test` cfg.
-    let mut bare = String::with_capacity(pred.len());
-    let mut in_str = false;
-    let mut prev_escape = false;
-    for c in pred.chars() {
-        match c {
-            '"' if !prev_escape => in_str = !in_str,
-            _ if !in_str => bare.push(c),
-            _ => {}
-        }
-        prev_escape = c == '\\' && !prev_escape;
-    }
-
-    // A whole-word `test`, not `test_utils` and not `latest`.
-    bare.match_indices("test").any(|(at, _)| {
-        let before_ok = at == 0
-            || !bare[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        let after = at + "test".len();
-        let after_ok = !bare[after..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        before_ok && after_ok
-    })
-}
-
-/// The character ranges covered by test-gated modules, so their contents can be held out of scope.
-///
-/// The attribute is located only where it is genuine code (an occurrence inside a string or a comment is
-/// not an attribute), its predicate is read to the matching `)` and tested by [`predicate_gates_on_test`],
-/// then the following `{` is brace-matched with strings and comments skipped, so a `}` inside a test's own
-/// message does not close the module early.
-fn cfg_test_spans(src: &[char], kinds: &[Kind]) -> Vec<(usize, usize)> {
-    let needle: Vec<char> = "#[cfg(".chars().collect();
-    let n = src.len();
-    let mut spans = Vec::new();
-    let mut i = 0usize;
-
-    while i + needle.len() <= n {
-        if kinds[i] == Kind::Code && src[i..i + needle.len()] == needle[..] {
-            // Read the predicate to its matching ')'.
-            let mut depth = 0usize;
-            let mut e = i + needle.len() - 1;
-            while e < n {
-                if kinds[e] == Kind::Code {
-                    if src[e] == '(' {
-                        depth += 1;
-                    } else if src[e] == ')' {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    }
-                }
-                e += 1;
-            }
-            let pred: String = src[(i + needle.len()).min(n)..e.min(n)].iter().collect();
-            if !predicate_gates_on_test(&pred) {
-                i += 1;
-                continue;
-            }
-
-            // The opening brace of the module that the attribute decorates.
-            let mut b = e.min(n);
-            while b < n && !(src[b] == '{' && kinds[b] == Kind::Code) {
-                b += 1;
-            }
-            if b < n {
-                let mut depth = 0usize;
-                let mut j = b;
-                while j < n {
-                    if kinds[j] == Kind::Code {
-                        if src[j] == '{' {
-                            depth += 1;
-                        } else if src[j] == '}' {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                    }
-                    j += 1;
-                }
-                spans.push((i, (j + 1).min(n)));
-                i = (j + 1).min(n);
-                continue;
-            }
-        }
-        i += 1;
-    }
-
-    spans
-}
 
 fn is_dash(c: char) -> bool {
     c == '\u{2014}' || c == '\u{2013}'
@@ -459,7 +171,36 @@ struct Offence {
     text: String,
 }
 
-/// Scan one file and return the dashes that sit in production string literals.
+/// Whether an unescaped `\u{2014}` or `\u{2013}` escape (hex in either case, leading zeros allowed)
+/// starts at `idx`: the source spelling of a dash that a string literal compiles into a real one.
+fn escaped_dash_at(chars: &[char], idx: usize) -> bool {
+    if chars.get(idx) != Some(&'\\') {
+        return false;
+    }
+    // An odd run of backslashes before this one means this one is itself escaped.
+    let before = chars[..idx]
+        .iter()
+        .rev()
+        .take_while(|c| **c == '\\')
+        .count();
+    if before % 2 == 1 {
+        return false;
+    }
+    let rest: String = chars[idx + 1..].iter().take(12).collect();
+    let Some(body) = rest.strip_prefix("u{") else {
+        return false;
+    };
+    let Some(end) = body.find('}') else {
+        return false;
+    };
+    matches!(
+        u32::from_str_radix(&body[..end], 16).ok().and_then(char::from_u32),
+        Some(c) if is_dash(c)
+    )
+}
+
+/// Scan one file and return the dashes that sit in production string literals, whether written as the
+/// character or as its `\u{…}` escape.
 fn offences_in(path: &Path, src: &str) -> Vec<Offence> {
     let chars: Vec<char> = src.chars().collect();
     let kinds = classify(&chars);
@@ -472,7 +213,7 @@ fn offences_in(path: &Path, src: &str) -> Vec<Offence> {
         if c == '\n' {
             line += 1;
         }
-        if !is_dash(c) || kinds[idx] != Kind::Str {
+        if kinds[idx] != Kind::Str || !(is_dash(c) || escaped_dash_at(&chars, idx)) {
             continue;
         }
         if spans.iter().any(|&(a, b)| idx >= a && idx < b) {
@@ -583,6 +324,38 @@ fn f() {
             ('g', Kind::Str),
         ],
         "the lexer mis-attributed at least one dash; the gate's scope is only as good as this"
+    );
+}
+
+/// **An escaped dash in a production string is an offence; the same escape as a character value, an
+/// escaped backslash, and anything in a test module are not.**
+///
+/// Every line is a spelling the lexer alone reads as dash-free, which is why this row exists: the gate
+/// used to see only the literal character.
+#[test]
+fn an_escaped_dash_in_a_shipped_string_is_an_offence() {
+    let sample = "\
+fn f() {
+    let a = \"em \\u{2014} a\";
+    let b = \"en \\u{2013} b\";
+    let c = \"zero-padded \\u{02014} c\";
+    let d = '\\u{2014}';
+    let e = \"escaped backslash \\\\u{2014} e\";
+    let g = \"arrow \\u{2192} g\";
+}
+#[cfg(test)]
+mod tests {
+    const T: &str = \"test \\u{2014} t\";
+}
+";
+    let lines: Vec<usize> = offences_in(Path::new("sample.rs"), sample)
+        .iter()
+        .map(|o| o.line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![2, 3, 4],
+        "expected the em, en and zero-padded escapes on lines 2 to 4 and nothing else"
     );
 }
 

@@ -814,6 +814,18 @@ pub fn hash_gate(space: Space) -> Result<(), String> {
     ))
 }
 
+/// **The hash range's `len` box, parsed**: a decimal byte count, or the panel's own refusal.
+///
+/// It used to be parsed inline in `ui.rs`, trimmed for the parse and quoted UNtrimmed in the refusal, so
+/// `" 0x10 "` was refused as `len " 0x10 "` and a reader saw padding the parser never looked at, and it
+/// did not say what the Watchpoints tab's `len` box says about the same mistake. Both now come from
+/// [`crate::stopping::len_refusal`], over the text that was actually parsed.
+pub fn hash_len(text: &str) -> Result<u64, Line> {
+    let t = text.trim();
+    t.parse()
+        .map_err(|e| Line::from_panel(crate::stopping::len_refusal(t, &e)))
+}
+
 /// `emulator/memory_hash` over `addr..addr+len`, answered by the handler.
 pub fn hash(bus: &mut Bus, sys: &mut System, addr: u32, len: u64) -> Answer {
     bus.call(
@@ -1889,6 +1901,69 @@ mod bus_parity {
 /// actually go through it?** A helper can be perfect and unreached — the defect it replaced was reached
 /// eight times, from six files — so these legs make the real calls on a real machine and read the line
 /// [`answer_line`] hands the panel, which is the string `note_label` draws.
+/// **The hash range's `len` refusal** (the parcel 6-8 addendum left its `len {:?}` quoting open).
+#[cfg(test)]
+mod hash_len_tests {
+    use super::*;
+
+    /// **The refusal quotes the text that was parsed, and says what the Watchpoints tab's `len` box says
+    /// about the same typing.**
+    ///
+    /// The expectation for every non-empty input is read off the Watchpoints tab's own refusal, as that
+    /// tab draws it (`watch_add_params`'s error through [`Line::from_panel`]), so the gate holds the two
+    /// boxes together rather than pinning a sentence. An empty box is the one input the two boxes treat
+    /// differently (the watch box sends the handler's default), so it is checked on its own: refused, with
+    /// the empty text visible.
+    #[test]
+    fn a_hash_len_refusal_quotes_the_parsed_text_and_matches_the_watch_len_box() {
+        let mut padded = 0;
+        for typed in [
+            "0x10",
+            " 0x10 ",
+            "12x",
+            "\t4O\t",
+            "-1",
+            "99999999999999999999",
+        ] {
+            let refused = hash_len(typed).expect_err("not a decimal byte count");
+            let watch =
+                crate::stopping::watch_add_params("0xFF0000", typed, "bus", false, true, "", "")
+                    .expect_err("the watch box refuses the same typing");
+            let expected = Line::from_panel(watch);
+            assert!(
+                refused.text == expected.text && refused.refused && refused.addr.is_none(),
+                "the hash box and the watch box say different things about {typed:?}: {:?} and {:?}",
+                refused.text,
+                expected.text
+            );
+            assert!(
+                refused.text.contains(&format!("{:?}", typed.trim())),
+                "the refusal does not quote the parsed text: {:?}",
+                refused.text
+            );
+            if typed != typed.trim() {
+                padded += 1;
+                assert!(
+                    !refused.text.contains(&format!("{typed:?}")),
+                    "the refusal quotes padding the parser never read: {:?}",
+                    refused.text
+                );
+            }
+        }
+        assert!(padded >= 2, "COULD NOT MEASURE: no padded input");
+
+        for blank in ["", "   "] {
+            let refused = hash_len(blank).expect_err("an empty box is not a length");
+            assert!(
+                refused.refused && refused.text.contains("len \"\""),
+                "{:?}",
+                refused.text
+            );
+        }
+        assert_eq!(hash_len(" 256 ").ok(), Some(256));
+    }
+}
+
 #[cfg(test)]
 mod json_echo {
     use super::*;

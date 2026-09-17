@@ -825,23 +825,24 @@ impl Panels<'_> {
         // capability *findable*, and it names the keys so the row teaches them rather than replacing
         // them.
         //
-        // The occupancy dots are read from [`crate::states::States`]'s probe of the filesystem, not from
-        // a count this window keeps: a slot file written by the other window, or deleted outside both,
-        // must show as it is.
+        // ⚑ **All ten slots, one cell each** (audit §4, "the control strip and the save slots"). This
+        // row used to draw `slot N (occupied)` for the selected slot and nothing for the other nine, so a
+        // person stepped through ten slots blind to find a full one. [`slot_cells`] draws every slot, and
+        // a click on a cell selects it; the steppers stay beside it because they name F6 and F7.
+        //
+        // The occupancy comes from [`crate::states::States::cells`], which reads the probe taken at open,
+        // at a cartridge swap and by a save. It is NOT re-read per frame, so a slot file written by the
+        // other window, or deleted outside both, shows as it was at the last probe. That was already true
+        // of the one slot this row used to show; the choice of when to re-probe is recorded as open in
+        // the audit page's parcel 9-11 addendum.
         ui.horizontal(|ui| {
             ui.weak("state:");
+            if let Some(slot) = slot_cells(ui, &self.states.cells()) {
+                self.states.select(slot);
+            }
             if ui.button("◀").on_hover_text("F6: previous slot").clicked() {
                 self.states.step(-1);
             }
-            let slot = self.states.slot();
-            ui.monospace(format!(
-                "slot {slot} {}",
-                if self.states.occupied(slot) {
-                    "(occupied)"
-                } else {
-                    "(empty)"
-                }
-            ));
             if ui.button("▶").on_hover_text("F7: next slot").clicked() {
                 self.states.step(1);
             }
@@ -1922,11 +1923,8 @@ impl Panels<'_> {
                 .clicked()
             {
                 let base = self.mem.base;
-                let parsed = self.mem.hash_len_text.trim().parse::<u64>();
-                self.mem.hash_note = Some(match parsed {
-                    Err(e) => {
-                        memory::Line::from_panel(format!("len {:?}: {e}", self.mem.hash_len_text))
-                    }
+                self.mem.hash_note = Some(match memory::hash_len(&self.mem.hash_len_text) {
+                    Err(refused) => refused,
                     Ok(len) => {
                         let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
                         memory::answer_line(&memory::hash(bus, sys, base, len))
@@ -4289,6 +4287,97 @@ fn cell_face(ui: &egui::Ui, c: &table::Col) -> egui::FontId {
         .get(&want)
         .cloned()
         .unwrap_or_else(|| egui::FontId::proportional(13.0))
+}
+
+/// The gap between two save-slot cells. Small, because the ten cells are one control and read as a row.
+const SLOT_CELL_GAP: f32 = 2.0;
+
+/// **The save-state slots as one row of cells**, drawn by [`Panels::screen_controls`]. Returns the slot
+/// clicked this frame; the caller owns the selection, as it does for [`table`].
+///
+/// Audit §4's "Becomes" for the Screen strip, and the reasons each choice is what it is:
+///
+/// * **The slot number, in the monospace face**, and nothing else in the cell. The `(occupied)` /
+///   `(empty)` parenthetical this replaces was prose in the machine face (P3), and it described only the
+///   selected slot.
+/// * **Occupancy is carried twice**: by the fill (`raised` for a slot with a file, the panel's `surface`
+///   for an empty one) and by the number's colour (the emphasis colour, or the recessed one). The hover
+///   says it a third time in words ([`crate::states::SlotCell::hover`]), so it is never colour alone.
+/// * **The selected slot takes [`crate::theme::selection`]**, the fill a chosen table row takes, and the
+///   number keeps its occupancy colour, so the selection does not hide whether it holds a state.
+/// * **Hover is a stroke, not a fill.** [`row_fill`] lets hover replace a row's banding, which is safe
+///   there because banding carries nothing. Here the fill is a fact, and a pointer resting on a cell must
+///   not change what the cell says.
+///
+/// ⚑ **Where the code disagreed with §4, the code won.** §4 names `text_faint` for an empty slot's
+/// number. The theme exposes no path to that token at draw time: `Visuals` has no slot for it, and every
+/// other recessed text in the window is `weak_text_color`, so that is what an empty slot uses.
+fn slot_cells(ui: &mut egui::Ui, cells: &[crate::states::SlotCell]) -> Option<usize> {
+    let face = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Monospace)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::monospace(12.0));
+    let labels: Vec<String> = cells.iter().map(|c| c.slot.to_string()).collect();
+    let widest = labels
+        .iter()
+        .map(|l| text_w(ui, &face, l))
+        .fold(0.0_f32, f32::max);
+    let h = ui.spacing().interact_size.y;
+    // Square when the number fits, wider only if a slot number ever needs it; every cell the same width
+    // either way, so the row reads as one control.
+    let size = egui::vec2(h.max(widest + 2.0 * ui.spacing().button_padding.x), h);
+    let mut clicked = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = SLOT_CELL_GAP;
+        for (c, label) in cells.iter().zip(labels) {
+            let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+            let (fill, ink) = slot_cell_colours(ui.visuals(), c);
+            let radius = ui.visuals().widgets.inactive.corner_radius;
+            let painter = ui.painter();
+            painter.rect_filled(rect, radius, fill);
+            if resp.hovered() {
+                painter.rect_stroke(
+                    rect,
+                    radius,
+                    ui.visuals().widgets.hovered.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                face.clone(),
+                ink,
+            );
+            if resp.on_hover_text(c.hover()).clicked() {
+                clicked = Some(c.slot);
+            }
+        }
+    });
+    clicked
+}
+
+/// A slot cell's fill and its number's colour, from the facts [`slot_cells`] documents.
+fn slot_cell_colours(
+    v: &egui::Visuals,
+    c: &crate::states::SlotCell,
+) -> (egui::Color32, egui::Color32) {
+    let fill = if c.selected {
+        crate::theme::selection()
+    } else if c.occupied {
+        v.faint_bg_color
+    } else {
+        v.panel_fill
+    };
+    let ink = if c.occupied {
+        v.strong_text_color()
+    } else {
+        v.weak_text_color()
+    };
+    (fill, ink)
 }
 
 /// **What one row of a table is filled with**, in one function, so a selected row cannot be one colour in
@@ -10718,49 +10807,6 @@ mod memory_tab_tests {
         }
         assert!(addressed == 2 && refused == 1, "COULD NOT MEASURE");
     }
-
-    /// **P7, at the source: every `ScrollArea` production code in this file builds names its `id_salt`.**
-    ///
-    /// A source gate, because a scroll area without a salt draws identically and only loses its place when
-    /// something else changes, which no headless frame reaches. It reads each constructor call in the
-    /// production half of `ui.rs` (above the first test module, the cut
-    /// `the_owner_is_the_only_production_reader_of_the_fit` asserts is sound) and requires `.id_salt(`
-    /// before the `.show` that ends the builder. The count of constructors found is asserted non-trivial.
-    #[test]
-    fn every_scroll_area_production_ui_rs_builds_names_its_id_salt() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui.rs");
-        let src = std::fs::read_to_string(&path).expect("COULD NOT MEASURE: ui.rs");
-        let lines: Vec<&str> = src.lines().collect();
-        let cut = lines
-            .windows(2)
-            .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod "))
-            .expect("COULD NOT MEASURE: no test module");
-        let mut found = 0;
-        for (i, line) in lines[..cut].iter().enumerate() {
-            let code = line.trim_start();
-            if code.starts_with("//") || !code.contains("egui::ScrollArea::") {
-                continue;
-            }
-            found += 1;
-            let builder: String = lines[i..cut]
-                .iter()
-                .take_while(|l| !l.contains(".show"))
-                .chain(lines[i..cut].iter().find(|l| l.contains(".show")))
-                .copied()
-                .collect::<Vec<_>>()
-                .join("\n");
-            let show = builder.find(".show").expect("a builder ends in show");
-            assert!(
-                builder[..show].contains(".id_salt("),
-                "ui.rs:{} builds a ScrollArea with no id_salt (P7):\n{builder}",
-                i + 1
-            );
-        }
-        assert!(
-            found >= 10,
-            "COULD NOT MEASURE: only {found} ScrollArea constructors found"
-        );
-    }
 }
 
 /// **The Planes tab's legend** (audit build-order item 8): the picture checkers every transparent pixel,
@@ -10909,6 +10955,307 @@ mod planes_legend_tests {
                     .iter()
                     .any(|(_, t)| t == crate::planes::TRANSPARENT_LEGEND),
                 "at {ppp}: a legend drawn for a picture that is not there"
+            );
+        }
+    }
+}
+
+/// **The Screen strip's save slots** (audit build-order item 9): all ten are drawn, each says whether it
+/// holds a state by fill and by colour, and a click selects.
+///
+/// Every expected colour is read off the theme family's own tokens (`raised`, `surface`, `text_hi`) or
+/// off the installed `Visuals`, never off [`slot_cell_colours`], so the gate is not the function
+/// agreeing with itself.
+#[cfg(test)]
+mod slot_cells_tests {
+    use super::*;
+    use crate::states::SlotCell;
+
+    const FAMILY: crate::theme::Family = crate::theme::DEFAULT_FAMILY;
+
+    /// Occupied at 0, 3 and 9; selected at `selected`. An occupied slot that is not selected and an empty
+    /// one that is not selected are both present for every `selected`, so neither fact can be read off
+    /// the selection.
+    fn cells(selected: usize) -> Vec<SlotCell> {
+        (0..oracle_frontend::save_state::SLOT_COUNT)
+            .map(|slot| SlotCell {
+                slot,
+                occupied: [0, 3, 9].contains(&slot),
+                selected: slot == selected,
+            })
+            .collect()
+    }
+
+    struct Drawn {
+        /// Text runs: rect, text, colour, family.
+        runs: Vec<(egui::Rect, String, egui::Color32, egui::FontFamily)>,
+        /// Filled rects: rect, fill.
+        fills: Vec<(egui::Rect, egui::Color32)>,
+        visuals: egui::Visuals,
+        clicked: Option<usize>,
+    }
+
+    /// Draw [`slot_cells`] headless on the installed theme. With `click_at`, the pointer goes down and up
+    /// over that point on the frames after the first, which is what egui needs to report a click.
+    fn drawn(cells: &[SlotCell], click_at: Option<egui::Pos2>) -> Drawn {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, FAMILY);
+        let mut d = Drawn {
+            runs: Vec::new(),
+            fills: Vec::new(),
+            visuals: egui::Visuals::default(),
+            clicked: None,
+        };
+        for frame in 0..4 {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 200.0),
+                )),
+                ..Default::default()
+            };
+            if let Some(at) = click_at {
+                let button = |pressed| egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                };
+                match frame {
+                    1 => raw.events.push(egui::Event::PointerMoved(at)),
+                    2 => raw.events.push(button(true)),
+                    3 => raw.events.push(button(false)),
+                    _ => {}
+                }
+            }
+            let mut clicked = None;
+            let mut visuals = None;
+            let mut out = ctx.run_ui(raw, |ui| {
+                visuals = Some(ui.visuals().clone());
+                ui.horizontal(|ui| {
+                    clicked = slot_cells(ui, cells);
+                });
+            });
+            out.textures_delta.clear();
+            d.clicked = d.clicked.or(clicked);
+            d.visuals = visuals.expect("the frame ran");
+            fn walk(s: &egui::Shape, d: &mut Drawn) {
+                match s {
+                    egui::Shape::Text(t) => {
+                        let first = t.galley.job.sections.first();
+                        // `Painter::text` bakes the colour into the galley's `fallback_color`.
+                        let colour = if t.fallback_color != egui::Color32::PLACEHOLDER {
+                            t.fallback_color
+                        } else {
+                            first.map_or(egui::Color32::PLACEHOLDER, |s| s.format.color)
+                        };
+                        d.runs.push((
+                            t.galley.rect.translate(t.pos.to_vec2()),
+                            t.galley.text().into(),
+                            colour,
+                            first.map_or(egui::FontFamily::Proportional, |s| {
+                                s.format.font_id.family.clone()
+                            }),
+                        ))
+                    }
+                    egui::Shape::Rect(r) => d.fills.push((r.rect, r.fill)),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, d)),
+                    _ => {}
+                }
+            }
+            d.runs.clear();
+            d.fills.clear();
+            for c in &out.shapes {
+                walk(&c.shape, &mut d);
+            }
+        }
+        d
+    }
+
+    /// The smallest filled rect that holds `at`: the cell a number was painted in.
+    fn cell_of(d: &Drawn, at: egui::Pos2) -> (egui::Rect, egui::Color32) {
+        d.fills
+            .iter()
+            .filter(|(r, _)| r.contains(at))
+            .min_by(|a, b| a.0.area().total_cmp(&b.0.area()))
+            .copied()
+            .unwrap_or_else(|| panic!("COULD NOT MEASURE: no filled rect under {at:?}"))
+    }
+
+    /// ★ **All ten slots are drawn, each as its own monospace number and nothing else, and each says
+    /// whether it holds a state by its fill and by its number's colour.**
+    ///
+    /// The row used to paint `slot N (occupied)` for the selected slot only: one run, prose inside it, and
+    /// nine slots with no occupancy anywhere on the screen.
+    #[test]
+    fn every_slot_is_a_cell_whose_fill_and_number_say_whether_it_holds_a_state() {
+        for selected in [0, 4, 9] {
+            let cells = cells(selected);
+            let d = drawn(&cells, None);
+            assert_eq!(
+                d.runs.len(),
+                cells.len(),
+                "the row painted {:?}, which is not one run per slot",
+                d.runs.iter().map(|r| &r.1).collect::<Vec<_>>()
+            );
+            let (mut occupied_seen, mut empty_seen) = (0, 0);
+            for c in &cells {
+                let want = c.slot.to_string();
+                let (rect, text, colour, family) =
+                    d.runs.iter().find(|r| r.1 == want).unwrap_or_else(|| {
+                        panic!("slot {} was never painted: {:?}", c.slot, d.runs)
+                    });
+                assert_eq!(text, &want);
+                assert_eq!(*family, egui::FontFamily::Monospace, "slot {}", c.slot);
+                let (_, fill) = cell_of(&d, rect.center());
+                let want_fill = if c.selected {
+                    crate::theme::selection()
+                } else if c.occupied {
+                    FAMILY.raised
+                } else {
+                    FAMILY.surface
+                };
+                assert_eq!(
+                    fill, want_fill,
+                    "slot {} (occupied {}, selected {}) has the wrong fill",
+                    c.slot, c.occupied, c.selected
+                );
+                let want_ink = if c.occupied {
+                    FAMILY.text_hi
+                } else {
+                    d.visuals.weak_text_color()
+                };
+                assert_eq!(
+                    *colour, want_ink,
+                    "slot {} (occupied {}) has the wrong number colour",
+                    c.slot, c.occupied
+                );
+                if c.occupied {
+                    occupied_seen += 1;
+                } else {
+                    empty_seen += 1;
+                }
+            }
+            assert!(
+                occupied_seen > 1 && empty_seen > 1 && FAMILY.raised != FAMILY.surface,
+                "COULD NOT MEASURE: the fixture must tell occupied from empty"
+            );
+            assert_ne!(
+                FAMILY.text_hi,
+                d.visuals.weak_text_color(),
+                "COULD NOT MEASURE: the two number colours are the same colour"
+            );
+        }
+    }
+
+    /// **The cells hold their places**: one row, left to right in slot order, none overlapping, and each
+    /// number inside its own cell. A cell that reserved only its text's width would pull the next one
+    /// onto it, which is the table furniture's own defect from the parcel 6-8 addendum.
+    ///
+    /// ⚑ **The containment clause was missing from the first version, and a mutation found it.** With
+    /// every cell allocated one point wide, the cells still ran left to right without overlapping and
+    /// were all one width, so this gate stayed green while ten numbers were painted on top of each other.
+    /// Now each number's painted rect must sit inside its cell.
+    #[test]
+    fn the_cells_run_left_to_right_in_slot_order_without_overlapping() {
+        let cells = cells(4);
+        let d = drawn(&cells, None);
+        let rects: Vec<egui::Rect> = cells
+            .iter()
+            .map(|c| {
+                let run = d
+                    .runs
+                    .iter()
+                    .find(|r| r.1 == c.slot.to_string())
+                    .expect("painted");
+                let cell = cell_of(&d, run.0.center()).0;
+                assert!(
+                    cell.expand(0.5).contains_rect(run.0),
+                    "slot {}'s number {:?} is painted outside its cell {:?}",
+                    c.slot,
+                    run.0,
+                    cell
+                );
+                cell
+            })
+            .collect();
+        for w in rects.windows(2) {
+            assert!(
+                w[1].min.x >= w[0].max.x && (w[1].center().y - w[0].center().y).abs() < 0.5,
+                "two cells overlap or leave the row: {:?} then {:?}",
+                w[0],
+                w[1]
+            );
+            assert!(
+                (w[1].width() - w[0].width()).abs() < 0.01,
+                "the cells are not one width"
+            );
+        }
+    }
+
+    /// **A click on a cell selects that slot**, for every slot, on the cell the number is painted in.
+    #[test]
+    fn a_click_on_a_cell_returns_that_slot() {
+        let cells = cells(0);
+        let d = drawn(&cells, None);
+        for c in &cells {
+            let run = d
+                .runs
+                .iter()
+                .find(|r| r.1 == c.slot.to_string())
+                .expect("painted");
+            let clicked = drawn(&cells, Some(run.0.center())).clicked;
+            assert_eq!(
+                clicked,
+                Some(c.slot),
+                "a click on slot {}'s cell selected {clicked:?}",
+                c.slot
+            );
+        }
+        assert_eq!(
+            drawn(&cells, Some(egui::pos2(590.0, 190.0))).clicked,
+            None,
+            "a click outside every cell selected a slot"
+        );
+    }
+
+    /// **At the source: the Screen strip draws the cells, and the parenthetical is gone from it.**
+    ///
+    /// The strip lives in [`Panels::screen_controls`], which needs a whole machine, bus and battery to
+    /// draw, so this gate reads that function's body instead. It requires the call to [`slot_cells`] and
+    /// forbids the two words and the monospace `format!` the old line was made of.
+    #[test]
+    fn the_screen_strip_draws_the_slot_cells_and_no_occupancy_prose() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui.rs");
+        let src = std::fs::read_to_string(&path).expect("COULD NOT MEASURE: ui.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.starts_with("    fn screen_controls("))
+            .expect("COULD NOT MEASURE: `fn screen_controls(` is not in ui.rs");
+        let len = lines[start..]
+            .iter()
+            .position(|l| *l == "    }")
+            .expect("COULD NOT MEASURE: `fn screen_controls` never closes");
+        let code: Vec<&str> = lines[start..start + len]
+            .iter()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .copied()
+            .collect();
+        assert!(
+            code.len() > 40,
+            "COULD NOT MEASURE: only {} code lines read",
+            code.len()
+        );
+        assert!(
+            code.iter()
+                .any(|l| l.contains("slot_cells(ui, &self.states.cells())")),
+            "the Screen strip does not draw the slot cells"
+        );
+        for banned in ["(occupied)", "(empty)", "monospace(format!"] {
+            assert!(
+                !code.iter().any(|l| l.contains(banned)),
+                "the Screen strip still draws {banned:?}"
             );
         }
     }
