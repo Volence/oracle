@@ -1516,6 +1516,60 @@ mod tests {
         );
     }
 
+    /// **Real replies for the CR-W vector file's cases 1-4** (CR-H's bar: hand-built populated vectors are
+    /// replaced by replies the implementation produced before the kind is served). Ignored: a capture, not a
+    /// gate. `cargo test -p oracle-player capture_cr_w_vector_replies -- --ignored --nocapture` prints one
+    /// `CRW-VECTOR <case> <reply>` line per case, each a whole `emulator/screen_text` result from
+    /// `Bus::call` after `Loop::publish_screen_text`, stamp included.
+    ///
+    /// 1. two leaves expanded (the other two collapsed), window narrowed until a drawn cell is elided;
+    /// 2. every leaf collapsed: the bar's two surfaces and no panel;
+    /// 3. a drawn panel with no text on the glass (`--dock every-tab`'s Profiler, W8's case);
+    /// 4. U+6F22 typed into the Watchpoints add box (W7's case).
+    #[test]
+    #[ignore = "capture for the CR-W vector file; run with --ignored --nocapture"]
+    fn capture_cr_w_vector_replies() {
+        let collapse_all_but = |dock: &mut egui_dock::DockState<Tab>, keep: &[Tab]| {
+            for node in dock.main_surface_mut().iter_mut() {
+                if let egui_dock::Node::Leaf(l) = node {
+                    l.collapsed = !l.tabs.iter().any(|t| keep.contains(t));
+                }
+            }
+        };
+        // 1: Registers and Breakpoints drawn; find a width at which some drawn run is elided.
+        let mut case1 = None;
+        for w in [1600.0f32, 1200.0, 1000.0, 800.0, 700.0, 600.0] {
+            let mut dock = crate::ui::initial_dock();
+            collapse_all_but(&mut dock, &[Tab::Registers, Tab::Breakpoints]);
+            let mut lp = fixture(dock);
+            let ctx = context();
+            let mut last = None;
+            for i in 0..=WARM {
+                let mut r = raw(i, Vec::new());
+                r.screen_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 700.0)));
+                last = Some(present(&mut lp, &ctx, r, Mode::Record, None));
+            }
+            let p = last.expect("presented");
+            if p.panel_surfaces().iter().any(|s| s.3) {
+                println!("case 1 found an elided cell at width {w}");
+                case1 = Some(p.reply);
+                break;
+            }
+        }
+        println!("CRW-VECTOR 1 {}", case1.expect("no width elided a cell"));
+        let mut dock = crate::ui::initial_dock();
+        collapse_all_but(&mut dock, &[]);
+        let mut lp = fixture(dock);
+        println!("CRW-VECTOR 2 {}", one(&mut lp, &Setup::default()).reply);
+        let mut lp = fixture(crate::ui::every_tab_dock());
+        println!("CRW-VECTOR 3 {}", one(&mut lp, &Setup::default()).reply);
+        let mut dock = focus_dock(Tab::Watchpoints);
+        collapse_all_but(&mut dock, &[Tab::Watchpoints]);
+        let mut lp = fixture(dock);
+        lp.stopping.w_target = "\u{6F22}".into();
+        println!("CRW-VECTOR 4 {}", one(&mut lp, &Setup::default()).reply);
+    }
+
     /// **W10, the cost of publishing per present** — ignored: a measurement, run in release:
     /// `CRW_ROUNDS=2000 cargo test --release -p oracle-player w10_publish_cost -- --ignored --nocapture`.
     ///
