@@ -394,6 +394,7 @@ impl Palette {
 
                 ui.separator();
                 egui::ScrollArea::vertical()
+                    .id_salt("palette-methods")
                     .max_height(320.0)
                     .show(ui, |ui| {
                         for m in &rows {

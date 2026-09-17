@@ -737,6 +737,7 @@ impl RomOpen {
                 drew.push(screen::Run::after_sep(sel_line));
 
                 egui::ScrollArea::vertical()
+                    .id_salt("rom-open-rows")
                     .max_height(320.0)
                     .show(ui, |ui| {
                         for (n, row) in rows.iter().enumerate() {

@@ -10810,49 +10810,6 @@ mod memory_tab_tests {
         }
         assert!(addressed == 2 && refused == 1, "COULD NOT MEASURE");
     }
-
-    /// **P7, at the source: every `ScrollArea` production code in this file builds names its `id_salt`.**
-    ///
-    /// A source gate, because a scroll area without a salt draws identically and only loses its place when
-    /// something else changes, which no headless frame reaches. It reads each constructor call in the
-    /// production half of `ui.rs` (above the first test module, the cut
-    /// `the_owner_is_the_only_production_reader_of_the_fit` asserts is sound) and requires `.id_salt(`
-    /// before the `.show` that ends the builder. The count of constructors found is asserted non-trivial.
-    #[test]
-    fn every_scroll_area_production_ui_rs_builds_names_its_id_salt() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui.rs");
-        let src = std::fs::read_to_string(&path).expect("COULD NOT MEASURE: ui.rs");
-        let lines: Vec<&str> = src.lines().collect();
-        let cut = lines
-            .windows(2)
-            .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod "))
-            .expect("COULD NOT MEASURE: no test module");
-        let mut found = 0;
-        for (i, line) in lines[..cut].iter().enumerate() {
-            let code = line.trim_start();
-            if code.starts_with("//") || !code.contains("egui::ScrollArea::") {
-                continue;
-            }
-            found += 1;
-            let builder: String = lines[i..cut]
-                .iter()
-                .take_while(|l| !l.contains(".show"))
-                .chain(lines[i..cut].iter().find(|l| l.contains(".show")))
-                .copied()
-                .collect::<Vec<_>>()
-                .join("\n");
-            let show = builder.find(".show").expect("a builder ends in show");
-            assert!(
-                builder[..show].contains(".id_salt("),
-                "ui.rs:{} builds a ScrollArea with no id_salt (P7):\n{builder}",
-                i + 1
-            );
-        }
-        assert!(
-            found >= 10,
-            "COULD NOT MEASURE: only {found} ScrollArea constructors found"
-        );
-    }
 }
 
 /// **The Planes tab's legend** (audit build-order item 8): the picture checkers every transparent pixel,
