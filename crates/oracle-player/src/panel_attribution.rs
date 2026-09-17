@@ -1544,15 +1544,21 @@ mod tests {
         );
     }
 
-    /// **Real replies for the CR-W vector file's cases 1-4** (CR-H's bar: hand-built populated vectors are
-    /// replaced by replies the implementation produced before the kind is served). Ignored: a capture, not a
-    /// gate. `cargo test -p oracle-player capture_cr_w_vector_replies -- --ignored --nocapture` prints one
-    /// `CRW-VECTOR <case> <reply>` line per case, each a whole `emulator/screen_text` result from
-    /// `Bus::call` after `Loop::publish_screen_text`, stamp included.
+    /// **Real replies for the CR-W vector file's cases 1-4, captured OVER A REAL SOCKET** (CR-H's bar:
+    /// hand-built populated vectors are replaced by replies the implementation produced). Ignored: a
+    /// capture, not a gate. `cargo test -p oracle-player --bin oracle-player capture_cr_w_vector_replies --
+    /// --ignored --nocapture` prints one `CRW-VECTOR <case> <reply>` line per case.
     ///
-    /// 1. two leaves expanded (the other two collapsed), window narrowed until a drawn cell is elided;
+    /// ⚑ **The socket, not `Bus::call`.** The first version of this capture read the reply through
+    /// `Bus::call` in-process, and the replies it produced were REFUSED by the vendored fragment: the D11
+    /// stamp (`frame`, `mclk`, `running`, `droppedEvents`) is added by the serving path
+    /// (`server::render`), not by `Engine::dispatch`, and `droppedEvents` is per connection. A vector is a
+    /// whole wire document, so it is captured from a whole wire document — a `Loop` bound to a private
+    /// socket, a real NDJSON client, `initialize`, then the read.
+    ///
+    /// 1. two leaves of the default dock expanded, the other two collapsed, with a cut cell;
     /// 2. every leaf collapsed: the bar's two surfaces and no panel;
-    /// 3. a drawn panel with no text on the glass (`--dock every-tab`'s Profiler, W8's case);
+    /// 3. `--dock every-tab`: two panels drawn with nothing on the glass (W8's case);
     /// 4. U+6F22 typed into the Watchpoints add box (W7's case).
     #[test]
     #[ignore = "capture for the CR-W vector file; run with --ignored --nocapture"]
@@ -1564,38 +1570,131 @@ mod tests {
                 }
             }
         };
-        // 1: Registers and Breakpoints drawn; find a width at which some drawn run is elided.
-        let mut case1 = None;
-        for w in [1600.0f32, 1200.0, 1000.0, 800.0, 700.0, 600.0] {
-            let mut dock = crate::ui::initial_dock();
-            collapse_all_but(&mut dock, &[Tab::Registers, Tab::Breakpoints]);
-            let mut lp = fixture(dock);
-            let ctx = context();
-            let mut last = None;
-            for i in 0..=WARM {
-                let mut r = raw(i, Vec::new());
-                r.screen_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 700.0)));
-                last = Some(present(&mut lp, &ctx, r, Mode::Record, None));
+        let mut case1 = crate::ui::initial_dock();
+        collapse_all_but(&mut case1, &[Tab::Registers, Tab::Breakpoints]);
+        let mut case2 = crate::ui::initial_dock();
+        collapse_all_but(&mut case2, &[]);
+        let mut case4 = focus_dock(Tab::Watchpoints);
+        collapse_all_but(&mut case4, &[Tab::Watchpoints]);
+        let cases: [(egui_dock::DockState<Tab>, &str); 4] = [
+            (case1, ""),
+            (case2, ""),
+            (crate::ui::every_tab_dock(), ""),
+            (case4, "\u{6F22}"),
+        ];
+        for (n, (dock, typed)) in cases.into_iter().enumerate() {
+            let reply = capture_over_socket(dock, typed);
+            if n == 0 {
+                assert!(
+                    reply["surfaces"]
+                        .as_array()
+                        .expect("surfaces")
+                        .iter()
+                        .any(|s| s["kind"] == "panel" && s["truncated"] == true),
+                    "case 1 must carry a cut panel: {reply}"
+                );
             }
-            let p = last.expect("presented");
-            if p.panel_surfaces().iter().any(|s| s.3) {
-                println!("case 1 found an elided cell at width {w}");
-                case1 = Some(p.reply);
-                break;
-            }
+            println!("CRW-VECTOR {} {reply}", n + 1);
         }
-        println!("CRW-VECTOR 1 {}", case1.expect("no width elided a cell"));
-        let mut dock = crate::ui::initial_dock();
-        collapse_all_but(&mut dock, &[]);
-        let mut lp = fixture(dock);
-        println!("CRW-VECTOR 2 {}", one(&mut lp, &Setup::default()).reply);
-        let mut lp = fixture(crate::ui::every_tab_dock());
-        println!("CRW-VECTOR 3 {}", one(&mut lp, &Setup::default()).reply);
-        let mut dock = focus_dock(Tab::Watchpoints);
-        collapse_all_but(&mut dock, &[Tab::Watchpoints]);
-        let mut lp = fixture(dock);
-        lp.stopping.w_target = "\u{6F22}".into();
-        println!("CRW-VECTOR 4 {}", one(&mut lp, &Setup::default()).reply);
+    }
+
+    /// One `emulator/screen_text` reply, read by a real client over a real socket from a `Loop` running
+    /// `dock`. The window drives presents until the client has finished; the client waits for
+    /// `status.display` and then reads several times, keeping the last, so the reply it keeps is from a
+    /// settled window (`egui_dock`'s outer scroll bar animates the body clip over the first presents).
+    fn capture_over_socket(dock: egui_dock::DockState<Tab>, typed: &str) -> serde_json::Value {
+        use std::io::{BufRead as _, Write as _};
+        let tag = format!("{}-{}", std::process::id(), line!());
+        let socket = std::env::temp_dir().join(format!("crw-{tag}.sock"));
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: Some(object_listing()),
+                path: None,
+                fatal: None,
+            },
+            Some(Some(socket.clone())),
+        );
+        assert!(lp.bus.is_serving(), "the fixture did not bind {socket:?}");
+        arm_for_measurement(&mut lp);
+        lp.dock = dock;
+        lp.stopping.w_target = typed.to_owned();
+        let path = socket.clone();
+        let client = std::thread::spawn(move || {
+            let deadline = Instant::now() + std::time::Duration::from_secs(20);
+            let stream = loop {
+                match std::os::unix::net::UnixStream::connect(&path) {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut id = 0i64;
+            let mut call = |reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+                            method: &str,
+                            params: serde_json::Value| {
+                id += 1;
+                writeln!(
+                    writer,
+                    "{}",
+                    serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                )
+                .unwrap();
+                writer.flush().unwrap();
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).expect("read") > 0, "hung up");
+                    let v: serde_json::Value = serde_json::from_str(&line).expect("bad JSON");
+                    if v.get("id").is_some_and(|i| !i.is_null()) {
+                        assert!(v.get("error").is_none(), "{method}: {}", v["error"]);
+                        return v["result"].clone();
+                    }
+                }
+            };
+            call(
+                &mut reader,
+                "initialize",
+                serde_json::json!({"clientId":"crw-capture","clientName":"crw","clientVersion":"0",
+                    "protocolVersion":1,"clientCapabilities":{"events":false}}),
+            );
+            let deadline = Instant::now() + std::time::Duration::from_secs(20);
+            while call(&mut reader, "emulator/status", serde_json::json!({}))["display"] != true {
+                assert!(Instant::now() < deadline, "the window never presented");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let mut last = serde_json::Value::Null;
+            for _ in 0..16 {
+                last = call(&mut reader, "emulator/screen_text", serde_json::json!({}));
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+            last
+        });
+        let ctx = context();
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        let mut i = 0;
+        while !client.is_finished() {
+            assert!(Instant::now() < deadline, "the client never finished");
+            i += 1;
+            let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+        }
+        let reply = client.join().expect("the client thread");
+        drop(lp);
+        let _ = std::fs::remove_file(&socket);
+        reply
     }
 
     /// **W10, the cost of publishing per present** — ignored: a measurement, run in release:
