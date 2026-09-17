@@ -548,6 +548,21 @@ pub(crate) fn active_tabs(dock: &egui_dock::DockState<Tab>) -> Vec<Tab> {
     out
 }
 
+/// The active tabs of the MAIN surface alone, in its own node order.
+pub(crate) fn active_tabs_of_main(dock: &egui_dock::DockState<Tab>) -> Vec<Tab> {
+    let mut out = Vec::new();
+    for node in dock.main_surface().iter() {
+        if let egui_dock::Node::Leaf(leaf) = node {
+            if !leaf.collapsed {
+                if let Some(t) = leaf.tabs.get(leaf.active.0) {
+                    out.push(*t);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// One arrangement's measurement: the production harvest against the truth, for every drawn tab.
 pub(crate) struct Measured {
     pub name: String,
@@ -978,19 +993,32 @@ mod tests {
         assert_eq!(empty_runs, 0, "an empty galley became a run");
     }
 
-    /// ★ **A tab dragged out into a floating window, over another tab's body, is attributed exactly, and
-    /// its surface follows the main surface's.** `egui_dock` draws a window surface's body in the window's
-    /// own `Middle` layer; the span records that layer and the reader reads it. The spike measured that
-    /// attributing by clip rectangle instead takes the window's whole body into the tab beneath it.
+    /// ★ **Floating windows: attributed exactly, IN the drawn set, and reported main surface first, then
+    /// the windows in the order the window drew them** — §11.50's three normative corrections, two of them
+    /// here (the third, "an empty text shape is not a run", is in the TextEdit row).
+    ///
+    /// `egui_dock` draws a window surface's body in the window's own `Middle` layer; the span records that
+    /// layer and the reader reads it. The spike measured that attributing by clip rectangle instead takes
+    /// the window's whole body into the tab beneath it.
+    ///
+    /// **Two windows, not one**, because one window cannot tell "windows after the main surface" from
+    /// "this window last": the served order is asserted against the dock's own surface order, which is
+    /// derived independently of the recording (`active_tabs`), and the main-surface count is asserted so
+    /// the partition itself is checked rather than inferred.
     #[test]
     fn a_floating_window_over_a_body_is_attributed_exactly_and_reported_after_the_main_surface() {
         fn dock() -> egui_dock::DockState<Tab> {
             let mut dock = crate::ui::initial_dock();
-            let w = dock.add_window(vec![Tab::Profiler]);
-            dock.get_window_state_mut(w)
-                .expect("the window just added")
-                .set_position(egui::pos2(100.0, 150.0))
-                .set_size(egui::vec2(500.0, 400.0));
+            for (tab, at) in [
+                (Tab::Profiler, egui::pos2(100.0, 150.0)),
+                (Tab::Objects, egui::pos2(700.0, 500.0)),
+            ] {
+                let w = dock.add_window(vec![tab]);
+                dock.get_window_state_mut(w)
+                    .expect("the window just added")
+                    .set_position(at)
+                    .set_size(egui::vec2(500.0, 400.0));
+            }
             dock
         }
         let setup = Setup {
@@ -998,39 +1026,77 @@ mod tests {
             ..Setup::default()
         };
         let m = measure_with(
-            "window over Screen",
+            "two windows over the dock",
             dock(),
             WARM,
             &|_| Vec::new(),
             &mut |_| {},
             &setup,
         );
-        check_controls("window over Screen", &m);
+        check_controls("two windows over the dock", &m);
         let spans = &m.full.spans;
         let screen = spans
             .iter()
             .find(|s| s.name == "Screen")
             .expect("Screen drawn");
-        let window = spans
-            .iter()
-            .find(|s| s.name == "Profiler")
-            .expect("the window's body drawn");
-        assert_ne!(
-            window.layer, screen.layer,
-            "control: the window body shares the main layer, so the per-layer read is untested"
+        for name in ["Profiler", "Objects"] {
+            let w = spans.iter().find(|s| s.name == name).unwrap_or_else(|| {
+                panic!(
+                    "{name}'s window body was not drawn, so it is not in the \
+                     drawn set — §11.50 says it must be"
+                )
+            });
+            assert_ne!(
+                w.layer, screen.layer,
+                "control: {name}'s window body shares the main layer, so the per-layer read is untested"
+            );
+        }
+        // Control: a window really does cover part of Screen's body, so "nothing foreign" below is a
+        // verdict about an overlap. Measured from the clip rectangles the runs were painted under, since
+        // a production span carries no rectangle of its own.
+        let area = |tab: Tab| {
+            painted_of(&m.full, tab)
+                .iter()
+                .map(|p| p.clip)
+                .reduce(|a, b| a.union(b))
+                .unwrap_or_else(|| panic!("{tab:?} painted nothing"))
+        };
+        let (under, over) = (area(Tab::Screen), area(Tab::Profiler));
+        assert!(
+            under.intersects(over),
+            "control: the window at {over:?} does not overlap Screen's body at {under:?}, so \
+             exclusivity under a window is untested"
         );
         for (tab, truth, v) in &m.rows {
             assert!(*truth > 0, "{tab:?}: vacuous");
             assert!(v.pass(), "{tab:?}: {v:?}");
         }
+        // The served order, against the dock's own surfaces (main first, then windows) — derived
+        // independently of the spans.
         let names: Vec<String> = m.full.panel_surfaces().into_iter().map(|s| s.0).collect();
+        let expect: Vec<String> = active_tabs(&dock())
+            .iter()
+            .map(|t| t.title().to_owned())
+            .collect();
         assert_eq!(
-            names.last().map(String::as_str),
-            Some("Profiler"),
-            "a floating window's panel is drawn after the main surface's and reported in that order: \
-             {names:?}"
+            names, expect,
+            "§11.50: main surface's panels, then the windows"
         );
-        assert_eq!(names.len(), 5, "the default four and the window: {names:?}");
+        let main_count = active_tabs_of_main(&dock()).len();
+        assert_eq!(
+            main_count, 4,
+            "the default dock draws four bodies on the main surface"
+        );
+        assert_eq!(
+            names.len(),
+            main_count + 2,
+            "…and the two windows follow them: {names:?}"
+        );
+        assert_eq!(
+            &names[main_count..],
+            ["Profiler", "Objects"],
+            "the windows follow in the order they were added and drawn, not tab order: {names:?}"
+        );
     }
 
     /// **The Screen tab's picture overlay, painted through `Painter::with_clip_rect(picture)`, is the
