@@ -1907,6 +1907,13 @@ mod tests {
             cut_arrangements().len(),
             "the sweep did not drive every arrangement"
         );
+        // A floor on the LIST as well as on the loop over it: the assertion above compares the sweep with
+        // the same function that fed it, so it cannot notice the list itself being cut down.
+        assert!(
+            arrangements_driven >= 28,
+            "only {arrangements_driven} arrangements are swept; the defect was found by sweeping the \
+             default dock, every-tab, every focus layout, a narrow pane per tab and two scales"
+        );
         assert!(
             runs > 2000,
             "anti-vacuity: only {runs} runs were laid out, so this sweep is not measuring the panels"
