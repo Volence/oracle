@@ -69,6 +69,8 @@ mod preview;
 mod report;
 // **Opening a ROM without leaving the window** — a browsable listing, a pasted path and a dropped file,
 // all through one pause/reload/restore sequence. A CONTROL, not a `ui::Tab`.
+#[cfg(test)]
+mod crw_q3_spike;
 mod rom_open;
 mod screen;
 mod screen_pick;
