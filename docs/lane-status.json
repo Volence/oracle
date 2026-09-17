@@ -58,7 +58,7 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "next",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -90,11 +90,11 @@
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "open",
+      "state": "next",
       "size": "M",
-      "blockedBy": "the hub's ruling on CR-W",
+      "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Letting a connected program read what the debug panels say, so I can check panels myself. The contract change is written and with the hub for a ruling."
+      "title": "Letting a program read what the debug panels say. The hub approved the shape on one condition: a short test build must first prove it works. That test is next."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -107,5 +107,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-17T09:58:12Z"
+  "updatedAt": "2026-09-17T09:59:49Z"
 }
