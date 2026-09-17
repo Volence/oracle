@@ -171,7 +171,9 @@ impl States {
     /// Not per frame, not on a timer and not on focus: the moment occupancy matters is the moment a person
     /// is choosing a slot, and that is always a gesture. So a slot file written by the other window or a
     /// script shows at the next touch of the strip, not before. Measured cost of the ten checks on the
-    /// development machine: a few microseconds warm, tens cold (the audit page's `L-17` addendum).
+    /// development machine's local disks: 1-4 microseconds warm, under 15 for a first probe, and one
+    /// worst case of 2.6 milliseconds under a build (the audit page's `L-17` addendum). Not measured on
+    /// a network filesystem, which is the ledger's named way for this to be wrong.
     fn probe(&mut self) {
         let rom = Path::new(&self.rom_path);
         for (slot, occupied) in self.on_disk.iter_mut().enumerate() {
