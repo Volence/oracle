@@ -364,8 +364,12 @@ impl Palette {
                 let rows = offered(&self.query);
                 // **The headline is derived twice over and pinned nowhere**: how many rows match, out of
                 // how many the build serves.
+                //
+                // "The same registry a tool reads" is contract D15 (`protocol.md`: an in-process GUI is a
+                // consumer of the same registry, not a second server). The citation lives here and not in
+                // the string: P9, a panel never quotes the specification at the person reading it.
                 let head = format!(
-                    "{} of {} served methods: in-process, through the same registry a tool reads (D15)",
+                    "{} of {} served methods: in-process, through the same registry a tool reads",
                     rows.len(),
                     METHODS.len()
                 );
@@ -833,6 +837,112 @@ mod tests {
     // -------------------------------------------------------------------------------------------
     // Tilde opens the palette — the owner's 2026-09-09 ask, and the incumbent binding survives it
     // -------------------------------------------------------------------------------------------
+
+    /// Whether `text` cites the specification, by the style page's P9 check
+    /// (`§[0-9]|protocol\.md|\bD1[0-9]\b`) widened to any `§` at all, spelled out because this crate has
+    /// no regex dependency.
+    fn cites_the_specification(text: &str) -> bool {
+        if text.contains('§') || text.contains("protocol.md") {
+            return true;
+        }
+        let b = text.as_bytes();
+        (0..b.len().saturating_sub(2)).any(|i| {
+            let word_before = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+            let word_after = b
+                .get(i + 3)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+            !word_before
+                && b[i] == b'D'
+                && b[i + 1] == b'1'
+                && b[i + 2].is_ascii_digit()
+                && !word_after
+        })
+    }
+
+    /// **P9 on the palette's glass: nothing it paints cites the specification**, for every row the
+    /// registry serves.
+    ///
+    /// The palette is a wire console (`L-15` keeps its reply echo raw), but its headline and its method
+    /// summaries are prose for the person at the window, and two of them quoted the contract: the
+    /// headline ended `(D15)` and `wait_for_break`'s summary ended `see §6 D6`. The summary is the
+    /// registry's own text, so it is checked where the palette paints it: each row is filtered to on its
+    /// own (so the scroll area cannot leave it unpainted) and every text shape of the frame is read.
+    ///
+    /// Anti-vacuity: the detector is shown to fire on both old spellings, every frame must paint the
+    /// headline and the row's own name, and every row in `METHODS` is visited.
+    #[test]
+    fn nothing_the_palette_paints_cites_the_specification() {
+        for old in [
+            "3 of 90 served methods: in-process, through the same registry a tool reads (D15)",
+            "poll where the machine halted (deprecated by the `stopped` event; see §6 D6)",
+        ] {
+            assert!(
+                cites_the_specification(old),
+                "COULD NOT MEASURE: the detector misses {old:?}"
+            );
+        }
+        assert!(!cites_the_specification(
+            "D0 holds 0x10, and 1D12 is not a citation"
+        ));
+
+        let (mut machine, mut bus) = rig();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let mut visited = 0;
+        for m in METHODS {
+            let mut p = Palette {
+                open: true,
+                query: m.name.to_string(),
+                ..Palette::default()
+            };
+            let mut painted: Vec<String> = Vec::new();
+            // Two frames: a new window lays itself out on the first and may not paint its contents.
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1400.0, 1000.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let ctx = ui.ctx().clone();
+                        p.show(&ctx, &mut machine, &mut bus);
+                    },
+                );
+                out.textures_delta.clear();
+                fn walk(s: &egui::Shape, out: &mut Vec<String>) {
+                    match s {
+                        egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                        egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                        _ => {}
+                    }
+                }
+                painted.clear();
+                for c in &out.shapes {
+                    walk(&c.shape, &mut painted);
+                }
+            }
+            assert!(
+                painted.iter().any(|t| t.contains("served methods"))
+                    && painted.iter().any(|t| t == m.name)
+                    && painted.iter().any(|t| t == m.summary),
+                "COULD NOT MEASURE: the palette filtered to {} did not paint its headline, the row and \
+                 its summary: {painted:?}",
+                m.name
+            );
+            for t in &painted {
+                assert!(
+                    !cites_the_specification(t),
+                    "the palette, filtered to {}, painted a citation of the specification: {t:?}",
+                    m.name
+                );
+            }
+            visited += 1;
+        }
+        assert_eq!(visited, METHODS.len());
+    }
 
     /// **The binding table, as a table.** The ask was *"commands should open with tilde like the other
     /// one"*, and the standing instruction with it was that whatever opens it today must not be removed.
