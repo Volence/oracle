@@ -72,6 +72,37 @@ pub struct Note {
     pub refused: bool,
 }
 
+/// One save-state slot as the Screen strip draws it: [`States::cells`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotCell {
+    /// `0..SLOT_COUNT`, which is also the number drawn in the cell and the key that selects it.
+    pub slot: usize,
+    /// A state file for this slot was on disk at the last probe.
+    pub occupied: bool,
+    /// The slot `save` and `load` act on.
+    pub selected: bool,
+}
+
+impl SlotCell {
+    /// The cell's hover, which says in words what its fill and its number's colour say, so occupancy is
+    /// never carried by colour alone.
+    pub fn hover(&self) -> String {
+        let held = if self.occupied {
+            "holds a saved state"
+        } else {
+            "is empty"
+        };
+        if self.selected {
+            format!(
+                "slot {} {held}. It is selected: F2 saves here, F4 loads from here",
+                self.slot
+            )
+        } else {
+            format!("slot {} {held}. Click to select it", self.slot)
+        }
+    }
+}
+
 /// The slot state: which one the controls act on, what the cartridge's fingerprint is, and which slots
 /// have a file.
 pub struct States {
@@ -129,16 +160,40 @@ impl States {
         }
     }
 
+    /// The selected slot. Test-only: the window reads it through [`States::cells`].
+    #[cfg(test)]
     pub fn slot(&self) -> usize {
         self.slot
     }
 
+    /// One slot's occupancy. Test-only since the Screen strip draws [`States::cells`], which is the one
+    /// reader the window has.
+    #[cfg(test)]
     pub fn occupied(&self, slot: usize) -> bool {
         self.on_disk.get(slot).copied().unwrap_or(false)
     }
 
     pub fn last(&self) -> Option<&Note> {
         self.last.as_ref()
+    }
+
+    /// **Every slot, in order, with whether it has a file and whether it is the one the controls act on.**
+    ///
+    /// The Screen strip draws one cell per entry (audit §4, "the control strip and the save slots"). Until
+    /// this existed only the *selected* slot's occupancy reached the screen, so a person stepped through
+    /// ten slots blind to find a full one.
+    ///
+    /// **No I/O.** It reads [`States::on_disk`], the cache probed at open, at a cartridge swap and by a
+    /// save, so drawing all ten every frame costs what drawing one did. What that cache does *not* see
+    /// is a slot file written or deleted by something else after the last probe: that was already true
+    /// of the one slot the strip used to show, and whether to re-probe (and when) is recorded as an open
+    /// option in the audit page's parcel 9-11 addendum rather than decided here.
+    pub fn cells(&self) -> [SlotCell; SLOT_COUNT] {
+        std::array::from_fn(|slot| SlotCell {
+            slot,
+            occupied: self.on_disk[slot],
+            selected: slot == self.slot,
+        })
     }
 
     /// Select a slot directly. Out-of-range is ignored rather than clamped: a caller that computed one is
@@ -328,6 +383,64 @@ mod tests {
             0,
             "an out-of-range selection is ignored, not clamped onto the last slot"
         );
+    }
+
+    /// ★ **Every slot's occupancy is reported, not only the selected one's**, and each agrees with the
+    /// file on disk.
+    ///
+    /// The Screen strip used to draw the selected slot's state and nothing else. The expectation here is
+    /// read off the filesystem with the container's own path rule, never off `States`, and it is checked
+    /// twice: on the `States` that did the saving (the cache a save updates) and on a fresh one opened
+    /// over the same cartridge (the probe at open).
+    ///
+    /// Anti-vacuity: the fixture must hold at least one occupied slot that is NOT selected and at least
+    /// one empty one, or a report of only the selected slot could not be told from a report of all ten.
+    ///
+    /// Mutation proven red: in [`States::cells`], `occupied: slot == self.slot && self.on_disk[slot]`.
+    #[test]
+    fn every_slot_cell_reports_the_file_on_disk_and_only_one_is_selected() {
+        let cart = Cartridge::new("cells");
+        let machine = booted();
+        let mut states = States::open(&cart.path(), machine.system());
+        for slot in [2, 7] {
+            states.select(slot);
+            let note = states.save(&machine).clone();
+            assert!(!note.refused, "{}", note.text);
+        }
+        states.select(4);
+
+        let on_disk: Vec<bool> = (0..SLOT_COUNT)
+            .map(|s| save_state::state_path_for(&cart.rom, s).exists())
+            .collect();
+        assert!(
+            on_disk.iter().enumerate().any(|(s, o)| *o && s != 4) && on_disk.contains(&false),
+            "COULD NOT MEASURE: the fixture needs an occupied unselected slot and an empty one: {on_disk:?}"
+        );
+
+        let reopened = States::open(&cart.path(), machine.system());
+        for (who, s, selected) in [
+            ("the saving States", &states, 4),
+            ("a fresh open", &reopened, 0),
+        ] {
+            let cells = s.cells();
+            assert_eq!(cells.len(), SLOT_COUNT);
+            for (i, c) in cells.iter().enumerate() {
+                assert_eq!(c.slot, i, "{who}: cell {i} names slot {}", c.slot);
+                assert_eq!(
+                    c.occupied, on_disk[i],
+                    "{who}: slot {i} is drawn {} but the file on disk says {}",
+                    c.occupied, on_disk[i]
+                );
+                assert_eq!(c.selected, i == selected, "{who}: slot {i} selection");
+                assert!(
+                    c.hover().contains(&i.to_string())
+                        && c.hover()
+                            .contains(if c.occupied { "holds" } else { "empty" }),
+                    "{who}: slot {i}'s hover does not say it in words: {:?}",
+                    c.hover()
+                );
+            }
+        }
     }
 
     /// ★ **A slot round-trips the whole machine, and the load flushes the battery first.**
