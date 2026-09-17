@@ -1517,19 +1517,33 @@ mod tests {
     }
 
     /// **W10, the cost of publishing per present** — ignored: a measurement, run in release:
-    /// `cargo test --release -p oracle-player w10_publish_cost -- --ignored --nocapture`.
+    /// `CRW_ROUNDS=2000 cargo test --release -p oracle-player w10_publish_cost -- --ignored --nocapture`.
     ///
-    /// Three arms interleaved in rotating order on one context and one loop, per dock:
-    /// * **null** — `build_ui(root, false)`: no spans recorded, nothing published (a window no client can
-    ///   reach, which is what the `is_serving` gate gives);
-    /// * **publish** — `build_ui(root, true)` then `Loop::publish_screen_text`, the exact production call:
-    ///   spans, in-pass read, glyph probe, joins, and the push;
-    /// * **publish + reply** — the same, plus one `emulator/screen_text` dispatch serialised to a string,
-    ///   which a client pays only when it asks (an upper bound: one read per present).
+    /// Four arms on one context and one loop, per dock:
+    /// * **null** — `build_ui(root, false)` and nothing published: a window no client can reach, which is
+    ///   what the `is_serving` gate gives;
+    /// * **bar only** — `build_ui(root, false)` then `Loop::publish_screen_text` with no spans: the
+    ///   pre-CR-W publish (title bar and top bar), so the panels' increment is read off this arm, not null;
+    /// * **bar + panels** — `build_ui(root, true)` then `publish_screen_text`: the production call, spans,
+    ///   in-pass read, glyph probe, joins and push;
+    /// * **bar + panels + one reply** — the same plus one `emulator/screen_text` dispatch serialised to a
+    ///   string, which a client pays only when it asks (an upper bound: one read per present).
+    ///
+    /// ⚑ **Blocks, not per-present interleaving, and the reason was measured.** The first version of this
+    /// harness rotated the arms present by present, and the publish arm came out BIMODAL: ~0.26 ms after a
+    /// present that had not published, ~0.06 ms after one that had. `Glyphs` lays out each character it
+    /// probes, and egui keeps a galley in its layout cache only while the previous pass used it, so an arm
+    /// that follows a non-publishing present pays the layouts again. A serving window publishes EVERY
+    /// present, so the steady state is the warm one, and interleaving measured a cold cache the product
+    /// never has. So each arm runs in blocks of [`BLOCK`] consecutive presents, blocks rotating across arms
+    /// (so load drift is still shared), and the first [`SETTLE`] presents of every block are discarded.
     #[test]
     #[ignore = "measurement; run in release with --ignored --nocapture"]
     fn w10_publish_cost_per_present() {
         use std::time::Duration;
+        const BLOCK: usize = 20;
+        const SETTLE: usize = 5;
+        const ARMS: [&str; 4] = ["null", "bar only", "bar + panels", "bar + panels + reply"];
         let rounds: usize = std::env::var("CRW_ROUNDS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -1540,22 +1554,26 @@ mod tests {
         ] {
             let mut lp = fixture(dock);
             let ctx = context();
-            let mut whole: [Vec<Duration>; 3] = Default::default();
-            let mut part: [Vec<Duration>; 3] = Default::default();
-            let mut bytes = [0usize; 3];
-            for i in 0..(rounds + 30) {
-                for k in 0..3 {
-                    let arm = (i + k) % 3;
+            let mut whole: [Vec<Duration>; 4] = Default::default();
+            let mut part: [Vec<Duration>; 4] = Default::default();
+            let mut bytes = [0usize; 4];
+            let mut i = 0u32;
+            // Two warm-up blocks per arm, discarded whole.
+            let blocks = (rounds / (BLOCK - SETTLE)).max(1) * ARMS.len() + 2 * ARMS.len();
+            for block in 0..blocks {
+                let arm = block % ARMS.len();
+                for n in 0..BLOCK {
+                    i += 1;
                     let t0 = Instant::now();
                     let mut spent = Duration::ZERO;
                     let mut made = 0usize;
-                    let mut out = ctx.run_ui(raw(i as u32, Vec::new()), |root| {
+                    let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
                         let c = root.ctx().clone();
-                        let (drew, drawn) = lp.build_ui(root, arm > 0);
-                        if arm > 0 {
+                        let (drew, drawn) = lp.build_ui(root, arm >= 2);
+                        if arm >= 1 {
                             let t = Instant::now();
                             lp.publish_screen_text(&c, &drew, &drawn);
-                            if arm == 2 {
+                            if arm == 3 {
                                 if let crate::bus::Answer::Ok(v) = lp.bus.call(
                                     lp.machine.system_mut(),
                                     "emulator/screen_text",
@@ -1569,7 +1587,7 @@ mod tests {
                     });
                     let dt = t0.elapsed();
                     out.textures_delta.clear();
-                    if i >= 30 {
+                    if block >= 2 * ARMS.len() && n >= SETTLE {
                         whole[arm].push(dt);
                         part[arm].push(spent);
                         bytes[arm] = made;
@@ -1581,14 +1599,11 @@ mod tests {
                 let ms = |d: Duration| d.as_secs_f64() * 1000.0;
                 (ms(v[v.len() / 2]), ms(v[v.len() * 95 / 100]), v.len())
             };
-            for (arm, label) in ["null (not serving)", "publish", "publish + one reply"]
-                .iter()
-                .enumerate()
-            {
+            for (arm, label) in ARMS.iter().enumerate() {
                 let w = stat(&mut whole[arm]);
                 let h = stat(&mut part[arm]);
                 println!(
-                    "W10 {name:<9} {label:<22} present median {:.3} ms p95 {:.3} ms | publish median {:.4} ms p95 {:.4} ms | n {} | reply {} bytes",
+                    "W10 {name:<9} {label:<21} present median {:.3} ms p95 {:.3} ms | publish median {:.4} ms p95 {:.4} ms | n {} | reply {} bytes",
                     w.0, w.1, h.0, h.1, w.2, bytes[arm]
                 );
             }

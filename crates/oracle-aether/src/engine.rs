@@ -776,7 +776,9 @@ pub fn advertised_methods(presents_frames: bool) -> impl Iterator<Item = &'stati
 /// The cap on how many surfaces one `emulator/screen_text` reply carries.
 ///
 /// **A policy bound, and it is honest about being one.** The player's own surfaces are bounded already —
-/// one title bar, one status line, at most `MAX_TOASTS` toasts — but the palette can list one row per file
+/// one title bar, one status line, at most `MAX_TOASTS` toasts, and (§11.50, CR-W) at most one `panel`
+/// per drawn panel body, which on `oracle-player` is one per tab, eleven, however they are docked or
+/// floated — but the palette can list one row per file
 /// in a directory, so the list is not bounded by the *design*. The reply therefore carries
 /// `total`/`returned`/`truncated` (§2.4's flat spelling) and this cap makes `truncated` mean something
 /// instead of being decorative. It is deliberately not a `cursor`: §2.4 clause (b) forbids a continuation
