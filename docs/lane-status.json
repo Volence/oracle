@@ -1,15 +1,34 @@
 {
-  "focus": "Panel reading is live: programs can read what the debug panels say. Ready for a clear.",
-  "inFlight": [],
+  "focus": "Fixing panel lines that get cut with no sign they were cut. The layout half is a card for you.",
+  "inFlight": [
+    {
+      "what": "Making cut panel text show that it was cut",
+      "where": "branch parcel/elision-mark",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
       "since": "2026-09-14",
       "id": "d-51"
+    },
+    {
+      "what": "Whether long panel lines should wrap or the panes get wider, now that cut lines will at least say they were cut",
+      "since": "2026-09-17",
+      "id": "d-54"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything pushed.",
+  "nextBoundary": "When the cut-text fix returns, is checked here and lands.",
   "queue": [
+    {
+      "id": "PANEL-CLIP-MARK",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Panel text cut off at a pane edge gives no sign it was cut. Adding the '...' mark now; the layout half is card d-54 for you."
+    },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
       "state": "open",
@@ -83,7 +102,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing from you. This lane is clearable: everything is committed and pushed, and nothing is running.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-17T23:04:07Z"
+  "awaiting": "nothing blocking. New card d-54 when you have a moment: should long panel lines wrap, or the panes be wider?",
+  "atBoundary": false,
+  "updatedAt": "2026-09-17T23:06:55Z"
 }
