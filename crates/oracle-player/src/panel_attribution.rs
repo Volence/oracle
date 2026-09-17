@@ -1481,6 +1481,41 @@ mod tests {
         );
     }
 
+    /// **The `is_serving` gate, observed**: a window no client can reach runs `Loop::iterate` — the
+    /// production caller, not `publish_screen_text` directly — and publishes nothing, so
+    /// `emulator/screen_text` still refuses `noDisplay` in-process. Control: the same loop's bodies really
+    /// drew (a direct `build_ui(root, true)` returns spans), so the silence is the gate and not an empty
+    /// dock.
+    #[test]
+    fn a_window_no_client_can_reach_publishes_no_panels() {
+        let mut lp = fixture(crate::ui::every_tab_dock());
+        assert!(!lp.bus.is_serving(), "control: the fixture binds no socket");
+        let ctx = context();
+        let mut spans = 0;
+        for i in 0..3 {
+            let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
+                let c = root.ctx().clone();
+                lp.iterate(&c, root, Instant::now());
+            });
+            out.textures_delta.clear();
+        }
+        let mut out = ctx.run_ui(raw(3, Vec::new()), |root| {
+            spans = lp.build_ui(root, true).1.len();
+        });
+        out.textures_delta.clear();
+        assert_eq!(spans, Tab::ALL.len(), "control: every body draws");
+        let answer = lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/screen_text",
+            &serde_json::json!({}),
+        );
+        assert_eq!(
+            answer.reason(),
+            Some("noDisplay"),
+            "a window that serves no client published its screen text anyway"
+        );
+    }
+
     /// **W10, the cost of publishing per present** — ignored: a measurement, run in release:
     /// `cargo test --release -p oracle-player w10_publish_cost -- --ignored --nocapture`.
     ///
