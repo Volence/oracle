@@ -350,3 +350,5 @@ from the tree first, and check whether it needs a contract change (a hub CR) bef
 enum in the contract (§11.29; §11.47 rules runs inside a kind are not a CR), so panel text is a contract change. Docs-only agent on
 `parcel/cr-panel-text` (worktree `../oracle-crpanel`, base `349298d`) drafting `docs/proposed/2026-09-17-cr-*-panel-screen-text.md`; the hub
 rules it. **Successor, named in the same write: `F-SLOT-REPROBE-ON-GESTURE`** (ruled `L-17`, no decision needed).
+**`F-SLOT-REPROBE-ON-GESTURE` DISPATCHED 2026-09-17 in parallel** (branch `parcel/slot-reprobe`, worktree `../oracle-slots`, base `793b50d`; the
+CR draft beside it is docs-only, so no build contention). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.

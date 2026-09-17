@@ -1,9 +1,14 @@
 {
-  "focus": "Drafting the contract change that would let me read the debug panels myself instead of asking you to look.",
+  "focus": "Two agents: one drafts the contract change for reading panels, one makes save slots refresh on click.",
   "inFlight": [
     {
       "what": "Drafting a contract change so programs can read panel text",
       "where": "branch parcel/cr-panel-text",
+      "agent": true
+    },
+    {
+      "what": "Save slots re-check the disk when you click them",
+      "where": "branch parcel/slot-reprobe",
       "agent": true
     }
   ],
@@ -14,11 +19,11 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the contract change draft returns, is checked here and goes to the hub for a ruling.",
+  "nextBoundary": "When both agents return and their work is checked and landed (the contract draft goes to the hub).",
   "queue": [
     {
       "id": "F-SLOT-REPROBE-ON-GESTURE",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -58,7 +63,7 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -107,5 +112,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-17T09:41:31Z"
+  "updatedAt": "2026-09-17T09:42:00Z"
 }
