@@ -396,3 +396,8 @@ shape is not a run). **R1 dropped ⇒ vector cases 11-15 are RETIRED, not ignore
 go red, because `initialize.capabilities` is open — a fail-vector the schema cannot refuse. Re-vendor dispatched to the parked agent (resumed with
 its context), with the hub's 11-case agreement to be re-measured here rather than taken. ⚑ **The hub CORRECTED its own morning ruling: sigil does
 NOT vendor `protocol.md`; this lane is the only vendor.**
+**CR-W LANDED 2026-09-17, merge `106b659`, `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` CLOSED** (agent tip `3bae30d`; land.sh GREEN, release 91/91
+3017/0/7; debug 91/3014/0/10 and a red-first reproduced here; vendored schema sha256-identical to empyrean `265efaa7`, checked at this seat).
+Vectors: 11 cases, 5 accepted / 6 refused, each refusal citing its own rule; R1's five retired. ⚑ **The lockstep was MEASURED, not assumed**:
+with the pre-CR-W schema bytes restored the pin test AND the vectors row go red, so the re-vendor is what admits the kind. **Owed: aurora's
+review (not a gate) and his Q2 look** (`docs/2026-09-17-cr-w-landing.md`) — the first is Registers' `aether` line cut at the pane edge with no `…`.

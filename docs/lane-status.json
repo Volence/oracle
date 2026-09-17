@@ -1,12 +1,6 @@
 {
-  "focus": "The hub's contract wording landed, so the panel-reading work is being finished and landed now.",
-  "inFlight": [
-    {
-      "what": "Finishing panel reading: matching the hub's landed contract wording",
-      "where": "branch parcel/crw-panel",
-      "agent": true
-    }
-  ],
+  "focus": "Panel reading is live: programs can read what the debug panels say. Ready for a clear.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When panel reading lands; then this lane is clearable again.",
+  "nextBoundary": "Now: nothing running, everything pushed.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -81,14 +75,6 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     },
     {
-      "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Letting a program read what the debug panels say. The hub's wording landed, so the last step is running and it lands today."
-    },
-    {
       "id": "LIVE-EFFECTS-NUDGES",
       "state": "open",
       "size": "M",
@@ -97,7 +83,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-17T22:17:35Z"
+  "awaiting": "nothing from you. This lane is clearable: everything is committed and pushed, and nothing is running.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-17T23:04:07Z"
 }
