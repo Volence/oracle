@@ -1192,3 +1192,231 @@ before believing this sentence too"*), which is exactly the instinct that made t
 **The general shape: a comparison between two measured differences needs its own noise estimate.** Each figure
 here came with a null arm; the difference BETWEEN them did not, and two small differences can each be real
 while their ordering is noise.
+
+---
+
+## Addendum, 2026-09-17 (parcels 6-8): three tabs built, one charge was never live, and the shared table misplaced its headers
+
+*Appended under this document's standing rule: nothing before this heading is edited. Written by the
+`DATA-DISPLAY-AUDIT` parcel that did the work, on `parcel/data-display-3` off `5d27b0e`.*
+
+**Nothing here was seen on a screen.** The window cannot be opened from an agent seat, so every claim about
+*appearance* below is a prediction from headless layout, and the questions only a frame can answer are
+collected at the end.
+
+**How every count below was made.** Line numbers at the base come from `git show 5d27b0e:<file> | grep -n`.
+Counts over `ui.rs` come from one Python pass (`target/counts.py` in the parcel's worktree, not kept) over
+`git show <rev>:<file>`. It treats everything above the first `#[cfg(test)]` directly followed by a `mod`
+line as production code, and a line whose stripped text starts with `//` as a comment. It finds function
+bodies by counting braces from the `fn` line. Test totals are
+`grep -cE '^\s+(Running|Doc-tests)'` for legs, checked against `grep -c '^test result:'`, and the three
+fields of every `test result:` line added up. "Stayed green" is only claimed when the same run showed a
+failure too, so the mutation is known to have compiled and applied.
+
+### What was open, closed or moved, item by item
+
+**Registers (item 6).**
+
+| §4 charge | at `5d27b0e` | now |
+|---|---|---|
+| `ui.rs:756` `{label:<18}{value}` in monospace (P2, P3) | **open**, at `ui.rs:1719` | closed |
+| the alarm rows drawn at the weight of `frame (emulated)` | **open** | closed |
+| "data modelling is the best in the window, do not touch" | true | respected, see below |
+| `ui.rs:728` / `:2622` / `:2630` | moved to `1691` / `5184` / `5197` | |
+
+**The P2 charge was worse than §4 says, and the headless capture shows it.** Eighteen characters is shorter
+than the label `frames run (player)` (19), so the old line drew `frames run (player)1200` with no space
+between label and value. §4 did not see this because it read the format string and never saw the output.
+
+What changed: `StatusStrip::facts` returns `pacing::Fact`s (label, value, face, health), and a new
+`registers_tab` draws them with `health_grid` inside a `card`. `rows()` is now `facts()` with the face and
+colour removed, and it is test-only. So every existing strip gate still checks the words that are drawn,
+and there is no second list to fall out of step. No sentence, stated absence or row order changed.
+`pacing::Health` gains `Alarm` (the error colour). This is the second panel on `health_grid`, the case that
+function's own note said would come.
+
+**Where the code disagreed with §4's "Becomes", the code won:**
+
+1. **Colours come from the transport bar's own predicates**, not from a new rule. The halting row is `Alarm`
+   exactly when `Halting::halted_here`, which is what the bar paints red. The aether row is `Alarm` exactly
+   when `AetherStatus::alarm` raises the bar's alarm, otherwise `Good`. The held row is `Watch`.
+2. **A row built with no bus to ask is `Watch`, not `Unmeasured`.** `StatusStrip::held`'s doc calls it "a
+   loud row", and `Unmeasured` draws recessed.
+3. **Counts stay monospace.** §4 says "counts and sentences lose it". The Pacing exemplar keeps `rebases`
+   and `samples` monospace, so `rom bytes`, `frame (emulated)` and `frames run (player)` do too. `symbols`
+   (`N loaded`) is drawn as words, following Pacing's `44100 Hz, 2 channels`. `symbol at pc` is monospace
+   only when it is a name from the listing. Its three stated absences are not.
+
+**Memory (item 7).** Item 1's raw JSON (closed at `beed8d9`) was not reopened.
+
+| §4 charge | at `5d27b0e` | now |
+|---|---|---|
+| `ui.rs:971` gate table, padded `format!` (P2, P3) | **open**, at `ui.rs:1966` | closed: a `table` of `GATE_COLS` |
+| its em dash (P10) | **already closed**: the cell reads `"  no "`. Zero dashes in `fn memory`'s code, 5 in its comments | zero |
+| `ui.rs:889` hex dump `{:<47}` (P2 by the rendered-string check) | **open**, at `ui.rs:1883` | closed: a `table` of `HEX_COLS` |
+| "`{:<47}` ... the ASCII gutter drifts left on a truncated final page" | **never live** | see below |
+| `ui.rs:886` hex `ScrollArea` has no `id_salt` (P7), "the only missing one in the crate" | **open**, at `ui.rs:1880`. **Not the only one**: see below | closed |
+| `note_label` (`ui.rs:2291`) draws prose in monospace (P3) | **open**, at `ui.rs:4858` | closed |
+| `memory.rs:504`, `:518`, `:672` (P1) | closed by item 1. Those lines now hold a doc comment, a doc comment and a `};` | |
+
+**The drift charge was never live.** `{:<47}` pads a shorter hex run out to 47 characters. In the theme's
+monospace face a space is as wide as a digit (6.625 points each for `' '`, `'0'`, `'A'`, `'.'`). Measured
+headless at `5d27b0e`: the text before the ASCII gutter is 61 characters and 403.97 points for both a
+sixteen-byte row and a five-byte row. (That was a scratch test, not kept.) The real defect was that 47 is
+`PER_ROW * 3 - 1` typed by hand. §4 said the charge was "hiding a bug". The bug was elsewhere, as the next
+section shows.
+
+**Unsalted scroll areas: three in the crate, not one.** Counted over production code in every
+`crates/oracle-player/src` file, finding each `egui::ScrollArea::` constructor and checking for `.id_salt(`
+before its `.show`: there are 15 constructors, and three have no salt: `palette.rs:396`, `rom_open.rs:739`
+and `ui.rs:1880`. Only the `ui.rs` one is a panel. The other two are modals and were **left alone** (at
+this tip they are the only two). The new gate covers production `ui.rs` only.
+
+**Found on the tab and fixed, though §4 does not name them:**
+
+- **P9:** the note under the gate table began "§6's run-control rule" (`ui.rs:1973`). This was the only hit
+  outside comments for `grep -nE '§[0-9]|protocol\.md|\bD1[0-9]\b'` in production `ui.rs`. The section
+  reference moved to `memory::GATES_NOTE`'s doc comment.
+- **P2 and P1's letter:** the write stamp was `"{}   [frame {} · …]"` built with `Value::to_string()`. Now
+  `Line::stamped` reads each field as its D11 type and states when one is missing.
+- **P2:** `"region  {r}"`.
+
+**`note_label` is shared,** so the Breakpoints, Watchpoints and Profiler notes are no longer monospace
+either. `memory::Line` gains `addr: Option<u32>`. The address is drawn apart in monospace and the prose in
+the body face. Both hex-arm sentences moved into `memory::Line` constructors, so a gate can now reach them.
+
+**Planes (item 8).** Still open at the base: `git grep -nE 'checker|transparent|empty_a|empty_b' 5d27b0e --
+crates/oracle-player/src/ui.rs` finds one line, a comment about the object ghost (`ui.rs:3393`). §4's other
+citations had moved: `planes.rs:113, 197, 426` now land on a module doc line, `Inputs::display`, and a
+scroll-note string. The checker is `Ink::empty_a`/`empty_b` (`planes.rs:151, 153`) and `CHECKER`
+(`planes.rs:174`). `ui.rs:610` is now `plane_split`'s narrow branch at `ui.rs:3033`.
+
+What was built: `planes::TRANSPARENT_LEGEND` is drawn by `plane_image`, `Small` and recessed, **directly
+above** the picture. Why there, and not where §4 suggests:
+
+- **Not in the facts card.** That card goes under the picture in a narrow pane, which is §4's own reason.
+- **Not under the picture.** The picture is fitted to all the height it gets, so a line below it would
+  fall off the bottom of the pane.
+- **Its real height is reserved.** The legend is laid out at the width it is drawn at, and its wrapped
+  height is taken off before the fit.
+- **Only with a picture.** It is drawn only when there is a picture to explain.
+
+### ⚑ The table furniture put every header after the first left-aligned column in the wrong place
+
+`table_cell` and `header_cell` lay each cell out with `allocate_ui_with_layout(vec2(w, h), ..)`. In egui
+0.36.1 that call allocates only the space its contents used (`ui.rs:1330`, `scope_dyn`), not `w`. So a
+left-aligned cell reserved the width of its own text, and every later column in that row started where the
+text ended. A right-aligned cell never showed this, because its contents start at the far edge.
+
+**How far off it was, on the window's real columns** (scratch test, not kept: one realistic row drawn with
+`objects::POOL_COLS` and `stopping::PROFILER_COLS`, then cell edge minus header edge per column, before and
+after the fix):
+
+| table | column | before | after |
+|---|---|---|---|
+| Objects pool | `code` | 45.5 | 0.0 |
+| Objects pool | `x`, `y`, `name` | **89.8** | 0.0 |
+| Profiler | `cycles`, `self`, `stall`, `calls`, `name` | 45.2 to 45.5 | -0.3 to 0.0 |
+
+So in both tables every header from the second non-numeric column onward was drawn **45 to 90 points left
+of its column**. In the body rows, a column moved whenever the left-aligned cell before it changed width.
+This is a prediction from headless layout, and look call 27 asks for a frame. **It matches the owner's
+fourth finding** (`slotaddrcode  x  yname`), and the gutter fix recorded at `fit_columns` never addressed
+it.
+
+**The lock whose name covers it could not see it.**
+`a_numeric_column_holds_its_right_edge_and_a_text_column_holds_its_left` is named for exactly this. Its
+only left-aligned column that is not last holds `0x00001234` and `0x00005678`, two cells of the same width.
+It stayed `ok` with the fix removed, in the same run where the new gate failed. This is the fourth time on
+this page that a test's name claimed more than its body checked.
+
+Fix: `ui.set_min_width(w)` in both functions (commit `8c5aa4a`). New gate:
+`every_column_holds_its_edge_on_every_row_and_on_the_header_whatever_the_cells_before_it_measure`. It
+varies every left-aligned column that is not last, and makes each header narrower than its cells.
+
+### Two more names that claimed more than their bodies checked
+
+- `bus_parity::the_aether_row_is_always_drawn_and_agrees_with_the_launch_line`, and the five other strip
+  gates, checked `rows()` and never the drawing. They stayed `ok` when the old padded monospace draw was put
+  back, in the same run where the three new Registers gates failed.
+- `memory::a_listing_address_and_its_bus_address_reach_the_same_page_and_the_panel_says_so` never read the
+  sentence the panel says: it was built inline in `ui.rs`. It stayed `ok` when the sentence named the wrong
+  number, in the same run where the new
+  `the_listing_spelling_line_names_the_page_address_and_the_spelling_typed` failed.
+
+### This parcel's own blind gate
+
+The first version of `the_legend_sits_directly_above_a_drawn_picture_and_the_picture_still_fits_the_pane`
+**stayed green** (496 passed, 0 failed) when the reserved height was one `Small` line instead of the wrapped
+legend. The only pane that wrapped the legend (180 by 500) was limited by its width, so no height mistake
+could show. Fixed in `f84907a` with a 180 by 110 pane, plus a check that fails unless the legend wraps in a
+pane whose height limits the picture. The gate's other three mutations were then run again at `f84907a`
+and are all red (proof table below). **The earlier red runs at `a58f8b0` are superseded by those re-runs.**
+
+### Gate proofs
+
+Each mutation was applied on disk after its commit. Its `git diff -U0` lines are quoted in the parcel's
+report. Each ran against all of `oracle-player` with `--no-fail-fast` (4 of 4 legs), then was undone with
+`git checkout <commit> -- <file>`, leaving a clean tree.
+
+| commit | mutation | fails | controls that stayed `ok` in that run |
+|---|---|---|---|
+| `b9b0eb5` | the strip's padded monospace draw put back | all 3 `registers_tab_tests` | the 6 `bus_parity` strip gates |
+| `b9b0eb5` | halted-here row decided `Watch` | the health gate | |
+| `b9b0eb5` | `no listing loaded` marked monospace | the face gate | |
+| `8c5aa4a` | `set_min_width` removed from `table_cell` | the edge gate (cell 60.375, header 158.5) | `a_numeric_column_holds_its_right_edge_and_a_text_column_holds_its_left` |
+| `8c5aa4a` | `set_min_width` removed from `header_cell` | the edge gate (cell 158.5, header 58.69) | |
+| `b0f7d21` | `set_min_width` removed from `table_cell` | the edge gate **and** the hex gate (ascii 186.7 vs 405) | the numeric-column test |
+| `b0f7d21` | hex view put back to the padded monospace line | the hex gate | |
+| `b0f7d21` | gate table put back to the padded monospace line | the gate-table gate | |
+| `b0f7d21` | `write` cell always `SUCCESS` | the gate-table gate | |
+| `b0f7d21` | a note's prose drawn monospace | the note gate | |
+| `b0f7d21` | `.id_salt("memory-hex")` removed | the scroll-area source gate | |
+| `b0f7d21` | `§6's` put back in `GATES_NOTE` | the P9/P10 strings gate | |
+| `b0f7d21` | stamp spacer made three spaces | the P2 strings gate | |
+| `b0f7d21` | `running: false` said as `running` | the stamp gate | |
+| `b0f7d21` | listing sentence names the page address instead of the typed one | the listing-sentence gate | the `..._panel_says_so` lock |
+| `f84907a` | legend not drawn | the legend gate | `transparent_is_the_checker_not_a_colour`, `the_planes_tab_says_it_where_its_picture_would_be` |
+| `f84907a` | legend height not reserved | the legend gate (picture 15 to 315 in a 300 pane) | |
+| `f84907a` | one line's height reserved | the legend gate (picture 37 to 127 in a 110 pane) | |
+| `f84907a` | legend drawn below the picture | the legend gate | |
+
+### Measured here, because the next reader will look
+
+Counts from the Python pass above:
+
+- **`monospace(format!` in production `ui.rs` code:** 4 at `5d27b0e` (lines 837, 1719, 1882, 1965), 2 at
+  `f84907a`. The two left are the Screen tab's save-slot line and the note's address, which is a machine
+  address. The parcels 4-5 addendum's count of 6 could not be reproduced by this method. That addendum does
+  not state its method, so the two figures should not be compared.
+- **Width-padded specifiers in production `ui.rs` code** (regex `\{[a-zA-Z_0-9.]*:[<>^][0-9]+`): 3 at the
+  base, at `1719, 1883, 1966`, the three the last addendum listed. **None** at `f84907a`.
+- **Dashes in each tab's code:** em and en dashes are 0 in `fn planes`, `fn registers`, `fn memory`,
+  `note_label` and every new function, at both revisions. Positive control: `ui.rs` holds 264 em dashes and
+  0 en dashes at the base, and 262 and 0 at `f84907a`.
+
+### What a frame still has to answer (parked look calls 21-29, same rule: none of these were seen)
+
+21. **The halting row in a `health_grid` value cell.** The value is the headline plus the advice, often
+    over 250 characters, so it wraps inside the grid's value column. *Question: does a wrapped red row still
+    read as one alarm, and does its label stay beside its first line?*
+22. **Red twice.** A failed bind is now red on the strip and on the top bar. *Question: is that
+    agreement, or noise?*
+23. **Monospace counts beside proportional sentences in one value column** on the strip. *Question: does
+    the mixed column look deliberate?*
+24. **The hex view as a banded table** with a header, address and ASCII recessed, bytes plain. It now
+    scrolls sideways in a narrow pane where the old line wrapped. *Question: is a recessed address still
+    easy to read, and is sideways scrolling better than a wrapped dump?*
+25. **The gate table's `why` column cuts off, with the full text on hover,** in a collapsing section.
+    At a realistic width most reasons will be cut; the old form wrapped them. *Question: does the table
+    still answer "what every space accepts", or has the reason moved behind a hover people won't find?*
+26. **The note's 11-point monospace address before 13-point body prose** in one wrapped row. *Question:
+    do they share a baseline?*
+27. **Every table in the window has moved** (Objects pool and players, Profiler, both Watchpoints tables,
+    Breakpoints, and the two tables above). Headers now sit over their columns, a shift of up to 90 points
+    in the Objects pool. *Question: first, does a frame of the base build really show the misplaced headers
+    this addendum predicts? Then, does every table now line up?*
+28. **The legend line above the plane.** *Question: does a small recessed sentence above a large picture
+    read as its caption, and do `void` and `surface` look like a checker at the plane's fitted scale?*
+29. **The stopping tabs' notes in the body face.** `ok: breakpoint b3 addr 0x00001234` is now one
+    proportional line. *Question: is the address inside it still easy to pick out?*
