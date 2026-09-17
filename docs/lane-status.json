@@ -1,6 +1,12 @@
 {
-  "focus": "Booted fresh. The last landing is confirmed green; next is the remaining panels of the debug-window display cleanup.",
-  "inFlight": [],
+  "focus": "Tidying how the Registers, Memory and Planes panels show their numbers; an agent is on it.",
+  "inFlight": [
+    {
+      "what": "Registers, Memory and Planes panel display cleanup",
+      "where": "branch parcel/data-display-3",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now. Nothing running, everything pushed, last landing's checks read green to completion.",
+  "nextBoundary": "When the panel parcel returns, is checked here and lands.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -68,11 +74,11 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "next",
+      "state": "doing",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Four of eleven panels done: Pacing, Profiler, Watchpoints, Breakpoints. The rest reuse the same table code. Needs no decision from you; two items in it are still for your eyes."
+      "title": "Four of eleven panels done. Registers, Memory and the Planes legend are being built now. Needs no decision from you; two items are still for your eyes."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -92,14 +98,14 @@
     },
     {
       "id": "OVERSEER-RECUT",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "My own start-up notes grew by over a third today, mostly checklists that belong in the file read at review time. Moving them back keeps every future session quick to start. Source: git diff 61288ff HEAD."
     }
   ],
-  "awaiting": "your go to start the next panel job (Registers, Memory and the rest of the display cleanup). Nothing about it needs a decision from you.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-17T06:53:35Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-17T07:12:57Z"
 }
