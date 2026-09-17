@@ -1,11 +1,6 @@
 {
-  "focus": "Two agents: one drafts the contract change for reading panels, one makes save slots refresh on click.",
+  "focus": "Save slots are being made to refresh on click. The panel-reading contract change is with the hub.",
   "inFlight": [
-    {
-      "what": "Drafting a contract change so programs can read panel text",
-      "where": "branch parcel/cr-panel-text",
-      "agent": true
-    },
     {
       "what": "Save slots re-check the disk when you click them",
       "where": "branch parcel/slot-reprobe",
@@ -19,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When both agents return and their work is checked and landed (the contract draft goes to the hub).",
+  "nextBoundary": "When the save-slot agent returns and its work is checked and landed.",
   "queue": [
     {
       "id": "F-SLOT-REPROBE-ON-GESTURE",
@@ -95,11 +90,11 @@
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "doing",
+      "state": "open",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "the hub's ruling on CR-W",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Letting a connected program read what the debug panels say, so I can check panels myself instead of asking you. It needs a contract change, so an agent is drafting that first."
+      "title": "Letting a connected program read what the debug panels say, so I can check panels myself. The contract change is written and with the hub for a ruling."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -112,5 +107,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-17T09:42:00Z"
+  "updatedAt": "2026-09-17T09:58:12Z"
 }

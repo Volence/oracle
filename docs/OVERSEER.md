@@ -352,3 +352,8 @@ enum in the contract (§11.29; §11.47 rules runs inside a kind are not a CR), s
 rules it. **Successor, named in the same write: `F-SLOT-REPROBE-ON-GESTURE`** (ruled `L-17`, no decision needed).
 **`F-SLOT-REPROBE-ON-GESTURE` DISPATCHED 2026-09-17 in parallel** (branch `parcel/slot-reprobe`, worktree `../oracle-slots`, base `793b50d`; the
 CR draft beside it is docs-only, so no build contention). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.
+**CR-W FILED 2026-09-17, merge `fb1c042`** (docs only: `docs/proposed/2026-09-17-cr-w-panel-screen-text.md` + vectors). Recommends one `panel`
+kind named by its tab, harvested from egui's PAINTED output (one hook for every panel) rather than ~212 ad-hoc label sites; reverses
+`screen.rs`'s module-doc refusal and answers it (§1.1). Sent to the hub for ruling; `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` is blocked on it. Its
+Q3 (a short build spike proving each tab's text is harvestable from the paint list) is the first build step once ruled. Q6 (reading a hidden
+tab) is his only if the hub wants it pursued.
