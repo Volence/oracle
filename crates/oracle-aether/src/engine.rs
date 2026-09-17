@@ -1650,31 +1650,74 @@ pub struct Engine {
 }
 
 /// Which text surface of the player one [`ScreenSurface`] came from — the contract's closed `kind` enum
-/// (`emulator/screen_text`, §11.29).
+/// (`emulator/screen_text`, §11.29, widened by §11.50 CR-W).
 ///
 /// Closed rather than free-form so that adding a surface is a contract edit rather than a silent drift.
 /// `TitleBar` is drawn by the **window manager**, not by the overlay, which is why the method is named
 /// `screen_text` and not `overlay_*`: an enumeration of the overlay's own draw calls misses it entirely,
 /// and so does any OCR of the presented framebuffer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// # `Panel` carries its name, so a kind/name mismatch is unrepresentable (CR-W §10)
+///
+/// The wire rule is *`panel` is present if and only if `kind` is `panel`, and non-empty*. Carried as an
+/// `Option<String>` beside this enum, that rule would be a sentence every producer must remember: a
+/// `statusLine` with a name, a `panel` without one, or a `panel` named `""` would all type-check. So the
+/// name lives INSIDE the variant, as a [`PanelName`] that cannot be empty — [`PacingFacts`]' argument for
+/// its conditional shapes, applied to this one. The handler then has nothing to check: it writes the key
+/// exactly when the variant has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenSurfaceKind {
     StatusLine,
     Toast,
     Palette,
     Lens,
     TitleBar,
+    /// **One debug-window panel whose body was drawn on this present** (§11.50, CR-W), named by the title
+    /// its own tab bar draws. Free text, not an enum: the contract does not carry one window's tab
+    /// vocabulary.
+    Panel(PanelName),
+}
+
+/// **A panel surface's name: the title its tab bar draws, never empty** (§11.50's `minLength: 1`).
+///
+/// The only constructor is [`PanelName::new`], which refuses `""`, so a `ScreenSurfaceKind::Panel` with an
+/// empty name cannot be built — the schema's red case 8 is a type error here rather than a reply a
+/// validator has to catch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelName(String);
+
+impl PanelName {
+    /// `None` for the empty string; the name otherwise, verbatim (no trimming: it is text on the glass).
+    pub fn new(name: impl Into<String>) -> Option<Self> {
+        let name = name.into();
+        (!name.is_empty()).then_some(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl ScreenSurfaceKind {
     /// The wire spelling. The `enum` in the schema fragment is the authority; this is the only place the
-    /// strings are written, so a handler cannot invent a sixth.
-    pub fn wire(self) -> &'static str {
+    /// strings are written, so a handler cannot invent a seventh.
+    pub fn wire(&self) -> &'static str {
         match self {
             Self::StatusLine => "statusLine",
             Self::Toast => "toast",
             Self::Palette => "palette",
             Self::Lens => "lens",
             Self::TitleBar => "titleBar",
+            Self::Panel(_) => "panel",
+        }
+    }
+
+    /// The `panel` key's value: `Some` exactly for [`ScreenSurfaceKind::Panel`], which is the whole
+    /// if-and-only-if the schema's `if`/`then`/`else` states.
+    pub fn panel(&self) -> Option<&str> {
+        match self {
+            Self::Panel(name) => Some(name.as_str()),
+            _ => None,
         }
     }
 }
@@ -1695,7 +1738,10 @@ pub struct ScreenSurface {
     pub kind: ScreenSurfaceKind,
     /// The SOURCE string the player composed.
     pub text: String,
-    /// What is actually on the glass, after the player's own fit/truncation. A prefix of [`text`] today.
+    /// What is actually on the glass, after the player's own fit, elision or clipping. **Not necessarily a
+    /// prefix of [`text`](ScreenSurface::text)**: an elided run ends in the toolkit's elision mark, and for a
+    /// `panel` surface row *k* run *j* of this string is the glass rendering of row *k* run *j* of `text`
+    /// (§11.50).
     pub rendered: String,
     /// Characters in [`text`](ScreenSurface::text) for which the player has no glyph — it draws a hollow
     /// box where they should be. Neither `text` nor `rendered` can express that, which is why the field
@@ -3934,14 +3980,20 @@ impl Engine {
             .iter()
             .take(MAX_SCREEN_SURFACES)
             .map(|s| {
-                json!({
+                let mut v = json!({
                     "kind": s.kind.wire(),
                     "text": s.text,
                     "rendered": s.rendered,
                     // Derived, never carried. See the note above.
                     "truncated": s.rendered != s.text,
                     "unrenderable": s.unrenderable,
-                })
+                });
+                // §11.50 (CR-W): present if and only if the kind is `panel`. Nothing to check here, because
+                // `ScreenSurfaceKind::Panel` is the only thing that carries a name.
+                if let Some(name) = s.kind.panel() {
+                    v["panel"] = json!(name);
+                }
+                v
             })
             .collect();
         Ok(json!({
@@ -11778,6 +11830,92 @@ mod tests {
             slot.as_ref().expect("still filled").rgb,
             held,
             "the slot must be untouched, not cleared and not half-written"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // §11.50 (CR-W): the `panel` kind and its name
+    // -----------------------------------------------------------------------------------------------
+
+    /// **The `panel` key is on a surface if and only if its kind is `panel`, and it is the name the
+    /// producer gave.** Driven through the real `dispatch` of `emulator/screen_text`, not through
+    /// `ScreenSurfaceKind::panel`, so the assertion is about the reply a client reads.
+    ///
+    /// The control is the non-panel surfaces in the same reply: a handler that wrote `panel` on every
+    /// surface (or on none) is red on one half or the other, and the reply-level counts pin that nothing
+    /// was dropped or added while doing it. Schema validation of this shape lives in
+    /// `tests/hosted.rs` and waits on the §11.50 re-vendor; this row does not need the schema.
+    #[test]
+    fn a_panel_surface_carries_its_name_and_no_other_surface_carries_one() {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(oracle_core::testrom::build());
+        sys.reset();
+        let mut e = Engine::new(sys, EngineConfig::default(), Subscribers::new());
+        let surface = |kind: ScreenSurfaceKind, text: &str| ScreenSurface {
+            kind,
+            text: text.into(),
+            rendered: text.into(),
+            unrenderable: vec![],
+        };
+        e.set_screen_text(vec![
+            surface(ScreenSurfaceKind::TitleBar, "oracle-player"),
+            surface(ScreenSurfaceKind::StatusLine, "bar"),
+            surface(
+                ScreenSurfaceKind::Panel(PanelName::new("Registers").expect("non-empty")),
+                "pc\t0x000200",
+            ),
+            surface(
+                ScreenSurfaceKind::Panel(PanelName::new("Screen").expect("non-empty")),
+                "",
+            ),
+        ]);
+        let v = e
+            .dispatch("emulator/screen_text", &json!({}))
+            .expect("a published screen is served");
+        let got = v["surfaces"].as_array().expect("surfaces");
+        assert_eq!(v["total"], json!(4));
+        assert_eq!(v["returned"], json!(4));
+        let names: Vec<(&str, Option<&str>)> = got
+            .iter()
+            .map(|s| {
+                (
+                    s["kind"].as_str().unwrap(),
+                    s.get("panel").map(|p| p.as_str().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("titleBar", None),
+                ("statusLine", None),
+                ("panel", Some("Registers")),
+                ("panel", Some("Screen")),
+            ],
+            "`panel` present exactly on the panel kind, carrying the producer's name"
+        );
+        assert_eq!(
+            got[3]["text"],
+            json!(""),
+            "a drawn blank panel is served, with an empty string, not omitted"
+        );
+        assert_eq!(got[3]["truncated"], json!(false));
+    }
+
+    /// **An empty panel name cannot be built** (§11.50's `minLength: 1`, the CR's red vector 8), and a
+    /// non-empty one is kept verbatim. The control is the second assertion: a `new` that refused
+    /// everything would pass the first.
+    #[test]
+    fn a_panel_name_is_never_empty_and_is_otherwise_verbatim() {
+        assert_eq!(PanelName::new(""), None);
+        assert_eq!(
+            PanelName::new(" Watchpoints ").map(|n| n.as_str().to_owned()),
+            Some(" Watchpoints ".to_owned())
+        );
+        assert_eq!(
+            ScreenSurfaceKind::StatusLine.panel(),
+            None,
+            "a non-panel kind has no name to give"
         );
     }
 }
