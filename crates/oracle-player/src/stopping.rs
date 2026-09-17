@@ -1489,6 +1489,16 @@ pub fn breakpoint_clear_all_params() -> Value {
     json!({ "all": true })
 }
 
+/// **The refusal for a `len` box that does not parse**, shared by the Watchpoints tab and the Memory
+/// tab's hash range, so two boxes with the same label and the same rule say one thing.
+///
+/// `typed` is the text that was parsed, already trimmed, and it is quoted with `{:?}`: the house spelling
+/// for echoing typed input (the address box does the same), which makes an empty box or a pasted tab
+/// visible instead of an invisible gap before the colon.
+pub fn len_refusal(typed: &str, e: &std::num::ParseIntError) -> String {
+    format!("len {typed:?}: {e}. `len` is a decimal byte count, not hex")
+}
+
 /// **`emulator/watchpoint_add` — the row with the two traps in it.**
 ///
 /// 1. **`write: true`, not `op: "write"`.** The handler resolves the op from the `read`/`write` boolean
@@ -1516,9 +1526,7 @@ pub fn watch_add_params(
     // Empty is "the handler's default", which is 1, and saying nothing is how a panel asks for a default
     // without knowing what it is.
     if !len.is_empty() {
-        let n: u64 = len
-            .parse()
-            .map_err(|e| format!("len {len:?}: {e}. `len` is a decimal byte count, not hex"))?;
+        let n: u64 = len.parse().map_err(|e| len_refusal(len, &e))?;
         v["len"] = json!(n);
     }
     v["space"] = json!(space);

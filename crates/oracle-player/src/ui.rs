@@ -1923,11 +1923,8 @@ impl Panels<'_> {
                 .clicked()
             {
                 let base = self.mem.base;
-                let parsed = self.mem.hash_len_text.trim().parse::<u64>();
-                self.mem.hash_note = Some(match parsed {
-                    Err(e) => {
-                        memory::Line::from_panel(format!("len {:?}: {e}", self.mem.hash_len_text))
-                    }
+                self.mem.hash_note = Some(match memory::hash_len(&self.mem.hash_len_text) {
+                    Err(refused) => refused,
                     Ok(len) => {
                         let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
                         memory::answer_line(&memory::hash(bus, sys, base, len))
