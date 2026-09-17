@@ -1,6 +1,12 @@
 {
-  "focus": "Registers, Memory and Planes panels landed. Checking the online tests, then trimming my start-up notes.",
-  "inFlight": [],
+  "focus": "Panels landed. An agent is trimming my start-up notes; the online tests for the landing are running.",
+  "inFlight": [
+    {
+      "what": "Moving checklists out of the start-up notes",
+      "where": "branch parcel/overseer-recut",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything pushed. Online tests for this landing still being read.",
+  "nextBoundary": "When the notes trim lands and the online tests for today's panel landing are read.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -68,7 +74,7 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "open",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -92,7 +98,7 @@
     },
     {
       "id": "OVERSEER-RECUT",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -100,6 +106,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-17T08:29:47Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-17T08:30:28Z"
 }
