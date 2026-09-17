@@ -112,8 +112,9 @@ pub struct States {
     /// makes a state written against a previous build refuse to load instead of quietly putting the
     /// previous build's ROM back — a snapshot carries the cartridge with it.
     rom_fp: u64,
-    /// Which slots have a file, probed at open and after a cartridge swap, and updated by a save. A
-    /// cache of the filesystem, so it is only ever *shown*; nothing is gated on it.
+    /// Which slots have a file: [`States::probe`]'s cache, re-read at open, after a cartridge swap and
+    /// after every slot gesture (`L-17`). A cache of the filesystem, so it is only ever *shown*; nothing is
+    /// gated on it.
     on_disk: [bool; SLOT_COUNT],
     /// The path the slot files are keyed to. Re-derived with the cartridge.
     rom_path: String,
@@ -155,8 +156,28 @@ impl States {
     fn rekey(&mut self, rom_path: &str, sys: &System) {
         self.rom_path = rom_path.to_string();
         self.rom_fp = save_state::rom_fingerprint(sys.rom());
+        self.probe();
+    }
+
+    /// **Re-read all ten slot files' occupancy from disk**: one `Path::exists` per slot.
+    ///
+    /// The one place [`States::on_disk`] is written. Ledger `L-17` rules *when*: at open, at a cartridge
+    /// swap, and at the end of every slot gesture, which is every call to [`States::select`],
+    /// [`States::step`], [`States::save`] and [`States::load`]. Those four methods are the only way a
+    /// gesture reaches the slots (the cells, both steppers, the save and load buttons, and the `F2`, `F4`,
+    /// `F6`, `F7` and `0`-`9` keys all call one of them), so the probe lives inside them rather than at
+    /// nine call sites that would each have to remember it.
+    ///
+    /// Not per frame, not on a timer and not on focus: the moment occupancy matters is the moment a person
+    /// is choosing a slot, and that is always a gesture. So a slot file written by the other window or a
+    /// script shows at the next touch of the strip, not before. Measured cost of the ten checks on the
+    /// development machine's local disks: 1-4 microseconds warm, under 15 for a first probe, and one
+    /// worst case of 2.6 milliseconds under a build (the audit page's `L-17` addendum). Not measured on
+    /// a network filesystem, which is the ledger's named way for this to be wrong.
+    fn probe(&mut self) {
+        let rom = Path::new(&self.rom_path);
         for (slot, occupied) in self.on_disk.iter_mut().enumerate() {
-            *occupied = save_state::state_path_for(Path::new(rom_path), slot).exists();
+            *occupied = save_state::state_path_for(rom, slot).exists();
         }
     }
 
@@ -183,11 +204,10 @@ impl States {
     /// this existed only the *selected* slot's occupancy reached the screen, so a person stepped through
     /// ten slots blind to find a full one.
     ///
-    /// **No I/O.** It reads [`States::on_disk`], the cache probed at open, at a cartridge swap and by a
-    /// save, so drawing all ten every frame costs what drawing one did. What that cache does *not* see
-    /// is a slot file written or deleted by something else after the last probe: that was already true
-    /// of the one slot the strip used to show, and whether to re-probe (and when) is recorded as an open
-    /// option in the audit page's parcel 9-11 addendum rather than decided here.
+    /// **No I/O.** It reads [`States::on_disk`], the cache [`States::probe`] fills at open, at a cartridge
+    /// swap and after every slot gesture, so drawing all ten every frame costs what drawing one did. A
+    /// slot file written or deleted by something else shows at the next gesture on the strip, not before
+    /// (ledger `L-17`).
     pub fn cells(&self) -> [SlotCell; SLOT_COUNT] {
         std::array::from_fn(|slot| SlotCell {
             slot,
@@ -198,16 +218,23 @@ impl States {
 
     /// Select a slot directly. Out-of-range is ignored rather than clamped: a caller that computed one is
     /// wrong, and clamping would hide it behind a save to slot 9.
+    ///
+    /// A gesture, so it re-probes the disk ([`States::probe`]), also when the slot was ignored: the person
+    /// still reached for the strip.
     pub fn select(&mut self, slot: usize) {
         if slot < SLOT_COUNT {
             self.slot = slot;
         }
+        self.probe();
     }
 
     /// Step the selection, wrapping over `0..SLOT_COUNT`. `delta` is `-1` / `+1` from the two keys.
+    ///
+    /// A gesture, so it re-probes the disk ([`States::probe`]).
     pub fn step(&mut self, delta: isize) {
         let n = SLOT_COUNT as isize;
         self.slot = (self.slot as isize + delta).rem_euclid(n) as usize;
+        self.probe();
     }
 
     /// Write the machine to the selected slot.
@@ -216,26 +243,28 @@ impl States {
     /// changes nothing about it, so there is nothing the `.srm` could lose. The SRAM rides into the file
     /// with everything else, which is what makes the load's flush necessary and this one's absence
     /// correct.
+    ///
+    /// A gesture, so it re-probes the disk after the write ([`States::probe`]): the saved slot shows
+    /// occupied because its file is there, not because a save was attempted, and the other nine are
+    /// re-read in the same pass.
     pub fn save(&mut self, machine: &Machine) -> &Note {
         let path = save_state::state_path_for(Path::new(&self.rom_path), self.slot);
         let note = match save_state::save(&path, machine.system(), self.rom_fp) {
-            Ok(n) => {
-                self.on_disk[self.slot] = true;
-                Note {
-                    text: format!(
-                        "state: saved {n} bytes to slot {} ({})",
-                        self.slot,
-                        path.display()
-                    ),
-                    refused: false,
-                }
-            }
+            Ok(n) => Note {
+                text: format!(
+                    "state: saved {n} bytes to slot {} ({})",
+                    self.slot,
+                    path.display()
+                ),
+                refused: false,
+            },
             Err(e) => Note {
                 text: format!("state: save to slot {} failed: {e}", self.slot),
                 refused: true,
             },
         };
         self.last = Some(note);
+        self.probe();
         self.last.as_ref().expect("just set")
     }
 
@@ -254,7 +283,24 @@ impl States {
     /// **The bus is told last, after the machine is whole**, because the event carries the §2.2 stamp of
     /// the machine it is announcing. Told before the swap it would stamp the timeline the load just left,
     /// which is the one reading a subscriber would have no way to detect as wrong.
+    ///
+    /// **A gesture, so it re-probes the disk ([`States::probe`]) on both paths**, the refusal included:
+    /// loading a slot whose file was deleted behind the window's back is refused as before, and its cell
+    /// then shows empty. The probe wraps the load rather than sitting in it so the refusal's early return
+    /// cannot skip it.
     pub fn load(
+        &mut self,
+        machine: &mut Machine,
+        battery: &mut Battery,
+        bus: &mut crate::bus::Bus,
+        said: &mut Vec<String>,
+    ) {
+        self.load_selected(machine, battery, bus, said);
+        self.probe();
+    }
+
+    /// [`States::load`] without the probe.
+    fn load_selected(
         &mut self,
         machine: &mut Machine,
         battery: &mut Battery,
@@ -441,6 +487,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ★ **A slot file written or deleted behind the cache's back shows after EVERY slot gesture**
+    /// (ledger `L-17`).
+    ///
+    /// The strip's occupancy is a cache, and before `L-17` nothing re-read it after open, a swap or this
+    /// window's own save, so a slot the other window wrote stayed drawn empty. The "other window" here is
+    /// a second `States` over the same cartridge, saving through the real container, so the file is one a
+    /// real second window would write. The expectation is always read off the filesystem with the
+    /// container's path rule, never off `States`.
+    ///
+    /// One step per gesture method, because every gesture path reaches the slots through exactly one of
+    /// them: a cell click and `0`-`9` call `select`, both steppers and `F6`/`F7` call `step`, the save
+    /// button and `F2` call `save`, the load button and `F4` call `load`. `load` is taken twice, because
+    /// its refusal returns early and a probe placed after the success path alone would skip it: the
+    /// refused step loads a slot whose file was deleted behind the window's back, and that cell must show
+    /// empty afterwards.
+    ///
+    /// Anti-vacuity, per step: before the gesture the cache must still be wrong about the slot the other
+    /// window touched, or the step cannot tell a probe from no probe.
+    ///
+    /// Mutation proven red: delete `self.probe();` from [`States::step`] alone (the `step` steps fail);
+    /// separately, from [`States::load`] alone (the load steps fail).
+    #[test]
+    fn a_slot_file_written_behind_the_cache_shows_after_every_slot_gesture() {
+        let cart = Cartridge::new("reprobe");
+        let mut machine = booted();
+        let (mut battery, _) = Battery::open(&cart.path(), machine.system_mut());
+        let mut inert_bus = inert_bus(&mut machine);
+        let mut mine = States::open(&cart.path(), machine.system());
+        let mut other = States::open(&cart.path(), machine.system());
+        let file = |slot: usize| save_state::state_path_for(&cart.rom, slot);
+
+        // The other window writes `slot`, and this window's cache must not know yet.
+        let other_writes = |other: &mut States, machine: &Machine, mine: &States, slot: usize| {
+            other.select(slot);
+            let note = other.save(machine).clone();
+            assert!(!note.refused, "{}", note.text);
+            assert!(file(slot).exists(), "the other window's save left no file");
+            assert!(
+                !mine.cells()[slot].occupied,
+                "COULD NOT MEASURE: this window already shows slot {slot} occupied before the gesture"
+            );
+        };
+        let agrees = |mine: &States, gesture: &str| {
+            for c in mine.cells() {
+                assert_eq!(
+                    c.occupied,
+                    file(c.slot).exists(),
+                    "after {gesture}: slot {} is drawn {} but the file on disk says {}",
+                    c.slot,
+                    if c.occupied { "occupied" } else { "empty" },
+                    file(c.slot).exists()
+                );
+            }
+        };
+
+        other_writes(&mut other, &machine, &mine, 1);
+        mine.select(3);
+        agrees(&mine, "a cell click / digit key (select)");
+
+        other_writes(&mut other, &machine, &mine, 2);
+        mine.step(1);
+        agrees(&mine, "the next-slot stepper / F7 (step +1)");
+
+        other_writes(&mut other, &machine, &mine, 5);
+        mine.step(-1);
+        agrees(&mine, "the previous-slot stepper / F6 (step -1)");
+
+        other_writes(&mut other, &machine, &mine, 6);
+        let note = mine.save(&machine).clone();
+        assert!(!note.refused, "{}", note.text);
+        agrees(&mine, "the save button / F2 (save)");
+
+        other_writes(&mut other, &machine, &mine, 7);
+        let mut said = Vec::new();
+        mine.load(&mut machine, &mut battery, &mut inert_bus, &mut said);
+        assert!(
+            !mine.last().expect("the load said nothing").refused,
+            "the fixture's own slot must load"
+        );
+        agrees(&mine, "the load button / F4 (load, loaded)");
+
+        // The refusal path: slot 1 is shown occupied, then its file goes away behind the window's back
+        // while the other window writes slot 8.
+        mine.select(1);
+        assert!(
+            mine.cells()[1].occupied,
+            "fixture: slot 1 must show occupied"
+        );
+        std::fs::remove_file(file(1)).expect("delete slot 1 behind the window's back");
+        other_writes(&mut other, &machine, &mine, 8);
+        assert!(
+            mine.cells()[1].occupied,
+            "COULD NOT MEASURE: the deletion was already seen before the gesture"
+        );
+        let mut said = Vec::new();
+        mine.load(&mut machine, &mut battery, &mut inert_bus, &mut said);
+        let last = mine.last().expect("the refused load said nothing");
+        assert!(
+            last.refused && last.text.contains('1'),
+            "loading a deleted slot must refuse and name it: {}",
+            last.text
+        );
+        agrees(&mine, "the load button / F4 (load, refused)");
     }
 
     /// ★ **A slot round-trips the whole machine, and the load flushes the battery first.**

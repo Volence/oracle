@@ -831,10 +831,10 @@ impl Panels<'_> {
         // a click on a cell selects it; the steppers stay beside it because they name F6 and F7.
         //
         // The occupancy comes from [`crate::states::States::cells`], which reads the probe taken at open,
-        // at a cartridge swap and by a save. It is NOT re-read per frame, so a slot file written by the
-        // other window, or deleted outside both, shows as it was at the last probe. That was already true
-        // of the one slot this row used to show; the choice of when to re-probe is recorded as open in
-        // the audit page's parcel 9-11 addendum.
+        // at a cartridge swap and at the end of every slot gesture (ledger `L-17`). Every control in this
+        // row, and every slot key, ends in `select`, `step`, `save` or `load`, and each of those re-reads
+        // the ten files. It is NOT re-read per frame, on a timer or on focus, so a slot file written by the
+        // other window, or deleted outside both, shows at the next touch of this row and not before.
         ui.horizontal(|ui| {
             ui.weak("state:");
             if let Some(slot) = slot_cells(ui, &self.states.cells()) {
