@@ -1,6 +1,12 @@
 {
-  "focus": "Save-slot display and the panel tidy-ups landed. Deciding what the next job needs before starting it.",
-  "inFlight": [],
+  "focus": "Drafting the contract change that would let me read the debug panels myself instead of asking you to look.",
+  "inFlight": [
+    {
+      "what": "Drafting a contract change so programs can read panel text",
+      "where": "branch parcel/cr-panel-text",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,11 +14,11 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything pushed. Online tests for this landing still being read.",
+  "nextBoundary": "When the contract change draft returns, is checked here and goes to the hub for a ruling.",
   "queue": [
     {
       "id": "F-SLOT-REPROBE-ON-GESTURE",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -84,11 +90,11 @@
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "The reason I keep asking you to look at panels instead of reading them myself: the window can report its top bar to a connected program but not any panel."
+      "title": "Letting a connected program read what the debug panels say, so I can check panels myself instead of asking you. It needs a contract change, so an agent is drafting that first."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -100,6 +106,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-17T09:40:29Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-17T09:41:31Z"
 }

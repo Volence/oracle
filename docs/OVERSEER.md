@@ -346,3 +346,7 @@ item 10 (Objects) is a look call for him, not a build. **Successor, named in the
 (re-probe on gesture)**, booked `F-SLOT-REPROBE-ON-GESTURE`. What remains of the audit is the owner's eyes (look calls 1-33) plus
 `objects.rs`'s latent raw-JSON catch-all (not covered by `L-15`). **NEXT: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`** — re-derive its premise
 from the tree first, and check whether it needs a contract change (a hub CR) before dispatching.
+**`F-PANELS-INVISIBLE-TO-SCREEN-TEXT` STARTED 2026-09-17 as a CR DRAFT, not a build** — premise re-derived: `screen_text`'s `kind` is a closed
+enum in the contract (§11.29; §11.47 rules runs inside a kind are not a CR), so panel text is a contract change. Docs-only agent on
+`parcel/cr-panel-text` (worktree `../oracle-crpanel`, base `349298d`) drafting `docs/proposed/2026-09-17-cr-*-panel-screen-text.md`; the hub
+rules it. **Successor, named in the same write: `F-SLOT-REPROBE-ON-GESTURE`** (ruled `L-17`, no decision needed).
