@@ -1,6 +1,12 @@
 {
-  "focus": "Proved the debug panels can be read from what the window draws. Next: building that, with the hub.",
-  "inFlight": [],
+  "focus": "Building the panel-reading feature; it lands together with the hub's contract wording.",
+  "inFlight": [
+    {
+      "what": "Building panel reading for connected programs",
+      "where": "branch parcel/crw-panel",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything pushed.",
+  "nextBoundary": "When the panel-reading build returns and the hub's contract text is ready; both land together.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -44,7 +50,7 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -76,11 +82,11 @@
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Letting a program read what the debug panels say. The test build proved it works; next is building it, landing together with the hub's contract wording."
+      "title": "Letting a program read what the debug panels say. An agent is building it now; it lands together with the hub's contract wording."
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
@@ -92,6 +98,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-17T11:18:01Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-17T11:18:52Z"
 }

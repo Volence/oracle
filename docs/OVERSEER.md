@@ -378,3 +378,6 @@ and the W-rows are in `docs/2026-09-17-cr-w-q3-spike.md` (spans reset per PASS; 
 bodies; `Context::graphics` takes the write lock). Reported to the hub with aurora named reviewer.
 **NEXT: the CR-W implementing parcel, in lockstep with the hub's §11.50 + schema** — compose the brief from the CR §10 AND the spike doc's
 corrections, never the CR alone.
+**CR-W IMPLEMENTING PARCEL DISPATCHED 2026-09-17** (branch `parcel/crw-panel`, worktree `../oracle-crw`, base `774b4ba`), composed from CR §5/§6/§9/§10
+AND the spike's corrections. Schema re-vendor is the LAST step and BLOCKED until the hub sends the SHA carrying §11.50 + schema (vendored bytes are
+pinned by `PROVENANCE.md`, so no hand patch). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`.**
