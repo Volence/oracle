@@ -1706,33 +1706,15 @@ impl Panels<'_> {
                 self.symbols,
             ))
         };
-        for (label, value) in StatusStrip::of(
+        let strip = StatusStrip::of(
             self.machine,
             self.rom_path,
             self.symbols,
             held,
             Some(self.bus.aether_status()),
             halting,
-        )
-        .rows()
-        {
-            ui.monospace(format!("{label:<18}{value}"));
-        }
-        ui.separator();
-        egui::Grid::new("regs").num_columns(2).show(ui, |ui| {
-            for row in register_rows(self.machine.cpu_regs()) {
-                ui.monospace(row.label);
-                ui.monospace(row.hex());
-                ui.end_row();
-            }
-        });
-        ui.separator();
-        // Said out loud, because a panel that silently shows one number twice is a new wrong answer.
-        ui.small(
-            "A7 and SP are one register: the stack pointer the CPU is using right now, SSP in \
-             supervisor mode, USP in user. USP and SSP below it are the two storage slots, both shown \
-             whichever mode the machine is in.",
         );
+        registers_tab(ui, &strip.facts(), &register_rows(self.machine.cpu_regs()));
     }
 
     /// **The Memory panel.** One hex view, a space selector, an address box that takes a symbol, a write
@@ -1777,10 +1759,7 @@ impl Panels<'_> {
                     // used to advertise `0xFFFF0000`, which was the value the box was pre-filled with
                     // AND the value the read path refused. One derivation now, so a hint cannot go on
                     // recommending an address the panel no longer opens on.
-                    .hint_text(format!(
-                        "{} or a symbol name",
-                        memory::default_base_text()
-                    )),
+                    .hint_text(format!("{} or a symbol name", memory::default_base_text())),
             );
             let go = ui.button("go").clicked()
                 || (entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
@@ -1794,35 +1773,19 @@ impl Panels<'_> {
                         listing: None,
                     } => {
                         self.mem.base = addr;
-                        memory::Line::plain(format!(
-                            "{}: a hex literal, taken as typed",
-                            oracle_aether::hex::addr(addr)
-                        ))
+                        memory::Line::hex_literal(addr)
                     }
-                    // ⚑ **Masked, and SAID.** The typed value carried bits above the 24 the 68000
-                    // drives, so it was a listing spelling of a real bus address. The panel goes there
-                    // and names both numbers rather than refusing the one a person read off the
-                    // listing — and rather than moving silently, which is the thing the schema's
-                    // `rawAddr` note is actually protecting against. This is the sentence
-                    // `lookup_symbol` never wrote for the identical masking it has always done.
+                    // ⚑ **Masked, and SAID.** See `memory::Line::listing_spelling`.
                     memory::Resolved::Hex {
                         addr,
                         listing: Some(raw),
                     } => {
                         self.mem.base = addr;
-                        memory::Line::plain(format!(
-                            "{}: the 68000 drives 24 address lines, so the listing spelling {} names \
-                             this same location and this is where the page below is read from",
-                            oracle_aether::hex::addr(addr),
-                            oracle_aether::hex::addr(raw)
-                        ))
+                        memory::Line::listing_spelling(addr, raw)
                     }
                     memory::Resolved::Symbol { addr, reply } => {
                         self.mem.base = addr;
-                        memory::Line::plain(format!(
-                            "ok: {}",
-                            crate::bus::describe_reply(&reply)
-                        ))
+                        memory::Line::plain(format!("ok: {}", crate::bus::describe_reply(&reply)))
                     }
                     memory::Resolved::Refused(e) => {
                         memory::answer_line(&crate::bus::Answer::Err(e))
@@ -1869,7 +1832,7 @@ impl Panels<'_> {
             }
             None => {
                 if let Some(r) = v.region {
-                    ui.small(format!("region  {r}"));
+                    ui.small(format!("region: {r}"));
                 }
                 if let Some(n) = v.truncated_to {
                     ui.small(format!(
@@ -1877,16 +1840,11 @@ impl Panels<'_> {
                         oracle_aether::hex::addr(v.base)
                     ));
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for row in &v.rows {
-                        ui.monospace(format!(
-                            "{}  {:<47}  {}",
-                            oracle_aether::hex::addr(row.addr),
-                            row.hex(),
-                            row.ascii()
-                        ));
-                    }
-                });
+                // `both`, because the byte column is 47 monospace characters and does not shrink: a
+                // narrow pane scrolls to it rather than clipping it. The salt is P7's.
+                egui::ScrollArea::both()
+                    .id_salt("memory-hex")
+                    .show(ui, |ui| hex_table(ui, &v.rows));
             }
         }
         ui.separator();
@@ -1918,28 +1876,9 @@ impl Panels<'_> {
                     Ok(params) => {
                         let method = space.write_method().unwrap_or("");
                         let (bus, sys) = (&mut *self.bus, self.machine.system_mut());
-                        // Stamped, because `write_vram` is the one write that lands in a *running*
-                        // machine (see the asymmetry below): "ok" alone leaves a human unable to say
-                        // which frame absorbed the poke, and the next frame may already have redrawn
-                        // over it. D11 puts `{frame, mclk, running}` on every reply for exactly this.
+                        // Stamped: see `memory::Line::stamped` for why, and for what it replaced.
                         let (answer, stamp) = bus.call_stamped(sys, method, &params);
-                        let line = memory::answer_line(&answer);
-                        memory::Line {
-                            refused: line.refused,
-                            text: format!(
-                                "{}   [frame {} · mclk {} · running {}]",
-                                line.text,
-                                stamp
-                                    .get("frame")
-                                    .map_or_else(|| "?".into(), |v| v.to_string()),
-                                stamp
-                                    .get("mclk")
-                                    .map_or_else(|| "?".into(), |v| v.to_string()),
-                                stamp
-                                    .get("running")
-                                    .map_or_else(|| "?".into(), |v| v.to_string()),
-                            ),
-                        }
+                        memory::answer_line(&answer).stamped(&stamp)
                     }
                 });
                 // A write can change the gate's own answer only via the run state, which a write cannot
@@ -1960,21 +1899,13 @@ impl Panels<'_> {
         // inconsistency behind the selector either, because an asymmetry you can only find by clicking
         // through five spaces is an asymmetry nobody finds.
         ui.collapsing("what every space accepts right now", |ui| {
-            for space in memory::Space::ALL {
-                let g = self.mem.gate_of(space);
-                ui.monospace(format!(
-                    "{:<22} {}  {}",
-                    space.label(),
-                    if g.is_open() { "WRITE" } else { "  no " },
-                    g.why()
-                ));
-            }
-            ui.small(
-                "Not a defect in this panel. §6's run-control rule names write_memory, write_cram and \
-                 z80_write and does not name write_vram, and the server serves the gate it was given \
-                 (relaxing a refusal later is additive; introducing one is not). The argument for \
-                 naming that row is filed upstream, not settled here.",
-            );
+            let gates: Vec<(memory::Space, &memory::Gate)> = memory::Space::ALL
+                .into_iter()
+                .map(|space| (space, self.mem.gate_of(space)))
+                .collect();
+            gate_table(ui, &gates);
+            ui.add_space(SECTION_GAP);
+            ui.small(memory::GATES_NOTE);
         });
         ui.separator();
 
@@ -2927,9 +2858,26 @@ const PLANE_ASPECT: oracle_frontend::present::Aspect = oracle_frontend::present:
 ///
 /// Free rather than inline in [`Panels::plane_picture`] for the reason `plane_split` is: a headless test
 /// can then drive the Planes tab's own give-up through the real split, without a `Machine`.
+///
+/// ⚑ **The legend goes above the picture, and its line is taken off the room before the fit.** The picture
+/// checkers every transparent pixel and nothing else on the tab says so ([`crate::planes::TRANSPARENT_LEGEND`]
+/// has the argument). It is drawn *here* rather than in the facts card because [`plane_split`] stacks the
+/// card under the picture on a narrow pane, where a legend in it could be a scroll away from what it
+/// explains. Above rather than below, because the picture is fitted to all the height it is given: a line
+/// under it would be pushed off the bottom of the pane. It is drawn only when there is a picture, since a
+/// legend for a picture that is not there explains nothing.
 fn plane_image(ui: &mut egui::Ui, tex: &egui::TextureHandle) -> Option<egui::Response> {
     let src = tex.size_vec2();
-    let avail = ui.available_size();
+    // Laid out once, at the width it will be drawn at, so the height taken off is the height of the
+    // lines it really wraps to in a narrow pane, not of one line.
+    let legend = ui.painter().layout(
+        crate::planes::TRANSPARENT_LEGEND.to_owned(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        ui.visuals().weak_text_color(),
+        ui.available_width(),
+    );
+    let legend_h = legend.size().y + ui.spacing().item_spacing.y;
+    let avail = ui.available_size() - egui::vec2(0.0, legend_h);
     let ppp = ui.pixels_per_point();
     let size = fit_or_say(
         ui,
@@ -2940,6 +2888,7 @@ fn plane_image(ui: &mut egui::Ui, tex: &egui::TextureHandle) -> Option<egui::Res
         PLANE_ASPECT,
         None,
     )?;
+    ui.label(legend);
     let hit = egui::ScrollArea::both()
         .id_salt("planes_picture")
         .show(ui, |ui| {
@@ -3127,6 +3076,103 @@ fn plane_side_column(
     });
 }
 
+/// **The Memory tab's hex view**: a [`table`] of [`memory::HEX_COLS`], one banded row per page line.
+///
+/// ⚑ It replaced one `ui.monospace(format!("{}  {:<47}  {}", ..))` per row. See [`memory::HexRow::cells`]
+/// for what was wrong with that and what was not: a short final page did not drift, and the hand-typed 47
+/// was the part that could break. The table sizes every column from the rows it draws, so the ASCII
+/// gutter of a short last page starts where every row above it starts, by construction.
+fn hex_table(ui: &mut egui::Ui, rows: &[memory::HexRow]) {
+    let (plain, weak) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
+    // The bytes are what the view is read for; the address is where you are and the ASCII gutter is a
+    // hint about the bytes, so both recede.
+    let colours = [weak, plain, weak];
+    let rows: Vec<TableRow> = rows
+        .iter()
+        .map(|r| TableRow {
+            cells: r
+                .cells()
+                .into_iter()
+                .zip(colours)
+                .map(|(text, colour)| Cell {
+                    text,
+                    colour,
+                    hover: None,
+                })
+                .collect(),
+            id: None,
+            selected: false,
+        })
+        .collect();
+    table(ui, &memory::HEX_COLS, &rows, "memory-hex");
+}
+
+/// **What every space accepts right now**, as a [`table`] of [`memory::GATE_COLS`].
+///
+/// The `write` cell is [`crate::theme::SUCCESS`] when the gate is open and recessed when it is not, decided
+/// from [`memory::Gate::is_open`] and never from the word in the cell. The `why` column is the handler's
+/// own sentence, recessed: it is the explanation of the column before it, not a fact of its own.
+fn gate_table(ui: &mut egui::Ui, gates: &[(memory::Space, &memory::Gate)]) {
+    let (plain, weak) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
+    let rows: Vec<TableRow> = gates
+        .iter()
+        .map(|(space, gate)| {
+            let write = if gate.is_open() {
+                crate::theme::SUCCESS
+            } else {
+                weak
+            };
+            TableRow {
+                cells: gate
+                    .cells(*space)
+                    .into_iter()
+                    .zip([plain, write, weak])
+                    .map(|(text, colour)| Cell {
+                        text,
+                        colour,
+                        hover: None,
+                    })
+                    .collect(),
+                id: None,
+                selected: false,
+            }
+        })
+        .collect();
+    table(ui, &memory::GATE_COLS, &rows, "memory-gates");
+}
+
+/// **The Registers tab's drawing**, from the strip's facts and the register file.
+///
+/// Free rather than inline in [`Panels::registers`] for [`pacing_tab`]'s reason: a headless test can draw
+/// the tab's own body from a strip it built, without the `Machine` and the `Bus` a whole [`Panels`] holds.
+///
+/// ⚑ **What changed, and what did not.** The strip used to be `ui.monospace(format!("{label:<18}{value}"))`
+/// per row: a column drawn with spaces inside a string (style page P2, in the named-capture spelling its
+/// published grep could not see), in the face reserved for machine numbers over values that are whole
+/// sentences (P3), and with the two alarm rows at exactly the weight of `frame (emulated)`, so their
+/// position at the top was the only emphasis they had. It is now [`health_grid`], which is what the
+/// exemplar built for coloured facts. **The data under it is untouched**: [`StatusStrip::facts`] is
+/// [`StatusStrip::rows`] with a face and a colour beside each pair, and every sentence, absence and order
+/// is the one `rows` already had. The register file below was already a real grid and is unchanged.
+fn registers_tab(ui: &mut egui::Ui, strip: &[pacing::Fact], regs: &[RegRow]) {
+    card(ui, |ui| health_grid(ui, "registers-strip", strip));
+    ui.add_space(SECTION_GAP);
+    egui::Grid::new("regs").num_columns(2).show(ui, |ui| {
+        for row in regs {
+            ui.monospace(row.label);
+            ui.monospace(row.hex());
+            ui.end_row();
+        }
+    });
+    ui.separator();
+    // Said out loud, because a panel that silently shows one number twice is a new wrong answer.
+    ui.small(
+        "A7 and SP are one register: the stack pointer the CPU is using right now, SSP in \
+         supervisor mode, USP in user. USP and SSP below it are the two storage slots, both shown \
+         whichever mode the machine is in.",
+    );
+}
+
 /// Labelled facts in two aligned columns: the label small and recessed, the value emphasised.
 ///
 /// Emphasis is **colour and size, never weight** -- egui selects fonts by family and has no bold axis, so
@@ -3165,6 +3211,7 @@ fn health_colour(ui: &egui::Ui, h: pacing::Health) -> egui::Color32 {
         pacing::Health::Good => ui.visuals().strong_text_color(),
         pacing::Health::Watch => crate::theme::WARNING,
         pacing::Health::Unmeasured => ui.visuals().weak_text_color(),
+        pacing::Health::Alarm => ui.visuals().error_fg_color,
     }
 }
 
@@ -4183,6 +4230,12 @@ fn table_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, cell: &Cell) {
     // rect it hands back says nothing about whether any glyphs were dropped.
     let cut = text_w(ui, &cell_face(ui, c), text) > w;
     ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
+        // ⚑ **The column's width, not the text's.** `allocate_ui_with_layout` allocates what its contents
+        // used, so a left-aligned cell reserved only its own glyphs and every later column in the row
+        // started wherever this one's text happened to end: a short cell pulled the rest of its row left.
+        // A right-aligned cell never showed it, because its contents start at the far edge. See
+        // `every_column_holds_its_edge_on_every_row_and_on_the_header_whatever_the_cells_before_it_measure`.
+        ui.set_min_width(w);
         let r = ui.add(egui::Label::new(rich).truncate());
         // ⚑ **The panel's note wins over the table's.** A short cell like `(unnamed)` says an answer is
         // absent; the sentence saying *why* is a fact about that panel's data, not about tables, so the
@@ -4212,6 +4265,9 @@ fn header_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, colour: egui::Color32)
     };
     let h = ui.spacing().interact_size.y;
     ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
+        // The column's width, for [`table_cell`]'s reason: a header narrower than its column otherwise
+        // pulls every header after it left of the cells it names.
+        ui.set_min_width(w);
         ui.label(
             egui::RichText::new(c.head)
                 .text_style(egui::TextStyle::Small)
@@ -4855,11 +4911,27 @@ const NO_VALUE: &str = "no value (the server sent nothing here)";
 /// from the shape of the rendered text. A refusal that reads like a success is the one rendering mistake
 /// a debug surface cannot afford, and deciding by looking for a `"REFUSED"` prefix would be a second
 /// encoding of a fact already in hand.
+///
+/// ⚑ **Prose in the body face, and only the address in monospace** (style page P3). This used to draw every
+/// line that was not a refusal in the monospace face, which put sentences such as *"a hex literal, taken as
+/// typed"* and every tab's `ok:` echo in the face reserved for machine numbers. The address, when the line
+/// has one, is carried in [`memory::Line::addr`] and drawn apart, so nothing here looks inside the words.
+/// A refusal has no address to draw: its code and message are the server's, verbatim.
 fn note_label(ui: &mut egui::Ui, note: &memory::Line) {
     if note.refused {
         ui.colored_label(ui.visuals().error_fg_color, &note.text);
-    } else {
-        ui.monospace(&note.text);
+        return;
+    }
+    match note.addr {
+        None => {
+            ui.label(&note.text);
+        }
+        Some(a) => {
+            ui.horizontal_wrapped(|ui| {
+                ui.monospace(format!("{}:", oracle_aether::hex::addr(a)));
+                ui.label(&note.text);
+            });
+        }
     }
 }
 
@@ -5180,44 +5252,123 @@ impl StatusStrip {
     /// a reader has not thought to ask and is the reason they are staring at the strip in the first place.
     /// A row that only ever appears when something is wrong belongs where an alarm belongs, above the
     /// steady state, not appended after six rows a reader has already learned to skim past.
+    ///
+    /// **Test-only since the Registers tab draws [`facts`](Self::facts).** It is kept, and kept as a
+    /// projection of `facts` rather than a list of its own, because the strip's parity gates pin its words
+    /// through it: they now pin the words the tab draws, with no second list for them to drift from.
+    #[cfg(test)]
     pub fn rows(&self) -> Vec<(&'static str, String)> {
+        self.facts()
+            .into_iter()
+            .map(|f| (f.label, f.value))
+            .collect()
+    }
+
+    /// **The strip as the tab draws it**: `rows`' pairs, in the same order, each with the
+    /// face and the colour decided here beside the fact rather than at the draw site.
+    ///
+    /// `rows` is this with the presentation dropped, so the two cannot disagree about a label, a value or
+    /// an order: there is one list, and every test that pins the strip's words through `rows` is pinning
+    /// the words drawn.
+    ///
+    /// # The colour of each row, and where it comes from
+    ///
+    /// * **The halting row** is [`Health::Alarm`](pacing::Health::Alarm) when
+    ///   [`halted_here`](crate::stopping::Halting::halted_here), and
+    ///   [`Watch`](pacing::Health::Watch) otherwise. That is the transport bar's colouring of the same
+    ///   headline, from the same two predicates: `headline` is `Some` only when the machine halted here or
+    ///   [`can_halt`](crate::stopping::Halting::can_halt), so the bar's third, quiet arm cannot reach a
+    ///   row this function draws.
+    /// * **The held row** is `Watch`: a client holding the pads is not fatal, and it is not nothing.
+    /// * **The aether row** is `Alarm` exactly when [`AetherStatus::alarm`](crate::bus::AetherStatus::alarm)
+    ///   raises the top bar's alarm, and `Good` otherwise: serving and not-asked are both states the reader
+    ///   chose, which is that function's own argument for staying silent on them.
+    /// * **A row built with no bus to ask** is `Watch`. [`held`](Self::held)'s note calls that *a loud
+    ///   row*, and [`Unmeasured`](pacing::Health::Unmeasured) would draw it recessed, which is the opposite.
+    /// * Everything else is `Good`.
+    ///
+    /// # The face
+    ///
+    /// P3: the monospace face is for machine strings a reader compares character by character. So the
+    /// path, the three counts (the Pacing tab's precedent: `rebases` and `samples` keep the face) and a
+    /// symbol **as the listing spells it** take it; every sentence, including the three stated absences
+    /// under `symbols` and `symbol at pc`, does not. `symbols` is `N loaded`, words and a number, and is
+    /// drawn as words, on the Pacing tab's `44100 Hz, 2 channels` ruling.
+    pub fn facts(&self) -> Vec<pacing::Fact> {
+        use pacing::Health;
+        let fact = |label: &'static str, value: String, mono: bool, health: Health| pacing::Fact {
+            label,
+            value,
+            mono,
+            health,
+        };
+        let mut facts = Vec::new();
         // ⚑ The halting row is FIRST, ahead of even the held row, and the order is the ranking of alarms.
         // A held pad makes the game do something you did not ask for; a halted machine makes it do
         // NOTHING, which is the state a reader cannot diagnose at all from the picture. It goes at the
         // top for `held_row`'s reason, more so.
-        let mut rows: Vec<(&'static str, String)> =
-            self.halt_row().into_iter().chain(self.held_row()).collect();
-        rows.extend([
-            ("romPath", self.rom_path.clone()),
-            ("rom bytes", format!("{}", self.rom_bytes)),
-            ("frame (emulated)", format!("{}", self.frame)),
-            ("frames run (player)", format!("{}", self.frames_run)),
-            (
+        if let Some((label, value)) = self.halt_row() {
+            let health = match &self.halting {
+                Some(h) if h.halted_here() => Health::Alarm,
+                _ => Health::Watch,
+            };
+            facts.push(fact(label, value, false, health));
+        }
+        if let Some((label, value)) = self.held_row() {
+            facts.push(fact(label, value, false, Health::Watch));
+        }
+        facts.extend([
+            fact("romPath", self.rom_path.clone(), true, Health::Good),
+            fact(
+                "rom bytes",
+                format!("{}", self.rom_bytes),
+                true,
+                Health::Good,
+            ),
+            fact(
+                "frame (emulated)",
+                format!("{}", self.frame),
+                true,
+                Health::Good,
+            ),
+            fact(
+                "frames run (player)",
+                format!("{}", self.frames_run),
+                true,
+                Health::Good,
+            ),
+            fact(
                 "symbols",
                 match self.symbol_count {
                     None => "none loaded (no --symbols, and no .lst beside the ROM)".into(),
                     Some(n) => format!("{n} loaded"),
                 },
-            ),
-            (
-                "symbol at pc",
-                match (&self.symbol_at_pc, self.symbol_count) {
-                    (Some((name, 0)), _) => name.clone(),
-                    (Some((name, disp)), _) => format!("{name}+${disp:X}"),
-                    (None, None) => "no listing loaded".into(),
-                    // A table that resolves nothing at this address is a real answer and a different one:
-                    // the listing is there and the PC is before its first symbol (or past its end).
-                    (None, Some(_)) => "the listing names no symbol at or before pc".into(),
-                },
+                false,
+                Health::Good,
             ),
         ]);
+        let (at_pc, named) = match (&self.symbol_at_pc, self.symbol_count) {
+            (Some((name, 0)), _) => (name.clone(), true),
+            (Some((name, disp)), _) => (format!("{name}+${disp:X}"), true),
+            (None, None) => ("no listing loaded".into(), false),
+            // A table that resolves nothing at this address is a real answer and a different one: the
+            // listing is there and the PC is before its first symbol (or past its end).
+            (None, Some(_)) => ("the listing names no symbol at or before pc".into(), false),
+        };
+        facts.push(fact("symbol at pc", at_pc, named, Health::Good));
         // **Last, and the position is a decision too.** Every row above answers *what is loaded and where
-        // is the machine* — facts about the emulated system. This one answers *can anything outside this
+        // is the machine*: facts about the emulated system. This one answers *can anything outside this
         // process reach this window*, which is a fact about the process, so it sits after the machine
         // rather than among it. It is not in the alarm slot `held_row` occupies because it is not an
         // alarm: it is always true of something, and it is always shown.
-        rows.push(self.aether_row());
-        rows
+        let (label, value) = self.aether_row();
+        let health = match &self.aether {
+            None => Health::Watch,
+            Some(a) if a.alarm().is_some() => Health::Alarm,
+            Some(_) => Health::Good,
+        };
+        facts.push(fact(label, value, false, health));
+        facts
     }
 }
 
@@ -9684,6 +9835,106 @@ mod table_tests {
             "a proportional column is not left-aligned: {a:?} vs {b:?}"
         );
     }
+
+    /// **Every column starts at one x on every row and on the header, whatever the cells BEFORE it
+    /// measure.**
+    ///
+    /// The test above cannot see this, and its name says it can: its only left-aligned column that is
+    /// not last holds `0x00001234` and `0x00005678`, two cells of identical width, so a left-aligned cell
+    /// that reserves only its own text rather than its column leaves every later column where it would
+    /// have been anyway. Found 2026-09-17 by the Memory tab's hex view, whose short last page moved the
+    /// `ascii` column 218 points left of every row above it.
+    ///
+    /// So the fixture here makes every left-aligned column that is not last vary in width down the page,
+    /// and makes each header narrower than its cells. Expected edges are read off the table itself: for
+    /// each column, a left-aligned column's cells and header share a LEFT edge and a numeric column's
+    /// share a RIGHT edge, the same meaning of alignment the test above uses.
+    #[test]
+    fn every_column_holds_its_edge_on_every_row_and_on_the_header_whatever_the_cells_before_it_measure(
+    ) {
+        let cols = [
+            table::Col {
+                head: "k",
+                numeric: false,
+                mono: false,
+            },
+            table::Col {
+                head: "n",
+                numeric: true,
+                mono: true,
+            },
+            table::Col {
+                head: "w",
+                numeric: false,
+                mono: true,
+            },
+            table::Col {
+                head: "tail",
+                numeric: false,
+                mono: false,
+            },
+        ];
+        let white = egui::Color32::WHITE;
+        let texts: [[&str; 4]; 3] = [
+            ["a", "1", "x", "first"],
+            ["a much longer key", "22", "xxxxxxxxxx", "second"],
+            ["mid key", "333333", "xxxx", "third"],
+        ];
+        let runs = {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+            let rows: Vec<TableRow> = texts.iter().map(|t| row(t, &[white; 4])).collect();
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 300.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    table(ui, &cols, &rows, "edge-test");
+                },
+            );
+            out.textures_delta.clear();
+            super::subtype_list_tests::text_runs(&out.shapes)
+        };
+        let find = |t: &str| {
+            let hits: Vec<egui::Rect> = runs
+                .iter()
+                .filter(|(_, s)| s == t)
+                .map(|(r, _)| *r)
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "COULD NOT MEASURE: {t:?} painted {} times",
+                hits.len()
+            );
+            hits[0]
+        };
+        for (i, c) in cols.iter().enumerate() {
+            let edge = |r: egui::Rect| if c.numeric { r.right() } else { r.left() };
+            let head = edge(find(c.head));
+            let cells: Vec<egui::Rect> = texts.iter().map(|t| find(t[i])).collect();
+            assert!(
+                cells
+                    .iter()
+                    .any(|r| (r.width() - cells[0].width()).abs() > 1.0),
+                "COULD NOT MEASURE: column {:?}'s cells are all one width",
+                c.head
+            );
+            for (r, t) in cells.iter().zip(&texts) {
+                assert!(
+                    (edge(*r) - head).abs() < 0.6,
+                    "column {:?}: the cell {:?} holds its edge at {}, and the header at {head}",
+                    c.head,
+                    t[i],
+                    edge(*r)
+                );
+            }
+        }
+    }
 }
 
 // -------------------------------------------------------------------------------------------------------
@@ -9943,6 +10194,721 @@ mod watch_draw_tests {
                 drawn <= reserved,
                 "the {state} controls (tick-box: {toggle}) draw {drawn:.1} points into a gutter \
                  reserved for {reserved:.1}, so they land on the first column"
+            );
+        }
+    }
+}
+
+/// **What a headless frame painted**, for the data-display gates: every text run with its rect, its text,
+/// the colour of its first section and its font family. Drawn on the installed theme, two frames, because
+/// an `egui::Grid` sizes its columns from the frame before.
+#[cfg(test)]
+mod painted {
+    pub(super) struct Run {
+        pub rect: egui::Rect,
+        pub text: String,
+        pub colour: egui::Color32,
+        pub family: egui::FontFamily,
+    }
+
+    pub(super) fn paint(
+        size: egui::Vec2,
+        mut draw: impl FnMut(&mut egui::Ui),
+    ) -> (Vec<Run>, egui::Visuals) {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let (mut runs, mut visuals) = (Vec::new(), None);
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ui| {
+                    visuals = Some(ui.visuals().clone());
+                    draw(ui)
+                },
+            );
+            // The context is never painted, so a delta nobody consumes would otherwise be leaked.
+            out.textures_delta.clear();
+            fn walk(s: &egui::Shape, out: &mut Vec<Run>) {
+                match s {
+                    egui::Shape::Text(t) => {
+                        let first = t.galley.job.sections.first();
+                        out.push(Run {
+                            rect: t.galley.rect.translate(t.pos.to_vec2()),
+                            text: t.galley.text().into(),
+                            colour: first.map_or(egui::Color32::PLACEHOLDER, |s| s.format.color),
+                            family: first.map_or(egui::FontFamily::Proportional, |s| {
+                                s.format.font_id.family.clone()
+                            }),
+                        })
+                    }
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            runs.clear();
+            for c in &out.shapes {
+                walk(&c.shape, &mut runs);
+            }
+        }
+        (runs, visuals.expect("the frame ran"))
+    }
+}
+
+/// **The Registers tab's drawing** (audit build-order item 6): the strip is facts in a grid, coloured from
+/// the derivations that decide its alarms, and nothing on it pads itself into a column.
+///
+/// Every expectation here is read off [`StatusStrip::facts`] or off the predicates it colours from, never
+/// typed: the fixtures build the strip's own fields, and the gates ask what was painted.
+#[cfg(test)]
+mod registers_tab_tests {
+    use super::*;
+    use crate::bus::{AetherStatus, ServeOutcome};
+    use oracle_aether::breakpoints::BreakpointId;
+    use oracle_aether::engine::LastBreak;
+
+    fn halting(stopped: bool, frames_since: Option<u64>) -> stopping::Halting {
+        stopping::Halting {
+            armed: 1,
+            armed_handles: vec!["b1".into()],
+            armed_at: vec![oracle_aether::hex::addr(0x1234)],
+            more_addrs: 0,
+            stopped,
+            last: Some(LastBreak {
+                id: BreakpointId(1),
+                pc: 0x1234,
+                frame: 7,
+                ordinal: 2,
+            }),
+            frames_since,
+            last_symbol: None,
+            stopping_watches: 0,
+        }
+    }
+
+    /// Every arm the strip colours differently, across four strips: halted here with a failed bus and a
+    /// held pad; armed and running with a serving bus and a listing that names the PC; and the two
+    /// no-bus-to-ask strips, with and without a listing.
+    fn strips() -> Vec<StatusStrip> {
+        let held = Pad {
+            left: true,
+            ..Pad::default()
+        };
+        vec![
+            StatusStrip {
+                rom_path: "/roms/s4.bin".into(),
+                rom_bytes: 0x20_0000,
+                frame: 1234,
+                frames_run: 1200,
+                symbol_count: None,
+                symbol_at_pc: None,
+                held: Some([held, Pad::default()]),
+                aether: Some(AetherStatus {
+                    outcome: ServeOutcome::Failed {
+                        path: "/run/oracle.sock".into(),
+                        error: "Permission denied (os error 13)".into(),
+                        held: false,
+                    },
+                    attached: false,
+                }),
+                halting: Some(halting(true, Some(0))),
+            },
+            StatusStrip {
+                rom_path: "/roms/s4.bin".into(),
+                rom_bytes: 0x20_0000,
+                frame: 99,
+                frames_run: 98,
+                symbol_count: Some(812),
+                symbol_at_pc: Some(("GameLoop".into(), 0x1A)),
+                held: Some([Pad::default(); 2]),
+                aether: Some(AetherStatus {
+                    outcome: ServeOutcome::Serving("/run/oracle.sock".into()),
+                    attached: true,
+                }),
+                halting: Some(halting(false, Some(40))),
+            },
+            StatusStrip {
+                rom_path: "/roms/s4.bin".into(),
+                rom_bytes: 1,
+                frame: 0,
+                frames_run: 0,
+                symbol_count: Some(3),
+                symbol_at_pc: None,
+                held: None,
+                aether: None,
+                halting: None,
+            },
+            StatusStrip {
+                rom_path: "/roms/s4.bin".into(),
+                rom_bytes: 1,
+                frame: 0,
+                frames_run: 0,
+                symbol_count: Some(3),
+                symbol_at_pc: Some(("Start".into(), 0)),
+                held: Some([Pad::default(); 2]),
+                aether: Some(AetherStatus {
+                    outcome: ServeOutcome::NotAsked,
+                    attached: false,
+                }),
+                halting: Some(stopping::Halting {
+                    armed: 0,
+                    armed_handles: Vec::new(),
+                    armed_at: Vec::new(),
+                    more_addrs: 0,
+                    stopped: false,
+                    last: None,
+                    frames_since: None,
+                    last_symbol: None,
+                    stopping_watches: 0,
+                }),
+            },
+        ]
+    }
+
+    use super::painted::{paint, Run};
+
+    /// The real [`registers_tab`], drawn headless on the installed theme.
+    fn painted(strip: &StatusStrip) -> (Vec<Run>, egui::Visuals) {
+        let facts = strip.facts();
+        // The register file is not what these gates are about (it was already a real grid); an empty one
+        // keeps every painted run below the strip's own.
+        let regs: Vec<RegRow> = Vec::new();
+        paint(egui::vec2(900.0, 900.0), |ui| {
+            registers_tab(ui, &facts, &regs)
+        })
+    }
+
+    /// The colour [`health_colour`] gives `h` under `v`, restated over `Visuals` because that function
+    /// takes a `Ui` and the drawing is over by the time this asks.
+    fn expected_colour(v: &egui::Visuals, h: pacing::Health) -> egui::Color32 {
+        match h {
+            pacing::Health::Good => v.strong_text_color(),
+            pacing::Health::Watch => crate::theme::WARNING,
+            pacing::Health::Unmeasured => v.weak_text_color(),
+            pacing::Health::Alarm => v.error_fg_color,
+        }
+    }
+
+    /// **P2, on what is painted.** Every label and every value of the strip is its own text run, and no
+    /// run anywhere on the tab carries a run of spaces or a tab.
+    ///
+    /// The strip used to be one `ui.monospace(format!("{label:<18}{value}"))` per row, which paints one
+    /// run per row with the label padded out to eighteen characters inside it: no run equals a label, and
+    /// nearly every run carries a double space. Both halves of this gate see that shape.
+    #[test]
+    fn every_strip_label_and_value_is_painted_as_its_own_run_and_nothing_pads_itself() {
+        let mut checked = 0;
+        for strip in strips() {
+            let (runs, _) = painted(&strip);
+            for f in strip.facts() {
+                for want in [f.label, f.value.as_str()] {
+                    assert!(
+                        runs.iter().any(|r| r.text == want),
+                        "the strip's {:?} was not painted as a run of its own; the tab painted {:?}",
+                        want,
+                        runs.iter().map(|r| &r.text).collect::<Vec<_>>()
+                    );
+                    checked += 1;
+                }
+            }
+            for r in &runs {
+                assert!(
+                    !r.text.contains("  ") && !r.text.contains('\t'),
+                    "a run of spaces is a column drawn inside a string, which P2 outlaws: {:?}",
+                    r.text
+                );
+            }
+        }
+        assert!(
+            checked > 30,
+            "COULD NOT MEASURE: only {checked} strings checked"
+        );
+    }
+
+    /// **The alarm rows are coloured from the derivation, and the colour decided is the colour painted.**
+    ///
+    /// The expected health is read off the same predicates the transport bar colours the same headline
+    /// from ([`stopping::Halting::halted_here`]) and the same function that raises the bar's bus alarm
+    /// ([`crate::bus::AetherStatus::alarm`]), not off the words. And the fixture must reach all three
+    /// colours, or a strip painted uniformly would pass.
+    #[test]
+    fn the_strip_paints_each_row_in_the_health_its_derivation_decided() {
+        let mut seen = std::collections::BTreeSet::new();
+        for strip in strips() {
+            let facts = strip.facts();
+            for f in &facts {
+                let want = match f.label {
+                    HALTING_LABEL => match &strip.halting {
+                        Some(h) if h.halted_here() => pacing::Health::Alarm,
+                        _ => pacing::Health::Watch,
+                    },
+                    HELD_LABEL => pacing::Health::Watch,
+                    AETHER_LABEL => match &strip.aether {
+                        None => pacing::Health::Watch,
+                        Some(a) if a.alarm().is_some() => pacing::Health::Alarm,
+                        Some(_) => pacing::Health::Good,
+                    },
+                    _ => pacing::Health::Good,
+                };
+                assert_eq!(f.health, want, "`{}` decided the wrong health", f.label);
+                seen.insert(format!("{want:?}"));
+            }
+            let (runs, visuals) = painted(&strip);
+            for f in &facts {
+                let run = runs
+                    .iter()
+                    .find(|r| r.text == f.value)
+                    .unwrap_or_else(|| panic!("`{}`'s value was not painted", f.label));
+                assert_eq!(
+                    run.colour,
+                    expected_colour(&visuals, f.health),
+                    "`{}` is {:?} and was painted another colour",
+                    f.label,
+                    f.health
+                );
+            }
+        }
+        for h in ["Alarm", "Watch", "Good"] {
+            assert!(
+                seen.contains(h),
+                "COULD NOT MEASURE: no row in the fixture is {h}"
+            );
+        }
+    }
+
+    /// **P3.** Only a machine string a reader compares character by character is painted monospace: the
+    /// path, the three counts and a symbol as the listing spells it. Every sentence, the stated absences
+    /// included, is painted in the body face.
+    ///
+    /// Derived rather than listed: in these fixtures a machine string has no whitespace in it and every
+    /// sentence does, so the face must follow that, and the fixture must contain both kinds of
+    /// `symbol at pc` or the absence arm is untested.
+    #[test]
+    fn only_the_strips_machine_strings_are_painted_monospace() {
+        let (mut named, mut absent) = (0, 0);
+        for strip in strips() {
+            let (runs, _) = painted(&strip);
+            for f in strip.facts() {
+                let machine = !f.value.contains(char::is_whitespace);
+                assert_eq!(
+                    f.mono, machine,
+                    "`{}` = {:?} has the wrong face",
+                    f.label, f.value
+                );
+                let run = runs.iter().find(|r| r.text == f.value).expect("painted");
+                assert_eq!(
+                    run.family == egui::FontFamily::Monospace,
+                    f.mono,
+                    "`{}` was painted in {:?}",
+                    f.label,
+                    run.family
+                );
+                if f.label == "symbol at pc" {
+                    if f.mono {
+                        named += 1
+                    } else {
+                        absent += 1
+                    }
+                }
+                // Labels are always the small recessed face, never the register face.
+                let label = runs.iter().find(|r| r.text == f.label).expect("painted");
+                assert_ne!(label.family, egui::FontFamily::Monospace, "`{}`", f.label);
+                assert!(
+                    label.rect.min.x < run.rect.min.x,
+                    "the label sits left of its value"
+                );
+            }
+        }
+        assert!(
+            named > 0 && absent > 0,
+            "COULD NOT MEASURE: {named} named, {absent} absent"
+        );
+    }
+}
+
+/// **The Memory tab's drawing** (audit build-order item 7): the hex view and the table of gates are real
+/// tables, a note's prose is prose, and every scroll area in this file names its own state.
+#[cfg(test)]
+mod memory_tab_tests {
+    use super::painted::{paint, Run};
+    use super::*;
+
+    /// Four rows of distinct bytes and a short fifth, the shape `memory::view` hands over when a page runs
+    /// past the end of a space. Built from the constants the view uses, so a change of page width is a
+    /// change here too.
+    fn page() -> Vec<memory::HexRow> {
+        let mut rows: Vec<memory::HexRow> = (0..4u8)
+            .map(|r| memory::HexRow {
+                addr: 0x00FF_0000 + (r as u32) * memory::PER_ROW as u32,
+                bytes: (0..memory::PER_ROW as u8)
+                    .map(|b| 0x21 + r * 16 + b)
+                    .collect(),
+            })
+            .collect();
+        rows.push(memory::HexRow {
+            addr: 0x00FF_0000 + 4 * memory::PER_ROW as u32,
+            bytes: vec![0x41, 0x00, 0x7F, 0x42, 0x43],
+        });
+        rows
+    }
+
+    fn run<'a>(runs: &'a [Run], text: &str) -> &'a Run {
+        let hits: Vec<&Run> = runs.iter().filter(|r| r.text == text).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "COULD NOT MEASURE: {text:?} was painted {} times",
+            hits.len()
+        );
+        hits[0]
+    }
+
+    /// **Every column of the hex view starts at one x, on every row, a short last page included**, and
+    /// every column has its header.
+    ///
+    /// The alignment is asserted on what is painted: each cell of each row is found as its own run and
+    /// its left edge compared with the first row's. Anti-vacuity: the last row's bytes must really be
+    /// shorter than a full row's, or the case this exists for is not in the fixture.
+    #[test]
+    fn every_hex_column_starts_at_one_x_on_every_row_including_a_short_last_page() {
+        let rows = page();
+        let (runs, _) = paint(egui::vec2(900.0, 600.0), |ui| hex_table(ui, &rows));
+        for c in memory::HEX_COLS {
+            run(&runs, c.head);
+        }
+        let first = rows[0].cells();
+        let last = rows.last().expect("a page").cells();
+        assert!(
+            last[1].len() < first[1].len(),
+            "COULD NOT MEASURE: the fixture's last row is not short"
+        );
+        for row in &rows {
+            let cells = row.cells();
+            assert_eq!(cells.len(), memory::HEX_COLS.len());
+            for (i, text) in cells.iter().enumerate() {
+                let (x, x0) = (
+                    run(&runs, text).rect.min.x,
+                    run(&runs, &first[i]).rect.min.x,
+                );
+                assert!(
+                    (x - x0).abs() < 0.5,
+                    "the {:?} column of row {} starts at x {x}, and the first row's at {x0}",
+                    memory::HEX_COLS[i].head,
+                    oracle_aether::hex::addr(row.addr)
+                );
+                assert_eq!(run(&runs, text).family, egui::FontFamily::Monospace);
+            }
+        }
+        for r in &runs {
+            assert!(!r.text.contains("  "), "a padded run: {:?}", r.text);
+        }
+    }
+
+    /// Every arm of [`memory::Gate`], so the table is drawn with an open row and all three closed kinds.
+    fn gates() -> Vec<(memory::Space, memory::Gate)> {
+        vec![
+            (
+                memory::Space::Bus,
+                memory::Gate::Refused {
+                    method: "emulator/write_memory",
+                    code: -32005,
+                    reason: "machineRunning".into(),
+                    message: "pause first".into(),
+                },
+            ),
+            (
+                memory::Space::Vram,
+                memory::Gate::Open {
+                    method: "emulator/write_vram",
+                },
+            ),
+            (
+                memory::Space::Cram,
+                memory::Gate::Unserved {
+                    method: "emulator/write_cram",
+                },
+            ),
+            (memory::Space::Vsram, memory::Gate::NoMethod),
+        ]
+    }
+
+    /// **The table of what every space accepts has a header, one row per space, and a `write` cell whose
+    /// colour is the gate's**: [`crate::theme::SUCCESS`] exactly when [`memory::Gate::is_open`], taken from
+    /// the gate and compared on the run painted in that row.
+    #[test]
+    fn the_gate_table_paints_its_header_and_colours_write_from_the_gate() {
+        let gates = gates();
+        let refs: Vec<(memory::Space, &memory::Gate)> =
+            gates.iter().map(|(s, g)| (*s, g)).collect();
+        // Wide enough that no `why` is truncated, so every cell is findable by its whole text.
+        let (runs, visuals) = paint(egui::vec2(2400.0, 400.0), |ui| gate_table(ui, &refs));
+        for c in memory::GATE_COLS {
+            run(&runs, c.head);
+        }
+        let mut open = 0;
+        for (space, gate) in &gates {
+            let cells = gate.cells(*space);
+            let name = run(&runs, &cells[0]);
+            assert_eq!(name.family, egui::FontFamily::Proportional, "{cells:?}");
+            let y = name.rect.center().y;
+            let write = runs
+                .iter()
+                .find(|r| r.text == cells[1] && (r.rect.center().y - y).abs() < 1.0)
+                .unwrap_or_else(|| panic!("no `write` cell painted in the {:?} row", cells[0]));
+            let want = if gate.is_open() {
+                open += 1;
+                crate::theme::SUCCESS
+            } else {
+                visuals.weak_text_color()
+            };
+            assert_eq!(write.colour, want, "the {:?} row's write cell", cells[0]);
+            run(&runs, &cells[2]);
+        }
+        assert!(
+            open == 1 && gates.len() == 4,
+            "COULD NOT MEASURE: the fixture lost an arm"
+        );
+        for r in &runs {
+            assert!(!r.text.contains("  "), "a padded run: {:?}", r.text);
+        }
+    }
+
+    /// **P3 on a note: the address in monospace, the prose in the body face.** A refusal is the error
+    /// colour and carries no address. Expected strings come from the line itself.
+    #[test]
+    fn a_note_paints_its_address_in_monospace_and_its_prose_in_the_body_face() {
+        let lines = [
+            memory::Line::hex_literal(0x00FF_8000),
+            memory::Line::listing_spelling(0x00FF_8000, 0xFFFF_8000),
+            memory::Line::plain("ok: breakpoint b3".into()),
+            memory::Line::from_panel("not hex".into()),
+        ];
+        let (mut addressed, mut refused) = (0, 0);
+        for line in &lines {
+            let (runs, visuals) = paint(egui::vec2(2400.0, 200.0), |ui| note_label(ui, line));
+            let prose = run(&runs, &line.text);
+            if line.refused {
+                refused += 1;
+                assert_eq!(prose.colour, visuals.error_fg_color);
+                assert!(line.addr.is_none(), "a refusal is the server's words alone");
+                continue;
+            }
+            assert_eq!(
+                prose.family,
+                egui::FontFamily::Proportional,
+                "a sentence painted in the register face: {:?}",
+                line.text
+            );
+            if let Some(a) = line.addr {
+                addressed += 1;
+                let addr = run(&runs, &format!("{}:", oracle_aether::hex::addr(a)));
+                assert_eq!(addr.family, egui::FontFamily::Monospace);
+                // Same first line. Not compared on x: a wrapping label in a wrapped row lays its galley
+                // out from the row's left edge and starts its first glyph after the address, so the two
+                // rects both begin at the left.
+                assert!(
+                    (addr.rect.min.y - prose.rect.min.y).abs() < 1.0,
+                    "the address and its sentence are not on one line: {:?} {:?}",
+                    addr.rect,
+                    prose.rect
+                );
+            }
+        }
+        assert!(addressed == 2 && refused == 1, "COULD NOT MEASURE");
+    }
+
+    /// **P7, at the source: every `ScrollArea` production code in this file builds names its `id_salt`.**
+    ///
+    /// A source gate, because a scroll area without a salt draws identically and only loses its place when
+    /// something else changes, which no headless frame reaches. It reads each constructor call in the
+    /// production half of `ui.rs` (above the first test module, the cut
+    /// `the_owner_is_the_only_production_reader_of_the_fit` asserts is sound) and requires `.id_salt(`
+    /// before the `.show` that ends the builder. The count of constructors found is asserted non-trivial.
+    #[test]
+    fn every_scroll_area_production_ui_rs_builds_names_its_id_salt() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui.rs");
+        let src = std::fs::read_to_string(&path).expect("COULD NOT MEASURE: ui.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let cut = lines
+            .windows(2)
+            .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod "))
+            .expect("COULD NOT MEASURE: no test module");
+        let mut found = 0;
+        for (i, line) in lines[..cut].iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !code.contains("egui::ScrollArea::") {
+                continue;
+            }
+            found += 1;
+            let builder: String = lines[i..cut]
+                .iter()
+                .take_while(|l| !l.contains(".show"))
+                .chain(lines[i..cut].iter().find(|l| l.contains(".show")))
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let show = builder.find(".show").expect("a builder ends in show");
+            assert!(
+                builder[..show].contains(".id_salt("),
+                "ui.rs:{} builds a ScrollArea with no id_salt (P7):\n{builder}",
+                i + 1
+            );
+        }
+        assert!(
+            found >= 10,
+            "COULD NOT MEASURE: only {found} ScrollArea constructors found"
+        );
+    }
+}
+
+/// **The Planes tab's legend** (audit build-order item 8): the picture checkers every transparent pixel,
+/// and one line directly above it says so, without costing the picture its fit.
+#[cfg(test)]
+mod planes_legend_tests {
+    use super::*;
+
+    /// One frame of the real [`plane_image`] in a `pane` at `ppp`, with a real texture of a 64 by 32 cell
+    /// plane: every text run painted, and the rect the picture was laid out in if one was drawn.
+    /// Also the themed `Small` line height and item spacing, read inside the frame.
+    struct Laid {
+        runs: Vec<(egui::Rect, String)>,
+        pic: Option<egui::Rect>,
+        line: f32,
+        spacing: f32,
+    }
+
+    fn laid(pane: egui::Vec2, ppp: f32) -> Laid {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        let tex = ctx.load_texture(
+            "legend",
+            egui::ColorImage::filled([512, 256], egui::Color32::BLACK),
+            egui::TextureOptions::NEAREST,
+        );
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pane)),
+            ..Default::default()
+        };
+        let id = raw.viewport_id;
+        raw.viewports
+            .get_mut(&id)
+            .expect("the root viewport")
+            .native_pixels_per_point = Some(ppp);
+        let (mut hit, mut line, mut spacing) = (None, 0.0, 0.0);
+        let mut out = ctx.run_ui(raw, |ui| {
+            line = ui.text_style_height(&egui::TextStyle::Small);
+            spacing = ui.spacing().item_spacing.y;
+            hit = plane_image(ui, &tex).map(|r| r.rect);
+        });
+        out.textures_delta.clear();
+        assert_eq!(
+            ctx.pixels_per_point(),
+            ppp,
+            "COULD NOT MEASURE: ran at another scale"
+        );
+        Laid {
+            runs: super::subtype_list_tests::text_runs(&out.shapes),
+            pic: hit,
+            line,
+            spacing,
+        }
+    }
+
+    /// Panes where the height binds, where the width binds and the legend wraps, where the legend wraps
+    /// AND the height binds, and a roomy one, at the scales the window is drawn at.
+    ///
+    /// ⚑ The third is the one that matters and it was missing from this gate's first draft, which stayed
+    /// green when the height taken off was one line's rather than the wrapped legend's: in the only pane
+    /// that wrapped, the width bound the picture, so no height accounting could be seen.
+    fn panes() -> Vec<egui::Vec2> {
+        vec![
+            egui::vec2(1400.0, 300.0),
+            egui::vec2(180.0, 500.0),
+            egui::vec2(180.0, 110.0),
+            egui::vec2(700.0, 700.0),
+        ]
+    }
+
+    /// **Whenever the picture is drawn, the legend is drawn once, directly above it, and the picture still
+    /// ends inside the pane.**
+    ///
+    /// "Directly above" is derived from the layout's own spacing rather than a pixel count: the legend ends
+    /// at or above the picture's top, by no more than the item spacing plus a point. "Inside the pane" is
+    /// the pane's own bottom: a legend whose height was not taken off before the fit pushes the picture
+    /// past it in every pane where the height binds. Anti-vacuity: the picture is drawn in every case, and
+    /// at least one case wraps the legend onto more than one line.
+    #[test]
+    fn the_legend_sits_directly_above_a_drawn_picture_and_the_picture_still_fits_the_pane() {
+        let (mut wrapped, mut wrapped_and_tall_enough_to_bind) = (0, 0);
+        for ppp in [1.0, 1.25, 2.0] {
+            for pane in panes() {
+                let Laid {
+                    runs,
+                    pic,
+                    line,
+                    spacing,
+                } = laid(pane, ppp);
+                let pic =
+                    pic.unwrap_or_else(|| panic!("COULD NOT MEASURE: no picture in {pane:?}"));
+                let legends: Vec<egui::Rect> = runs
+                    .iter()
+                    .filter(|(_, t)| t == crate::planes::TRANSPARENT_LEGEND)
+                    .map(|(r, _)| *r)
+                    .collect();
+                assert_eq!(
+                    legends.len(),
+                    1,
+                    "{pane:?} at {ppp}: the legend was painted {} times",
+                    legends.len()
+                );
+                let legend = legends[0];
+                assert!(
+                    legend.bottom() <= pic.top() + 0.5 && pic.top() - legend.bottom() <= spacing + 1.0,
+                    "{pane:?} at {ppp}: the legend {legend:?} is not directly above the picture {pic:?}"
+                );
+                assert!(
+                    pic.bottom() <= pane.y + 0.5,
+                    "{pane:?} at {ppp}: the picture {pic:?} runs past the pane's bottom, so the legend's \
+                     height was not taken off before the fit"
+                );
+                if legend.height() > 1.5 * line {
+                    wrapped += 1;
+                    // The picture touches the pane's bottom: the height, not the width, bound the fit.
+                    if pane.y - pic.bottom() < 1.0 {
+                        wrapped_and_tall_enough_to_bind += 1;
+                    }
+                }
+            }
+        }
+        assert!(wrapped > 0, "COULD NOT MEASURE: the legend never wrapped");
+        assert!(
+            wrapped_and_tall_enough_to_bind > 0,
+            "COULD NOT MEASURE: the legend never wrapped in a pane whose height bound the picture, so the \
+             wrapped height taken off before the fit is untested"
+        );
+    }
+
+    /// **No picture, no legend.** A pane with no room says so (the owner's sentence), and a legend under
+    /// that sentence would be explaining a picture that is not there.
+    #[test]
+    fn a_pane_with_no_room_for_the_picture_draws_no_legend() {
+        for ppp in [1.0, 1.25, 2.0] {
+            let Laid { runs, pic, .. } = laid(egui::vec2(600.0, 0.5 / ppp), ppp);
+            assert!(
+                pic.is_none(),
+                "COULD NOT MEASURE: a picture fitted into half a device pixel"
+            );
+            assert!(
+                runs.iter().any(|(_, t)| t == NO_ROOM_FOR_PICTURE),
+                "precondition: the give-up was said"
+            );
+            assert!(
+                !runs
+                    .iter()
+                    .any(|(_, t)| t == crate::planes::TRANSPARENT_LEGEND),
+                "at {ppp}: a legend drawn for a picture that is not there"
             );
         }
     }

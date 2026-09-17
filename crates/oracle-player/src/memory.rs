@@ -201,6 +201,23 @@ impl HexRow {
             .join(" ")
     }
 
+    /// The row as the hex table draws it, in [`HEX_COLS`] order.
+    ///
+    /// ⚑ **This replaced `format!("{}  {:<47}  {}", ..)`**, and the 47 was the defect rather than the
+    /// padding. It is `PER_ROW * 3 - 1` spelled by hand, so the ASCII gutter lined up only while nobody
+    /// changed [`PER_ROW`]. A short final page did **not** drift under it, whatever
+    /// `docs/2026-09-05-debug-window-audit.md` §4 says: `{:<47}` pads a short run out to 47, and the
+    /// monospace face gives a space the width of a digit (measured at the theme's face, 2026-09-17: 403.97
+    /// points for both a sixteen-byte and a five-byte row). The table sizes each column from the rows
+    /// themselves, so the alignment no longer depends on a number anybody has to keep in step.
+    pub fn cells(&self) -> Vec<String> {
+        vec![
+            oracle_aether::hex::addr(self.addr),
+            self.hex(),
+            self.ascii(),
+        ]
+    }
+
     pub fn ascii(&self) -> String {
         self.bytes
             .iter()
@@ -214,6 +231,27 @@ impl HexRow {
             .collect()
     }
 }
+
+/// The hex view's columns. All three are machine strings read character by character, so all three are
+/// monospace (P3's own carve-out for a hex dump); none is right-aligned, because an address and a byte run
+/// are read from their left.
+pub const HEX_COLS: [crate::table::Col; 3] = [
+    crate::table::Col {
+        head: "address",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "bytes",
+        numeric: false,
+        mono: true,
+    },
+    crate::table::Col {
+        head: "ascii",
+        numeric: false,
+        mono: true,
+    },
+];
 
 /// What the panel draws for one repaint: either a page of rows, or the read's own refusal.
 pub struct View {
@@ -338,7 +376,65 @@ impl Gate {
                 .into(),
         }
     }
+
+    /// One row of the table of what every space accepts, in [`GATE_COLS`] order.
+    ///
+    /// ⚑ **This replaced `format!("{:<22} {}  {}", space.label(), "WRITE" or "  no ", why)`** in the
+    /// monospace face: a column drawn with spaces (P2), a space name and a sentence in the register face
+    /// (P3), and a yes/no spelled as a capitalised word against three padded spaces. The colour of the
+    /// `write` cell is decided by the panel from [`is_open`](Self::is_open), never from these words.
+    pub fn cells(&self, space: Space) -> Vec<String> {
+        vec![
+            space.label().to_owned(),
+            if self.is_open() {
+                WRITE_OPEN
+            } else {
+                WRITE_CLOSED
+            }
+            .to_owned(),
+            self.why(),
+        ]
+    }
 }
+
+/// The word the gate table's `write` column says for a space a write would reach right now.
+pub const WRITE_OPEN: &str = "open";
+/// The word for a space a write would not reach. The **why** is the next column's, in the handler's own
+/// words, so this is one word and not a second, shorter sentence about the same refusal.
+pub const WRITE_CLOSED: &str = "closed";
+
+/// The columns of the table of what every space accepts: the space, whether a write reaches it, and why.
+/// `why` is last because it is the unbounded one: a handler's sentence takes the room that is left and
+/// the whole of it is one hover away when that is not enough.
+pub const GATE_COLS: [crate::table::Col; 3] = [
+    crate::table::Col {
+        head: "space",
+        numeric: false,
+        mono: false,
+    },
+    crate::table::Col {
+        head: "write",
+        numeric: false,
+        mono: false,
+    },
+    crate::table::Col {
+        head: "why",
+        numeric: false,
+        mono: false,
+    },
+];
+
+/// The sentence under the table of what every space accepts.
+///
+/// ⚑ **It used to open with "§6's run-control rule"**, a section number of a specification the person at
+/// the window is not holding (style page P9). The fact survives in the reader's terms; the citation is
+/// here: the rule is the protocol's §6 run-control rule, which names `write_memory`, `write_cram`
+/// and `z80_write` and does not name `write_vram`, and the server serves the gate it was given because
+/// relaxing a refusal later is additive and introducing one is not (D5; audit D-16, deviation 1).
+pub const GATES_NOTE: &str = "Not a defect in this panel. The server's rule for writes to a running \
+     machine names write_memory, write_cram and z80_write and does not name write_vram, and the server \
+     serves the gate it was given (relaxing a refusal later is additive; introducing one is not). The \
+     argument for naming that row is filed upstream, not settled here.";
 
 /// Whether the surface carries `name` at all — from the dispatch table itself, which `initialize` also
 /// builds its advertised `methods` array from, so the two cannot disagree.
@@ -850,10 +946,19 @@ impl MemoryPanel {
 pub struct Line {
     pub text: String,
     pub refused: bool,
+    /// **The address this line is about**, drawn apart from [`text`](Self::text) in the monospace face.
+    ///
+    /// ⚑ Carried rather than kept inside the text because the renderer used to put the **whole** line in
+    /// the monospace face whenever it was not a refusal: `0x00FF0000: a hex literal, taken as typed` was a
+    /// sentence in the register face for the sake of its first ten characters (style page P3). Now the
+    /// prose is prose and only the address is a machine string, and the renderer does not have to find
+    /// the address by looking at the words.
+    pub addr: Option<u32>,
 }
 
 pub fn answer_line(a: &Answer) -> Line {
     Line {
+        addr: None,
         refused: a.is_err(),
         text: match a {
             Answer::Ok(v) => format!("ok: {}", crate::bus::describe_reply(v)),
@@ -873,6 +978,7 @@ impl Line {
         Line {
             text: format!("the panel cannot send that: {why}"),
             refused: true,
+            addr: None,
         }
     }
 
@@ -880,6 +986,69 @@ impl Line {
         Line {
             text,
             refused: false,
+            addr: None,
+        }
+    }
+
+    /// The address box's answer to a hex literal it took as typed.
+    pub fn hex_literal(addr: u32) -> Self {
+        Line {
+            text: "a hex literal, taken as typed".into(),
+            refused: false,
+            addr: Some(addr),
+        }
+    }
+
+    /// ⚑ **Masked, and SAID.** The typed value carried bits above the 24 the 68000 drives, so it was a
+    /// listing spelling of a real bus address. The panel goes to `addr` and names both numbers rather than
+    /// refusing the one a person read off the listing, and rather than moving silently, which is the thing
+    /// the schema's `rawAddr` note is actually protecting against. This is the sentence `lookup_symbol`
+    /// never wrote for the identical masking it has always done.
+    ///
+    /// `raw` stays inside the sentence: it is the number the sentence is about, and `addr` is the one the
+    /// page below is read from, which is the one drawn apart.
+    pub fn listing_spelling(addr: u32, raw: u32) -> Self {
+        Line {
+            text: format!(
+                "the 68000 drives 24 address lines, so the listing spelling {} names this same \
+                 location and this is where the page below is read from",
+                oracle_aether::hex::addr(raw)
+            ),
+            refused: false,
+            addr: Some(addr),
+        }
+    }
+
+    /// `self`, with the reply's frame stamp said after it.
+    ///
+    /// Stamped because `write_vram` is the one write that lands in a *running* machine: "ok" alone leaves
+    /// a human unable to say which frame absorbed the poke, and the next frame may already have redrawn
+    /// over it. D11 puts `{frame, mclk, running}` on every reply for exactly this.
+    ///
+    /// ⚑ **This used to be `format!("{}   [frame {} · …]", .., v.to_string())`**: three spaces doing a
+    /// column's work (P2), and each stamp field put on the glass through `Value`'s `Display` (P1's letter,
+    /// harmless only while all three are scalars). Each field is now read as the type D11 serves it as, and
+    /// a field that is missing or of another type is a stated absence rather than a `?`.
+    pub fn stamped(self, stamp: &serde_json::Map<String, Value>) -> Self {
+        let count = |k: &str| {
+            stamp
+                .get(k)
+                .and_then(Value::as_u64)
+                .map_or_else(|| format!("{k} not stamped"), |n| format!("{k} {n}"))
+        };
+        let running = match stamp.get("running").and_then(Value::as_bool) {
+            Some(true) => "running".to_owned(),
+            Some(false) => "not running".to_owned(),
+            None => "run state not stamped".to_owned(),
+        };
+        Line {
+            text: format!(
+                "{} (at {} · {} · {running})",
+                self.text,
+                count("frame"),
+                count("mclk")
+            ),
+            ..self
         }
     }
 }
@@ -1852,6 +2021,184 @@ mod json_echo {
             "not one of the {} gestures answered a reply whose raw Display carried punctuation, so \
              this gate would pass with the defect fully restored",
             gestures.len()
+        );
+    }
+}
+
+/// **Every string the Memory tab composes in this module**, against the style page's rules on text: P2
+/// (no run of spaces doing a column's work), P9 (no specification section cited at the reader) and P10 (no
+/// em or en dash). The strings are generated from every arm rather than listed, so an arm added later is
+/// walked without anybody remembering to add it.
+#[cfg(test)]
+mod tab_strings {
+    use super::*;
+
+    fn gates() -> Vec<Gate> {
+        vec![
+            Gate::Open {
+                method: "emulator/write_vram",
+            },
+            Gate::Refused {
+                method: "emulator/write_memory",
+                code: -32005,
+                reason: "machineRunning".into(),
+                message: "the machine is running".into(),
+            },
+            Gate::Unserved {
+                method: "emulator/write_cram",
+            },
+            Gate::NoMethod,
+        ]
+    }
+
+    fn stamps() -> Vec<serde_json::Map<String, Value>> {
+        [
+            json!({"frame": 12, "mclk": 3456, "running": true}),
+            json!({"frame": 12, "mclk": 3456, "running": false}),
+            json!({}),
+            json!({"frame": "12", "mclk": null, "running": "yes"}),
+        ]
+        .into_iter()
+        .map(|v| v.as_object().expect("an object").clone())
+        .collect()
+    }
+
+    fn every_string() -> Vec<String> {
+        let mut out = vec![
+            GATES_NOTE.to_owned(),
+            WRITE_OPEN.into(),
+            WRITE_CLOSED.into(),
+        ];
+        for c in HEX_COLS.iter().chain(&GATE_COLS) {
+            out.push(c.head.into());
+        }
+        for g in gates() {
+            for space in Space::ALL {
+                out.extend(g.cells(space));
+            }
+        }
+        for bytes in [
+            (0..PER_ROW as u8).collect::<Vec<u8>>(),
+            vec![0x41, 0x00, 0x7F],
+        ] {
+            out.extend(
+                HexRow {
+                    addr: 0x00FF_0000,
+                    bytes,
+                }
+                .cells(),
+            );
+        }
+        let lines = [
+            Line::hex_literal(0x00FF_0000),
+            Line::listing_spelling(0x00FF_0000, 0xFFFF_0000),
+            Line::from_panel("not hex".into()),
+            Line::plain("ok: addr 0x00FF0000".into()),
+        ];
+        for l in lines {
+            for st in stamps() {
+                out.push(
+                    Line {
+                        text: l.text.clone(),
+                        refused: l.refused,
+                        addr: l.addr,
+                    }
+                    .stamped(&st)
+                    .text,
+                );
+            }
+            out.push(l.text);
+        }
+        assert!(out.len() > 60, "COULD NOT MEASURE: {} strings", out.len());
+        out
+    }
+
+    #[test]
+    fn no_string_the_memory_tab_composes_pads_itself_into_a_column() {
+        for s in every_string() {
+            assert!(
+                !s.contains("  ") && !s.contains('\t'),
+                "a run of spaces is a column drawn inside a string, which P2 outlaws: {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_the_memory_tab_composes_cites_a_specification_section_or_carries_a_dash() {
+        for s in every_string() {
+            assert!(!s.contains('§'), "P9: {s:?}");
+            for bad in ['\u{2014}', '\u{2013}'] {
+                assert!(!s.contains(bad), "P10: {s:?}");
+            }
+        }
+    }
+
+    /// **The masked-address line names both numbers**: the one the page is read from as its address, and
+    /// the listing spelling the person typed inside the sentence.
+    ///
+    /// `a_listing_address_and_its_bus_address_reach_the_same_page_and_the_panel_says_so` pins that the
+    /// spelling is CARRIED, and never read the sentence: it was composed inline in `ui.rs`, where no gate
+    /// could reach it. Both numbers are derived from [`resolve_address`]'s own mask here.
+    #[test]
+    fn the_listing_spelling_line_names_the_page_address_and_the_spelling_typed() {
+        let raw = DEFAULT_BASE | !oracle_core::symbols::BUS_ADDR_MASK;
+        let addr = raw & oracle_core::symbols::BUS_ADDR_MASK;
+        assert_ne!(
+            raw, addr,
+            "COULD NOT MEASURE: the two spellings are one number"
+        );
+        let line = Line::listing_spelling(addr, raw);
+        assert_eq!(line.addr, Some(addr));
+        assert!(!line.refused);
+        assert!(
+            line.text.contains(&oracle_aether::hex::addr(raw)),
+            "the sentence does not name the spelling typed: {:?}",
+            line.text
+        );
+        assert!(
+            !line.text.contains(&oracle_aether::hex::addr(addr)),
+            "the page address is drawn apart, so the sentence saying it again is a second copy: {:?}",
+            line.text
+        );
+    }
+
+    /// **The stamp says each field as the type D11 serves it, and states an absence rather than a `?`.**
+    ///
+    /// Expected words are read off each stamp: a `u64` field is said with its own number, a `bool`
+    /// `running` as `running` or `not running`, and anything else (missing, `null`, a string) as not
+    /// stamped. The fixture must reach every one of those arms.
+    #[test]
+    fn a_write_stamp_says_each_field_it_carries_and_states_the_ones_it_does_not() {
+        let (mut numbers, mut absent, mut run_arms) = (0, 0, std::collections::BTreeSet::new());
+        for st in stamps() {
+            let text = Line::plain("ok".into()).stamped(&st).text;
+            for k in ["frame", "mclk"] {
+                match st.get(k).and_then(Value::as_u64) {
+                    Some(n) => {
+                        numbers += 1;
+                        assert!(text.contains(&format!("{k} {n}")), "{text:?}");
+                    }
+                    None => {
+                        absent += 1;
+                        assert!(text.contains(&format!("{k} not stamped")), "{text:?}");
+                    }
+                }
+            }
+            let want = match st.get("running").and_then(Value::as_bool) {
+                Some(true) => "· running)",
+                Some(false) => "· not running)",
+                None => "· run state not stamped)",
+            };
+            run_arms.insert(want);
+            assert!(text.ends_with(want), "{text:?} should end {want:?}");
+            assert!(
+                !text.contains('?'),
+                "an absence drawn as a question mark: {text:?}"
+            );
+        }
+        assert!(
+            numbers > 0 && absent > 0 && run_arms.len() == 3,
+            "COULD NOT MEASURE"
         );
     }
 }

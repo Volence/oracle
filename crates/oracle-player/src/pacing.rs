@@ -541,6 +541,12 @@ pub enum Health {
     Watch,
     /// **Nothing measured this.** Not a zero, not a success.
     Unmeasured,
+    /// **Something a reader has to act on, now.** Pacing never produces it: no number on that tab is an
+    /// error, only worth a look. It exists because the Registers tab's status strip is the second panel
+    /// to draw coloured facts through `health_grid` (the merge that function's note anticipated), and its
+    /// halting row can say *this machine is stopped at a breakpoint that is still armed*, which is the
+    /// error colour on the transport bar and must not be one shade quieter in a tab.
+    Alarm,
 }
 
 /// One number the tab shows big: the value, its unit, what it is, and how it is doing.

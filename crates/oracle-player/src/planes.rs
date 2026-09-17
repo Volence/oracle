@@ -167,6 +167,16 @@ impl Ink {
     }
 }
 
+/// **The picture's legend**: what the checkered squares mean, said beside the picture that draws them.
+///
+/// A person looking at a plane sees a checkered region and has no way to tell *nothing is drawn here* from
+/// dithered game art, which is the style page's named failure (*"what are the purple boxes"*): visual
+/// weight with no legend. The checker is [`Ink::empty_a`] and [`Ink::empty_b`], painted exactly where a
+/// tile's pixel is colour 0, the index the VDP treats as transparent (see `Raster::run`). The sentence says
+/// that in the reader's terms; *nibble* and *CRAM* are this comment's words, not the reader's.
+pub const TRANSPARENT_LEGEND: &str =
+    "Checkered squares are transparent: colour 0 of a tile, where this plane draws nothing.";
+
 /// The side of the transparent checker, in plane pixels.
 ///
 /// **4, not 8.** At 8 it lands exactly on the cell grid and a fully transparent cell reads as a solid
