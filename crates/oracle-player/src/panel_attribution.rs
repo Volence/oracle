@@ -1282,13 +1282,14 @@ mod tests {
     /// `rendered == text`. *Anti-vacuity:* the wrapped label occupies at least two glyph rows, and the
     /// sweep covers hundreds of runs.
     ///
-    /// ⚑ **The floor was 300 and is 250, and the second assertion is why.** `F-PANEL-TEXT-CUT-UNMARKED`
-    /// put [`crate::ui::fitted_label`] under the panels' grid and row labels, and a label the toolkit now
-    /// truncates is ELIDED — which is exactly the population this row excludes. The runs did not go away:
-    /// measured, 322 unelided before and 270 unelided plus 57 whole elided after, 327 in all. So the whole
-    /// population a run is drawn from is counted too and held at the old floor, and only the unelided
-    /// share was allowed to fall. Without that second count, the fix could have hollowed this row out and
-    /// it would still have read green.
+    /// ⚑ **The whole population is counted as well as the unelided share, and the reason is worth keeping.**
+    /// A label the toolkit truncates is ELIDED, which is exactly the population this row excludes, so
+    /// `F-PANEL-TEXT-CUT-UNMARKED`'s treatment could in principle hollow this row out and leave it green.
+    /// It nearly did: the first form of the fix put [`crate::ui::fitted_label`] under BOTH columns of the
+    /// fact grids and this count fell 322 → 270. That turned out not to be the treatment working — it was
+    /// the grid-column ratchet described in `fitted_label`, collapsing the label column to a bare `…`. The
+    /// count is 322 again with the ratchet gone, plus 5 whole elided runs. The floor on the unelided share
+    /// is still 300; the floor on the whole is what would have caught a real hollowing out.
     #[test]
     fn w4_an_unelided_unclipped_run_renders_exactly_its_source() {
         const WRAPPED: &str =
@@ -1378,7 +1379,7 @@ mod tests {
             tabbed_seen,
             "anti-vacuity: the tabbed run was never checked"
         );
-        assert!(checked > 250, "anti-vacuity: only {checked} runs checked");
+        assert!(checked > 300, "anti-vacuity: only {checked} runs checked");
         assert!(
             checked + elided_whole > 300,
             "anti-vacuity: {checked} unelided + {elided_whole} elided whole runs, so the population this \
@@ -1678,63 +1679,93 @@ mod tests {
         dock
     }
 
-    /// ★ **The whole of a truncated panel line is one hover away.**
-    ///
-    /// The mark says a line was cut; this says the reader can still read it. The treatment is
-    /// [`crate::ui::fitted_label`]'s half of what `table_cell` does for a cut cell, and without this row
-    /// the hover is an absence nothing measures — the mark could ship with the text unreachable and every
-    /// other gate would stay green.
-    ///
-    /// Real, not planted: the Registers strip's `aether` fact in a fifth-width pane, which is the line the
-    /// owner reported. The controls come first — the fact is painted, and the toolkit really elided it —
-    /// so a green run cannot mean the pane simply had room.
-    #[test]
-    fn the_whole_of_a_truncated_panel_line_is_on_its_hover() {
-        let mut lp = fixture(narrow_dock(Tab::Registers));
-        let first = one(&mut lp, &Setup::default());
-        let cut = painted_of(&first, Tab::Registers)
-            .iter()
-            .find(|g| g.galley.text().starts_with("not serving. No --aether"))
-            .expect("control: the Registers strip painted no `aether` fact")
-            .clone();
-        assert!(
-            cut.galley.elided,
-            "control: the pane is wide enough for the whole fact, so nothing here is truncated"
-        );
-        let whole = cut.galley.text().to_owned();
-        let hover = at(&first, Tab::Registers, &whole) + egui::vec2(4.0, 4.0);
-        let script = move |i: u32| {
-            if i >= 2 {
-                vec![egui::Event::PointerMoved(hover)]
-            } else {
-                Vec::new()
+    /// A point on the glass inside `p`'s first visible glyph — the place a pointer must be to hover this
+    /// run. Read off the glyph rather than off `Painted::pos`, which for a right-aligned galley is the
+    /// box's RIGHT edge and lands outside the text.
+    fn glyph_point(p: &Painted) -> Option<egui::Pos2> {
+        let origin = p.pos.to_vec2();
+        for row in &p.galley.rows {
+            for g in &row.glyphs {
+                let r = g.logical_rect().translate(origin + row.pos.to_vec2());
+                if p.clip.contains_rect(r) && r.width() > 0.0 {
+                    return Some(r.center());
+                }
             }
-        };
-        let mut lp = fixture(narrow_dock(Tab::Registers));
-        let p = settled_with(
-            &mut lp,
-            Mode::Record,
-            WARM,
-            &script,
-            &Setup {
-                tooltip_now: true,
-                ..Setup::default()
-            },
-        );
-        let tip: Vec<String> = p
-            .other_layers
-            .iter()
-            .flat_map(|(_, t)| t.iter().map(|k| k.text.clone()))
-            .collect();
-        assert!(
-            tip.iter().any(|t| *t == whole),
-            "the cut line's hover does not carry the whole of it. On the glass: {:?}. In other layers: \
-             {tip:?}",
-            crate::screen::glass_run(&cut).map(|r| r.rendered)
-        );
+        }
+        None
     }
 
-    /// Every arrangement the cut sweep drives: the default dock, every-tab, the eleven focus layouts, a
+    /// ★ **The whole of a truncated panel line is one hover away — exactly one.**
+    ///
+    /// The mark says a line was cut; this says the reader can still read it, and reads it once. Without
+    /// this row the hover is an absence nothing measures: the mark could ship with the text unreachable,
+    /// or reachable twice, and every other gate here would stay green. Both halves were found by running
+    /// it — see [`crate::ui::fitted_label`] for the duplicate it caught.
+    ///
+    /// Real lines, not planted: every run **the toolkit itself elided** in the Registers strip in a
+    /// fifth-width pane, which is where the line the owner reported is cut. Each is hovered on a glyph
+    /// that is really on the glass, with the tooltip delay at zero, and the tooltip is read out of the
+    /// other-layer text the harvest already records. `table_cell`'s half of the same treatment has its own
+    /// row, `ui::table_tests::a_cut_cell_carries_its_whole_text_on_one_hover`.
+    ///
+    /// *Controls:* the reported line must be among the cut ones, or the pane had room and this proves
+    /// nothing; and at least two lines must be hovered.
+    #[test]
+    fn the_whole_of_a_truncated_panel_line_is_on_its_hover() {
+        let tab = Tab::Registers;
+        let mut lp = fixture(narrow_dock(tab));
+        let first = one(&mut lp, &Setup::default());
+        let cuts: Vec<(String, egui::Pos2)> = painted_of(&first, tab)
+            .iter()
+            .filter(|g| g.galley.elided)
+            .filter_map(|g| glyph_point(g).map(|at| (g.galley.text().to_owned(), at)))
+            .collect();
+        assert!(
+            cuts.iter()
+                .any(|(t, _)| t.starts_with("not serving. No --aether")),
+            "control: the reported `aether` line is not cut in this pane, so this row measures nothing: \
+             {cuts:?}"
+        );
+        assert!(
+            cuts.len() >= 2,
+            "control: only {} line(s) are cut here: {cuts:?}",
+            cuts.len()
+        );
+        for (whole, at) in &cuts {
+            let at = *at;
+            let script = move |i: u32| {
+                if i >= 2 {
+                    vec![egui::Event::PointerMoved(at)]
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut lp = fixture(narrow_dock(tab));
+            let p = settled_with(
+                &mut lp,
+                Mode::Record,
+                WARM,
+                &script,
+                &Setup {
+                    tooltip_now: true,
+                    ..Setup::default()
+                },
+            );
+            let tip: Vec<String> = p
+                .other_layers
+                .iter()
+                .flat_map(|(_, t)| t.iter().map(|k| k.text.clone()))
+                .collect();
+            let n = tip.iter().filter(|t| *t == whole).count();
+            assert_eq!(
+                n, 1,
+                "the cut line {whole:?} must be on its hover exactly once. Other layers: {tip:?}"
+            );
+        }
+        println!("HOVER: {} cut lines, each on one hover", cuts.len());
+    }
+
+    /// Every arrangement the cut sweep drives:    /// Every arrangement the cut sweep drives: the default dock, every-tab, the eleven focus layouts, a
     /// narrow pane per tab, and the two scales the attribution gate uses.
     fn cut_arrangements() -> Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> {
         let mut v: Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> = arrangements()
@@ -1777,7 +1808,7 @@ mod tests {
     /// written: the owner's half (a body whose content is wider than its pane, scrolled horizontally).
     /// A **ceiling**, not a pin — the owner's half may shrink, and this number comes down with it; it may
     /// not grow, because growing means a new line was cut where none was.
-    const BOX_CUTS_BOOKED_FOR_THE_OWNER: usize = 58;
+    const BOX_CUTS_BOOKED_FOR_THE_OWNER: usize = 60;
 
     /// ★ **No drawn run is cut at a pane's edge without an elision mark** (`F-PANEL-TEXT-CUT-UNMARKED`).
     ///
@@ -1809,6 +1840,7 @@ mod tests {
         let mut elided = 0usize;
         let mut arrangements_driven = 0usize;
         let mut offenders: Vec<(String, String, RowCut)> = Vec::new();
+        let mut blanked: Vec<(String, String, String)> = Vec::new();
         let mut marked = 0usize;
         for (name, dock, ppp) in cut_arrangements() {
             let mut lp = fixture(dock);
@@ -1820,6 +1852,10 @@ mod tests {
                 },
             );
             arrangements_driven += 1;
+            // The arrangements where every drawn pane has real room: the dock the window opens in, and
+            // the focus layouts, all at the window's own scale. A pane squeezed to fifty points may
+            // honestly have nothing to show but the mark; these may not.
+            let roomy = ppp.is_none() && (name == "default" || name.starts_with("focus "));
             assert!(
                 !p.spans.is_empty(),
                 "{name}: no body was drawn, so this arrangement witnesses nothing"
@@ -1829,6 +1865,22 @@ mod tests {
                     runs += 1;
                     if g.galley.elided {
                         elided += 1;
+                    }
+                    // ⚑ A run truncated to NOTHING BUT the mark, in a pane with room for more. The sweep
+                    // below cannot see this one: such a run fits its clip perfectly and is never cut. It
+                    // is here because the first form of the fix did exactly that to the fact grids' label
+                    // column — a `Grid` column that is not the last one is as wide as it measured last
+                    // frame, so truncating to it is a ratchet that only turns down (see
+                    // `ui::fitted_label`). Every label in the Registers strip drew as a bare `…` and a
+                    // gate watching only the pane edge called it green.
+                    if roomy {
+                        if let Some(r) = crate::screen::glass_run(g) {
+                            if !r.rendered.trim().is_empty()
+                                && r.rendered.trim().chars().all(|c| c == '\u{2026}')
+                            {
+                                blanked.push((name.clone(), span.name.to_owned(), r.text.clone()));
+                            }
+                        }
                     }
                     for c in row_cuts(g) {
                         rows += 1;
@@ -1867,6 +1919,12 @@ mod tests {
             rows > 0,
             "anti-vacuity: no row was cut anywhere, so this gate cannot see a cut at all and would pass \
              on a window that draws no text"
+        );
+
+        assert!(
+            blanked.is_empty(),
+            "a run was truncated to nothing but the elision mark in a pane with room for more, which \
+             tells the reader less than an empty cell would: {blanked:?}"
         );
 
         // --- the fix: a run laid out at its natural width must not be cut without the mark ---

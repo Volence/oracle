@@ -3227,9 +3227,10 @@ fn fact_grid(ui: &mut egui::Ui, id: &str, facts: &[objects::Fact]) {
         .spacing([COL_GUTTER, 3.0])
         .show(ui, |ui| {
             for f in facts {
-                // A grid cell EXTENDS by default, so both of these are drawn through [`fitted_label`].
-                fitted_label(
-                    ui,
+                // The label column is not truncated, for [`health_grid`]'s reason: a `Grid` column that is
+                // not the last one is as wide as it measured last frame, so a cell that truncates to that
+                // width collapses the column over a few frames.
+                ui.label(
                     egui::RichText::new(&f.label)
                         .text_style(egui::TextStyle::Small)
                         .color(weak),
@@ -3392,9 +3393,14 @@ fn health_grid(ui: &mut egui::Ui, id: &str, facts: &[pacing::Fact]) {
         .spacing([COL_GUTTER, 3.0])
         .show(ui, |ui| {
             for f in facts {
-                // A grid cell EXTENDS by default, so both of these are drawn through [`fitted_label`].
-                fitted_label(
-                    ui,
+                // ⚑ **The label column is NOT drawn through [`fitted_label`], and this is load-bearing.**
+                // `Grid` hands a cell that is not in the LAST column the width that column measured on the
+                // previous frame, so a cell that truncates to what it is given allocates that width or
+                // less and the column can only ever shrink. Measured, when both columns went through
+                // `fitted_label`: the label column collapsed over a few frames to 10 points and every
+                // label in this grid drew as a bare `…`. The value column is the last one, whose width is
+                // "whatever is left of the pane", which is a real bound and does not feed back.
+                ui.label(
                     egui::RichText::new(f.label)
                         .text_style(egui::TextStyle::Small)
                         .color(weak),
@@ -3970,42 +3976,35 @@ fn section(ui: &mut egui::Ui, title: &str, scope: Option<String>, method: &str) 
 /// the person at the window instead of at a client.
 ///
 /// The treatment is the one [`table_cell`] already gives a cut cell, and is reused rather than reinvented:
-/// `Label::truncate`, so **the toolkit writes the elision mark itself** at the width the label really has,
-/// and the whole of it one hover away. Nothing about the layout changes: a label that fits is laid out and
-/// allocated exactly as `ui.label` laid it out before.
+/// `Label::truncate`, so **the toolkit writes the elision mark itself** at the width the label really has.
+/// Nothing about the layout changes: a label that fits is laid out and allocated exactly as `ui.label`
+/// laid it out before.
 ///
 /// **In a wrapping context this IS `ui.label`.** Wrapping is not truncation, and a paragraph must not
 /// become a one-line stub for having passed through here.
 ///
-/// The site's own hover, if it has one, is chained after this one by the caller, so a cut method name
-/// gives the reader both the name and what it is.
+/// ⚑ **Never in a `Grid` column that is not the last one.** Truncating means allocating no more than what
+/// you were given, and a non-last grid column's width is what that column allocated on the previous frame:
+/// the two together are a ratchet that only turns down. Measured on the Registers strip, whose label
+/// column collapsed to 10 points and drew every label as a bare `…`. The last column is safe — its width
+/// is whatever is left of the pane — and so is any cell inside an `allocate_ui_with_layout` of a width
+/// computed from the data, which is how [`table_cell`] and [`header_cell`] get theirs.
+///
+/// ⚑ **The hover is the toolkit's, and adding one here was a defect.** `Label` carries
+/// `show_tooltip_when_elided`, true by default (`egui-0.36.1/src/widgets/label.rs:285`): when the galley it
+/// drew is elided it shows the whole, unwrapped text on hover by itself. The first form of this function
+/// measured the natural width and attached its own `on_hover_text` on top of that, and the reader got the
+/// same sentence **twice, in two stacked tooltips** — measured, not predicted, by
+/// `the_whole_of_a_truncated_panel_line_is_on_its_hover`, which counts the tooltip and requires exactly
+/// one. The toolkit's hover is also the better one: it is keyed off the galley that was actually drawn, so
+/// it cannot disagree with the mark the way a width measured beside it can. A site's own hover chains
+/// after it, so a cut method name gives the reader both the name and what it is.
 fn fitted_label(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     let text: egui::WidgetText = text.into();
     if ui.wrap_mode() != egui::TextWrapMode::Extend {
         return ui.label(text);
     }
-    // ⚑ Measured before it is drawn, for [`table_cell`]'s reason: `Label::truncate` allocates the width it
-    // was given either way, so the rect it hands back says nothing about whether a glyph was dropped.
-    // `Extend` at an infinite width is the natural width, in whatever face the `RichText` carries.
-    let room = ui.available_width();
-    let natural = text
-        .clone()
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Extend),
-            f32::INFINITY,
-            egui::TextStyle::Body,
-        )
-        .size()
-        .x;
-    let whole = text.text().to_owned();
-    let r = ui.add(egui::Label::new(text).truncate());
-    if natural > room {
-        // A truncated line is unreadable, not merely tidy, so the whole of it is one hover away.
-        r.on_hover_text(whole)
-    } else {
-        r
-    }
+    ui.add(egui::Label::new(text).truncate())
 }
 
 /// The width `text` needs in `face`, measured with the font the theme actually installed.
@@ -4322,10 +4321,6 @@ fn table_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, cell: &Cell) {
         egui::Layout::left_to_right(egui::Align::Center)
     };
     let h = ui.spacing().interact_size.y;
-    // Whether this cell is going to be cut off, measured before it is drawn rather than inferred from
-    // the response afterwards: `Label::truncate` allocates the width it was given either way, so the
-    // rect it hands back says nothing about whether any glyphs were dropped.
-    let cut = text_w(ui, &cell_face(ui, c), text) > w;
     ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
         // ⚑ **The column's width, not the text's.** `allocate_ui_with_layout` allocates what its contents
         // used, so a left-aligned cell reserved only its own glyphs and every later column in the row
@@ -4334,15 +4329,20 @@ fn table_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, cell: &Cell) {
         // `every_column_holds_its_edge_on_every_row_and_on_the_header_whatever_the_cells_before_it_measure`.
         ui.set_min_width(w);
         let r = ui.add(egui::Label::new(rich).truncate());
-        // ⚑ **The panel's note wins over the table's.** A short cell like `(unnamed)` says an answer is
-        // absent; the sentence saying *why* is a fact about that panel's data, not about tables, so the
-        // panel supplies it and this function no longer knows what `objects::NO_NAME` is. The truncation
-        // hover below stays here, because *that* one is a fact about drawing.
+        // ⚑ **The panel's note.** A short cell like `(unnamed)` says an answer is absent; the sentence
+        // saying *why* is a fact about that panel's data, not about tables, so the panel supplies it and
+        // this function no longer knows what `objects::NO_NAME` is.
+        //
+        // ⚑ **The truncation hover used to be here too, and was a duplicate.** `Label` carries
+        // `show_tooltip_when_elided`, true by default (`egui-0.36.1/src/widgets/label.rs:285`), so a cell
+        // the toolkit elided already shows its whole text on hover; measuring the width here and adding a
+        // second `on_hover_text` gave the reader the same string twice in two stacked tooltips. Measured
+        // by `the_whole_of_a_truncated_panel_line_is_on_its_hover`, which counts the tooltip on a real cut
+        // cell and requires exactly one. What the panel's note now does is **stack after** the toolkit's
+        // full text rather than replace it, which is the better answer anyway: a cut `(unnamed)` gives the
+        // reader the whole cell AND why it is empty.
         if let Some(why) = cell.hover {
             r.on_hover_text(why);
-        } else if cut {
-            // A truncated cell is unreadable, not merely tidy, so the whole of it is one hover away.
-            r.on_hover_text(text);
         }
     });
 }
@@ -10026,6 +10026,80 @@ mod table_tests {
         assert!(
             (a.left() - b.left()).abs() < 0.6,
             "a proportional column is not left-aligned: {a:?} vs {b:?}"
+        );
+    }
+
+    /// ★ **A cut cell's whole text is on its hover, and is there exactly once.**
+    ///
+    /// [`table_cell`] used to measure the cell's width itself and attach an `on_hover_text` with the whole
+    /// text when it did not fit. `Label` does that on its own — `show_tooltip_when_elided`, true by
+    /// default (`egui-0.36.1/src/widgets/label.rs:285`) — so a cut cell was showing the reader the same
+    /// string **twice, in two stacked tooltips**. The measurement is here rather than in the note, and it
+    /// is the row that keeps the hover from disappearing altogether in the other direction.
+    ///
+    /// A tooltip is told from the cell by its galley: the drawn cell's galley is elided and the tooltip's
+    /// is not, and both carry the whole source in `Galley::text`.
+    #[test]
+    fn a_cut_cell_carries_its_whole_text_on_one_hover() {
+        const LONG: &str = "a routine name far wider than the column this table can give it";
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+        ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
+        let cols = cols();
+        let rows = vec![row(&["$FF8000", "1234", LONG], &[egui::Color32::WHITE; 3])];
+        // Narrow enough that the last column cannot hold its cell; the control below proves it.
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(260.0, 200.0));
+        let frame = |ctx: &egui::Context, events: Vec<egui::Event>| {
+            let mut found: Vec<(egui::Rect, std::sync::Arc<egui::Galley>)> = Vec::new();
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    table(ui, &cols, &rows, "cut-cell-hover");
+                },
+            );
+            fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, std::sync::Arc<egui::Galley>)>) {
+                match s {
+                    egui::Shape::Text(t) => out.push((
+                        egui::Rect::from_min_size(t.pos, t.galley.size()),
+                        t.galley.clone(),
+                    )),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            for c in &out.shapes {
+                walk(&c.shape, &mut found);
+            }
+            out.textures_delta.clear();
+            found
+        };
+        let first = frame(&ctx, Vec::new());
+        let cell = first
+            .iter()
+            .find(|(_, g)| g.text() == LONG)
+            .expect("the long cell was not drawn at all");
+        assert!(
+            cell.1.elided,
+            "control: the column held the whole cell, so nothing here is cut and the hover is not owed"
+        );
+        let at = cell.0.center();
+        // Held for several frames: egui decides a hover from the pointer's position last frame.
+        let mut last = Vec::new();
+        for _ in 0..4 {
+            last = frame(&ctx, vec![egui::Event::PointerMoved(at)]);
+        }
+        let tips = last
+            .iter()
+            .filter(|(_, g)| g.text() == LONG && !g.elided)
+            .count();
+        assert_eq!(
+            tips, 1,
+            "a cut cell must show its whole text on hover exactly once; the drawn cell and {tips} \
+             unelided copies were found"
         );
     }
 
