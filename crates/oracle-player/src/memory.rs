@@ -2133,6 +2133,35 @@ mod tab_strings {
         }
     }
 
+    /// **The masked-address line names both numbers**: the one the page is read from as its address, and
+    /// the listing spelling the person typed inside the sentence.
+    ///
+    /// `a_listing_address_and_its_bus_address_reach_the_same_page_and_the_panel_says_so` pins that the
+    /// spelling is CARRIED, and never read the sentence: it was composed inline in `ui.rs`, where no gate
+    /// could reach it. Both numbers are derived from [`resolve_address`]'s own mask here.
+    #[test]
+    fn the_listing_spelling_line_names_the_page_address_and_the_spelling_typed() {
+        let raw = DEFAULT_BASE | !oracle_core::symbols::BUS_ADDR_MASK;
+        let addr = raw & oracle_core::symbols::BUS_ADDR_MASK;
+        assert_ne!(
+            raw, addr,
+            "COULD NOT MEASURE: the two spellings are one number"
+        );
+        let line = Line::listing_spelling(addr, raw);
+        assert_eq!(line.addr, Some(addr));
+        assert!(!line.refused);
+        assert!(
+            line.text.contains(&oracle_aether::hex::addr(raw)),
+            "the sentence does not name the spelling typed: {:?}",
+            line.text
+        );
+        assert!(
+            !line.text.contains(&oracle_aether::hex::addr(addr)),
+            "the page address is drawn apart, so the sentence saying it again is a second copy: {:?}",
+            line.text
+        );
+    }
+
     /// **The stamp says each field as the type D11 serves it, and states an absence rather than a `?`.**
     ///
     /// Expected words are read off each stamp: a `u64` field is said with its own number, a `bool`
