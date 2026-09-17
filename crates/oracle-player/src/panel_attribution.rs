@@ -1346,30 +1346,58 @@ mod tests {
             "the cut run is found at the same row in rendered: {text:?} / {rendered:?}"
         );
 
+        // The real half: the stopping tables' cells are `Label::truncate`d (`ui.rs` `table_cell`), so a
+        // narrow pane elides them. Measured while writing this row: the every-tab and default docks at
+        // 1600x1000 elide NO run at all, so a sweep of those alone asserted nothing; hence the narrow
+        // panes, and the count is asserted rather than printed.
+        let narrow = |t: Tab| {
+            let mut dock = egui_dock::DockState::new(vec![Tab::Screen]);
+            dock.main_surface_mut()
+                .split_right(egui_dock::NodeIndex::root(), 0.8, vec![t]);
+            dock
+        };
         let mut elided = 0;
         for (name, dock) in [
+            ("narrow Breakpoints", narrow(Tab::Breakpoints)),
+            ("narrow Watchpoints", narrow(Tab::Watchpoints)),
+            ("narrow Profiler", narrow(Tab::Profiler)),
             ("every-tab", crate::ui::every_tab_dock()),
-            ("default", crate::ui::initial_dock()),
         ] {
             let mut lp = fixture(dock);
             let p = one(&mut lp, &Setup::default());
             for painted in &p.painted {
                 for g in painted {
-                    if let Some(run) = glass_run(g).filter(|r| r.elided) {
+                    let Some(run) = glass_run(g).filter(|r| r.elided) else {
+                        continue;
+                    };
+                    let whole = g
+                        .galley
+                        .rows
+                        .iter()
+                        .flat_map(|row| {
+                            row.glyphs.iter().map(move |gl| {
+                                gl.logical_rect()
+                                    .translate(g.pos.to_vec2() + row.pos.to_vec2())
+                            })
+                        })
+                        .all(|r| g.clip.contains_rect(r));
+                    if whole {
                         elided += 1;
                         assert!(
-                            run.rendered.ends_with('…')
-                                || !g
-                                    .clip
-                                    .contains_rect(g.galley.rect.translate(g.pos.to_vec2())),
+                            run.rendered.ends_with('\u{2026}'),
                             "{name}: an elided, unclipped run does not end in the mark: {run:?}"
                         );
                         assert_ne!(run.rendered, run.text, "{name}: {run:?}");
                     }
                 }
             }
+            assert_aligned(name, &p);
         }
-        println!("W5: {elided} real elided runs in the every-tab and default docks");
+        assert!(
+            elided > 0,
+            "anti-vacuity: no real body elided an unclipped run, so the real half measured nothing"
+        );
+        println!("W5: {elided} real elided, unclipped runs in narrow stopping panes");
     }
 
     /// ★ **W6, clipping.** A run half outside its clip appears in `text` whole and in `rendered` as the
