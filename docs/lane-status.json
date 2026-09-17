@@ -1,12 +1,6 @@
 {
-  "focus": "Tidying how the Registers, Memory and Planes panels show their numbers; an agent is on it.",
-  "inFlight": [
-    {
-      "what": "Registers, Memory and Planes panel display cleanup",
-      "where": "branch parcel/data-display-3",
-      "agent": true
-    }
-  ],
+  "focus": "Registers, Memory and Planes panels landed. Checking the online tests, then trimming my start-up notes.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the panel parcel returns, is checked here and lands.",
+  "nextBoundary": "Now: nothing running, everything pushed. Online tests for this landing still being read.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -74,11 +68,11 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "doing",
+      "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Four of eleven panels done. Registers, Memory and the Planes legend are being built now. Needs no decision from you; two items are still for your eyes."
+      "title": "Seven of eleven panel items done (Registers, Memory, Planes landed today). Left: Screen strip, Objects, the two sweeps. Look questions for your eyes are listed."
     },
     {
       "id": "F-PANELS-INVISIBLE-TO-SCREEN-TEXT",
@@ -106,6 +100,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-17T07:12:57Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-17T08:29:47Z"
 }

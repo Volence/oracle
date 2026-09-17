@@ -715,3 +715,16 @@ demand, the streaming asks. `docs/2026-08-19-subline-shipped.md` is the model ha
 * **`docs/OVERSEER-LOG.md`** holds closed history, append-only, newest last: not read at boot, read by
   `tail`/`grep` when a particular night or a moved entry is in question. **A live ruling goes in
   `OVERSEER.md`, never only in the log.**
+
+**DATA-DISPLAY-AUDIT PARCELS 6-8 (Registers, Memory, Planes) LANDED 2026-09-17, merge `9575b3e`** (agent tip `d6ad964`, via
+`tools/land.sh` GREEN and pushed: release 90/90 legs, 2983/0/5). Go: the hub, citing his 2026-09-02 words at empyrean `b010db4a`
+(verified an ancestor of their `origin/main`) — a decision-free next item is taken, not parked. Verified here on the merged tree:
+debug 90 legs 2980/0/8 (+14 = the diff's fourteen `#[test]`s), debug clippy 0, red-first reproduced with the mutation on disk.
+⚑ **Fourth named-lock instance:** the parcel found the shared `table_cell`/`header_cell` reserved only their text's width, so
+every later column (and header) was pulled left; `a_numeric_column_holds_its_right_edge_and_a_text_column_holds_its_left` stayed
+green under that defect (reproduced here). Probable cause of his `slotaddrcode  x  yname` photo — a prediction until a frame.
+Memory's "truncated page drifts" charge was never live (measured). Look calls 21-29 in the audit addendum. Ops: the first gate
+run was reaped for memory at 0 legs; `CARGO_BUILD_JOBS=4` in a `setsid` process got through, and only the WAITER was reaped the
+second time — check the gate process, not the waiter's notice.
+**NEXT: `OVERSEER-RECUT`** (this file grew; move review bars to the reference), then `DATA-DISPLAY-AUDIT` items 9-11 (Screen
+strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
