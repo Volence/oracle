@@ -4198,6 +4198,12 @@ fn table_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, cell: &Cell) {
     // rect it hands back says nothing about whether any glyphs were dropped.
     let cut = text_w(ui, &cell_face(ui, c), text) > w;
     ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
+        // ⚑ **The column's width, not the text's.** `allocate_ui_with_layout` allocates what its contents
+        // used, so a left-aligned cell reserved only its own glyphs and every later column in the row
+        // started wherever this one's text happened to end: a short cell pulled the rest of its row left.
+        // A right-aligned cell never showed it, because its contents start at the far edge. See
+        // `every_column_holds_its_edge_on_every_row_and_on_the_header_whatever_the_cells_before_it_measure`.
+        ui.set_min_width(w);
         let r = ui.add(egui::Label::new(rich).truncate());
         // ⚑ **The panel's note wins over the table's.** A short cell like `(unnamed)` says an answer is
         // absent; the sentence saying *why* is a fact about that panel's data, not about tables, so the
@@ -4227,6 +4233,9 @@ fn header_cell(ui: &mut egui::Ui, c: &table::Col, w: f32, colour: egui::Color32)
     };
     let h = ui.spacing().interact_size.y;
     ui.allocate_ui_with_layout(egui::vec2(w, h), layout, |ui| {
+        // The column's width, for [`table_cell`]'s reason: a header narrower than its column otherwise
+        // pulls every header after it left of the cells it names.
+        ui.set_min_width(w);
         ui.label(
             egui::RichText::new(c.head)
                 .text_style(egui::TextStyle::Small)
@@ -9777,6 +9786,106 @@ mod table_tests {
             (a.left() - b.left()).abs() < 0.6,
             "a proportional column is not left-aligned: {a:?} vs {b:?}"
         );
+    }
+
+    /// **Every column starts at one x on every row and on the header, whatever the cells BEFORE it
+    /// measure.**
+    ///
+    /// The test above cannot see this, and its name says it can: its only left-aligned column that is
+    /// not last holds `0x00001234` and `0x00005678`, two cells of identical width, so a left-aligned cell
+    /// that reserves only its own text rather than its column leaves every later column where it would
+    /// have been anyway. Found 2026-09-17 by the Memory tab's hex view, whose short last page moved the
+    /// `ascii` column 218 points left of every row above it.
+    ///
+    /// So the fixture here makes every left-aligned column that is not last vary in width down the page,
+    /// and makes each header narrower than its cells. Expected edges are read off the table itself: for
+    /// each column, a left-aligned column's cells and header share a LEFT edge and a numeric column's
+    /// share a RIGHT edge, the same meaning of alignment the test above uses.
+    #[test]
+    fn every_column_holds_its_edge_on_every_row_and_on_the_header_whatever_the_cells_before_it_measure(
+    ) {
+        let cols = [
+            table::Col {
+                head: "k",
+                numeric: false,
+                mono: false,
+            },
+            table::Col {
+                head: "n",
+                numeric: true,
+                mono: true,
+            },
+            table::Col {
+                head: "w",
+                numeric: false,
+                mono: true,
+            },
+            table::Col {
+                head: "tail",
+                numeric: false,
+                mono: false,
+            },
+        ];
+        let white = egui::Color32::WHITE;
+        let texts: [[&str; 4]; 3] = [
+            ["a", "1", "x", "first"],
+            ["a much longer key", "22", "xxxxxxxxxx", "second"],
+            ["mid key", "333333", "xxxx", "third"],
+        ];
+        let runs = {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, crate::theme::DEFAULT_FAMILY);
+            let rows: Vec<TableRow> = texts.iter().map(|t| row(t, &[white; 4])).collect();
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 300.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    table(ui, &cols, &rows, "edge-test");
+                },
+            );
+            out.textures_delta.clear();
+            super::subtype_list_tests::text_runs(&out.shapes)
+        };
+        let find = |t: &str| {
+            let hits: Vec<egui::Rect> = runs
+                .iter()
+                .filter(|(_, s)| s == t)
+                .map(|(r, _)| *r)
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "COULD NOT MEASURE: {t:?} painted {} times",
+                hits.len()
+            );
+            hits[0]
+        };
+        for (i, c) in cols.iter().enumerate() {
+            let edge = |r: egui::Rect| if c.numeric { r.right() } else { r.left() };
+            let head = edge(find(c.head));
+            let cells: Vec<egui::Rect> = texts.iter().map(|t| find(t[i])).collect();
+            assert!(
+                cells
+                    .iter()
+                    .any(|r| (r.width() - cells[0].width()).abs() > 1.0),
+                "COULD NOT MEASURE: column {:?}'s cells are all one width",
+                c.head
+            );
+            for (r, t) in cells.iter().zip(&texts) {
+                assert!(
+                    (edge(*r) - head).abs() < 0.6,
+                    "column {:?}: the cell {:?} holds its edge at {}, and the header at {head}",
+                    c.head,
+                    t[i],
+                    edge(*r)
+                );
+            }
+        }
     }
 }
 
