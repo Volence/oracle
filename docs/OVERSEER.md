@@ -51,7 +51,7 @@ moved with them.)*
 
 The order-of-work paragraph and every landing narrative after it in this section (orig lines 52-323 of `3e7a258`, 2026-09-13 to 2026-09-16) moved 2026-09-17: closed history and superseded `NEXT:` clauses to docs/OVERSEER-LOG.md, lessons and still-live holds to docs/OVERSEER-REFERENCE.md (both under "Moved from OVERSEER.md 2026-09-17"). Read the reference block before proposing H22 landings 2-3, M24 parcels 4-6 or the M1 live-look tags, before a panel or window parcel (d-52/d-53, `L-15`), and before composing a brief from the debug-window audit page. The live `NEXT:` is the last paragraph of this file.
 
-The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the order of work above, or before touching an area a booking names.
+The follow-up register and every registration under it (orig lines 112-440, through F-LEGACY-SILENT-DEFAULT) moved whole to docs/OVERSEER-REFERENCE.md (heading "Follow-up register"); read it when picking work past the live `NEXT:` (the order of work that stood above moved to docs/OVERSEER-LOG.md 2026-09-17), or before touching an area a booking names.
 
 
 ## ⚑ OWNER RULING: PUSH AUTHORIZATION. ✅ **CONFIRMED DIRECTLY BY THE OWNER, 2026-08-24, IN THIS SESSION**
@@ -338,4 +338,4 @@ The parcels 6-8 landing's history (orig lines 719-722) moved to docs/OVERSEER-LO
 
 **NEXT: `OVERSEER-RECUT`** (this file grew; move review bars to the reference), then `DATA-DISPLAY-AUDIT` items 9-11 (Screen
 strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
-**OVERSEER-RECUT LANDED 2026-09-17, merge `<pending>`** (docs only: 69,869 → 26,914 B; lessons and holds to `docs/OVERSEER-REFERENCE.md`, closed history to `docs/OVERSEER-LOG.md`, both under "Moved from OVERSEER.md 2026-09-17"). **NEXT: `DATA-DISPLAY-AUDIT` items 9-11** (Screen strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
+**OVERSEER-RECUT LANDED 2026-09-17, merge `345f385`** (docs only: 69,869 → 26,914 B; lessons and holds to `docs/OVERSEER-REFERENCE.md`, closed history to `docs/OVERSEER-LOG.md`, both under "Moved from OVERSEER.md 2026-09-17"). **NEXT: `DATA-DISPLAY-AUDIT` items 9-11** (Screen strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.

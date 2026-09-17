@@ -1,12 +1,6 @@
 {
-  "focus": "Panels landed. An agent is trimming my start-up notes; the online tests for the landing are running.",
-  "inFlight": [
-    {
-      "what": "Moving checklists out of the start-up notes",
-      "where": "branch parcel/overseer-recut",
-      "agent": true
-    }
-  ],
+  "focus": "Panels and the start-up notes trim both landed. Next is the last few panel items.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the notes trim lands and the online tests for today's panel landing are read.",
+  "nextBoundary": "Now: nothing running, everything pushed. Online tests for the panel landing still being read.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -95,17 +89,9 @@
       "blockedBy": null,
       "project": "LIVE-EFFECTS",
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
-    },
-    {
-      "id": "OVERSEER-RECUT",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "My own start-up notes grew by over a third today, mostly checklists that belong in the file read at review time. Moving them back keeps every future session quick to start. Source: git diff 61288ff HEAD."
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-17T08:30:28Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-17T08:37:18Z"
 }
