@@ -1,15 +1,17 @@
 # CR-W landing: `emulator/screen_text` reports the debug window's drawn panels as `panel` surfaces
 
-**Branch** `parcel/crw-panel`, base `774b4ba`. **Status: built and green; BLOCKED on the hub's contract
-commit** (§11.50, the §6 bullets and the schema). The parcel lands together with that text, never before
-it. Nothing here was run against an emulator process or a window: every figure comes from `cargo test`
+**Branch** `parcel/crw-panel`, base `774b4ba`. **Status: COMPLETE.** The hub landed §11.50, the §6 bullets
+and the schema at empyrean **`265efaa78b7ecf3a2ad014ce04a3faab79d7649d`**, and this branch now carries the
+serve, the re-vendor of that schema and the vectors it validates — the lockstep as ruled. Nothing here was run against an emulator process or a window: every figure comes from `cargo test`
 in-process harnesses over the fixture ROM, and whether the harvest reads the way the owner's window looks
 is Q2, his look (last section).
 
 **Read at:** CR `docs/proposed/2026-09-17-cr-w-panel-screen-text.md`; the Q3 spike
 `docs/2026-09-17-cr-w-q3-spike.md` (where they disagree, the spike was followed); the hub's ruling at
 empyrean `629bf21f` (*CR-W RULED*: option (a); Q7 fold ADOPTED; R1 DROPPED; §8 item 31 ADOPTED; Q4 and
-Q5 booked), and its follow-up at `4e5251d3` (*spike PASSED*, lockstep accepted).
+Q5 booked), its follow-up at `4e5251d3` (*spike PASSED*, lockstep accepted), and **the landed contract text
+at `265efaa7`** — §11.50 and the §6 `screen_text` bullets, read at the commit with
+`git -C ../empyrean show 265efaa7:contract/protocol.md`, never through a summary.
 
 ## 1. What was built
 
@@ -22,6 +24,9 @@ Q5 booked), and its follow-up at `4e5251d3` (*spike PASSED*, lockstep accepted).
 | `fb0be6c` | W10 harness corrected (blocks, not per-present interleaving; see §4). Docs: `MAX_SCREEN_SURFACES` counts panels; `oracle-frontend`'s module note says the enum has six values and why it never produces `panel`. |
 | `c7ad4bd` | An ignored capture that prints real replies for the vector file's cases 1-4. |
 | `36c3871` | W5's real-body sweep was vacuous; fixed (see §3). |
+| `95bf549` | **The re-vendor** at `265efaa7`: both artifacts re-copied from the object store, both pins moved, `PROVENANCE.md`'s tables re-derived by parsing (§6). |
+| `92b525c` | **The vectors:** cases 1-4 replaced with real replies captured over a real socket, R1's five cases dropped, the row un-ignored (§6). |
+| `e151f4f` | The contract's normative ordering checked with **two** floating windows (§7). |
 
 **The reading rule as built** (`crates/oracle-player/src/screen.rs`, module doc and `glass_run`/`join`):
 - A **run** is one `Shape::Text` in the span with at least one glyph whose logical rectangle meets its clip.
@@ -108,6 +113,17 @@ Every mutation was applied on disk, run with `cargo test`, and restored with `gi
 | P12 | blank panels omitted | red | W8, the attribution gate |
 | P13 | publish when not serving | red | `a_window_no_client_can_reach_publishes_no_panels` |
 
+**The re-vendor half (V rows), against `92b525c`, restored the same way:**
+
+| # | Mutation | Red? | Went red |
+|---|---|---|---|
+| V1 | the pre-CR-W schema bytes back in place (`git checkout 4585bf1 -- …/bus-protocol.schema.json`, on disk as blob `d5ae1746`, the five-value enum verified by parsing it) | red | `the_vendored_schema_is_the_blob_provenance_pins` (the pin is content-addressed), and the vectors row: *case 1 is declared passing and the schema REFUSED it: `"panel" is not one of "statusLine", "toast" or 3 other candidates`*. **This is the lockstep, measured: the re-vendor is what admits the kind.** |
+| V2 | the `panel` key stripped from a real reply's panel surface | red | the vectors row, *`"panel" is a required property`* — so the cases are read, not decoration |
+| V3 | an R1 case appended | red | the count assertion (11) fires first |
+| V3b | an R1 case put in place of a core one, so the count stays 11 | red | the tag guard: *a rider R1 case is back in the file* |
+| V4 | a case dropped | red | the count assertion |
+| O1 | panel surfaces ordered by name instead of draw order | red | the two-window ordering row and the attribution gate's W2 (`["Breakpoints", "Pacing", "Registers", "Screen"]` against `["Screen", "Registers", "Pacing", "Breakpoints"]`) |
+
 **Existing `snapshot` locks** (the six `screen::tests` rows about the bar) stayed green under every P
 mutation, as expected: none of them touches panels.
 
@@ -152,64 +168,66 @@ the glyph probe and the push, as its own §4 says, so they are not comparable to
 
 ## 5. Totals
 
-The commands were `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` and `cargo test --workspace --release`, all with `CARGO_BUILD_JOBS=4`. The base ran on the untouched `774b4ba`, the tip on `36c3871`, the last code commit; the commit that adds this note changes only this file. Counts are summed from each run's `test result:` lines, and 91 legs means 91 `Running`/`Doc-tests` headers, each with a result line.
+The commands were `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` and `cargo test --workspace --release`, all with `CARGO_BUILD_JOBS=4`. The base ran on the untouched `774b4ba`; the pre-re-vendor tip on `36c3871`; the **final tip on `e151f4f`**, the last code commit (the commit that carries this note changes only this file). Counts are summed from each run's `test result:` lines, and 91 legs means 91 `Running`/`Doc-tests` headers, each with a result line.
 
 | | fmt | clippy `-D warnings` | `cargo test --workspace` | `cargo test --workspace --release` |
 |---|---|---|---|---|
-| base `774b4ba` | clean | clean | 91 legs, 2999 passed, 0 failed, 9 ignored (3008 named result lines) | not run at base (the brief asks for release at the tip) |
-| tip `36c3871` | clean | clean | 91 legs, **3013 passed, 0 failed, 11 ignored** | 91 legs, **3016 passed, 0 failed, 8 ignored** |
+| base `774b4ba` | clean | clean | 91 legs, 2999 passed, 0 failed, 9 ignored | not run at base |
+| serve, before the re-vendor, `36c3871` | clean | clean | 91 legs, 3013 passed, 0 failed, 11 ignored | 91 legs, 3016 passed, 0 failed, 8 ignored |
+| **final tip `e151f4f`** | clean | clean | 91 legs, **3014 passed, 0 failed, 10 ignored** | 91 legs, **3017 passed, 0 failed, 7 ignored** |
 
-**Debug delta, reconciled by name** (sorted `test <name> ... <status>` lines of the two logs, diffed):
-- **Passed: +14** (2999 → 3013).
-  - Removed, 9: the spike's `crw_q3_spike::tests::*` gates.
-  - Added, 23:
-    - `panel_attribution::tests::*`, 16: the 9 carried-over gates, `a_window_no_client_can_reach_publishes_no_panels`, and W1, W4, W5, W6, W7, W8.
-    - `screen::tests::*`, 4 new.
-    - `engine::tests::*`, 2.
-    - hosted `a_player_that_published_panels_serves_each_by_name_after_the_bar`, 1.
-  - 2999 − 9 + 23 = 3013.
-- **Ignored: +2** (9 → 11).
-  - Removed: the spike's `harvest_cost_per_present`.
-  - Added: `w10_publish_cost_per_present`, `capture_cr_w_vector_replies`, and `the_cr_w_vectors_validate_the_way_the_file_says_they_do` (the one awaiting the re-vendor).
-- One name, `boot_read_exists_and_is_measurable`, appeared in the diff only because that test's own stdout split its result line at the tip. It passed in both runs.
+**Delta from the base to the serve** (sorted `test <name> ... <status>` lines, diffed):
+- **Passed +14** (2999 → 3013): the spike's 9 `crw_q3_spike::tests::*` gates removed; 23 added — `panel_attribution::tests::*` 16 (the 9 carried-over gates, the `is_serving` row, and W1, W4-W8), `screen::tests::*` 4, `engine::tests::*` 2, and the hosted panel row. 2999 − 9 + 23 = 3013.
+- **Ignored +2** (9 → 11): the spike's `harvest_cost_per_present` out; `w10_publish_cost_per_present`, `capture_cr_w_vector_replies` and `the_cr_w_vectors_validate_the_way_the_file_says_they_do` in.
 
-**Release against debug at the tip:** +3 passed and −3 ignored. `one_pass_repairs_four_stale_checkpoints_and_reproduces_the_pristine_image`, `the_slide_fixture_runs_green` and `the_standing_fixture_runs_green` are ignored in debug and run in release. That was true before this parcel.
+**Delta from the serve to the final tip:** exactly one name moved, `the_cr_w_vectors_validate_the_way_the_file_says_they_do`, `ignored` → `ok`. That is the whole of it: +1 passed, −1 ignored, no other row added, removed or changed status. Nothing else in the workspace moved on the re-vendor — no wire test went red on the new bytes, which is expected here and stated rather than assumed, since only this server's own replies can carry a `panel`.
 
-## 6. Blocked: the schema re-vendor
+**Release against debug at the final tip:** +3 passed, −3 ignored — `one_pass_repairs_four_stale_checkpoints_and_reproduces_the_pristine_image`, `the_slide_fixture_runs_green` and `the_standing_fixture_runs_green` are ignored in debug and run in release, as they were before this parcel.
 
-**No empyrean SHA carrying §11.50 and the schema had been sent when everything else was green.** Stopped
-there as instructed. The vendored bytes are content-addressed against `PROVENANCE.md`'s pins, so they cannot
-be hand-patched.
+**One reconciliation artifact, twice:** a test whose own `println!` lands mid-line (`boot_read_exists_and_is_measurable`, and in the release log two `real_sonic_lst_*` rows) splits its `... ok` onto the next line, so the by-name diff shows it appearing or disappearing. Each passed in both runs; the `test result:` sums, which are what the table carries, are unaffected.
 
-**Ignored awaiting the re-vendor (the complete list):**
-- `crates/oracle-aether/tests/screen_text.rs::the_cr_w_vectors_validate_the_way_the_file_says_they_do`, `#[ignore = "awaiting CR-W contract re-vendor"]`.
-- Measured red today with `cargo test -p oracle-aether --test screen_text -- --ignored cr_w`: *case 1 is declared passing and the schema REFUSED it: ... "panel" is not one of "statusLine", "toast" or 3 other candidates*.
-- It skips rider R1's five cases by their `[CR-W rider R1]` tag.
+## 6. The re-vendor, the vectors, and the five dropped cases
 
-**The re-vendor, ready to run** (the `PROVENANCE.md` recipe; `REV` is the hub's carrying commit):
+**Source of truth: empyrean `265efaa78b7ecf3a2ad014ce04a3faab79d7649d`**, read at the commit. `git -C ../empyrean merge-base --is-ancestor 265efaa7 origin/main` exits 0; the tip of `origin/main` at the time was `0f7f1e9a`, a commit that wrote neither file.
 
-```sh
-REV=<hub SHA>
-git -C ../empyrean fetch
-git -C ../empyrean merge-base --is-ancestor $REV origin/main && echo ancestor
-git -C ../empyrean show $REV:contract/schema/bus-protocol.schema.json > crates/oracle-aether/tests/contract/bus-protocol.schema.json
-git -C ../empyrean show $REV:contract/schema/tests/vectors.json      > crates/oracle-aether/tests/contract/vectors.json
-git -C ../empyrean rev-parse $REV:contract/schema/bus-protocol.schema.json $REV:contract/schema/tests/vectors.json
-git hash-object crates/oracle-aether/tests/contract/bus-protocol.schema.json crates/oracle-aether/tests/contract/vectors.json
-wc -c crates/oracle-aether/tests/contract/bus-protocol.schema.json crates/oracle-aether/tests/contract/vectors.json
-# then: both pin.* triples in PROVENANCE.md at the SAME revision, both Current-copy tables re-derived by parsing,
-# a leaf-path structural diff against the copy replaced, stated in full.
-```
+**The re-vendor (`95bf549`), through `PROVENANCE.md`'s own recipe.**
+- Both artifacts taken from the object store (`git show 265efaa7:contract/schema/bus-protocol.schema.json`, `…/tests/vectors.json`), never from a working tree.
+- Verified by content address: `git hash-object` on the written files returns `e18e6550` and `a6bd0fb3`, equal to `git rev-parse 265efaa7:<path>`. 371964 and 155581 bytes.
+- The per-path recipe was **run**, once per path: it answers `265efaa7` for the schema and `0937079` for the vectors, which did not move (§11.50 amended a fragment and added no case). Both pins carry `265efaa7` — the revision this copy was taken from — which is what step 0's same-revision assertion requires.
+- The gate: `cargo test -p oracle-aether --test schema_conformance` is green (26 passed), and with `AETHER_CONTRACT_REPO=/home/volence/sonic_hacks/empyrean` its step 2 prints `RESULT ok step=2-env-repo … rev=265efaa7…`, confirming the pin exists upstream and is merged.
+- **Structural delta**, both copies flattened to leaf paths (3116 → 3126): **15 added, 5 removed, 4 values changed**, touching exactly one fragment (`methods["emulator/screen_text"]`) plus the new `$defs/screenTextKind`. The five "removed" are the surface item's inline `kind` enum, which **moved** into `$defs`. `$defs` 20 → 21; 70 method fragments and 5 event fragments, unchanged. `$schema`, `$id`, `title`, `description`, `anyMessage`, `handshake` and `events` are identical as parsed structures.
 
-**Then, in the same commit:**
-1. Remove the `#[ignore]` above and run it.
-2. Replace the vector file's cases 1-4 with the lines printed by `cargo test -p oracle-player --bin oracle-player capture_cr_w_vector_replies -- --ignored --nocapture` (wrapped in each case's existing `method`/`kind`/`expect`/`why`, with `why` stating that it is a capture).
-3. Mark or strip R1's cases 12-16, since R1 was dropped.
-4. Run the whole suite. The hub's text may add vectors to `vectors.json` itself, and `schema_conformance` runs those.
+**The schema needs no key beyond the six this server emits** (`kind`, `panel`, `text`, `rendered`, `truncated`, `unrenderable`), so there was nothing to stop on. What landed is what the CR proposed: a six-value `$defs/screenTextKind`, `kind` as a `$ref` to it, `panel` (`type: string`, `minLength: 1`), and `if kind == "panel" then required[panel] else not required[panel]`.
 
-**Premise to re-check at the SHA:** the hub may spell the schema differently from CR §5.1, for example
-without the `if`/`then`/`else`. The serve emits exactly `kind`, `panel` (on panel kinds only), `text`,
-`rendered`, `truncated` and `unrenderable`. Any other required key is a stop.
+**The vectors (`92b525c`).**
+- **Cases 1-4 are now real replies**, and the capture had to change to produce them. Its first form read through `Bus::call` in-process, and the fragment REFUSED those documents: `frame`, `mclk`, `running` and `droppedEvents` are added by the serving path (`server::render`), not by `Engine::dispatch`, and `droppedEvents` is per connection. A vector is a whole wire document, so the capture now binds a `Loop` to a private socket, runs a real NDJSON client through `initialize`, waits for `status.display`, and keeps the last of sixteen reads so the window has settled. Case 1 is asserted to carry a cut panel before it is printed.
+- **R1's five `initialize` cases are dropped, deliberately.** They are the file's cases **12-16 one-indexed**, which §11.50 and the dispatch name **11-15 zero-indexed** — the same five, and the mapping is written down here because the two numberings disagree by one. The reason is §11.50's own: R1 was dropped, and against the schema as landed its two "pass" cases still validate while **its three declared-failure cases do not go red**, because `initialize.capabilities` is not a closed object, so an unknown key passes. A fail-vector the schema cannot refuse is coverage theatre. The file's `$comment` says so, and the test refuses any case tagged `rider R1` that comes back.
+- The row `the_cr_w_vectors_validate_the_way_the_file_says_they_do` is **un-ignored**. **Nothing in this repo is ignored awaiting a contract commit any more.**
+
+**The hub's claim re-run here, not taken from the message** (`cargo test -p oracle-aether --test screen_text -- --nocapture cr_w`, at `92b525c`, against the vendored fragment): **11 cases, 5 accepted, 6 refused, all agreeing with their own `expect`.** Each refusal cites the rule its case names:
+
+| # | case | verdict |
+|---|---|---|
+| 1-4 | the real replies (a cut cell; every leaf collapsed; two blank drawn panels; U+6F22 typed) | PASS |
+| 5 | the `noDisplay` refusal (CR-H's capture) | PASS |
+| 6 | a `panel` surface with no name | REFUSED: `/surfaces/2: "panel" is a required property` |
+| 7 | `panel` on a `statusLine` | REFUSED: `/surfaces/1: {"required":["panel"]} is not allowed` |
+| 8 | `panel: ""` | REFUSED: `/surfaces/2/panel: "" is shorter than 1 character` |
+| 9 | option (b)'s `panelBreakpoints` | REFUSED: `/surfaces/2/kind: … is not one of` the six |
+| 10 | option (c)'s `rows` on a surface | REFUSED: `Additional properties are not allowed ('rows' was unexpected)` |
+| 11 | a panel without `truncated` | REFUSED: `"truncated" is a required property` |
+
+The harness keys each case **by method AND kind** — the envelope comes from the case's `kind`, so an `error` document is judged against the error shape. §11.50 records why that matters: the hub's first run of this check routed an error case at the result fragment and reported three failures that were the harness's.
+
+## 6a. What the contract text corrected, or did not, in this build
+
+§11.50 makes three of the spike's corrections normative. Each was checked against the code as written, rather than the text read to fit the code:
+
+1. **"A panel dragged out into a floating window is a drawn body and IS reported."** Already true here and now pinned harder: `a_floating_window_over_a_body_is_attributed_exactly_and_reported_after_the_main_surface` requires a span (and a surface) for each floated tab.
+2. **"The main surface's panels first, then the floating windows, in the order the window drew them — never a static tab order."** The build orders surfaces by span order, which is draw order. One window cannot distinguish that rule from "this window last", so the row now floats **two** tabs out and asserts the served names equal `active_tabs` (derived from the dock's own surfaces, main first), with the main-surface count asserted separately. Measured: `[Screen, Registers, Pacing, Breakpoints, Profiler, Objects]` — not `Tab::ALL` order. Red-first: ordering the surfaces by name instead of draw order turns that row and the attribution gate red.
+3. **"An empty text shape is not a run"** (at least one glyph on the glass). Already the rule in `glass_run`, and pinned by `text_edit_contents_and_hint_text_are_attributed_to_their_tab`, which first asserts the control that an empty galley *was* painted.
+
+**No divergence found**, and nothing in the wording required a change to the serve. Two wordings are worth recording as matched rather than assumed: a wrapped run stays one run with `rendered == text` (W4's planted label wraps over 5 glyph rows), and rows scrolled out of view are in neither string (the harvest never reads a glyph the toolkit did not paint).
 
 ## 7. Look calls for the owner (Q2, tagged, not claimed)
 
@@ -220,5 +238,6 @@ No seat can open the window. These are the checks only he can make, each with a 
 4. **A floating window** is reported after the main surface's panels.
 
 **Also for the record, from the build:**
+- The vector file's case 1 is that cut `aether` line, captured over the socket, so the reply beside his screen already exists in `docs/proposed/2026-09-17-cr-w-panel-screen-text-vectors.json`.
 - P5 showed that no real body in the swept arrangements carries a multi-line label W4 checks, so the LF-restore path is proven by the unit row alone.
 - P10 showed that W3 cannot see a grouping error by design, so row grouping is proven by the unit row alone.
