@@ -1,5 +1,5 @@
 {
-  "focus": "The plane outline now has a check that can actually catch it breaking; the next panel job is ready to start.",
+  "focus": "Booted fresh. The last landing is confirmed green; next is the remaining panels of the debug-window display cleanup.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now, once CI is read. Nothing running, everything pushed, next job needs no decision from you.",
+  "nextBoundary": "Now. Nothing running, everything pushed, last landing's checks read green to completion.",
   "queue": [
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -99,7 +99,7 @@
       "title": "My own start-up notes grew by over a third today, mostly checklists that belong in the file read at review time. Moving them back keeps every future session quick to start. Source: git diff 61288ff HEAD."
     }
   ],
-  "awaiting": "nothing from you. Note only: CI is still running on this landing and I will read it to completion before calling it done.",
+  "awaiting": "your go to start the next panel job (Registers, Memory and the rest of the display cleanup). Nothing about it needs a decision from you.",
   "atBoundary": true,
-  "updatedAt": "2026-09-16T18:45:23Z"
+  "updatedAt": "2026-09-17T06:53:35Z"
 }
