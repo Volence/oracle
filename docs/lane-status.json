@@ -46,6 +46,14 @@
       "title": "Two ROMs print their results in a font we cannot read, so we only pin their picture, not their verdict. Until they are read, 'all the tests pass' is not something we can honestly say."
     },
     {
+      "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
+      "state": "open",
+      "size": "S",
+      "blockedBy": "a contract ruling (the hub's)",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Aurora reviewed yesterday's panel-text work and found a hole: a line pushed entirely off a pane is reported as no loss at all. We can see the line and throw it away. The hub rules the fix."
+    },
+    {
       "id": "PANEL-CLIP-MARK",
       "state": "open",
       "size": "S",
@@ -128,5 +136,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-18T19:31:46Z"
+  "updatedAt": "2026-09-18T19:36:40Z"
 }
