@@ -1,6 +1,12 @@
 {
-  "focus": "Booted; every test ROM that prints a verdict passes. Next is the sprite ROM's half we have never run.",
-  "inFlight": [],
+  "focus": "Running the half of the sprite test ROM we have never run: the wide screen mode, nine unmeasured tests.",
+  "inFlight": [
+    {
+      "what": "Scraping the sprite ROM's wide-screen half, and diagnosing why the mode toggle answers the wrong button",
+      "where": "branch parcel/h40-half",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,11 +19,11 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: nothing running, everything pushed, CI green on the merge.",
+  "nextBoundary": "When the H40 parcel returns and is verified here; nothing else is running.",
   "queue": [
     {
       "id": "TESTROM-H40-HALF",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -25,7 +31,7 @@
     },
     {
       "id": "TESTROM-UNSCRAPED-PAIR",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -120,7 +126,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "just booted and waiting on your go; I propose the sprite ROM's unrun second half next. Card d-54 whenever: wrap long panel lines, or widen the panes?",
-  "atBoundary": true,
-  "updatedAt": "2026-09-18T23:23:59Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-18T23:39:33Z"
 }
