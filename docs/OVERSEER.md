@@ -409,3 +409,45 @@ own treatment**: a DOUBLE hover (egui's `Label` already hovers when elided; `tab
 `Grid` truncate RATCHET collapsing a column to a bare `…` — **which a cut sweep is structurally blind to, because a collapsed run fits its clip**,
 so the gate also refuses a run drawn as nothing but the mark. **NEXT: weigh `F-BANKED-ADDR-AMBIGUITY` (undemanded CR) against `LIVE-EFFECTS-NUDGES`
 and `F-Z80-ACCESSES-UNWATCHED`; d-54 and aurora's CR-W review are owed but gate nothing.**
+
+## ⚑ OWNER RULING, 2026-09-18: **ORACLE GOES TO THE TESTS.** Relayed by empyrean-c2, **VERIFIED FIRSTHAND HERE**
+
+*"oracle keep worrking on passing all the tests? andd aurora can do look work"*
+
+**Verified rather than taken on the relay's word**, which is what makes it usable: empyrean **`472ff55f`** is an
+ancestor of their `origin/main`, the commit is dated 2026-09-18 and carries a docs ruling, and his words are
+present in the blob at that revision (`docs/OVERSEER.md`, under today's date). Provenance flag CLEARED, not carried.
+
+**His, read literally:** this lane's next work is the **test-ROM conformance track**, not the three rows its own
+board was weighing. Clause 2 is aurora's and does not reach here. **The other three rows are OUT-PRIORITISED, NOT
+CANCELLED** — his sentence names what to work on, not what to drop — so `F-BANKED-ADDR-AMBIGUITY` came off `next`
+and stays open. `d-51` and `d-54` are untouched by anything he said today.
+
+⚑ **THE HUB DELIBERATELY RELAYED NO FIGURE, and that is this repo's own rule aimed back at us.** This exact sentence
+of his carried **two wrong numbers in one night** on 09-16, so a banked pointer names its **SOURCES, never its
+FIGURE**. Re-derived here at boot from the machine-enforced source (`BASELINE` in
+`crates/oracle-core/tests/conformance_roms.rs`) plus the scorecard and ledger row P1 — **not** from the hub, and not
+from the prose alone:
+
+* **Five of the six verdict-printing ROMs are clean**: `io_sample`, `m68k_bcd`, `m68k_illegal` PASS;
+  `m68k_memory_test` 13/13; `vdp_port_access` **122/122 over all 22 pages**, `PORT_ACCESS_FAILING` empty.
+  ⚑ **`vdp_port_access` IS CLOSED — do not let it be re-proposed** (the hub did exactly that off a stale figure).
+* **The one remaining `FAIL` is OURS IN THE INSTRUMENT**: `vdp_sprite_masking` `6=FAIL`, the registered
+  `F-POSTHOC-STALE-CARRY` — the scraper reads its verdict glyph through the post-hoc `Vdp::render_line`, which
+  re-seeds the sprite dot-overflow carry from the end-of-frame value per line, so the glyph describes a machine
+  state that never existed. The live path reads `PASS`.
+* **"All the tests" is THREE items, and only the first is a defect.** (2) **Q1: the H40 half has never been run at
+  all** — the ROM says press `Start`, only `C` toggles it for us, so nine tests are unmeasured and a mode we have
+  never scraped is not a mode we can claim. (3) **Q2: `vcounter` and `m68k_opcode_sizes` are unscraped by choice**,
+  carrying a picture-pin and no verdict. **Until those are read, "all the tests pass" is not a sentence this lane
+  can honestly say**, which is the whole reason they are on the board rather than in a footnote.
+
+**POSTHOC-CARRY DISPATCHED 2026-09-18** (branch `parcel/posthoc-carry`, worktree `../oracle-posthoc`, base `5b3d551`).
+Briefed to **refute the premise if it is false** (it has stood unverified since 2026-08-15) and to settle the two
+blockers the follow-up names — the four glyph constants were themselves pinned from post-hoc pixels, i.e. the defect
+reproducing one layer down, and a live-path scrape needs a frame-aligned capture where `block_hash` needed none.
+Hard constraint: **do not change emulator behaviour to move a glyph.** Its centre of gravity is the control arm this
+house wrote down and never ran — **render a frame both ways and require them to agree** — because an artefact and a
+real failure are **identical in the output**, both a `FAIL` glyph, so *name your sources* cannot reach this class:
+only an instrument that fires on purpose can. **Successor, named in the same write: `TESTROM-H40-HALF`** (Q1;
+re-derive before dispatch — it may be an input/TH-protocol defect on our side rather than a harness gap).
