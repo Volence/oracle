@@ -111,6 +111,16 @@ second sub-case). Test 6 appears to be a measurement artefact of the instrument,
 > artefact this survey identified. The scorecard row and the P1 ledger row are amended at last (they were
 > deliberately left standing here); F-POSTHOC-STALE-CARRY is untouched and still open — no glyph constant
 > was re-derived, because the flipped test-3 hash matched the already-pinned `TICK_TICK`.
+>
+> **2026-09-18 — acted on (parcel `POSTHOC-CARRY`); F-POSTHOC-STALE-CARRY is CLOSED.** The conformance
+> scraper reads the live capture, the row says `6=PASS`, and the post-hoc reading is kept **in the row** as
+> `[post-hoc path differs: 6=FAIL]` — so the disagreement survives as the exhibit this section argued it
+> should be, but now as a machine-checked one. Both blockers below were settled by measurement rather than
+> removed: all four glyph constants survive the substrate change with **no re-derivation** (test 6's live
+> hash *is* the already-pinned `PASS` literal), and the frame read is the last one the run **completed**
+> before the idle stop, guarded three ways. No emulator behaviour changed. Full evidence, including the
+> per-line derivation (the carry commits `true` on line 87 and holds to 94, so lines 88-95 differ) and the
+> red-first mutation table, is in `docs/2026-07-25-testrom-conformance.md` §L1c.
 
 That reframes the priority of the P1 follow-up work itself, which is worth more than the row flip.
 
@@ -213,8 +223,14 @@ shape of the new instrument agree with the existing one.
    not free: the eleven `IDENTICAL-TO-POST-HOC` rows would lose their (cheap) equality check, and
    `golden_frames.rs` has no live path at all — its scenes are static `Vdp` fixtures with no machine to run, so
    per-scanline capture is not merely unimplemented there but not meaningful.
-2. **F-POSTHOC-STALE-CARRY** — whether to switch `vdp_sprite_masking`'s scraper to the live path and amend the
-   row to `6=PASS`, and whether the P1 ledger row should be corrected to claim one failure instead of two.
+2. ~~**F-POSTHOC-STALE-CARRY** — whether to switch `vdp_sprite_masking`'s scraper to the live path and amend
+   the row to `6=PASS`, and whether the P1 ledger row should be corrected to claim one failure instead of
+   two.~~ **Settled 2026-09-18 (`POSTHOC-CARRY`): yes to the first two, and the third needed no action** —
+   2026-09-16 had already rewritten the P1 row, which makes no claim about test 6. The switch was **not** a
+   substitution: the post-hoc classification is computed alongside the live one and reported in the row, so
+   what used to be an exhibit in prose is now the control arm. The general question (1) above —
+   should the post-hoc goldens be *retired*? — is untouched and still the owner's; this parcel is evidence
+   for keeping both readings rather than choosing one.
 3. **Should `frame_hash` grow a vblank-phase caveat?** Mechanism 3 means *any* end-of-frame hash of a ROM that
    updates in vblank describes a moment one update later than the frame. Six rows of the existing scorecard are
    plain `frame_hash` visual baselines; `shadow_highlight` is now known to be one of the affected ones.
