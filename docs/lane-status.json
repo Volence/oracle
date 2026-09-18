@@ -49,9 +49,9 @@
       "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
       "state": "open",
       "size": "S",
-      "blockedBy": "a contract ruling (the hub's)",
+      "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "Aurora reviewed yesterday's panel-text work and found a hole: a line pushed entirely off a pane is reported as no loss at all. We can see the line and throw it away. The hub rules the fix."
+      "title": "Aurora found that a line pushed entirely off a pane was reported as no loss at all. The hub ruled our fix in today, so it is now buildable: the lost line gets reported with nothing drawn beside it."
     },
     {
       "id": "PANEL-CLIP-MARK",
@@ -136,5 +136,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-18T19:36:40Z"
+  "updatedAt": "2026-09-18T19:38:33Z"
 }
