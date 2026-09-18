@@ -1,5 +1,5 @@
 {
-  "focus": "Cut panel text now shows it was cut. Ready for a clear; one card waiting on you.",
+  "focus": "Fresh session, nothing running. Weighing which of three open jobs to take next.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -96,7 +96,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing blocking. Card d-54 when you have a moment: should long panel lines wrap, or the panes be wider? This lane is clearable.",
+  "awaiting": "your go on what to start. Card d-54 when you have a moment: should long panel lines wrap, or the panes be wider?",
   "atBoundary": true,
-  "updatedAt": "2026-09-18T00:41:07Z"
+  "updatedAt": "2026-09-18T18:02:47Z"
 }
