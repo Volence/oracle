@@ -2301,3 +2301,42 @@ promoted a row — an instance fix. The row was demoted again at the next dispat
 cycle was the defect and the missing `next` was only its symptom.** A flag that names a state gets the state
 corrected; nothing in it asks how the state is produced. *(Same family as the queue-row rot lessons above: the
 correction has to reach the mechanism, or it reappears on the next write.)*
+
+## `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` — found by aurora reviewing CR-W, 2026-09-18; confirmed firsthand here
+
+**Registered by the oracle overseer on aurora's review of the CR-W landing (`106b659`); the finding is theirs.**
+Blocked on a hub ruling — it changes what a field means across kinds, so it is contract, not engineering.
+
+**The defect.** §11.50 tells a client to find a cut run by comparing `text` against `rendered`. A run **wholly
+outside its clip** is in **neither** string, so the two are equal, so `truncated` derives `false`: the reply says
+*nothing was cut* for the case where a whole run was lost. **It fails in the flattering direction**, which is why
+no gate here caught it — every one of them asks about runs that are partly visible.
+
+**Code anchors, both verified at `106b659`:** `crates/oracle-aether/src/engine.rs:3990` derives
+`"truncated": s.rendered != s.text` and carries **no independent loss signal**; `crates/oracle-player/src/screen.rs:518`
+in `glass_run` accumulates only glyphs meeting the clip and returns `None` via `let (top, bottom, left) = band?;`
+when none does, dropping the run whole. Aurora named its own falsifier — `truncated` true on such a surface — and
+**it does not fire**, which is what promotes this from a reading to a finding.
+
+⚑ **THE SHARPENING, AND IT IS THE WHOLE REASON THIS IS NOT A FOOTNOTE: this is not a run we failed to observe, it is
+a run we observed and DISCARDED.** W6's own control asserts *"the outside run WAS painted into the span"*, and
+`glass_run` is holding `p.galley.text()` at the instant it returns `None`. **We possess the lost text and emit "no
+loss."** §11.50 declined a typed signal for scrolled rows (Q4 option (i), `F-PANEL-SCROLL-UNSTATED`) on the reasoning
+that **egui does not lay out what it does not paint** — true of scroll, **FALSE of a clipped run**, which is laid out
+and painted. **The infeasibility that justified silence for scroll is absent here, and the two cases have been reading
+as one family while only one of them has an excuse.** ⚑ **Do NOT fold this into `F-PANEL-SCROLL-UNSTATED`**: that
+files it under the very excuse the finding says does not apply.
+
+**This seat's recommendation to the hub, WIDER than aurora's own and marked as such.** Aurora proposes the cheap
+form — one sentence in §11.50 stating the case and that `truncated` does not cover it, which makes the trap visible
+and leaves the client no signal. Recommended instead: **put the wholly-clipped run into `text` with an EMPTY
+`rendered`.** Alignment holds (an empty run between the joins is still a run), `truncated` derives **true** through
+the existing derivation with **no new field and no new mechanism**, and §11.50's own advertised technique begins
+working at exactly the case it now fails. Cost: a stated exception to the *"at least one glyph on the glass"* rule —
+read here as having been ruled to exclude **empty source shapes** (its stated reason was phantom rows from text
+boxes) rather than **clipped-away runs**. ⚑ **That distinction is this seat's and is NOT in the hub's text**, so it
+is offered as the thing to rule on, never as a reading of what was already ruled.
+
+**Aurora's own exposure: NIL, and recorded as a DATED ABSENCE, not a standing fact** — measured 2026-09-18 at aurora
+master `ff54201b`, no `emulator/screen_text` call in `src/` and no method schema vendored; re-derive with
+`grep -rn "screen_text" src/ test/`. **It changes without anything touching that sentence.**
