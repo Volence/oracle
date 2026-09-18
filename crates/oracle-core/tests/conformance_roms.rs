@@ -28,9 +28,19 @@
 //! classified by hashing the rendered pixels — its nametable cells are identical for the tick and cross
 //! cases, so only the framebuffer can tell them apart.
 //!
+//! **Which framebuffer, for that one ROM, is itself a measurement** (2026-09-18, `POSTHOC-CARRY`). The
+//! glyphs are hashed out of a `ScanlineCapture` — the pixels the VDP emitted during the run — and hashed a
+//! second time out of the post-hoc `Vdp::render_line`, and the row records both: the live verdicts, then
+//! the complete list of glyphs the re-render disagrees about. The two differ on exactly one glyph today,
+//! because `render_line` re-seeds R10 sprite masking from the end-of-frame `sprite_dot_overflow_carry`
+//! instead of advancing it per line, and one of this ROM's nine tests is a test *of that carry*. Reading
+//! that re-render as a verdict is what made `6=FAIL` stand for thirteen months as a defect that was not
+//! there; carrying both readings is what makes the next such divergence announce itself. See
+//! `the_glyph_scrape_reads_the_live_render_path`.
+//!
 //! If the vendored ROM is missing, that ROM skips cleanly (run `tools/fetch-testroms.sh`).
 
-use oracle_core::bus::{BusEvent, BusEventSink, BusOp};
+use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Fanout};
 use oracle_core::io::Pad;
 use oracle_core::scanline_capture::{Retain, ScanlineCapture};
 use oracle_core::system::System;
@@ -269,34 +279,53 @@ const BASELINE: &[(&str, &str)] = &[
         "page1 pass/fail/total=9/0/9; pages1+2 cumulative=16/0/16; all 22 pages cumulative=122/0/122",
     ),
     (
-        // **`6=FAIL` is measured to be an artefact of this scraper, NOT an emulator inaccuracy (2026-08-15).**
-        // `block_hash` classifies the verdict glyphs through the post-hoc `Vdp::render_line`, which re-seeds
-        // R10 sprite masking from a STALE `sprite_dot_overflow_carry` (`Vdp::report_rgb`'s own doc comment
-        // says re-resolving after `render_scanline` "would be wrong"). Through the LIVE per-scanline path the
-        // same glyph reads **PASS**; the other eight glyphs are identical through both paths, and this ROM
-        // makes zero VDP accesses after frame 7, so nothing mid-frame is involved. Proven by replaying the
-        // stateful path over the settled machine: it reproduces the live picture exactly, the pure path does
-        // not. The live frame is pinned as separate currency in `tests/scanline_goldens.rs`.
+        // **Re-pathed 2026-09-18 (POSTHOC-CARRY): `6=FAIL` → `6=PASS`, and F-POSTHOC-STALE-CARRY is
+        // CLOSED.** No emulator behaviour changed; the instrument did. The nine verdict glyphs are now
+        // classified from a `ScanlineCapture` of the last completed frame — the pixels the VDP emitted —
+        // instead of from the post-hoc `Vdp::render_line`, and the post-hoc reading is kept and reported in
+        // the bracket as the control arm.
         //
-        // The row is left as-is ON PURPOSE. This harness is non-gating, so a wrong pin blocks nothing, and
-        // switching the scraper is not a one-line change — the four glyph constants below are themselves
-        // pinned from post-hoc pixels and `block_hash` re-renders from settled state at any stop point, so a
-        // live-path scrape needs a frame-aligned capture and a decision about which frame. See
-        // `F-POSTHOC-STALE-CARRY` and `docs/2026-08-15-scanline-golden-coverage.md`.
+        // MECHANISM, re-derived from the tree rather than taken from the 2026-08-15 note. `Vdp::sprite_line`
+        // seeds its R10 x=0 masking with `seen_nonzero = self.sprite_dot_overflow_carry()` and never writes
+        // it back; `Vdp::render_scanline` commits the new carry after each line, `Vdp::render_line` does not.
+        // So a pure re-render seeds EVERY line from the carry as it stands after the run. Measured on this
+        // ROM at its idle stop: that settled carry is `false`, while live the walk commits `true` on line 87
+        // and holds it through line 94 (line 95 is drawn with the seed still `true` and commits `false` —
+        // the mask suppressed the sprites, so there was no overflow to carry). Lines 88-95, x 216..247, are
+        // therefore drawn with the mask armed live and unarmed post-hoc: eight lines, exactly the 32x8
+        // rectangle this scraper reads for test 6 — MASK S1 ON DOT OVERFLOW, i.e. the ROM's test OF the
+        // carry. The whole frame differs nowhere else (8 differing lines out of 224, measured), and the ROM
+        // makes zero VDP accesses after frame 7, so nothing mid-frame is involved.
         //
-        // **Do not "fix" the emulator until the post-hoc render says PASS** — that would mean breaking the
-        // correct live carry-seeding to satisfy a broken instrument.
+        // The two blockers F-POSTHOC-STALE-CARRY named are settled, by measurement, not by argument:
+        // (a) **every glyph constant survives the substrate change with no re-derivation.** Eight glyphs are
+        // bit-identical through both paths, and test 6's live hash is `0x66094bba88cb93ed` — the `PASS`
+        // literal, which was itself pinned from post-hoc pixels. `block_hash` has exactly one caller, this
+        // ROM, so "every ROM and glyph the scraper classifies" is these nine; the other 16 rows scrape the
+        // nametable, CRAM or a whole-frame hash and cannot be affected. (b) **which frame**: the last frame
+        // the run COMPLETED before the idle stop (index 14; the stop fires mid-frame 15). The old comment's
+        // "stopping mid-frame is irrelevant to it" was true of a re-render and is false of a capture, so it
+        // is replaced by three loud guards in `sprite_masking_glyphs` — exactly one complete frame, at least
+        // one frame completed, and the captured frame strictly later than the ROM's last VDP write.
         //
-        // **2026-09-16 (SPRITE-MID-CUT, ledger row P1): test 3 flips `TICK/CROSS` → `TICK/TICK`.** The
-        // per-line pixel budget now cuts **inside** the sprite that straddles it (`Vdp::sprite_line`), so
-        // test 3's second sub-case MAX SPRITE DOTS – COMPLEX — the one the row credited to P1 — passes. This
-        // is the ROM's own verdict on its own subject, re-derived from the run, not a re-pin: the glyph hash
-        // matched the ALREADY-PINNED `TICK_TICK` constant, so **no glyph constant was re-derived** and the
-        // F-POSTHOC-STALE-CARRY trap was never entered. `6=FAIL` is deliberately unchanged and is still the
-        // instrument artefact above — it was not touched and must not be. The other 16 rows of this
-        // scorecard are byte-identical across the parcel.
+        // The previous warning — "do not fix the emulator until the post-hoc render says PASS" — is still
+        // true and is now STRUCTURAL rather than prose. Doing that would empty `[post-hoc path differs: …]`,
+        // which moves this row and fails `the_glyph_scrape_reads_the_live_render_path`. So would losing the
+        // live path. The bracket is a positive statement in both directions: it says `[post-hoc path
+        // agrees]` when there is nothing to report, so an absent disagreement can never read as an
+        // unmeasured one.
+        //
+        // What did NOT move: no file under `crates/oracle-core/src/` was touched, and the other 16 rows of
+        // this scorecard — plus `determinism_gate`, `export_state_v1`, `golden_frames` and
+        // `scanline_goldens` — are byte-identical across this parcel.
+        //
+        // History. 2026-08-15 (the per-scanline survey) found the artefact and left the row standing on
+        // purpose. 2026-09-16 (SPRITE-MID-CUT, ledger row P1) flipped test 3 `TICK/CROSS` → `TICK/TICK` when
+        // the per-line pixel budget began cutting inside the straddling sprite; that glyph hash matched the
+        // already-pinned `TICK_TICK`, so blocker (a) was never put to the test then. It is now.
         "vdp_sprite_masking",
-        "H32: 1=TICK/TICK 2=TICK/TICK 3=TICK/TICK 4=PASS 5=PASS 6=FAIL 7=PASS 8=PASS 9=TICK/TICK",
+        "H32: 1=TICK/TICK 2=TICK/TICK 3=TICK/TICK 4=PASS 5=PASS 6=PASS 7=PASS 8=PASS 9=TICK/TICK \
+         [post-hoc path differs: 6=FAIL]",
     ),
     (
         "vdp_test_register",
@@ -501,6 +530,64 @@ fn block_hash(sys: &System, x0: usize, x1: usize, y0: u16, y1: u16) -> u64 {
     h
 }
 
+/// [`block_hash`]'s **live** twin: the same FNV-1a over the same rectangle, but read out of a
+/// [`ScanlineCapture`]'s pixels — the picture the VDP emitted during the run — instead of re-rendered
+/// afterwards. `px` is one complete frame, line-major, `width` pixels per line.
+///
+/// Byte-for-byte the same layout as [`block_hash`] on purpose: the two are compared directly (that
+/// comparison IS the control arm in `sprite_masking_glyphs`), so a hash from one and a hash from the other
+/// must name the same kind of thing, and the four pinned glyph constants must classify either substrate.
+fn block_hash_live(
+    px: &[(u8, u8, u8)],
+    width: usize,
+    x0: usize,
+    x1: usize,
+    y0: u16,
+    y1: u16,
+) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for line in y0..y1 {
+        let row = &px[line as usize * width..(line as usize + 1) * width];
+        for (r, g, b) in row.iter().take(x1).skip(x0) {
+            for byte in [*r, *g, *b] {
+                h ^= byte as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    h
+}
+
+/// `vdp_sprite_masking`'s four verdict glyphs, pinned from rendered pixels (Limitation L3).
+///
+/// **These are substrate-independent** — verified, not assumed, by `POSTHOC-CARRY` (2026-09-18) when the
+/// scraper moved from the post-hoc render to the live capture: all four survived the move with **no
+/// re-derivation**. Eight of the nine glyphs are bit-identical through both paths, and the ninth (test 6)
+/// hashes live to exactly the [`PASS`] literal below, which was pinned from post-hoc pixels. That was the
+/// blocker `F-POSTHOC-STALE-CARRY` named — "the constants are themselves pinned from post-hoc pixels, so
+/// the defect could reproduce one layer down" — and it is now settled by measurement.
+///
+/// [`TICK_CROSS`] currently classifies **nothing**: test 3's second sub-case was the only cross in the
+/// corpus and it flipped to a tick when the mid-sprite pixel-budget cut landed (2026-09-16, ledger P1). It
+/// is kept because it is a *classifier*, not a pin — a regression that reintroduces a cross must read
+/// `TICK/CROSS` rather than `UNKNOWN-GLYPH` — but it is worth knowing that no run exercises it today.
+const TICK_TICK: u64 = 0xb498_5631_5ac3_a445;
+const TICK_CROSS: u64 = 0xa126_fa46_503f_8e4d;
+const PASS: u64 = 0x6609_4bba_88cb_93ed;
+const FAIL: u64 = 0x1f88_0fb1_901c_cfe5;
+
+/// Classify one 32x8 verdict rectangle. An unrecognised hash is reported as `UNKNOWN-GLYPH(0x…)` rather
+/// than guessed at or dropped — loud, per L3, because any palette or renderer change invalidates the pins.
+fn glyph_label(h: u64) -> String {
+    match h {
+        TICK_TICK => "TICK/TICK".to_string(),
+        TICK_CROSS => "TICK/CROSS".to_string(),
+        PASS => "PASS".to_string(),
+        FAIL => "FAIL".to_string(),
+        other => format!("UNKNOWN-GLYPH(0x{other:016x})"),
+    }
+}
+
 /// Read the on-screen text out of the plane-A nametable, one `String` per cell row.
 ///
 /// Plane A base = `(R2 & $38) << 10`; plane pitch from R16; visible columns from the rendered line width
@@ -664,37 +751,134 @@ fn scrape_m68k_illegal(sys: &mut System) -> String {
 /// Runs in H32. The ROM's on-screen text says `Start` toggles H40/H32; in this core it is `C` that
 /// toggles — an OPEN QUESTION recorded in `docs/2026-07-25-testrom-conformance.md`, deliberately NOT
 /// "fixed" here.
+///
+/// ## The pixels come from the LIVE render path, and the post-hoc one is kept as the control
+///
+/// (2026-09-18, `POSTHOC-CARRY`; closes `F-POSTHOC-STALE-CARRY`.) This scraper used to read
+/// [`block_hash`] only — `Vdp::render_line`, a *pure* re-render of a line against whatever state the VDP
+/// holds after the run. That path re-seeds R10 sprite masking from `sprite_dot_overflow_carry` **as it
+/// stands at the end of the frame** on every line, instead of advancing it line by line the way
+/// `Vdp::render_scanline` does during the run. For eight of this ROM's nine glyphs the two substrates are
+/// bit-identical; for test 6 — `MASK S1 ON DOT OVERFLOW`, i.e. the ROM's test *of the carry itself* — they
+/// are not, and the post-hoc reading was a `FAIL` the machine never drew.
+///
+/// So the glyphs are now classified from a [`ScanlineCapture`] of the last **completed** frame — the
+/// pixels the VDP actually emitted — and the post-hoc classification is computed alongside and **reported
+/// in the row** as `[post-hoc path differs: …]` / `[post-hoc path agrees]`. That bracket is the control
+/// arm: it makes a future divergence between the two render paths a scorecard diff instead of something
+/// that arrives disguised as a ROM's verdict, in either direction —
+///
+/// * the live path collapsing back to post-hoc (a lost capture, a re-pathed `block_hash`) empties the
+///   bracket **and** flips `6=` to `FAIL`;
+/// * the post-hoc path being "fixed" until it agrees — the trap the old row comment warned about in prose —
+///   empties the bracket while `6=` stays `PASS`;
+/// * a *new* disagreement, on any glyph, adds an entry.
+///
+/// Each of those moves the single scorecard assert. `the_glyph_scrape_reads_the_live_render_path` below is
+/// the non-vacuity half: it proves the two substrates are still distinguishable here, so the choice between
+/// them is load-bearing rather than decorative.
 fn scrape_vdp_sprite_masking(sys: &mut System) -> String {
+    let (live, post_hoc) = sprite_masking_glyphs(sys);
+    sprite_masking_row(&live, &post_hoc)
+}
+
+/// The nine verdict glyphs classified through **both** substrates: `(live, post-hoc)`, test 1..=9 in order.
+///
+/// ## Which frame the live reading is of, and what that costs
+///
+/// [`VdpIdle`] stops the run *mid-frame* (at the first instruction boundary after the quiet window), so
+/// there is no live picture of "the stop point" to read — a per-scanline capture only has whole frames.
+/// The decision is therefore: **the last frame the run completed before the stop**, which
+/// `Retain::LastFrame` latches at the frame boundary. Measured for this ROM: the stop fires at frame 15,
+/// the captured frame is index 14, and the ROM's last VDP access of any kind is in frame 7.
+///
+/// The cost is that the old convention no longer holds. The 2026-08-14 idle-stop conversion could say
+/// "`block_hash` re-renders from live VDP state, so stopping mid-frame is irrelevant to it" — true of a
+/// post-hoc re-render, false of a capture. Three guards replace that sentence, and all three are loud:
+///
+/// * the capture must hold **exactly** one complete frame of active lines (a torn or short capture is a
+///   real failure mode — an early draft of `scanline_goldens.rs` hashed a fragment and got four confident
+///   garbage hashes);
+/// * the run must have completed at least one frame at all;
+/// * the captured frame must be **strictly later than the last frame in which the ROM touched the VDP**,
+///   so the picture scraped is one the ROM had already finished drawing. If this ROM ever starts writing
+///   later than the quiet window allows, that fires instead of the scrape quietly reading a stale frame.
+///
+/// Attaching the capture does not change the machine: `wants_scanlines` moves the run loop from
+/// `Vdp::advance_scanline` to `Vdp::render_scanline`, which `render.rs`'s
+/// `the_cheap_scanline_advance_leaves_the_same_machine` pins to be `PartialEq`-identical in every `Vdp`
+/// field. Measured here as well: with and without the capture attached the run stops at the same record
+/// (frame 15, pc `$316`, mclk 13,440,630) and the post-hoc frame hash is byte-identical.
+fn sprite_masking_glyphs(sys: &mut System) -> (Vec<String>, Vec<String>) {
     // Converted from a frame budget to a stop condition (2026-08-14): "run until the ROM stops drawing,
     // and give up after 300 frames". Measured over the full old budget, every VDP access this ROM makes is
-    // on frames 0-7 and there is not one on frames 8-299, so the screen the glyph hashes read is final by
-    // frame 7 and the stop fires at 15 (7 + QUIET_FRAMES). `block_hash` re-renders from live VDP state, so
-    // stopping mid-frame is irrelevant to it — only the VDP state matters, and that state is settled.
-    let mut idle = VdpIdle::default();
-    let stop = sys.run_frames_with_sink(300, &mut idle);
+    // on frames 0-7 and there is not one on frames 8-299, so the screen is final by frame 7 and the stop
+    // fires at 15 (7 + QUIET_FRAMES).
+    let mut sink = Fanout::new(VdpIdle::default(), ScanlineCapture::new(Retain::LastFrame));
+    let stop = sys.run_frames_with_sink(300, &mut sink);
     assert!(
         stop.fired(),
         "vdp_sprite_masking never went idle within 300 frames (stopped at {stop:?}) — the idle condition no \
          longer describes this ROM, so fail loudly rather than silently falling back to the old budget"
     );
-    // Verdict-glyph classification, pinned from the rendered pixels (see doc).
-    const TICK_TICK: u64 = 0xb498_5631_5ac3_a445;
-    const TICK_CROSS: u64 = 0xa126_fa46_503f_8e4d;
-    const PASS: u64 = 0x6609_4bba_88cb_93ed;
-    const FAIL: u64 = 0x1f88_0fb1_901c_cfe5;
+    let Fanout { a: idle, b: cap } = sink;
+    let width = sys.vdp().render_line(0).len();
+    assert_eq!(
+        cap.pixels().len(),
+        width * ACTIVE_LINES as usize,
+        "the live glyph scrape needs exactly one complete frame of active lines ({width}x{ACTIVE_LINES}); \
+         the capture handed back {} pixels, which is a torn or short frame, not a verdict",
+        cap.pixels().len()
+    );
+    let frame = cap.last_frame_index().expect(
+        "the run stopped before completing a single frame, so there is no live picture to classify — the \
+         idle stop must always sit well after the ROM's last frame boundary",
+    );
+    assert!(
+        frame > idle.last_busy_frame,
+        "the captured frame ({frame}) is not strictly later than the last frame in which this ROM touched \
+         the VDP ({}), so the glyphs would be read off a picture the ROM had not finished drawing",
+        idle.last_busy_frame
+    );
 
+    let live = (6u16..15)
+        .map(|row| {
+            glyph_label(block_hash_live(
+                cap.pixels(),
+                width,
+                216,
+                248,
+                row * 8,
+                row * 8 + 8,
+            ))
+        })
+        .collect();
+    let post_hoc = (6u16..15)
+        .map(|row| glyph_label(block_hash(sys, 216, 248, row * 8, row * 8 + 8)))
+        .collect();
+    (live, post_hoc)
+}
+
+/// Render the scorecard row: the live verdicts, then the **complete list** of glyphs the post-hoc path
+/// reads differently. The bracket is never omitted — "the paths agree" is stated positively, so an absent
+/// disagreement can never be confused with an unmeasured one.
+fn sprite_masking_row(live: &[String], post_hoc: &[String]) -> String {
     let mut out = vec!["H32:".to_string()];
-    for (n, row) in (6u16..15).enumerate() {
-        let h = block_hash(sys, 216, 248, row * 8, row * 8 + 8);
-        let label = match h {
-            TICK_TICK => "TICK/TICK".to_string(),
-            TICK_CROSS => "TICK/CROSS".to_string(),
-            PASS => "PASS".to_string(),
-            FAIL => "FAIL".to_string(),
-            other => format!("UNKNOWN-GLYPH(0x{other:016x})"),
-        };
+    for (n, label) in live.iter().enumerate() {
         out.push(format!("{}={label}", n + 1));
     }
+    let diffs: Vec<String> = live
+        .iter()
+        .zip(post_hoc)
+        .enumerate()
+        .filter(|(_, (l, p))| l != p)
+        .map(|(n, (_, p))| format!("{}={p}", n + 1))
+        .collect();
+    out.push(if diffs.is_empty() {
+        "[post-hoc path agrees]".to_string()
+    } else {
+        format!("[post-hoc path differs: {}]", diffs.join(" "))
+    });
     out.join(" ")
 }
 
@@ -815,6 +999,93 @@ fn baseline_covers_every_rom() {
     assert_eq!(
         sorted, ROMS,
         "keep ROMS sorted so the scorecard diff is stable"
+    );
+}
+
+/// **The control arm: render the verdict both ways and require them to agree — and say so when they do
+/// not.** (`POSTHOC-CARRY`, 2026-09-18.)
+///
+/// This is the one line nobody ever ran. For thirteen months every golden in this tree read the *post-hoc*
+/// `Vdp::render_line`; the 2026-08-15 per-scanline survey found that six of seventeen ROMs draw a picture
+/// that re-render cannot reproduce, and for `vdp_sprite_masking` the gap was not a hash but **a recorded
+/// verdict** — `6=FAIL`, indistinguishable in the output from a real emulator defect, because an artefact
+/// and a failure are the same glyph. The scorecard row now carries both readings (see
+/// [`sprite_masking_row`]), so any movement in their relationship is a scorecard diff. This test is what
+/// stops that row from decaying into a string nobody can read:
+///
+/// 1. **The two substrates are still distinguishable here.** If they were not, pinning the live one would
+///    be decoration and the row's bracket would be a tautology. Measured today: exactly one glyph differs.
+/// 2. **The row is oriented live-in-the-body, post-hoc-in-the-bracket.** Built from labels this test
+///    measures itself, not copied from [`BASELINE`], so swapping the two substrates fails here even if
+///    someone re-pinned the row to match.
+/// 3. **Neither reading is `UNKNOWN-GLYPH`.** A rectangle nobody can classify must never be reported as an
+///    agreement — "couldn't measure" is not "the same".
+///
+/// A mutation that re-paths the live classifier back to `render_line` fails assertions 1 and 2; a mutation
+/// that breaks the live carry-seeding in `Vdp::sprite_line` fails 1, 2 and the scorecard row together.
+/// If the **post-hoc** path ever legitimately catches up — a stateful re-render, a carry replayed from
+/// line 0 — assertion 1 is the thing that fires, and that is the correct outcome: it is a real change to
+/// the instrument and must be re-derived and re-pinned with evidence, never quietly absorbed.
+#[test]
+fn the_glyph_scrape_reads_the_live_render_path() {
+    let Some(mut sys) = boot("vdp_sprite_masking") else {
+        eprintln!("SKIP: vdp_sprite_masking not vendored");
+        return;
+    };
+    let (live, post_hoc) = sprite_masking_glyphs(&mut sys);
+    assert_eq!(live.len(), 9, "this ROM has nine verdict glyphs");
+    assert_eq!(post_hoc.len(), live.len());
+
+    // (3) loud on unmeasurable, before anything is compared.
+    for (n, (l, p)) in live.iter().zip(&post_hoc).enumerate() {
+        for (which, label) in [("live", l), ("post-hoc", p)] {
+            assert!(
+                !label.starts_with("UNKNOWN-GLYPH"),
+                "test {} classifies as {label} through the {which} path — the four pinned glyph hashes \
+                 no longer describe what this ROM draws (Limitation L3). Re-derive them from the run and \
+                 re-pin BASELINE; do NOT let an unclassifiable rectangle read as an agreement.",
+                n + 1
+            );
+        }
+    }
+
+    // (1) non-vacuity: the choice of substrate has to be able to change the answer.
+    let differing: Vec<usize> = (0..live.len())
+        .filter(|&n| live[n] != post_hoc[n])
+        .collect();
+    assert!(
+        !differing.is_empty(),
+        "the live and post-hoc render paths now classify all nine glyphs identically, so this scraper's \
+         choice of substrate no longer carries any information. On 2026-09-18 exactly one differed (test 6, \
+         MASK S1 ON DOT OVERFLOW: live PASS vs post-hoc FAIL, the stale sprite_dot_overflow_carry). Either \
+         the live capture stopped being live — check block_hash_live and the ScanlineCapture wiring — or \
+         the post-hoc path genuinely caught up, which is a real instrument change: re-derive this guard \
+         and the BASELINE row together, with the evidence."
+    );
+
+    // (2) orientation: the row states the LIVE verdicts and reports the post-hoc reading as the exception.
+    let row = sprite_masking_row(&live, &post_hoc);
+    for (n, label) in live.iter().enumerate() {
+        assert!(
+            row.contains(&format!("{}={label}", n + 1)),
+            "the scorecard row does not state test {}'s LIVE verdict ({label}): {row}",
+            n + 1
+        );
+    }
+    let bracket: Vec<String> = differing
+        .iter()
+        .map(|&n| format!("{}={}", n + 1, post_hoc[n]))
+        .collect();
+    assert!(
+        row.ends_with(&format!("[post-hoc path differs: {}]", bracket.join(" "))),
+        "the scorecard row must end by naming every glyph the post-hoc path reads differently ({}): {row}",
+        bracket.join(" ")
+    );
+    eprintln!(
+        "CONTROL ARM the_glyph_scrape_reads_the_live_render_path: OK — 9 glyphs classified through both \
+         substrates, {} differing ({})",
+        differing.len(),
+        bracket.join(" ")
     );
 }
 
