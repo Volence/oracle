@@ -1044,26 +1044,8 @@ fn sprite_masking_half(
             cap.pixels().len()
         )
     });
-    let ragged: Vec<usize> = frame
-        .rows()
-        .map(|r| r.len())
-        .filter(|&w| w != frame.width())
-        .collect();
-    assert!(
-        ragged.is_empty(),
-        "the {} half's captured frame is ragged: {} of its {ACTIVE_LINES} lines are not {}px wide \
-         ({:?}). `CompletedFrame::pixels` would pad or cut those lines and hand back a confident \
-         rectangle anyway, so a frame torn across a mode switch must fail here instead.",
-        want.label(),
-        ragged.len(),
-        frame.width(),
-        {
-            let mut u = ragged.clone();
-            u.sort_unstable();
-            u.dedup();
-            u
-        }
-    );
+    let line_widths: Vec<usize> = frame.rows().map(|r| r.len()).collect();
+    refuse_a_ragged_frame(&line_widths, frame.width(), want.label());
 
     // THE GATE. Nothing below may read a pixel until the mode the picture is in has been established from
     // the picture itself; `sprite_masking_classify` takes the `ProvenScreen` this line either produces or
@@ -1090,6 +1072,44 @@ fn sprite_masking_half(
         live,
         post_hoc,
     }
+}
+
+/// Refuse a captured frame whose lines are not all the frame's own width.
+///
+/// The failure mode this exists for is a frame **torn across a mode switch**: lines drawn before the R12
+/// write are 256px and the rest 320px, and `CompletedFrame::pixels` pads the short ones with black and cuts
+/// the long ones, so such a frame hands back a clean 320x224 rectangle with a black gutter and hashes
+/// confidently. It is the non-vacuous heir of the `pixels().len() == width * ACTIVE_LINES` assert this
+/// parcel retired (that one compared the capture against a width re-queried from the *chip*, which after a
+/// mode switch answers for the next frame).
+///
+/// A free function with its own test (`a_ragged_captured_frame_is_refused`) rather than an inline assert,
+/// and the reason is worth recording: **this ROM cannot produce a torn retained frame**, so the guard is
+/// not red-provable through the run. The tear can only happen in the frame the R12 write lands in, that
+/// write is itself a VDP write, and `VdpIdle` will not stop until 8 frames after the last VDP write — so
+/// the torn frame is always at least nine frames older than the retained one. Structurally unreachable
+/// today, and a guard whose subject is unreachable is exactly the kind that rots into decoration. So the
+/// subject is supplied directly instead.
+fn refuse_a_ragged_frame(line_widths: &[usize], width: usize, mode: &str) {
+    let ragged: Vec<usize> = line_widths
+        .iter()
+        .copied()
+        .filter(|&w| w != width)
+        .collect();
+    assert!(
+        ragged.is_empty(),
+        "the {mode} half's captured frame is ragged: {} of its {} lines are not {width}px wide ({:?}). \
+         `CompletedFrame::pixels` would pad or cut those lines and hand back a confident rectangle anyway, \
+         so a frame torn across a mode switch must fail here instead.",
+        ragged.len(),
+        line_widths.len(),
+        {
+            let mut u = ragged.clone();
+            u.sort_unstable();
+            u.dedup();
+            u
+        }
+    );
 }
 
 /// Classify the nine verdict glyphs of one half-run through both substrates: `(live, post-hoc)`, test
@@ -1382,6 +1402,45 @@ fn the_glyph_scrape_reads_the_live_render_path() {
             bracket.join(" ")
         );
     }
+}
+
+/// [`refuse_a_ragged_frame`] must actually refuse, and must accept a uniform frame.
+///
+/// Both halves matter. The accept half is what stops the guard from being tightened into something that
+/// fires on the real run (which would look like a broken ROM, not a broken guard); the refuse half is the
+/// gate, and it is tested here rather than through the run because the run **cannot** produce its subject —
+/// see that function's docs for why the tear is structurally nine frames too old to be retained.
+///
+/// The widths used are the real ones: 256 = H32, 320 = H40, and the ragged case is the shape a frame torn
+/// across the mode switch takes — the lines before the R12 write at the old width, the rest at the new one.
+#[test]
+fn a_ragged_captured_frame_is_refused() {
+    let lines = ACTIVE_LINES as usize;
+
+    // Accept: a whole H32 frame, and a whole H40 frame. These are the two shapes the real run produces,
+    // measured (every line of the H32 capture is 256px, every line of the H40 capture is 320px).
+    refuse_a_ragged_frame(&vec![256; lines], 256, "H32");
+    refuse_a_ragged_frame(&vec![320; lines], 320, "H40");
+
+    // Refuse: torn across the switch at line 87, which is the shape the toggle frame actually has (the R12
+    // write lands mid-frame). `width` is what the frame ENDED on, so the 88 short lines are the ragged ones.
+    let mut torn = vec![256usize; 88];
+    torn.extend(std::iter::repeat_n(320usize, lines - 88));
+    let panicked = std::panic::catch_unwind(|| refuse_a_ragged_frame(&torn, 320, "H40"));
+    let msg = panicked.expect_err(
+        "a frame torn across the mode switch must be refused, not padded into a rectangle",
+    );
+    let msg = msg
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or("<non-string panic>");
+    for want in ["ragged", "88 of its 224 lines", "320px wide", "[256]"] {
+        assert!(
+            msg.contains(want),
+            "the refusal must name what it saw: {want:?} missing from {msg:?}"
+        );
+    }
+    eprintln!("GATE a_ragged_captured_frame_is_refused: OK — uniform 256 and 320 frames accepted, a frame torn at line 88 refused");
 }
 
 /// CI guard: the vendored test ROMs MUST be present under CI, so a fetch failure fails LOUDLY instead of
