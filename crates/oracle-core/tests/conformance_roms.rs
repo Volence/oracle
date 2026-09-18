@@ -38,6 +38,13 @@
 //! there; carrying both readings is what makes the next such divergence announce itself. See
 //! `the_glyph_scrape_reads_the_live_render_path`.
 //!
+//! **And that ROM is scraped in BOTH its screen modes** (2026-09-18, `TESTROM-H40-HALF`). It runs its nine
+//! tests in H32 and again in H40 — different sprite-per-line, dots-per-line and sprites-per-frame limits,
+//! which four of the nine tests are tests *of* — and the harness had only ever measured the power-on half.
+//! The row now carries both, and the mode each half is in is **proved off the captured picture** before a
+//! single glyph is read (`ProvenScreen`): a toggle that silently failed would otherwise re-scrape the H32
+//! screen and print nine perfectly plausible H40 verdicts.
+//!
 //! If the vendored ROM is missing, that ROM skips cleanly (run `tools/fetch-testroms.sh`).
 
 use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Fanout};
@@ -323,8 +330,38 @@ const BASELINE: &[(&str, &str)] = &[
         // purpose. 2026-09-16 (SPRITE-MID-CUT, ledger row P1) flipped test 3 `TICK/CROSS` → `TICK/TICK` when
         // the per-line pixel budget began cutting inside the straddling sprite; that glyph hash matched the
         // already-pinned `TICK_TICK`, so blocker (a) was never put to the test then. It is now.
+        // ## The H40 half (2026-09-18, `TESTROM-H40-HALF`)
+        //
+        // This ROM runs its nine tests in TWO screen modes, and until today the harness measured the
+        // power-on one. The row now carries both halves of one boot, separated by ` | `: H32 to idle, the
+        // mode toggle, H40 to idle. One row rather than two BASELINE entries, deliberately —
+        // `baseline_covers_every_rom` asserts a ROM/row bijection, and a regression in EITHER mode is a
+        // diff on this single line either way, so the second entry would buy nothing and cost the guard.
+        //
+        // What the H40 half adds that the H32 half could not: the two modes have different sprite limits
+        // (per line 20 vs 16, per line in dots 320 vs 256, per frame 80 vs 64), and tests 1, 2, 3 and 9
+        // are tests OF those limits. Nine verdicts that had never been read now are.
+        //
+        // The H40 verdicts come out identical to the H32 ones, including the `6=` live/post-hoc split —
+        // the stale-carry artefact reproduces in H40 for the same reason it does in H32 — so the bracket
+        // is carried per half and the control arm requires the divergence in both.
+        //
+        // Every coordinate in the H40 segment was derived in H40, not scaled from H32 (see
+        // `Screen::glyph_x`): the verdict rectangle is x 216..248 in both modes because the ROM writes
+        // the verdict cells at plane columns 27-30 regardless of mode rather than right-aligning them, so
+        // in H40 they sit nine cells in from the right edge. Confirmed off the H40 framebuffer: all nine
+        // glyphs' lit pixels fall in x 216..=246, and x 248..319 is blank on all nine rows. The mode
+        // LABEL is likewise measured — it is `ProvenScreen`'s, taken from the width the captured frame
+        // ended on, not a string literal; the old row's `"H32:"` was a literal that could not be wrong.
+        //
+        // The toggle is `C`, which is the button the ROM's own code reads even though its text names
+        // `Start`. Q1 is closed by that finding, not worked around: the ROM never writes `$A10009`
+        // anywhere in its image, so TH is never driven low and bit 5 of `$A10003` is `C`. Full evidence
+        // in `docs/2026-09-18-h40-half.md`; nothing under `crates/oracle-core/src/` was touched.
         "vdp_sprite_masking",
         "H32: 1=TICK/TICK 2=TICK/TICK 3=TICK/TICK 4=PASS 5=PASS 6=PASS 7=PASS 8=PASS 9=TICK/TICK \
+         [post-hoc path differs: 6=FAIL] | \
+         H40: 1=TICK/TICK 2=TICK/TICK 3=TICK/TICK 4=PASS 5=PASS 6=PASS 7=PASS 8=PASS 9=TICK/TICK \
          [post-hoc path differs: 6=FAIL]",
     ),
     (
@@ -748,9 +785,20 @@ fn scrape_m68k_illegal(sys: &mut System) -> String {
 /// sub-case). The tick and cross share identical nametable cells, so the glyphs are classified by hashing
 /// the rendered pixels — the framebuffer is the only channel that distinguishes them.
 ///
-/// Runs in H32. The ROM's on-screen text says `Start` toggles H40/H32; in this core it is `C` that
-/// toggles — an OPEN QUESTION recorded in `docs/2026-07-25-testrom-conformance.md`, deliberately NOT
-/// "fixed" here.
+/// **Run in BOTH of the ROM's screen modes** (2026-09-18, `TESTROM-H40-HALF`). This ROM boots in H32 and
+/// re-runs all nine tests in H40 when the mode is toggled; for its first thirteen months here the harness
+/// measured the power-on half only, so half of what the ROM tests — the H40 per-line sprite limit (20, not
+/// 16) and dot limit (320, not 256) — was never scraped at all. The scrape is now two halves of one boot:
+/// H32 to idle, the toggle, H40 to idle, each half [`ProvenScreen`]-gated and each contributing its own
+/// segment to the row.
+///
+/// The toggle is driven by `C`, not the `Start` the ROM's own on-screen text names. That was open question
+/// Q1 and it is now **answered**: the ROM's wait routine at `$0002FA` writes `#$00` to the *Data* register
+/// `$A10003` and then spins on `btst #5,$A10003`, and the string `$A10009` — the P1 *Control* (direction)
+/// register — does not occur anywhere in the ROM's 256 KB image. TH is therefore never configured as an
+/// output, never driven low, and floats high on the port pull-up (recon IO3), where bit 5 is `C`. It is a
+/// bug in the ROM, not in this core; `vdp_port_access`, which does write `$A10009`, is advanced by `Start`
+/// through this same harness. See `docs/2026-09-18-h40-half.md`.
 ///
 /// ## The pixels come from the LIVE render path, and the post-hoc one is kept as the control
 ///
@@ -778,11 +826,157 @@ fn scrape_m68k_illegal(sys: &mut System) -> String {
 /// the non-vacuity half: it proves the two substrates are still distinguishable here, so the choice between
 /// them is load-bearing rather than decorative.
 fn scrape_vdp_sprite_masking(sys: &mut System) -> String {
-    let (live, post_hoc) = sprite_masking_glyphs(sys);
-    sprite_masking_row(&live, &post_hoc)
+    sprite_masking_halves(sys)
+        .iter()
+        .map(|h| sprite_masking_row(h))
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
-/// The nine verdict glyphs classified through **both** substrates: `(live, post-hoc)`, test 1..=9 in order.
+/// One of the ROM's two screen modes, named by its **display width in pixels** — the one property of the
+/// mode that the picture itself carries, so it can be measured rather than believed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Screen {
+    H32,
+    H40,
+}
+
+impl Screen {
+    /// The active display width. H32 = 32 cells x 8px, H40 = 40 cells x 8px.
+    const fn width(self) -> usize {
+        match self {
+            Screen::H32 => 256,
+            Screen::H40 => 320,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Screen::H32 => "H32",
+            Screen::H40 => "H40",
+        }
+    }
+
+    /// The x-range of the 32x8 verdict rectangle **in this mode**, half-open.
+    ///
+    /// Both entries are derived from that mode's own picture, independently — H40 is **not** the H32
+    /// number scaled, copied, or assumed, and it is worth saying explicitly that it comes out equal:
+    ///
+    /// * **H32** (the original, 2026-07-25): nametable row 6 carries exactly four non-zero cells past the
+    ///   test's name text, at plane columns 27, 28, 29, 30 (`$010E $010F $010C $010D`); 27 x 8 = 216 and
+    ///   31 x 8 = 248.
+    /// * **H40** (2026-09-18): the same recon repeated on the H40 screen. The nametable's verdict cells
+    ///   are at plane columns **27, 28, 29, 30 again** — the ROM does not right-align the verdicts, so in
+    ///   a 40-column screen they sit 9 cells in from the right edge rather than at it. Corroborated off
+    ///   the framebuffer, which is the reading that does not depend on a scroll assumption: in the H40
+    ///   capture every lit pixel of every one of the nine verdict glyphs falls in x 216..=246, with the
+    ///   72 pixels from 248 to 319 blank on all nine rows.
+    const fn glyph_x(self) -> (usize, usize) {
+        match self {
+            Screen::H32 => (216, 248),
+            Screen::H40 => (216, 248),
+        }
+    }
+}
+
+/// A [`Screen`] that has been **measured off the picture the run actually produced**, and the only ticket
+/// into the glyph scrape.
+///
+/// ## Why this is a type and not an assert
+///
+/// The failure this whole H40 half exists to avoid is silent: if the toggle does not take, the second half
+/// re-scrapes the *first* half's screen, every one of the nine glyphs classifies, and the row reads
+/// `H40: 1=TICK/TICK …` — nine plausible verdicts for a mode the run never entered. An `assert!` next to
+/// the scrape would catch that today and stop catching it the first time someone reorders the function.
+///
+/// So the proof *gates* the scrape structurally: [`establish`](Self::establish) is the only constructor,
+/// it refuses loudly, and [`sprite_masking_classify`] cannot be called without the value it returns. An
+/// unproven mode is not a thing this file can represent. That is the same shape as the
+/// `[post-hoc path …]` bracket — agreement stated positively, so an absent disagreement can never read as
+/// an unmeasured one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ProvenScreen(Screen);
+
+impl ProvenScreen {
+    /// The only way to make one. `want` is the mode the caller set the machine up for, `measured` is the
+    /// width the **captured frame ended on** (`CompletedFrame::width`, never a post-hoc re-query of the
+    /// chip — after a mode switch the chip answers for the *next* frame), and `must_differ_from` is the
+    /// mode the previous half of the run proved, if any.
+    ///
+    /// Both checks are load-bearing and neither implies the other:
+    ///
+    /// * `measured == want.width()` catches a toggle that did not take, a toggle that took in the wrong
+    ///   direction, and a capture read at the wrong width.
+    /// * `measured != previous` catches the case where `want` itself was wrong — if a future edit set both
+    ///   halves up for the same mode, the first check would pass twice and the row would carry two
+    ///   readings of one screen under two labels.
+    fn establish(want: Screen, measured: usize, must_differ_from: Option<ProvenScreen>) -> Self {
+        assert_eq!(
+            measured,
+            want.width(),
+            "the captured frame is {measured}px wide, but this half of the run was set up for {} \
+             ({}px). The mode toggle did not take, so every glyph below would be read off the OTHER \
+             mode's screen and would classify perfectly — nine plausible verdicts for a screen the run \
+             never entered. Check the `C` press in `sprite_masking_halves` (and note the ROM's on-screen \
+             text names the wrong button — see the Q1 answer in docs/2026-09-18-h40-half.md).",
+            want.label(),
+            want.width()
+        );
+        if let Some(prev) = must_differ_from {
+            assert_ne!(
+                prev.0,
+                want,
+                "both halves of this run were set up for {} — the scorecard would carry two readings of \
+                 one screen under two labels",
+                want.label()
+            );
+        }
+        Self(want)
+    }
+
+    const fn screen(self) -> Screen {
+        self.0
+    }
+}
+
+/// One half of the run: the mode it was **proved** to be in, and the nine verdict glyphs read through both
+/// substrates.
+struct SpriteMaskingHalf {
+    screen: ProvenScreen,
+    live: Vec<String>,
+    post_hoc: Vec<String>,
+}
+
+/// Both halves of this ROM's run, in order: H32 (power-on) then H40 (after the toggle).
+///
+/// The H32 half is byte-for-byte the run it always was — same boot, same seed, same sink, same stop — so
+/// the H32 segment of the row is unmoved by adding the H40 one. The toggle and the second run happen
+/// strictly after the H32 half's post-hoc reading has been taken, because that reading is of
+/// `sys`'s *current* VDP state and the toggle changes it.
+///
+/// **The press.** `C`, held for two frames on port 1 and then released. Measured: at the H32 idle stop the
+/// ROM is parked at pc `$316`, the "wait for bit 5 to go low" half of its wait routine, so it sees the
+/// press on the first frame of it; the toggle is edge-shaped, not level-shaped (holding `C` for ten frames
+/// toggles once, not ten times), and the release matters because the routine's *other* half waits for bit
+/// 5 to come back high before it will accept anything again. Two frames rather than one is slack, not a
+/// tuned constant: the assert in [`ProvenScreen::establish`] is what says whether it worked.
+fn sprite_masking_halves(sys: &mut System) -> [SpriteMaskingHalf; 2] {
+    let h32 = sprite_masking_half(sys, Screen::H32, None);
+    sys.set_pad(
+        oracle_core::io::PadPort::P1,
+        Pad {
+            c: true,
+            ..Default::default()
+        },
+    );
+    sys.run_frames(2);
+    sys.set_pad(oracle_core::io::PadPort::P1, Pad::default());
+    let h40 = sprite_masking_half(sys, Screen::H40, Some(h32.screen));
+    [h32, h40]
+}
+
+/// Run the ROM until it stops drawing, prove the mode off the captured picture, then classify the nine
+/// verdict glyphs through **both** substrates: `(live, post-hoc)`, test 1..=9 in order.
 ///
 /// ## Which frame the live reading is of, and what that costs
 ///
@@ -794,11 +988,22 @@ fn scrape_vdp_sprite_masking(sys: &mut System) -> String {
 ///
 /// The cost is that the old convention no longer holds. The 2026-08-14 idle-stop conversion could say
 /// "`block_hash` re-renders from live VDP state, so stopping mid-frame is irrelevant to it" — true of a
-/// post-hoc re-render, false of a capture. Three guards replace that sentence, and all three are loud:
+/// post-hoc re-render, false of a capture. Four guards replace that sentence, and all four are loud:
 ///
 /// * the capture must hold **exactly** one complete frame of active lines (a torn or short capture is a
 ///   real failure mode — an early draft of `scanline_goldens.rs` hashed a fragment and got four confident
-///   garbage hashes);
+///   garbage hashes). `CompletedFrame` is what enforces this now, and it is stricter than the
+///   `pixels().len() == width * ACTIVE_LINES` assert it replaces: that assert compared the capture's
+///   length against a width re-queried from the chip, which after a mode switch is the *next* frame's
+///   width, so in the H40 half it would have compared 224 lines of 320px against 224 x 320 and agreed
+///   for a reason unrelated to the picture. `completed_frame` refuses a log shorter than a frame and
+///   refuses a tail whose per-line widths do not sum to the pixels held;
+/// * **no line of the captured frame is a different width from the frame itself.** This is the
+///   non-vacuous heir of the old length assert and the one that can see a tear *across* a mode switch:
+///   `CompletedFrame::pixels` pads a short line with black and cuts a long one, so a frame half-drawn in
+///   H32 and half in H40 reads as a clean 320-wide picture with a black left-hand gutter, and hashes
+///   confidently. Measured today: every line of the H32 capture is 256px and every line of the H40
+///   capture is 320px;
 /// * the run must have completed at least one frame at all;
 /// * the captured frame must be **strictly later than the last frame in which the ROM touched the VDP**,
 ///   so the picture scraped is one the ROM had already finished drawing. If this ROM ever starts writing
@@ -809,61 +1014,116 @@ fn scrape_vdp_sprite_masking(sys: &mut System) -> String {
 /// `the_cheap_scanline_advance_leaves_the_same_machine` pins to be `PartialEq`-identical in every `Vdp`
 /// field. Measured here as well: with and without the capture attached the run stops at the same record
 /// (frame 15, pc `$316`, mclk 13,440,630) and the post-hoc frame hash is byte-identical.
-fn sprite_masking_glyphs(sys: &mut System) -> (Vec<String>, Vec<String>) {
+fn sprite_masking_half(
+    sys: &mut System,
+    want: Screen,
+    previous: Option<ProvenScreen>,
+) -> SpriteMaskingHalf {
     // Converted from a frame budget to a stop condition (2026-08-14): "run until the ROM stops drawing,
     // and give up after 300 frames". Measured over the full old budget, every VDP access this ROM makes is
     // on frames 0-7 and there is not one on frames 8-299, so the screen is final by frame 7 and the stop
-    // fires at 15 (7 + QUIET_FRAMES).
+    // fires at 15 (7 + QUIET_FRAMES). Measured again for the H40 half (2026-09-18): the press lands in
+    // frame 15, the ROM redraws over frames 15-22, and the stop fires at frame 30 on the captured frame 29.
     let mut sink = Fanout::new(VdpIdle::default(), ScanlineCapture::new(Retain::LastFrame));
     let stop = sys.run_frames_with_sink(300, &mut sink);
     assert!(
         stop.fired(),
-        "vdp_sprite_masking never went idle within 300 frames (stopped at {stop:?}) — the idle condition no \
-         longer describes this ROM, so fail loudly rather than silently falling back to the old budget"
+        "vdp_sprite_masking never went idle within 300 frames in its {} half (stopped at {stop:?}) — the \
+         idle condition no longer describes this ROM, so fail loudly rather than silently falling back to \
+         the old budget",
+        want.label()
     );
     let Fanout { a: idle, b: cap } = sink;
-    let width = sys.vdp().render_line(0).len();
-    assert_eq!(
-        cap.pixels().len(),
-        width * ACTIVE_LINES as usize,
-        "the live glyph scrape needs exactly one complete frame of active lines ({width}x{ACTIVE_LINES}); \
-         the capture handed back {} pixels, which is a torn or short frame, not a verdict",
-        cap.pixels().len()
+    let frame = cap.completed_frame(ACTIVE_LINES as usize).unwrap_or_else(|| {
+        panic!(
+            "the {} half completed no whole frame of {ACTIVE_LINES} active lines, so there is no live \
+             picture to classify — the capture logged {} lines holding {} pixels. The idle stop must \
+             always sit well after a frame boundary.",
+            want.label(),
+            cap.lines().len(),
+            cap.pixels().len()
+        )
+    });
+    let ragged: Vec<usize> = frame
+        .rows()
+        .map(|r| r.len())
+        .filter(|&w| w != frame.width())
+        .collect();
+    assert!(
+        ragged.is_empty(),
+        "the {} half's captured frame is ragged: {} of its {ACTIVE_LINES} lines are not {}px wide \
+         ({:?}). `CompletedFrame::pixels` would pad or cut those lines and hand back a confident \
+         rectangle anyway, so a frame torn across a mode switch must fail here instead.",
+        want.label(),
+        ragged.len(),
+        frame.width(),
+        {
+            let mut u = ragged.clone();
+            u.sort_unstable();
+            u.dedup();
+            u
+        }
     );
-    let frame = cap.last_frame_index().expect(
+
+    // THE GATE. Nothing below may read a pixel until the mode the picture is in has been established from
+    // the picture itself; `sprite_masking_classify` takes the `ProvenScreen` this line either produces or
+    // panics trying, so there is no path to a glyph that skips it.
+    let screen = ProvenScreen::establish(want, frame.width(), previous);
+
+    let index = cap.last_frame_index().expect(
         "the run stopped before completing a single frame, so there is no live picture to classify — the \
          idle stop must always sit well after the ROM's last frame boundary",
     );
     assert!(
-        frame > idle.last_busy_frame,
-        "the captured frame ({frame}) is not strictly later than the last frame in which this ROM touched \
-         the VDP ({}), so the glyphs would be read off a picture the ROM had not finished drawing",
+        index > idle.last_busy_frame,
+        "the {} half's captured frame ({index}) is not strictly later than the last frame in which this \
+         ROM touched the VDP ({}), so the glyphs would be read off a picture the ROM had not finished \
+         drawing",
+        want.label(),
         idle.last_busy_frame
     );
 
+    let px: Vec<(u8, u8, u8)> = frame.pixels().collect();
+    let (live, post_hoc) = sprite_masking_classify(screen, &px, sys);
+    SpriteMaskingHalf {
+        screen,
+        live,
+        post_hoc,
+    }
+}
+
+/// Classify the nine verdict glyphs of one half-run through both substrates: `(live, post-hoc)`, test
+/// 1..=9 in order. Takes a [`ProvenScreen`] rather than a width because the mode has to have been
+/// established from the machine before any of these pixels means anything — see that type's docs.
+fn sprite_masking_classify(
+    screen: ProvenScreen,
+    px: &[(u8, u8, u8)],
+    sys: &System,
+) -> (Vec<String>, Vec<String>) {
+    let (x0, x1) = screen.screen().glyph_x();
+    let width = screen.screen().width();
+    // Cell rows 6..=14, one per test, 8 lines each. Derived in both modes from the picture: the nine
+    // verdict glyphs occupy exactly lines 48..=119 and every one of them is 8-line-aligned at 48 + 8k.
     let live = (6u16..15)
-        .map(|row| {
-            glyph_label(block_hash_live(
-                cap.pixels(),
-                width,
-                216,
-                248,
-                row * 8,
-                row * 8 + 8,
-            ))
-        })
+        .map(|row| glyph_label(block_hash_live(px, width, x0, x1, row * 8, row * 8 + 8)))
         .collect();
     let post_hoc = (6u16..15)
-        .map(|row| glyph_label(block_hash(sys, 216, 248, row * 8, row * 8 + 8)))
+        .map(|row| glyph_label(block_hash(sys, x0, x1, row * 8, row * 8 + 8)))
         .collect();
     (live, post_hoc)
 }
 
-/// Render the scorecard row: the live verdicts, then the **complete list** of glyphs the post-hoc path
-/// reads differently. The bracket is never omitted — "the paths agree" is stated positively, so an absent
-/// disagreement can never be confused with an unmeasured one.
-fn sprite_masking_row(live: &[String], post_hoc: &[String]) -> String {
-    let mut out = vec!["H32:".to_string()];
+/// Render one half's segment of the scorecard row: the **proved** mode label, the live verdicts, then the
+/// **complete list** of glyphs the post-hoc path reads differently. The bracket is never omitted — "the
+/// paths agree" is stated positively, so an absent disagreement can never be confused with an unmeasured
+/// one — and the label comes from a [`ProvenScreen`], so neither can an unmeasured mode.
+fn sprite_masking_row(half: &SpriteMaskingHalf) -> String {
+    let SpriteMaskingHalf {
+        screen,
+        live,
+        post_hoc,
+    } = half;
+    let mut out = vec![format!("{}:", screen.screen().label())];
     for (n, label) in live.iter().enumerate() {
         out.push(format!("{}={label}", n + 1));
     }
@@ -1032,61 +1292,96 @@ fn the_glyph_scrape_reads_the_live_render_path() {
         eprintln!("SKIP: vdp_sprite_masking not vendored");
         return;
     };
-    let (live, post_hoc) = sprite_masking_glyphs(&mut sys);
-    assert_eq!(live.len(), 9, "this ROM has nine verdict glyphs");
-    assert_eq!(post_hoc.len(), live.len());
+    let halves = sprite_masking_halves(&mut sys);
 
-    // (3) loud on unmeasurable, before anything is compared.
-    for (n, (l, p)) in live.iter().zip(&post_hoc).enumerate() {
-        for (which, label) in [("live", l), ("post-hoc", p)] {
+    // (0) The two halves are two DIFFERENT screens. Without this the three checks below could all hold
+    // twice over one mode — which is exactly what a toggle that silently failed would look like.
+    // `ProvenScreen::establish` already refuses that inside the run; this restates it where the test's own
+    // premise ("both of the ROM's modes are measured") is stated, so the premise cannot rot separately.
+    assert_eq!(
+        halves.len(),
+        2,
+        "this ROM runs its nine tests in two screen modes"
+    );
+    assert_ne!(
+        halves[0].screen, halves[1].screen,
+        "both halves proved the same screen mode, so only one of the ROM's two modes is measured"
+    );
+    assert_eq!(halves[0].screen.screen(), Screen::H32, "power-on is H32");
+    assert_eq!(
+        halves[1].screen.screen(),
+        Screen::H40,
+        "the toggle gives H40"
+    );
+
+    for half in &halves {
+        let mode = half.screen.screen().label();
+        let SpriteMaskingHalf { live, post_hoc, .. } = half;
+        assert_eq!(live.len(), 9, "this ROM has nine verdict glyphs");
+        assert_eq!(post_hoc.len(), live.len());
+
+        // (3) loud on unmeasurable, before anything is compared.
+        for (n, (l, p)) in live.iter().zip(post_hoc).enumerate() {
+            for (which, label) in [("live", l), ("post-hoc", p)] {
+                assert!(
+                    !label.starts_with("UNKNOWN-GLYPH"),
+                    "{mode} test {} classifies as {label} through the {which} path — the four pinned \
+                     glyph hashes no longer describe what this ROM draws (Limitation L3). Re-derive them \
+                     from the run and re-pin BASELINE; do NOT let an unclassifiable rectangle read as an \
+                     agreement.",
+                    n + 1
+                );
+            }
+        }
+
+        // (1) non-vacuity: the choice of substrate has to be able to change the answer. Required in BOTH
+        // modes — the H40 half is a second, independent instance of the same divergence, so a fix that
+        // quietly repaired one mode's carry seeding and not the other's would fire here.
+        let differing: Vec<usize> = (0..live.len())
+            .filter(|&n| live[n] != post_hoc[n])
+            .collect();
+        assert!(
+            !differing.is_empty(),
+            "in {mode} the live and post-hoc render paths now classify all nine glyphs identically, so \
+             this scraper's choice of substrate no longer carries any information. On 2026-09-18 exactly \
+             one differed IN EACH MODE (test 6, MASK S1 ON DOT OVERFLOW: live PASS vs post-hoc FAIL, the \
+             stale sprite_dot_overflow_carry). Either the live capture stopped being live — check \
+             block_hash_live and the ScanlineCapture wiring — or the post-hoc path genuinely caught up, \
+             which is a real instrument change: re-derive this guard and the BASELINE row together, with \
+             the evidence."
+        );
+
+        // (2) orientation: the segment states the LIVE verdicts and reports the post-hoc reading as the
+        // exception, under the mode label the machine proved.
+        let row = sprite_masking_row(half);
+        assert!(
+            row.starts_with(&format!("{mode}: ")),
+            "the segment must be labelled with the mode its pixels were measured in: {row}"
+        );
+        for (n, label) in live.iter().enumerate() {
             assert!(
-                !label.starts_with("UNKNOWN-GLYPH"),
-                "test {} classifies as {label} through the {which} path — the four pinned glyph hashes \
-                 no longer describe what this ROM draws (Limitation L3). Re-derive them from the run and \
-                 re-pin BASELINE; do NOT let an unclassifiable rectangle read as an agreement.",
+                row.contains(&format!("{}={label}", n + 1)),
+                "the {mode} segment does not state test {}'s LIVE verdict ({label}): {row}",
                 n + 1
             );
         }
-    }
-
-    // (1) non-vacuity: the choice of substrate has to be able to change the answer.
-    let differing: Vec<usize> = (0..live.len())
-        .filter(|&n| live[n] != post_hoc[n])
-        .collect();
-    assert!(
-        !differing.is_empty(),
-        "the live and post-hoc render paths now classify all nine glyphs identically, so this scraper's \
-         choice of substrate no longer carries any information. On 2026-09-18 exactly one differed (test 6, \
-         MASK S1 ON DOT OVERFLOW: live PASS vs post-hoc FAIL, the stale sprite_dot_overflow_carry). Either \
-         the live capture stopped being live — check block_hash_live and the ScanlineCapture wiring — or \
-         the post-hoc path genuinely caught up, which is a real instrument change: re-derive this guard \
-         and the BASELINE row together, with the evidence."
-    );
-
-    // (2) orientation: the row states the LIVE verdicts and reports the post-hoc reading as the exception.
-    let row = sprite_masking_row(&live, &post_hoc);
-    for (n, label) in live.iter().enumerate() {
+        let bracket: Vec<String> = differing
+            .iter()
+            .map(|&n| format!("{}={}", n + 1, post_hoc[n]))
+            .collect();
         assert!(
-            row.contains(&format!("{}={label}", n + 1)),
-            "the scorecard row does not state test {}'s LIVE verdict ({label}): {row}",
-            n + 1
+            row.ends_with(&format!("[post-hoc path differs: {}]", bracket.join(" "))),
+            "the {mode} segment must end by naming every glyph the post-hoc path reads differently ({}): \
+             {row}",
+            bracket.join(" ")
+        );
+        eprintln!(
+            "CONTROL ARM the_glyph_scrape_reads_the_live_render_path [{mode}]: OK — 9 glyphs classified \
+             through both substrates, {} differing ({})",
+            differing.len(),
+            bracket.join(" ")
         );
     }
-    let bracket: Vec<String> = differing
-        .iter()
-        .map(|&n| format!("{}={}", n + 1, post_hoc[n]))
-        .collect();
-    assert!(
-        row.ends_with(&format!("[post-hoc path differs: {}]", bracket.join(" "))),
-        "the scorecard row must end by naming every glyph the post-hoc path reads differently ({}): {row}",
-        bracket.join(" ")
-    );
-    eprintln!(
-        "CONTROL ARM the_glyph_scrape_reads_the_live_render_path: OK — 9 glyphs classified through both \
-         substrates, {} differing ({})",
-        differing.len(),
-        bracket.join(" ")
-    );
 }
 
 /// CI guard: the vendored test ROMs MUST be present under CI, so a fetch failure fails LOUDLY instead of
