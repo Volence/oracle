@@ -1,6 +1,12 @@
 {
-  "focus": "Fresh session, nothing running. Weighing which of three open jobs to take next.",
-  "inFlight": [],
+  "focus": "On your word: back to making the test ROMs pass. The last failing one is our own reader, not the emulator.",
+  "inFlight": [
+    {
+      "what": "Fixing the scorecard reader that reports a sprite test as failing when the machine actually passes it",
+      "where": "branch parcel/posthoc-carry",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,8 +19,32 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything pushed.",
+  "nextBoundary": "When the parcel lands and the scorecard is re-measured on the merged tree.",
   "queue": [
+    {
+      "id": "POSTHOC-CARRY",
+      "state": "doing",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Of the six test ROMs that print a verdict, one line still reads FAIL. It is our scorecard reading a stale copy of the screen: the machine passes. Fixing the reader, plus a guard so the two cannot disagree in silence."
+    },
+    {
+      "id": "TESTROM-H40-HALF",
+      "state": "next",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "The sprite test ROM has a second half in the wider screen mode, and we have never run it: its on-screen instruction says press Start, but only C switches it for us. Nine tests currently unmeasured."
+    },
+    {
+      "id": "TESTROM-UNSCRAPED-PAIR",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Two ROMs print their results in a font we cannot read, so we only pin their picture, not their verdict. Until they are read, 'all the tests pass' is not something we can honestly say."
+    },
     {
       "id": "PANEL-CLIP-MARK",
       "state": "open",
@@ -57,7 +87,7 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "next",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -96,7 +126,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "your go on what to start. Card d-54 when you have a moment: should long panel lines wrap, or the panes be wider?",
-  "atBoundary": true,
-  "updatedAt": "2026-09-18T18:02:47Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-18T19:31:46Z"
 }
