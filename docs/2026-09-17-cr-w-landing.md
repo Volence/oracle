@@ -241,3 +241,235 @@ No seat can open the window. These are the checks only he can make, each with a 
 - The vector file's case 1 is that cut `aether` line, captured over the socket, so the reply beside his screen already exists in `docs/proposed/2026-09-17-cr-w-panel-screen-text-vectors.json`.
 - P5 showed that no real body in the swept arrangements carries a multi-line label W4 checks, so the LF-restore path is proven by the unit row alone.
 - P10 showed that W3 cannot see a grouping error by design, so row grouping is proven by the unit row alone.
+
+## 8. Addendum: `F-PANEL-TEXT-CUT-UNMARKED`, the half the harvest found and this repo owns
+
+**Branch** `parcel/elision-mark`, base `6088078`, tip `2a70a18`. Commits `a13562c` (the treatment and the cut
+gate), `8c43405` (the hover gate), `e909e35` (two defects those gates found in the treatment itself),
+`2a70a18` (a floor on the sweep's arrangement list). **Nothing here was run against an emulator process or
+a window**: every figure is `cargo test` in-process over the fixture ROM, and whether the glass reads the
+way the harvest says it does is the owner's, listed as look calls 5-9 below, continuing §7's numbering.
+
+The hub ruled this half oracle's on §11.29's own standard: serving `rendered` is justified because a
+source-only report is *"structurally blind to the whole defect class, reporting text that is not on screen
+as though it were"*. A run clipped with no mark is that defect aimed at the person at the window. **The
+layout half — pane widths, which panes the dock opens with, whether a line should wrap instead of cut — is
+not this parcel's and nothing here changes it.**
+
+### 8.1 Measured first, and it was not one line
+
+The sweep drives the shipped harvest over **28 arrangements**: the default dock, every-tab, the eleven focus
+layouts, a narrow pane per tab (a fifth of the window beside the Screen tab), and the default and every-tab
+docks again at 1.25 and 2.0 device pixels per point. For every drawn body it walks the galleys that body
+painted and finds each glyph row that put glyphs on the glass **and** ran past its clip's right edge.
+Blank glyphs do not count as overrunning: a trailing space whose advance crosses the edge is not a cut
+sentence.
+
+**Command:** `cargo test -p oracle-player --bin oracle-player -- --nocapture no_drawn_run_is_cut`.
+
+| | runs laid out | rows cut at a pane edge | of those, marked | **unmarked** |
+|---|---|---|---|---|
+| before (the R1 mutation below, which is the base's behaviour) | 2695 | 92 | 1 | **91** |
+| after | 2709 | 69 | 2 | **67** |
+
+**The mechanism, read off each galley rather than guessed.** Of the 91, **40 were laid out at their natural
+width** — `wrap.max_width` infinite. A `Grid` cell and a horizontal row both default to
+`TextWrapMode::Extend`, so egui was never told a width, never tried to fit, and the pane's clip did the
+cutting. The other **51 had a finite box that already lay past the clip**: the body's content is wider than
+its pane and scrolls horizontally, so no truncation width would have brought the text back inside.
+
+The reported line is the first kind. At 1600 wide with only Registers and Breakpoints drawn, the Registers
+strip's `aether` fact is a `health_grid` value in a two-column `Grid`, cut 350.81 points past the pane's
+edge at *"...nothing can attach to this window"*, with the parenthesis that changes its meaning off the
+glass.
+
+### 8.2 The treatment
+
+**`ui::fitted_label`**, one function rather than a patch per site. Where the surrounding layout lets text
+extend, it draws `Label::truncate` — so **the toolkit writes the elision mark itself** at the width the
+label really has — and where the layout wraps, it *is* `ui.label`, because wrapping is not truncation and a
+paragraph must not become a one-line stub for having passed through here. This is the treatment
+`table_cell` already gives a cut cell, reused rather than reinvented. Nothing about the layout changes: a
+label that fits is laid out and allocated exactly as before.
+
+Applied at `health_grid` and `fact_grid` (the value column), `section` (the scope and the served-method
+name), `stat` (the headline number and its unit — a number cut with no mark is a *wrong* number, not a
+short one), the Screen strip's armed count, the Objects tab's rings line, the Profiler's lens line, and
+`header_cell`, where it should never fire, which is why it belongs there: if a header ever outgrows its
+column again it now says so instead of running into its neighbour.
+
+**A consequence worth recording.** A `ui.label` in Extend mode allocates its natural width, and allocating
+past the pane expands the body's `max_rect`, which is what every widget below it reads as its available
+width. So the cut `aether` line was also making the paragraph under it wrap at 848 points in a 318-point
+pane. Truncating the extending labels stops that growth, and paragraphs below them wrap to the pane again.
+That cascade is most of the difference between 91 and 67, and not one line of layout was touched to get it.
+
+**The hover is the toolkit's, and adding one was a defect** — see §8.4.
+
+### 8.3 The gate
+
+`panel_attribution::tests::no_drawn_run_is_cut_at_a_pane_edge_without_the_mark`, over the same 28
+arrangements, through the shipped `build_ui` and the production harvest. A cut run must carry the mark, and
+there are exactly **two named exits**, neither of them a count:
+
+1. **the run was laid out at its natural width** — the toolkit was never told a width. That is
+   `fitted_label`'s job and the gate admits no such run except the five control captions in
+   `CONTROLS_LEFT_FOR_THE_OWNER`, listed in §8.5. A new one fails with the instruction to draw it through
+   `fitted_label` or to list it and say why;
+2. **the run's own layout box already lies past the clip's right edge**, asserted per run, so no truncation
+   width would have helped: its container is wider than the pane. Those are the owner's half, held under a
+   **ceiling** of 60 rather than a pin — the owner's half may shrink and the number comes down with it; it
+   may not grow, because growing means a new line was cut where none was.
+
+It also refuses **a run rendered as nothing but the elision mark**, in the arrangements where every pane has
+room (the default dock and the eleven focus layouts at the window's own scale). That rule is not decoration:
+it is the only thing that catches §8.4's second defect, which the cut sweep is structurally blind to.
+
+**Loud when it cannot measure**, because the claim it makes is an absence. It asserts that it drove every
+arrangement *and* that there were at least 28 of them (the first check compares the sweep with the function
+that fed it and cannot notice the list being cut down); that over 2000 runs were laid out; that the toolkit
+elided something somewhere, so a mark is a thing it can see; and that some row really was cut, so a cut is
+a thing it can see.
+
+`the_whole_of_a_truncated_panel_line_is_on_its_hover` is the other half: for every cut line in the
+Registers strip in a fifth-width pane it puts the pointer on a glyph really on the glass, with the tooltip
+delay at zero, and requires the whole text in the tooltip **exactly once**.
+`ui::table_tests::a_cut_cell_carries_its_whole_text_on_one_hover` does the same for a real `table_cell` in
+the headless table harness.
+
+### 8.4 Two defects the gates found in the treatment itself
+
+Both were found by running the gates, not by reading the code, and both are recorded because the second one
+is the argument for the blank-run rule.
+
+**1. The hover was double.** `Label` carries `show_tooltip_when_elided`, true by default
+(`egui-0.36.1/src/widgets/label.rs:285`): a label whose galley it elided already shows the whole, unwrapped
+text on hover. The first form of `fitted_label` measured the natural width itself and attached a second
+`on_hover_text` on top, and the reader got the same sentence **twice, in two stacked tooltips** — measured,
+2 where 1 was owed, by counting the tooltip rather than by predicting it. **`table_cell` has been doing the
+same thing since it was written**, so a cut cell has been showing its text twice. Both now let the
+toolkit's own hover stand, which is also the better one: it is keyed off the galley that was drawn, so it
+cannot disagree with the mark the way a width measured beside it can. One behaviour changed with it and is
+named rather than left to be discovered: `table_cell`'s doc said *"the panel's note wins over the table's"*,
+and what actually happens now is that the note **stacks after** the whole text, so a cut `(unnamed)` gives
+the reader the cell and the reason. That is look call 9.
+
+**2. A grid column that truncates collapses.** `Grid` hands a cell that is not in the **last** column the
+width that column measured on the previous frame. A cell that truncates to what it is given allocates that
+width or less, so the two together are a ratchet that only turns down. Measured, when both columns of the
+fact grids went through `fitted_label`: the label column reached **10 points** and every label in the
+Registers strip — `romPath`, `rom bytes`, `frame (emulated)`, `symbols`, `aether` — drew as a bare `…`. The
+label column is `ui.label` again; only the value column, which is last and whose width is whatever is left
+of the pane, is truncated.
+
+**The cut sweep could not see it**, and that is the general lesson: a run collapsed to `…` fits its clip
+perfectly and is never cut, so a gate watching only the pane edge called a panel with no labels green.
+Hence the blank-run rule, whose red-first (R3) fires on the **default** dock — the ratchet is a feedback
+loop, not a narrow-pane effect.
+
+**W4's note is corrected retroactively.** Its unelided count fell 322 → 270 under the first form of the fix,
+and that was the ratchet, not the treatment; it is 322 again. What stays is the second count W4 grew while
+this was being chased: a label the toolkit truncates is elided, which is exactly the population W4 excludes,
+so W4 now counts the **whole** population a run is drawn from (327) and floors that at 300 as well as
+flooring the unelided share at 300. Without it, a treatment that hollowed W4 out would have read green.
+
+### 8.5 Left for the owner's half
+
+**Command for both lists:** `cargo test -p oracle-player --bin oracle-player -- --nocapture no_drawn_run_is_cut`
+prints every remaining cut, widest first, with its wrap width, its box overflow and the glyphs on the glass.
+
+**(a) Five control captions, 7 rows.** `raster program` (the Effects tab's channel `selectable_label`),
+`place rings…` and `spawn mode…` (buttons), `load` and `◀` (the Screen strip's buttons). Each is a
+button-like widget in a control strip narrower than the strip needs, so **the widget is off the pane, not
+merely its text**: an elision mark inside a control the reader cannot click is not the cure, and the cure —
+letting the strip wrap, or bounding it — is a layout change. They are named in the gate so a new unmarked
+cut cannot hide among them.
+
+**(b) 60 rows whose own layout box lies past the clip** — Objects 17, Memory 17, Pacing 12, Watchpoints 8,
+Breakpoints 4, Spawn 1, Profiler 1. Three shapes, all one cause, a body whose content is wider than its
+pane:
+- **tables wider than their pane**: the Objects tab's `ObjCodeBase+$…` cells, the Watchpoints `range`
+  column and its header, the Memory tab's 16-byte hex rows. Each cell is truncated correctly *inside its
+  column*; the column is off the pane.
+- **paragraphs wrapped to the content width, not the pane**: the Objects rings notes, the Profiler's
+  undivided-totals note, the Watchpoints Z80 notes, the Spawn tab's off-state sentence, the Breakpoints
+  stopped sentence.
+- **right-aligned section lines**: `section`'s served-method name is anchored at the content's right edge,
+  which is past the pane whenever something above it overflowed, so truncation cannot bring it back.
+
+Nothing in (a) or (b) can take the mark without moving something, so this parcel stopped on them rather
+than reaching for a layout change.
+
+### 8.6 Red-first
+
+Every mutation was applied on disk, shown by `git diff` before the run, driven by
+`cargo test -p oracle-player --bin oracle-player -- no_drawn_run_is_cut the_whole_of_a_truncated
+a_cut_cell_carries w4_ w5_ w6_ every_column_holds_its_edge the_hit_logs_columns_are_wide_enough` — a filter
+that includes **the existing rows whose names claim this class** — and restored with
+`git checkout <committed sha> -- <file>` (`e909e35` for R1-R5, `2a70a18` for R6-R7), never `git checkout --`
+on a dirty tree.
+
+| # | Mutation | Red? | Went red |
+|---|---|---|---|
+| R1 | `fitted_label` never truncates: the treatment removed, which is the base's behaviour | red | the cut gate (`91` unmarked, 40 of them at natural width) and the hover gate |
+| R2 | only the reported site reverted (`health_grid`'s value column back to `ui.label`) | red | both, at 76 unmarked — so the gate fails on **one** site, not only on the whole treatment |
+| R3 | the grid-column ratchet reinstated (`fitted_label` on the fact grids' label column) | red | the cut gate's blank-run rule, naming the **default** dock's Registers labels, and W4's floor |
+| R4 | `fitted_label`'s own `on_hover_text` put back | red | the hover gate: 2 tooltips where 1 is owed |
+| R5 | `table_cell`'s own `on_hover_text` put back | red | `a_cut_cell_carries_its_whole_text_on_one_hover` only |
+| R6 | the instrument blinded: no glyph is ever judged to overrun its clip | red | the cut gate's anti-vacuity — *"no row was cut anywhere, so this gate cannot see a cut at all"* |
+| R7 | the arrangement list cut down to the default dock alone | red | the arrangement floor — *"only 5 arrangements are swept"* |
+
+**The existing locks that claim this class stayed GREEN under every mutation**, and that is stated as a
+measurement rather than assumed: `ui::table_tests::every_column_holds_its_edge_on_every_row_and_on_the_header_whatever_the_cells_before_it_measure`
+and `ui::watch_draw_tests::the_hit_logs_columns_are_wide_enough_for_every_row_it_can_draw` both measure
+whether a column is wide enough for the *data*, which neither the pane's clip nor a tooltip can affect;
+W5 and W6 stayed green throughout, because a planted elided run and a planted straddling run are unchanged
+by any of this. Only R3 and R5 reached outside the two new rows, and each reached exactly one row.
+
+**An absence audited.** R4 and R5 exist because the first run of R2 in an earlier form — dropping
+`fitted_label`'s hover — left **everything green**. That is what exposed egui's own
+`show_tooltip_when_elided`, and therefore the duplicate: the hover had no instrument, so the two new hover
+rows were written before the duplicate could be called a finding.
+
+### 8.7 Totals
+
+`CARGO_BUILD_JOBS=4` throughout. Base is the untouched `6088078`; tip is `2a70a18`. Counts are summed from
+each run's `test result:` lines; 91 legs means 91 `Running`/`Doc-tests` headers.
+
+| | `cargo fmt --check` | `cargo clippy --workspace --all-targets -- -D warnings` | `cargo test --workspace` | `cargo test --workspace --release` |
+|---|---|---|---|---|
+| base `6088078` | clean | clean | 91 legs, 3014 passed, 0 failed, 10 ignored | not run at base |
+| **tip `2a70a18`** | clean | clean | 91 legs, **3017 passed, 0 failed, 10 ignored** | 91 legs, **3020 passed, 0 failed, 7 ignored** |
+
+**The debug delta reconciled by name** (sorted `test <name> ... <status>` lines, diffed): **+3, all
+additions, nothing removed or changed status** — `panel_attribution::tests::no_drawn_run_is_cut_at_a_pane_edge_without_the_mark`,
+`panel_attribution::tests::the_whole_of_a_truncated_panel_line_is_on_its_hover`, and
+`ui::table_tests::a_cut_cell_carries_its_whole_text_on_one_hover`. Release is the same +3 over the previous
+tip's 3017/7, and the three rows that run only in release are the same ones as before.
+
+**Cost was not re-measured and does not need to be.** W10 measures the publish, which is untouched. On the
+draw side the final treatment *removes* work rather than adding it: `fitted_label` lays the text out once,
+exactly as `ui.label` did, and the natural-width measurement the first form added went out with the
+duplicate hover in §8.4.
+
+### 8.8 Look calls for the owner (numbering continues §7)
+
+5. **The reported line, now.** At 1600 with only Registers and Breakpoints drawn, the `aether` fact should
+   read *"not serving. No --aether given, so nothing can attach to this window (pass…"* with the mark at the
+   pane's edge, and the whole sentence on hover. Is the mark visible at that size, and is the hover the
+   right way to get the rest?
+6. **The served-method names.** `section`'s right-aligned `emulator/get_profiler_frames` and friends now
+   truncate. In a narrow pane they can cut to very little. Is a cut method name useful, or should the whole
+   line move rather than shorten?
+7. **A fact value in a small pane.** Where the pane leaves almost nothing, a value truncates to `…` alone.
+   The gate allows that only outside the default and focus layouts, on the argument that `…` at least says
+   *"there is text here"* whereas a silently cut number is a wrong number. In the every-tab dock at 2.0 ppp
+   it happens to `0.00`, `ms` and `fps`. Does that read as intended, or does a headline number want the
+   layout treatment instead?
+8. **What is left cut, and whether horizontal scrolling is the answer.** Every body sits in a `ScrollArea`
+   with both bars, so §8.5(b)'s 60 rows are reachable by scrolling sideways. Is that the intended answer for
+   the Memory hex view, the Objects table and the wrapped notes, or should those bodies be bounded to their
+   pane?
+9. **The hover stack on a cut cell with a note.** A cut `(unnamed)` now shows the whole cell text and then
+   the panel's sentence, as two tooltips; `table_cell`'s doc used to say the note wins. Stacked is what the
+   toolkit does and it gives the reader both, but the order and the stacking are a look.
