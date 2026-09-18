@@ -451,3 +451,42 @@ house wrote down and never ran — **render a frame both ways and require them t
 real failure are **identical in the output**, both a `FAIL` glyph, so *name your sources* cannot reach this class:
 only an instrument that fires on purpose can. **Successor, named in the same write: `TESTROM-H40-HALF`** (Q1;
 re-derive before dispatch — it may be an input/TH-protocol defect on our side rather than a harness gap).
+
+## ⚑ HUB RULING, 2026-09-18: `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` — **wholly clipped run = present with an EMPTY `rendered`**
+
+**VERIFIED FIRSTHAND, not taken on the relay:** empyrean **`183b63e2`** is an ancestor of their `origin/main`, dated
+2026-09-18, and `--stat` shows it carries `contract/protocol.md` — **a contract SHA vouching for contract text**, which
+is the class check this repo's 08-24 bar exists for. Aurora's finding, this seat's form, the hub's boundary.
+
+**NORMATIVE.** A run whose glyphs are **entirely clipped away** is **present in `text` with an empty `rendered`**.
+An empty run between the joins is still a run, so row *k* run *j* alignment holds, **`truncated` derives TRUE through
+the existing comparison** — no new field, no schema change, no consumer break. Ruled as **the limit of elision, not an
+exception to it**: a partly cut run already reports its glyphs plus the mark, so omitting a wholly cut one makes total
+loss the one cut a client cannot see.
+
+⚑ **THE DEFINING CLAUSE ITSELF MOVED, and this is the sentence an implementing parcel must read**: `text` is now the
+source of every run **"that the toolkit laid out on a reported row"**, replacing *"with at least one glyph on the
+glass"*. **The old wording is what swallowed the run** — the hub's own diagnosis, against its own text: *the rule was
+written wider than the reason under it* (its parenthetical only ever justified excluding an empty text **shape**).
+Same topology defect the suite spent the day on, in the contract this time.
+
+⚑ **THE BOUNDARY IS THE LOAD-BEARING HALF AND IT IS THE HUB'S, PROPOSED BY NEITHER OF US: it applies to a run on a ROW
+THE SURFACE REPORTS.** Rows scrolled out of view stay in neither string and stay not-truncation (`F-PANEL-SCROLL-UNSTATED`
+unchanged). **Without that sentence the ruling would have silently reopened the scroll question.** Refusing to fold this
+finding into the scroll row was right in one direction; ruling it without the boundary would have failed in the other.
+
+**Aurora's cheaper form (document the trap, no signal) was REFUSED on the record:** *making a trap visible is worth less
+than making the technique work.*
+
+▶ **IMPLEMENTATION WRINKLE, from this seat having read the code — hand it to the parcel, do not let it be discovered
+late.** `crates/oracle-player/src/screen.rs` `glass_run` derives `(top, bottom, left)` from **the first VISIBLE glyph**
+and returns `None` via `band?` when there is none. A wholly-clipped run has no visible glyph, so **the row-grouping
+coordinates it now needs cannot come from the same source** — they must come from the galley's own row rect translated
+by the paint origin, which is present and unclipped at that point. `group_runs` places a run on a row by the vertical
+centre of its first visible glyph row, so **that predicate needs the same treatment or an empty run will land on the
+wrong row and break the very alignment this ruling turns on.** ⚑ Treat this as a reading to verify, not a finding: it
+is derived from the code, not measured by running it.
+
+**NOT STARTED, and deliberately behind his instruction.** `protocol.md` text only — **no vendored blob moved**, so
+aurora's schema-drift gate cannot redden on it (the hub flagged this coupling from its own side). If implementing it
+turns out to need a schema touch, **tell the hub BEFORE pushing** so they run the vendoring-lane notification.
