@@ -503,3 +503,48 @@ invent a typed signal** — that is a `contract/schema/` change and carries the 
 defining sentence will **build the special case instead of fixing the predicate, then pass a test written from the
 paragraph.** The hub banked this as a documentation-shape finding worth more than the edit it is about — *a rule
 fixed by adding a paragraph beside it, rather than by changing the sentence that is wrong, recurs.*
+
+**POSTHOC-CARRY LANDED 2026-09-18, merge `9b97cd7`, `F-POSTHOC-STALE-CARRY` CLOSED** (agent tip `8af6f76`; three commits,
+**nothing under `crates/oracle-core/src/` touched** — the hard constraint held, the instrument moved and the machine did not).
+**The premise HELD and was re-derived, not taken:** `Vdp::sprite_line` seeds masking from `sprite_dot_overflow_carry()` and never
+writes it back — the write-back is `commit_scanline_sprites`, called only by the stateful renders — so `render_line` seeds **every**
+line from the settled post-run carry. Live, the walk commits the carry on line **87** and holds it through 94; lines **88-95,
+x216..247** — *exactly the 32x8 rectangle test 6 is read from* — are drawn with the mask armed live and unarmed post-hoc. **Test 6
+is the ROM's test OF that carry.** `vdp_sprite_masking` **`6=FAIL` → `6=PASS`**; every scraped ROM in the corpus now passes.
+**Blocker (a): all four glyph constants survived with ZERO re-derivation** — eight of nine glyphs are bit-identical through both
+paths and test 6's *live* hash **is** the already-pinned `PASS` literal, so the feared one-layer-down reproduction never arose.
+⚑ Its finding: `TICK_CROSS` now classifies **nothing** (the corpus's only cross became a tick on 09-16) — an unexercised classifier,
+kept deliberately and recorded. **Blocker (b): the capture is the last frame COMPLETED before the idle stop**, and the 2026-08-14
+convention *"stopping mid-frame is irrelevant to `block_hash`"* is **DELETED, not amended** — true of a re-render, false of a
+capture — replaced by three loud guards (one complete frame; a frame completed at all; the captured frame strictly later than the
+ROM's last VDP touch).
+▶ **VERIFIED FIRSTHAND BY THIS SEAT ON THE MERGED TREE**, none of it taken from the agent: fmt clean; clippy `--workspace
+--all-targets` clean; **91 legs / 3018 passed / 0 failed / 10 ignored**; `conformance_roms` 5 → 6 (the new control arm, and the leg
+count is unmoved because no test TARGET was added); currency suites `determinism_gate` 2, `export_state_v1` 3, `golden_frames` 9,
+`scanline_goldens` 5. **Red-first reproduced INDEPENDENTLY here**, mutation shown on disk by `git diff` *before* the run and restored
+from committed `9b97cd7`: `post_hoc := live.clone()` — the "someone fixes the post-hoc path until it agrees" trap — gives **4 passed
+/ 2 failed with BOTH the scorecard and the control arm firing**, which is what proves the bracket is load-bearing rather than
+decorative. Origin confirmed moved; **CI queued at push, NOT yet read.**
+
+⚑ **THE AGENT CORRECTED THIS SEAT'S BRIEF AND WAS RIGHT: "render a frame both ways and REQUIRE THEM TO AGREE" IS UNEXECUTABLE AS
+WRITTEN.** As a literal gate it is permanently red — the two paths *should* differ here, because the live one is correct and the
+post-hoc one is **structurally incapable** of being correct, so demanding agreement demands the emulator be broken. The house had
+carried that sentence as its named control arm and **nobody had run it**, which is exactly why it read as fine. **The executable
+form is: agree EXCEPT on an enumerated, pinned set, with the set itself load-bearing in the assert** — and the bracket states
+agreement **positively in both directions** (`[post-hoc path agrees]` when empty) so an absence can never read as an unmeasured
+value. ⚑ **Generalise it: a control arm that was written down and never executed is not a control arm, and prose is where an
+unrunnable one hides.** Fourth consecutive agent in this repo to correct its brief.
+⚑ **And it declined to extend `scanline_goldens.rs`, correctly**: that suite already carries the whole-frame live-vs-post-hoc
+verdict for all 17 rows and is green — but it compares **whole-frame hashes**, so it cannot localise a divergence to a glyph or say
+which verdict changed. **That is precisely how `6=FAIL` survived beside it for a month.** The control belongs at the point of use.
+⚑ **Ops, against this seat, twice:** (1) my first clippy exit code came through a **pipe in zsh**, where `PIPESTATUS` is not the
+shell's spelling — I read a green I had not measured, and re-ran it outside the pipe; the landing list warns about exactly this.
+(2) The full suite was **reaped for memory at 75 of 91 legs**; the log aggregates clean and reads like a pass. Re-run detached under
+`setsid nohup` with `CARGO_BUILD_JOBS=4`, polling **my own end marker** rather than a notification. **Both of my first two mutation
+attempts also failed to COMPILE — a compile error is not a red**, and banking it would have been a vacuous gate with an exit code
+that looked right (101 either way).
+
+**NEXT: `TESTROM-H40-HALF`** (open question Q1) — **re-derive before dispatch**: the ROM's own text says `Start` toggles H32/H40 and
+only `C` does for us, so the first question is whether that is an input/TH-protocol defect on OUR side or the ROM's text being stale,
+and the answer decides whether this is a harness row or an emulator one. **Nine tests are currently unmeasured**, and a mode never
+scraped is not a mode this lane can claim. Then `TESTROM-UNSCRAPED-PAIR` (Q2), then the ruled `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`.
