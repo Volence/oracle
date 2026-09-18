@@ -1,5 +1,5 @@
 {
-  "focus": "Every test ROM that prints a verdict now passes. The one failure left was our own reader misreading the screen.",
+  "focus": "Booted; every test ROM that prints a verdict passes. Next is the sprite ROM's half we have never run.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -13,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything pushed. CI on the merge is queued, not yet read.",
+  "nextBoundary": "Here now: nothing running, everything pushed, CI green on the merge.",
   "queue": [
     {
       "id": "TESTROM-H40-HALF",
@@ -120,7 +120,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing blocking; I'll take the next test-ROM row. Card d-54 when you have a moment: should long panel lines wrap, or the panes be wider?",
+  "awaiting": "just booted and waiting on your go; I propose the sprite ROM's unrun second half next. Card d-54 whenever: wrap long panel lines, or widen the panes?",
   "atBoundary": true,
-  "updatedAt": "2026-09-18T20:42:29Z"
+  "updatedAt": "2026-09-18T23:23:59Z"
 }
