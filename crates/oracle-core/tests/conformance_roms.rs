@@ -1041,7 +1041,9 @@ fn the_glyph_scrape_reads_the_live_render_path() {
         for (which, label) in [("live", l), ("post-hoc", p)] {
             assert!(
                 !label.starts_with("UNKNOWN-GLYPH"),
-                "test {} classifies as {label} through the {which} path — the four pinned glyph hashes no                  longer describe what this ROM draws (Limitation L3). Re-derive them from the run and                  re-pin BASELINE; do NOT let an unclassifiable rectangle read as an agreement.",
+                "test {} classifies as {label} through the {which} path — the four pinned glyph hashes \
+                 no longer describe what this ROM draws (Limitation L3). Re-derive them from the run and \
+                 re-pin BASELINE; do NOT let an unclassifiable rectangle read as an agreement.",
                 n + 1
             );
         }
@@ -1053,7 +1055,12 @@ fn the_glyph_scrape_reads_the_live_render_path() {
         .collect();
     assert!(
         !differing.is_empty(),
-        "the live and post-hoc render paths now classify all nine glyphs identically, so this scraper's          choice of substrate no longer carries any information. On 2026-09-18 exactly one differed (test          6, MASK S1 ON DOT OVERFLOW: live PASS vs post-hoc FAIL, the stale sprite_dot_overflow_carry).          Either the live capture stopped being live — check block_hash_live and the ScanlineCapture wiring          — or the post-hoc path genuinely caught up, which is a real instrument change: re-derive this          guard and the BASELINE row together, with the evidence."
+        "the live and post-hoc render paths now classify all nine glyphs identically, so this scraper's \
+         choice of substrate no longer carries any information. On 2026-09-18 exactly one differed (test 6, \
+         MASK S1 ON DOT OVERFLOW: live PASS vs post-hoc FAIL, the stale sprite_dot_overflow_carry). Either \
+         the live capture stopped being live — check block_hash_live and the ScanlineCapture wiring — or \
+         the post-hoc path genuinely caught up, which is a real instrument change: re-derive this guard \
+         and the BASELINE row together, with the evidence."
     );
 
     // (2) orientation: the row states the LIVE verdicts and reports the post-hoc reading as the exception.
