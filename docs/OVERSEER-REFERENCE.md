@@ -28,6 +28,23 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ A LABEL THAT CANNOT BE WRONG IS NOT A MEASUREMENT** *(2026-09-18, found at this seat while re-deriving
+`TESTROM-H40-HALF`'s premise from the tree; banked as a class by the hub at empyrean `9f3db535`)*. The
+`vdp_sprite_masking` scorecard row is prefixed with a hardcoded `"H32:"` string literal in
+`sprite_masking_row`, **while the width the capture actually ended on is available in the same function**.
+It would have gone on reading `H32` in H40 forever, on a row whose whole purpose is to be diffed. **Same
+family as a filename that is not evidence about the bytes (the 2026-09-16 capture ruling) and a status
+fallback rendering unmeasured as green: an artifact reporting a fact it never consulted, which therefore
+keeps reporting it after the fact changes.** This instance is the cleanest of the three, because the
+correct source was one line away. **Test, before accepting any label, unit, mode or count in an output:
+what would have to change for this to print something else? If the answer is "an edit", it is decoration.**
+
+**⚑ AND A CHECK'S RED MUST GATE THE NEXT ACTION, NOT MERELY ACCOMPANY IT** *(the hub's sharpening of the
+above, same night)*. If the code can reach the thing the check protects without the check having passed,
+the check is a log line. Stated for the instance it was ruled on: a harness that can scrape "H40" verdicts
+before it has PROVEN the mode changed reads the old screen again and every verdict looks plausible.
+**Structure the proof upstream so the unproven state is unreachable, rather than asserting beside the use.**
+
 **⚑ A THRESHOLD CALIBRATED FROM THE SYSTEM'S OWN BEHAVIOUR MEASURES THE DEFECT, NOT THE PROPERTY**
 *(2026-09-09, found by an agent against a guard it was not sent to look at)*. A control required
 **>= 5 %** open-loop underruns. That 5 % was arithmetic done on the **broken** samples-per-frame value
