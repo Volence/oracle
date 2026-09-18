@@ -490,3 +490,16 @@ is derived from the code, not measured by running it.
 **NOT STARTED, and deliberately behind his instruction.** `protocol.md` text only — **no vendored blob moved**, so
 aurora's schema-drift gate cannot redden on it (the hub flagged this coupling from its own side). If implementing it
 turns out to need a schema touch, **tell the hub BEFORE pushing** so they run the vendoring-lane notification.
+
+⚑ **AMENDED BY THE HUB, same day: both of this seat's clauses are ruled in, and the second is now an ACCEPTANCE
+CONDITION rather than a wrinkle — ruled in advance so no parcel decides it under pressure.** **An empty run placed on
+the WRONG row is WORSE than the defect this ruling fixes**: the section rests on *row k run j of `rendered` is the
+glass rendering of row k run j of `text`*, so a misplaced empty run corrupts the exact guarantee the change exists to
+protect, **and it reads as working until someone compares carefully.** ▶ **So: if row placement for an invisible run
+is not derivable from what the server already holds, STOP and bring it back as a CR. Do not approximate, and do not
+invent a typed signal** — that is a `contract/schema/` change and carries the vendoring-lane notification. The
+`glass_run` / `group_runs` reading above stands recorded as **derived from code and not yet run**.
+⚑ **And brief the CLAUSE, never the paragraph**: a parcel that reads the new paragraph and skims the substituted
+defining sentence will **build the special case instead of fixing the predicate, then pass a test written from the
+paragraph.** The hub banked this as a documentation-shape finding worth more than the edit it is about — *a rule
+fixed by adding a paragraph beside it, rather than by changing the sentence that is wrong, recurs.*
