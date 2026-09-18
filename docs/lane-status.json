@@ -1,12 +1,6 @@
 {
-  "focus": "Fixing panel lines that get cut with no sign they were cut. The layout half is a card for you.",
-  "inFlight": [
-    {
-      "what": "Making cut panel text show that it was cut",
-      "where": "branch parcel/elision-mark",
-      "agent": true
-    }
-  ],
+  "focus": "Cut panel text now shows it was cut. Ready for a clear; one card waiting on you.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,15 +13,15 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the cut-text fix returns, is checked here and lands.",
+  "nextBoundary": "Now: nothing running, everything pushed.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
-      "state": "doing",
+      "state": "open",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "your card d-54",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Panel text cut off at a pane edge gives no sign it was cut. Adding the '...' mark now; the layout half is card d-54 for you."
+      "title": "Cut panel text now says it was cut: 91 such lines fixed across 28 window sizes. The 67 left are whole tables or controls wider than their pane, which is card d-54."
     },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
@@ -102,7 +96,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing blocking. New card d-54 when you have a moment: should long panel lines wrap, or the panes be wider?",
-  "atBoundary": false,
-  "updatedAt": "2026-09-17T23:06:55Z"
+  "awaiting": "nothing blocking. Card d-54 when you have a moment: should long panel lines wrap, or the panes be wider? This lane is clearable.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-18T00:41:07Z"
 }

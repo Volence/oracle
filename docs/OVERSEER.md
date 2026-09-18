@@ -401,3 +401,11 @@ NOT vendor `protocol.md`; this lane is the only vendor.**
 Vectors: 11 cases, 5 accepted / 6 refused, each refusal citing its own rule; R1's five retired. ⚑ **The lockstep was MEASURED, not assumed**:
 with the pre-CR-W schema bytes restored the pin test AND the vectors row go red, so the re-vendor is what admits the kind. **Owed: aurora's
 review (not a gate) and his Q2 look** (`docs/2026-09-17-cr-w-landing.md`) — the first is Registers' `aether` line cut at the pane edge with no `…`.
+**PANEL-CLIP-MARK LANDED 2026-09-17, merge `67d9bc4`** (agent tip `7733f4f`; land.sh GREEN, release 91/91 3020/0/7; debug 91/3017/0/10 and R1
+reproduced here). The hub's split: the missing mark is ENGINEERING (§11.29's own standard — a lossy render that does not announce itself), the
+layout is HIS (card `d-54` filed). ⚑ **It was 91 unmarked cut runs over 28 arrangements, not the one line reported — the harvest landed hours
+earlier is what could count them**, and 67 remain, all whole-widget/table overflow, held under a ceiling. ⚑ **The gate found two defects in its
+own treatment**: a DOUBLE hover (egui's `Label` already hovers when elided; `table_cell` has carried the duplicate since it was written), and a
+`Grid` truncate RATCHET collapsing a column to a bare `…` — **which a cut sweep is structurally blind to, because a collapsed run fits its clip**,
+so the gate also refuses a run drawn as nothing but the mark. **NEXT: weigh `F-BANKED-ADDR-AMBIGUITY` (undemanded CR) against `LIVE-EFFECTS-NUDGES`
+and `F-Z80-ACCESSES-UNWATCHED`; d-54 and aurora's CR-W review are owed but gate nothing.**
