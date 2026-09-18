@@ -548,3 +548,23 @@ that looked right (101 either way).
 only `C` does for us, so the first question is whether that is an input/TH-protocol defect on OUR side or the ROM's text being stale,
 and the answer decides whether this is a harness row or an emulator one. **Nine tests are currently unmeasured**, and a mode never
 scraped is not a mode this lane can claim. Then `TESTROM-UNSCRAPED-PAIR` (Q2), then the ruled `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`.
+
+**CI READ GREEN for `9b97cd7`** (and the two docs commits after it): `gh run list` shows all three `completed` /
+`success`, read to completion rather than off a status field. The "CI queued, NOT yet read" clause above is left
+standing and corrected here rather than edited, per this repo's correct-by-appending habit.
+
+⚑ **THE REAP MECHANISM, corrected by the hub (aurora's find, hub re-derived, not relayed on trust) — and the correction
+CHANGES THE REMEDY, which is why it is banked rather than noted.** The box runs `earlyoom` with a `--prefer` list, and
+**`cargo`, `rustc` and our test binaries are NOT on it** (`node` and `electron.*` are, which is aurora's harnesses; our
+own sessions run as `claude` and do not match either). **So the 75-of-91 reap was ordinary SIZE-BASED OOM, not
+configured bias.** Same outcome, different mechanism: **a bias you cannot influence versus a footprint you can**, and
+`CARGO_BUILD_JOBS=4` is the right lever for the second and useless against the first. The list is dominated by his
+desktop apps — `steamwebhelper` at 1.9 GB, `Discord` at 1.1 GB, six browser processes at ~700 MB — all larger than
+anything we run, so under pressure they are in front of us anyway. ▶ **No lane changes that config: it is his machine
+and a deliberate desktop-responsiveness choice.** The fix on our side is the completeness gate. **The end-marker
+practice stands unchanged and is the better instrument either way — it detects a truncated run regardless of which
+mechanism truncated it**, which is more than either diagnosis buys.
+
+⚑ **SHARPENING ON THE `TESTROM-H40-HALF` NEXT (the hub's, adopted): if the `Start`/`C` toggle turns out to be an
+INPUT-PROTOCOL DEFECT rather than a harness gap, it is a finding about the CORE and gets stated as one — do NOT fold it
+into the harness row.** A core defect filed inside a harness parcel is a defect nobody outside this lane can see.
