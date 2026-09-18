@@ -1,12 +1,6 @@
 {
-  "focus": "On your word: back to making the test ROMs pass. The last failing one is our own reader, not the emulator.",
-  "inFlight": [
-    {
-      "what": "Fixing the scorecard reader that reports a sprite test as failing when the machine actually passes it",
-      "where": "branch parcel/posthoc-carry",
-      "agent": true
-    }
-  ],
+  "focus": "Every test ROM that prints a verdict now passes. The one failure left was our own reader misreading the screen.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,16 +13,8 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the parcel lands and the scorecard is re-measured on the merged tree.",
+  "nextBoundary": "Now: nothing running, everything pushed. CI on the merge is queued, not yet read.",
   "queue": [
-    {
-      "id": "POSTHOC-CARRY",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Of the six test ROMs that print a verdict, one line still reads FAIL. It is our scorecard reading a stale copy of the screen: the machine passes. Fixing the reader, plus a guard so the two cannot disagree in silence."
-    },
     {
       "id": "TESTROM-H40-HALF",
       "state": "next",
@@ -134,7 +120,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-18T19:38:33Z"
+  "awaiting": "nothing blocking; I'll take the next test-ROM row. Card d-54 when you have a moment: should long panel lines wrap, or the panes be wider?",
+  "atBoundary": true,
+  "updatedAt": "2026-09-18T20:42:29Z"
 }
