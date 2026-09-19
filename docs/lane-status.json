@@ -1,6 +1,12 @@
 {
-  "focus": "Seventeen unexplained test failures checked; fifteen were real bugs, none was a mystery.",
-  "inFlight": [],
+  "focus": "Our landing check does not run what the build server runs, and the status checker checks almost nothing.",
+  "inFlight": [
+    {
+      "what": "Making the landing check run the build server's real step list, and the status validator enforce the rules it is believed to",
+      "where": "branch parcel/landing-gate-parity",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: twelve landings, main green, nothing running.",
+  "nextBoundary": "When the landing-gate parcel returns and is verified here.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -25,7 +31,7 @@
     },
     {
       "id": "F-LANDING-GATE-NOT-RUN",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -33,7 +39,7 @@
     },
     {
       "id": "F-METHOD-ROWS-FROM-THE-REDS",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -105,14 +111,14 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "next",
+      "state": "open",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T11:39:48Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T12:05:19Z"
 }
