@@ -703,3 +703,33 @@ all 255" when the measured answer was RED on 37** — 16 of those being the cont
 the measured one, inside the parcel fixing printed claims that were never measured.**
 **NEXT: `F-METHOD-ROWS-FROM-THE-REDS`** (the three habit rows: a survey trusting its own empty result, a heuristic reused unscoped, an
 untestable-here asserted twice), then `DATA-DISPLAY-AUDIT`.
+
+**`F-METHOD-ROWS-FROM-THE-REDS` LANDED 2026-09-19, merge `108dfcf`** (agent tip `79d88ae`; `docs/` + `tools/`). **Three habits become three
+MISSING FIELDS.** One artifact, not three: a fenced ```` ```detectors ```` block in an investigation doc carrying `ABSENCE:` / `HEURISTIC:` /
+`CANNOT-TEST:` declarations, validated by **`tools/detector-check.py` at `land.sh` G2c on every landing** (~0.4 s over 224 docs).
+⚑ **THE DESIGN CATCH IS SHARPER THAN MY BRIEF: a positive/negative control pair catches only TWO of the three false absences I produced.**
+Instance (1) — the `--limit 8` CI waiter — was a **WINDOW** failure: a control on a case inside the window fires happily and the zero is still
+wrong. So `ABSENCE:` carries **five** fields, and the last two are the ones that were missing — `scope:` (what the instrument enumerated, **with
+its boundary**) and `contains:` (how the subject is shown to lie inside it). A red case pins exactly that: a perfect control pair with the window
+deleted, which every other check passes.
+▶ **The strongest check is that `HEURISTIC:`'s `checked:` citation is RESOLVED, not parsed** — `<rev>:<path>:<line> "<text>"`, the blob read at
+that revision and the quoted text required on that line. Moving the line number or one digit of the SHA reds it.
+⚑ **DELIBERATELY LEGAL, and this is the honest half: `attempted: none`, `cost: not measured`, `prior: not-searched` PASS and print as NOTES.**
+Cohort 1's block is **green with three of them** — *an impossibility claim with no attempt behind it*, *a price asserted rather than measured*,
+*this lane's own record never grepped* — **and those three notes are precisely the holes the next night paid for.** A reader sees `none` in a
+field instead of reading a paragraph and assuming there was a reason.
+▶ **HONEST ABOUT ITS OWN LIMITS, printed by `--gaps` on every landing rather than left to be discovered:** the trigger is **self-selecting**
+(delete the `**Kind:** investigation` line and the gate holds nothing), counts are never re-run, `assumes`/`cost` are never judged, and **there is
+no control arm** — because there is no previous gate to run on the same bytes, which the agent stated instead of faking one.
+▶ **VERIFIED FIRSTHAND:** the new gate ran on the merged tree — **28 gates PASS, 0 FAIL**, `legs=91/91`, `debug_legs=91/91`, `gates=full`, two
+declared `ci_gap=` rows, and **`PASS G2c detector-check: clean — 224 doc(s), 6 declaration(s), 4 note(s)`** on the real landing path. **My own
+red-first, aimed at the check my `--limit 8` defect needed:** deleted the `scope:` line from the 0909 cohort's declaration — shown on disk by
+`git diff --numstat` first — and the tool names the missing field and **exits 1**, restored **exit 0**. ⚑ **Exit code captured OUTSIDE a pipe**,
+because a gate that prints a complaint and exits 0 is a log line, which is this night's own lesson aimed at the gate that encodes it.
+⚑ **Ops, the agent's, and it is the same shape a fourth time: its first mutation pass produced FOUR FALSE GREENS** — `sed` errored on the `:` in
+the expressions and the tool printed `clean` over an **unapplied** mutation. Redone with an assertion that the mutation applied. **An unapplied
+mutation and a clean baseline are the same artifact**, in the parcel whose subject is exactly that.
+⚑ **And it caught itself once more: its first trigger regex matched `**Kind:** investigation` anywhere and immediately fired on
+`OVERSEER-REFERENCE.md`, which mentions the marker while documenting the trigger.** Anchored to column 0; the comment records it.
+**NEXT: `DATA-DISPLAY-AUDIT`** — two buildable items (the hidden raw-JSON fallback in `objects.rs`, the slot-refresh follow-up) and look calls
+1-33 that are HIS. **With this landed, the buildable queue is nearly exhausted: what remains is mostly his eyes.**
