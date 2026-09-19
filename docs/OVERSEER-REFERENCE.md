@@ -654,6 +654,13 @@ takes 35-45 minutes** — measured, so a long one is not a stall; judging a dura
 nearly produced a false alarm about a stuck runner an hour after the false all-clear.
 ⚑ **A wait-for-CI loop that times out EXITS 0 and reads exactly like success.** Re-read the run list;
 never trust the waiter's exit code, and never trust `cmd | head; echo $?`, which hands back `head`'s.
+⚑ **CLOSED 2026-09-19 by `F-LANDING-GATE-NOT-RUN` (merge `2c8befd`): `land.sh` NOW RUNS CI'S DEBUG ARM (D1-D6) BY DEFAULT, and every GREEN
+names the gates it did not run.** Parity was measured at **half again, not double** — debug suite 731 s, whole debug arm ~790 s, a full landing
+**18.5 min warm** — which is why it is a default and not a flag. `tools/ci-parity.py` classifies all 25 push-triggered workflow steps, keyed by
+job+name and **pinned by a digest of the step body**, and proves the reverse claim too. The `VERDICT` file now carries `debug_legs=`,
+`debug_arm=` and one `ci_gap=` per remaining gap (`skipped/skipped`, never `0`). **Run `35418036061` — the red this bar was written from — is now
+inside the gate.** The text below stands as the record of what was wrong.
+
 ⚑ **AND THE SIBLING, MEASURED AT THIS SEAT 2026-09-19: A WAITER WHOSE SUBJECT CAN LEAVE ITS QUERY WINDOW
 WAITS FOREVER ON AN ABSENCE.** I armed `gh run list --limit 8` on a landing SHA, then pushed six docs
 commits; each queued its own run, the landing SHA fell out of the window, and the waiter's filter returned
