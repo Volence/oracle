@@ -1,6 +1,12 @@
 {
-  "focus": "All eight unexplained test failures were real bugs, already fixed. Nothing was missing but a look.",
-  "inFlight": [],
+  "focus": "Same check on seven older test failures, after the last eight all turned out to be real bugs.",
+  "inFlight": [
+    {
+      "what": "Giving the seven 9 September failures a disposition each, by the method that just went eight for eight",
+      "where": "branch parcel/reds-0909",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: eleven landings, main green, nothing running.",
+  "nextBoundary": "When the 09-09 cohort returns and is verified here.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -25,7 +31,7 @@
     },
     {
       "id": "F-REDS-0909-COHORT",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -105,14 +111,14 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "open",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T11:17:34Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T11:30:32Z"
 }
