@@ -73,14 +73,24 @@
 //!
 //! # ⚑ `Debug_Lab_Index` IS NEVER WRITTEN, AND IT IS GUARDED TWICE
 //!
-//! `$FFFFEE0D` is the START chord's **cursor**. Writing it moves the label on screen and changes nothing
-//! that runs, which is a display that lies — the worst outcome available to a panel whose job is telling
-//! a person what the machine is doing. [`NOTE`] prices it: *"This cost this lane an hour today — the
-//! label said one row while the machine ran another."*
+//! [`LAB_INDEX_SYMBOL`] is the START chord's **cursor**. Writing it moves the label on screen and changes
+//! nothing that runs, which is a display that lies — the worst outcome available to a panel whose job is
+//! telling a person what the machine is doing. [`NOTE`] prices it: *"This cost this lane an hour today —
+//! the label said one row while the machine ran another."*
 //!
 //! [`forbidden`] refuses it **by name and by address independently**, because those are two different
 //! routes in: a write-set edited to name it, and a cell whose symbol happens to resolve there. Neither
 //! guard subsumes the other and both are gated.
+//!
+//! ⚑ **The address route is keyed on what the LOADED LISTING resolves the name to** ([`Cursor`]), never on
+//! a number written down here, and that is this section's one hard-won rule rather than a style choice.
+//! It was a transcribed `$FFFFEE0D` until aeon swept its own RAM table (aeon `61918621`) and found the
+//! cursor had moved to `$FFFFF00D` — `+$200`, while six sibling symbols slid `+$20`, so not even
+//! recoverable by applying the others' offset. A stale number breaks the guard in **both** directions at
+//! once: the real cursor stops being refused, *and* the old address — `$FFFFEE0D` is now 13 bytes into
+//! `Player_Pos_Ring` (`$FFFFEE00`) in `s4.debug.lst` — starts being refused under the cursor's name, which
+//! is a refusal that misidentifies what it caught. aeon's own remedy for the class is the one adopted
+//! here: **resolve, do not transcribe**, because updating the number only rewinds a clock nobody winds.
 //!
 //! # ⚑ A PAUSED WRITE CANNOT LAND MID-FRAME, SO THE TORN-FRAME CAVEAT DOES NOT APPLY HERE
 //!
@@ -129,9 +139,11 @@ pub const EMPTY_TABLE_COMMIT: &str = "aeon 41c845fa";
 /// **The chord's cursor, which this panel must never write.** See the module header.
 pub const LAB_INDEX_SYMBOL: &str = "Debug_Lab_Index";
 
-/// [`LAB_INDEX_SYMBOL`]'s address as [`NOTE`] records it. Used **only** by [`forbidden`]'s second guard,
-/// so a cell whose symbol resolves here is caught even when the name check passes.
-pub const LAB_INDEX_ADDR: u32 = 0xFFFF_EE0D;
+// ⚑ There is deliberately NO `LAB_INDEX_ADDR` constant here. [`forbidden`]'s address route is keyed on
+// [`Cursor`], which resolves [`LAB_INDEX_SYMBOL`] out of the loaded listing per gesture. See the module
+// header: the constant this file used to carry went stale and made the guard wrong in both directions.
+// The note's number survives in exactly one place — `tests::NOTED_STALE_LAB_INDEX`, whose whole job is to
+// be the value the guard must NOT be keyed on — and nothing in the shipped path reads it.
 
 // -------------------------------------------------------------------------------------------------------
 // One cell of a write-set
@@ -502,26 +514,101 @@ impl Channel {
     }
 }
 
+/// ⚑ **Where the START chord's cursor actually is**, resolved out of the loaded listing, or the stated
+/// reason [`forbidden`]'s address route has nothing to key on.
+///
+/// This type exists so that the address route cannot be a transcribed number again. It is the shape aeon's
+/// remedy prescribes — *resolve, do not transcribe* — and it is the opposite of [`SCRATCH_NOTED_ADDR`],
+/// which is a literal kept **deliberately** as a witness to what a note said. A witness may be a literal;
+/// a claim about the running machine may not.
+///
+/// Resolved **per gesture and never cached**, the same rule §11.26 imposes on every other name this module
+/// reads: a listing can be swapped between one gesture and the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    /// The 32-bit `rawAddr` the loaded listing gives [`LAB_INDEX_SYMBOL`], or `None` when **this listing**
+    /// does not carry the name.
+    ///
+    /// ⚑ `None` is *did not resolve in this listing*, never *does not exist*: it is the ordinary answer for
+    /// a release listing and for a game with no lab at all (measured 2026-09-19 — `s4.debug.lst` carries
+    /// the name, and `s4.lst`, `demo.lst` and `demo.debug.lst` do not), and it is equally the answer for a
+    /// listing that merely predates the symbol.
+    pub raw: Option<u32>,
+}
+
+impl Cursor {
+    /// **Which of the two routes is live**, as a clause [`forbidden`] puts inside every refusal it raises.
+    ///
+    /// It is a clause on the refusal rather than a standing caveat on the panel, and that is a decision
+    /// with a reason: on three of the four listings on this box the name does not resolve, so a banner
+    /// saying so would be drawn on nearly every gesture — the **unconditional caveat** this tree forbids in
+    /// terms (`oracle-core/src/render.rs`, `oracle-frontend/src/pick.rs` §11.27). Attached to the refusal
+    /// it is conditional on the guard actually speaking, and it is exactly then that a reader needs to know
+    /// how much of the guard ran.
+    fn routes(&self) -> String {
+        match self.raw {
+            Some(raw) => format!(
+                "the loaded listing puts it at {raw:#010X}, so BOTH routes are live: the name and that \
+                 address"
+            ),
+            None => format!(
+                "⚠ ONLY THE NAME ROUTE RAN. `{LAB_INDEX_SYMBOL}` is not a name in the loaded listing, so \
+                 the address route had no address to key on and was not run — a cell resolving onto the \
+                 cursor under some other name would NOT have been caught. That is the ordinary shape of a \
+                 release listing and of a game with no lab, and it is equally what an out-of-date listing \
+                 looks like; this panel cannot tell those apart and does not guess"
+            ),
+        }
+    }
+}
+
+/// **Resolve the cursor out of the loaded listing**, for [`forbidden`] to key its address route on.
+///
+/// ⚑ **A listing that does not carry the name does NOT refuse the feature**, and that choice is the whole
+/// of this function. The alternative — treating an unresolvable cursor as a precondition failure — would
+/// make a panel that selects parallax scenes go dark because of a symbol it never writes, and on a release
+/// listing it would go dark *always*. This lane made the same call for [`SCRATCH_NOTED_ADDR`] and for the
+/// same reason: a gate whose red is about the layout rather than about the subject teaches nothing.
+///
+/// So the two outcomes are separated rather than collapsed:
+///
+/// * the bus answered and this listing has no such name (`notInListing`) → `Cursor { raw: None }`, the
+///   name route still refuses, and [`Cursor::routes`] says in the refusal that the address route did not
+///   run. Honest, and not silent;
+/// * anything else — no listing loaded at all, a malformed reply, a dead bus — is **propagated**. Those
+///   are not statements about this symbol, and swallowing them here would let a broken bus read as a build
+///   without a lab.
+pub fn cursor(c: &mut impl Caller) -> Result<Cursor, Refusal> {
+    match resolve(c, LAB_INDEX_SYMBOL) {
+        Ok((_, raw)) => Ok(Cursor { raw: Some(raw) }),
+        Err(e) if e.reason.as_deref() == Some("notInListing") => Ok(Cursor { raw: None }),
+        Err(e) => Err(e),
+    }
+}
+
 /// ⚑ **The guard that keeps [`LAB_INDEX_SYMBOL`] unwritable**, by name and by address independently.
 ///
 /// Two checks rather than one, because they catch two different mistakes and neither subsumes the other:
 /// a write-set edited to name the cursor, and a cell whose symbol *resolves* to the cursor's address in
-/// some build. A panel that only checked the name would happily poke `$FFFFEE0D` through a symbol called
-/// something else; one that only checked the address would miss it the day the cursor moves.
+/// some build. A panel that only checked the name would happily poke the cursor's cell through a symbol
+/// called something else; one that only checked the address would miss it the day the cursor moves.
+///
+/// ⚑ **`cursor` is the listing's answer, not a constant** — see [`Cursor`] and the module header. The
+/// address route fires only when the name resolved; when it did not, the refusal says so rather than the
+/// panel quietly checking half of what it advertises.
 ///
 /// ⚑ **`raw_addr` is the listing's 32-bit spelling (`rawAddr`), never the 24-bit form the memory doors
-/// take**, because [`LAB_INDEX_ADDR`] is transcribed from the note in that spelling. Handing this the
-/// door form makes the address branch **dead** — `$FFEE0D` never equals `$FFFFEE0D` — so the guard would
-/// pass every real input while its own test went on passing on the constant. That is not hypothetical:
-/// it is what this function was doing until
-/// `the_address_route_fires_on_a_resolved_symbol_and_not_only_on_the_constant` was written, and the row
-/// exists so it cannot come back.
+/// take**, because that is the spelling [`resolve`] reports the cursor in too, and the comparison has to be
+/// like for like. Handing this the door form makes the address branch **dead** — `$FFF00D` never equals
+/// `$FFFFF00D` — so the guard would pass every real input. That is not hypothetical: it is what this
+/// function was doing until `the_address_route_fires_on_a_resolved_symbol_and_not_only_on_the_constant` was
+/// written, and the row exists so it cannot come back.
 ///
 /// `None` means the write may proceed. Deliberately not a `bool`: the caller must have a sentence.
-pub fn forbidden(symbol: &str, raw_addr: u32) -> Option<Refusal> {
+pub fn forbidden(cursor: Cursor, symbol: &str, raw_addr: u32) -> Option<Refusal> {
     let how = if symbol == LAB_INDEX_SYMBOL {
         "it is named as the write target"
-    } else if raw_addr == LAB_INDEX_ADDR {
+    } else if cursor.raw == Some(raw_addr) {
         "it resolves to that address"
     } else {
         return None;
@@ -529,10 +616,11 @@ pub fn forbidden(symbol: &str, raw_addr: u32) -> Option<Refusal> {
     Some(Refusal::window(
         "labIndexIsNotASelector",
         format!(
-            "refused: `{LAB_INDEX_SYMBOL}` ({LAB_INDEX_ADDR:#010X}) is the START chord's cursor, not a \
-             selector, and {how}. Writing it moves the label on screen and changes nothing that runs, \
-             which is a display that lies about what the machine is doing. {NOTE} prices that mistake at \
-             an hour of aeon's day: the label said one row while the machine ran another"
+            "refused: `{LAB_INDEX_SYMBOL}` is the START chord's cursor, not a selector, and {how}. \
+             Writing it moves the label on screen and changes nothing that runs, which is a display that \
+             lies about what the machine is doing. {NOTE} prices that mistake at an hour of aeon's day: \
+             the label said one row while the machine ran another. {}",
+            cursor.routes()
         ),
         Some(format!(
             "write one of the cells this panel's write-sets name, never the cursor. The live cells are: \
@@ -1528,7 +1616,7 @@ pub fn arm(c: &mut impl Caller) -> Result<(Hook, Installed), Refusal> {
     if let Some(r) = PARALLAX.drift(sel) {
         return Err(r);
     }
-    if let Some(r) = forbidden(SCRATCH_ARM, h.scratch_raw.wrapping_add(h.span)) {
+    if let Some(r) = forbidden(cursor(c)?, SCRATCH_ARM, h.scratch_raw.wrapping_add(h.span)) {
         return Err(r);
     }
     c.call(
@@ -1621,7 +1709,8 @@ pub fn read_scratch(c: &mut impl Caller, h: &Hook) -> Result<Scratch, Refusal> {
 ///    [`Hook::max_bands`], which is the reservation and not the scene.
 /// 4. **The value**, against [`Field::range`]. The door accepts every byte; only some of them mean
 ///    something.
-/// 5. **The offset**, against [`Hook::span`], and [`forbidden`] on the resolved destination. The span
+/// 5. **The offset**, against [`Hook::span`], and [`forbidden`] on the resolved destination — with the
+///    cursor itself resolved from the loaded listing ([`cursor`]) rather than transcribed. The span
 ///    check is the one that makes a per-game stride safe: a band index inside the count whose record
 ///    still fell outside the buffer would be a write into whatever RAM follows.
 pub fn nudge(
@@ -1688,7 +1777,7 @@ pub fn nudge(
             None,
         ));
     }
-    if let Some(r) = forbidden(SCRATCH, h.scratch_raw.wrapping_add(off)) {
+    if let Some(r) = forbidden(cursor(c)?, SCRATCH, h.scratch_raw.wrapping_add(off)) {
         return Err(r);
     }
     let mut req = serde_json::json!({
@@ -1916,10 +2005,12 @@ impl Wrote {
 /// The order the guards run in:
 ///
 /// 1. **[`available`]** — the channel's live cell resolves in this build's listing at all.
-/// 2. **[`forbidden`]**, on the live cell's name and resolved address independently.
-/// 3. **[`Channel::drift`]**, refusing when the listing and [`NOTE`] disagree about where it lives.
-/// 4. **Resolve the target by name**, so the value written is the listing's and not this crate's.
-/// 5. **Every cell**, each addressed `{symbol, disp, value, width}` so the server resolves the
+/// 2. **[`cursor`]**, resolving the START chord's cursor out of the loaded listing ONCE for the whole
+///    gesture, so every cell below is measured against one listing rather than re-resolved per cell.
+/// 3. **[`forbidden`]**, on the live cell's name and resolved address independently.
+/// 4. **[`Channel::drift`]**, refusing when the listing and [`NOTE`] disagree about where it lives.
+/// 5. **Resolve the target by name**, so the value written is the listing's and not this crate's.
+/// 6. **Every cell**, each addressed `{symbol, disp, value, width}` so the server resolves the
 ///    destination from the same table it would answer a socket client from, and each passed through
 ///    [`forbidden`] again on its own resolved address.
 ///
@@ -1933,14 +2024,17 @@ impl Wrote {
 /// exactly how far it got is the honest repair, and it is what the readout does.
 pub fn point_at(c: &mut impl Caller, channel: &Channel, target: &str) -> Result<Wrote, Refusal> {
     let sel_addr = available(c, channel)?;
-    if let Some(r) = forbidden(channel.selector, sel_addr) {
+    // Resolved ONCE per gesture and handed down, so every cell of the write-set is measured against the
+    // same listing. Resolving it per cell would let a listing swapped mid-set be checked two ways.
+    let cur = cursor(c)?;
+    if let Some(r) = forbidden(cur, channel.selector, sel_addr) {
         return Err(r);
     }
     if let Some(r) = channel.drift(sel_addr) {
         return Err(r);
     }
     let (_, value) = resolve(c, target)?;
-    run(c, channel, target, value)
+    run(c, cur, channel, target, value)
 }
 
 /// **Turn `channel` off**, by the one route [`Channel::off`] names, or refuse and say why.
@@ -1961,7 +2055,8 @@ pub fn turn_off(c: &mut impl Caller, channel: &Channel) -> Result<Wrote, Refusal
         Off::At { symbol, blocked } => (symbol, blocked),
     };
     let sel_addr = available(c, channel)?;
-    if let Some(r) = forbidden(channel.selector, sel_addr) {
+    let cur = cursor(c)?;
+    if let Some(r) = forbidden(cur, channel.selector, sel_addr) {
         return Err(r);
     }
     if let Some(r) = channel.drift(sel_addr) {
@@ -1970,7 +2065,7 @@ pub fn turn_off(c: &mut impl Caller, channel: &Channel) -> Result<Wrote, Refusal
     // The empty program or empty table, when the listing has it. **No fallback**: a panel that reached
     // for a second address when the first was missing would be choosing a target in somebody else's RAM.
     match resolve(c, symbol) {
-        Ok((_, value)) => run(c, channel, symbol, value),
+        Ok((_, value)) => run(c, cur, channel, symbol, value),
         Err(_) => Err(Refusal::window(
             "offTargetMissing",
             blocked,
@@ -1990,6 +2085,7 @@ pub fn turn_off(c: &mut impl Caller, channel: &Channel) -> Result<Wrote, Refusal
 /// for one channel.
 fn run(
     c: &mut impl Caller,
+    cursor: Cursor,
     channel: &Channel,
     target: &str,
     target_value: u32,
@@ -2003,7 +2099,7 @@ fn run(
         // ⚑ The forbidden guard runs on **every cell**, not only the channel's live one. A write-set is
         // data, and data is what gets edited by somebody who has not read the header.
         let (_, raw) = resolve(c, cell.symbol)?;
-        if let Some(r) = forbidden(cell.symbol, raw.wrapping_add(cell.disp)) {
+        if let Some(r) = forbidden(cursor, cell.symbol, raw.wrapping_add(cell.disp)) {
             return Err(r);
         }
         let mut req = serde_json::json!({
@@ -2877,6 +2973,25 @@ mod tests {
     /// test writes and records every call. What the gates below assert is **which cells were written,
     /// with which values, addressed how** — which is the whole of what this module decides and the whole
     /// of what a wrong write-set gets wrong.
+    /// ⚑ **The cursor's address in `s4.debug.lst`**, read 2026-09-19 off the build of 2026-09-18 19:26
+    /// (` Debug_Lab_Index : FFFFF00D C |`).
+    ///
+    /// It is a fixture's number and nothing in the shipped path holds it: [`forbidden`] is keyed on what
+    /// the loaded listing answers ([`Cursor`]). It is here so the fake listing says something a real
+    /// listing says, and `the_address_route_follows_the_listing_rather_than_any_number_in_this_file`
+    /// deliberately uses a DIFFERENT address, so no green anywhere depends on this value being the live one.
+    const S4_LAB_INDEX: u32 = 0xFFFF_F00D;
+
+    /// ⚑ **What [`NOTE`] recorded and what this file used to ship as `LAB_INDEX_ADDR`** — kept as a
+    /// witness, in the [`SCRATCH_NOTED_ADDR`] sense, and **never as a claim about the machine**.
+    ///
+    /// Its whole job is to be the number the guard must NOT be keyed on. aeon swept its RAM table at
+    /// `61918621` and the cursor had moved `+$200` to [`S4_LAB_INDEX`] while six siblings slid `+$20`.
+    /// `$FFFFEE0D` is now 13 bytes inside `Player_Pos_Ring` (`$FFFFEE00` in the same listing), so a guard
+    /// still keyed here does not merely miss the cursor: it refuses somebody else's cell **in the cursor's
+    /// name**, which is a refusal that misidentifies what it caught.
+    const NOTED_STALE_LAB_INDEX: u32 = 0xFFFF_EE0D;
+
     struct Fake {
         /// `(name, addr, raw_addr)`. The two spellings differ for work-RAM symbols exactly as the bus's
         /// do, so a test can tell an `addr` from a `rawAddr` in a written value.
@@ -2907,9 +3022,25 @@ mod tests {
             }
         }
 
-        /// Every symbol this module's three channels touch, at the addresses both listings measured on
-        /// this box actually carry. **The two debug-only ones are present here**; the tests that are
-        /// about their absence take them out rather than the other tests inventing them.
+        /// Every symbol this module's three channels touch. **The two debug-only ones are present here**;
+        /// the tests that are about their absence take them out rather than the other tests inventing
+        /// them.
+        ///
+        /// ⚑ **These rows were measured off the listings on this box, and most of them have since moved.**
+        /// Re-audited 2026-09-19 against `s4.debug.lst` (built 2026-09-18 19:26): the four `Parallax_*` RAM
+        /// cells still hold, the ROM addresses have all slid — which they do on every build and which
+        /// nothing here depends on — and two RAM rows matter more than that:
+        ///
+        /// * `Raster_Program` is `$FFFF8BF6` in that listing and `$FFFF8BD6` here;
+        /// * `BgAnim_Table_Ptr` is `$FFFFE93A` there and `$FFFFE91A` here.
+        ///
+        /// Both are what [`Channel::noted_addr`] still carries, so this fixture agrees with the note and
+        /// **a green here does not mean the raster and bands channels work on a current listing** —
+        /// [`Channel::drift`] refuses on exactly that disagreement. That is a separate subject from the
+        /// cursor guard, it needs a decision rather than a fresh transcription (aeon `61918621`: *resolve,
+        /// do not transcribe*), and it is reported upward rather than quietly patched here. `Debug_Lab_Index`
+        /// is the one row that has been brought current, because [`forbidden`] resolves it and this fixture
+        /// is what it resolves from.
         fn full() -> Self {
             Fake::new(vec![
                 ("Parallax_Current_Config", 0xFF_88EC, 0xFFFF_88EC),
@@ -2925,7 +3056,7 @@ mod tests {
                 ("BgAnim_Table_Ptr", 0xFF_E91A, 0xFFFF_E91A),
                 ("BgAnim_LastStep", 0xFF_8F06, 0xFFFF_8F06),
                 ("BgAnim_Table", 0x02_8BD4, 0x0002_8BD4),
-                ("Debug_Lab_Index", 0xFF_EE0D, 0xFFFF_EE0D),
+                ("Debug_Lab_Index", 0xFF_F00D, S4_LAB_INDEX),
             ])
         }
 
@@ -3235,13 +3366,16 @@ mod tests {
     ///
     /// The two routes in are different mistakes: a write-set edited to name the cursor, and a cell whose
     /// symbol happens to resolve at the cursor's address in some build. A guard that only checked names
-    /// would poke `$FFFFEE0D` through a symbol called something else.
+    /// would poke the cursor's cell through a symbol called something else.
     ///
-    /// The control is the third assertion: a real selector at a real address passes, so the two above
-    /// are refusing this address rather than refusing everything.
+    /// The control is the last assertion: a real selector at a real address passes, so the two above are
+    /// refusing this address rather than refusing everything.
     #[test]
     fn the_lab_index_is_refused_by_name_and_by_address_independently() {
-        let by_name = forbidden(LAB_INDEX_SYMBOL, 0x00FF_0000)
+        let here = Cursor {
+            raw: Some(S4_LAB_INDEX),
+        };
+        let by_name = forbidden(here, LAB_INDEX_SYMBOL, 0x00FF_0000)
             .expect("the cursor's NAME must be refused even at an unrelated address");
         assert!(
             by_name.message.contains("named as the write target"),
@@ -3249,7 +3383,7 @@ mod tests {
             by_name.message
         );
 
-        let by_addr = forbidden("Something_Else_Entirely", LAB_INDEX_ADDR)
+        let by_addr = forbidden(here, "Something_Else_Entirely", S4_LAB_INDEX)
             .expect("the cursor's ADDRESS must be refused even under another name");
         assert!(
             by_addr.message.contains("resolves to that address"),
@@ -3264,25 +3398,165 @@ mod tests {
                 "the refusal must say WHY, not merely that it refused: {}",
                 r.message
             );
+            // ⚑ And it names the address it is talking about as the LISTING's, so a reader can check it.
+            assert!(
+                r.message.contains(&format!("{S4_LAB_INDEX:#010X}"))
+                    && r.message.contains("the loaded listing puts it at"),
+                "the refusal must say where the cursor was resolved to: {}",
+                r.message
+            );
         }
 
         // The control. Without it both rows above pass on a `forbidden` that refuses everything.
         assert_eq!(
-            forbidden(PARALLAX.selector, 0xFF_88EC),
+            forbidden(here, PARALLAX.selector, 0xFF_88EC),
             None,
             "a real selector at a real address must pass, or the two rows above witness nothing"
         );
     }
 
-    /// ⚑ **The ADDRESS route fires on a symbol the bus resolved, not only on the constant.**
+    /// ⚑ **THE ADDRESS ROUTE FOLLOWS THE LISTING, NOT ANY NUMBER IN THIS FILE.**
+    ///
+    /// # This is the regression gate for the defect the resolve-instead-of-transcribe change fixes
+    ///
+    /// The guard shipped with a transcribed `LAB_INDEX_ADDR = $FFFFEE0D`, and aeon's sweep (`61918621`)
+    /// moved the cursor to [`S4_LAB_INDEX`]. A transcribed guard then fails **both ways at once** — the
+    /// real cursor is no longer refused, and [`NOTED_STALE_LAB_INDEX`], which is now inside
+    /// `Player_Pos_Ring`, is refused in the cursor's name.
+    ///
+    /// ⚑ **The listing address used here is FICTIONAL and appears nowhere else in this crate**, which is
+    /// the whole design of the row. A gate that used [`S4_LAB_INDEX`] would still pass if somebody
+    /// re-keyed the guard on a fresh literal — it would be testing a coincidence. This one can only pass
+    /// if the guard reads the address it was handed, so re-transcribing ANY constant fails it.
+    #[test]
+    fn the_address_route_follows_the_listing_rather_than_any_number_in_this_file() {
+        // A number no listing on this box carries and no constant in this crate holds.
+        const ELSEWHERE: u32 = 0xFFFF_BEEF;
+        let moved = Cursor {
+            raw: Some(ELSEWHERE),
+        };
+
+        let caught = forbidden(moved, "Some_Other_Cell", ELSEWHERE)
+            .expect("the address route must fire wherever THIS listing puts the cursor");
+        assert_eq!(caught.reason.as_deref(), Some("labIndexIsNotASelector"));
+        assert!(
+            caught.message.contains("resolves to that address"),
+            "the ADDRESS route must be the one that caught it: {}",
+            caught.message
+        );
+
+        // ⚑ And the two literals a transcribing guard would have used must now pass. Either one refusing
+        // means the address route is keyed on a number rather than on the listing.
+        for (what, addr) in [
+            ("the note's stale address", NOTED_STALE_LAB_INDEX),
+            ("s4.debug.lst's current one", S4_LAB_INDEX),
+        ] {
+            assert_eq!(
+                forbidden(moved, "Some_Other_Cell", addr),
+                None,
+                "{what} ({addr:#010X}) was refused on a listing that puts the cursor at                  {ELSEWHERE:#010X}. The address route is keyed on a TRANSCRIBED constant again, which is                  the defect this row exists for: it refuses a cell that is not the cursor, in the                  cursor's name, and misses the one that is"
+            );
+        }
+    }
+
+    /// ⚑ **A LISTING WITHOUT THE CURSOR KEEPS THE NAME ROUTE AND SAYS THE ADDRESS ROUTE DID NOT RUN.**
+    ///
+    /// Measured 2026-09-19: `s4.debug.lst` carries `Debug_Lab_Index` and `s4.lst`, `demo.lst` and
+    /// `demo.debug.lst` do not — so this is the common shape, not an edge. Three things are pinned, and
+    /// the third is the one that makes this honest rather than merely quiet:
+    ///
+    /// 1. the name route still refuses;
+    /// 2. the address route refuses **nothing**, including the addresses the old constant held — an
+    ///    unresolvable cursor must not be turned into a refusal of some other cell;
+    /// 3. the refusal **says** only the name route ran. A guard that silently checked half of what it
+    ///    advertises would leave a reader believing both routes were live.
+    #[test]
+    fn an_unresolvable_cursor_keeps_the_name_route_and_says_the_address_route_did_not_run() {
+        let absent = Cursor { raw: None };
+
+        let by_name = forbidden(absent, LAB_INDEX_SYMBOL, 0x00FF_0000)
+            .expect("the NAME route needs no listing and must still refuse");
+        assert_eq!(by_name.reason.as_deref(), Some("labIndexIsNotASelector"));
+        assert!(
+            by_name.message.contains("ONLY THE NAME ROUTE RAN")
+                && by_name.message.contains("was not run"),
+            "the refusal must say how much of the guard ran: {}",
+            by_name.message
+        );
+
+        for (what, addr) in [
+            ("the note's stale address", NOTED_STALE_LAB_INDEX),
+            ("s4.debug.lst's current one", S4_LAB_INDEX),
+            ("the selector's", 0xFFFF_88EC),
+        ] {
+            assert_eq!(
+                forbidden(absent, "Some_Other_Cell", addr),
+                None,
+                "{what} ({addr:#010X}) was refused on a listing that does not carry the cursor at all.                  With no resolved address there is nothing for the address route to compare against, and                  inventing one refuses a cell in the cursor's name"
+            );
+        }
+    }
+
+    /// ⚑ **An absent cursor does NOT refuse the feature**, and a broken bus is NOT reported as an absence.
+    ///
+    /// The two halves are one decision seen from both sides. A listing without `Debug_Lab_Index` is an
+    /// ordinary release or no-lab build, so [`cursor`] answers `None` and the gesture proceeds with the
+    /// name route — the drift-refusal trap this lane avoided for [`SCRATCH_NOTED_ADDR`], where a gate's red
+    /// would have been about the layout rather than about the subject. But *no listing loaded at all* is
+    /// not a statement about this symbol, and swallowing it would let a dead bus read as a build with no
+    /// lab, so it is propagated.
+    #[test]
+    fn a_missing_cursor_symbol_is_not_a_refusal_and_a_dead_bus_is_not_a_missing_cursor() {
+        // 1. The name is absent. The cursor resolves to nothing and the GESTURE STILL RUNS.
+        let mut f = Fake::full().without(LAB_INDEX_SYMBOL);
+        assert_eq!(
+            cursor(&mut f).expect("an absent cursor is not a refusal"),
+            Cursor { raw: None }
+        );
+        let w = point_at(&mut f, &PARALLAX, "ParallaxConfig_Haze")
+            .expect("a listing without the cursor must still be able to select a scene");
+        assert_eq!(w.cells.len(), PARALLAX.writes.len());
+
+        // The control: the same fixture WITH the name resolves it, so the row above witnesses the absence
+        // rather than a `cursor` that answers `None` for everything.
+        let mut g = Fake::full();
+        assert_eq!(
+            cursor(&mut g).expect("the full fixture carries the cursor"),
+            Cursor {
+                raw: Some(S4_LAB_INDEX)
+            },
+            "`cursor` must read the listing's address, not a constant"
+        );
+
+        // 2. A bus that answers nothing at all is propagated, not converted into `raw: None`.
+        struct Dead;
+        impl Caller for Dead {
+            fn call(&mut self, _m: &str, _p: Value) -> Result<Value, Refusal> {
+                Err(Refusal {
+                    code: Some(-32012),
+                    reason: Some("noListing".to_string()),
+                    message: "no listing is loaded".to_string(),
+                    remedy: None,
+                })
+            }
+            fn address_of(&mut self, _s: &str) -> Option<u32> {
+                None
+            }
+        }
+        let e = cursor(&mut Dead).expect_err("a bus with no listing is not a build without a lab");
+        assert_eq!(e.reason.as_deref(), Some("noListing"));
+    }
+
+    /// ⚑ **The ADDRESS route fires on a symbol the bus resolved, not only on a value handed in by hand.**
     ///
     /// # This row exists because the guard it checks was dead, and its own sibling could not tell
     ///
-    /// `the_lab_index_is_refused_by_name_and_by_address_independently` hands [`forbidden`] the constant
-    /// and passes. For a while the shipped path handed it the **24-bit door address** instead, and
-    /// `$FFEE0D` never equals `$FFFFEE0D`, so the address branch could not fire on any real input while
-    /// that sibling went on being green. The two spellings are the whole bug, so this row goes through
-    /// `run` with a real listing and a real resolve, which is the only arrangement that can see it.
+    /// `the_lab_index_is_refused_by_name_and_by_address_independently` calls [`forbidden`] directly and
+    /// passes. For a while the shipped path handed it the **24-bit door address** instead, and `$FFF00D`
+    /// never equals `$FFFFF00D`, so the address branch could not fire on any real input while that sibling
+    /// went on being green. The two spellings are the whole bug, so this row goes through `run` with a real
+    /// listing and two real resolves — the cell's and the cursor's — which is the only arrangement that can
+    /// see it.
     ///
     /// The mutation lesson banked in this repo, arriving again: a guard tested on the value it was
     /// written against is tested on the one input that cannot expose it.
@@ -3311,9 +3585,11 @@ mod tests {
         };
 
         let mut f = Fake::full();
-        f.listing
-            .push(("Some_Other_Cell", 0xFF_EE0D, LAB_INDEX_ADDR));
-        let e = run(&mut f, &TRAP, "whatever", 0)
+        f.listing.push(("Some_Other_Cell", 0xFF_F00D, S4_LAB_INDEX));
+        // ⚑ The cursor comes out of the same fixture listing the cell does, resolved here exactly as the
+        // shipped gesture resolves it. Nothing in this row hands the guard a number from this file.
+        let cur = cursor(&mut f).expect("the full fixture carries the cursor");
+        let e = run(&mut f, cur, &TRAP, "whatever", 0)
             .expect_err("a cell resolving onto the cursor must be refused");
         assert_eq!(e.reason.as_deref(), Some("labIndexIsNotASelector"));
         assert!(
@@ -3327,11 +3603,11 @@ mod tests {
         // which is exactly the dead guard this row was written against. Pinned so that a future change
         // routing the door address in here fails HERE, with this sentence, rather than silently.
         assert_eq!(
-            forbidden("Some_Other_Cell", 0xFF_EE0D),
+            forbidden(cur, "Some_Other_Cell", 0xFF_F00D),
             None,
-            "the 24-bit door form cannot match LAB_INDEX_ADDR, which is why `run` resolves and passes \
-             the 32-bit `rawAddr`. If this ever starts refusing, the constant has changed spelling and \
-             the doc on `forbidden` is stale"
+            "the 24-bit door form cannot match the resolved `rawAddr`, which is why `run` resolves and \
+             passes the 32-bit spelling. If this ever starts refusing, `resolve` has changed which \
+             spelling it reports and the doc on `forbidden` is stale"
         );
     }
 
@@ -3344,8 +3620,9 @@ mod tests {
                 let mut f = Fake::full();
                 let (_, raw) =
                     resolve(&mut f, w.symbol).expect("the fake listing carries every cell");
+                let cur = cursor(&mut f).expect("the fake listing carries the cursor");
                 assert_eq!(
-                    forbidden(w.symbol, raw.wrapping_add(w.disp)),
+                    forbidden(cur, w.symbol, raw.wrapping_add(w.disp)),
                     None,
                     "{}'s cell `{}` reaches the START chord's cursor",
                     c.key,
@@ -4218,7 +4495,7 @@ mod tests {
                 S4_SCRATCH_END,
             ),
             ("Parallax_InstallScratch", 0x01_2345, 0x0001_2345),
-            ("Debug_Lab_Index", 0xFF_EE0D, 0xFFFF_EE0D),
+            ("Debug_Lab_Index", 0xFF_F00D, S4_LAB_INDEX),
         ])
         .with_equates(scratch_equates())
         // installed: the selector holds the scratch's own raw address
@@ -4647,7 +4924,7 @@ mod tests {
         // A listing whose scratch sits so that band 0's `factor_a_s1` (header 30 + 2) is the cursor.
         // ⚑ The END mark moves with it, so the SPAN is unchanged: a fixture that moved only the base
         // would be refused by the factoring check and would report a green on the wrong guard.
-        let base = LAB_INDEX_ADDR - 32;
+        let base = S4_LAB_INDEX - 32;
         let end = base + 542;
         f.listing
             .retain(|(n, _, _)| *n != SCRATCH && *n != SCRATCH_END && *n != SCRATCH_ARM);
