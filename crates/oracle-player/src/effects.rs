@@ -4796,6 +4796,104 @@ mod tests {
         );
     }
 
+    /// ⚑ **THE GATE M18 FOUND MISSING, AND THE MUTATION THAT READ GREEN IS THE REASON IT EXISTS.**
+    ///
+    /// The campaign's M18 changed [`resolved_offsets`] from *drop a field whose equate is unpublished* to
+    /// *default it to zero*, and **the suite stayed green**: the row on `nudge` covers the WRITE path,
+    /// which resolves the equate itself and refuses, and nothing covered the **DRAW** path, which reads its
+    /// offsets out of [`Nudging::offsets`].
+    ///
+    /// That gap is not cosmetic. Offset 0 is `pcfg_band_count`, so a defaulted zero makes the control for
+    /// an unpublished field **display the band count as its value** — a readout that lies, on the surface
+    /// whose entire thesis is that it does not, with a correct refusal on the write hiding it from the one
+    /// row that would have noticed.
+    ///
+    /// So both directions are asserted here: absent means **absent**, and present means the byte the
+    /// listing's offset names.
+    #[test]
+    fn a_field_whose_equate_is_unpublished_has_no_offset_rather_than_a_defaulted_zero() {
+        let field = FIELDS
+            .iter()
+            .find(|f| f.key == "layer_mask")
+            .expect("the field exists");
+
+        // Present: the offset is the listing's (2) and the value is the byte there.
+        let mut f = armed(2);
+        let h = hook(&mut f).expect("the listing");
+        let n = Nudging {
+            hook: h,
+            installed: took(&mut f, &h).expect("the state"),
+            scratch: Some(read_scratch(&mut f, &h).expect("the bytes")),
+            offsets: resolved_offsets(&mut f, &h),
+        };
+        assert_eq!(n.equate_of(field), Some(2));
+        // `scratch_bytes` puts `i ^ 0x5A` at byte i, so the u16 at offset 2 is $5859 — a value no other
+        // offset in the buffer holds, which is why the fixture uses distinct bytes rather than a pattern.
+        assert_eq!(
+            n.value_of(field, 0),
+            Some(0x5859),
+            "a present equate must read the word the LISTING's offset names"
+        );
+
+        // Absent: no entry at all, so the control has nothing to draw and says so.
+        let mut g = armed(2).without_equate("parallax_config_pcfg_layer_mask");
+        let h = hook(&mut g).expect("the listing still factors");
+        let n = Nudging {
+            hook: h,
+            installed: took(&mut g, &h).expect("the state"),
+            scratch: Some(read_scratch(&mut g, &h).expect("the bytes")),
+            offsets: resolved_offsets(&mut g, &h),
+        };
+        assert_eq!(
+            n.equate_of(field),
+            None,
+            "an unpublished equate must leave NO entry. A defaulted 0 is `pcfg_band_count`'s offset, so \
+             the control would show the band count as this field's value"
+        );
+        assert_eq!(
+            n.value_of(field, 0),
+            None,
+            "and therefore no value, so the control draws unavailable rather than confidently wrong"
+        );
+        // The other fields are unaffected, so this is a per-field absence and not a collapsed surface.
+        let other = FIELDS.iter().find(|f| f.key == "factor_a_s1").unwrap();
+        assert_eq!(n.equate_of(other), Some(2));
+    }
+
+    /// ⚑ **THE MOVED ADDRESS IS SAID ON SCREEN, not only in a comment.**
+    ///
+    /// A reader comparing this panel against `NOTE` §6.1 finds the two addresses disagree, and on every
+    /// other symbol this module touches a disagreement is a **refusal** ([`Channel::drift`]). So the shape
+    /// line names the difference and says why it is benign here. Left out, the most likely reading of the
+    /// discrepancy is the one the panel refuses everywhere else for, which is an hour.
+    #[test]
+    fn the_shape_line_names_the_notes_address_when_the_listing_has_moved_past_it() {
+        let mut f = armed(2);
+        let h = hook(&mut f).expect("the listing");
+        let n = Nudging {
+            hook: h,
+            installed: took(&mut f, &h).expect("the state"),
+            scratch: None,
+            offsets: Vec::new(),
+        };
+        let line = n.shape_line();
+        for want in ["542", "30", "16", "32"] {
+            assert!(
+                line.contains(want),
+                "the derivation must be checkable: {line}"
+            );
+        }
+        assert!(
+            line.contains(&format!("{SCRATCH_NOTED_ADDR:#010X}")),
+            "the note's address must appear, because a reader will find the disagreement anyway: {line}"
+        );
+        assert!(
+            line.contains("nothing refuses on it"),
+            "and it must say the disagreement is deliberately not a refusal, which is what a reader of \
+             `Channel::drift` will otherwise assume it should be: {line}"
+        );
+    }
+
     /// ⚑ **NOTHING OFFERED IS A FIELD THE NOTE CALLS INERT OR COUPLED.**
     ///
     /// `NOTE` §6.5's three-way division is the whole reason [`FIELDS`] is short: an **inert** field is a
