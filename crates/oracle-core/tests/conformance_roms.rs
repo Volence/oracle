@@ -196,7 +196,55 @@ const BASELINE: &[(&str, &str)] = &[
         "shadow_highlight",
         "VISUAL-BASELINE frame_hash=0x428e03aa61cc0285",
     ),
-    ("vcounter", "VISUAL-BASELINE frame_hash=0x294957c8001b9f93"),
+    (
+        // **Was a picture pin with a FALSE reason; now a verdict row** (2026-09-18,
+        // `TESTROM-VCOUNTER-MENU`). From this row's first pin (2026-07-25) to 2026-09-18 it read
+        // `VISUAL-BASELINE frame_hash=0x294957c8001b9f93`, and the ledger's reason was "not scraped: the ROM
+        // draws its results in a proportional font that is not an ASCII-ordered nametable, so the text-scrape
+        // path does not apply", with open question Q2 adding "needs a glyph table; deferred". Both are wrong.
+        // The ROM's text is ordinary ASCII-ordered nametable text at **font base `$100`** — the base
+        // `m68k_memory_test` already uses, through the same `text_rows` — and nothing anywhere in it needs a
+        // glyph table. The real blocker was that this ROM is **menu-driven**: it prints nine mode choices and
+        // a scan-length toggle and does nothing until a button is pressed, and no scraper in this file drove a
+        // menu for it. Sixteen frame hashes were pinned in place of nine verdicts for eight weeks because the
+        // note said the door was locked.
+        //
+        // WHAT THE ROW SAYS. `vctest` reads the V counter once per scanline for a whole scan and prints the
+        // values as a paged table. The run drives all nine menu items at both scan lengths (262 and 312
+        // lines) from one boot — its result screen's `Start` is an *exit* back to the menu, and both the
+        // cursor row and the toggle survive it — and the row groups the modes that read the same sequence, so
+        // a mode that ever starts differing splits its own group out of `modes[0-8]`.
+        //
+        // WHY EVERY MODE READS THE SAME SEQUENCE, and why that is a recorded limitation rather than nine
+        // passes. `Vdp::v_counter` is a pure function of the master clock: it reads no register, so reg 12's
+        // LSM bits (interlace) and reg 1's M4 and M2/V30 bits cannot move it. `ACTIVE_LINES` = 224 is
+        // documented in `vdp.rs` as "the only vertical mode this core models" and `LINES_PER_FRAME` as "fixed
+        // at NTSC's 262". Only menu item 3 (Mode 5 320x224) is a V28 NTSC mode; for it the reading
+        // `$00-$EA(235),$E5-$FF(27)` is exactly what recon R2 pins, and that is a genuine pass. The other
+        // eight ask for a vertical timing this core does not have and agree by being unmodelled. Nothing is
+        // excluded: the navigation is identical for all nine, so the eight cost one extra keypress each, and
+        // they are the only thing in the corpus that would *announce* an interlace or V30 vertical-timing
+        // model arriving.
+        //
+        // The 312-line half is the one that measures the frame's LENGTH rather than the counter's shape: a
+        // scan longer than one frame wraps, and `$00-$31(50)` says the wrap came 50 lines into the next frame
+        // — 262 lines per frame, read off the ROM instead of out of the constant. A PAL/V30 frame is 313
+        // lines, so that segment is exactly where items 6-8 would separate.
+        //
+        // `[recon-R2 NTSC-V28 match n/9]` is a comparison against `vc_r2_ntsc_v28`, which restates recon R2's
+        // published progression (`docs/2026-07-16-vdp-recon.md` §R2) instead of calling `Vdp::v_counter` —
+        // deliberately, so a change to the model moves this row rather than moving the expectation with it.
+        // `the_vcounter_row_measures_nine_established_modes` proves the comparison can fail and that all
+        // eighteen readings are of modes this run established.
+        //
+        // No file under `crates/oracle-core/src/` was touched, and the other 16 rows of this scorecard —
+        // plus `determinism_gate`, `export_state_v1`, `golden_frames` and `scanline_goldens` — are
+        // byte-identical across this parcel. Evidence: `docs/2026-09-18-vcounter-menu.md`.
+        "vcounter",
+        "262-line scan: modes[0-8]=$00-$EA(235),$E5-$FF(27) [recon-R2 NTSC-V28 match 9/9] | \
+         312-line scan: modes[0-8]=$00-$EA(235),$E5-$FF(27),$00-$31(50) [recon-R2 NTSC-V28 match 9/9] | \
+         V28-ONLY MODEL: only mode 3 is a V28 mode, so the other 8 agree by being unmodelled",
+    ),
     (
         // A1 (2026-08-03): live FIFO EMPTY/FULL status flags. The Results counts were UNCHANGED, but
         // T16 "FIFO Wait States" went 26/80 → 62/80 verdict bytes green (every group's first-probe
@@ -627,12 +675,13 @@ fn glyph_label(h: u64) -> String {
     }
 }
 
-/// Read the on-screen text out of the plane-A nametable, one `String` per cell row.
+/// Plane-A nametable geometry: `(byte base, plane pitch in cells, visible columns, cell rows)`.
 ///
-/// Plane A base = `(R2 & $38) << 10`; plane pitch from R16; visible columns from the rendered line width
-/// (256 = H32, 320 = H40). A cell's low 11 bits are `font_base + ASCII` for every text ROM here; anything
-/// outside printable ASCII becomes a space, so rows compare by their text content after [`squeeze`].
-fn text_rows(sys: &System, font_base: u16) -> Vec<String> {
+/// Extracted from [`text_rows`] so the two channels that read this plane — its **text** and, for
+/// `vcounter`, its **priority bits** (that ROM's menu cursor is a priority highlight and carries no text of
+/// its own) — cannot drift onto different geometry. Plane A base = `(R2 & $38) << 10`; pitch from R16;
+/// visible columns from the rendered line width (256 = H32, 320 = H40).
+fn plane_a_geometry(sys: &System) -> (usize, usize, usize, usize) {
     let vdp = sys.vdp();
     let base = ((vdp.regs()[2] as usize) & 0x38) << 10;
     let pitch = match vdp.regs()[16] & 0x03 {
@@ -641,7 +690,17 @@ fn text_rows(sys: &System, font_base: u16) -> Vec<String> {
         _ => 128,
     };
     let cols = vdp.render_line(0).len() / 8;
-    let rows = (ACTIVE_LINES / 8) as usize;
+    (base, pitch, cols, (ACTIVE_LINES / 8) as usize)
+}
+
+/// Read the on-screen text out of the plane-A nametable, one `String` per cell row.
+///
+/// Plane A base = `(R2 & $38) << 10`; plane pitch from R16; visible columns from the rendered line width
+/// (256 = H32, 320 = H40). A cell's low 11 bits are `font_base + ASCII` for every text ROM here; anything
+/// outside printable ASCII becomes a space, so rows compare by their text content after [`squeeze`].
+fn text_rows(sys: &System, font_base: u16) -> Vec<String> {
+    let vdp = sys.vdp();
+    let (base, pitch, cols, rows) = plane_a_geometry(sys);
     (0..rows)
         .map(|row| {
             (0..cols)
@@ -1185,6 +1244,703 @@ fn scrape_color_1536(sys: &mut System) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------------
+// `vcounter` — the menu-driven ROM
+// ---------------------------------------------------------------------------------------------------
+//
+// **The ledger's reason for never scraping this ROM was FALSE, and this section replaces it**
+// (2026-09-18, `TESTROM-VCOUNTER-MENU`). From 2026-07-25 to 2026-09-18 the row read
+// `VISUAL-BASELINE frame_hash=…` with the note "not scraped: the ROM draws its results in a
+// proportional font that is not an ASCII-ordered nametable, so the text-scrape path does not apply", and
+// open question Q2 said scraping it "needs a glyph table; deferred". Measured: the ROM's text is
+// **ordinary ASCII-ordered nametable text at font base `$100`** — the same base `m68k_memory_test`
+// already uses, through the same [`text_rows`]. No glyph table exists to build.
+//
+// The real blocker was never the font. It is that this ROM is **menu-driven**: it prints nine test modes
+// and a scan-length toggle and does nothing at all until a button is pressed, and nothing in the harness
+// drove a menu for it. So the work is navigation, and the navigation is what the rest of this section is.
+
+/// `vcounter`'s font base. Same as `m68k_memory_test`'s; hardcoded per ROM like every other one here, so a
+/// decode change shows up as garbled text rather than being silently re-derived.
+const VC_FONT: u16 = 0x100;
+
+/// Plane-A cell row of menu item `0`. Items 0..=8 occupy rows 5..=13 — measured off the nametable, and the
+/// same rows the probe's text grid prints them on.
+const VC_MENU_ROW0: usize = 5;
+
+/// The result table's geometry, measured off the ROM's own pages: 16 cell rows starting at cell row 7, 8
+/// columns of `XXXX ` five characters wide, filled **column-major** (down a column, then the next).
+///
+/// Column-major is a measurement, not a guess, and the page that settles it is the LAST one: with a
+/// 262-line scan page 2 holds six entries and they are in column 0, rows 7..=12 — row-major would have put
+/// them in row 7, columns 0..=5. Re-confirmed on the 312-line scan's page 2, whose 56 entries fill columns
+/// 0, 1 and 2 and then eight rows of column 3.
+const VC_TABLE_ROW0: usize = 7;
+const VC_TABLE_ROWS: usize = 16;
+const VC_TABLE_COLS: usize = 8;
+/// Characters per table cell: four hex digits and a space.
+const VC_CELL_W: usize = 5;
+/// Values one full result page holds.
+const VC_PAGE: usize = VC_TABLE_ROWS * VC_TABLE_COLS;
+
+/// Frames a button is held, and then released, for one press. The ROM's menu wait is **edge-shaped**:
+/// measured, a one-frame press moves the cursor once and a thirty-frame hold also moves it once. Two is
+/// slack rather than a tuned constant — every press in this section is followed by a wait on the *effect*
+/// the press was supposed to have, so a press that did not land fails loudly at that step.
+const VC_HOLD: u64 = 2;
+
+/// The two scan lengths the ROM's `A` toggle offers, in the order this run visits them (power-on first).
+const VC_SCANS: &[u32] = &[262, 312];
+
+/// One menu item: the label the ROM prints, and the **(reg 12, reg 1) pair the ROM programs for it** —
+/// which the ROM also prints on its own result screen as `Reg: 8Crr 81rr`, and which is therefore the
+/// channel that says which mode actually ran.
+///
+/// Every pair is measured off that result screen (`docs/2026-09-18-vcounter-menu.md`), and the nine are
+/// **pairwise distinct** — asserted by [`the_vcounter_mode_table_discriminates_the_nine_modes`], because a
+/// mode gate built on a value two modes share would pass for the wrong mode. Reg 12: bit 7 = RS1 (H40),
+/// bits 2-1 = LSM1/LSM0 (interlace). Reg 1: bit 6 = display enable, bit 3 = M2/V30 (240-line), bit 2 = M5.
+struct VcMode {
+    label: &'static str,
+    r12: u8,
+    r1: u8,
+}
+
+/// The nine items of the ROM's mode menu, in menu order (item = index).
+const VC_MODES: &[VcMode] = &[
+    VcMode {
+        label: "M4-256x192",
+        r12: 0x00,
+        r1: 0x40,
+    },
+    VcMode {
+        label: "M4-256x192-IM1",
+        r12: 0x02,
+        r1: 0x40,
+    },
+    VcMode {
+        label: "M4-256x192-IM2",
+        r12: 0x06,
+        r1: 0x40,
+    },
+    VcMode {
+        label: "M5-320x224",
+        r12: 0x81,
+        r1: 0x44,
+    },
+    VcMode {
+        label: "M5-320x448-IM1",
+        r12: 0x83,
+        r1: 0x44,
+    },
+    VcMode {
+        label: "M5-320x448-IM2",
+        r12: 0x87,
+        r1: 0x44,
+    },
+    VcMode {
+        label: "M5-320x240-PAL",
+        r12: 0x81,
+        r1: 0x4C,
+    },
+    VcMode {
+        label: "M5-320x480-IM1-PAL",
+        r12: 0x83,
+        r1: 0x4C,
+    },
+    VcMode {
+        label: "M5-320x480-IM2-PAL",
+        r12: 0x87,
+        r1: 0x4C,
+    },
+];
+
+/// The one menu item that is a **V28 NTSC** mode — the only vertical mode this core models
+/// (`Vdp::ACTIVE_LINES` = 224 "the only vertical mode this core models"; `LINES_PER_FRAME` "this core
+/// fixes at NTSC's 262"). Its V-counter sequence is the one recon R2 pins; the other eight ask for a
+/// vertical timing this core does not have.
+const VC_V28_ITEM: usize = 3;
+
+/// The plane-A cell row carrying the menu cursor, or `None` if it is not unambiguous.
+///
+/// **This ROM's cursor carries no text.** It highlights the selected line by setting the nametable cell's
+/// **priority bit** (cell bit 15) across that row and nowhere else, so the cursor is invisible in
+/// [`text_rows`]' output and this is the only channel that has it. Measured: at power-on exactly cell row 8
+/// has the bit set (menu item 3); one `Up` press moves it to row 7, one `Down` to row 9.
+fn vc_cursor_row(sys: &System) -> Option<usize> {
+    let (base, pitch, cols, rows) = plane_a_geometry(sys);
+    let vram = sys.vdp().vram();
+    let hits: Vec<usize> = (0..rows)
+        .filter(|row| {
+            (0..cols).any(|col| {
+                let off = base + (row * pitch + col) * 2;
+                u16::from_be_bytes([vram[off], vram[off + 1]]) & 0x8000 != 0
+            })
+        })
+        .collect();
+    (hits.len() == 1).then(|| hits[0])
+}
+
+/// The squeezed text rows of whichever screen the ROM is on.
+fn vc_rows(sys: &System) -> Vec<String> {
+    text_rows(sys, VC_FONT).iter().map(|r| squeeze(r)).collect()
+}
+
+/// Whether the ROM is on its **mode menu** — its own words for it. Matched as a prefix because the ROM
+/// ends the line with a full stop ("Press START to run a test."), which is punctuation rather than a fact
+/// about the screen.
+fn vc_on_menu(sys: &System) -> bool {
+    vc_rows(sys)
+        .iter()
+        .any(|r| r.starts_with("Press START to run a test"))
+}
+
+/// Whether the ROM is on its **result screen** — its own words, plus a header this reader can parse.
+fn vc_on_results(sys: &System) -> bool {
+    vc_result_header(sys).is_some()
+        && vc_rows(sys)
+            .iter()
+            .any(|r| r.starts_with("Press START to exit"))
+}
+
+/// `Lines to scan: N` off the menu — the ROM's own statement of what the `A` toggle currently selects.
+fn vc_menu_scan_len(sys: &System) -> Option<u32> {
+    vc_rows(sys)
+        .iter()
+        .find_map(|r| r.strip_prefix("Lines to scan:")?.trim().parse().ok())
+}
+
+/// The result screen's header, `Page: p/max  Reg: 8Crr 81rr  Format:f`, as
+/// `(page, max_page, reg12, reg1, format)`.
+///
+/// The two `Reg:` words are **control-port register-write words** (`%100rrrrr dddddddd`), so their high
+/// bytes are `$8C` (register 12) and `$81` (register 1); anything else means the header shape moved and is
+/// reported as `None` rather than parsed loosely.
+fn vc_result_header(sys: &System) -> Option<(usize, usize, u8, u8, u8)> {
+    let row = vc_rows(sys).into_iter().find(|r| r.starts_with("Page:"))?;
+    let f: Vec<&str> = row.split_whitespace().collect();
+    if f.len() != 6 || f[2] != "Reg:" {
+        return None;
+    }
+    let (page, max) = f[1].split_once('/')?;
+    let w12 = u16::from_str_radix(f[3], 16).ok()?;
+    let w1 = u16::from_str_radix(f[4], 16).ok()?;
+    if w12 >> 8 != 0x8C || w1 >> 8 != 0x81 {
+        return None;
+    }
+    Some((
+        page.parse().ok()?,
+        max.parse().ok()?,
+        (w12 & 0xFF) as u8,
+        (w1 & 0xFF) as u8,
+        f[5].strip_prefix("Format:")?.parse().ok()?,
+    ))
+}
+
+/// The V-counter values on the result page currently shown, in scan order.
+///
+/// Refuses a page with a hole rather than compacting one away: a blank cell inside a column, or a filled
+/// column after an empty one, means the fill order this reader assumes no longer describes the ROM, and
+/// compacting would hand back a shorter table that still looked like a clean sequence.
+fn vc_page_values(sys: &System) -> Vec<u16> {
+    let rows = text_rows(sys, VC_FONT);
+    let mut out = Vec::new();
+    let mut column_was_short = false;
+    for col in 0..VC_TABLE_COLS {
+        let mut in_column = 0usize;
+        for r in 0..VC_TABLE_ROWS {
+            let cell: String = rows[VC_TABLE_ROW0 + r]
+                .chars()
+                .skip(col * VC_CELL_W)
+                .take(4)
+                .collect();
+            let value = (cell.len() == 4 && cell.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| u16::from_str_radix(&cell, 16).expect("four hex digits"));
+            if let Some(v) = value {
+                assert_eq!(
+                    in_column, r,
+                    "vcounter's result page has a hole: column {col} row {r} holds {v:#06x} but an \
+                     earlier row of that column is blank. The table is filled column-major with no gaps \
+                     (measured); a reader that compacted a hole away would hand back a short table that \
+                     still looked like a clean sequence."
+                );
+                assert!(
+                    !column_was_short,
+                    "vcounter's result page has a filled column {col} after a short one — the \
+                     column-major fill order no longer describes this ROM"
+                );
+                out.push(v);
+                in_column += 1;
+            }
+        }
+        column_was_short |= in_column < VC_TABLE_ROWS;
+    }
+    out
+}
+
+/// Hold one button for [`VC_HOLD`] frames, then release it for [`VC_HOLD`] frames.
+fn vc_press(sys: &mut System, pad: Pad) {
+    sys.set_pad(oracle_core::io::PadPort::P1, pad);
+    sys.run_frames(VC_HOLD);
+    sys.set_pad(oracle_core::io::PadPort::P1, Pad::default());
+    sys.run_frames(VC_HOLD);
+}
+
+/// Run frame by frame until `pred` holds, and **panic naming what was being waited for** if it never does.
+/// Returns the frames spent. Every press in this section is followed by one of these on the effect the
+/// press was supposed to have, so the navigation is self-verifying step by step rather than timed.
+fn vc_wait(sys: &mut System, bound: u64, what: &str, pred: impl Fn(&System) -> bool) -> u64 {
+    for spent in 0..bound {
+        if pred(sys) {
+            return spent;
+        }
+        sys.run_frames(1);
+    }
+    panic!(
+        "vcounter: {what} did not happen within {bound} frames (pc ${:06X}) — the menu model no longer \
+         describes this ROM, so fail loudly rather than scrape whatever screen is up",
+        sys.cpu_regs().pc
+    );
+}
+
+/// Put the menu cursor on `item`, **one verified step at a time**: each single press must move the
+/// highlight exactly one row, and a press that lands on the wrong row (lost, doubled, or wrong direction)
+/// fails at that step instead of leaving the run on a mode nobody asked for.
+fn vc_select(sys: &mut System, item: usize) -> u64 {
+    let want = VC_MENU_ROW0 + item;
+    let mut frames = 0;
+    for step in 0..=VC_MODES.len() {
+        let at = vc_cursor_row(sys).unwrap_or_else(|| {
+            panic!("vcounter's menu has no single highlighted row, so the cursor cannot be read")
+        });
+        if at == want {
+            return frames;
+        }
+        assert!(
+            step < VC_MODES.len(),
+            "vcounter's cursor did not reach menu row {want} in {step} single steps (stuck at {at})"
+        );
+        let (pad, next) = if at > want {
+            (
+                Pad {
+                    up: true,
+                    ..Default::default()
+                },
+                at - 1,
+            )
+        } else {
+            (
+                Pad {
+                    down: true,
+                    ..Default::default()
+                },
+                at + 1,
+            )
+        };
+        vc_press(sys, pad);
+        frames += 2 * VC_HOLD;
+        frames += vc_wait(
+            sys,
+            30,
+            &format!("one press to move the menu cursor from row {at} to row {next}"),
+            |s| vc_cursor_row(s) == Some(next),
+        );
+    }
+    unreachable!()
+}
+
+/// Set the scan length with the `A` toggle, verified off the ROM's own `Lines to scan:` line.
+fn vc_set_scan_len(sys: &mut System, want: u32) -> u64 {
+    assert!(
+        VC_SCANS.contains(&want),
+        "vcounter's A toggle offers only {VC_SCANS:?} lines"
+    );
+    let at = vc_menu_scan_len(sys)
+        .expect("vcounter's menu must print `Lines to scan: N` before the toggle is used");
+    if at == want {
+        return 0;
+    }
+    vc_press(
+        sys,
+        Pad {
+            a: true,
+            ..Default::default()
+        },
+    );
+    2 * VC_HOLD
+        + vc_wait(
+            sys,
+            30,
+            &format!("the A toggle to select {want} lines"),
+            |s| vc_menu_scan_len(s) == Some(want),
+        )
+}
+
+/// A `vcounter` menu selection that has been **established off the machine**, and the only ticket into the
+/// V-counter table.
+///
+/// ## Why this is a type and not an assert
+///
+/// The failure this whole row exists to avoid is silent, and it is the same shape as the one
+/// [`ProvenScreen`] was built for one parcel earlier. If a mode selection does not take — a lost press, a
+/// cursor that clamped at the end of the list, an `A` toggle that flipped the wrong way — the run reads the
+/// **previous** mode's result screen. Every field parses, the table decodes, and the row prints nine
+/// plausible V-counter verdicts for tests that never ran. An `assert!` beside the scrape would catch that
+/// today and stop catching it the first time someone reorders the function, so the proof *gates*
+/// structurally instead: [`establish`](Self::establish) is the only constructor, it refuses loudly, and
+/// [`vc_classify`] cannot be called without the value it returns.
+///
+/// ## The four facts it is built from, each read from the machine
+///
+/// 1. **The cursor was on this item's row**, read immediately before `Start` out of the nametable's
+///    priority bits ([`vc_cursor_row`]) — and every single step that put it there was verified
+///    ([`vc_select`]).
+/// 2. **The ROM says it programmed this item's registers.** The result screen prints `Reg: 8Crr 81rr`, the
+///    two control-port register-write words it used for the run, and the nine items' pairs are pairwise
+///    distinct ([`the_vcounter_mode_table_discriminates_the_nine_modes`]). This is the load-bearing one: it
+///    is the ROM's own statement of which mode ran, and it is a complete discriminator over the nine.
+/// 3. **The menu's scan length was the one asked for**, read off its `Lines to scan:` line.
+/// 4. **The table the ROM printed is that long.** `Lines to scan: 262` with 128 entries would mean the
+///    pages were misread or a page was missed, which no amount of sequence-checking would notice.
+///
+/// `Format:0` is asserted too — the ROM's `A` key on the *result* screen re-formats the words for IM2, and
+/// every value in this row is the raw read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ProvenVcMode {
+    item: usize,
+    scan_len: u32,
+}
+
+impl ProvenVcMode {
+    fn establish(
+        item: usize,
+        scan_len: u32,
+        cursor_row: Option<usize>,
+        menu_scan_len: Option<u32>,
+        reg: (u8, u8),
+        format: u8,
+        entries: usize,
+    ) -> Self {
+        let m = &VC_MODES[item];
+        assert_eq!(
+            cursor_row,
+            Some(VC_MENU_ROW0 + item),
+            "the menu cursor was not on item {item} ({}) when Start was pressed, so the result screen \
+             below belongs to whatever mode WAS selected — and it would decode perfectly",
+            m.label
+        );
+        assert_eq!(
+            reg,
+            (m.r12, m.r1),
+            "vcounter's result screen says it ran with reg12=${:02X} reg1=${:02X}, but item {item} ({}) is \
+             ${:02X}/${:02X}. The selection did not take, so every V-counter value below is another mode's.",
+            reg.0,
+            reg.1,
+            m.label,
+            m.r12,
+            m.r1
+        );
+        assert_eq!(
+            menu_scan_len,
+            Some(scan_len),
+            "vcounter's menu said it would scan {menu_scan_len:?} lines, not {scan_len} — the A toggle did \
+             not take"
+        );
+        assert_eq!(
+            entries as u32, scan_len,
+            "vcounter printed {entries} values for a {scan_len}-line scan — a page was missed or the table \
+             layout moved, and a short table still reads as a clean sequence"
+        );
+        assert_eq!(
+            format, 0,
+            "vcounter's result screen is in IM2 format {format}; this row reads the RAW counter words"
+        );
+        Self { item, scan_len }
+    }
+}
+
+/// One established (mode, scan length) reading: the proof, and the V-counter sequence decomposed into
+/// ascending runs `(first, last, count)`.
+struct VcResult {
+    mode: ProvenVcMode,
+    runs: Vec<(u16, u16, usize)>,
+    matches_r2: bool,
+}
+
+/// Turn one run's raw table into a [`VcResult`]. Takes a [`ProvenVcMode`] rather than an item number
+/// because none of these values means anything until the mode they were produced in is established — see
+/// that type's docs.
+fn vc_classify(mode: ProvenVcMode, values: &[u16]) -> VcResult {
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < values.len() {
+        let mut j = i;
+        while j + 1 < values.len() && values[j + 1] == values[j] + 1 {
+            j += 1;
+        }
+        runs.push((values[i], values[j], j - i + 1));
+        i = j + 1;
+    }
+    VcResult {
+        matches_r2: values == vc_r2_ntsc_v28(mode.scan_len),
+        mode,
+        runs,
+    }
+}
+
+/// **The reference sequence, stated from recon R2 rather than read back out of the model.**
+///
+/// `docs/2026-07-16-vdp-recon.md` §R2 pins the NTSC V28 V counter as `0x00–0xEA` then `0xE5–0xFF`
+/// (235 + 27 = 262 lines), the jump being `0xEA → 0xE5`. A scan longer than one frame simply continues into
+/// the next one, so the expected reading for a scan of `n` lines is that sequence taken modulo 262.
+///
+/// It is written out here **deliberately duplicating** [`oracle_core::vdp::Vdp::v_counter`]'s arithmetic
+/// rather than calling it. Calling it would make the comparison circular — the model would agree with
+/// itself by construction, and a change to the model would move the expectation along with the reading
+/// instead of moving this row. `the_vcounter_row_measures_nine_established_modes` proves the comparison can
+/// fail, so it is not a tautology in the other direction either.
+fn vc_r2_ntsc_v28(scan_len: u32) -> Vec<u16> {
+    (0..scan_len)
+        .map(|i| match u16::try_from(i % 262).expect("262 fits u16") {
+            line @ 0..=0xEA => line,
+            line => 0xE5 + (line - 0xEB),
+        })
+        .collect()
+}
+
+/// One whole drive of `vcounter`: every menu item at every scan length, from one boot.
+struct VcounterRun {
+    results: Vec<VcResult>,
+    frames: u64,
+}
+
+/// Drive the ROM's menu through all [`VC_MODES`] x [`VC_SCANS`] combinations **in one boot**, because its
+/// result screen's `Start` is an *exit* back to the menu (measured) and the cursor row and scan-length
+/// toggle both survive that exit.
+///
+/// Nothing here is timed. Every step waits on the effect it was supposed to have — the menu appearing, the
+/// cursor moving exactly one row, the toggle changing the printed scan length, the result screen appearing,
+/// the page number advancing, the menu coming back — and panics naming the step if it does not.
+fn run_vcounter() -> Option<VcounterRun> {
+    let mut sys = boot("vcounter")?;
+    let mut frames = vc_wait(
+        &mut sys,
+        200,
+        "vcounter's menu to appear after boot",
+        vc_on_menu,
+    );
+    let mut results = Vec::new();
+    for &scan_len in VC_SCANS {
+        for item in 0..VC_MODES.len() {
+            assert!(
+                vc_on_menu(&sys),
+                "vcounter is not on its mode menu before item {item} / {scan_len} lines"
+            );
+            frames += vc_set_scan_len(&mut sys, scan_len);
+            frames += vc_select(&mut sys, item);
+
+            // The two menu-side facts, read at the last moment before the press that commits them.
+            let cursor_row = vc_cursor_row(&sys);
+            let menu_scan_len = vc_menu_scan_len(&sys);
+
+            vc_press(
+                &mut sys,
+                Pad {
+                    start: true,
+                    ..Default::default()
+                },
+            );
+            frames += 2 * VC_HOLD;
+            frames += vc_wait(
+                &mut sys,
+                600,
+                &format!("vcounter's result screen for item {item} / {scan_len} lines"),
+                vc_on_results,
+            );
+
+            let (_, max_page, r12, r1, format) =
+                vc_result_header(&sys).expect("the wait above proved a header");
+            // How many values each page must hold, **derived from the scan length the ROM itself printed on
+            // the menu**. The header appears before the table under it is finished being drawn (measured:
+            // reading page 0 as soon as the header parses got 212 of 262 values), so each page is waited on
+            // until it holds its own full count rather than until its number changes.
+            let printed = menu_scan_len.expect("the menu printed a scan length") as usize;
+            let mut values = Vec::new();
+            for page in 0..=max_page {
+                let want_on_page = printed.saturating_sub(page * VC_PAGE).min(VC_PAGE);
+                frames += vc_wait(
+                    &mut sys,
+                    120,
+                    &format!(
+                        "vcounter's result page {page} to finish drawing all {want_on_page} of its values"
+                    ),
+                    |s| {
+                        vc_result_header(s).map(|h| h.0) == Some(page)
+                            && vc_page_values(s).len() == want_on_page
+                    },
+                );
+                let header = vc_result_header(&sys).expect("still on the result screen");
+                assert_eq!(
+                    (header.2, header.3, header.4),
+                    (r12, r1, format),
+                    "vcounter's result header changed registers or format between pages {page} and 0"
+                );
+                values.extend(vc_page_values(&sys));
+                if page == max_page {
+                    break;
+                }
+                vc_press(
+                    &mut sys,
+                    Pad {
+                        c: true,
+                        ..Default::default()
+                    },
+                );
+                frames += 2 * VC_HOLD;
+            }
+
+            // THE GATE. Nothing below may read a V-counter value until the mode and scan length the table
+            // was produced under have been established off the machine; `vc_classify` takes the
+            // `ProvenVcMode` this line either produces or panics trying, so there is no path around it.
+            let mode = ProvenVcMode::establish(
+                item,
+                scan_len,
+                cursor_row,
+                menu_scan_len,
+                (r12, r1),
+                format,
+                values.len(),
+            );
+            results.push(vc_classify(mode, &values));
+
+            vc_press(
+                &mut sys,
+                Pad {
+                    start: true,
+                    ..Default::default()
+                },
+            );
+            frames += 2 * VC_HOLD;
+            frames += vc_wait(
+                &mut sys,
+                120,
+                &format!("vcounter's menu to come back after item {item} / {scan_len} lines"),
+                vc_on_menu,
+            );
+        }
+    }
+    Some(VcounterRun { results, frames })
+}
+
+/// The one shared run, so the ROM boots once per test binary however many tests read it.
+fn vcounter_run() -> Option<&'static VcounterRun> {
+    static RUN: std::sync::OnceLock<Option<VcounterRun>> = std::sync::OnceLock::new();
+    RUN.get_or_init(run_vcounter).as_ref()
+}
+
+/// One V-counter value as the row prints it: two hex digits while it fits a byte, four when it does not.
+/// Mode-blind on purpose — an IM2 or V30 model that ever produced a counter above `$FF` would widen the
+/// affected values and move this row, rather than being silently truncated into agreement.
+fn vc_hex(v: u16) -> String {
+    if v < 0x100 {
+        format!("${v:02X}")
+    } else {
+        format!("${v:04X}")
+    }
+}
+
+/// One mode's V-counter sequence as `$00-$EA(235),$E5-$FF(27)` — the ascending runs and their lengths,
+/// which is the whole content of the ROM's table in the space of a scorecard row.
+fn vc_signature(runs: &[(u16, u16, usize)]) -> String {
+    runs.iter()
+        .map(|(a, b, n)| format!("{}-{}({n})", vc_hex(*a), vc_hex(*b)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// A sorted list of menu items as compact ranges: `0-8`, or `0-5,7-8` if one ever differs.
+fn vc_ranges(items: &[usize]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        let mut j = i;
+        while j + 1 < items.len() && items[j + 1] == items[j] + 1 {
+            j += 1;
+        }
+        out.push(if i == j {
+            items[i].to_string()
+        } else {
+            format!("{}-{}", items[i], items[j])
+        });
+        i = j + 1;
+    }
+    out.join(",")
+}
+
+/// `vctest` — **the V counter, read by the ROM once per scanline for a whole scan and printed as a table**.
+///
+/// Nine modes (Mode 4, Mode 5, three interlace settings, and the ROM's three "PAL" 240-line variants) x two
+/// scan lengths (262 or 312 lines, the `A` toggle), all driven from one boot. Each reading is a
+/// [`ProvenVcMode`] and its sequence, and the row groups the modes that read the same sequence so a mode
+/// that ever starts differing splits its own group out.
+///
+/// ## What the nine modes measure here, and why all nine are worth having
+///
+/// This core models **one** vertical timing: `ACTIVE_LINES` = 224 is documented as "the only vertical mode
+/// this core models" and `LINES_PER_FRAME` is "fixed at NTSC's 262", and `Vdp::v_counter` is a pure
+/// function of the master clock that reads no register at all. So reg 12's LSM bits (interlace) and reg 1's
+/// M4 and M2/V30 bits cannot move the V counter, and all nine modes must read the V28 NTSC sequence. They
+/// do. That is a **recorded limitation, not nine passes**: only item 3 is a V28 mode, so the other eight
+/// agree by being unmodelled, and the row says so.
+///
+/// They are all measured anyway, and deliberately: the navigation is identical for all nine, so the eight
+/// unmodelled ones cost one extra menu keypress each, and they are the only thing in the corpus that would
+/// *announce* a V30 or interlace vertical-timing model arriving — correct or not. An excluded mode with a
+/// stated reason is a result; an excluded mode that silently never ran is the hole this row was opened to
+/// close. Nothing here is excluded.
+///
+/// The 312-line scan is the half that carries the frame's **total length**: a scan longer than one frame
+/// wraps, and the value the wrap lands on says where the frame ended. At 262 lines every mode reads
+/// `$00-$EA,$E5-$FF`; at 312 every mode reads that plus `$00-$31`, i.e. 50 lines into the next frame, which
+/// is 262 lines per frame measured off the ROM rather than read out of the constant. A PAL/V30 frame is 313
+/// lines, so that is exactly where items 6-8 would separate if this core ever grew them.
+///
+/// **Not scraped before 2026-09-18, for a reason that was wrong.** See this section's header comment.
+fn scrape_vcounter() -> Option<String> {
+    let run = vcounter_run()?;
+    let mut segments = Vec::new();
+    for &scan_len in VC_SCANS {
+        let mine: Vec<&VcResult> = run
+            .results
+            .iter()
+            .filter(|r| r.mode.scan_len == scan_len)
+            .collect();
+        let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+        for r in &mine {
+            let sig = vc_signature(&r.runs);
+            match groups.iter_mut().find(|(s, _)| *s == sig) {
+                Some((_, items)) => items.push(r.mode.item),
+                None => groups.push((sig, vec![r.mode.item])),
+            }
+        }
+        let body = groups
+            .iter()
+            .map(|(sig, items)| format!("modes[{}]={sig}", vc_ranges(items)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let matched = mine.iter().filter(|r| r.matches_r2).count();
+        segments.push(format!(
+            "{scan_len}-line scan: {body} [recon-R2 NTSC-V28 match {matched}/{}]",
+            mine.len()
+        ));
+    }
+    Some(format!(
+        "{} | V28-ONLY MODEL: only mode {VC_V28_ITEM} is a V28 mode, so the other 8 agree by being \
+         unmodelled",
+        segments.join(" | ")
+    ))
+}
+
+// ---------------------------------------------------------------------------------------------------
 // The scorecard
 // ---------------------------------------------------------------------------------------------------
 
@@ -1192,6 +1948,10 @@ fn scrape(name: &str) -> Option<String> {
     if name == "vdp_port_access" {
         // Read from the one shared whole-ROM run rather than booting the ROM a second time.
         return scrape_vdp_port_access();
+    }
+    if name == "vcounter" {
+        // Likewise: one shared menu drive, read by the scorecard row and by its control arm.
+        return scrape_vcounter();
     }
     let mut sys = boot(name)?;
     Some(match name {
@@ -1996,5 +2756,120 @@ fn vdp_port_access_full_rom_verdicts() {
          docs/2026-09-12-vdp-port-access-full-rom.md. Today's list:\n{}",
         moved.join("\n  "),
         today.join("\n")
+    );
+}
+
+/// **The `vcounter` mode gate's non-vacuity half: the nine items' register pairs must be pairwise
+/// distinct.**
+///
+/// [`ProvenVcMode::establish`] proves which mode ran by comparing the `Reg:` pair the ROM prints with the
+/// pair the menu item is defined by. That proof is only as strong as the table being a discriminator: if two
+/// items shared a pair, a selection that landed on the wrong one of them would establish anyway and the row
+/// would carry a reading of the wrong mode under the right label. Nine distinct pairs is what makes the
+/// comparison complete over the whole menu.
+#[test]
+fn the_vcounter_mode_table_discriminates_the_nine_modes() {
+    assert_eq!(
+        VC_MODES.len(),
+        9,
+        "vcounter's menu lists nine test modes (items 0-8)"
+    );
+    for (i, a) in VC_MODES.iter().enumerate() {
+        for (j, b) in VC_MODES.iter().enumerate().skip(i + 1) {
+            assert_ne!(
+                (a.r12, a.r1),
+                (b.r12, b.r1),
+                "vcounter items {i} ({}) and {j} ({}) share the register pair ${:02X}/${:02X}, so the \
+                 result screen's `Reg:` field cannot tell them apart and `ProvenVcMode::establish` would \
+                 accept a reading of the wrong mode",
+                a.label,
+                b.label,
+                a.r12,
+                a.r1
+            );
+        }
+    }
+    assert!(
+        VC_V28_ITEM < VC_MODES.len() && VC_MODES[VC_V28_ITEM].r1 & 0x0C == 0x04,
+        "item {VC_V28_ITEM} is named as the one V28 mode, so it must be M5 (reg 1 bit 2) without V30 \
+         (reg 1 bit 3)"
+    );
+}
+
+/// **The control arm: eighteen readings, each of a mode this run established, and a reference comparison
+/// that can fail.**
+///
+/// The scorecard row is a grouping, and a grouping is exactly the shape that can hide a hole: if a mode
+/// silently never ran, or two readings were of the same screen under two labels, the row would still print
+/// one tidy group and read as complete. So the premises the row rests on are stated here, where they cannot
+/// rot separately from it:
+///
+/// 1. **Eighteen readings, one per (mode, scan length), in order.** `ProvenVcMode::establish` refuses a
+///    reading whose mode was not established; this says the set is the whole menu x both toggle positions.
+/// 2. **The pairs are distinct.** Two readings of the same (mode, scan length) would mean a step was
+///    repeated, and the row would group them as one mode.
+/// 3. **The recon-R2 comparison discriminates.** `vc_r2_ntsc_v28` is stated independently of
+///    `Vdp::v_counter` so the row moves when the model does — but an expectation that matched anything
+///    would be worth nothing either. A reference shifted by one line must NOT match what the ROM printed.
+/// 4. **Every reading's runs account for its whole scan.** The signature the row prints is a lossy
+///    summary; if the run lengths did not sum to the scan length, values would be missing from the picture
+///    the row paints without the row getting shorter.
+#[test]
+fn the_vcounter_row_measures_nine_established_modes() {
+    let Some(run) = vcounter_run() else {
+        eprintln!("SKIP: vcounter not vendored");
+        return;
+    };
+
+    // (1) and (2): the whole grid, once each, in order.
+    let want: Vec<ProvenVcMode> = VC_SCANS
+        .iter()
+        .flat_map(|&scan_len| (0..VC_MODES.len()).map(move |item| ProvenVcMode { item, scan_len }))
+        .collect();
+    let got: Vec<ProvenVcMode> = run.results.iter().map(|r| r.mode).collect();
+    assert_eq!(
+        got, want,
+        "vcounter's run must establish every menu item at every scan length, exactly once each"
+    );
+
+    for r in &run.results {
+        let ProvenVcMode { item, scan_len } = r.mode;
+        // (4) the summary is complete.
+        let counted: usize = r.runs.iter().map(|(_, _, n)| n).sum();
+        assert_eq!(
+            counted, scan_len as usize,
+            "item {item} / {scan_len} lines: the {} ascending runs the row prints account for {counted} \
+             values, not {scan_len}",
+            r.runs.len()
+        );
+        assert!(
+            !r.runs.is_empty(),
+            "item {item} / {scan_len} lines produced no V-counter values at all"
+        );
+    }
+
+    // (3) the reference can fail. Shift it by one line and it must stop matching every reading that
+    // matches it unshifted.
+    for &scan_len in VC_SCANS {
+        let straight = vc_r2_ntsc_v28(scan_len);
+        let shifted: Vec<u16> = vc_r2_ntsc_v28(scan_len + 1)[1..].to_vec();
+        assert_eq!(straight.len(), shifted.len());
+        assert_ne!(
+            straight, shifted,
+            "the recon-R2 reference for a {scan_len}-line scan is unchanged by a one-line shift, so \
+             comparing against it proves nothing"
+        );
+    }
+    let matched = run.results.iter().filter(|r| r.matches_r2).count();
+    assert!(
+        matched > 0,
+        "not one of vcounter's {} readings matches the recon-R2 NTSC V28 sequence. That is a real change \
+         and must be re-derived and re-pinned with evidence, never absorbed into the row",
+        run.results.len()
+    );
+    eprintln!(
+        "vcounter: {} readings over {} frames, {matched} matching recon-R2 NTSC V28",
+        run.results.len(),
+        run.frames
     );
 }
