@@ -379,6 +379,85 @@ mod tests {
             )
         }
 
+        /// The same reaction, routed through [`Order`] at the loop's **normal** position — after the
+        /// frame, before the present. `None` on the first iteration, which owes its drain to
+        /// [`Win::after_present`].
+        fn before_present(
+            &mut self,
+            order: &mut Order,
+            sys: &mut System,
+            bus: &mut Bus,
+        ) -> Option<Drained> {
+            order.before_present(
+                sys,
+                bus,
+                Reaction {
+                    ov: &mut self.ov,
+                    draws: &mut self.draws,
+                    cap: &mut self.cap,
+                    buf: &mut self.buf,
+                    width: &mut self.width,
+                    rom_fp: &mut self.rom_fp,
+                    symbols: &mut self.symbols,
+                    paused: &mut self.paused,
+                    spawn: &mut self.spawn,
+                },
+            )
+        }
+
+        /// The deferred first drain, at the loop's position for it: after the publish and the blit.
+        fn after_present(
+            &mut self,
+            order: &mut Order,
+            sys: &mut System,
+            bus: &mut Bus,
+        ) -> Option<Drained> {
+            order.after_present(
+                sys,
+                bus,
+                Reaction {
+                    ov: &mut self.ov,
+                    draws: &mut self.draws,
+                    cap: &mut self.cap,
+                    buf: &mut self.buf,
+                    width: &mut self.width,
+                    rom_fp: &mut self.rom_fp,
+                    symbols: &mut self.symbols,
+                    paused: &mut self.paused,
+                    spawn: &mut self.spawn,
+                },
+            )
+        }
+
+        /// **The loop's own publish**, called where `fn main` calls it: at the bottom of the present
+        /// block, after every surface has finished drawing.
+        ///
+        /// It goes through `crate::screen_text::snapshot` rather than a hand-built `Vec<Surface>`, so what
+        /// reaches the engine here is the same document the window really publishes — a literal would make
+        /// the row green against a loop that had stopped composing one.
+        fn publish(&self, bus: &mut Bus, title: &str) {
+            let area = crate::present::Rect {
+                x: 0,
+                y: 0,
+                w: 320,
+                h: HEIGHT,
+            };
+            let st = crate::overlay::Status {
+                paused: self.paused,
+                draws: self.draws,
+                slot: 0,
+                occupied: [false; save_state::SLOT_COUNT],
+                volume: None,
+                filter: None,
+                aether: bus.is_serving(),
+                aspect: "1:1",
+                native: (320, HEIGHT),
+                layers: bus.layers(),
+                spawn: None,
+            };
+            bus.set_screen_text(crate::screen_text::snapshot(title, &self.ov, area, &st));
+        }
+
         /// The toasts this window has been shown, oldest first.
         fn toasts(&self) -> Vec<String> {
             self.ov.toasts().map(|t| t.text.clone()).collect()
@@ -1245,5 +1324,207 @@ mod tests {
 
         drop(bus);
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ★ F-FIRST-PRESENT-REFUSAL — the first drain must have a publish behind it
+    // ---------------------------------------------------------------------------------------------
+
+    /// One whole startup, up to and including the moment the **first** drain answers a client: a peer that
+    /// connected and finished its handshake before the loop iterated at all, one request queued, then
+    /// iteration 1 driven in `fn main`'s own order. Returns that request's reply, verbatim off the wire.
+    ///
+    /// `publish` is the **only** difference between the two arms the gate below compares: whether the
+    /// loop's `bus.set_screen_text` runs before the deferred first drain. Everything else — the client, the
+    /// request, the order, the number of pumps — is identical, so a difference in the reply can only be the
+    /// publish.
+    ///
+    /// ⚑ **The handshake is turned with `Bus::pump` directly, NOT through [`Order`]**, and that is
+    /// deliberate rather than convenient. `session.rs` makes `initialize` the mandatory first message on a
+    /// connection and the connection thread blocks on its reply, so a handshake run through the loop would
+    /// spend the very deferral this measures. `initialize` carries no `display` field and composes nothing,
+    /// so nothing asserted below rests on it.
+    fn first_drain_reply(publish: bool) -> Value {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(rom_with_appendix(0x8000));
+        sys.reset();
+
+        let tag = if publish { "fp-published" } else { "fp-bare" };
+        let path = sock(tag);
+        let mut bus = Bus::start(Some(Some(path.clone())), MachineInfo::default());
+        assert!(
+            bus.is_serving(),
+            "the fixture did not bind {}, so no client can reach it and nothing below is a test",
+            path.display()
+        );
+        let mut win = Win::new(0, None, true);
+        let mut order = Order::new();
+
+        let mut peer = Peer::connect(&path);
+        let hello = peer.request(
+            "initialize",
+            json!({
+                "clientId": "frontend-first-present",
+                "clientName": "first present",
+                "clientVersion": "0",
+                "protocolVersion": 1,
+                "clientCapabilities": {"events": false},
+            }),
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            bus.pump(&mut sys);
+            if let Some(v) = peer.poll(hello) {
+                assert!(v.get("error").is_none(), "initialize: {}", v["error"]);
+                break;
+            }
+            assert!(Instant::now() < deadline, "initialize was never answered");
+        }
+        peer.send(&json!({"jsonrpc":"2.0","method":"initialized"}));
+
+        // The request under test, queued **before the loop's first iteration**.
+        //
+        // ⚑ The wait is what makes both arms deterministic, and it is not decoration. The connection
+        // thread has to have forwarded this to the engine before the first pump — otherwise the bare arm
+        // is answered by some later pump that *does* have a publish behind it and reads green, which is
+        // exactly how this defect stayed a flake in CI rather than a red.
+        let id = peer.request("emulator/screen_text", json!({}));
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            peer.poll(id).is_none(),
+            "something answered before the loop ran a single iteration, so the order below is not what \
+             produced the reply"
+        );
+
+        // --- Iteration 1, in the order `fn main` runs it. ---
+        //
+        // The drain's normal position: after the frame, before the present. `Order` defers it here; that
+        // it does so is pinned by `the_loop_defers_its_first_drain_and_only_its_first` below rather than
+        // asserted here, so that this row's own red is the **wire's** answer and not the shape.
+        let _ = win.before_present(&mut order, &mut sys, &mut bus);
+        if publish {
+            win.publish(&mut bus, "oracle (fixture)");
+        }
+        // `window.update_with_buffer` would be here; the blit is minifb's and is not a fact about the bus.
+        win.after_present(&mut order, &mut sys, &mut bus);
+
+        // The reply, with any further iterations turning the crank at their own normal position.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(v) = peer.poll(id) {
+                drop(bus);
+                let _ = std::fs::remove_file(&path);
+                return v;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "emulator/screen_text was never answered"
+            );
+            win.before_present(&mut order, &mut sys, &mut bus);
+        }
+    }
+
+    /// ## ★ **A request that beats this window's first frame is answered by a window that EXISTS**
+    /// (`F-FIRST-PRESENT-REFUSAL`).
+    ///
+    /// Both embedders drained once in iteration 1 *before* that iteration's present, and one `bus.pump`
+    /// answers every request it finds queued — so a request answered by that drain was refused `-32005`
+    /// `noDisplay`, *there is no window*, from a window that was already showing a frame. This loop's order
+    /// had only ever been asserted **by reading** (`fn main` needs a `minifb::Window`); this is the
+    /// measurement.
+    ///
+    /// # It is a differential, and the control arm is the old behaviour
+    ///
+    /// The two arms differ **only** in whether the publish runs before the first drain:
+    ///
+    /// * without it the reply is `noDisplay` — which proves the refusal is reachable in this fixture, that
+    ///   `emulator/screen_text` is really being dispatched, and that the green arm is green *because of the
+    ///   publish* rather than because the method cannot refuse here;
+    /// * with it the reply is the snapshot, carrying the surfaces `screen_text::snapshot` composed.
+    ///
+    /// A fixture that could only ever produce one of the two would be worth nothing, which is why the
+    /// refusal is asserted as an equality on `error.data.reason` and not merely as "an error".
+    ///
+    /// # ⚑ What this row is blind to
+    ///
+    /// **It does not observe `fn main`.** No test in this crate can construct a `minifb::Window`, so what
+    /// is measured is [`Order`] driven in the order `fn main` is written to use — and a future edit that
+    /// moved `fn main`'s `after_present` call back above its `bus.set_screen_text` would leave this green.
+    /// That residue is the same one `FRONTEND-LOOP-UNTESTABLE` recorded for the whole of [`drain`], it is
+    /// why `Order::before_present` returns an `Option` the loop cannot ignore, and it is the reason the
+    /// player's own gate drives the real `Loop::iterate` instead.
+    #[test]
+    fn a_request_that_beats_the_first_present_is_not_told_there_is_no_window() {
+        let bare = first_drain_reply(false);
+        assert_eq!(
+            bare["error"]["data"]["reason"],
+            json!("noDisplay"),
+            "the control arm must reproduce the refusal, or the green arm below proves nothing: {bare}"
+        );
+
+        let published = first_drain_reply(true);
+        assert!(
+            published.get("error").is_none(),
+            "the first drain answered a client from behind a published snapshot and was still refused: \
+             {published}"
+        );
+        let surfaces = published["result"]["surfaces"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a reply with no surfaces array: {published}"));
+        assert!(
+            !surfaces.is_empty(),
+            "an EMPTY surface list means 'the screen is blank', which is a different answer from the one \
+             this window published: {published}"
+        );
+        assert!(
+            surfaces
+                .iter()
+                .any(|s| s["text"].as_str() == Some("oracle (fixture)")),
+            "the reply must carry the snapshot this loop published, not some other document: {published}"
+        );
+    }
+
+    /// ## ★ **The loop defers its first drain, and only its first.**
+    ///
+    /// The shape half of the row above, split out so that each has one reason to go red: this one pins that
+    /// [`Order`] withholds exactly one drain and hands it back exactly once, and it needs no socket and no
+    /// client to do it.
+    ///
+    /// The bound matters as much as the deferral. A deferral that never ended — say one keyed on *"has this
+    /// window published yet"*, which is the shape that first suggests itself — would stall the bus forever
+    /// in a window that never publishes (`is_serving()` false: no socket, no publish, and then no pump).
+    /// One iteration is the whole of it.
+    #[test]
+    fn the_loop_defers_its_first_drain_and_only_its_first() {
+        let mut sys = System::new(0x5EED);
+        sys.load_rom(rom_with_appendix(0x8000));
+        sys.reset();
+        // No socket: this is the shape of the order, and it must hold in a window no client can reach.
+        let mut bus = Bus::start(None, MachineInfo::default());
+        let mut win = Win::new(0, None, true);
+        let mut order = Order::new();
+
+        assert!(
+            win.before_present(&mut order, &mut sys, &mut bus).is_none(),
+            "iteration 1 pumped at the drain's normal position, which is ahead of every publish in the \
+             iteration — the defect F-FIRST-PRESENT-REFUSAL names"
+        );
+        assert!(
+            win.after_present(&mut order, &mut sys, &mut bus).is_some(),
+            "iteration 1's drain was withheld and never handed back, so this loop would answer nothing"
+        );
+
+        for i in 2..6 {
+            assert!(
+                win.before_present(&mut order, &mut sys, &mut bus).is_some(),
+                "iteration {i} did not drain at the normal position: the deferral is not bounded to the \
+                 first iteration"
+            );
+            assert!(
+                win.after_present(&mut order, &mut sys, &mut bus).is_none(),
+                "iteration {i} drained a second time after its present, so the loop pumps twice per \
+                 iteration"
+            );
+        }
     }
 }
