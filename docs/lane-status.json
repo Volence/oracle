@@ -1,12 +1,6 @@
 {
-  "focus": "Main is RED from my own landing: a new test depends on how fast the machine runs. Fixing that.",
-  "inFlight": [
-    {
-      "what": "Making last night's new panel test independent of machine speed, so main goes green again",
-      "where": "branch fix/panel-boundary-determinism",
-      "agent": true
-    }
-  ],
+  "focus": "The red is fixed at its source: a test no longer depends on how fast the machine it runs on is.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,16 +13,8 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Not at one: main is red from my panel landing and that is mine to clear before anything else.",
+  "nextBoundary": "Here now, once this fix's CI is read: nothing running, everything pushed.",
   "queue": [
-    {
-      "id": "CI-RED-PANEL-BOUNDARY-ROW",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "A test I landed tonight compares two screenshots of a panel that prints how fast the loop is running, so on a slower machine it fails. Main is red until it is fixed."
-    },
     {
       "id": "PANEL-CLIP-MARK",
       "state": "blocked",
@@ -118,7 +104,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T04:05:22Z"
+  "awaiting": "nothing blocking; I'll take the live-effects row once this fix's CI is read green. Card d-54 whenever: wrap long panel lines, or widen the panes?",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T04:51:22Z"
 }
