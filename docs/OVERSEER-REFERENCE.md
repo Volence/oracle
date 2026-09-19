@@ -124,7 +124,7 @@ expensive one disagree about settledness, the cheap one is lying — and it is t
 false claim of settledness lived in a FILENAME; here it lived in the ABSENCE OF VARIATION.**
 ▶ **Bar: every pin taken from a timed run says which property it rests on.** An animation pinned at frame
 120 is legitimate — it is a determinism pin — but it must SAY so, because a reader takes it for convergence.
-Booked `F-TIMED-PIN-UNSETTLED` (three rows to annotate; the annotation lands after the vcounter parcel, to
+Booked `F-TIMED-PIN-UNSETTLED` — ⚑ **DISCHARGED 2026-09-19, all three rows annotated (see the discharge later in this file); the deferral clause below is spent.** (three rows to annotate; the annotation lands after the vcounter parcel, to
 avoid two writers in one ledger).
 
 **⚑ AND A BOOKING READS AS A REASON, SO NOBODY RE-CHECKS IT** *(same re-derivation)*. The ledger said
@@ -2239,7 +2239,7 @@ sentence that states the rule. ⚑ **Its second lesson is a DIFFERENT mechanism 
 empyrean `docs/OVERSEER.md:85`): the `119/122` was **true when written and rotted**; this one was **wrong when written and never rotted**, surviving since
 2026-08-15 because the artifact and a real failure are **identical in the output** — both a `FAIL` glyph. A rotted claim is fixed by naming sources; an
 absence rendered as a positive finding is fixed only by **making the instrument fire on purpose**. Control arm here, one line, never run because the
-harness is non-gating and the glyph "worked": **render a frame both ways and require them to agree.**
+harness is non-gating and the glyph "worked": **render a frame both ways and require them to agree.** ⚑ **THAT CONTROL ARM IS UNEXECUTABLE AS WRITTEN AND WAS NEVER RUN — corrected 2026-09-19, and the correction is 340 lines below at "THE AGENT CORRECTED THIS SEAT'S BRIEF".** As a literal gate it is permanently red: the two paths *should* differ here, so demanding agreement demands the emulator be broken. The executable form is *agree EXCEPT on an enumerated, pinned set, with the set load-bearing in the assert*. ⚑ **Flagged here because this file's own bar says a claim repaired at its canonical site leaves its paraphrases standing — this is that bar running in REVERSE: the correction landed far from the claim, so the claim needs the pointer, not the other way round.**
 
 ### SPRITE-MID-CUT and the `NEXT:` clause that rotted by succeeding (orig lines 147-157, 159-166)
 
@@ -2518,7 +2518,7 @@ correction has to reach the mechanism, or it reappears on the next write.)*
 ## `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` — found by aurora reviewing CR-W, 2026-09-18; confirmed firsthand here
 
 **Registered by the oracle overseer on aurora's review of the CR-W landing (`106b659`); the finding is theirs.**
-Blocked on a hub ruling — it changes what a field means across kinds, so it is contract, not engineering.
+Blocked on a hub ruling — it changes what a field means across kinds, so it is contract, not engineering. ⚑ **NO LONGER BLOCKED AND NOW CLOSED: ruled 2026-09-18, implemented 2026-09-19 at merge `462e9cf`.** Left standing and corrected rather than edited.
 
 **The defect.** §11.50 tells a client to find a cut run by comparing `text` against `rendered`. A run **wholly
 outside its clip** is in **neither** string, so the two are equal, so `truncated` derives `false`: the reply says

@@ -411,6 +411,13 @@ centre of its first visible glyph row, so **that predicate needs the same treatm
 wrong row and break the very alignment this ruling turns on.** ⚑ Treat this as a reading to verify, not a finding: it
 is derived from the code, not measured by running it.
 
+⚑ **DISCHARGED 2026-09-19 at merge `462e9cf` — THIS SECTION IS THE RULING, NOT PENDING WORK.** The predicate was fixed
+(`glass_run`'s `on_glass.or(laid_out)?`), the acceptance condition below was answered in the buildable direction (row placement IS derivable
+from the galley, so no CR), and **no schema change was needed**. Kept in the boot read because it is a live NORMATIVE contract rule a session
+must know before touching `screen_text`; **its landing narrative is in `docs/OVERSEER-LOG.md` under "Moved from OVERSEER.md 2026-09-19".**
+⚠ The paragraph immediately below was true when written and is now false about the state of the work — **left standing and corrected here
+rather than edited, per this repo's correct-by-appending habit.**
+
 **NOT STARTED, and deliberately behind his instruction.** `protocol.md` text only — **no vendored blob moved**, so
 aurora's schema-drift gate cannot redden on it (the hub flagged this coupling from its own side). If implementing it
 turns out to need a schema touch, **tell the hub BEFORE pushing** so they run the vendoring-lane notification.
@@ -430,6 +437,6 @@ fixed by adding a paragraph beside it, rather than by changing the sentence that
 
 Every landing narrative, CI-read note and superseded `NEXT:` filed under this ruling between 2026-09-18 and 2026-09-19 (orig lines 510-822: `POSTHOC-CARRY`, `TESTROM-H40-HALF` and Q1, `TESTROM-VCOUNTER-MENU`, `TESTROM-OPCODE-SIZES-NEVER-SETTLES`, this ruling's own implementing landing `462e9cf`, `F-TH-PULLUP-UNDISCRIMINATED`, and the CI-red fix `1235148`) moved 2026-09-19: closed history to docs/OVERSEER-LOG.md, the live rules to docs/OVERSEER-REFERENCE.md (both under "Moved from OVERSEER.md 2026-09-19"). Read the reference block **before dispatching** (a control arm written down and never executed is not a control arm; a core defect is never filed inside a harness parcel), **before reproducing a red** (a compile error is not a red; an unapplied mutation and a clean baseline are the same artifact; a flake that passes reads as fixed), and **before landing** (a landing run makes the whole tree read-only; the hub's `d-54` fold; a ruling that CHANGES a rule must name the fixtures that encode the OLD one). ⚠ **Pointer, not a container: new material goes to the target file, never back underneath here.** **The paragraph below is NOT part of what moved: it is the live `NEXT:`, and it is the last paragraph of this file.**
 
-**NEXT: `LIVE-EFFECTS-NUDGES`** — taken once CI on this fix is read green to completion. It is a declared `LIVE-EFFECTS` project with aeon, so
+**NEXT: `DATA-DISPLAY-AUDIT`** *(corrected 2026-09-19: `LIVE-EFFECTS-NUDGES` is DISPATCHED, branch `parcel/live-effects-nudges`; CI on the fix was read green, run `1235148`, all three jobs)*. Its premise was re-derived before dispatch and aeon's hook is LANDED in engine source at `origin/master` (`Parallax_InstallScratch`, `Parallax_Scratch_Arm`, `Parallax_Scratch_Config`), so §5.2's *"GENUINELY BLOCKED"* is stale; the live constraint is that the scratch RAM is **debug-only** (`if DEBUG == 1 @shape_divergent` in aeon's `engine/ram.emp`), so the control must refuse honestly on a release build. The previous clause read: It is a declared `LIVE-EFFECTS` project with aeon, so
 **whatever it establishes about WHICH fields have a runtime reader is owed to aeon and aurora in the same turn**, not discovered by them later.
 **CI READ GREEN for the fix at `1235148`** — read to completion with `gh run view`, all three jobs green (*Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*). **Main is green; the red this seat opened is closed.**
