@@ -190,7 +190,29 @@ period **minus one** (63 means 64 px) and `col_shift` is a **log2** (7 means 128
 ceiling is **reported, not trusted**. The gate is the note's own worked example decoding to the note's own
 sentence.
 
-### 5.2 Numeric nudging — GENUINELY BLOCKED, and shown disabled
+### 5.2 Numeric nudging — ⚠ **UNBLOCKED 2026-09-19, AND THIS SECTION IS STALE AS WRITTEN**
+
+> **⚑ CLOSED. Read `docs/2026-09-19-live-effects-nudges.md` instead of this section; what follows is the
+> record of the blocker, kept because the *reasoning* is still the reasoning and two of its claims are now
+> false.**
+>
+> * **"GENUINELY BLOCKED" is false.** aeon landed the hook at `935c33cf`: a RAM scratch parallax config
+>   (`Parallax_Scratch_Config`), a request cell (`Parallax_Scratch_Arm`) and `Parallax_InstallScratch`,
+>   which copies the active ROM config into the scratch and re-points the selector. The hub's *"nudge
+>   controls do not ship until it lands"* is satisfied rather than overridden. The working control shipped
+>   on `parcel/live-effects-nudges`.
+> * **"It is two numbers when it arrives, `driver` and `rate_shift`" is false, and it was a forecast about
+>   the wrong struct.** Those are **BgAnim band-record** fields (`NOTE` §2, the table `BgAnim_Table_Ptr`
+>   selects). The hook that landed is the **parallax** channel's, and a `parallax_config` has no `driver`
+>   and no `rate_shift` — its band records carry scroll-factor shifts. aeon's own §6.5 noticed the same
+>   thing from the other side: *"The parallel with §2's band-record advice holds, and the answer is **not**
+>   the same one."* What ships instead is ten free knobs off `NOTE` §6.3/§6.4, and `driver`/`rate_shift`
+>   are refused **as the wrong channel** — their table is ROM and no RAM copy of it exists in any build
+>   shape, which is an open aeon ask.
+> * **What SURVIVES intact is the choice below**, and it is why the parcel had somewhere to land: the
+>   control was drawn disabled with a readable line rather than omitted, so the day the hook landed there
+>   was a control to turn on and a stated surface to check it against, instead of a feature to remember.
+
 
 `Parallax_Current_Config` points at ROM, so a factor cannot be edited in place. aeon's hook (a RAM scratch
 config plus a copy-and-repoint entry, the shape `Raster_Buf_A`/`Raster_Buf_B` already use) is sized and

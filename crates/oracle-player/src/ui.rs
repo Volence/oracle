@@ -1407,22 +1407,12 @@ impl Panels<'_> {
         }
 
         ui.separator();
-        // ⚑ THE DISABLED NUDGE CONTROL. It is drawn OFF with the reason rather than omitted, because the
-        // owner asked for nudges by name and an absent control reads as "we forgot". See
-        // `crate::effects::NUDGE_BLOCKED` for the argument and for why it will be two numbers rather
-        // than four when the engine hook lands.
-        ui.add_enabled_ui(false, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("nudge");
-                ui.add(egui::DragValue::new(&mut 0i32).prefix("driver "));
-                ui.add(egui::DragValue::new(&mut 0i32).prefix("rate shift "));
-            });
-        });
-        ui.label(
-            egui::RichText::new(crate::effects::NUDGE_BLOCKED)
-                .text_style(egui::TextStyle::Small)
-                .color(weak),
-        );
+        // ⚑ THE NUDGE CONTROLS, WHICH NOW WORK. Until 2026-09-19 this was a DISABLED row with a one-line
+        // reason, because `Parallax_Current_Config` points at ROM and there was nothing to write. aeon
+        // landed the RAM scratch config, so the control is live. See `crate::effects`'s nudge section for
+        // the two conditions that gate it, why the offsets come out of the listing rather than out of this
+        // file, and why the fields are NOT the `driver`/`rate_shift` pair the design note forecast.
+        self.effects_nudge(ui, &channel);
 
         // The write-set, last, under a heading a person can skip. Read once and then known, but never
         // hidden: a panel that wrote four cells while showing one would be the thing this module's
@@ -1442,6 +1432,254 @@ impl Panels<'_> {
             for cell in channel.writes {
                 ui.label(
                     egui::RichText::new(format!("{}: {}", cell.symbol, cell.why))
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+            }
+        });
+    }
+
+    /// **The nudge section of the Effects tab**: arm the RAM scratch, then turn the numbers it holds.
+    ///
+    /// # ⚑ It was a DISABLED row for a fortnight, and that was the right shape then
+    ///
+    /// The owner asked for numeric nudges by name. They could not be built — a scene's config is in ROM —
+    /// so this drew a greyed control with one readable line, on the argument that a panel which simply
+    /// lacks the control reads as *we forgot* and sends him to ask. aeon landed the RAM scratch config
+    /// (`crate::effects::HOOK`), so the control is live and the line is gone. **The disabled shape is
+    /// still here for the build that has no scratch**, because a release ROM genuinely does not: see
+    /// `crate::effects::hook`'s refusal, which says which shape has the buffer rather than that anything
+    /// is broken.
+    ///
+    /// # Why the whole section is parallax-only, and says so on the other two channels
+    ///
+    /// The hook is the parallax channel's. The other two have nothing of the shape — the band table an act
+    /// carries is ROM with no RAM copy in any build — so drawing knobs under a raster or band heading
+    /// would be offering an edit that cannot land. The line that replaces them names the reason, for the
+    /// same argument that kept the disabled row on screen.
+    ///
+    /// # ⚑ Every control is seeded from the MACHINE, and a change is written immediately
+    ///
+    /// No edit buffer lives between the person and the RAM. Each control's value comes from the scratch as
+    /// the last gesture read it, and a change goes out as a paused write on the spot, after which the
+    /// scratch is read again. So the number under the cursor is always one the machine holds: there is
+    /// nowhere for a typed-but-unsent value to sit and be mistaken for the scene's state, which is this
+    /// panel's own thesis (a readback, never an echo) applied to a control that writes.
+    ///
+    /// The cost is one pause-write-resume per step of a drag, and it is the cost the owner priced in
+    /// advance — *"a small pause to pause and unpause for the change is fine"*. The alternative, a commit
+    /// button, buys nothing here: on a stopped machine the write is instant, and a pending edit beside a
+    /// live readout is exactly the disagreement this tab exists to remove.
+    ///
+    /// This function lays out and decides nothing. Every sentence it draws is `crate::effects`'s.
+    fn effects_nudge(&mut self, ui: &mut egui::Ui, channel: &crate::effects::Channel) {
+        let weak = ui.visuals().weak_text_color();
+
+        // The other two channels: a sentence rather than a control, and rather than silence.
+        if channel.key != crate::effects::PARALLAX.key {
+            ui.label(
+                egui::RichText::new(format!(
+                    "turning numbers is the {} channel's, not this one's. {}",
+                    crate::effects::PARALLAX.title,
+                    crate::effects::WRONG_CHANNEL
+                ))
+                .text_style(egui::TextStyle::Small)
+                .color(weak),
+            );
+            self.effects_not_offered(ui);
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            if ui
+                .button("arm the scratch")
+                .on_hover_text(
+                    "copies the config the engine is running into RAM and points the engine at the copy, \
+                     so its numbers become editable. Pauses the machine, writes one request byte, runs \
+                     one frame (the engine polls the request at the head of its own update, so the swap \
+                     lands on that frame), then puts the run state back.",
+                )
+                .clicked()
+            {
+                self.effects.arm_scratch(self.machine, self.bus);
+            }
+            if ui
+                .button("re-read")
+                .on_hover_text(
+                    "asks whether this build has the scratch, whether it is installed, and what it holds. \
+                     A pure read: the machine is neither paused nor stepped.",
+                )
+                .clicked()
+            {
+                self.effects.refresh_nudge(self.machine, self.bus);
+            }
+        });
+
+        match self.effects.nudging() {
+            // Not looked yet, which is a different state from "there is nothing" and is said as one.
+            None => {
+                ui.label(
+                    egui::RichText::new(
+                        "press arm to make this scene's numbers editable, or re-read to find out whether \
+                         this build has the buffer for it.",
+                    )
+                    .text_style(egui::TextStyle::Small)
+                    .color(weak),
+                );
+            }
+            // ⚑ THE HONEST REFUSAL. On a release build this is the whole section: the buffer does not
+            // exist there, and the sentence says which shape has it rather than that anything failed.
+            // The controls below are drawn DISABLED underneath it for the reason this function opens
+            // with — an absent control reads as an oversight, and this one has a reason a person can act
+            // on.
+            Some(Err(why)) => {
+                ui.label(
+                    egui::RichText::new(why.clone())
+                        .text_style(egui::TextStyle::Small)
+                        .color(ui.visuals().error_fg_color),
+                );
+                ui.add_enabled_ui(false, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for f in crate::effects::FIELDS {
+                            let mut v = 0i32;
+                            ui.add(egui::DragValue::new(&mut v).prefix(format!("{} ", f.label)));
+                        }
+                    });
+                });
+            }
+            Some(Ok(n)) => {
+                let installed = n.installed.took();
+                let line = n.installed.line();
+                let shape = n.shape_line();
+                let count = n.scratch.as_ref().map(|s| s.band_count);
+                let max_bands = n.hook.max_bands;
+                // ⚑ The install state, in the warning colour when a knob would do nothing. It is not
+                // coloured off the shape of the sentence (P5) but off `took()`, which is the fact.
+                ui.label(
+                    egui::RichText::new(line)
+                        .text_style(egui::TextStyle::Small)
+                        .color(if installed {
+                            weak
+                        } else {
+                            crate::theme::WARNING
+                        }),
+                );
+                ui.label(
+                    egui::RichText::new(shape)
+                        .text_style(egui::TextStyle::Small)
+                        .color(weak),
+                );
+
+                // ⚑ The controls are drawn ENABLED only when a write would land. Not because a refusal
+                // would be wrong — `crate::effects::nudge` refuses this case with the reason and writes
+                // nothing — but because a live-looking knob over an uninstalled scratch invites the
+                // gesture and then explains it away, and the sentence above already says what to do.
+                ui.add_enabled_ui(installed, |ui| {
+                    if let Some(c) = count {
+                        ui.horizontal(|ui| {
+                            let mut band = self.effects.band_index() as i32;
+                            let hi = max_bands.saturating_sub(1) as i32;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut band)
+                                        .range(0..=hi)
+                                        .prefix("band "),
+                                )
+                                .on_hover_text(format!(
+                                    "which band record the shift controls address. This scene's config \
+                                     carries {c}; the buffer is reserved for {max_bands}, and a band at \
+                                     or above {c} was never written by the install, so it is refused \
+                                     rather than edited."
+                                ))
+                                .changed()
+                            {
+                                self.effects.look_at_band(band.max(0) as u32);
+                            }
+                            ui.label(
+                                egui::RichText::new(format!("of {c} in this scene"))
+                                    .text_style(egui::TextStyle::Small)
+                                    .color(weak),
+                            );
+                        });
+                    }
+                    let band = self.effects.band_index();
+                    // Two rows, because the two halves address different things: the header once, and
+                    // the selected band record. A person turning a shift needs to know which band it is
+                    // on, and a person turning the layer mask needs to know it is not on one.
+                    for (heading, at) in [
+                        ("the scene", crate::effects::Where::Header),
+                        ("this band", crate::effects::Where::Band),
+                    ] {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(heading)
+                                    .text_style(egui::TextStyle::Small)
+                                    .color(weak),
+                            );
+                            for f in crate::effects::FIELDS.iter().filter(|f| f.at == at) {
+                                let now = self
+                                    .effects
+                                    .nudging()
+                                    .and_then(|r| r.ok())
+                                    .and_then(|n| n.value_of(f, band));
+                                // ⚑ A field whose offset equate this listing does not publish draws
+                                // DISABLED with its own hover, never at a defaulted zero: offset 0 is
+                                // `pcfg_band_count`, so a default would put a write at the band count.
+                                let Some(now) = now else {
+                                    ui.add_enabled_ui(false, |ui| {
+                                        let mut v = 0i32;
+                                        ui.add(
+                                            egui::DragValue::new(&mut v)
+                                                .prefix(format!("{} ", f.label)),
+                                        )
+                                        .on_hover_text(format!(
+                                            "the loaded listing does not publish `{}`, so this panel \
+                                             cannot say where `{}` sits and will not guess.",
+                                            f.equate_name(),
+                                            f.label
+                                        ));
+                                    });
+                                    continue;
+                                };
+                                let (lo, hi) = f.range;
+                                let mut v = now as i32;
+                                let r = ui
+                                    .add(
+                                        egui::DragValue::new(&mut v)
+                                            .range(lo as i32..=hi as i32)
+                                            .speed(0.15)
+                                            .prefix(format!("{} ", f.label)),
+                                    )
+                                    .on_hover_text(f.what);
+                                if r.changed() && v as u32 != now {
+                                    self.effects.nudge_field(
+                                        self.machine,
+                                        self.bus,
+                                        f,
+                                        v.max(0) as u32,
+                                    );
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        }
+        self.effects_not_offered(ui);
+    }
+
+    /// ⚑ **The fields this panel will not turn, and why**, collapsed but never absent.
+    ///
+    /// The same argument as the disabled control it replaced, one level up: a reader who goes looking for
+    /// `driver` — which the design note promised by name — must find out here that it belongs to a
+    /// different channel whose table is ROM, rather than conclude it was forgotten. Every line is
+    /// `crate::effects::NOT_OFFERED`'s.
+    fn effects_not_offered(&mut self, ui: &mut egui::Ui) {
+        let weak = ui.visuals().weak_text_color();
+        ui.collapsing("numbers this panel will not turn, and why", |ui| {
+            for n in crate::effects::NOT_OFFERED {
+                ui.label(
+                    egui::RichText::new(format!("{} ({}): {}", n.field, n.class, n.why))
                         .text_style(egui::TextStyle::Small)
                         .color(weak),
                 );
