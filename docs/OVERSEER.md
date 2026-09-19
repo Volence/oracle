@@ -822,3 +822,4 @@ was applied — and **the empty `git diff` I printed before the run is what said
 artifact; only printing the diff separates them.
 **NEXT: `LIVE-EFFECTS-NUDGES`** — taken once CI on this fix is read green to completion. It is a declared `LIVE-EFFECTS` project with aeon, so
 **whatever it establishes about WHICH fields have a runtime reader is owed to aeon and aurora in the same turn**, not discovered by them later.
+**CI READ GREEN for the fix at `1235148`** — read to completion with `gh run view`, all three jobs green (*Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*). **Main is green; the red this seat opened is closed.**

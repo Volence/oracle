@@ -13,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now, once this fix's CI is read: nothing running, everything pushed.",
+  "nextBoundary": "Here now: main green, CI read, nothing running, everything pushed.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -106,5 +106,5 @@
   ],
   "awaiting": "nothing blocking; I'll take the live-effects row once this fix's CI is read green. Card d-54 whenever: wrap long panel lines, or widen the panes?",
   "atBoundary": true,
-  "updatedAt": "2026-09-19T04:51:22Z"
+  "updatedAt": "2026-09-19T05:31:35Z"
 }
