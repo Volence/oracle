@@ -785,3 +785,40 @@ carries a **"WHAT WOULD MAKE THIS TEST WRONG"** section naming BlastEm's own kno
 left**, and `th_pullup.bin` needs no screen — only a way to read work RAM back. Tagged for the owner's foreground, gating nothing.
 **NEXT: `LIVE-EFFECTS-NUDGES`** (buildable per its own row; re-derive its two stated constraints from the tree before dispatch — a runtime reader
 for only some fields, and the memory it needs being absent in a release build).
+
+**⚑ CI RED ON MY OWN PANEL-CLIP LANDING, AND THE FIX: `fix/panel-boundary-determinism` LANDED 2026-09-19, merge `1235148`.**
+CI run **`35418036061`** on `462e9cf`, job *Build, test, clippy, fmt* (**the DEBUG suite**): `a_run_on_no_reported_row_is_in_neither_string_and_changes_nothing`
+FAILED, 519 passed / 1 failed. ⚑ **My `land.sh` run was green because land.sh runs RELEASE and CI runs DEBUG — which land.sh's own header says in as
+many words, and I inferred a prediction from it anyway.** Three of the night's five landings reported release totals only. Banked as a landing-check
+bar in `docs/OVERSEER-REFERENCE.md`.
+⚑ **THE CAUSE IS THE NIGHT'S OWN THEME, IN A TEST I ACCEPTED HOURS EARLIER: TESTED AGAINST THE INSTANCE, NOT THE MECHANISM.** The row compared two
+fixture builds with **each ASCII digit masked to `#`**, and its own doc comment records why — a raw comparison had failed on `272.73` vs `243.24`.
+**Masking genuinely fixed THAT, because those are the same width.** It cannot fix a width change: `format!("{:.2}", fps_value)` varies in integer
+digits, so `9.09` masks to `#.##` and `272.73` to `###.##`. **The failure that prompted the repair became the case that validated it** — the sample
+and the test case were the same object. **Worse than a control arm written down and never run: this one RAN, and passed honestly.**
+▶ **FIXED AT THE SOURCE, NOT AT THE COMPARISON.** `fixture()` now captures its own `t0` and drives its iterations at `t0 + FRAME_PERIOD * (i + 1)`
+instead of `Instant::now()`; every `PacingFacts` figure is a **difference** from the loop's start instant, so all of them render the same string on
+any box. Production is untouched — `Loop::iterate` already takes `now` as an argument so the caller owns the clock. ⚑ **A wider mask was refused on
+the record: a length-insensitive mask is another repair aimed at one sample, because a wider number changes what FITS in a pane and therefore which
+runs exist at all.** ⚑ **And the mask is now GONE, not widened: under a forced skew the two surfaces are byte-identical, so the comparison is RAW**
+and keeping the mask would have hidden a digit-only change that really moved. It survives only inside the failure message, which says how to read
+each outcome.
+⚑ **A LATENT CLASS WENT WITH IT, wider than the one red:** several rows put floors on populations drawn from **all** bodies including Pacing
+(`elided > 0`, `cuts.len() >= 2`, the cut sweep's floors), and a wider `fps window` changes what elides and what a clip eats — so those floors were
+machine-speed dependent too, each one a flake waiting near its floor. **Fixing the clock rather than the comparison retires that for every row at
+once**, which is the argument for the mechanism.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE, IN THE DEBUG PROFILE — the first landing under the new bar:** fmt 0, clippy `-D warnings` 0,
+**91/91 legs by both counts, 3026 passed / 0 failed / 10 ignored**, end marker reached (detached, `CI=1`, polled my own marker; the run passed 75
+legs, the count where a memory reap truncated an earlier run tonight, so the marker rather than a tail is what says it finished). The previously
+failing test ran and passed. **Red-first FORCED INDEPENDENTLY here** — wall clock restored **and** a 900 ms skew on every second fixture build, both
+mutations shown on disk before the run and restored from committed `1235148`: **RED**, `27.78 fps / 324 ms` against `26.39 fps / 341 ms`.
+⚑ **And that mutation proves more than the fix: those two differ at EQUAL WIDTH, so THE OLD MASKED COMPARISON WOULD HAVE PASSED ON IT.** Dropping
+the mask strictly strengthened the gate rather than merely repairing it.
+⚑ **Ops, and it matters for how a flake is read: the two landings AFTER the red (`30a4617`, `0186691`) came back CI GREEN carrying the same test.**
+So it was never deterministically broken — it passed or failed on the runner's speed that minute. **A flake that passes reads as fixed**, and the
+green on those two SHAs was a fact about a moment, not about the tree (the currency-gate rule, aimed at our own suite this time).
+⚑ **Ops, second, and the mutation discipline paid for itself:** my first attempt at the forced mutation **asserted out before writing**, so nothing
+was applied — and **the empty `git diff` I printed before the run is what said so.** An unapplied mutation and a clean baseline are the same
+artifact; only printing the diff separates them.
+**NEXT: `LIVE-EFFECTS-NUDGES`** — taken once CI on this fix is read green to completion. It is a declared `LIVE-EFFECTS` project with aeon, so
+**whatever it establishes about WHICH fields have a runtime reader is owed to aeon and aurora in the same turn**, not discovered by them later.
