@@ -28,6 +28,30 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ A CARRIED COPY IS CORRECT THE DAY IT IS WRITTEN AND HAS NOTHING THAT NOTICES WHEN IT STOPS BEING**
+*(2026-09-19; aeon's RAM sweep found our defect, the hub paired it with aeon's own, banked at empyrean
+`877e0fc0`)*. ⚑ **THE SUITE ALREADY HAD THIS RULE AND BOTH INSTANCES PREDATE ANYONE APPLYING IT** — verified
+at `empyrean origin/main:CLAUDE.md`: *"Resolve symbols live via Aether's `lookup_symbol` — **never hardcode
+RAM addresses** (they drift between builds; a rebuild shifted the whole RAM block +$24 mid-session)."*
+**So this is not a new finding; it is that rule's blast radius being wider than the word "symbols".** It was
+written about addresses in a debugger, and the class is **every value one tool learns by copying from
+another**: addresses, record lengths, table sizes, layout offsets.
+▶ **THE CHECKABLE DISCRIMINATOR: does the consumer READ the value at run time from the thing that owns it, or
+CARRY a copy?** Nothing else need be judged.
+**Our instance:** `LAB_INDEX_ADDR = 0xFFFF_EE0D` was a **live guard route** (refuse a write by name OR by
+address), transcribed from a note by its own comment's admission. aeon moved `Debug_Lab_Index` **+$200** and
+it failed **both ways at once**: the real cursor at `$FFFFF00D` no longer refused, and an innocent cell at the
+old address refused *with a message naming it as the cursor*. **A refusal that misidentifies what it caught is
+worse than no refusal, because the operator believes it.** **aeon's paired instance:** a size that could be
+published once was derived per tool, and one tool was wrong for three weeks **and blamed the engine for it.**
+⚑ **Both were found by a THIRD PARTY, neither by the holder — which is the expected outcome, because the copy
+looks identical before and after the source moves.** ⚑ **And the remedy is asymmetric: re-transcribing the new
+value fixes today and reproduces the class; resolving from the source removes it.** The correct shape for a
+value that must record what a NOTE said is a witness named for it (`SCRATCH_NOTED_ADDR`), never a live check.
+⚑ **A per-symbol delta report is what makes such a find fixable**: six of aeon's seven slid +$20 and this one
++$200, so "the table moved" would have had me slide everything by $20 and produce a guard confidently wrong at
+a *different* address. **Cite the deltas, not the slide** — the sources-not-figures bar, aimed at a sweep.
+
 **⛑ A SECTION REDUCED TO A POINTER IS CLOSED, AND A POINTER THAT ACQUIRES A BODY HAS ALREADY FAILED** *(banked in this
 lane's own words 2026-09-19, at the recut that gave this repo's boot file three new pointers; the rule itself is the
 suite's, in `OVERSEER-PROTOCOL.md`, and it needed a LOCAL reader at the moment it will next be violated — the next time
