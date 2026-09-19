@@ -540,3 +540,56 @@ the title `Screen` and `Present::surface` hands back the first of them. The swee
 galleys against the wide pane's strings and reported a defect in the harvest. It now pairs surfaces with
 spans **by position** (the contract's order is draw order, and that pairing is asserted), which is also how
 a future row should read a duplicated title.
+
+### 9.1 What it moved in the real corpus, measured rather than argued
+
+**188 panel surfaces over the 28 swept arrangements, digits masked, dumped at the base and at the tip and
+diffed. EXACTLY TWO surfaces changed, and each change is the ruling:**
+
+| Arrangement / panel | What moved |
+|---|---|
+| `every-tab` / Memory | `text` gains the run `go` (the Go button's caption, eaten whole) on the `address  0x00FF0000` row; `rendered` gains an EMPTY run at the same index; `truncated` **false → true**. A client comparing the strings was told nothing was cut while a button's caption was entirely off the pane. |
+| `narrow Screen` / Screen | the state strip's `8` and `9` join `text`; `rendered` gains two empty runs. The row used to end at `7` in both strings. |
+
+Nothing else moved by a byte: no row was split or merged, no visible run changed place, no `unrenderable`
+list changed, and the row and per-row run counts of every other surface are identical. That is the
+row-alignment guarantee (*row k run j of `rendered` is the glass rendering of row k run j of `text`*) shown
+to hold **with empty runs present**, in the real corpus rather than in a fixture — and it is the evidence
+that placing invisible runs did not disturb the grouping of visible ones. (The dump was a temporary
+`#[ignore]`d row, run at both revisions and not committed; `assert_aligned` covers the same invariant as a
+standing gate on every arrangement.)
+
+### 9.2 Totals at the tip `cc3a312`
+
+`CARGO_BUILD_JOBS=4`, `CI=1`, release, and `land.sh --no-push` is NOT the instrument: it refuses at G3 on a
+parcel branch because the tip is not a descendant of `origin/main` — a push gate, not a correctness one. So
+G4-G8's content was run directly, in land.sh's own order, with each exit code captured outside a pipe.
+
+| Gate | Result |
+|---|---|
+| G4 `cargo fmt --all --check` | exit 0 |
+| G5 `cargo clippy --workspace --all-targets --release -- -D warnings` | exit 0 |
+| G6 derived leg count | **91** (87 test executables + 4 doc-test legs) |
+| G6b frozen aeon pin (`--nocapture`) | exit 0, banner printed once |
+| G7 `cargo test --workspace --release` | exit 0, 328 s |
+| G8 ran-to-the-end | 91 legs by header, 91 by `test result:`, both equal to the derivation; **3027 passed, 0 failed, 7 ignored** |
+| currency `determinism_gate` | exit 0, 2 passed |
+| currency `export_state_v1` | exit 0, 3 passed |
+| currency `golden_frames` | exit 0, 9 passed |
+| currency `scanline_goldens` | exit 0, 5 passed |
+
+The four frozen-currency suites were run **by name, individually**, and all four are green — measured, not
+inferred from the workspace run that also contains them. Row count: the `oracle-player` bin leg goes from
+**521 to 524** rows (`--list`, both revisions), which is the three rows added; the aggregate delta from the
+base is therefore those three and nothing else. Wall clock at the end of the run: `up 3 days, 3:19`.
+
+### 9.3 What is NOT in this change
+
+* **Nothing under `contract/`, no vendored schema, no `PROVENANCE.md`.** The diff is three files
+  (`screen.rs`, `panel_attribution.rs`, this note). No schema change was needed — which is one of the three
+  grounds the ruling rests on, so needing one would have meant stopping.
+* **No emulator behaviour.** Nothing under `crates/oracle-core/src/`.
+* **The scroll question stays closed.** `F-PANEL-SCROLL-UNSTATED` is unchanged, gated from both sides
+  (§9's table) and demonstrated by the corpus dump, where no surface gained a row.
+* **The 67 whole-widget/table overflow rows under `d-54`** are the owner's layout half and are untouched,
+  as is the `Grid` ratchet (§8.7): a ratcheted run is visible and is not in this population at all.
