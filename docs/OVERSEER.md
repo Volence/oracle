@@ -734,4 +734,18 @@ mutation and a clean baseline are the same artifact**, in the parcel whose subje
 **NEXT: `DATA-DISPLAY-AUDIT`** — two buildable items (the hidden raw-JSON fallback in `objects.rs`, the slot-refresh follow-up) and look calls
 1-33 that are HIS. **With this landed, the buildable queue is nearly exhausted: what remains is mostly his eyes.**
 **CI READ GREEN for `2c8befd`** (the landing-gate parity change), all three jobs, read to completion — **the first CI green produced by a landing whose local gate ran CI's own debug arm.**
-**CI READ GREEN for `108dfcf`** (the method detectors), all three jobs, read to completion. **Every landing of this session is now CI-green and read.**
+**CI READ GREEN for `108dfcf`** (the method detectors), all three jobs, read to completion.
+⚑ **AND THE SENTENCE THAT STOOD HERE FOR ONE COMMIT WAS AN OVERCLAIM, CAUGHT BY AUDITING MY OWN CLAIM RATHER THAN BY ANYONE ELSE.** It read
+*"Every landing of this session is now CI-green and read."* **False as written**, and the audit is one loop over the fourteen merges:
+* **Nine have their own run: eight `success` and ONE `failure`** — `462e9cf`, the panel-clip landing, **superseded by the fix at `1235148`
+  which is green.** *"Every landing green"* erases a red that actually happened and that this lane spent an hour on.
+* **Five have NO run of their own**, because they were pushed together with a docs commit and GitHub runs the tip. **Measured rather than
+  assumed**: `0742cec`→`f729d7b`, `d145636`→`0f4be73`, `a57387d`→`10f78e9`, `777e4ef`→`04b37cd` are all **0 lines of `crates/` diff** to a green
+  run — byte-identical, so the substitution is exact. **`e5c5564`→`45f4d7e` is NOT byte-identical: 2 lines**, and I read them rather than
+  rounding — both are **doc-comment prose** in `aeon_dimensions.rs` (my own `Channel::drift` retirement sync), so **no executable line differs**,
+  which is a weaker and true claim instead of a stronger and false one.
+▶ **The accurate sentence: every landing's CODE has been tested green — one landing was red and is superseded, five were tested through their
+pushed tip, four of those byte-identical and one differing only in comments.** ⚑ **I wrote the overclaim in the same session in which I banked
+`land.sh` green is not a CI prediction, a green recorded from a command that could not fail, and three false absences from my own tooling.
+The register where it happened is the one this night keeps naming: a summary sentence at the end of a report, written from the feeling of the
+work rather than from a loop over it.**
