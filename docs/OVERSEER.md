@@ -521,3 +521,44 @@ judged noisy and silenced, correctly. A red saying *the layout you are about to 
 **The test is not importance or truth — it is whether the red NAMES the thing the refusal defends.** `drift` was the first kind while believing
 itself the second, **and the belief is what made it expensive rather than merely useless.**
 **NEXT: `F-DRIFT-GATES-ON-AN-ADDRESS`** — build the ruling above. Then `DATA-DISPLAY-AUDIT`.
+
+**`F-DRIFT-GATES-ON-AN-ADDRESS` LANDED 2026-09-19, merge `e5c5564`** (agent tip `41ebfe7`, three commits; player only). **`Channel::drift` is
+RETIRED and the two dead channels select again.** Access resolves; nothing consults `noted_addr` to decide where to read or write. ⚑ **The witness
+survived, which was the half most at risk** — it now carries three facts, not two: the note's address, the listing's, **and what the note's old
+address IS NOW**. Measured, and I verified the first at this seat: **`$FFFF8BD6` is `Region_Cur_X0`**, `$FFFFE91A` is `$68` into
+`Canopy_Snap_RowFrame`. **So the old refusal was blocking a healthy build while naming an address that had become another cell — the lab-index
+defect with the sign flipped**, which is the ruling's own claim turning out measurable rather than aesthetic.
+▶ **The refusal moved onto two facts re-derived from the loaded listing per gesture**, run in full before the first cell: no other symbol starts
+inside the bytes a cell writes, and an array poisoned whole is exactly that large and partitions by the count the listing publishes
+(`BGANIM_MAX_BANDS`). **Measured silent on the real listing**: 8/8 cells pass, `BgAnim_LastStep` pins at exactly 8 bytes, `BGANIM_MAX_BANDS = 4`
+divides it into 2-byte slots. A new `label_at` uses the address direction's own `disp` (`queried − disp`), so **no contract change**, and it is
+alias-safe by comparing starts rather than names (`Raster_Program`/`Raster_State` and `BgAnim_LastStep`/`Palette_State_End` share addresses).
+⚑ **PER-CHANNEL HONESTY INSTEAD OF A UNIFORM CLAIM, and this is the part a lesser parcel would have faked:** parallax and raster carry **no**
+transcribed offsets, so their gate can only check width — **and the readout says that in those words** rather than implying offsets were verified.
+Bands carries the module's one transcribed layout fact (`BgAnim_LastStep+4`) and gets both gates; its record decode (`BAND_RECORD_BYTES = 44`)
+stays transcribed because **the listing publishes no equate for it** — the nine `band_entry_*` rows belong to the *parallax* band record, a
+different struct — so that is a **stated conditional caveat**, not a silent pass.
+⚑ **THE FIXTURE WAS THE ACCOMPLICE, AND REPAIRING IT CONVERTED THREE PRE-EXISTING ROWS INTO WITNESSES.** `Fake::full` carried the note's numbers
+too, under a doc claiming they were what the listings actually carry; with it repaired (plus four neighbour symbols giving the fixture a layout),
+**three rows that had been green over the shipped defect now catch it**. That is the night's third *fixture asserts the stale fact and passes
+honestly* instance, and the repair is what turned it into coverage.
+⚑ **AND THE SENTENCE THE WHOLE REFUSAL RESTED ON WAS FALSE.** `SCRATCH_NOTED_ADDR`'s doc read *"`Parallax_Current_Config` is engine RAM at a fixed
+offset and is a different case, which is why it is still drift-checked."* **False on its own terms** — RAM at a fixed offset inside its own block
+still moves when a block above it changes size, which is exactly what aeon `61918621` did. Corrected in place rather than deleted, **because a
+reader who finds only its absence learns nothing.**
+▶ **VERIFIED FIRSTHAND, DEBUG PROFILE:** fmt 0, clippy 0, **91/91 legs both counts, 3055 passed / 0 failed / 10 ignored**; currency 2/3/9/5 with no
+golden or fixture in the diff. **Red-first reproduced INDEPENDENTLY against the parcel's strongest claim — the TEMPTING WRONG REPAIR**: I bumped
+both `noted_addr` constants to today's listing (`$FFFF8BF6`, `$FFFFE93A`), shown on disk before the run and restored from committed `e5c5564`:
+**56 passed / 1 failed**, guard `the_channels_whose_note_is_stale_still_select_and_still_read`. **So the gate rejects re-transcription, not merely
+the original staleness** — the anti-instance property, verified rather than taken. ⚑ **Ops, against this seat: my first cut of that mutation put a
+`//` comment before the trailing comma and would have been a COMPILE ERROR — not a red.** Caught by reading the diff before running it, which is
+the whole reason that rule exists.
+**The gate's blind spots, stated by the parcel rather than discovered later:** an array that grew while its neighbour did not (trailing pad absorbs
+it) reads as healthy — the extent probe only bounds above; an array that is the **last** symbol in the listing would read as grown and be refused
+(unreachable in this listing family, and the refusal **names that shape itself** so a reader can discharge it in one look); a `synthetic`
+alignment label starting inside a cell would refuse a healthy build (not present here; the refusal names the offending symbol); and **two fields
+swapping inside one symbol's extent passes every check.**
+▶ **NEEDS HIS EYES (tagged, gating nothing):** none of this touches a real machine — it is all `Fake`, and **the panel cannot be opened from an
+agent seat.** Open the effects tab on `aeon/s4.debug.bin` with `s4.debug.lst` loaded and confirm the raster and bands channels now select and the
+readout carries the DRIFT line.
+**NEXT: `DATA-DISPLAY-AUDIT`** (his look calls 1-33 plus `objects.rs`'s latent raw-JSON catch-all).
