@@ -1364,11 +1364,27 @@ both ports. So this core's `Start` bit is demonstrably readable by a ROM that dr
 run could only have said what another model does — it could not have made "this ROM contains no direction
 write" false, and that is what settles it.
 
-*One residual, stated not buried.* All of the above rests on the pinned rule that an input-configured TH pin
-reads **high** (`docs/2026-07-17-io-recon.md`, IO3, PINNED). No corpus ROM discriminates it — the two that
-read the pad both *drive* TH. What would settle it empirically is a one-instruction harness ROM that reads
-`$A10003` with Control untouched at `$00`: pull-up-high predicts `$FF`, pull-low would predict `$B3`. That
-is a question about the port model rather than about this row, so it is recorded, not done here.
+*One residual, stated not buried — and now settled.* All of the above rests on the pinned rule that an
+input-configured TH pin reads **high** (`docs/2026-07-17-io-recon.md`, IO3, PINNED). **That rule was
+corroborated 2026-09-19 (`F-TH-PULLUP-UNDISCRIMINATED`, `docs/2026-09-19-th-pullup.md`), so Q1's answer
+stands with its confidence raised, not merely repeated.** `tools/blastem-differential/th_pullup.bin` reads
+`$A10003` with Control pristine at `$00` and BlastEm 0.6.2 answers `$7F` in bits 6–0 — TH high — on both
+ports, with both controls firing and the latch-echo confound excluded; and the 3-button pad turns out to
+carry **its own discrete pull-up on the select line**, so a plugged-in pad holds TH high whenever the console
+is not driving it, whatever the console's internal pull does. What remains missing is real hardware, which is
+tagged for a foreground follow-up.
+
+**Two corrections to what this paragraph used to say.** (1) *"No corpus ROM discriminates it"* stopped being
+true in this very landing: teaching the harness to reach the H40 half **by pressing `C`** made
+`vdp_sprite_masking` depend on the rule, and under an inverted-pull mutation `testrom_conformance_scorecard`
+and `the_glyph_scrape_reads_the_live_render_path` both go red (`pc: 790` = `$000316`, the ROM's
+`btst #5,$A10003`). The discriminator is indirect — it prints *"never went idle within 300 frames"*, which
+points a reader at a frame budget rather than at a pull direction — so the direct gate
+(`undriven_th_reads_high_in_both_models`) still earns its place. (2) The byte columns in the trace table
+above are **our core's**, and one bit of them is now a recorded cross-model divergence: BlastEm reads Data
+**bit 7** back from the latch rather than forcing it high, so it would print `$7F` and `$5F` where the table
+says `$FF` and `$DF` (`F-IO-DATA-BIT7`, recon IO4 as amended). **Bit 5 — the bit this row turns on — is
+identical either way, and so is the conclusion.**
 
 **The harness no longer exercises H32 only** — it runs both halves, using `C` on the evidence above. See the
 row in the scorecard table and `docs/2026-09-18-h40-half.md`.

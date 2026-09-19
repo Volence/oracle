@@ -88,8 +88,10 @@ fn an_unrelated_button_does_not_flip_the_start_backdrop() {
 
 /// The ROM image both arms run. Built by `tools/blastem-differential/build_th_pullup.py`; a wrong path is a
 /// compile error rather than a silently skipped test.
-const TH_PULLUP_ROM: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/blastem-differential/th_pullup.bin"));
+const TH_PULLUP_ROM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tools/blastem-differential/th_pullup.bin"
+));
 
 /// Work-RAM offset of the ROM's observable block (`$FF8000`), and of its done marker (`$FF8010`).
 const OBS: usize = 0x8000;
