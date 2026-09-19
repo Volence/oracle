@@ -19,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the diagnosis returns and is verified here.",
+  "nextBoundary": "When the diagnosis returns and is verified here. Both landings' CI is read and green.",
   "queue": [
     {
       "id": "TESTROM-OPCODE-SIZES-NEVER-SETTLES",
@@ -120,5 +120,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-19T01:35:37Z"
+  "updatedAt": "2026-09-19T02:12:21Z"
 }

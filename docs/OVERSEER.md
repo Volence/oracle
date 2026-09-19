@@ -657,3 +657,5 @@ as determinism pins on ROMs that animate and therefore have no settled frame.
 **NEXT: `TESTROM-OPCODE-SIZES-NEVER-SETTLES`** — the last unscraped ROM, and the open question is whether it has a verdict page at all or our
 machine is failing to complete it. **Re-derive before dispatch, and if it is the latter it is a CORE finding stated as one**, not folded into a
 harness row.
+
+**CI READ GREEN for the vcounter landing**, read to completion with `gh run view`: run `35412782076` on **`f729d7b`**, `conclusion=success`, all three jobs green — *Determinism gate*, *Replay playthroughs (release)*, *Build, test, clippy, fmt*. ⚑ **The SHA is the pushed TIP, not the merge, and that substitution is PROVED rather than assumed**: `0742cec` (the merge) has **no CI run at all** — a multi-commit push creates one run, for the tip — and `git diff --stat 0742cec f729d7b -- crates/` is **empty**, so that run tested the landing's code byte-for-byte. Banked in the reference beside the window defect it is indistinguishable from: **both failures print nothing, and the discriminator is whether the run EXISTS, which no status poll asks.**
