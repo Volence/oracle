@@ -776,3 +776,13 @@ here proves the string reaches the glass. **Both written into the test itself.**
 rows behind hub rulings. **`next` is set to `PANEL-CLIP-MARK` WITH its blocker visible, under `LANE_STATUS.md`'s explicit exception for a lane
 with no `doing` row** — *"what I would take when the hold lifts", the field at its most useful* — **not an invented startable row to fill a
 field.**
+⚑ **CI ON THE FINAL LANDING `2414223` WAS `cancelled`, NOT GREEN — and I caught it in my own closing claim.** The *Build, test, clippy, fmt* job
+started 15:28:05Z and was cancelled 15:47:09Z; the other two jobs passed. **I looked for a cause and did not assert one**: `ci.yml` declares no
+`concurrency` block, so the obvious guess (my later docs pushes superseding it) is **not supported by the config**, and the log gives no reason.
+**Unexplained, and recorded as unexplained.** ⚑ **A cancelled run is an ABSENCE, not a pass** — reporting it as green would have been the night's
+own defect in the night's last sentence.
+▶ **Resolved by measurement, not by substitution-on-trust: `7d56eb6` carries `crates/` BYTE-IDENTICAL to `2414223` (0 lines of diff) and its run
+is `success` on all three jobs, read to completion.** So the landing's code is CI-green; the landing's own *run* is not, and both halves are
+stated. ▶ **Booked `F-CI-RUN-CANCELLED-UNEXPLAINED`** — a cancelled run on a landing SHA with no declared concurrency group and no logged reason;
+it is the second shape of *the run that does not exist to read*, after the multi-commit-push case, and the discriminator is the same: **ask whether
+a verdict EXISTS before reading its colour.**

@@ -13,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now, and fully: fifteen landings, main green, nothing running, nothing unbanked.",
+  "nextBoundary": "Here now and fully: fifteen landings, main green (the last proven on a byte-identical SHA), nothing running.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -30,6 +30,14 @@
       "blockedBy": "your card d-54",
       "project": "ORACLE-DEBUG-UI",
       "title": "What I would take the moment you answer d-54: 67 panel rows whose text is cut by a whole table or control wider than its pane."
+    },
+    {
+      "id": "F-CI-RUN-CANCELLED-UNEXPLAINED",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "One automated run was cancelled partway with no reason given and no setting that explains it. Harmless this time, but a cancelled run reads like a pass if nobody looks."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -98,5 +106,5 @@
   ],
   "awaiting": "nothing buildable remains. Cheapest first: d-54 (one answer releases 67 held rows); then the nudge controls moving the picture; then the raster and bands channels selecting.",
   "atBoundary": true,
-  "updatedAt": "2026-09-19T15:27:08Z"
+  "updatedAt": "2026-09-19T16:00:29Z"
 }
