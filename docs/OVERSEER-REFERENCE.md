@@ -2417,6 +2417,13 @@ second time — check the gate process, not the waiter's notice.
 
 ## ⚑ `next` COEXISTS WITH `doing`. THIS LANE WROTE THAT RULE INTO THE CONTRACT AND THEN BROKE IT TWICE IN ONE DAY
 
+⚑ **AND THERE IS A THIRD FORBIDDEN PAIR, ADDED TO `contract/LANE_STATUS.md` 2026-09-19 (empyrean `b8a7333f`) FROM THIS LANE'S
+MEASUREMENT — `open` WITH A NON-NULL `blockedBy`.** Read it there, not here; the mechanism and the reason it was missing are:
+**the other two pairs are each ONE ROW BY CONSTRUCTION** (a lane has one `next`; a `blocked` row gets read) **while `open` is
+unbounded, so the class accumulates there and nowhere else.** ▶ **A sweep for this is keyed on `open`, never on `next`.**
+Measured when it was found: five rows on this board, and eight across three lanes suite-wide. **The hub flagged my single
+`next` instance; measuring the RULE rather than the row is what found the rest** — bar 8, applied to an incoming flag.
+
 *(2026-09-16, after the hub flagged `0 next rows` for the second time in ninety minutes. Governing text:
 `empyrean/contract/LANE_STATUS.md`, the `state` cell and the clause at its line 136 — read it there.)*
 
