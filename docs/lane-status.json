@@ -1,12 +1,6 @@
 {
-  "focus": "Our landing check does not run what the build server runs, and the status checker checks almost nothing.",
-  "inFlight": [
-    {
-      "what": "Making the landing check run the build server's real step list, and the status validator enforce the rules it is believed to",
-      "where": "branch parcel/landing-gate-parity",
-      "agent": true
-    }
-  ],
+  "focus": "The landing check now runs what the build server runs, and admits what it skipped.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the landing-gate parcel returns and is verified here.",
+  "nextBoundary": "Here now: thirteen landings, main green, nothing running.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -28,14 +22,6 @@
       "blockedBy": "your card d-54",
       "project": "ORACLE-DEBUG-UI",
       "title": "Cut panel text now says it was cut: 91 such lines fixed across 28 window sizes. The 67 left are whole tables or controls wider than their pane, which is card d-54."
-    },
-    {
-      "id": "F-LANDING-GATE-NOT-RUN",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Our landing check runs a different set of checks than the build server does, so a landing can be marked green by a command that could not have caught what breaks. It has happened three times."
     },
     {
       "id": "F-METHOD-ROWS-FROM-THE-REDS",
@@ -118,7 +104,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T12:05:19Z"
+  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T13:30:55Z"
 }
