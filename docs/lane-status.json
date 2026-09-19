@@ -1,5 +1,5 @@
 {
-  "focus": "The sprite ROM's never-run wide mode now passes nine for nine, and its confusing button was the cartridge's mistake, not ours.",
+  "focus": "The sprite ROM's never-run mode passes nine for nine; the confusing button was the cartridge's mistake.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -114,5 +114,5 @@
   ],
   "awaiting": "nothing blocking; next is the pair of ROMs whose results we still cannot read. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
   "atBoundary": true,
-  "updatedAt": "2026-09-19T00:30:27Z"
+  "updatedAt": "2026-09-19T00:36:29Z"
 }
