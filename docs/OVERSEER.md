@@ -730,9 +730,14 @@ is in none of these populations (that is §8.7's `blanked` assertion's business)
 `d-54` (67 rows, untouched).
 ▶ **TWO LOOK CALLS FOR HIM, both now honestly reported and both arguably `d-54`:** in `every-tab` the Memory panel's **Go button caption is
 entirely off the pane**, and in a fifth-width Screen pane the state buttons **8 and 9** are. Whether those widgets should be there at all is his.
-⚑ **Ops, minor and unexplained rather than guessed at:** my combined push-and-tidy chain failed at the worktree removal with *"fatal: Needed a
-single revision"*; both the removal and the branch delete succeeded on a plain retry seconds later, and the push had already landed. **Cause not
-established, so none is recorded** — the state was verified directly (origin at the merge, worktree gone, branch deleted) rather than inferred
+⚑ **Ops, and the cause IS established as of the next landing — IT WAS MINE, AND MY FIRST NOTE MISATTRIBUTED IT.** *(Corrected in place rather
+than left standing, because the wrong attribution points a successor at git.)* The chain failed at **`git rev-parse --short HEAD origin/main`**:
+**`--short` takes a SINGLE revision and exits 128 on two**, which broke the `&&` chain, so **the worktree removal never ran at all** — the very
+thing my note said it failed at. Reproduced deliberately and in isolation the second time it happened. **Same family as *read the empty diff
+before reading the result*: a chain's failure is attributed to the command you were watching rather than the one that exited.** Original note, left
+for the shape of the error: my combined push-and-tidy chain failed at the worktree removal with *"fatal: Needed a single revision"*; both the
+removal and the branch delete succeeded on a plain retry seconds later, and the push had already landed. **Cause not established, so none is
+recorded** — the state was verified directly (origin at the merge, worktree gone, branch deleted) rather than inferred
 from the retry. ⚑ Noticed while checking: **40 stale `parcel/*` branches** are still in this repo from previous landings; the worktrees are gone
 but the refs are not. Not cleaned tonight (deleting refs is the shared-machine caution's territory and nothing depends on it), but a successor
 should know they are cruft, not live work.

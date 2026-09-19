@@ -1301,6 +1301,22 @@ list first. `## Where the detail lives` at the foot of this file says which of t
 
 ## Follow-up register (from `OVERSEER.md`'s queue section, orig lines 112-440)
 
+* **F-TH-PULLUP-UNDISCRIMINATED — ✅ SETTLED 2026-09-19 (merge `30a4617`), CORROBORATED, and the row's own premise was overtaken by events.**
+  An undriven, input-configured TH pin reads **HIGH**; IO3 stands and Q1's answer with it. **Three arms, with what each proves stated:** our core
+  answers `$FF` **by construction** (a consistency check, NOT evidence — `read_data` literally contains the rule); **BlastEm 0.6.2 agrees on both
+  ports** with Control pristine at `$00` (bits 6-0 `$7F`), premise *observed* rather than assumed and a driven-low control proving a low TH would
+  be observable (`$33`); and the documented leg is the one that carries a **mechanism** rather than an assertion — **the 3-button pad has its own
+  discrete pull-up on the select line**, so a plugged-in pad holds TH high regardless of the console's internal pull. ⚑ **IO3 CITED NOTHING for
+  the pull direction** — its Plutiedev quote is accurate for the read/write model and silent on the pull, and IO2's parenthetical and IO4's bit-7
+  row rest on the same unattributed clause: **three statements on one uncited sentence.** ⚑ **And the booking's own premise had already expired:
+  "no corpus ROM discriminates it" stopped being true in the landing that REGISTERED it** — pressing `C` to reach the H40 half made
+  `vdp_sprite_masking` depend on the rule (measured: both its tests go red at the ROM's own `btst #5,$A10003`, `pc $000316`), though only
+  indirectly, which is why the direct differential still earns its place. **Real hardware is the only arm left and `th_pullup.bin` needs no screen
+  to run it.** ▶ **New row booked in its place: `F-IO-DATA-BIT7`** — we force Data **bit 7** to 1 unconditionally where BlastEm returns the data
+  latch's own bit 7, so we answer `$FF` where it answers `$7F` on **every pad read a normal game performs**. Recorded in
+  `tools/blastem-differential/known_differences.py` as the **one entry that deliberately does NOT pin ours as right**: the port has seven I/O pins
+  so no pin corresponds to bit 7, neither side has a citation, and the `315-5309` wiki contradicts itself. Q1 is untouched (bits 5 and 6 agree).
+  *Original booking follows, superseded:*
 * **F-TH-PULLUP-UNDISCRIMINATED — no corpus ROM discriminates the undriven-TH pull direction.** (Registered
   2026-09-19 by `TESTROM-H40-HALF`, which needed the rule and found nothing exercising it. **Code anchor:
   `pad_device_byte` in `crates/oracle-core/src/io.rs`; reference `docs/2026-07-17-io-recon.md` IO3, status
