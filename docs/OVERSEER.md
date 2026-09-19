@@ -670,3 +670,36 @@ and **not** reproduced — that needs an old-SHA build and a loaded many-trial l
 so no claim is made about it.
 **NEXT: `F-LANDING-GATE-NOT-RUN`** — it is the root cause of tonight's own red and of two historical greens, it needs nobody, and it is the one row
 whose fix would have prevented three separate failures in this repo.
+
+**`F-LANDING-GATE-NOT-RUN` LANDED 2026-09-19, merge `2c8befd`** (agent tip `e4c3dfb`, five commits; `tools/` only). **Both halves of one defect
+class — a gate believed to check something it does not — and this row is the ROOT CAUSE of the 17 reds, not one beside them: a red after a green
+landing reads as noise because the green looked authoritative while answering a different question.**
+▶ **HALF A: `land.sh` now runs CI's DEBUG arm (D1-D6) by default, and the measurement inverted my brief's assumption.** I warned against making
+landings 40 minutes; **parity costs half again, not double** — debug suite **731 s**, whole debug arm ~790 s, **a full landing 18.5 min warm** — so
+it is a default, not a flag. Two mechanisms: **`tools/ci-parity.py` classifies every `run:` step of every push-triggered workflow** (25 steps,
+keyed by job+name, **pinned by a digest of the step body**, so a step changing under us reds rather than diverging silently) **and proves the
+reverse claim** — each `RUN` row must name text actually present in `land.sh` outside comments. ⚑ **And every GREEN now names the gates it did NOT
+run**, with `debug_legs=skipped/skipped` rather than `0` — loud-on-unmeasurable inside the instrument that judges everything else.
+▶ **HALF B: `lane-check.py` enforces the contract it claimed to.** Exactly-one-`next` (with the no-`doing` exception), `open`+blocker,
+`blocked`-with-no-blocker, all four size bounds, unknown keys. **Read from empyrean `819f59b6`, blob `a20be8cb`, and both are PRINTED on every
+landing**, so the log names the contract it enforced — the copy problem handled by making the copy cite its source. `--gaps` lists the **seven
+rules deliberately not enforced.**
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE BY THE NEW GATE ITSELF: 27 gates PASS, 0 FAIL, `legs=91/91` AND `debug_legs=91/91`, `gates=full`,
+`debug_arm=D1-D6 ran`** — plus **two declared `ci_gap=` rows** (the cache-miss corpora fetch, ABSENT; the aeon-pin naming, DIFFERS, nearest local
+gate G6b). **A green that names its own remaining gaps is the deliverable I cared most about.** ⚑ **And I tested half B against my OWN dated
+defects rather than the agent's fixtures**: `8d58a76` (focus 126), `558de41` (five `open`+blocker), `48e8e12` (the two-`next` state I shipped an
+hour earlier) — all three now refused, each with a message saying *why it costs*; **and the control was RUN, not asserted: the old validator prints
+`clean`, exit 0, on all of them.**
+⚑ **THREE CORRECTIONS AGAINST ME, and the second is the one to relay:** (1) **future `updatedAt` was already enforced** — one of my four items
+needed no work. (2) ⚑ **`lane-check` was STRICTER than the contract**: it REQUIRED `awaiting` and `atBoundary`, which `LANE_STATUS.md` marks
+optional in as many words, so **the gate had been red on 16 of this lane's own 255 status revisions for obeying the contract.** ⚑ **That direction
+is invisible from the console** — a console sees a card go dark when a status is malformed; **it cannot see a lane quietly failing its own gate for
+being right.** Hub swept all four lanes with a validator (empyrean `5cef4ed1`, with a positive control because the first pass returned zeros it did
+not trust): **oracle's was the only one**; aurora's is correct, aeon's and sigil's do not touch those fields. (3) **The new debug gate caught a
+defect in the commit that ADDED it** — a timing figure written where a compiler version is parsed, which **the release arm structurally could not
+have caught, because the debug gate runs first.** ⚑ **A gate that catches its own author on its first run is the strongest evidence it is live.**
+⚑ **And five self-corrections in the agent's own work, one of which is this night's theme exactly: its corpus harness PRINTED "the control passed
+all 255" when the measured answer was RED on 37** — 16 of those being the contract-optionality divergence above. **A printed claim that was never
+the measured one, inside the parcel fixing printed claims that were never measured.**
+**NEXT: `F-METHOD-ROWS-FROM-THE-REDS`** (the three habit rows: a survey trusting its own empty result, a heuristic reused unscoped, an
+untestable-here asserted twice), then `DATA-DISPLAY-AUDIT`.
