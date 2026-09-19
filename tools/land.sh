@@ -440,11 +440,21 @@ write_verdict_ci_parity() {
     esac
     # Same per-run list as the report; see the note beside it. `$CI_GAPS` (captured at G0, before
     # any D gate could have run) is deliberately NOT what goes in the marker.
+    #
+    # ⚑ FILTERED TO THE THREE CLASSIFICATION WORDS, and that is not tidying. This function also
+    #   runs from `finish_red`, INCLUDING on a G0 refusal — the refusal that means ci-parity itself
+    #   is unhappy — and on that path the tool prints its `BAD ...` findings and a `N finding(s)`
+    #   summary alongside the gaps. Unfiltered, those became `ci_gap=` rows: a machine-read marker
+    #   naming gaps that are not gaps, on the one run where a reader most needs the marker to be
+    #   exact. Anything the tool says that is not a classified row belongs in the log, which
+    #   `finish_red` has already printed in full.
     local ran=""
     [ "$DEBUG_ARM" = 2 ] && ran="D5"
-    ./tools/ci-parity.py --gaps-only --ran "$ran" 2>/dev/null | while IFS= read -r l; do
-        [ -n "$l" ] && echo "ci_gap=$(printf '%s' "$l" | command sed -e 's/^ *//')"
-    done
+    ./tools/ci-parity.py --gaps-only --ran "$ran" 2>/dev/null \
+        | command grep -E '^[[:space:]]*(DIFFERS|ABSENT|CONDITIONAL)[[:space:]]' \
+        | while IFS= read -r l; do
+            echo "ci_gap=$(printf '%s' "$l" | command sed -e 's/^ *//')"
+        done
 }
 
 # (b), and it is a measurement rather than a claim: whenever we end without pushing, go and read
