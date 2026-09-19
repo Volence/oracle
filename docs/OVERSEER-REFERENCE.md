@@ -28,6 +28,38 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ VARY THE BUDGET, NOT THE SEED: A PIN FROM A TIMED RUN RESTS ON ONE OF TWO PROPERTIES AND NOBODY EVER
+ASKS WHICH** *(2026-09-19, measured at this seat while re-deriving `TESTROM-UNSCRAPED-PAIR`; adopted as suite
+protocol by the hub at empyrean `c847ec8d` as "the never-settles baseline rule")*. Re-running the same input
+proves **determinism**. **Convergence** is proven only by the artifact being identical at two DIFFERENT run
+lengths, and nothing in a passing suite distinguishes them.
+**Measured across our own scorecard, 120 vs 600 frames: THREE picture-pins rest on a moving picture** —
+`m68k_opcode_sizes` (`0x5436cda5786ea450` → `0x102fe6ffdd51e11c` → `0x5330009202fa2287` →
+`0xb1e54eed02744f27` at 120/300/600/1800), `window_distortion` (`…295b4e2c` → `…01e7c61e`) and
+`vdp_test_register` (`…306e928b` → `…f2181823`). The other five visual rows are identical at both budgets.
+Each of the three still matches its pinned hash at 120 frames exactly, which is the whole problem:
+**a stale golden is WRONG and will disagree with a correct run; one of these is RIGHT ABOUT A MOMENT NOBODY
+CHOSE and will keep agreeing forever**, so no gate resting on it can ever fire for this reason. The
+vacuous-gate family reached from the DATA side instead of the check side.
+⚑ **And the half that generalises hardest: the CHEAP surface lied.** The decoded plane text was identical at
+120, 600 and 1800 frames while the full frame hash differed at all four. **When a cheap surface and an
+expensive one disagree about settledness, the cheap one is lying — and it is the one everybody checks.**
+⚑ Sibling, same defect on a different surface *(aeon, 2026-09-16T05:25:06Z)*: two captures named
+`settled`/`landed` that were mid-fade — *a capture's filename is a claim about frame state*. **There the
+false claim of settledness lived in a FILENAME; here it lived in the ABSENCE OF VARIATION.**
+▶ **Bar: every pin taken from a timed run says which property it rests on.** An animation pinned at frame
+120 is legitimate — it is a determinism pin — but it must SAY so, because a reader takes it for convergence.
+Booked `F-TIMED-PIN-UNSETTLED` (three rows to annotate; the annotation lands after the vcounter parcel, to
+avoid two writers in one ledger).
+
+**⚑ AND A BOOKING READS AS A REASON, SO NOBODY RE-CHECKS IT** *(same re-derivation)*. The ledger said
+`vcounter` *"draws its results in a proportional font that is not an ASCII-ordered nametable"* and that
+scraping it *"needs a glyph table"*. It decodes as ordinary ASCII at font base `$100` — the base
+`m68k_memory_test` already uses. **That sentence stood 56 days** (introduced `7b46ae2`, 2026-07-25, dated
+from the commit per the duration bar above, not from feel) **and pointed every reader at the one artifact
+nobody needed to build.** A deferral carries its justification, and a justification is exactly the kind of
+sentence that is never re-measured — only a probe finds this, and only if someone distrusts the reason.
+
 **⚑ A DURATION IS A MEASUREMENT, AND "FOR THIRTEEN MONTHS" WAS WRITTEN FROM FEEL** *(2026-09-19, found by an
 agent against this seat's own prose from the night before)*. `POSTHOC-CARRY` wrote, in two places, that a
 pinned failure had stood "for thirteen months". **The repository's first commit is 2026-06-24 (86 days) and
