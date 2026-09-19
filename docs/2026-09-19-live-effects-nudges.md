@@ -335,6 +335,45 @@ own guard. **This is the retroactive tightening the method requires** — the ca
 
 ---
 
+## 5.2 Aggregates
+
+**The DEBUG profile, which is what CI runs**, at `1f90d41`, wall clock uptime 3 days 6:36 at launch:
+
+```
+cargo test --workspace     91 legs   3046 passed   0 failed   10 ignored   exit 0
+cargo fmt --all --check                                                    exit 0
+cargo clippy --workspace --all-targets -- -D warnings                      exit 0   (exit captured OUTSIDE a pipe)
+```
+
+The four frozen-currency suites, **individually**, all from that same run:
+
+| suite | result |
+|---|---|
+| `determinism_gate` | ok. **2 passed**, 0 failed, in 1.77s |
+| `export_state_v1` | ok. **3 passed**, 0 failed, in 0.41s |
+| `golden_frames` | ok. **9 passed**, 0 failed, in 0.03s |
+| `scanline_goldens` | ok. **5 passed**, 0 failed, in 36.19s |
+
+No golden or fixture file is in the diff (`git diff --name-only f52d226..HEAD` is four files, two of them docs),
+so the currencies came back byte-identical rather than re-pinned.
+
+### ⚑ Two failures the DEBUG suite caught that a targeted run did not
+
+1. **`p10_no_dashes_in_shipped_text`: 14 em dashes reached a person through shipped strings.** The rule
+   exempts doc comments and `#[cfg(test)]`, and this parcel's prose habits went into the strings the panel
+   *draws*. Fixed at `1f90d41` with the rule's own remedies (a colon, a full stop, a comma pair,
+   parentheses); no sentence lost a clause. **This is the invariant about verifying in the debug profile
+   rather than only in a targeted run, paying for itself in the same session it was written down.**
+2. **`the_compiled_in_build_id_still_names_this_tree` failed once, transiently and correctly.** It fired on
+   a run that was launched *before* the parcel's commit and read back afterwards: `build.rs` baked
+   `f52d226` and HEAD had become `8d8e1bb`. That is the guard working as designed (it exists to catch a
+   cached build-script product) and is not a defect in this parcel. It is green on the clean run.
+   **Recorded rather than dropped**, because a reader of the earlier log would otherwise find a red with no
+   account of it.
+3. A third, worth naming because it is an environment fact rather than a result: a fresh worktree has no
+   `vendor/` (it is gitignored), so `color_1536_gradient_guard` blocked on a missing test ROM until the
+   directory was symlinked to the main tree's. Nothing in the repo changed for it.
+
 ## 6. Owed, and not done here
 
 * **⚑ NO RUNTIME CONFIRMATION, AND THIS PARCEL IS THE KIND THAT NEEDS IT.** Nothing here has been exercised
