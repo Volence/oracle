@@ -1,12 +1,6 @@
 {
-  "focus": "Same check on seven older test failures, after the last eight all turned out to be real bugs.",
-  "inFlight": [
-    {
-      "what": "Giving the seven 9 September failures a disposition each, by the method that just went eight for eight",
-      "where": "branch parcel/reds-0909",
-      "agent": true
-    }
-  ],
+  "focus": "Seventeen unexplained test failures checked; fifteen were real bugs, none was a mystery.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the 09-09 cohort returns and is verified here.",
+  "nextBoundary": "Here now: twelve landings, main green, nothing running.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -30,20 +24,20 @@
       "title": "Cut panel text now says it was cut: 91 such lines fixed across 28 window sizes. The 67 left are whole tables or controls wider than their pane, which is card d-54."
     },
     {
-      "id": "F-REDS-0909-COHORT",
-      "state": "doing",
+      "id": "F-LANDING-GATE-NOT-RUN",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Seven more unexplained test failures from 9 September, all with logs intact. The same check just found eight for eight were real bugs, so these are worth the same look."
+      "title": "Our landing check runs a different set of checks than the build server does, so a landing can be marked green by a command that could not have caught what breaks. It has happened three times."
     },
     {
-      "id": "F-CI-SURVEY-UNVERIFIED",
+      "id": "F-METHOD-ROWS-FROM-THE-REDS",
       "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "My own quick searches reported missing evidence that was present, three times in one night. Any such search needs a known-positive case run through it before its silence counts."
+      "title": "Three smaller habits the failure review caught: a survey that trusted its own empty result, a rule of thumb reused where it did not apply, and 'that cannot be tested here' asserted twice and disproved."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -118,7 +112,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T11:30:32Z"
+  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T11:39:48Z"
 }
