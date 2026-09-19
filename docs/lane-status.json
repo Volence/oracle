@@ -1,12 +1,6 @@
 {
-  "focus": "Two ROMs we could not read: one turns out readable and menu-driven, the other never settles.",
-  "inFlight": [
-    {
-      "what": "Driving the V-counter ROM's menu so it prints verdicts we can read, instead of pinning a picture",
-      "where": "branch parcel/vcounter-menu",
-      "agent": true
-    }
-  ],
+  "focus": "One test ROM left that we cannot read, and it never stops moving. Its picture-pin now says so.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,16 +13,8 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the V-counter parcel returns and is verified here. Last landing's CI is read and green.",
+  "nextBoundary": "Here now: landed, pushed, nothing running. Only this landing's CI is unread.",
   "queue": [
-    {
-      "id": "TESTROM-VCOUNTER-MENU",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The V-counter ROM is readable after all -- the note saying it needed a font table was wrong. It is a menu of nine display modes; drive it and it prints verdicts we can pin."
-    },
     {
       "id": "TESTROM-OPCODE-SIZES-NEVER-SETTLES",
       "state": "next",
@@ -36,14 +22,6 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "The opcode-size ROM's picture keeps changing out to 1800 frames and no button moves it, so what we pinned is a snapshot of something still moving. Is it its design, or is our machine not finishing it?"
-    },
-    {
-      "id": "F-TIMED-PIN-UNSETTLED",
-      "state": "open",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Three test-ROM pictures we pin were still moving when we pinned them. For two that is fine -- they are animations -- but none of the three says so, so a reader takes them for finished pictures."
     },
     {
       "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
@@ -134,7 +112,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T00:56:52Z"
+  "awaiting": "nothing blocking; one unreadable ROM left and I'll take it. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T01:29:18Z"
 }
