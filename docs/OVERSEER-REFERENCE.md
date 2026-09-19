@@ -28,6 +28,15 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ A DURATION IS A MEASUREMENT, AND "FOR THIRTEEN MONTHS" WAS WRITTEN FROM FEEL** *(2026-09-19, found by an
+agent against this seat's own prose from the night before)*. `POSTHOC-CARRY` wrote, in two places, that a
+pinned failure had stood "for thirteen months". **The repository's first commit is 2026-06-24 (86 days) and
+the pin is 2026-07-25 (55 days)** — wrong by roughly sevenfold, in the direction that makes the finding
+sound weightier. Same defect as `updatedAt` written from one's head, and the same family as *a banked pointer
+names its SOURCES, never its FIGURE*. **Bar: an age, an interval or a "since when" in any prose this lane
+writes comes from `git log`, quoted with the commit that dates it — never from a sense of how long the thing
+has felt true.**
+
 **⚑ A LABEL THAT CANNOT BE WRONG IS NOT A MEASUREMENT** *(2026-09-18, found at this seat while re-deriving
 `TESTROM-H40-HALF`'s premise from the tree; banked as a class by the hub at empyrean `9f3db535`)*. The
 `vdp_sprite_masking` scorecard row is prefixed with a hardcoded `"H32:"` string literal in
@@ -1189,6 +1198,17 @@ sentence was invisible to every paragraph- or sentence-boundary check a person w
 list first. `## Where the detail lives` at the foot of this file says which of the three files takes what.
 
 ## Follow-up register (from `OVERSEER.md`'s queue section, orig lines 112-440)
+
+* **F-TH-PULLUP-UNDISCRIMINATED — no corpus ROM discriminates the undriven-TH pull direction.** (Registered
+  2026-09-19 by `TESTROM-H40-HALF`, which needed the rule and found nothing exercising it. **Code anchor:
+  `pad_device_byte` in `crates/oracle-core/src/io.rs`; reference `docs/2026-07-17-io-recon.md` IO3, status
+  PINNED.**) Q1's whole answer — the ROM's text is stale and our core is right — turns on *an
+  input-configured TH pin reads high*. If the pull were the other way, bit 5 WOULD be `Start` and the ROM's
+  text would be correct. Both pad-reading ROMs in the corpus **drive** TH, so they exercise the driven case
+  only. *What would settle it:* a one-instruction harness ROM reading `$A10003` with Control untouched at
+  `$00` and reporting the byte — `$FF` predicts pull-up-high, `$B3` predicts pull-low — through
+  `tools/blastem-differential`'s existing RAM-dispatch rig. **A port-model question, not a harness row's**,
+  which is why the parcel that found it correctly did not do it.
 
 **Follow-up register** (each named where registered; deferrals here are unaudited estimates,
 measured 3-for-3 cheaper than documented): F-SCANLINE-INDEX / F-SCANLINE-SH (priced down by the

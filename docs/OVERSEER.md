@@ -568,3 +568,49 @@ mechanism truncated it**, which is more than either diagnosis buys.
 ⚑ **SHARPENING ON THE `TESTROM-H40-HALF` NEXT (the hub's, adopted): if the `Start`/`C` toggle turns out to be an
 INPUT-PROTOCOL DEFECT rather than a harness gap, it is a finding about the CORE and gets stated as one — do NOT fold it
 into the harness row.** A core defect filed inside a harness parcel is a defect nobody outside this lane can see.
+
+**`TESTROM-H40-HALF` LANDED 2026-09-19, merge `821ad41`; ledger Q1 CLOSED** (agent tip `57cc1e6`, four commits; **nothing under
+`crates/oracle-core/src/` touched** — the hard constraint held for the second parcel running). **The nine H40 verdicts are read for the
+first time and all nine PASS**, every one classifying against the four already-pinned glyph hashes with **no constant re-derived** (the L3
+trap avoided a third time). ⚑ **The half was never cosmetic and the queue row undersold it:** the VDP's sprite limits are per-mode
+(16 sprites / 256 dots / 64 per frame at H32; **20 / 320 / 80** at H40) and tests 1, 2, 3 and 9 are tests OF those limits, so this exercised
+a budget path in `Vdp::sprite_line` that no instrument had ever reached. ⚑ **And `POSTHOC-CARRY`'s artefact is NOT an H32 accident**: the
+live-vs-post-hoc split on test 6 reproduces identically in H40, so `the_glyph_scrape_reads_the_live_render_path` now requires the divergence
+in **each half** — a fix repairing one mode's carry seeding and not the other's goes red.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE, none of it taken from the agent:** `tools/land.sh --no-push` GREEN, every gate G1-G10, **91/91
+legs, 3022 passed / 0 failed / 7 ignored**, run reached its end marker (detached under `setsid nohup`, `CARGO_BUILD_JOBS=4`, polled for my
+own marker). `conformance_roms` 6 → 7 tests, explained by the new ragged-frame guard and **not** a new target, so the leg count is unmoved.
+Currency suites individually: `determinism_gate` 2, `export_state_v1` 3, `golden_frames` 9, `scanline_goldens` 5. The row printed here with
+`--nocapture` rather than read off the agent's report. **Red-first reproduced INDEPENDENTLY here, twice, each mutation shown on disk by
+`git diff` BEFORE the run and restored from committed `821ad41`:** (1) the `C` press removed fires the **idle-stop** guard, not the mode gate
+— 5 passed / 2 failed; (2) a **double toggle landing back in H32** fires `ProvenScreen::establish` with `left: 256, right: 320` — the case
+where nine plausible verdicts would otherwise print under the wrong label. ⚑ **Mutation (1) is the more instructive of the two: it is red for
+a reason that is NOT the property under test**, so it would have read as proof of the gate while proving only that the press matters. A
+mutation's colour does not tell you which guard caught it.
+
+**Q1 CLOSED: the ROM's on-screen text is stale; THIS CORE IS CORRECT.** ⚑ **Verified at this seat against the 256 KB image rather than taken
+from the agent:** `$A10009` (P1 Control) occurs **zero** times in the ROM, `$A10003` (P1 Data) exactly **three** (`$2FE`, `$30E`, `$31A`).
+The wait routine writes Data and spins on `btst #5,$A10003`; writing Data cannot drive TH, so TH is never made an output, floats high on the
+pull-up (recon IO3) and bit 5 is `C`. Corroborated **in-corpus, not cross-emulator**: `vdp_port_access` DOES write `$A10009` and is advanced
+through all 22 pages by `Start` in this same harness. So the harness presses `C` **on the evidence**, not as a workaround, and the hub's
+sharpening (a core input defect would have been stated as a CORE finding in its own right) did not need to fire — there is no core defect.
+▶ **Booked `F-TH-PULLUP-UNDISCRIMINATED`** (the one residual, stated by the agent rather than buried): the whole answer rests on IO3's
+pinned pull-up-high rule, and **no corpus ROM discriminates it** — both pad readers drive TH. A one-instruction harness ROM reading
+`$A10003` with Control untouched at `$00` settles it (`$FF` predicts pull-up-high, `$B3` pull-low). It is a **port-model** question, not this
+row's, and correctly not done inside a harness parcel.
+
+⚑ **A CORRECTION AGAINST THIS SEAT, FOUND BY THE AGENT, AND THE FIGURE WAS MINE FROM LAST NIGHT.** `conformance_roms.rs` claimed in two
+places — both written by `POSTHOC-CARRY` on 09-18 — that `6=FAIL` had stood, and goldens had read post-hoc, **"for thirteen months"**.
+**Measured at this seat: the repository's first commit is `e11ddd2`, 2026-06-24 — 86 days — and the `6=FAIL` pin is `7b46ae2`, 2026-07-25 —
+55 days.** Wrong by roughly sevenfold, in the direction that makes the finding sound weightier. Corrected in place by the agent with a
+visible note; POSTHOC-CARRY's substance is untouched and not in question. **The class: a duration written from FEEL rather than from the
+clock** — the same defect as `updatedAt` written from one's head, and the same family as *a banked pointer names its sources, never its
+figure*. ▶ Relayed to the hub, because the agent's question is the right one and only the hub can see across lanes: **does this habit appear
+in other lanes' prose?**
+
+**NEXT: `TESTROM-UNSCRAPED-PAIR`** (open question Q2) — `vcounter` and `m68k_opcode_sizes` carry a picture-pin and no verdict, so
+"all the tests pass" is still not a sentence this lane can honestly say. **Re-derive before dispatch**: `vcounter` needs a glyph table for a
+proportional font, and `m68k_opcode_sizes` may need only a longer budget or an input to reach its result page — those are two different
+parcels wearing one row, and the row should be split if the re-derivation says so. Then the ruled
+`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` (brief the substituted defining CLAUSE and the pre-ruled row-placement acceptance condition, never the
+paragraph).
