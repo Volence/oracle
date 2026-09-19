@@ -13,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: landed, pushed, nothing running. CI queued at push and not yet read.",
+  "nextBoundary": "Here now: landed and pushed, nothing running. Only CI on the landing SHA is still being read.",
   "queue": [
     {
       "id": "TESTROM-UNSCRAPED-PAIR",
@@ -114,5 +114,5 @@
   ],
   "awaiting": "nothing blocking; next is the pair of ROMs whose results we still cannot read. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
   "atBoundary": true,
-  "updatedAt": "2026-09-19T00:27:43Z"
+  "updatedAt": "2026-09-19T00:30:27Z"
 }
