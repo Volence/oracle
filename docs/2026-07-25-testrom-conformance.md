@@ -43,7 +43,7 @@ Harness facts, so a reader can reproduce a row by hand:
 | `vdp_test_register` (`DisableRegTestROM.bin`) | The undocumented VDP test register (`$1F`) display-disable bits | Frame hash only | `frame_hash=0x4a49cfea306e928b` | We do not model the test register; the hash is a "did the picture move" pin, not a verdict. |
 | `gfx_joystick` (`Graphics & Joystick Sampler`) | Basic graphics + joystick sampler (a smoke ROM) | Frame hash only | `frame_hash=0xba8ce06075e4e163` | — |
 | `fm_test` (`FM Test by DevSter`) | YM2612 FM tone output | Frame hash only — **audio, not video**; the harness pins the (blank) screen so the ROM at least boots and runs | `frame_hash=0xed40dc4a6c4fc325` (identical to `direct_color_dma`: both are all-black screens) | Audio verdict is out of scope here — the sound stack has its own instrument (VGM capture / A-B vs Oracle, `docs/2026-07-23-rt3-oracle-ab-findings.md`). |
-| `vcounter` (`vctest.bin`) | V-counter / HV-counter behaviour across the frame | Frame hash only — **not scraped**: the ROM draws its results in a proportional font that is not an ASCII-ordered nametable, so the text-scrape path does not apply | `frame_hash=0x294957c8001b9f93` | Unscraped by choice, not by failure. Scraping it needs a glyph table; deferred. |
+| `vcounter` (`vctest.bin`) | V-counter behaviour across the frame, in nine screen/vertical modes, read once per scanline for a whole scan and printed as a paged table | **Yes, since 2026-09-18** (`TESTROM-VCOUNTER-MENU`) — ordinary ASCII nametable text, **font base `$100`**, driven through the ROM's own menu: nine modes x two scan lengths (262 / 312 lines) from ONE boot, because its result screen's `Start` is an *exit* back to the menu and both the cursor and the `A` toggle survive it. The mode cursor is a **priority-bit** highlight on the selected nametable row (cell bit 15), not text, so it is read out of the raw cells; `Up`/`Down` move it one row per press, edge-shaped and clamped at both ends. Every step is waited on for its own effect, never timed, and the mode is PROVED before a value is read: `ProvenVcMode::establish` is the only constructor and the only route into `vc_classify`, and it checks the `Reg: 8Crr 81rr` pair the ROM prints for the run (the nine items' pairs are pairwise distinct), the cursor row, the menu's printed scan length, the table's length and `Format:0` | `262-line scan: modes[0-8]=$00-$EA(235),$E5-$FF(27) [recon-R2 NTSC-V28 match 9/9] \| 312-line scan: modes[0-8]=$00-$EA(235),$E5-$FF(27),$00-$31(50) [recon-R2 NTSC-V28 match 9/9] \| V28-ONLY MODEL: only mode 3 is a V28 mode, so the other 8 agree by being unmodelled` — **menu item 3 (Mode 5 320x224) is a real PASS**: character-for-character recon R2's NTSC V28 progression. The other eight are a **recorded limitation**, not passes (was `frame_hash=0x294957c8001b9f93`) | **2026-09-18 (TESTROM-VCOUNTER-MENU): the previous reason for this row was FALSE, and it stood eight weeks.** "The ROM draws its results in a proportional font that is not an ASCII-ordered nametable" is wrong: it is ordinary ASCII nametable text at font base `$100`, the base `m68k_memory_test` already used, through the same `text_rows`. Q2's "needs a glyph table" is wrong for the same reason — there is no glyph table to build. The real blocker was that this ROM is **menu-driven** and nothing in the harness drove a menu for it, so the work was navigation. The eight non-V28 modes agree with the V28 reading **by being unmodelled**, derived from the tree: `Vdp::v_counter` reads no register at all (it is a pure function of the master clock), `ACTIVE_LINES` is documented as "the only vertical mode this core models" and `LINES_PER_FRAME` as "fixed at NTSC's 262", and `Vdp::interlace_enabled` feeds only the ODD status bit. Recorded, not fixed — this instrument is non-gating. **Nothing is excluded**: the navigation is identical for all nine, so the eight cost one keypress each, and they are the only thing in the corpus that would *announce* an interlace or V30 vertical-timing model arriving (the row's grouping splits the moment one differs). The 312-line half is the one that measures frame **length** rather than counter shape — the wrap lands 50 lines into the next frame, i.e. 262 lines/frame read off the ROM instead of out of the constant, and a V30 frame is 313. `[recon-R2 NTSC-V28 match n/9]` compares against `vc_r2_ntsc_v28`, which restates recon R2's published progression rather than calling `Vdp::v_counter`, so a model change moves this row instead of moving the expectation with it. Measured surprise, recorded: the result screen's header appears **before** its table finishes drawing (reading page 0 on the header gave 212 of 262 values), so each page is waited on until it holds its own full count. Seven red-first mutations, each with the guard that fired named. No file under `crates/oracle-core/src/` was touched and the other 16 rows are byte-identical. See `docs/2026-09-18-vcounter-menu.md`. |
 | `m68k_opcode_sizes` (`m68k_opcode_sizes.bin`) | Per-opcode size/encoding sweep | Frame hash only — **not scraped**: at the pinned 120-frame budget the screen shows the ROM's font/pattern page, not a result page | `frame_hash=0x5436cda5786ea450` (re-pinned 2026-08-02 with the K1 fix; was `0xca81010c64f8e701` — 476 px moved across the `$0/4/8/C/E` opcode pages, the newly-trapping encodings) | Unscraped by choice. Finding its result page (a longer budget or an input) is deferred. |
 
 Deliberately **not** vendored: the two TiTAN *Overdrive* mega-demos. They are the classic hardware-torture
@@ -1366,18 +1366,31 @@ is a question about the port model rather than about this row, so it is recorded
 **The harness no longer exercises H32 only** — it runs both halves, using `C` on the evidence above. See the
 row in the scorecard table and `docs/2026-09-18-h40-half.md`.
 
-**Q2 — `vcounter` and `m68k_opcode_sizes` are unscraped.** Both are automatable in principle; neither yields
-its verdict through the ASCII-nametable path the other text ROMs share. Deferred, not blocked.
+**Q2 — `m68k_opcode_sizes` is unscraped.** Automatable in principle; at the pinned 120-frame budget the
+screen shows the ROM's font/pattern page rather than a result page, so finding its result page (a longer
+budget, or an input) is what is deferred. Not blocked.
+
+**Q2 used to name `vcounter` too, and its reason for both was wrong.** It said neither ROM "yields its
+verdict through the ASCII-nametable path the other text ROMs share" and that scraping `vcounter` "needs a
+glyph table". `vcounter` yields its verdict through exactly that path, at font base `$100` — the base
+`m68k_memory_test` was already using. The blocker was that the ROM is menu-driven and nothing drove its
+menu. It is scraped as of 2026-09-18 (`TESTROM-VCOUNTER-MENU`); see its row above and
+`docs/2026-09-18-vcounter-menu.md`. Nothing was ever checked about `m68k_opcode_sizes`' font, so this half of
+Q2 keeps only the claim its own row makes — that the pinned budget does not reach a result page.
 
 ## How to amend a row
 
 1. Reproduce with `cargo test -p oracle-core --test conformance_roms -- --nocapture` (the scorecard prints
    before the assert).
 2. Investigate with `cargo run -p oracle-core --example testrom_probe -- vendor/TestRoms/<rom>.bin <frames>
-   [font_base_hex]` (env: `SCREEN=<step>`/`SCRX0`, `RAW_ROW`, `TILES=<hex>,<count>`, `BLOCKS`,
-   `PRESS`/`PRESS_AT`/`PRESS_LEN`). For a ROM with more than one screen mode, `PRESS=<btn> PRESS_AT=20
-   PRESS_LEN=10` and then reading the printed `width=` is how you find out which button actually toggles it
-   — that one line is what closed Q1 and opened the H40 half.
+   [font_base_hex]` (env: `SCREEN=<step>`/`SCRX0`, `RAW_ROW`, `TILES=<hex>,<count>`, `BLOCKS`, `CUTS`,
+   `PRESS`/`PRESS_AT`/`PRESS_LEN`, `PRESSES=<at>:<btn>:<len>,…`, `PRIO_ROWS`). For a ROM with more than one
+   screen mode, `PRESS=<btn> PRESS_AT=20 PRESS_LEN=10` and then reading the printed `width=` is how you find
+   out which button actually toggles it — that one line is what closed Q1 and opened the H40 half. For a
+   **menu-driven** ROM use `PRESSES`, which scripts several presses (d-pad included) in one run, and
+   `PRIO_ROWS`, which prints the nametable's priority bits per row — `vcounter`'s menu cursor is a priority
+   highlight and carries no text, so it is invisible in the text grid and that one line is what opened its
+   row.
 3. Update `BASELINE` **and** this ledger in the same change, with the evidence for why the row moved.
 4. If a row is scraped at coordinates, **re-derive them in the new condition** rather than reusing the old
    ones. A derived number that comes out equal to a copied one is fine and should say so; a copied one is

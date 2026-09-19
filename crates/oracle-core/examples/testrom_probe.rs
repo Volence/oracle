@@ -18,6 +18,8 @@
 //! | `BLOCKS=1` | FNV-1a of the 32x8 rect at x 216..248 for cell rows 6..14 — the `vdp_sprite_masking` verdict glyphs |
 //! | `CUTS=1` | one FNV-1a per line (diff two builds to name the lines a model change moved) + any sprite the per-line pixel budget cut in half on that line |
 //! | `PRESS=<start\|a\|b\|c>` + `PRESS_AT=<f>` + `PRESS_LEN=<f>` | hold a button on port 1 for `PRESS_LEN` frames starting at frame `PRESS_AT` |
+//! | `PRESSES=<at>:<btn>:<len>,...` | a SCRIPT of presses on port 1 (ascending `at`), for menu-driven ROMs; `btn` is any of `up down left right a b c start`. Cannot be combined with `PRESS` |
+//! | `PRIO_ROWS=1` | which plane-A cells have the priority bit set, per row — `vcounter`'s menu cursor is a priority-bit highlight, invisible in the text grid |
 //!
 //! Documented in `docs/2026-07-25-testrom-conformance.md` ("How to amend a row").
 
@@ -36,27 +38,27 @@ fn main() {
     let mut sys = System::new(0x1234_5678);
     sys.load_rom(rom);
     sys.reset();
-    if let Ok(btn) = std::env::var("PRESS") {
-        let at: u64 = std::env::var("PRESS_AT").unwrap().parse().unwrap();
-        let len: u64 = std::env::var("PRESS_LEN").unwrap().parse().unwrap();
-        let mut pad = oracle_core::io::Pad::default();
-        match btn.as_str() {
-            "start" => pad.start = true,
-            "a" => pad.a = true,
-            "b" => pad.b = true,
-            "c" => pad.c = true,
-            _ => panic!("bad button"),
-        }
-        sys.run_frames(at);
-        sys.set_pad(oracle_core::io::PadPort::P1, pad);
-        sys.run_frames(len);
-        sys.set_pad(
-            oracle_core::io::PadPort::P1,
-            oracle_core::io::Pad::default(),
-        );
-        sys.run_frames(frames - at - len);
-    } else {
+    let script = press_script();
+    if script.is_empty() {
         sys.run_frames(frames);
+    } else {
+        let mut now = 0u64;
+        for (at, pad, len) in script {
+            assert!(at >= now, "PRESSES must be in ascending frame order");
+            sys.run_frames(at - now);
+            sys.set_pad(oracle_core::io::PadPort::P1, pad);
+            sys.run_frames(len);
+            sys.set_pad(
+                oracle_core::io::PadPort::P1,
+                oracle_core::io::Pad::default(),
+            );
+            now = at + len;
+        }
+        assert!(
+            frames >= now,
+            "frames ({frames}) is before the last press ends ({now})"
+        );
+        sys.run_frames(frames - now);
     }
 
     let width = sys.vdp().render_line(0).len();
@@ -91,6 +93,22 @@ fn main() {
                 });
             }
             println!("{row:02}|{s}|");
+        }
+    }
+
+    // `PRIO_ROWS=1` — the priority bit (cell bit 15) per plane-A cell, one line per cell row. `vcounter`
+    // highlights its menu cursor by setting that bit on the selected row's cells and nothing else, so the
+    // cursor is invisible in the text grid above and this is the channel that carries it.
+    if std::env::var_os("PRIO_ROWS").is_some() {
+        let base = ((sys.vdp().regs()[2] as usize) & 0x38) << 10;
+        for row in 0..28usize {
+            let mut s = String::new();
+            for col in 0..cols {
+                let off = base + (row * plane_w + col) * 2;
+                let cell = u16::from_be_bytes([sys.vdp().vram()[off], sys.vdp().vram()[off + 1]]);
+                s.push(if cell & 0x8000 != 0 { 'P' } else { '.' });
+            }
+            println!("PRIO {row:02}|{s}|");
         }
     }
 
@@ -215,4 +233,56 @@ fn main() {
         }
     }
     println!("frame_hash=0x{h:016x}");
+}
+
+/// One button by name, as `PRESS`/`PRESSES` spell it.
+fn button(name: &str) -> oracle_core::io::Pad {
+    let mut pad = oracle_core::io::Pad::default();
+    match name {
+        "start" => pad.start = true,
+        "a" => pad.a = true,
+        "b" => pad.b = true,
+        "c" => pad.c = true,
+        "up" => pad.up = true,
+        "down" => pad.down = true,
+        "left" => pad.left = true,
+        "right" => pad.right = true,
+        other => panic!("bad button {other:?}"),
+    }
+    pad
+}
+
+/// The press script, as `(at, pad, len)` triples in frame order. `PRESS`/`PRESS_AT`/`PRESS_LEN` is the
+/// one-press special case of `PRESSES`; declaring both is refused rather than silently resolved.
+fn press_script() -> Vec<(u64, oracle_core::io::Pad, u64)> {
+    let one = std::env::var("PRESS").ok();
+    let many = std::env::var("PRESSES").ok();
+    assert!(
+        !(one.is_some() && many.is_some()),
+        "PRESS and PRESSES are alternatives; declare one"
+    );
+    if let Some(btn) = one {
+        let at: u64 = std::env::var("PRESS_AT").unwrap().parse().unwrap();
+        let len: u64 = std::env::var("PRESS_LEN").unwrap().parse().unwrap();
+        return vec![(at, button(&btn), len)];
+    }
+    let Some(spec) = many else {
+        return Vec::new();
+    };
+    spec.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|item| {
+            let f: Vec<&str> = item.trim().split(':').collect();
+            assert_eq!(
+                f.len(),
+                3,
+                "PRESSES item must be <at>:<btn>:<len>, got {item:?}"
+            );
+            (
+                f[0].parse().expect("at"),
+                button(f[1]),
+                f[2].parse().expect("len"),
+            )
+        })
+        .collect()
 }
