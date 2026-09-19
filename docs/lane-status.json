@@ -1,12 +1,6 @@
 {
-  "focus": "Building the controls that nudge a live effect's numbers while the game runs.",
-  "inFlight": [
-    {
-      "what": "Nudging a running effect's parallax numbers from the debug window, with an honest refusal on builds that lack the memory",
-      "where": "branch parcel/live-effects-nudges",
-      "agent": true
-    }
-  ],
+  "focus": "You can now turn a live effect's numbers while the game runs. Needs your eyes on the picture once.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the nudge parcel returns. The boot read is back under a third of its bound.",
+  "nextBoundary": "Here now: seven landings, main green, nothing running, boot read at 44 KB of its 100 KB bound.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -44,6 +38,14 @@
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
       "title": "We and another emulator disagree about one bit of the controller port on every ordinary pad read. Recorded honestly: nobody can show who is right, and no real pin corresponds to it."
+    },
+    {
+      "id": "LIVE-EFFECTS-NUDGE-LOOK",
+      "state": "blocked",
+      "size": "S",
+      "blockedBy": "your eyes on a moving picture",
+      "project": "LIVE-EFFECTS",
+      "title": "The new nudge controls are built and checked, but the one claim that matters -- turn a number and the picture changes -- can only be confirmed by you watching it."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -100,17 +102,9 @@
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
-    },
-    {
-      "id": "LIVE-EFFECTS-NUDGES",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LIVE-EFFECTS",
-      "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T06:21:45Z"
+  "awaiting": "two things for you, neither blocking: d-54 (wrap long panel lines, or widen the panes?) and a look at the new nudge controls actually changing the picture -- no test can see that.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T06:51:51Z"
 }
