@@ -1,12 +1,6 @@
 {
-  "focus": "A panel line pushed entirely off its pane reported no loss at all. Fixing it so total loss shows.",
-  "inFlight": [
-    {
-      "what": "Making a wholly cut-off panel line report itself as cut instead of as absent",
-      "where": "branch parcel/panel-clip-total-loss",
-      "agent": true
-    }
-  ],
+  "focus": "Panel lines pushed entirely off a pane now say so. Two real cases found in your own window.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,16 +13,8 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the panel-clip parcel returns and is verified here.",
+  "nextBoundary": "Here now: four landings done, pushed, nothing running. Only this landing's CI is unread.",
   "queue": [
-    {
-      "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Aurora found that a line pushed entirely off a pane was reported as no loss at all. The hub ruled our fix in today, so it is now buildable: the lost line gets reported with nothing drawn beside it."
-    },
     {
       "id": "F-TH-PULLUP-UNDISCRIMINATED",
       "state": "next",
@@ -118,7 +104,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T02:35:26Z"
+  "awaiting": "nothing blocking; next is a tiny ROM that settles last night's one loose end. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T03:16:44Z"
 }

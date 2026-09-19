@@ -692,3 +692,49 @@ the count guard is what refuses to let a dropped row read as a clean scorecard.
 **EVERY SCRAPEABLE ROM IN THE CORPUS NOW REPORTS A VERDICT AND EVERY ONE PASSES.** `vcounter` and `m68k_opcode_sizes` were the last two carrying
 a picture and no verdict; Q2 is closed. **NEXT: `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`** (hub-ruled, buildable) — brief the substituted defining
 CLAUSE and the pre-ruled row-placement acceptance condition, never the paragraph.
+
+**`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` LANDED 2026-09-19, merge `462e9cf`** (agent tip `8ef2197`, code tip `cc3a312`, four commits;
+**no `contract/`, no vendored schema, no `PROVENANCE.md`, nothing under `oracle-core/src`; NO SCHEMA CHANGE NEEDED**, which is one of the three
+grounds the hub's ruling rests on). ⚑ **THE PREDICATE IS FIXED AND THERE IS NO WHOLLY-CLIPPED BRANCH** — the amendment's whole warning.
+`glass_run` returns `None` **only when the toolkit laid out no glyph at all** (the sentence the old return's own parenthetical justified), and
+the operative line is `let (top, bottom, left) = on_glass.or(laid_out)?;` — **two candidates from ONE source, not a fallback of a different
+kind**. Visibility now decides `rendered` and nothing else.
+▶ **MY PREMISE READING WAS RIGHT WITH TWO REFINEMENTS, BOTH FROM THE AGENT**: `top`/`bottom` **already** came from `row_rect`, so only `left`
+came from the glyph — which is why the fix is this small — and `left` has an honest value for an invisible run,
+`rect_without_leading_space().min.x`, equal to the old value whenever that glyph is visible. **Not the STOP case**, so no CR.
+▶ **The clause's other half — *on a reported row* — is `reported_rows`**, and the scroll boundary holds by construction: pre-change a run only
+ever had a band when a glyph was on the glass, so **every row that already existed still contains such a run** and nothing previously reported
+can be dropped. `F-PANEL-SCROLL-UNSTATED` unchanged. ⚑ **One thing the brief did not anticipate: `unrenderable` had to move with it**, or a
+scrolled-away run's hollow boxes would be named in a field describing strings it is not in — proven by the agent's own mutation M4, which
+**would have been green before it tightened that row**, so it tightened, committed, and re-ran all four mutations against the tightened set
+(clause (e), unprompted).
+▶ **THE EVIDENCE IS A 188-SURFACE DIFFERENTIAL, not an argument: 28 arrangements dumped at base and tip, digits masked, EXACTLY TWO moved and
+both are the ruling** — `every-tab`/Memory gains the run `go` (the Go button's caption, eaten whole) with `truncated` **false → true**, and
+`narrow Screen` gains the state strip's `8` and `9`. No row split or merged, no visible run moved, no `unrenderable` changed, every other
+surface byte-identical.
+⚑ **AND A DEFECT IN THE SUITE THIS SEAT LANDED YESTERDAY: `w6`'s second half has asserted THE OPPOSITE since CR-W — *"a run wholly outside
+appears in neither string"* — green the whole time, with its plant on the Pacing panel's `governor` row, A ROW THE PANE SHOWS.** So the fixture
+tested the defect and passed. Inverted and renamed; the genuine absence case is now its own row **with the control W6 could not have** (nothing
+shown shares its row). The agent's sentence: **"The plant did not move; the rule did."** ⚑ Two more of its findings: `narrow Screen` **docks the
+Screen tab twice**, so `Present::surface` returns the first and a harvest must pair surfaces to spans **by position**; and its own boundary row's
+byte-for-byte premise was wrong because the Pacing panel prints measured fps, so digits are masked and every join, run and letter stays under the
+comparison.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `land.sh --no-push` **17 gates PASS, none FAIL**, 91/91 legs, **3027 passed / 0 failed / 7 ignored**,
+tree untouched for the whole run. **Red-first reproduced INDEPENDENTLY here by restoring the exact defect** (`on_glass.or(laid_out)?` →
+`on_glass?`), shown on disk before the run and restored from committed `462e9cf`: **four named guards fire** —
+`a_run_the_clip_ate_whole_is_in_text_with_an_empty_rendered_on_its_row`, `a_run_the_clip_ate_is_in_text_exactly_when_its_row_is_reported`, the
+corrected `w6_…`, and `screen::tests::a_clip_decides_which_glyphs_are_on_the_glass` — with the message *"a run the toolkit laid out is a run
+whatever the clip kept"*. 516/4 red, 520/0 restored.
+**What the gates are blind to, stated by the parcel rather than discovered later:** a run **ratcheted** down to fit its clip is *visible*, so it
+is in none of these populations (that is §8.7's `blanked` assertion's business), and whole-widget/table overflow remains the owner's half under
+`d-54` (67 rows, untouched).
+▶ **TWO LOOK CALLS FOR HIM, both now honestly reported and both arguably `d-54`:** in `every-tab` the Memory panel's **Go button caption is
+entirely off the pane**, and in a fifth-width Screen pane the state buttons **8 and 9** are. Whether those widgets should be there at all is his.
+⚑ **Ops, minor and unexplained rather than guessed at:** my combined push-and-tidy chain failed at the worktree removal with *"fatal: Needed a
+single revision"*; both the removal and the branch delete succeeded on a plain retry seconds later, and the push had already landed. **Cause not
+established, so none is recorded** — the state was verified directly (origin at the merge, worktree gone, branch deleted) rather than inferred
+from the retry. ⚑ Noticed while checking: **40 stale `parcel/*` branches** are still in this repo from previous landings; the worktrees are gone
+but the refs are not. Not cleaned tonight (deleting refs is the shared-machine caution's territory and nothing depends on it), but a successor
+should know they are cruft, not live work.
+**NEXT: `F-TH-PULLUP-UNDISCRIMINATED`** — the residual last night's Q1 answer left standing: no corpus ROM discriminates the undriven-TH pull
+direction, and a one-instruction ROM reading `$A10003` with Control at `$00` settles it (`$FF` pull-up-high, `$B3` pull-low).
