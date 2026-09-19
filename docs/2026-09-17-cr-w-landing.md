@@ -29,11 +29,13 @@ at `265efaa7`** — §11.50 and the §6 `screen_text` bullets, read at the commi
 | `e151f4f` | The contract's normative ordering checked with **two** floating windows (§7). |
 
 **The reading rule as built** (`crates/oracle-player/src/screen.rs`, module doc and `glass_run`/`join`):
-- A **run** is one `Shape::Text` in the span with at least one glyph whose logical rectangle meets its clip.
+- A **run** is one `Shape::Text` in the span that the toolkit laid a glyph out in, on a row the surface
+  reports. ⚑ **Amended 2026-09-18** — it read *"with at least one glyph whose logical rectangle meets its
+  clip"*, which swallowed a run the clip ate whole (`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`, §9 below).
 - `text` is `Galley::text()` (the source). `rendered` is the glyphs that meet the clip, the elision mark included.
 - A source LF is a row break, not a glyph, so its folded space goes back into `rendered` between visible glyphs.
 - TAB and LF are folded to a space in both strings (Q7).
-- **Rows:** a run joins the current visual row when the centre of its first visible glyph row lies inside the band of the row's topmost run. Rows go top to bottom joined by LF; runs go left to right joined by TAB, identically in both strings.
+- **Rows:** a run joins the current visual row when the centre of its own band lies inside the band of the row's topmost run; the band is read off the galley's row geometry, so it does not need a visible glyph (amended 2026-09-18). A row no run of which put a glyph on the glass is **not reported** and is in neither string, which is where the scroll rule lives. Rows go top to bottom joined by LF; runs go left to right joined by TAB, identically in both strings.
 - `unrenderable` runs over each run's source, per `LayoutJob` section family, through the existing `Glyphs` probe. Only `Some(false)` counts.
 - A drawn panel with no run is present with `""`.
 - **Recording and publishing are gated on `is_serving`,** decided once per iteration (`main.rs`, `Loop::iterate`).
@@ -58,7 +60,7 @@ shipped `Loop::build_ui` plus `Loop::publish_screen_text`, then reads the reply 
 | **W3** alignment | `assert_aligned`, called by the attribution gate (every arrangement), the scales row, W4 and W5 | Equal LF count; equal TAB count per row. The gate requires more than 100 surfaces checked. |
 | **W4** no false truncation | `w4_an_unelided_unclipped_run_renders_exactly_its_source` | Every unelided run whose glyphs all lie inside its clip has `rendered == text`, over real bodies plus a planted wrapped label and a planted TAB. Printed: `W4: 322 whole unelided runs, rendered == text; wrapped label on 5 rows` (`cargo test -p oracle-player --bin oracle-player -- --nocapture w4_`). |
 | **W5** elision | `w5_an_elided_run_is_truncated_and_ends_in_the_elision_mark` | A planted `Label::truncate` in 40 pt: `Galley::elided` is true (control), the run ends in `…`, `truncated: true`, and the cut run is on the same row in both strings. Real half: narrow stopping panes, at least one elided unclipped run, each ending in the mark (`W5: 1 real elided, unclipped runs`, same command with `w5_`). |
-| **W6** clipping | `w6_a_clipped_run_is_whole_in_text_and_cut_in_rendered_and_an_unseen_run_is_absent` | A run straddling the pane's right edge: whole in `text`, a strict prefix in `rendered`, `truncated: true`. A run wholly outside: painted into the span (control) and in neither string. Warmed up by 12 presents. |
+| **W6** clipping | `w6_a_clipped_run_is_whole_in_text_and_a_wholly_clipped_one_is_empty_in_rendered` | A run straddling the pane's right edge: whole in `text`, a strict prefix in `rendered`, `truncated: true`. A run wholly outside, on a row the pane reports: whole in `text`, EMPTY in `rendered`, `truncated: true`. Warmed up by 12 presents. ⚑ **That second half asserted the opposite until 2026-09-18** (*in neither string*), which was the contract's own text and was the defect — see §9. |
 | **W7** boxes | `w7_a_character_the_window_cannot_draw_is_named_and_a_drawable_one_is_not` | The Watchpoints add box holding `A`: `unrenderable: []` (control). Holding U+6F22: `["漢"]`. |
 | **W8** blank | `w8_a_drawn_panel_with_no_text_on_the_glass_is_present_and_empty` | Real, not faked. In `every_tab_dock` at 1600x1000, **Profiler's body runs and paints no text shape at all**, and **Watchpoints paints two text shapes with no glyph on the glass**. Both are present with `""`, `truncated: false`, `unrenderable: []`. Found by a scratch sweep of that dock at four window sizes, not committed. |
 | W9 | none | R1 was dropped. |
@@ -225,9 +227,9 @@ The harness keys each case **by method AND kind** — the envelope comes from th
 
 1. **"A panel dragged out into a floating window is a drawn body and IS reported."** Already true here and now pinned harder: `a_floating_window_over_a_body_is_attributed_exactly_and_reported_after_the_main_surface` requires a span (and a surface) for each floated tab.
 2. **"The main surface's panels first, then the floating windows, in the order the window drew them — never a static tab order."** The build orders surfaces by span order, which is draw order. One window cannot distinguish that rule from "this window last", so the row now floats **two** tabs out and asserts the served names equal `active_tabs` (derived from the dock's own surfaces, main first), with the main-surface count asserted separately. Measured: `[Screen, Registers, Pacing, Breakpoints, Profiler, Objects]` — not `Tab::ALL` order. Red-first: ordering the surfaces by name instead of draw order turns that row and the attribution gate red.
-3. **"An empty text shape is not a run"** (at least one glyph on the glass). Already the rule in `glass_run`, and pinned by `text_edit_contents_and_hint_text_are_attributed_to_their_tab`, which first asserts the control that an empty galley *was* painted.
+3. **"An empty text shape is not a run"** (read then as *at least one glyph on the glass*). Already the rule in `glass_run`, and pinned by `text_edit_contents_and_hint_text_are_attributed_to_their_tab`, which first asserts the control that an empty galley *was* painted. ⚑ **The parenthetical was the wider claim, and the two came apart on 2026-09-18**: the justification covers an empty SOURCE, the rule as written covered anything with zero glyphs on the glass, which is a run the clip ate. `glass_run` now returns `None` for exactly the case the justification names — no glyph laid out at all (§9).
 
-**No divergence found**, and nothing in the wording required a change to the serve. Two wordings are worth recording as matched rather than assumed: a wrapped run stays one run with `rendered == text` (W4's planted label wraps over 5 glyph rows), and rows scrolled out of view are in neither string (the harvest never reads a glyph the toolkit did not paint).
+**No divergence found**, and nothing in the wording required a change to the serve. Two wordings are worth recording as matched rather than assumed: a wrapped run stays one run with `rendered == text` (W4's planted label wraps over 5 glyph rows), and rows scrolled out of view are in neither string (as of 2026-09-18 that is `screen::reported_rows`' own sentence rather than a by-product of the run predicate: see §9).
 
 ## 7. Look calls for the owner (Q2, tagged, not claimed)
 
@@ -473,3 +475,68 @@ duplicate hover in §8.4.
 9. **The hover stack on a cut cell with a note.** A cut `(unnamed)` now shows the whole cell text and then
    the panel's sentence, as two tooltips; `table_cell`'s doc used to say the note wins. Stacked is what the
    toolkit does and it gives the reader both, but the order and the stacking are a look.
+
+## 9. Addendum: `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`, and why the clause was the rule
+
+**Branch** `parcel/panel-clip-total-loss`, base `55f62d1`. Aurora's finding; the hub adopted oracle's wider
+form on **2026-09-18T19:37:29Z** and **amended its own ruling at 19:39:27Z** with the two clauses an
+implementer needs. Read the ruling and the landed §11.50 at a commit, never through a summary:
+`git -C ../empyrean show origin/main:docs/OVERSEER.md` and `:contract/protocol.md`. **No vendored blob moved
+and nothing under `contract/` was touched here** — the protocol text landed upstream ahead of this build, by
+design, so aurora's schema-drift gate cannot redden on it.
+
+**The defect.** §11.50 said `text` is every run *"with at least one glyph on the glass"*, and its own
+parenthetical gives the reason: *an empty text SHAPE is not a run*. The justification covers an empty
+**source**; the rule as written covered anything with **zero glyphs on the glass**, which is exactly a run
+the clip ate whole. Such a run was in neither string, the two compared equal, `truncated` derived FALSE, and
+the technique this section advertises — compare the strings, find the cut run — returned *nothing was cut*
+for the case that loses the most.
+
+**The fix is the predicate, not a case.** The clause is now *"laid out on a reported row"*, and this build
+says the same thing in two places, each the natural home of half of it:
+
+* `screen::glass_run` returns `None` only when **the toolkit laid out no glyph at all**, which is the
+  sentence the old return's own justification named. A run's PLACEMENT is read off the galley's row
+  geometry — `PlacedRow::rect` for the band and `rect_without_leading_space` for the left edge, both
+  computed for every row whether or not the clip kept anything — so it no longer depends on a source no
+  invisible run has. Visibility decides `rendered` and nothing else. There is **no branch for the
+  wholly-clipped case**: it is not a case here.
+* `screen::reported_rows` (the grouping half of the old `join`, now separate and reusable) drops a visual
+  row **no run of which put a glyph on the glass**. That is the boundary the hub added, and it is where the
+  scroll rule lives: rows off the view are in neither string, unchanged. *Nothing that used to be reported
+  can be dropped by it*: before this change a run only ever had a band when a glyph of it was on the glass,
+  so every row that existed already contains such a run.
+
+`panel_surface` now takes `unrenderable` from the runs the **rows** kept, not from every run `glass_run`
+admits — otherwise a scrolled-away run's hollow boxes would be named in a field describing strings it is
+not in. Paint order is preserved (the shape's index rides along and is re-sorted).
+
+**Row placement is derived, and that was the ruling's acceptance condition** (*an empty run on the wrong row
+is worse than the defect*). The derivation is the galley's own layout: the band of the first row the toolkit
+laid glyphs out on, in the same coordinates and by the same expression a visible run uses. Two rows assert
+it rather than assuming it: the planted pair
+(`a_run_the_clip_ate_whole_is_in_text_with_an_empty_rendered_on_its_row`) is painted in one font at one
+baseline, so the two strings' bands are **asserted equal off the galleys** before the reply is read, and
+then row *k* of `text` carries both while row *k* of `rendered` has an EMPTY run at the same index *j*.
+
+**Rows added or changed** (all in `panel_attribution.rs` unless noted):
+
+| Row | What it holds |
+|---|---|
+| `screen::tests::a_clip_decides_which_glyphs_are_on_the_glass` | Unit level: the eaten run is `Some` with an empty `rendered`, placed **identically** to the visible reading of the same galley; alone it joins to `("","")`; beside a shown run it is run *j* of both strings; an empty SHAPE is still `None`. |
+| `w6_…_and_a_wholly_clipped_one_is_empty_in_rendered` | W6's second half, **inverted by the amendment**: the `Outside` plant lands on the Pacing panel's `governor` row — a row the pane shows — so it is whole in `text`, empty in `rendered`, `truncated: true`. |
+| `a_run_the_clip_ate_whole_is_in_text_with_an_empty_rendered_on_its_row` | The positive, with the row derived (above) and the alignment guarantee checked at row *k* run *j*. |
+| `a_run_on_no_reported_row_is_in_neither_string_and_changes_nothing` | The boundary: a run painted below the clip leaves the surface **character for character identical**, digits masked (the Pacing panel prints its own measured fps, so a raw byte comparison failed on `272.73` vs `243.24` — a defect in the premise, recorded). |
+| `a_run_the_clip_ate_is_in_text_exactly_when_its_row_is_reported` | The sweep: 28 arrangements, 2707 galleys, geometry read off the galleys and never through `glass_run`. **2** real runs eaten whole on a row their pane shows (the state buttons `8` and `9` in the narrow Screen pane — the defect in a real panel, found rather than planted), **37** on rows their pane shows nothing of (asserted absent), 42 unasserted (partial overlap, or a source that occurs twice in one body, where this gate cannot speak). Floors on both populations. |
+
+**What these gates are blind to, said out loud.** A run **ratcheted** down to fit its clip is *visible*, so
+it is in none of these populations — the `Grid` column that collapsed to a bare `…` is §8.7's `blanked`
+assertion's business, and whole-widget/table overflow stays the owner's half under card `d-54` (67 rows).
+The sweep also cannot speak about a galley whose band only partly overlaps a shown row, or whose source
+occurs twice in one body; both are counted and printed rather than guessed at.
+
+**A defect the sweep found in itself**: `narrow Screen` docks the Screen tab **twice**, so two spans carry
+the title `Screen` and `Present::surface` hands back the first of them. The sweep read the narrow pane's
+galleys against the wide pane's strings and reported a defect in the harvest. It now pairs surfaces with
+spans **by position** (the contract's order is draw order, and that pairing is asserted), which is also how
+a future row should read a duplicated title.
