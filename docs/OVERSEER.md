@@ -751,3 +751,37 @@ ruling and amendment both warned about the implementation (*build the rule, not 
 asserting the previous clause — **which are exactly the artifacts that report success while contradicting the new text.** Banked at empyrean
 `f5beff1a` as the class *"the plant did not move; the rule did"*: unlike a stale golden, which disagrees with a correct run, **such a fixture
 agrees forever and is supposed to.**
+
+**`F-TH-PULLUP-UNDISCRIMINATED` SETTLED 2026-09-19, merge `30a4617`: CORROBORATED — IO3 stands and Q1's answer with it** (agent tip `3e8ecdc`,
+four commits; **nothing under `crates/oracle-core/src/`**, and `testrom.rs` was never touched because the fixture is a committed `.bin` both arms
+load). An undriven, input-configured TH pin reads **HIGH**. ⚑ **Confidence is high for a better reason than "two emulators agree": the documented
+leg carries a MECHANISM — the 3-button pad has its own discrete pull-up on the select line**, so a plugged-in pad holds TH high regardless of the
+console's internal pull. **Each arm's limits are stated rather than blurred:** ours answers `$FF` **by construction** (`read_data` contains the
+rule — a consistency check, not evidence); **BlastEm 0.6.2** agrees on both ports with Control pristine at `$00`, with the premise **observed**
+rather than assumed and a driven-low control proving a low TH *would* be visible (`$33`); neither is hardware, and two models can inherit one
+documentation error.
+⚑ **IO3 CITED NOTHING FOR THE PULL DIRECTION, which is a better finding than a passing test.** Its Plutiedev quote is accurate for the read/write
+model and silent on the pull; IO2's parenthetical and IO4's bit-7 row rest on the same unattributed clause — **three statements standing on one
+uncited sentence**, in the reference every pad argument in this tree cites.
+⚑ **AND IT CORRECTED MY BRIEF: "no ROM in our corpus discriminates it" HAD ALREADY EXPIRED IN THE LANDING THAT REGISTERED THE ROW.** Pressing `C`
+to reach the H40 half made `vdp_sprite_masking` depend on the rule — measured, both its tests go red at the ROM's own `btst #5,$A10003`
+(`pc $000316`) — but *indirectly*, reporting *"never went idle within 300 frames"*, which points at a frame budget rather than a pull direction.
+So the direct differential still earns its place. **A booking's premise can expire by the hand that books it**, which is the register's own
+`(a) re-derive location as well as necessity` rule reaching one day further.
+▶ **NEW ROW IN ITS PLACE, `F-IO-DATA-BIT7`, and the instrument found it rather than the question:** we force Data **bit 7** to 1 unconditionally
+where BlastEm returns the data latch's own bit 7, so **we answer `$FF` where it answers `$7F` on every pad read a normal game performs.** Booked in
+`known_differences.py` as **the one entry that deliberately does NOT pin ours as right** — the port has seven I/O pins so no pin corresponds to bit
+7 at all, neither side has a citation, and the `315-5309` wiki contradicts itself. **Recorded so the disagreement is visible, not settled.** Q1 is
+untouched: bits 5 and 6 agree.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `land.sh --no-push` **17 gates PASS, none FAIL**, 91/91 legs, **3029 passed / 0 failed / 7 ignored**,
+tree untouched for the run; currency 2/3/9/5. **Red-first reproduced INDEPENDENTLY by flipping the rule in the core itself**
+(`true // input pin floats high` → `false`), shown on disk before the run and restored from committed `30a4617`: **`undriven_th_reads_high_in_both_models`
+fires alone**, reporting **`$B3` against BlastEm's `$7F`** — and **`$B3` is the exact value this seat predicted for a pull-low world in the dispatch
+brief, derived before the instrument existed**, which is the strongest form the (d) bar takes. Its message also names the consequence: a
+disagreement here reopens Q1 and is a core question, not a harness one. ⚑ **And the mutation showed the gap it fills: every pre-existing `io.rs`
+unit test writes `ctrl = $40`, so both pad-protocol tests stayed GREEN under it — the pull direction had no direct test at all.**
+**The test's own header is the artifact worth copying:** it records its expectations from the independent model rather than from our output, and
+carries a **"WHAT WOULD MAKE THIS TEST WRONG"** section naming BlastEm's own known blind spot in this very rig. ▶ **Real hardware is the only arm
+left**, and `th_pullup.bin` needs no screen — only a way to read work RAM back. Tagged for the owner's foreground, gating nothing.
+**NEXT: `LIVE-EFFECTS-NUDGES`** (buildable per its own row; re-derive its two stated constraints from the tree before dispatch — a runtime reader
+for only some fields, and the memory it needs being absent in a release build).

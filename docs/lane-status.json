@@ -1,12 +1,6 @@
 {
-  "focus": "Settling the one loose end from last night: no cartridge we own tests the rule that answer rests on.",
-  "inFlight": [
-    {
-      "what": "A purpose-built tiny ROM to settle which way an unread controller line floats",
-      "where": "branch parcel/th-pullup",
-      "agent": true
-    }
-  ],
+  "focus": "Last night's controller answer now has evidence from outside our own emulator, and it holds.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,16 +13,8 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the TH parcel returns and is verified here.",
+  "nextBoundary": "Here now: five landings done, pushed, nothing running. Two landings' CI still to read.",
   "queue": [
-    {
-      "id": "F-TH-PULLUP-UNDISCRIMINATED",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Last night's answer about a confusing controller button rests on one rule no test cartridge we own actually checks. A tiny purpose-built ROM would settle it in one read."
-    },
     {
       "id": "PANEL-CLIP-MARK",
       "state": "blocked",
@@ -44,6 +30,14 @@
       "blockedBy": "a contract ruling (the hub's)",
       "project": "ORACLE-DEFAULT",
       "title": "Found by today's fix: in its first moment a window tells a connected program 'there is no window'. What it should say is a ruling for the hub."
+    },
+    {
+      "id": "F-IO-DATA-BIT7",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "We and another emulator disagree about one bit of the controller port on every ordinary pad read. Recorded honestly: nobody can show who is right, and no real pin corresponds to it."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -110,7 +104,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T03:18:46Z"
+  "awaiting": "nothing blocking. Card d-54 whenever: wrap long panel lines, or widen the panes? It now also decides two buttons sitting off their pane.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T04:01:53Z"
 }
