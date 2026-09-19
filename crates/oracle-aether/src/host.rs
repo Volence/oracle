@@ -400,13 +400,19 @@ impl Host {
     /// served text describes the frame that is actually on the glass — never one being composed, never one
     /// that has not been shown.
     ///
-    /// ⚑ **The FIRST drain has no push before it.** Both embedders drain once in iteration 1 before that
-    /// iteration's present, and one `pump` answers every request it finds queued. So a request answered by
-    /// that drain is refused `noDisplay`, and `emulator/status` answers `display: false`, **from a window
-    /// that exists**. Measured in `oracle-player` (F-PLAYER-SCREENTEXT-FIRST-READ: `frame 1`, the frame
-    /// iteration 1 ran before its drain); the frontend has the same order by reading. What the wire should
-    /// say in that state is booked for a contract ruling, not decided here; a client that must not see it
-    /// waits for `emulator/status`'s `display: true`.
+    /// ⚑ **The first drain used to have no push before it, and that was a defect** — repaired by
+    /// `F-FIRST-PRESENT-REFUSAL`. Both embedders drained once in iteration 1 *before* that iteration's
+    /// present, and one `pump` answers every request it finds queued, so a request answered by that drain
+    /// was refused `noDisplay` and `emulator/status` answered `display: false`, **from a window that
+    /// exists**. It was measured in `oracle-player` (F-PLAYER-SCREENTEXT-FIRST-READ: `frame 1`, the frame
+    /// iteration 1 ran before its drain) and reasoned about in `oracle-frontend`; both now defer iteration
+    /// 1's drain past that iteration's publishes and its present, and both have a regression gate.
+    ///
+    /// **This is an obligation on any embedder, not a property of this method.** Nothing here can tell that
+    /// a host pumped before it published — `pump` has no way to know a window exists — so a third embedder
+    /// can get it wrong in exactly the same silent way. The obligation is: *do not pump before the first
+    /// `set_screen_text`, and never publish a snapshot for a frame that has not been composed.* A contract
+    /// sentence stating it is proposed in `docs/2026-09-19-first-present-order.md`.
     ///
     /// **Deliberately NOT gated on [`has_clients`](Host::has_clients)**, unlike
     /// [`publish_capture`](Host::publish_capture) beside it, and the difference is not an oversight. That

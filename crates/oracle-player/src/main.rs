@@ -387,6 +387,14 @@ struct Loop {
     buckets: Buckets,
     iterations: u64,
     frame_iterations: u64,
+    /// **The first drain, owed back** (`F-FIRST-PRESENT-REFUSAL`).
+    ///
+    /// Raised by iteration 1 at the drain's normal position, where it does **not** drain, and taken at the
+    /// top of iteration 2 — which is after eframe has put iteration 1's composition on the glass and after
+    /// both of iteration 1's publishes. See [`Loop::iterate`]'s two comments for the whole argument; the
+    /// field exists so the deferral is one-shot by construction rather than by a counter comparison
+    /// repeated at two sites.
+    owe_deferred_drain: bool,
     /// Frame-owning iterations by how many emulated frames the audio ring asked for: `[0, 1, 2]`.
     frames_per_iter: [u64; 3],
     /// When the previous *frame-owning* iteration started, for the period series.
@@ -697,6 +705,8 @@ impl Loop {
             buckets: Buckets::default(),
             iterations: 0,
             frame_iterations: 0,
+            // Nothing is owed until iteration 1 declines to drain.
+            owe_deferred_drain: false,
             frames_per_iter: [0; 3],
             last_frame_at: None,
             presents: pacing::Presents::start(now),
@@ -755,13 +765,54 @@ impl Loop {
     ///    many emulated frames to run (layer 2 — the master clock).
     /// 3. Upload the picture and lay out the UI, whether or not a frame ran, so an early wake still
     ///    re-presents the retained picture instead of flashing black.
+    /// 4. Drain the bus **after** that frame and **before** those publishes — except on iteration 1,
+    ///    which has nothing on the glass to publish yet and therefore owes its drain to the top of
+    ///    iteration 2 (`F-FIRST-PRESENT-REFUSAL`; the first block in the body is the argument).
     ///
     /// Returns the governor's verdict: whether this iteration owned a frame, and how long to ask the
     /// toolkit to wait before the next repaint.
     fn iterate(&mut self, ctx: &egui::Context, root: &mut egui::Ui, now: Instant) -> pacing::Tick {
         self.iterations += 1;
 
-        // --- ⚑ Conflict 1, inbound: adopt the bus's run state, and do it FIRST. ---
+        // --- ⚑ Iteration 1's drain, deferred to here (`F-FIRST-PRESENT-REFUSAL`). ---
+        //
+        // **The defect this repairs: a window that exists answered "there is no window", once, at the start
+        // of every session.** Both publishes below (`set_pacing`, `publish_screen_text`) exist to answer
+        // *the frame that is on the glass*, so neither can run before iteration 1 has composed one — and
+        // one `Host::pump` answers every request it finds queued. So a request answered by iteration 1's
+        // drain, sitting where every later iteration's drain sits, was refused `-32005 noDisplay` /
+        // `noPacing`, and `emulator/status` answered `display: false`, from a live window.
+        //
+        // **Priming a publish cannot fix it and must not be tried.** In iteration 1 there is nothing on the
+        // glass yet, so a publish before the first composition would trade a false *"no window"* for a
+        // false *picture* — the worse of the two. What is wrong is the order, and only for iteration 1.
+        //
+        // **Why HERE and not at the bottom of iteration 1.** `iterate` runs inside eframe's update
+        // callback; eframe presents after it returns. A drain at the bottom of iteration 1 would therefore
+        // still precede the blit, and `Host::set_screen_text`'s promise is that a client reads the frame
+        // that is *on the glass*. At the top of iteration 2 the blit has happened, so the promise holds
+        // unconditionally — and the drain still lands **before** the adoption below, exactly as a
+        // mid-iteration drain lands before the next iteration's adoption. Nothing about the halt path or
+        // the transport bar's one-iteration latency changes.
+        //
+        // **What it costs, stated:** a request that arrives before the first frame is answered one
+        // iteration later instead of being refused, and anything that drain applies (a queued `hold`, a
+        // queued `pause`) lands one iteration later with it. At startup, before any frame has been shown,
+        // that is a strictly better answer than a refusal and is not otherwise observable.
+        //
+        // `self.paused` is deliberately read by this drain **before** the adoption rewrites it: this is
+        // iteration 1's drain, and iteration 1's pause state is the one it mirrors.
+        let deferred_bus_ms = if std::mem::take(&mut self.owe_deferred_drain) {
+            self.drain_and_react().1
+        } else {
+            0.0
+        };
+
+        // --- ⚑ Conflict 1, inbound: adopt the bus's run state, ahead of everything that reads it. ---
+        //
+        // ⚑ Exactly one thing runs before it: the deferred first drain above, on iteration 2 only — and
+        // that is the *same* relative order this adoption already has with every other drain (drain, then
+        // the next adoption). A drain after this line is the bug named two paragraphs down.
         //
         // **One adoption, at the top, and it is load-bearing in both directions.** Three things move the
         // engine's run flags behind this field's back, and all three land before the next iteration
@@ -831,6 +882,12 @@ impl Loop {
         // it, so the player would run one extra frame past a breakpoint it had already stopped on. The
         // *adoption* is what moved to the top; the drain stays here, behind the frame that latches into it.
         //
+        // ⚑ **The deferred first drain is at the top and does not have that problem**, because it is
+        // ahead of the adoption rather than behind it — and there is nothing for it to have missed either
+        // way: a breakpoint or watchpoint can only be armed over the bus, the bus is only read by a pump,
+        // and iteration 1's frame runs before any pump has ever happened. So iteration 1's frame cannot
+        // latch a halt, and the halt path is untouched by the deferral (checked, not assumed).
+        //
         // There is deliberately **no second `self.paused = ...` after this**. An earlier draft had one,
         // and both it and the one at the top were then individually removable with every test still
         // green — two lines, each covering for the other, which is how a redundancy passes for a
@@ -845,6 +902,177 @@ impl Loop {
         // whose answer the caller may decline to mention is the shape that made the omission expressible.
         // The whole of it is inside the `bus` bucket, for `Machine::step`'s reason one module over: timing
         // only the pump would make this parcel's own cost structurally invisible.
+        // ⚑ **Except on iteration 1, which owes this drain to the top of iteration 2 instead**
+        // (`F-FIRST-PRESENT-REFUSAL`). At this point in iteration 1 nothing has been published: both
+        // publishes below answer *the frame that is on the glass* and there is not one yet. A drain here
+        // would therefore answer a client's request with `-32005 noDisplay` / `noPacing` — *there is no
+        // window* — from a window that exists. The whole argument, and what the deferral costs, is at the
+        // top of this function.
+        //
+        // `Drained::default()` stands in for that one iteration, and it is not a lie by omission: every
+        // flag `Drained` carries means *"this drain moved it"*, and this drain has not run. Its only
+        // reader below is the upload gate, which is `true` on iteration 1 regardless (`self.tex.is_none()`),
+        // so no picture depends on the substitution.
+        let (drained, bus_ms) = if self.iterations == 1 {
+            self.owe_deferred_drain = true;
+            (bus::Drained::default(), 0.0)
+        } else {
+            self.drain_and_react()
+        };
+        // The deferred first drain's own cost, charged to the iteration that ran it rather than dropped.
+        // Zero on every iteration but the second.
+        let bus_ms = bus_ms + deferred_bus_ms;
+
+        // --- ⚑ The machine keys (S3): reset, ROM reload, and the save-state slots. ---
+        //
+        // **After the drain and before `build_ui`, deliberately.** `F1` and `F5` are `Host::call`s, so
+        // what they move is recorded on the bus and repaired by the *next* drain — the same
+        // one-iteration path every gesture this window's palette and transport bar make already takes,
+        // and the reason `crate::bus::drain` holds the battery carry from the drain before it rather
+        // than re-taking one. Handling them before the drain instead would put the reload ahead of the
+        // carry that exists to rescue the battery from it.
+        //
+        // `F2`/`F4` are **not** bus gestures — there is no served method that means "the file beside the
+        // ROM" — so `crate::states` does the whole sequence itself, and
+        // `Machine::adopt_system` is what makes the timeline repair inseparable from the swap.
+        for cmd in input::poll_machine_keys(ctx) {
+            self.machine_key(cmd);
+        }
+
+        // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
+        // texture already bound, which is both correct and free — uploading again would be 287 KB of
+        // memcpy to hand egui a picture it is already holding.
+        //
+        // ⚑ **…and whenever the drain itself replaced the picture**, which is the half that was missing:
+        // a client's own frame (`picture`) and a masked re-render (`masked_picture`, S2a) both change
+        // `Machine::image` on an iteration that emulated nothing, and an early wake that skipped the
+        // upload would leave the previous picture on the glass with the Screen tab correctly announcing
+        // that the two disagree. The flags are the drain's own answer rather than a second reading of it.
+        let upload = if tick.run || self.tex.is_none() || drained.picture || drained.masked_picture
+        {
+            let ms = self.upload(ctx);
+            // ⚑ **The one place a present is counted** (§11.42 M1). Inside this arm and not beside it:
+            // the `else` is an early wake re-presenting the texture already bound, which puts no new
+            // picture on the glass and must not inflate a frame rate. `now` — the iteration's own
+            // instant — rather than a fresh reading, so a gap between two presents is the loop period
+            // `Buckets::period` already records and the two cannot tell different stories about one run.
+            self.presents.note(now);
+            ms
+        } else {
+            0.0
+        };
+        // ⚑ **Derived ONCE, here, and read twice below**: published to the bus for `emulator/pacing`,
+        // and handed to the Pacing tab by `build_ui`. See `pacing::Readout::of` for why a second
+        // derivation on either side is the defect and not a convenience.
+        //
+        // After the present and before `build_ui`, for `set_screen_text`'s reason one field over: a
+        // client reading pacing must be reading the frame that is on the glass.
+        self.pacing = self.derive_pacing(now);
+        // Gated on `is_serving` exactly as the screen-text snapshot below is, and for the same reason:
+        // with no socket bound no client can exist, so the publish is pure cost — and gating on
+        // *attachment* instead would leave a client that connects mid-session reading a refusal.
+        // ⚑ **And it no longer has the start-of-session gap it used to share with the snapshot below.**
+        // Until `F-FIRST-PRESENT-REFUSAL` the drain ran above this line's FIRST publish, so a request
+        // iteration 1's drain answered was refused `noPacing` from a window that was already pacing.
+        // Iteration 1 now owes its drain to the top of iteration 2, so every drain has a publish behind
+        // it and `noPacing` means what it says.
+        if self.bus.is_serving() {
+            self.bus.set_pacing(self.pacing);
+        }
+        self.status = format!(
+            "{} · {} frames · {} rebases",
+            if self.governor.is_paced() {
+                "governor on"
+            } else {
+                "GOVERNOR OFF (control)"
+            },
+            self.machine.frames(),
+            self.governor.rebases()
+        );
+        let t = Instant::now();
+        // Panel spans are recorded only when something will read them: the same `is_serving` gate as the
+        // push below, decided once so the two cannot disagree within an iteration.
+        let serving = self.bus.is_serving();
+        let (drew, drawn) = self.build_ui(root, serving);
+        let ui_ms = ms(t.elapsed());
+
+        // --- ⚑ What the window says, published for `emulator/screen_text` (§11.29, CR-H). ---
+        //
+        // **Here, after `build_ui` and after the drain, and both halves of that position are the point.**
+        // `Host::set_screen_text`'s own doc names the trap: text describing a frame *not yet presented* is
+        // a false answer to the one question the method answers truthfully. `drew` cannot exist before
+        // `build_ui` returns it — that is why it is a return value and not a helper this line could have
+        // called earlier — and the next drain is in iteration N+1, after its frame and before its
+        // `build_ui`, so after eframe has presented what was just composed. So a client's read lands on
+        // the frame that is on the glass, never on one mid-composition. Design §5.8.2 booked this call's
+        // absence; this is it.
+        //
+        // ⚑ **And the FIRST of these pushes is no longer the exception** (`F-FIRST-PRESENT-REFUSAL`,
+        // which repairs the defect `F-PLAYER-SCREENTEXT-FIRST-READ` measured). Iteration 1's drain used to
+        // run before this line had ever executed, and one `Host::pump` answers every request it finds
+        // queued — so a request that drain answered was refused `noDisplay` and `status.display` was
+        // `false`, from a window that exists (`frame 1`: the frame that iteration ran before its drain).
+        // Iteration 1 now owes its drain to the **top of iteration 2**, after eframe has blitted this
+        // composition, so no drain in this loop can answer a request with no publish behind it. The
+        // paragraph above is therefore true of every drain, first one included.
+        //
+        // **Gated on `is_serving`, deliberately not on `has_clients`**, which is `oracle-frontend`'s split
+        // and its reason travels unchanged: with no socket bound no client can exist, so the snapshot is
+        // pure cost — but gating on *attachment* would leave a client that connects mid-session reading
+        // `-32005 noDisplay` ("there is no window") until the next present, which is exactly the false
+        // answer the method exists to prevent. The skip belongs one level up, and this is that level.
+        //
+        // **Missing glyphs are asked of the live `egui::Context`**, through the family that drew each run
+        // (`screen::Run::mono`). A hand-written table of characters this build cannot draw would be a
+        // second opinion about a font, and the wrong one first.
+        //
+        // ⚑ **But NOT through `Fonts::has_glyph`, which is the obvious call and is wrong here.**
+        // `screen::Glyphs` carries the measurement: on egui 0.36 `has_glyph` calls the letter `A`
+        // undrawable in the monospace family and `▶` undrawable in the proportional one, on a build that
+        // draws both — 26 invented hollow boxes on this bar. What it actually answers is *"is this char
+        // owned by the same face as `◻`?"*. The atlas rectangle a glyph samples cannot lie that way,
+        // because it IS what the renderer reads, so that is what is compared.
+        //
+        // ⚑ **The panels (§11.50, CR-W) ride the same push, after the bar's two surfaces**, read off the
+        // paint-list spans `build_ui` just returned. **Here, inside the pass**: `end_pass` drains every
+        // layer's list, so the spans are only readable before this closure returns (measured, Q3 spike).
+        // See `screen`'s module doc for the whole reading rule.
+        if serving {
+            self.publish_screen_text(ctx, &drew, &drawn);
+        }
+        // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
+        // deliberately NOT a drain and applies neither pending change (host.rs) — so a pause or resume it
+        // just issued has already moved the engine's own flags. It is adopted at the TOP of the next
+        // iteration, before that iteration's tick decides whether to run a frame, which is why no frame
+        // slips through between the click and the pause taking effect.
+
+        if tick.run {
+            self.buckets.emulate.push(cost.emulate);
+            self.buckets.audio.push(cost.audio);
+            self.buckets.convert.push(cost.convert);
+            self.buckets.upload.push(upload);
+            self.buckets.ui.push(ui_ms);
+            self.buckets.bus.push(bus_ms);
+            self.buckets
+                .cpu_total
+                .push(cost.emulate + cost.audio + cost.convert + upload + ui_ms + bus_ms);
+        }
+        tick
+    }
+
+    /// **One drain, and every repair this window owes in response to it** — returned with the
+    /// milliseconds it cost, for the caller's `bus` bucket.
+    ///
+    /// A method only because [`Loop::iterate`] calls it from **two** positions: the normal one (after the
+    /// frame, before the present) and, for iteration 1 alone, the top of the next iteration
+    /// (`F-FIRST-PRESENT-REFUSAL`). Both positions therefore run the *same* pump and the *same* reactions;
+    /// a second inline copy at the deferred site is precisely how one of these repairs would go missing,
+    /// which is the defect `crate::bus::drain`'s own header exists because of.
+    ///
+    /// It deliberately does **not** include the machine keys or the upload gate, which are the caller's:
+    /// the keys need the `egui::Context`, and the gate is a decision about the glass rather than a
+    /// reaction to the bus.
+    fn drain_and_react(&mut self) -> (bus::Drained, f64) {
         let t_bus = Instant::now();
         let drained = bus::drain(
             &mut self.machine,
@@ -906,139 +1134,7 @@ impl Loop {
             self.states
                 .after_replacement(&self.rom_path, self.machine.system());
         }
-
-        // --- ⚑ The machine keys (S3): reset, ROM reload, and the save-state slots. ---
-        //
-        // **After the drain and before `build_ui`, deliberately.** `F1` and `F5` are `Host::call`s, so
-        // what they move is recorded on the bus and repaired by the *next* drain — the same
-        // one-iteration path every gesture this window's palette and transport bar make already takes,
-        // and the reason `crate::bus::drain` holds the battery carry from the drain before it rather
-        // than re-taking one. Handling them before the drain instead would put the reload ahead of the
-        // carry that exists to rescue the battery from it.
-        //
-        // `F2`/`F4` are **not** bus gestures — there is no served method that means "the file beside the
-        // ROM" — so `crate::states` does the whole sequence itself, and
-        // `Machine::adopt_system` is what makes the timeline repair inseparable from the swap.
-        for cmd in input::poll_machine_keys(ctx) {
-            self.machine_key(cmd);
-        }
-
-        // Only re-upload when a frame ran (or on the very first picture). An early wake re-presents the
-        // texture already bound, which is both correct and free — uploading again would be 287 KB of
-        // memcpy to hand egui a picture it is already holding.
-        //
-        // ⚑ **…and whenever the drain itself replaced the picture**, which is the half that was missing:
-        // a client's own frame (`picture`) and a masked re-render (`masked_picture`, S2a) both change
-        // `Machine::image` on an iteration that emulated nothing, and an early wake that skipped the
-        // upload would leave the previous picture on the glass with the Screen tab correctly announcing
-        // that the two disagree. The flags are the drain's own answer rather than a second reading of it.
-        let upload = if tick.run || self.tex.is_none() || drained.picture || drained.masked_picture
-        {
-            let ms = self.upload(ctx);
-            // ⚑ **The one place a present is counted** (§11.42 M1). Inside this arm and not beside it:
-            // the `else` is an early wake re-presenting the texture already bound, which puts no new
-            // picture on the glass and must not inflate a frame rate. `now` — the iteration's own
-            // instant — rather than a fresh reading, so a gap between two presents is the loop period
-            // `Buckets::period` already records and the two cannot tell different stories about one run.
-            self.presents.note(now);
-            ms
-        } else {
-            0.0
-        };
-        // ⚑ **Derived ONCE, here, and read twice below**: published to the bus for `emulator/pacing`,
-        // and handed to the Pacing tab by `build_ui`. See `pacing::Readout::of` for why a second
-        // derivation on either side is the defect and not a convenience.
-        //
-        // After the present and before `build_ui`, for `set_screen_text`'s reason one field over: a
-        // client reading pacing must be reading the frame that is on the glass.
-        self.pacing = self.derive_pacing(now);
-        // Gated on `is_serving` exactly as the screen-text snapshot below is, and for the same reason:
-        // with no socket bound no client can exist, so the publish is pure cost — and gating on
-        // *attachment* instead would leave a client that connects mid-session reading a refusal.
-        // It has the snapshot's start-of-session gap too: the drain above runs before this line's
-        // FIRST publish, so a request iteration 1's drain answers is refused `noPacing` (see the
-        // screen-text block below, F-PLAYER-SCREENTEXT-FIRST-READ).
-        if self.bus.is_serving() {
-            self.bus.set_pacing(self.pacing);
-        }
-        self.status = format!(
-            "{} · {} frames · {} rebases",
-            if self.governor.is_paced() {
-                "governor on"
-            } else {
-                "GOVERNOR OFF (control)"
-            },
-            self.machine.frames(),
-            self.governor.rebases()
-        );
-        let t = Instant::now();
-        // Panel spans are recorded only when something will read them: the same `is_serving` gate as the
-        // push below, decided once so the two cannot disagree within an iteration.
-        let serving = self.bus.is_serving();
-        let (drew, drawn) = self.build_ui(root, serving);
-        let ui_ms = ms(t.elapsed());
-
-        // --- ⚑ What the window says, published for `emulator/screen_text` (§11.29, CR-H). ---
-        //
-        // **Here, after `build_ui` and after the drain, and both halves of that position are the point.**
-        // `Host::set_screen_text`'s own doc names the trap: text describing a frame *not yet presented* is
-        // a false answer to the one question the method answers truthfully. `drew` cannot exist before
-        // `build_ui` returns it — that is why it is a return value and not a helper this line could have
-        // called earlier — and the next drain is in iteration N+1, after its frame and before its
-        // `build_ui`, so after eframe has presented what was just composed. So a client's read lands on
-        // the frame that is on the glass, never on one mid-composition. Design §5.8.2 booked this call's
-        // absence; this is it.
-        //
-        // ⚑ **Except before the FIRST of these pushes** (F-PLAYER-SCREENTEXT-FIRST-READ, measured).
-        // Iteration 1's drain runs before this line has ever executed, and one `Host::pump` answers every
-        // request it finds queued, so a request that drain answers is refused `noDisplay`, and
-        // `status.display` is `false`, from a window that exists (`frame 1`: the frame this iteration
-        // ran before its drain). A client that must not see that waits for `display: true`, as
-        // `a_client_reads_this_windows_top_bar_and_it_follows_the_run_state` does. What the wire should
-        // say in that state is booked for a contract ruling, not decided here.
-        //
-        // **Gated on `is_serving`, deliberately not on `has_clients`**, which is `oracle-frontend`'s split
-        // and its reason travels unchanged: with no socket bound no client can exist, so the snapshot is
-        // pure cost — but gating on *attachment* would leave a client that connects mid-session reading
-        // `-32005 noDisplay` ("there is no window") until the next present, which is exactly the false
-        // answer the method exists to prevent. The skip belongs one level up, and this is that level.
-        //
-        // **Missing glyphs are asked of the live `egui::Context`**, through the family that drew each run
-        // (`screen::Run::mono`). A hand-written table of characters this build cannot draw would be a
-        // second opinion about a font, and the wrong one first.
-        //
-        // ⚑ **But NOT through `Fonts::has_glyph`, which is the obvious call and is wrong here.**
-        // `screen::Glyphs` carries the measurement: on egui 0.36 `has_glyph` calls the letter `A`
-        // undrawable in the monospace family and `▶` undrawable in the proportional one, on a build that
-        // draws both — 26 invented hollow boxes on this bar. What it actually answers is *"is this char
-        // owned by the same face as `◻`?"*. The atlas rectangle a glyph samples cannot lie that way,
-        // because it IS what the renderer reads, so that is what is compared.
-        //
-        // ⚑ **The panels (§11.50, CR-W) ride the same push, after the bar's two surfaces**, read off the
-        // paint-list spans `build_ui` just returned. **Here, inside the pass**: `end_pass` drains every
-        // layer's list, so the spans are only readable before this closure returns (measured, Q3 spike).
-        // See `screen`'s module doc for the whole reading rule.
-        if serving {
-            self.publish_screen_text(ctx, &drew, &drawn);
-        }
-        // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
-        // deliberately NOT a drain and applies neither pending change (host.rs) — so a pause or resume it
-        // just issued has already moved the engine's own flags. It is adopted at the TOP of the next
-        // iteration, before that iteration's tick decides whether to run a frame, which is why no frame
-        // slips through between the click and the pause taking effect.
-
-        if tick.run {
-            self.buckets.emulate.push(cost.emulate);
-            self.buckets.audio.push(cost.audio);
-            self.buckets.convert.push(cost.convert);
-            self.buckets.upload.push(upload);
-            self.buckets.ui.push(ui_ms);
-            self.buckets.bus.push(bus_ms);
-            self.buckets
-                .cpu_total
-                .push(cost.emulate + cost.audio + cost.convert + upload + ui_ms + bus_ms);
-        }
-        tick
+        (drained, bus_ms)
     }
 
     /// **One machine key, done** — the only place any of them is acted on, for either surface.
@@ -2122,15 +2218,22 @@ mod loop_tests {
         out.textures_delta.clear();
     }
 
-    /// ⚑ **The startup listing install arrives as a listing change on the FIRST turn**, so every row
-    /// below primes one turn before it arms anything.
+    /// ⚑ **The startup listing install arrives as a listing change on the first DRAIN**, so every row
+    /// below primes until that drain has happened before it arms anything.
     ///
     /// `Loop::new` hands the engine the listing it was launched with, and that reaches the next drain as
     /// `symbols_changed` exactly as a client's `emulator/load_symbols` would — correctly, since it *is* a
     /// listing arriving. It is invisible in production because a person cannot arm spawn mode before the
     /// window has drawn its first frame, and drawing it is what turns the loop. It is very visible to a
     /// test that arms before the first turn, which is what the first draft of these rows did.
+    ///
+    /// ⚑ **Two turns and not one since `F-FIRST-PRESENT-REFUSAL`.** Iteration 1 no longer drains — it owes
+    /// that drain to the top of iteration 2 — so the launch listing is consumed on the second turn, and a
+    /// row primed with one turn would arm in between and be retracted by the drain it primed for. Still
+    /// invisible in production for the reason above; very visible here, which is why it is written down at
+    /// the one helper both rows go through rather than at each of them.
     fn primed(lp: &mut Loop, ctx: &egui::Context) {
+        turn(ctx, lp);
         turn(ctx, lp);
     }
 

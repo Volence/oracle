@@ -238,6 +238,83 @@ pub fn drain(sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Drained {
     }
 }
 
+/// **Where in an iteration the drain is allowed to happen** — one object, so the rule is a property
+/// something holds rather than a convention two call sites have to keep agreeing about.
+///
+/// # The defect it exists because of (`F-FIRST-PRESENT-REFUSAL`)
+///
+/// [`Bus::set_screen_text`] answers *the frame that is on the glass*, so the loop cannot publish before it
+/// has composed one — and **iteration 1 has not composed one when the drain's normal position comes
+/// round.** One [`Bus::pump`] answers every request it finds queued, so a request answered by iteration 1's
+/// drain was refused `-32005 noDisplay` (and `emulator/status` answered `display: false`) **from a window
+/// that exists**. It was measured in `oracle-player`, whose loop has the same order, and reasoned about
+/// here; the tests below now measure it here too.
+///
+/// ⚑ **Publishing earlier cannot be the fix.** In iteration 1 there is nothing on the glass, so a publish
+/// ahead of the first composition would trade a false *"there is no window"* for a false *picture*, which
+/// is worse. What is wrong is the order, and only for iteration 1.
+///
+/// # The rule
+///
+/// [`Order::before_present`] is the normal position — after the frame, before the present — and it returns
+/// `None` exactly once, on the first iteration. [`Order::after_present`] runs that one deferred drain,
+/// after the publish and the blit, and returns `None` on every other iteration. So no pump in this loop
+/// ever answers a request with no publish behind it.
+///
+/// **What it costs, stated:** a request that arrives before the first frame is answered a little later in
+/// iteration 1 instead of being refused, and anything that drain applies lands with it. Before any frame
+/// has been shown, that is strictly better for the caller than a refusal.
+/// ⚑ `Default` is written out rather than derived: a derived one would start `first: false`, which is
+/// silently *no deferral at all* — the defect back, with nothing to notice it.
+#[derive(Debug)]
+pub struct Order {
+    /// The deferred first drain has been handed out at the normal position and not yet run.
+    owed: bool,
+    /// The first iteration has not reached the normal position yet.
+    first: bool,
+}
+
+impl Default for Order {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Order {
+    /// A loop that has not iterated. `first` starts `true`: the very next
+    /// [`before_present`](Order::before_present) is iteration 1's and is the one that defers.
+    pub fn new() -> Self {
+        Self {
+            owed: false,
+            first: true,
+        }
+    }
+
+    /// **The drain at its normal position** — after the frame and its publish, before the present.
+    ///
+    /// `None` on the first iteration only, which owes its drain to
+    /// [`after_present`](Order::after_present) instead. The caller must be able to carry on without a
+    /// [`Drained`]: every flag it holds means *"this drain moved it"*, and on that one iteration no drain
+    /// has run.
+    pub fn before_present(&mut self, sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Option<Drained> {
+        if self.first {
+            self.first = false;
+            self.owed = true;
+            return None;
+        }
+        Some(drain(sys, bus, r))
+    }
+
+    /// **The deferred first drain** — called after this iteration's publishes and its present, and `Some`
+    /// exactly once in the life of the loop.
+    pub fn after_present(&mut self, sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Option<Drained> {
+        if !std::mem::take(&mut self.owed) {
+            return None;
+        }
+        Some(drain(sys, bus, r))
+    }
+}
+
 // -------------------------------------------------------------------------------------------------
 // ⚑ The reproduction: the defect that was found by hand, in a test that goes red without the fix
 // -------------------------------------------------------------------------------------------------
