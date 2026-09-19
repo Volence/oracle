@@ -1,6 +1,12 @@
 {
-  "focus": "The landing check now runs what the build server runs, and admits what it skipped.",
-  "inFlight": [],
+  "focus": "Turning three habits that cost us real bugs into things a reader can check, not advice.",
+  "inFlight": [
+    {
+      "what": "Giving each of three recurring mistakes a detector -- something checkable that is missing when the mistake is made",
+      "where": "branch parcel/method-detectors",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: thirteen landings, main green, nothing running.",
+  "nextBoundary": "When the detectors parcel returns and is verified here.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -25,7 +31,7 @@
     },
     {
       "id": "F-METHOD-ROWS-FROM-THE-REDS",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -97,14 +103,14 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "open",
+      "state": "next",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T13:30:55Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T13:34:46Z"
 }
