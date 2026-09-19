@@ -187,10 +187,26 @@ const BASELINE: &[(&str, &str)] = &[
         "13/13 rows match the ROM's hardware reference",
     ),
     (
+        // **Was a 120-frame picture pin with a doubly-false reason; now a verdict row** (2026-09-18,
+        // `TESTROM-OPCODE-SIZES-NEVER-SETTLES`). From this row's first pin (2026-07-25) to 2026-09-18 it
+        // read `VISUAL-BASELINE frame_hash=0x5436cda5786ea450` with the ledger reason "not scraped: at the
+        // pinned 120-frame budget the screen shows the ROM's font/pattern page, not a result page", plus a
+        // 2026-09-19 amendment calling the picture perpetually in motion and the pin necessarily a
+        // determinism pin. All three claims are measured false. There is no font page — the thing that
+        // looked like one is an **identity nametable**, `cell = row*40 + col`, whose tile indices `$20-$7E`
+        // decode as printable ASCII in a text-grid dump. The picture settles: 685 through 3600 frames all
+        // give `frame_hash=0xb1e54eed02744f27`. And there IS a result page, painted at VRAM `$8000`: this
+        // ROM measures the **length of every one of the 65536 opcode words** by executing each in front of
+        // `$F000` padding and reading the trap's stacked PC, plots one pixel per opcode, then CRC-32s its
+        // own 32768-byte map (and an 8192-byte measured/asserted bitmap) against two constants baked into
+        // the image and paints colour 6 for match, colour 9 for mismatch. Both match. The old pin hashed a
+        // frame in which the ROM's own opcode counter at `$FFFF86` reads `$46AF` — 27.8% through the sweep,
+        // with the `$8xxx`, `$Cxxx` and `$Exxx` pages not yet plotted at all, which is also why that pin's
+        // K1 note ("476 px across the `$0/4/8/C/E` opcode pages") cannot be right as stated.
+        // See the `m68k_opcode_sizes` section below and docs/2026-09-18-opcode-sizes-diagnosis.md.
         "m68k_opcode_sizes",
-        // Re-pinned 2026-08-02 with the K1 illegal-decode fix: the ROM plots the live decode map, and
-        // the newly-trapping encodings move a handful of its cells (476 px in the 0x0/4/8/C/E pages).
-        "VISUAL-BASELINE frame_hash=0x5436cda5786ea450",
+        "2/2 crc32 sizemap=0x5c6da501 classmap=0x20ac2324 — 65536 opcode lengths + the 8192-byte \
+         measured/asserted bitmap, against the ROM's own baked constants",
     ),
     (
         "shadow_highlight",
@@ -1942,6 +1958,377 @@ fn scrape_vcounter() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------------------------------
+// `m68k_opcode_sizes` — the ROM that plots one pixel per opcode
+// ---------------------------------------------------------------------------------------------------
+//
+// **This row was a 120-frame picture pin for eight weeks, and both halves of the reason were wrong**
+// (2026-09-18, `TESTROM-OPCODE-SIZES-NEVER-SETTLES`). The ledger said "not scraped: at the pinned
+// 120-frame budget the screen shows the ROM's font/pattern page, not a result page", and a 2026-09-19
+// amendment added that the ROM "animates forever" so the pin could only ever be a determinism pin. Both
+// measured false. There is no font page, the ROM does not animate forever, and it carries the most
+// complete verdict in this corpus.
+//
+// **What the ROM does.** It copies a 36-word routine to work RAM at `$FFFF80` (ROM `$3DC`): a
+// `movem.l ($28C).w,d0-d7/a0-a7` that preloads all sixteen registers with `$FFFFE000` (a scratch RAM
+// address, so every effective address is harmless), then the **opcode under test at `$FFFF86`**, then 32
+// words of `$F000` padding. Vectors 4, 10 and 11 (illegal / line-A / line-F) all point at ROM `$42C`, so
+// running the routine ends in a trap either way, and the handler's first instruction —
+// `move.w $4(a7),d1` then `subi.w #$FF86,d1` — turns the stacked PC into **the length in bytes of the
+// instruction that was just executed**: an illegal opcode traps at `$FFFF86` itself and yields 0, a valid
+// one runs and the following `$F000` traps at `$FFFF86 + its size`. `lsr.w #1` makes that a word count,
+// clamped to 15, and four of them are packed into one 16-bit word and written to the VDP data port.
+//
+// So the screen is **one pixel per opcode word, its colour the instruction's length in words, colour 0 =
+// illegal**, laid out linearly from VRAM `$0000`. The nametable is an identity map — ROM `$3C6-$3D8`
+// writes 64 ascending cells per row and then `subi.w #$18,d3`, i.e. cell = `row * 40 + col` — written
+// once and never touched again. Verified against the 68000 independently of our decoder: tile `$200`
+// (opcodes `$8000-$803F`, `OR.b <ea>,D0`) reads `1×8 / 0×8 / 1×8 / 1×8 / 1×8 / 2×8 / 2×8 / 2,3,2,2,2,0,0,0`
+// — Dn 1 word, **An illegal** (the K1 fix), `(An)`/`(An)+`/`-(An)` 1 word, `d16(An)`/`d8(An,Xn)` 2,
+// `(xxx).w` 2, `(xxx).l` 3, `d16(PC)`/`d8(PC,Xn)`/`#imm` 2, modes 7/5-7/7 illegal.
+//
+// Opcodes too dangerous to execute are not executed. ROM `$472` walks mask/value pairs at ROM `$400` and,
+// on a match, substitutes the size the ROM knows the encoding to have (`moveq #2`/`moveq #4`, then back
+// into the packer) — for `Bcc` it even reads the displacement byte to choose 2 or 4. A second pass over
+// all 65536 opcodes (ROM `$506`) records one bit each for "was this measured or asserted" into an
+// 8192-byte bitmap at `$FF8000`.
+//
+// **Then it checks itself.** It builds a CRC-32 table at `$FFA010` (reflected `$EDB88320`, ROM `$62C`),
+// reads its 32768-byte pixel map back out of VRAM into RAM, and CRC-32s both buffers against two
+// constants baked into the image. Each check paints four tiles from VRAM `$8000`: a blank tile, the
+// computed CRC's own eight nibbles, another blank, and then **64 pixels of colour 6 if the CRC matched or
+// colour 9 if it did not** (ROM `$682`/`$68C`). Palette entry 6 is `$00E0`, full green; entry 9 is
+// `$000E`, full red. The verdict is a **colour**, which is why a printable-ASCII sweep of the image finds
+// no `PASS`, `FAIL` or `ERROR` anywhere: there is no such word to find.
+//
+// **Why the harness never saw it — two independent causes, both ours, neither a core defect.** The
+// budget: [`scrape_visual`] runs 120 frames, and at frame 120 the ROM's own opcode counter at `$FFFF86`
+// reads `$46AF` — **27.8% of the way through the sweep**. Tiles `$200`, `$300` and `$380` (the `$8xxx`,
+// `$Cxxx` and `$Exxx` pages) are still entirely unwritten at that point, which also makes this row's
+// existing K1 note ("476 px moved across the `$0/4/8/C/E` opcode pages") impossible as stated: three of
+// those five pages are not plotted in the frame the pin hashes. And the channel: the verdict is tile
+// pattern data, while the probe's text grid decodes *nametable cells* — which here are an identity map,
+// constant by construction. The "ASCII character ramp" that looked like a font page is the identity map's
+// tile indices `$20-$7E` rendering as printable characters. That channel could never have carried a
+// verdict, at any budget.
+//
+// The picture also settles, contrary to the 2026-09-19 note: every budget from 685 to 3600 frames gives
+// `frame_hash=0xb1e54eed02744f27`. The four samples that read as perpetual motion (120 / 300 / 600 /
+// 1800) straddled the two transitions; 400-675 are all one hash and >= 685 all another.
+
+/// The frame budget ceiling for the sweep. The sweep is **waited on, never timed** — [`OpcodeSizesRun`]
+/// steps until the ROM parks itself on its own input wait — so this is only the point at which we stop
+/// believing it will ever get there. Measured: the verdict band completes between frames 680 (first check
+/// only) and 685 (both), so this is ~4x headroom.
+const OPSIZE_FRAME_CEILING: u64 = 2400;
+
+/// How far to run between polls of the machine.
+const OPSIZE_FRAME_STEP: u64 = 20;
+
+/// The ROM's pad wait, ROM `$5FA-$62A`: it reads both halves of port 1 and loops until
+/// `new & ~old` is non-zero — a **release** edge on any of the eight buttons. `$5E4` seeds the shadow
+/// byte at `$FFA000` with `$FF` just before, so with no pad input this loop can never exit, and it is
+/// reached only after both checks have been painted. A PC inside it is therefore proof that the ROM
+/// **finished**, which is the one thing a still picture cannot tell you: finished-and-waiting and hung
+/// look identical on screen.
+const OPSIZE_PAD_WAIT_LO: u32 = 0x5FA;
+const OPSIZE_PAD_WAIT_HI: u32 = 0x62A;
+
+/// VRAM address the verdict band is painted at — ROM `$55E` sets the data port to it with
+/// `move.l #$40000002,$4(a1)`. Tile `$400`.
+const OPSIZE_BAND_VRAM: usize = 0x8000;
+
+/// The two buffers the ROM checksums, as its own code names them: `move.w #$8000,d1` at ROM `$566` over
+/// the pixel map it read back out of VRAM, and `lea $8000.w,a0` + `move.w #$2000,d1` at ROM `$574` over
+/// the classifier bitmap in RAM.
+const OPSIZE_SIZEMAP_LEN: usize = 0x8000;
+const OPSIZE_CLASSMAP_RAM: usize = 0x8000;
+const OPSIZE_CLASSMAP_LEN: usize = 0x2000;
+
+/// The ROM's own numbers, read out of the **vendored image** rather than copied into this file, so they
+/// are an expectation that moves with the ROM and never with our code. Each offset is checked against the
+/// instruction it belongs to, so a wrong offset is refused instead of silently read.
+struct OpcodeSizesRomFacts {
+    /// Expected CRC-32 of the 32768-byte pixel map — operand of `move.l #imm,d2` at ROM `$56A`.
+    sizemap_crc: u32,
+    /// Expected CRC-32 of the 8192-byte classifier bitmap — operand of `move.l #imm,d2` at ROM `$57C`.
+    classmap_crc: u32,
+    /// The nibble the ROM paints when a CRC matched — from `move.l #$66666666,d0` at ROM `$682`.
+    pass_nibble: u8,
+    /// The nibble it paints when one did not — from `move.l #$99999999,d0` at ROM `$68C`.
+    fail_nibble: u8,
+}
+
+/// Read [`OpcodeSizesRomFacts`] out of the image, refusing a wrong offset rather than trusting one.
+fn opcode_sizes_rom_facts(rom: &[u8]) -> OpcodeSizesRomFacts {
+    /// `move.l #imm,d2` — the instruction both expected constants are the operand of.
+    const MOVE_L_IMM_D2: [u8; 2] = [0x24, 0x3C];
+    /// `move.l #imm,d0` — the instruction both verdict words are the operand of.
+    const MOVE_L_IMM_D0: [u8; 2] = [0x20, 0x3C];
+
+    let long_at = |at: usize| u32::from_be_bytes(rom[at..at + 4].try_into().unwrap());
+    let operand_of = |at: usize, opcode: [u8; 2], what: &str| -> u32 {
+        assert_eq!(
+            &rom[at..at + 2],
+            &opcode,
+            "m68k_opcode_sizes ROM ${at:04X} is ${:02X}{:02X}, not the {what} instruction \
+             ${:02X}{:02X} this row reads its expectation from. The vendored image is not the one this \
+             row was derived against, so every offset below is meaningless — re-derive them from the ROM \
+             before touching the baseline.",
+            rom[at],
+            rom[at + 1],
+            opcode[0],
+            opcode[1]
+        );
+        long_at(at + 2)
+    };
+
+    let pass_word = operand_of(0x682, MOVE_L_IMM_D0, "pass-colour");
+    let fail_word = operand_of(0x68C, MOVE_L_IMM_D0, "fail-colour");
+    // Each verdict word is one nibble repeated eight times — that is what makes 64 uniform pixels — and
+    // the two must differ or the band would carry no information at all.
+    let uniform_nibble = |word: u32, what: &str| -> u8 {
+        let n = (word >> 28) as u8;
+        assert_eq!(
+            word,
+            u32::from_be_bytes([n * 0x11, n * 0x11, n * 0x11, n * 0x11]),
+            "the ROM's {what} word ${word:08X} is not one nibble repeated, so it does not paint a \
+             uniform band and this row's shape check is wrong about it"
+        );
+        n
+    };
+    let pass_nibble = uniform_nibble(pass_word, "pass-colour");
+    let fail_nibble = uniform_nibble(fail_word, "fail-colour");
+    assert_ne!(
+        pass_nibble, fail_nibble,
+        "the ROM paints the same colour for pass and fail, so its band cannot be read"
+    );
+
+    OpcodeSizesRomFacts {
+        sizemap_crc: operand_of(0x56A, MOVE_L_IMM_D2, "sizemap-expectation"),
+        classmap_crc: operand_of(0x57C, MOVE_L_IMM_D2, "classmap-expectation"),
+        pass_nibble,
+        fail_nibble,
+    }
+}
+
+/// CRC-32 exactly as this ROM computes it, transcribed from its own code:
+///
+/// * the table build at ROM `$62C` — 256 entries, reflected polynomial `$EDB88320`.
+/// * the digest loop at ROM `$652` — `moveq #$FF,d0` seeds `d0`, and **`MOVEQ` sign-extends its byte**,
+///   so the seed is `$FFFFFFFF`. Read as the literal `$000000FF` it yields `0x3e13d6a8` where the ROM
+///   expects `0x5c6da501`: a transcription error that would have read as a failing emulator. Then
+///   `crc = (crc >> 8) ^ table[(crc ^ byte) & $FF]` per byte, and `not.l d0` at `$670`.
+/// * the count at `$658` — the `bra` lands on the `dbra` *before* the first body pass, so `d1` is an
+///   exact byte count and nothing is read past the buffer.
+///
+/// Which makes it ordinary CRC-32/ISO-HDLC. Kept as a local transcription anyway: the point is that the
+/// expectation is the ROM's, not a crate's, and the ROM is what it has to agree with.
+fn crc32_opcode_sizes(bytes: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    for (i, slot) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                (c >> 1) ^ 0xEDB8_8320
+            } else {
+                c >> 1
+            };
+        }
+        *slot = c;
+    }
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        crc = (crc >> 8) ^ table[((crc ^ b as u32) & 0xFF) as usize];
+    }
+    !crc
+}
+
+/// One of the ROM's two self-checks, as the four tiles it paints carry it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OpcodeSizesCheck {
+    /// The CRC the ROM computed, read off its nibbles.
+    crc: u32,
+    /// The verdict nibble it painted — compared against the ROM's own pass/fail words, never assumed.
+    verdict: u8,
+}
+
+/// Read one check out of four consecutive tiles, or `None` while the band is not fully painted.
+///
+/// The shape is the ROM's: each of the four words is written eight times (`$692`: `moveq #7,d4` /
+/// `move.l d0,(a1)` / `dbra`), so every tile is **32 identical bytes** and a half-painted band fails the
+/// uniformity check rather than reading as a value. Tiles 0 and 2 are the separators the ROM writes from
+/// `moveq #0,d0`, tile 1 is the CRC, tile 3 the verdict.
+fn opcode_sizes_read_check(vram: &[u8], at: usize) -> Option<OpcodeSizesCheck> {
+    let tile = |i: usize| -> Option<u32> {
+        let (longs, rest) = vram[at + i * 32..at + (i + 1) * 32].as_chunks::<4>();
+        debug_assert!(
+            rest.is_empty(),
+            "a tile is 32 bytes, i.e. exactly eight longs"
+        );
+        let first = u32::from_be_bytes(longs[0]);
+        // Eight identical longs, or this tile is mid-write and carries no value yet.
+        longs
+            .iter()
+            .all(|c| u32::from_be_bytes(*c) == first)
+            .then_some(first)
+    };
+    let (blank_a, crc, blank_b, verdict) = (tile(0)?, tile(1)?, tile(2)?, tile(3)?);
+    // The separators are the cheapest proof that this is the band and not some other VRAM: they are zero
+    // in the ROM's layout and essentially nothing else is.
+    if blank_a != 0 || blank_b != 0 {
+        return None;
+    }
+    let n = (verdict >> 28) as u8;
+    if verdict != u32::from_be_bytes([n * 0x11, n * 0x11, n * 0x11, n * 0x11]) {
+        return None;
+    }
+    Some(OpcodeSizesCheck { crc, verdict: n })
+}
+
+/// A **completed** `m68k_opcode_sizes` run. [`Self::establish`] is the only constructor and the only route
+/// to [`Self::verdict`], so a reading taken off an unfinished sweep, off the wrong tiles, or off a pixel
+/// map that is not the one the ROM checksummed, is not representable.
+struct OpcodeSizesRun {
+    sizemap: OpcodeSizesCheck,
+    classmap: OpcodeSizesCheck,
+    facts: OpcodeSizesRomFacts,
+}
+
+impl OpcodeSizesRun {
+    /// Run the ROM until it parks itself, then prove that what we are about to read is what the ROM
+    /// checked. Four conditions, and none of them implies another:
+    ///
+    /// 1. **The PC is inside the ROM's own pad wait** (`OPSIZE_PAD_WAIT_LO..=OPSIZE_PAD_WAIT_HI`). The sweep, the second pass
+    ///    and both checksums all precede it, so this is the completion signal — and it is the signal a
+    ///    still picture cannot give, because a hang looks the same.
+    /// 2. **Both bands read as bands** — separators zero, every tile 32 identical bytes, the verdict tile
+    ///    one repeated nibble. A band that is mid-write, or a read at the wrong VRAM address, fails this.
+    /// 3. **Our own CRC-32 of the live machine equals the CRC the ROM displayed**, for both buffers. This
+    ///    is the condition that makes the read *established* rather than asserted: it ties the four tiles
+    ///    we are reading to the 32768-byte pixel map and the 8192-byte bitmap they are supposed to
+    ///    describe. Read the wrong tiles, or read a map the ROM did not checksum, and the numbers part.
+    /// 4. **The verdict nibble is one of the ROM's two**, taken from the image, not from this file.
+    ///
+    /// What it deliberately does *not* require is that the CRCs **match the ROM's expectation** — that is
+    /// the reading, not the proof. A failing emulator has to stay representable, or this instrument could
+    /// never go red.
+    fn establish(sys: &mut System) -> Option<Self> {
+        let facts = opcode_sizes_rom_facts(sys.rom());
+        let mut frames = 0;
+        let (sizemap, classmap) = loop {
+            if frames >= OPSIZE_FRAME_CEILING {
+                eprintln!(
+                    "m68k_opcode_sizes: NOT ESTABLISHED — after {frames} frames the PC is \
+                     ${:06X} and the verdict band at VRAM ${OPSIZE_BAND_VRAM:04X} is \
+                     {}. The ROM paints the band and then parks in its pad wait \
+                     (${OPSIZE_PAD_WAIT_LO:03X}-${OPSIZE_PAD_WAIT_HI:03X}); neither happened, so the \
+                     sweep did not complete. This row measured nothing — it is NOT a pass and NOT a \
+                     fail.",
+                    sys.cpu_regs().pc,
+                    if opcode_sizes_read_check(sys.vdp().vram(), OPSIZE_BAND_VRAM).is_some() {
+                        "readable"
+                    } else {
+                        "not readable"
+                    },
+                );
+                return None;
+            }
+            sys.run_frames(OPSIZE_FRAME_STEP);
+            frames += OPSIZE_FRAME_STEP;
+            if !(OPSIZE_PAD_WAIT_LO..=OPSIZE_PAD_WAIT_HI).contains(&sys.cpu_regs().pc) {
+                continue;
+            }
+            let vram = sys.vdp().vram();
+            if let (Some(a), Some(b)) = (
+                opcode_sizes_read_check(vram, OPSIZE_BAND_VRAM),
+                opcode_sizes_read_check(vram, OPSIZE_BAND_VRAM + 4 * 32),
+            ) {
+                break (a, b);
+            }
+        };
+
+        // Condition 3. The ROM read its pixel map back out of VRAM into RAM before checksumming it, so
+        // the bytes it hashed are VRAM's — hash the same range and the same length the ROM did.
+        let ours_sizemap = crc32_opcode_sizes(&sys.vdp().vram()[..OPSIZE_SIZEMAP_LEN]);
+        let ours_classmap = crc32_opcode_sizes(
+            &sys.ram()[OPSIZE_CLASSMAP_RAM..OPSIZE_CLASSMAP_RAM + OPSIZE_CLASSMAP_LEN],
+        );
+        for (what, ours, shown) in [
+            ("sizemap", ours_sizemap, sizemap.crc),
+            ("classmap", ours_classmap, classmap.crc),
+        ] {
+            assert_eq!(
+                ours, shown,
+                "the band says the ROM's {what} CRC-32 is 0x{shown:08x}, but the same digest over the \
+                 live machine's own buffer is 0x{ours:08x}. The four tiles being read are therefore not \
+                 describing the buffer this row thinks they describe — a verdict read from here would be \
+                 a verdict about nothing. Re-derive the band address and the two buffer extents from the \
+                 ROM's code (${OPSIZE_BAND_VRAM:04X} from ROM $55E; the lengths from $566 and $578)."
+            );
+        }
+
+        for (what, check) in [("sizemap", &sizemap), ("classmap", &classmap)] {
+            assert!(
+                check.verdict == facts.pass_nibble || check.verdict == facts.fail_nibble,
+                "the {what} verdict tile is colour {} — the ROM paints only {} (pass) or {} (fail), so \
+                 this is not the verdict tile",
+                check.verdict,
+                facts.pass_nibble,
+                facts.fail_nibble
+            );
+        }
+
+        eprintln!(
+            "m68k_opcode_sizes: established at {frames} frames, pc=${:06X} (the ROM's pad wait)",
+            sys.cpu_regs().pc
+        );
+        Some(Self {
+            sizemap,
+            classmap,
+            facts,
+        })
+    }
+
+    /// The reading. Each half states the ROM's verdict colour **and** whether the CRC it displayed is the
+    /// one baked into the image, because those are two different facts and a row that carried only the
+    /// first could not say what the second was.
+    fn verdict(&self) -> String {
+        let halves = [
+            ("sizemap", &self.sizemap, self.facts.sizemap_crc),
+            ("classmap", &self.classmap, self.facts.classmap_crc),
+        ];
+        let passed = halves
+            .iter()
+            .filter(|(_, c, want)| c.verdict == self.facts.pass_nibble && c.crc == *want)
+            .count();
+        let body = halves
+            .iter()
+            .map(|(name, c, want)| {
+                if c.crc == *want && c.verdict == self.facts.pass_nibble {
+                    format!("{name}=0x{:08x}", c.crc)
+                } else {
+                    format!(
+                        "{name}=0x{:08x} MISMATCH (ROM expects 0x{want:08x}, band colour {})",
+                        c.crc, c.verdict
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "{passed}/2 crc32 {body} — 65536 opcode lengths + the 8192-byte measured/asserted bitmap, \
+             against the ROM's own baked constants"
+        )
+    }
+}
+
+/// `m68k_opcode_sizes` — one pixel per opcode, checksummed by the ROM against its own baked constants.
+/// See this section's header comment for why it was a 120-frame picture pin until 2026-09-18.
+fn scrape_m68k_opcode_sizes(sys: &mut System) -> Option<String> {
+    Some(OpcodeSizesRun::establish(sys)?.verdict())
+}
+
+// ---------------------------------------------------------------------------------------------------
 // The scorecard
 // ---------------------------------------------------------------------------------------------------
 
@@ -1953,6 +2340,12 @@ fn scrape(name: &str) -> Option<String> {
     if name == "vcounter" {
         // Likewise: one shared menu drive, read by the scorecard row and by its control arm.
         return scrape_vcounter();
+    }
+    if name == "m68k_opcode_sizes" {
+        // The only row whose reading can be *not established*: the sweep is waited on rather than timed,
+        // so a machine that never finishes it produces no row at all and the count guard below says so.
+        let mut sys = boot(name)?;
+        return scrape_m68k_opcode_sizes(&mut sys);
     }
     let mut sys = boot(name)?;
     Some(match name {
