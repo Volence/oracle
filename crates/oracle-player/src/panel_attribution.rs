@@ -516,9 +516,25 @@ pub(crate) fn fixture(dock: egui_dock::DockState<Tab>) -> Loop {
         oracle_core::io::PadPort::P1,
         oracle_core::io::Pad::default(),
     );
+    // ⚑ **A SYNTHETIC clock, and it is the reason two fixtures are comparable at all.**
+    // `Loop::iterate` is the one place pacing figures are derived (`Loop::derive_pacing`), and what it
+    // leaves in `Loop::pacing` is what the Pacing body then PRINTS: a rate, the window it was measured
+    // over, two frame-time percentiles. Handed `Instant::now()` those figures are *this box's speed on
+    // the day*, so two fixtures built moments apart print different strings, and any gate that compares
+    // a present of one against a present of the other is comparing the machine's load. That is what took
+    // CI red on `462e9cf` — see
+    // `tests::a_run_on_no_reported_row_is_in_neither_string_and_changes_nothing`.
+    //
+    // Every figure in `PacingFacts` is a DIFFERENCE from the instant this loop started, never a reading
+    // of the clock, so laying a nominal 60 Hz over the real iterations makes all of them identical on
+    // every box: eight presents one `FRAME_PERIOD` apart, whatever the wall clock did in between. The
+    // machine, the UI and the bus still run for real and still take as long as they take; only the
+    // *reported* pacing is fixed. Nothing here touches production — `Loop::iterate` takes its `now` as an
+    // argument precisely so the caller owns the clock, and the window's caller is still `Instant::now()`.
+    let t0 = Instant::now();
     let mut lp = Loop::new(
         machine,
-        Instant::now(),
+        t0,
         Some(0.0),
         String::from("(fixture)"),
         symbols::Loaded {
@@ -533,7 +549,7 @@ pub(crate) fn fixture(dock: egui_dock::DockState<Tab>) -> Loop {
     for i in 0..8 {
         let mut out = ctx.run_ui(raw(i, Vec::new()), |root| {
             let c = root.ctx().clone();
-            lp.iterate(&c, root, Instant::now());
+            lp.iterate(&c, root, t0 + crate::pacing::FRAME_PERIOD * (i + 1));
         });
         out.textures_delta.clear();
     }
@@ -1785,12 +1801,33 @@ mod tests {
     /// for character, which is a stronger statement than "the source does not appear": a fix that reopened
     /// the scroll question by reporting rows the panel does not show would have to change this string.
     ///
-    /// ⚑ **Every ASCII DIGIT is masked before the comparison, and the mask is the whole reason this row
-    /// can make that claim.** The Pacing panel prints the loop's own measured rate (`243.24 fps`, `37 ms`),
-    /// so two presents of the same fixture differ in those digits by wall clock alone — a raw byte
-    /// comparison here failed on `272.73` vs `243.24` the first time it ran, which is a defect in the
-    /// premise and not in the surface. Masking digits keeps every join, every run and every letter under
-    /// the comparison, which is what a reopened scroll question would have to disturb.
+    /// ⚑ **The two sides come from two fixtures, and what makes them comparable is [`fixture`]'s
+    /// synthetic clock — not the digit mask below.** The Pacing body prints the loop's own measured rate
+    /// (`presented fps`, `fps window`, the frame-time percentiles), so on a real clock the two arms report
+    /// two different speeds and this comparison measures the runner's load. `fixture` drives
+    /// `Loop::iterate` at a nominal `FRAME_PERIOD` from a base it captures itself, so every figure in
+    /// `PacingFacts` is the same string in both arms on any box.
+    ///
+    /// ⚑ **The comparison is RAW, byte for byte; the digit mask that used to BE the comparison is now
+    /// only a message.** The mask mapped each ASCII digit to `#`, which removes a digit's *identity* but
+    /// not its COUNT: `9.09` masks to `#.##` and `272.73` to `###.##`, `312 ms` to `### ms` and
+    /// `1000 ms` to `#### ms`. That is how each repair failed in turn. A raw comparison failed first on
+    /// `272.73` vs `243.24` — the same width, which masking did fix — and the mask then failed on CI
+    /// (`462e9cf`, run `35418036061`) on exactly the width it cannot see: the repair had been tested
+    /// against the instance that had occurred rather than against the mechanism. With the clock fixed at
+    /// its source the two surfaces are *identical unmasked*, measured under a forced 900 ms skew between
+    /// the two fixtures, so the character-for-character claim in the first paragraph is the one actually
+    /// asserted. The mask survives only as a first cut at which of the two ways this row fired:
+    /// masked-EQUAL can only be a time-derived figure that escaped the synthetic clock at the same width,
+    /// while masked-DIFFERENT is either such a figure that changed WIDTH or the scroll rule itself — the
+    /// mask cannot separate those two, which is the same blindness that let it pass as a repair.
+    ///
+    /// ⚑ **What none of this covers.** A figure read from `Instant::now()` *inside* a panel body, instead
+    /// of derived from the `now` `Loop::iterate` is handed, would be back on the wall clock — the clock is
+    /// fixed where the loop takes it, not everywhere one could be read. Nor is either instrument any
+    /// defence against a *layout* difference: a wider number changes what FITS inside a pane, so a width
+    /// difference is able to change which runs exist at all. No mask over a rendered string could have
+    /// repaired that, which is the second reason the fix belongs at the clock and not in the comparison.
     ///
     /// *Controls:* the string was painted into the span; no glyph of it touches the clip; and no other
     /// galley of that body has a band overlapping its row, so the row really is one the surface does not
@@ -1834,31 +1871,46 @@ mod tests {
             !runs_of(s["text"].as_str().unwrap()).contains(&BELOW),
             "a row the panel does not show is in neither string: {s}"
         );
-        let masked =
+        let both =
             |v: &serde_json::Value| -> (String, String, serde_json::Value, serde_json::Value) {
-                let mask = |k: &str| {
-                    v[k].as_str()
-                        .unwrap()
-                        .chars()
-                        .map(|c| if c.is_ascii_digit() { '#' } else { c })
-                        .collect::<String>()
-                };
+                let get = |k: &str| v[k].as_str().unwrap().to_owned();
                 (
-                    mask("text"),
-                    mask("rendered"),
+                    get("text"),
+                    get("rendered"),
                     v["truncated"].clone(),
                     v["unrenderable"].clone(),
                 )
             };
+        // Digits mapped to `#`, used ONLY in the message below: it separates the two ways this row can
+        // fire. See the doc above for why it is no longer the comparison.
+        let masked = |v: &serde_json::Value| -> (String, String) {
+            let mask = |k: &str| {
+                v[k].as_str()
+                    .unwrap()
+                    .chars()
+                    .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                    .collect::<String>()
+            };
+            (mask("text"), mask("rendered"))
+        };
         assert_eq!(
             plain["unrenderable"],
             serde_json::json!([]),
             "control: this panel names a box of its own, so the comparison below would pass on a leak"
         );
         assert_eq!(
-            masked(&s),
-            masked(&plain),
-            "planting a run off every reported row moved the surface, so the scroll rule has been reopened"
+            both(&s),
+            both(&plain),
+            "planting a run off every reported row moved the surface, so the scroll rule has been \
+             reopened. With every digit masked the two sides are {}: EQUAL means only digit VALUES moved, \
+             at the same width, which can only be a time-derived figure escaping `fixture`'s synthetic \
+             clock; DIFFERENT means either such a figure changed WIDTH — which the mask cannot hide — or \
+             the surface really changed shape, and the two strings above say which.",
+            if masked(&s) == masked(&plain) {
+                "EQUAL"
+            } else {
+                "DIFFERENT"
+            }
         );
     }
 
