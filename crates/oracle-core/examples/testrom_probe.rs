@@ -20,6 +20,10 @@
 //! | `PRESS=<start\|a\|b\|c>` + `PRESS_AT=<f>` + `PRESS_LEN=<f>` | hold a button on port 1 for `PRESS_LEN` frames starting at frame `PRESS_AT` |
 //! | `PRESSES=<at>:<btn>:<len>,...` | a SCRIPT of presses on port 1 (ascending `at`), for menu-driven ROMs; `btn` is any of `up down left right a b c start`. Cannot be combined with `PRESS` |
 //! | `PRIO_ROWS=1` | which plane-A cells have the priority bit set, per row — `vcounter`'s menu cursor is a priority-bit highlight, invisible in the text grid |
+//! | `CPU=1` | the 68000's PC, SR and register file — the "is it progressing or parked?" instrument. Sample it at two budgets: an unchanged PC inside a short backward branch is a wait loop, not a hang |
+//! | `RAM=<hex>,<count>` | `count` bytes of 68000 work RAM from `$FF0000 + hex`, as hex + printable ASCII. A ROM's own progress counter is usually the cheapest completion signal there is |
+//! | `RAM_CRC=<hex>,<len>` | the same CRC-32 over work RAM from `$FF0000 + hex` — `m68k_opcode_sizes` checksums a RAM buffer, not VRAM |
+//! | `VRAM_CRC=<hex>,<len>` | the CRC-32 of `len` VRAM bytes from `hex`, in `m68k_opcode_sizes`' own flavour (poly `$EDB88320`, init `$FFFFFFFF`, final complement — the ROM's own self-check, see `crc32_elektro`). Recomputes a ROM's self-check independently of the ROM |
 //!
 //! Documented in `docs/2026-07-25-testrom-conformance.md` ("How to amend a row").
 
@@ -223,6 +227,64 @@ fn main() {
         }
     }
 
+    // `CPU=1` — where the machine actually IS. An absence of movement in the picture has two causes that
+    // look identical on screen (finished-and-waiting vs. hung), and only the PC separates them.
+    if std::env::var_os("CPU").is_some() {
+        let r = sys.cpu_regs();
+        println!("CPU pc=${:06X} sr=${:04X}", r.pc, r.sr);
+        for (i, d) in r.d.iter().enumerate() {
+            print!("CPU d{i}=${d:08X}{}", if i == 7 { "\n" } else { " " });
+        }
+        for (i, a) in r.a.iter().enumerate() {
+            print!("CPU a{i}=${a:08X}{}", if i == 7 { "\n" } else { " " });
+        }
+    }
+
+    // `RAM=<hex>,<count>` — 68000 work RAM, addressed the way a 68k program does (`$FF0000 + hex`).
+    if let Ok(spec) = std::env::var("RAM") {
+        let mut it = spec.split(',');
+        let at = usize::from_str_radix(it.next().unwrap().trim_start_matches("0x"), 16).unwrap();
+        let count: usize = it.next().unwrap().parse().unwrap();
+        let ram = sys.ram();
+        for chunk in (at..at + count).step_by(16) {
+            let row: Vec<u8> = (chunk..(chunk + 16).min(at + count))
+                .map(|i| ram[i & 0xFFFF])
+                .collect();
+            let hex: Vec<String> = row.iter().map(|b| format!("{b:02X}")).collect();
+            let txt: String = row
+                .iter()
+                .map(|b| {
+                    if (0x20..0x7F).contains(b) {
+                        *b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            println!("RAM $FF{chunk:04X}: {}  |{txt}|", hex.join(" "));
+        }
+    }
+
+    // `VRAM_CRC=<hex>,<len>` — recompute a ROM's own self-check over OUR VRAM, so "the ROM printed a
+    // checksum" and "the bytes really hash to that" become two separate measurements.
+    if let Ok(spec) = std::env::var("VRAM_CRC") {
+        let mut it = spec.split(',');
+        let at = usize::from_str_radix(it.next().unwrap().trim_start_matches("0x"), 16).unwrap();
+        let len = usize::from_str_radix(it.next().unwrap().trim_start_matches("0x"), 16).unwrap();
+        let vram = sys.vdp().vram();
+        let crc = crc32_elektro(&vram[at..at + len]);
+        println!("VRAM_CRC ${at:04X}+${len:04X} = 0x{crc:08x}");
+    }
+
+    // `RAM_CRC=<hex>,<len>` — the same digest over work RAM from `$FF0000 + hex`.
+    if let Ok(spec) = std::env::var("RAM_CRC") {
+        let mut it = spec.split(',');
+        let at = usize::from_str_radix(it.next().unwrap().trim_start_matches("0x"), 16).unwrap();
+        let len = usize::from_str_radix(it.next().unwrap().trim_start_matches("0x"), 16).unwrap();
+        let crc = crc32_elektro(&sys.ram()[at..at + len]);
+        println!("RAM_CRC $FF{at:04X}+${len:04X} = 0x{crc:08x}");
+    }
+
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for line in 0..224u16 {
         for (r, g, b) in sys.vdp().render_line(line) {
@@ -233,6 +295,41 @@ fn main() {
         }
     }
     println!("frame_hash=0x{h:016x}");
+}
+
+/// CRC-32 exactly as `m68k_opcode_sizes` computes it — transcribed from the ROM's own code, not from a
+/// crate, so it is an expectation that moves with the ROM and not with us:
+///
+/// - the table build at ROM `$62C`: 256 entries, reflected polynomial `$EDB88320`, stored ascending from
+///   `$FFA010` (`move.l d0,-(a0)` descending from `$FFA410`, index `$FF` first).
+/// - the digest loop at ROM `$652`: `moveq #$FF,d0` seeds `d0` — **`MOVEQ` sign-extends its byte**, so the
+///   seed is `$FFFFFFFF`, the standard one (read as a literal `$000000FF` it produces
+///   `0x3e13d6a8` where the ROM expects `0x5c6da501`, which is how the sign extension was caught). Then
+///   `crc = (crc >> 8) ^ table[(crc ^ byte) & $FF]` per byte (`eor.b d0,d4` into a word-cleared `d4`,
+///   `lsr.l #8,d0`, `move.l (a2,d4.w),d4`, `eor.l d4,d0`), and `not.l d0` at `$670`.
+/// - the byte count at `$658`: `bra` lands on the `dbra` **before** the first body pass, so `d1` is an
+///   exact count, not a count-minus-one — `$8000` means 32768 bytes and nothing is read past the buffer.
+///
+/// The result is ordinary CRC-32/ISO-HDLC, and the ROM's two baked expected constants (`$5C6DA501` over
+/// the 32768-byte size map, `$20AC2324` over the 8192-byte classifier bitmap) are values of it.
+fn crc32_elektro(bytes: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    for (i, slot) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                (c >> 1) ^ 0xEDB8_8320
+            } else {
+                c >> 1
+            };
+        }
+        *slot = c;
+    }
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        crc = (crc >> 8) ^ table[((crc ^ b as u32) & 0xFF) as usize];
+    }
+    !crc
 }
 
 /// One button by name, as `PRESS`/`PRESSES` spell it.
