@@ -1,12 +1,6 @@
 {
-  "focus": "Fixing the check that kills two effect channels on a current build by comparing the wrong thing.",
-  "inFlight": [
-    {
-      "what": "Making the effect channels check the layout they write through, not an address that moved for unrelated reasons",
-      "where": "branch parcel/drift-layout-gate",
-      "agent": true
-    }
-  ],
+  "focus": "The two effect channels that refused everything on a real build work again.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,16 +13,8 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the drift parcel returns and is verified here.",
+  "nextBoundary": "Here now: nine landings, main green, nothing running, boot read at 48 KB of 100 KB.",
   "queue": [
-    {
-      "id": "F-DRIFT-GATES-ON-AN-ADDRESS",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "LIVE-EFFECTS",
-      "title": "Two of the three effect channels refuse every gesture on a current build, because a check compares an address that moved for an unrelated reason. Ruled: check the layout, not the address."
-    },
     {
       "id": "PANEL-CLIP-MARK",
       "state": "blocked",
@@ -59,7 +45,7 @@
       "size": "S",
       "blockedBy": "your eyes on a moving picture",
       "project": "LIVE-EFFECTS",
-      "title": "The new nudge controls are built and checked, but the one claim that matters -- turn a number and the picture changes -- can only be confirmed by you watching it."
+      "title": "Two things built tonight can only be confirmed by you looking: that nudging a number changes the picture, and that the raster and bands channels now select on a real build."
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
@@ -118,7 +104,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T08:04:57Z"
+  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; and that the raster and bands channels now select.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T09:11:55Z"
 }
