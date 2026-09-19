@@ -604,3 +604,38 @@ rather than by knowing about it.**
 **Measured vs reasoned, stated: the player is measured end to end through the real `Loop::iterate`; the frontend is measured AT THE MECHANISM** —
 real `drain::Order`, real `Bus`, real socket, real snapshot, in `fn main`'s written order — **but not at `fn main`**, which needs a real window.
 **NEXT: `DATA-DISPLAY-AUDIT`**, or `F-REDS-WITHOUT-A-CAUSE` if the nine reds are worth a night's attention before it.
+
+**`F-REDS-WITHOUT-A-CAUSE` ANSWERED 2026-09-19, merge `a57387d`** (agent tip `81c9e53`; docs only, nothing fixed — the row was an
+investigation). ⚑ **UNDETERMINED = 0 of 8, and NOT because they were clean: all eight were REAL DEFECTS, all already fixed, and the eight runs
+are FOUR EVENTS.** RULE 2 was never reached — none resisted a first look.
+* **A — floor clippy** (`549f020` + `c03ebea`): `nonminimal_bool` at `vdp.rs:986`, **deterministic, never a flake**, fixed by `0647d6f`, the very
+  next commit on main.
+* **B — `F-MACHINEREPLACED-EVENT-RACE`** (`c86e1c3` + `ea1dcb8`): fixed `c6ed909`, with a mechanism (registration lags the synchronous emit;
+  nothing is dropped, which is why `droppedEvents` was 0), verified against the tree rather than the commit message.
+* **C — M13 inode reuse, a TRIPLE** (`adcf239` + `85c1599` + `82e812a`) — **my clustering note stopped one short.** The agent built `82e812a` and
+  ran it rather than trusting the fix's claim: **red 3/3 on an ext4 `TMPDIR`, green 3/3 on tmpfs**, post-fix main green on ext4. **The local green
+  was the FILESYSTEM, not correctness.**
+* **D — panel masked digit** (`462e9cf`): the same test and the same counts as the already-explained `2e9821b`; fixed `1235148`.
+**INFRA = 0, established rather than assumed:** the Determinism and Replay jobs were green in all eight while only *Build, test, clippy, fmt*
+failed — **a runner or OOM event does not spare two sibling jobs eight times running.** **Hit rate on investigated reds: 6 for 6 by event, 10 for
+10 by run.** The parcel's own sentence, and it is the row's result: **what was missing was never the evidence — it was that a survey said the
+evidence was gone, so nobody looked.**
+⚑ **MY SURVEY WAS WRONG IN THREE WAYS AND THE THIRD IS THE ONE THAT MATTERS.** (a) It listed **seven** rows while saying eight. (b) `test result:`
+counts are **not** suite progress — a run's log concatenates all three jobs, so the 09-16 pair's "three legs" were other jobs and those runs died
+in **clippy**, never reaching Test. (c) **The three runs I reported as having NO LOGS have full logs** — I re-verified at this seat: **1683 / 1675
+/ 1692 lines, all panicking at `server.rs:1339`** — and the cause is that my `gh run list --limit 200` window had been pushed past them **by the
+night's own commits.** ⚑ **That is the THIRD false absence my own ad-hoc tooling produced tonight** (the CI waiter's window, the sweep's regex,
+this survey's window), **every one after I had banked the rule against it.** Banked in the reference with the corrective: **a query's silence is
+not evidence until the query has been shown to fire — run a positive control in the same invocation.** ⚑ **And the diagnosis that generalises: I
+applied "an absence is never a finding" scrupulously to every parcel's evidence and never once to my own instruments** — author-versus-carrier in
+a new costume, the discipline running on the thing being judged and never on the thing doing the judging.
+▶ **TWO METHOD ROWS BOOKED BY THE PARCEL, both against this seat:** `F-CI-SURVEY-UNVERIFIED` (a survey reported absent evidence that was present,
+twice) and **`F-RED-NOT-CROSS-CHECKED`** — `462e9cf` was enumerated as unchased **while its fix was already in `lane-log.jsonl`,
+`OVERSEER-LOG.md` and a dated doc, and the fix commit names the CI run outright.** One grep would have caught it; the bar is now *grep the lane's
+own records for a red's SHA before chasing it.*
+⚑ **AND A GREEN IN THIS LANE'S OWN RECORD THAT COULD NOT FAIL:** `lane-log.jsonl` at `2026-09-16T03:26:06Z` records *"clippy exit 0"* on the merged
+tree — **the same day CI failed on a clippy lint.** The invocation lacked **`-D warnings`**. **A verification line naming a tool is not a
+verification; the FLAGS are the claim.**
+▶ **ONE SIZED, UNSTARTED FOLLOW-UP, correctly not opened inside this parcel: `F-REDS-0909-COHORT`** — seven more failures just outside my ten-run
+window, all 2026-09-09, **all logs retrievable** (1318-2116 lines), five exit 101 and two exit 100. **Log-only cost, no builds.**
+**NEXT: `F-REDS-0909-COHORT`** (same method, known-cheap, and the hit rate now stands at 6/6 by event), then `DATA-DISPLAY-AUDIT`.
