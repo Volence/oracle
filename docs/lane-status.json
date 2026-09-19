@@ -1,12 +1,6 @@
 {
-  "focus": "One buildable item left in the audit row -- not two. The other turned out to be a question for you.",
-  "inFlight": [
-    {
-      "what": "The last buildable item in the debug-window audit: a panel path that can still put raw data on screen",
-      "where": "branch parcel/objects-catchall",
-      "agent": true
-    }
-  ],
+  "focus": "Everything buildable is done. What is left on this lane is your eyes.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,15 +13,23 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When this lands the audit row is entirely your eyes, and the buildable queue is empty.",
+  "nextBoundary": "Here now, and fully: fifteen landings, main green, nothing running, nothing unbanked.",
   "queue": [
     {
-      "id": "PANEL-CLIP-MARK",
+      "id": "DATA-DISPLAY-AUDIT",
       "state": "blocked",
+      "size": "L",
+      "blockedBy": "your eyes: look calls 1-36",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Every buildable item in the debug-window audit is done. What remains is 36 questions only you can answer, by looking at the window."
+    },
+    {
+      "id": "PANEL-CLIP-MARK",
+      "state": "next",
       "size": "S",
       "blockedBy": "your card d-54",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Cut panel text now says it was cut: 91 such lines fixed across 28 window sizes. The 67 left are whole tables or controls wider than their pane, which is card d-54."
+      "title": "What I would take the moment you answer d-54: 67 panel rows whose text is cut by a whole table or control wider than its pane."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -92,17 +94,9 @@
       "blockedBy": "your look at the write-up first",
       "project": "ORACLE-DEBUG-UI",
       "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
-    },
-    {
-      "id": "DATA-DISPLAY-AUDIT",
-      "state": "doing",
-      "size": "L",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "One buildable item left: a panel path that can still put raw data on screen. CORRECTED -- the slot item I had listed as buildable is a look call, so the rest of this row is 36 questions for you."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T14:35:43Z"
+  "awaiting": "nothing buildable remains. Cheapest first: d-54 (one answer releases 67 held rows); then the nudge controls moving the picture; then the raster and bands channels selecting.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T15:27:08Z"
 }
