@@ -2185,6 +2185,16 @@ fn opcode_sizes_read_check(vram: &[u8], at: usize) -> Option<OpcodeSizesCheck> {
     Some(OpcodeSizesCheck { crc, verdict: n })
 }
 
+/// Wording for the not-established note: an unreadable band and a readable one have to be told apart, or
+/// the note names a cause the run did not have.
+const fn readable(check: Option<OpcodeSizesCheck>) -> &'static str {
+    if check.is_some() {
+        "readable"
+    } else {
+        "NOT readable"
+    }
+}
+
 /// A **completed** `m68k_opcode_sizes` run. [`Self::establish`] is the only constructor and the only route
 /// to [`Self::verdict`], so a reading taken off an unfinished sweep, off the wrong tiles, or off a pixel
 /// map that is not the one the ROM checksummed, is not representable.
@@ -2218,18 +2228,30 @@ impl OpcodeSizesRun {
         let (sizemap, classmap) = loop {
             if frames >= OPSIZE_FRAME_CEILING {
                 eprintln!(
-                    "m68k_opcode_sizes: NOT ESTABLISHED — after {frames} frames the PC is \
-                     ${:06X} and the verdict band at VRAM ${OPSIZE_BAND_VRAM:04X} is \
-                     {}. The ROM paints the band and then parks in its pad wait \
-                     (${OPSIZE_PAD_WAIT_LO:03X}-${OPSIZE_PAD_WAIT_HI:03X}); neither happened, so the \
-                     sweep did not complete. This row measured nothing — it is NOT a pass and NOT a \
-                     fail.",
-                    sys.cpu_regs().pc,
-                    if opcode_sizes_read_check(sys.vdp().vram(), OPSIZE_BAND_VRAM).is_some() {
-                        "readable"
+                    "m68k_opcode_sizes: NOT ESTABLISHED after {frames} frames. The ROM paints its \
+                     verdict band and then parks in its pad wait, so BOTH of these have to hold and \
+                     the one that does not is the diagnosis:\n  \
+                     parked in the pad wait (${OPSIZE_PAD_WAIT_LO:03X}-${OPSIZE_PAD_WAIT_HI:03X}): \
+                     {} (pc=${:06X})\n  \
+                     both bands readable at VRAM ${OPSIZE_BAND_VRAM:04X}: {} / {}\n\
+                     A parked PC with unreadable bands means the band address or its shape is wrong \
+                     (re-derive from ROM $55E and $692); bands readable with an unparked PC means the \
+                     wait range is wrong; neither means the sweep did not finish. This row measured \
+                     NOTHING — it is not a pass and not a fail.",
+                    if (OPSIZE_PAD_WAIT_LO..=OPSIZE_PAD_WAIT_HI).contains(&sys.cpu_regs().pc) {
+                        "YES"
                     } else {
-                        "not readable"
+                        "no"
                     },
+                    sys.cpu_regs().pc,
+                    readable(opcode_sizes_read_check(
+                        sys.vdp().vram(),
+                        OPSIZE_BAND_VRAM
+                    )),
+                    readable(opcode_sizes_read_check(
+                        sys.vdp().vram(),
+                        OPSIZE_BAND_VRAM + 4 * 32
+                    )),
                 );
                 return None;
             }
