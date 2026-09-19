@@ -4877,10 +4877,21 @@ mod tests {
             offsets: Vec::new(),
         };
         let line = n.shape_line();
-        for want in ["542", "30", "16", "32"] {
+        // ⛑ **EXACT PHRASES, NOT LOOSE DIGITS**, and the first version of this row got it wrong. It
+        // read `for want in ["542", "30", "16", "32"]`, and **M20 (printing the ceiling where the stride
+        // belongs, so the line says "16 records of 16 bytes") PASSED it** — because every digit that
+        // matters also occurs as a LITERAL in the same sentence ("it is 32 on s4.debug and 10 on
+        // demo.debug"). The question to ask of an assertion over rendered text carrying numbers is what
+        // the SPACE of values is, not which value was seen: over that space a bare-digit substring test
+        // here cannot fail at all.
+        for want in [
+            "542 bytes",
+            "30-byte header and 16 records of 32 bytes",
+            "(542 - 30) / 16",
+        ] {
             assert!(
                 line.contains(want),
-                "the derivation must be checkable: {line}"
+                "the derivation must be checkable, and {want:?} is the phrase that carries it: {line}"
             );
         }
         assert!(
