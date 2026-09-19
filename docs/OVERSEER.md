@@ -478,3 +478,46 @@ argued from aeon's source, which calls its own refusal arm *"DEFENSIVE AND UNEXE
 `BgAnim_Table` is ROM and **no RAM copy exists in any build shape** — so closing it is this hook's own two-part shape one struct over
 (`BgAnim_Scratch_Table` + `BgAnim_InstallScratch`). A much smaller ask would retire the derivation above: **publish a `band_record_len` equate.**
 **NEXT: `DATA-DISPLAY-AUDIT`** (items for his eyes plus `objects.rs`'s latent raw-JSON catch-all).
+
+**`F-LAB-INDEX-ADDR-TRANSCRIBED` FIXED 2026-09-19, merge `fe518e7`** (agent tip `7dba687`; player only). `LAB_INDEX_ADDR` is **gone from the
+shipped path**; `Debug_Lab_Index` is resolved per gesture and the name route is unchanged. ⚑ **The false positive was CONCRETE and I verified it
+at this seat: `s4.debug.lst` puts `Player_Pos_Ring` at `$FFFFEE00`, so the stale `$FFFFEE0D` sat 13 bytes INSIDE it — the old guard refused a real
+player-position cell in the cursor's name.** ⚑ **Three of four listings on this box do not carry the symbol at all**, so the unresolved path is the
+common one: it refuses nothing, the name route still fires, and each refusal carries a clause saying only the name route ran — **put on the refusal
+rather than as a standing banner, because at 3-of-4 a banner would be drawn on nearly every gesture**, which this tree forbids in terms.
+⚑ **THE GATE IS WRITTEN AGAINST THE MECHANISM, NOT THE INSTANCE — tonight's own bar, applied by the agent unprompted:** it puts the cursor at a
+fictional `$FFFFBEEF` and asserts that **both** literals a transcriber would reach for — the note's `$FFFFEE0D` and the listing's current
+`$FFFFF00D` — now **pass**. A gate keyed on either would have been testing a coincidence. The stale number survives only as
+`tests::NOTED_STALE_LAB_INDEX`, **a witness whose documented job is to be the value the guard must not be keyed on.**
+▶ **Verified firsthand, DEBUG profile:** fmt 0, clippy 0, **91/91 legs both counts, 3049 passed / 0 failed / 10 ignored**; CI on the preceding
+nudge landing `0a591d7` read green to completion, all three jobs. Blind spots the agent stated rather than left: a **rename** would silence the
+address route permanently with every fixture still green (closing it needs a gate reading aeon's tip, which `aeon_dimensions.rs` forbids in terms);
+and `Cursor.raw` being `pub` lets a future caller transcribe at the call site.
+
+⚑ **ATTRIBUTION, CORRECTED AGAINST MY OWN LANE LOG (hub's catch, and its own relay was the source of the error).** My log entry says *"another
+project's tidy-up found a real bug in ours"*. **False.** The chain: **we** transcribed the address from aeon's note → our nudge parcel **measured**
+the disagreement → **we reported it** → aeon swept its own documentation and found **seven**, not the one we named → aeon flagged this one moved
+**+$200, not +$20**, and said to check our end → **we checked and found the live guard.** Aeon's contribution is the middle link and it is real; it
+is not the discovery. **Corrected in `docs/lane-log.jsonl` by APPENDING, never by editing — that file is his changelog and append-only from his
+side, so the wrong sentence stays with the right one after it.**
+
+## ⚑ LANE DESIGN RULING, 2026-09-19: `Channel::drift` GATES ON THE WRONG FACT, AND TWO CHANNELS ARE DEAD BECAUSE OF IT
+
+**Found by the lab-index agent, correctly refused as a design call, verified at this seat against `s4.debug.lst`:** `Parallax_Current_Config`
+`$FFFF88EC` = `$FFFF88EC` ✓; **`Raster_Program` notes `$FFFF8BD6`, the listing says `$FFFF8BF6`**; **`BgAnim_Table_Ptr` notes `$FFFFE91A`, the
+listing says `$FFFFE93A`**. `drift` **refuses** on disagreement, so **the raster and bands channels refuse EVERY gesture on a current build** —
+and **every test is green over it, because `Fake::full` carried the note's numbers too**, under a doc claiming they were "the addresses both
+listings measured on this box actually carry". **Third instance tonight of a fixture asserting the stale fact and passing honestly, this one inside
+the file already being fixed for its sibling defect.**
+▶ **RULING (mine, under the owner's standing delegation; recorded with the reasoning): resolve the address for every ACCESS, keep the note's value
+as a WITNESS that states the disagreement, and move the refusal onto a LAYOUT fact — the derived span and the published equates — never an
+address.** ⚑ **The reasoning, and it is measurable rather than aesthetic: `drift` asks "is the note's LAYOUT still trustworthy?" and answers with an
+address-equality test, which is a PROXY and a bad one — an address is precisely the thing that slides harmlessly when unrelated RAM above it grows,
+while the layout it certifies does not move at all.** aeon's own sweep is the evidence: six symbols slid `+$20` and **the widths did not move**, a
+542 B span still re-deriving from `End − start`. So the proxy fails in the direction that **refuses healthy builds**. This also makes all three
+channels consistent with the scratch-address decision taken in the same file hours earlier.
+⚑ **THE GENERAL BAR, banked suite-wide from this: GATE ON WHAT YOUR REFUSAL ACTUALLY PROTECTS.** A red saying *something moved near this* will be
+judged noisy and silenced, correctly. A red saying *the layout you are about to write through is not the layout you measured* is worth stopping for.
+**The test is not importance or truth — it is whether the red NAMES the thing the refusal defends.** `drift` was the first kind while believing
+itself the second, **and the belief is what made it expensive rather than merely useless.**
+**NEXT: `F-DRIFT-GATES-ON-AN-ADDRESS`** — build the ruling above. Then `DATA-DISPLAY-AUDIT`.
