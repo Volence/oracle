@@ -505,6 +505,16 @@ out of (`--limit 60` here, or a per-commit query), and make the empty case SAY w
 that found this prints *"empty = the SHA is outside the window, not a verdict"*. Same family as bar 8(d)
 (loud on unmeasurable) and as the never-settles pins above: **an absence dressed as an outcome, this time in
 my own instrument.**
+⚑ **SECOND FORM, MEASURED THE SAME NIGHT, AND IT IS NOT A WINDOW PROBLEM AT ALL: THE RUN MAY NEVER HAVE
+EXISTED.** Pushing a merge and its docs commit together creates a run for the **pushed TIP**, not for each
+commit — so watching the merge SHA waits forever on a run GitHub never made. Measured: `0742cec` (the
+vcounter merge) has **no run**; `f729d7b` (pushed with it) has the one that tests that tree. **The fix is not
+a wider window, and the two failures are indistinguishable from the caller's side — both print nothing.**
+▶ **So: watch the SHA YOU PUSHED (the tip), and prove it carries the landing's code** rather than assuming
+the merge was tested — `git diff --stat <merge> <tip> -- crates/` must be EMPTY, which is the check that makes
+the substitution legitimate instead of convenient. Verified here: 0 lines, so that run tests the landing's
+code byte-for-byte. **Two distinct causes, one empty result: the discriminator is whether the run EXISTS, and
+nothing about the poll asks that.**
 
 ⚑ **If your own landing breaks something, test the explanation that makes it YOUR FAULT first.** See the
 ops entry below; the structural story arrives first and costs the most.
