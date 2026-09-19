@@ -28,6 +28,18 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ AN EXPECTATION DERIVED FROM THE THING UNDER TEST CANNOT FAIL WHEN THE THING UNDER TEST CHANGES**
+*(2026-09-19, from `TESTROM-VCOUNTER-MENU`; the hub banked it suite-wide at empyrean `b37f85a3` as the
+never-settles rule aimed at an EXPECTATION instead of a PIN)*. The `vcounter` row compares against
+`vc_r2_ntsc_v28`, which **restates recon R2's published progression** rather than calling `Vdp::v_counter`.
+Had it called the model, a vertical-timing change would have moved the expectation and the row together and
+the comparison would have stayed green through the very change it exists to announce. **This is the
+difference between *derived* and *derived from the right thing*: the existing bar says never COPY an
+expectation from a nearby pin, and this one says never derive it from the IMPLEMENTATION either.** Derive it
+from the reference, the ROM, the datasheet or the recon doc — a source that does not move when our code does.
+▶ **Review question, at every parcel: if the code under test changed tomorrow, would this expectation change
+with it?** If yes, it is a mirror, not a test.
+
 **⚑ VARY THE BUDGET, NOT THE SEED: A PIN FROM A TIMED RUN RESTS ON ONE OF TWO PROPERTIES AND NOBODY EVER
 ASKS WHICH** *(2026-09-19, measured at this seat while re-deriving `TESTROM-UNSCRAPED-PAIR`; adopted as suite
 protocol by the hub at empyrean `c847ec8d` as "the never-settles baseline rule")*. Re-running the same input
