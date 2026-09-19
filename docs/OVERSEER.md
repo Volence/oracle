@@ -368,12 +368,13 @@ from the prose alone:
   all** — the ROM says press `Start`, only `C` toggles it for us, so nine tests are unmeasured and a mode we have
   never scraped is not a mode we can claim. (3) **Q2: `vcounter` and `m68k_opcode_sizes` are unscraped by choice**,
   ⚑ *[CORRECTED 2026-09-19: "by choice" was true of neither. `vcounter` is now a verdict row — its stated reason (a
-  proportional font needing a glyph table) was FALSE, see the landing below. `m68k_opcode_sizes`'s own reason is
+  proportional font needing a glyph table) was FALSE, see the `TESTROM-VCOUNTER-MENU` landing, moved 2026-09-19 to
+  docs/OVERSEER-LOG.md under "Moved from OVERSEER.md 2026-09-19". `m68k_opcode_sizes`'s own reason is
   measured as half false too: a longer budget does not reach a result page. Left standing and corrected here.]*
   carrying a picture-pin and no verdict. **Until those are read, "all the tests pass" is not a sentence this lane
   can honestly say**, which is the whole reason they are on the board rather than in a footnote.
 
-The `POSTHOC-CARRY` dispatch record that stood here (orig lines 448-456) moved 2026-09-19 whole to docs/OVERSEER-LOG.md (under "Moved from OVERSEER.md 2026-09-19"); read it only for that dispatch's own history — its live lesson (*an artefact and a real failure are identical in the output, so only an instrument that fires on purpose can reach this class*) is already a bar in docs/OVERSEER-REFERENCE.md, and the control arm it named is corrected there under the same date. ⚠ **Pointer, not a container: new material goes to the target file, never back underneath here.**
+The `POSTHOC-CARRY` dispatch record that stood here (orig lines 448-456) moved 2026-09-19 whole to docs/OVERSEER-LOG.md (under "Moved from OVERSEER.md 2026-09-19"); read it only for that dispatch's own history — its live lesson (*an artefact and a real failure are identical in the output, so only an instrument that fires on purpose can reach this class*) is already a bar in docs/OVERSEER-REFERENCE.md, and the control arm it named is corrected there under the same date. ⚠ **AND READ IT BEFORE ACTING ON THE THREE BULLETS ABOVE, WHICH ARE THE BOARD STATE OF 2026-09-18 AND ARE NOW FALSE IN ALL THREE: `vdp_sprite_masking` reads `6=PASS` (`F-POSTHOC-STALE-CARRY` closed, merge `9b97cd7`), Q1's nine H40 verdicts are read and all nine PASS (merge `821ad41`), and Q2 is CLOSED — every scrapeable ROM in the corpus now reports a verdict and every one passes.** Those three corrections are landings, so they are in docs/OVERSEER-LOG.md under "Moved from OVERSEER.md 2026-09-19"; the bullets above are left standing and corrected here rather than edited, per this repo's correct-by-appending habit. ⚠ **Pointer, not a container: new material goes to the target file, never back underneath here.**
 
 ## ⚑ HUB RULING, 2026-09-18: `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` — **wholly clipped run = present with an EMPTY `rendered`**
 

@@ -3690,7 +3690,7 @@ the sweeps). ⚑ Per **`L-16`**, §4's line numbers and P10 charges are dead let
 (verified an ancestor of their `origin/main`) — a decision-free next item is taken, not parked. Verified here on the merged tree:
 debug 90 legs 2980/0/8 (+14 = the diff's fourteen `#[test]`s), debug clippy 0, red-first reproduced with the mutation on disk.
 
-## Moved from OVERSEER.md 2026-09-19 — closed landings, dispatch records, CI-read notes and superseded `NEXT:` clauses, verbatim (the second recut, 85,360 -> 37,409 B)
+## Moved from OVERSEER.md 2026-09-19 — closed landings, dispatch records, CI-read notes and superseded `NEXT:` clauses, verbatim (the second recut, 85,360 -> 37,528 B (measured at this commit's tip, not predicted))
 
 *Nobody boots from this file.* The live rules these narratives contained are in `docs/OVERSEER-REFERENCE.md` under the
 section of the same date; where a rule's sentence could not be lifted at a line boundary it is **quoted verbatim there**,
