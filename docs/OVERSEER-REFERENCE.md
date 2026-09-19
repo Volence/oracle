@@ -28,6 +28,20 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ A CHANNEL THAT CANNOT VARY IS NOT EVIDENCE ABOUT THE QUESTION YOU ARE ASKING** *(2026-09-19, from the
+`m68k_opcode_sizes` diagnosis; the hub banked it as its own section at empyrean `d1d98d4b`)*. We read
+`m68k_opcode_sizes`'s plane text at three budgets, saw it identical, and treated that as evidence about the
+ROM. **It is an identity nametable written once at boot (`cell = row*40+col`) — constant BY CONSTRUCTION, so
+it could never have carried a verdict at any budget.** The printable-ASCII absence was never about the ROM
+at all. ⚑ **The hub's framing, which is the usable one: this is the POSITIVE CONTROL aimed at a DATA SOURCE
+rather than at a pipeline.** A pipeline control proves the pipeline can report a hit; **a source control
+proves the source can change at all.** Before concluding *there is nothing there*, prove the channel you are
+reading is capable of showing something.
+▶ **And the shape that unifies it with the sampling defect beside it: A NEGATIVE RESULT FROM AN INSTRUMENT
+AIMED AT A MOMENT WHEN THE ANSWER COULD NOT EXIST.** Cleanest instance: a pad probe fired at frame 60
+against a pad state the ROM does not seed until ~frame 680. ***"No button moves it"* and *"no button moved
+it yet"* are different findings, and the instrument could not tell them apart.**
+
 **⚑ AN EXPECTATION DERIVED FROM THE THING UNDER TEST CANNOT FAIL WHEN THE THING UNDER TEST CHANGES**
 *(2026-09-19, from `TESTROM-VCOUNTER-MENU`; the hub banked it suite-wide at empyrean `b37f85a3` as the
 never-settles rule aimed at an EXPECTATION instead of a PIN)*. The `vcounter` row compares against
