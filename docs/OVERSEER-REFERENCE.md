@@ -28,6 +28,34 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ A LANDING GREEN MUST NAME THE GATES IT RAN, AND OURS HAS RECORDED TWO THAT COULD NOT FAIL**
+*(2026-09-19, both found by the reds cohorts; booked `F-LANDING-GATE-NOT-RUN`)*. `docs/lane-log.jsonl` at
+**`2026-09-16T03:26:06Z`** records *"clippy exit 0"* on the day CI failed on a clippy `nonminimal_bool`, and
+**`lane-log.jsonl:184`** records a genuine full-suite green (`CARGO_EXIT=0, 2737 passed`) from a command
+that **cannot fail a clippy gate at all.** Neither line was false about what it ran; both were useless about
+what CI runs. ⚑ **And tonight's own red is the third instance of the same shape**: `land.sh` runs `--release`
+while CI runs **debug**, so three of five landings reported totals that could not have caught the defect
+that reddened `main`. ▶ **Bar: the lander's check set is the CI job's STEP LIST, not a subset of it, and a
+verification line quotes the INVOCATION rather than naming the tool — the flags are the claim.**
+⚑ Sharpest single instance: **`a003801` introduced that lint and never had a CI run of its own**, so `main`
+was red for 34 minutes with nothing able to say so.
+
+**⚑ A HEURISTIC BORROWED FROM A PRIOR INVESTIGATION MUST BE RE-SCOPED, NOT REUSED** *(same night; booked
+`F-INFRA-HEURISTIC-UNSCOPED`)*. The first cohort ruled INFRA = 0 partly because the two sibling CI jobs were
+green while only one failed — sound there. The second cohort **checked instead of inheriting it** and found
+it **does not transfer**: `ci.yml:63` puts the `apt-get` step in `Build, test, clippy, fmt` **and nowhere
+else**, so the siblings were never exposed to the failing step and their greenness says nothing. ▶ **Before
+invoking a sibling-green argument, check the failing step's JOB DISTRIBUTION.** A heuristic is a claim about
+a topology, and the topology is what changes between investigations.
+
+**⚑ "THAT CANNOT BE TESTED HERE" IS A CLAIM, AND THIS LANE HAS ASSERTED IT TWICE AND HAD IT DISPROVED**
+*(booked `F-FLOOR-LINT-ASSUMED-UNTESTABLE`)*. A floor-toolchain lint was written off as unreproducible on
+this box; the second cohort reproduced it **in twenty seconds on a two-file scratch crate**. ⚑ **And the tree
+had already corrected this once: `2999687` (2026-09-09) is titled *"correct my own diagnosis: there was no
+toolchain skew, I skipped clippy."*** **A cheap falsification refused twice, ten days apart, with the
+correction already committed in between** — which is the booking-reads-as-a-reason bar aimed at an
+impossibility claim instead of a deferral.
+
 **⚑ MY OWN AD-HOC QUERIES PRODUCED A FALSE ABSENCE THREE TIMES IN ONE NIGHT, ALL AFTER I BANKED THE RULE
 AGAINST IT** *(2026-09-19; the third was caught by an agent auditing my survey, the first two by me)*.
 (1) A CI waiter on `--limit 8` whose SHA fell out of the window — an empty filter reads exactly like
