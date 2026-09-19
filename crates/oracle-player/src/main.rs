@@ -844,11 +844,13 @@ impl Loop {
         // it, so the player would run one extra frame past a breakpoint it had already stopped on. The
         // *adoption* is what moved to the top; the drain stays here, behind the frame that latches into it.
         //
-        // ⚑ **The deferred first drain is later in the iteration and not in the next one**, so it is
-        // still ahead of the next adoption and the halt path is unchanged. There is also nothing for it to
-        // have missed: a breakpoint or watchpoint can only be armed over the bus, the bus is only read by a
-        // pump, and iteration 1's frame runs before any pump has ever happened — so iteration 1's frame
-        // cannot latch a halt at all (checked, not assumed).
+        // ⚑ **The deferred first drain is later in the SAME iteration, not in the next one**, and that is
+        // what keeps the halt path exactly as described above: it is still ahead of the next iteration's
+        // adoption, which is the whole of the requirement. Checked rather than assumed, because a halt
+        // really can be latched by iteration 1's frame — `--bench-arm` issues sixteen
+        // `emulator/breakpoint_add` calls through `Bus::call` before the loop starts (they are
+        // `enabled: false`, so as shipped none of them can fire, and only a breakpoint latches:
+        // `bus::break_observed` reads the breakpoint sink alone).
         //
         // There is deliberately **no second `self.paused = ...` after this**. An earlier draft had one,
         // and both it and the one at the top were then individually removable with every test still
