@@ -3763,3 +3763,15 @@ NOT vendor `protocol.md`; this lane is the only vendor.**
 Vectors: 11 cases, 5 accepted / 6 refused, each refusal citing its own rule; R1's five retired. ⚑ **The lockstep was MEASURED, not assumed**:
 with the pre-CR-W schema bytes restored the pin test AND the vectors row go red, so the re-vendor is what admits the kind. **Owed: aurora's
 review (not a gate) and his Q2 look** (`docs/2026-09-17-cr-w-landing.md`) — the first is Registers' `aether` line cut at the pane edge with no `…`.
+
+### `POSTHOC-CARRY` DISPATCHED 2026-09-18: the dispatch record (orig lines 448-456)
+
+**POSTHOC-CARRY DISPATCHED 2026-09-18** (branch `parcel/posthoc-carry`, worktree `../oracle-posthoc`, base `5b3d551`).
+Briefed to **refute the premise if it is false** (it has stood unverified since 2026-08-15) and to settle the two
+blockers the follow-up names — the four glyph constants were themselves pinned from post-hoc pixels, i.e. the defect
+reproducing one layer down, and a live-path scrape needs a frame-aligned capture where `block_hash` needed none.
+Hard constraint: **do not change emulator behaviour to move a glyph.** Its centre of gravity is the control arm this
+house wrote down and never ran — **render a frame both ways and require them to agree** — because an artefact and a
+real failure are **identical in the output**, both a `FAIL` glyph, so *name your sources* cannot reach this class:
+only an instrument that fires on purpose can. **Successor, named in the same write: `TESTROM-H40-HALF`** (Q1;
+re-derive before dispatch — it may be an input/TH-protocol defect on our side rather than a harness gap).

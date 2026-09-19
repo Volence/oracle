@@ -373,15 +373,7 @@ from the prose alone:
   carrying a picture-pin and no verdict. **Until those are read, "all the tests pass" is not a sentence this lane
   can honestly say**, which is the whole reason they are on the board rather than in a footnote.
 
-**POSTHOC-CARRY DISPATCHED 2026-09-18** (branch `parcel/posthoc-carry`, worktree `../oracle-posthoc`, base `5b3d551`).
-Briefed to **refute the premise if it is false** (it has stood unverified since 2026-08-15) and to settle the two
-blockers the follow-up names — the four glyph constants were themselves pinned from post-hoc pixels, i.e. the defect
-reproducing one layer down, and a live-path scrape needs a frame-aligned capture where `block_hash` needed none.
-Hard constraint: **do not change emulator behaviour to move a glyph.** Its centre of gravity is the control arm this
-house wrote down and never ran — **render a frame both ways and require them to agree** — because an artefact and a
-real failure are **identical in the output**, both a `FAIL` glyph, so *name your sources* cannot reach this class:
-only an instrument that fires on purpose can. **Successor, named in the same write: `TESTROM-H40-HALF`** (Q1;
-re-derive before dispatch — it may be an input/TH-protocol defect on our side rather than a harness gap).
+The `POSTHOC-CARRY` dispatch record that stood here (orig lines 448-456) moved 2026-09-19 whole to docs/OVERSEER-LOG.md (under "Moved from OVERSEER.md 2026-09-19"); read it only for that dispatch's own history — its live lesson (*an artefact and a real failure are identical in the output, so only an instrument that fires on purpose can reach this class*) is already a bar in docs/OVERSEER-REFERENCE.md, and the control arm it named is corrected there under the same date. ⚠ **Pointer, not a container: new material goes to the target file, never back underneath here.**
 
 ## ⚑ HUB RULING, 2026-09-18: `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` — **wholly clipped run = present with an EMPTY `rendered`**
 
