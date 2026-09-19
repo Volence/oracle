@@ -733,3 +733,4 @@ mutation and a clean baseline are the same artifact**, in the parcel whose subje
 `OVERSEER-REFERENCE.md`, which mentions the marker while documenting the trigger.** Anchored to column 0; the comment records it.
 **NEXT: `DATA-DISPLAY-AUDIT`** — two buildable items (the hidden raw-JSON fallback in `objects.rs`, the slot-refresh follow-up) and look calls
 1-33 that are HIS. **With this landed, the buildable queue is nearly exhausted: what remains is mostly his eyes.**
+**CI READ GREEN for `2c8befd`** (the landing-gate parity change), all three jobs, read to completion — **the first CI green produced by a landing whose local gate ran CI's own debug arm.**
