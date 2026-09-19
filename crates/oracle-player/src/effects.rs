@@ -553,7 +553,7 @@ impl Cursor {
             ),
             None => format!(
                 "⚠ ONLY THE NAME ROUTE RAN. `{LAB_INDEX_SYMBOL}` is not a name in the loaded listing, so \
-                 the address route had no address to key on and was not run — a cell resolving onto the \
+                 the address route had no address to key on and was not run, so a cell resolving onto the \
                  cursor under some other name would NOT have been caught. That is the ordinary shape of a \
                  release listing and of a game with no lab, and it is equally what an out-of-date listing \
                  looks like; this panel cannot tell those apart and does not guess"
