@@ -18,9 +18,17 @@
 //!
 //! # A dimension can move without ever becoming absent — so presence is only half a probe
 //!
-//! The live-effects panel (`oracle-player/src/effects.rs`) resolves twelve names and **refuses to write
-//! when the listing's address disagrees with the one its note recorded** (`Channel::drift`). Against the
-//! frozen listings that refusal fires on every channel, and for two different reasons at once:
+//! The live-effects panel (`oracle-player/src/effects.rs`) resolves twelve names. ⚑ **CORRECTED
+//! 2026-09-19 (merge `e5c5564`): it no longer refuses on an address disagreement. `Channel::drift` is
+//! RETIRED** — an address slides harmlessly when unrelated RAM above it grows, while the layout it
+//! certifies does not move, so that refusal blocked healthy builds (two of three channels were dead on a
+//! current listing) while naming an address that had become a different cell. The note's value is now a
+//! **witness that states the disagreement**, and the refusal is on a LAYOUT fact re-derived from the
+//! loaded listing. **The sentence below described the shipped behaviour when written and is left standing
+//! and corrected here**, because the reasoning it encodes is exactly what this fixture's address set was
+//! built to exercise. It read: refuses to write when the listing's address disagrees with the one its note
+//! recorded (`Channel::drift`); against the frozen listings that refusal fires on every channel, and for
+//! two different reasons at once:
 //!
 //! * **nine are present at a different address.** Frozen minus note: the parallax block is a uniform
 //!   `-4`, the raster block `-0x10E`, `BgAnim_LastStep` `-0x128`. A probe that could only answer
@@ -232,8 +240,9 @@ fn measure(t: &SymbolTable, probe: &str, arg: &str) -> Option<usize> {
         "symbol_present" => Some(usize::from(t.by_name(arg).is_some())),
         // Presence AND location in one row. `raw_addr`, not `addr`: the 32-bit spelling the listing
         // itself writes and the one every consumer that carries a transcribed address compares against
-        // (`oracle-player/src/effects.rs`'s `Channel::drift` is explicit that the 24-bit door form would
-        // make every channel read as drifted). `None` here means the name is absent, which is exactly
+        // (`oracle-player/src/effects.rs`'s retired `Channel::drift` was explicit that the 24-bit door
+        // form would make every channel read as drifted; the point survives its retirement, because the
+        // witness that replaced it compares the same two spellings). `None` here means the name is absent, which is exactly
         // what `symbol_present` would have called `0`, so this probe strictly subsumes that one.
         "symbol_addr" => t.by_name(arg).map(|s| s.raw_addr as usize),
         "equate_prefix_count" => Some(t.equates_with_prefix(arg).len()),
