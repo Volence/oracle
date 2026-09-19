@@ -1496,8 +1496,8 @@ impl Panels<'_> {
                 .on_hover_text(
                     "copies the config the engine is running into RAM and points the engine at the copy, \
                      so its numbers become editable. Pauses the machine, writes one request byte, runs \
-                     one frame — the engine polls the request at the head of its own update, so the swap \
-                     lands on that frame — then puts the run state back.",
+                     one frame (the engine polls the request at the head of its own update, so the swap \
+                     lands on that frame), then puts the run state back.",
                 )
                 .clicked()
             {
@@ -1679,7 +1679,7 @@ impl Panels<'_> {
         ui.collapsing("numbers this panel will not turn, and why", |ui| {
             for n in crate::effects::NOT_OFFERED {
                 ui.label(
-                    egui::RichText::new(format!("{} — {}: {}", n.field, n.class, n.why))
+                    egui::RichText::new(format!("{} ({}): {}", n.field, n.class, n.why))
                         .text_style(egui::TextStyle::Small)
                         .color(weak),
                 );

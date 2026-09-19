@@ -1146,7 +1146,7 @@ pub const FIELDS: &[Field] = &[
         at: Where::Header,
         width: 1,
         range: (0, 255),
-        what: "packed, and the WHOLE BYTE 0 means no bob — the sentinel is the byte, not a nibble. \
+        what: "packed, and the WHOLE BYTE 0 means no bob: the sentinel is the byte, not a nibble. \
                Otherwise bits 7-4 are the amplitude shift (legal 1..8) and bits 3-0 the period shift \
                (legal 0..8), so a nonzero byte outside those nibble ranges is a sway the engine will \
                still draw and nobody authored",
@@ -1158,7 +1158,7 @@ pub const FIELDS: &[Field] = &[
         at: Where::Band,
         width: 1,
         range: (0, 15),
-        what: "Plane A scroll shift 1 — NOTE 6.4's main knob. 0..14 is a shift; 15 means whole-factor \
+        what: "Plane A scroll shift 1, NOTE 6.4's main knob. 0..14 is a shift; 15 means whole-factor \
                zero, the band locked to the camera",
     },
     Field {
@@ -1259,14 +1259,14 @@ pub const NOT_OFFERED: &[NotOffered] = &[
     NotOffered {
         field: "bc_step / bc_rem / bc_span / bc_pad",
         class: "inert",
-        why: "the first three are derived every frame — the curve hoist recomputes all of them into the \
+        why: "the first three are derived every frame. The curve hoist recomputes all of them into the \
               engine's shadow copy each pass, so the ROM image is always 0 and a write is overwritten \
               before it is read. bc_pad is alignment and is read by nothing at all",
     },
     NotOffered {
         field: "pcfg_transition",
         class: "inert here",
-        why: "read at install time and nowhere else, and the install forces it to 1 deliberately — a \
+        why: "read at install time and nowhere else, and the install forces it to 1 deliberately, since a \
               scene authoring 0 would be STAGED as a lerp target instead of installed. Writing it changes \
               nothing until the next arm and breaks that one if set to 0",
     },
@@ -1421,7 +1421,7 @@ fn no_scratch() -> Refusal {
              nowhere for a nudge to land and nothing was written. This is not a fault: the scratch is \
              declared inside `if DEBUG == 1 @shape_divergent` ({HOOK}, `engine/ram.emp:1811`), so a \
              RELEASE build emits ZERO bytes for it and a release listing carries neither name. Selecting \
-             a scene still works here — `Parallax_Current_Config` is in both shapes — and only editing \
+             a scene still works here (`Parallax_Current_Config` is in both shapes), and only editing \
              one's numbers needs the scratch. ⚠ `{SCRATCH_PROC}` DOES appear in a release listing with an \
              address, because its body is DEBUG-gated and an empty label collapses onto its neighbour's; \
              this panel deliberately does not resolve it, since a gate keyed on that name would offer \
@@ -1491,7 +1491,7 @@ impl Installed {
         if self.arm != 0 {
             return format!(
                 "the arm was NEVER SERVICED: `{SCRATCH_ARM}` still reads {:#04X} after a frame, and the \
-                 engine clears it as it services it. `Parallax_Update` did not reach its head poll — it \
+                 engine clears it as it services it. `Parallax_Update` did not reach its head poll: it \
                  is not running this frame at all (no act loaded, or a game with no caller for it: \
                  {HOOK} names games/demo as exactly that case). `{}` still holds {:#010X}. This is not a \
                  refusal and nothing is dirty.",
@@ -1502,7 +1502,7 @@ impl Installed {
             "the engine SERVICED the arm and REFUSED the install: `{SCRATCH_ARM}` was cleared and `{}` \
              still holds {:#010X} rather than `{SCRATCH}` ({:#010X}). `{SCRATCH_PROC}`'s own Out: says \
              that means either no config was active (parallax off) or the active config's \
-             `pcfg_band_count` exceeds `{MAX_BANDS_EQU}` — and that NOTHING was written, because a \
+             `pcfg_band_count` exceeds `{MAX_BANDS_EQU}`, and that NOTHING was written, because a \
              refusal never clamps.",
             PARALLAX.selector, self.current, self.scratch
         )
@@ -1641,8 +1641,8 @@ pub fn nudge(
             ),
             Some(format!(
                 "arm the scratch first. If it was armed and has stopped being the current config, the \
-                 camera crossed a section boundary — `Parallax_CheckBoundary` installs the new section's \
-                 own ROM preset, exactly as it always did — so arm it again ({HOOK})"
+                 camera crossed a section boundary. `Parallax_CheckBoundary` installs the new section's \
+                 own ROM preset, exactly as it always did, so arm it again ({HOOK})"
             )),
         ));
     }
@@ -2350,7 +2350,7 @@ impl Nudging {
     pub fn shape_line(&self) -> String {
         let mut s = format!(
             "the scratch is {} bytes at {:#010X}: a {}-byte header and {} records of {} bytes. The stride \
-             is DERIVED from those ({} - {}) / {}, not transcribed — it is 32 on s4.debug and 10 on \
+             is DERIVED from those ({} - {}) / {}, not transcribed: it is 32 on s4.debug and 10 on \
              demo.debug.",
             self.hook.span,
             self.hook.scratch_raw,
