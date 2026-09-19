@@ -28,6 +28,27 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⛑ A SECTION REDUCED TO A POINTER IS CLOSED, AND A POINTER THAT ACQUIRES A BODY HAS ALREADY FAILED** *(banked in this
+lane's own words 2026-09-19, at the recut that gave this repo's boot file three new pointers; the rule itself is the
+suite's, in `OVERSEER-PROTOCOL.md`, and it needed a LOCAL reader at the moment it will next be violated — the next time
+somebody appends to `docs/OVERSEER.md`)*. **New material for a pointed-at section goes to the TARGET, never back under the
+pointer.**
+⚑ **The mechanism, and it is what makes this undetectable: a pointer is a sentence whose truth can be destroyed by an
+append it never sees.** It was true when written; nothing re-checks it; and the reader then meets *"this has been moved"*
+immediately above live material, which is worse than either the text or the pointer alone, because the pointer tells them
+not to look.
+⚑ **The measured instance, in the suite's own protocol: 10,676 B of live bars sat underneath a sentence saying that
+section had been moved, FOR FOUR DAYS, and nothing could detect it.** No gate can — both halves are well-formed markdown
+and the file's size, heading count and link targets are all exactly what they should be. **The only instrument is a reader
+who distrusts the pointer**, which is the same shape as *a booking reads as a reason, so nobody re-checks it*.
+▶ **The corollary the hub adopted the same night, and it makes citation-safety and this rule ONE rule: when consolidating
+a file whose headings peers have cited, leave EVERY cited heading in place with a pointer under it.** The citation still
+resolves, and the reader is told where the body went — so the pointer earns its place precisely by being the thing that
+must never grow.
+⚠ **And when you report on pointers, report a COUNT as a COUNT.** The hub's audit of its own file found 25 pointer
+paragraphs, inspected the tail directly, and reported the rest as *"counted, not audited"* rather than clean. By this
+lane's own standard an unverified population is **not measured**, never **sound**.
+
 **⚑ TESTED AGAINST THE INSTANCE, NOT THE MECHANISM — and this is WORSE than a control arm written down and
 never run** *(2026-09-19, my own accepted test, red on CI hours after I landed it; the hub banked it above the
 unrun-control rule at empyrean `24c23e78` for exactly this reason)*. A panel comparison masked **each ASCII
@@ -2532,3 +2553,148 @@ is offered as the thing to rule on, never as a reading of what was already ruled
 **Aurora's own exposure: NIL, and recorded as a DATED ABSENCE, not a standing fact** — measured 2026-09-18 at aurora
 master `ff54201b`, no `emulator/screen_text` call in `src/` and no method schema vendored; re-derive with
 `grep -rn "screen_text" src/ test/`. **It changes without anything touching that sentence.**
+
+## Moved from OVERSEER.md 2026-09-19 (the second recut; the before/after size is DELIBERATELY NOT QUOTED HERE — measure it, `git show 0f8aa76:docs/OVERSEER.md | wc -c` against `wc -c docs/OVERSEER.md`) — live rules from the 09-17/09-18/09-19 narratives, each read at the moment its pointer names
+
+*Only the rules that were NOT already bars in this file moved here; the night's other lessons were banked as bars at the
+top of this file as they were found, and their narratives went to `docs/OVERSEER-LOG.md` instead. Each block below is
+verbatim from `OVERSEER.md`, with its original line range.*
+
+### `F-SLOT-REPROBE-ON-GESTURE`: read the empty diff before you read the result (orig lines 368-370)
+
+**`F-SLOT-REPROBE-ON-GESTURE` LANDED 2026-09-17, merge `ef2b06d`** (`L-17` built; land.sh GREEN, release 91/91 2993/0/5; debug 91/2990/0/8 here;
+M18 reproduced). ⚑ Ops, against this seat: my first reproduction's `sed` hit the wrong line, `git diff --stat` was EMPTY, and the run was
+green — discarded, redone on the right line, red. The empty diff is what showed it; read it before reading the result.
+
+### `PANEL-CLIP-MARK`: a cut sweep is structurally blind to a run collapsed to its mark, and what `d-54` still holds (orig lines 404-411)
+
+**PANEL-CLIP-MARK LANDED 2026-09-17, merge `67d9bc4`** (agent tip `7733f4f`; land.sh GREEN, release 91/91 3020/0/7; debug 91/3017/0/10 and R1
+reproduced here). The hub's split: the missing mark is ENGINEERING (§11.29's own standard — a lossy render that does not announce itself), the
+layout is HIS (card `d-54` filed). ⚑ **It was 91 unmarked cut runs over 28 arrangements, not the one line reported — the harvest landed hours
+earlier is what could count them**, and 67 remain, all whole-widget/table overflow, held under a ceiling. ⚑ **The gate found two defects in its
+own treatment**: a DOUBLE hover (egui's `Label` already hovers when elided; `table_cell` has carried the duplicate since it was written), and a
+`Grid` truncate RATCHET collapsing a column to a bare `…` — **which a cut sweep is structurally blind to, because a collapsed run fits its clip**,
+so the gate also refuses a run drawn as nothing but the mark. **NEXT: weigh `F-BANKED-ADDR-AMBIGUITY` (undemanded CR) against `LIVE-EFFECTS-NUDGES`
+and `F-Z80-ACCESSES-UNWATCHED`; d-54 and aurora's CR-W review are owed but gate nothing.**
+
+### A control arm written down and never executed is not a control arm; the control belongs at the point of use; a compile error is not a red (orig lines 532-549)
+
+⚑ **THE AGENT CORRECTED THIS SEAT'S BRIEF AND WAS RIGHT: "render a frame both ways and REQUIRE THEM TO AGREE" IS UNEXECUTABLE AS
+WRITTEN.** As a literal gate it is permanently red — the two paths *should* differ here, because the live one is correct and the
+post-hoc one is **structurally incapable** of being correct, so demanding agreement demands the emulator be broken. The house had
+carried that sentence as its named control arm and **nobody had run it**, which is exactly why it read as fine. **The executable
+form is: agree EXCEPT on an enumerated, pinned set, with the set itself load-bearing in the assert** — and the bracket states
+agreement **positively in both directions** (`[post-hoc path agrees]` when empty) so an absence can never read as an unmeasured
+value. ⚑ **Generalise it: a control arm that was written down and never executed is not a control arm, and prose is where an
+unrunnable one hides.** Fourth consecutive agent in this repo to correct its brief.
+⚑ **And it declined to extend `scanline_goldens.rs`, correctly**: that suite already carries the whole-frame live-vs-post-hoc
+verdict for all 17 rows and is green — but it compares **whole-frame hashes**, so it cannot localise a divergence to a glyph or say
+which verdict changed. **That is precisely how `6=FAIL` survived beside it for a month.** The control belongs at the point of use.
+⚑ **Ops, against this seat, twice:** (1) my first clippy exit code came through a **pipe in zsh**, where `PIPESTATUS` is not the
+shell's spelling — I read a green I had not measured, and re-ran it outside the pipe; the landing list warns about exactly this.
+(2) The full suite was **reaped for memory at 75 of 91 legs**; the log aggregates clean and reads like a pass. Re-run detached under
+`setsid nohup` with `CARGO_BUILD_JOBS=4`, polling **my own end marker** rather than a notification. **Both of my first two mutation
+attempts also failed to COMPILE — a compile error is not a red**, and banking it would have been a vacuous gate with an exit code
+that looked right (101 either way).
+
+
+### The reap mechanism, corrected: size-based OOM, not configured bias — and a core defect is never filed inside a harness parcel (orig lines 559-574)
+
+⚑ **THE REAP MECHANISM, corrected by the hub (aurora's find, hub re-derived, not relayed on trust) — and the correction
+CHANGES THE REMEDY, which is why it is banked rather than noted.** The box runs `earlyoom` with a `--prefer` list, and
+**`cargo`, `rustc` and our test binaries are NOT on it** (`node` and `electron.*` are, which is aurora's harnesses; our
+own sessions run as `claude` and do not match either). **So the 75-of-91 reap was ordinary SIZE-BASED OOM, not
+configured bias.** Same outcome, different mechanism: **a bias you cannot influence versus a footprint you can**, and
+`CARGO_BUILD_JOBS=4` is the right lever for the second and useless against the first. The list is dominated by his
+desktop apps — `steamwebhelper` at 1.9 GB, `Discord` at 1.1 GB, six browser processes at ~700 MB — all larger than
+anything we run, so under pressure they are in front of us anyway. ▶ **No lane changes that config: it is his machine
+and a deliberate desktop-responsiveness choice.** The fix on our side is the completeness gate. **The end-marker
+practice stands unchanged and is the better instrument either way — it detects a truncated run regardless of which
+mechanism truncated it**, which is more than either diagnosis buys.
+
+⚑ **SHARPENING ON THE `TESTROM-H40-HALF` NEXT (the hub's, adopted): if the `Start`/`C` toggle turns out to be an
+INPUT-PROTOCOL DEFECT rather than a harness gap, it is a finding about the CORE and gets stated as one — do NOT fold it
+into the harness row.** A core defect filed inside a harness parcel is a defect nobody outside this lane can see.
+
+
+### A landing run makes the whole tree read-only, and the overseer is the likeliest violator; `F-TIMED-PIN-UNSETTLED` DISCHARGED (orig lines 650-656)
+
+⚑ **Ops, against this seat: I edited `docs/OVERSEER.md` WHILE the landing run was in flight.** `tools/land.sh`'s `TOLERATED_DIRTY` is exactly
+one path (`docs/lane-status.json`), so G10 would have failed the run on my edit — and committing instead would have failed G9 (*HEAD moved
+under the run*). Caught at G6 and **stashed**, which is the only move that satisfies both gates. **A landing run makes the whole tree
+read-only for its duration, and the overseer is the likeliest violator** because it is the seat doing docs work while the suite runs.
+**F-TIMED-PIN-UNSETTLED DISCHARGED in the same landing** (it was deferred only to avoid two writers in one ledger): all three timed pins now
+declare which property they rest on — `m68k_opcode_sizes` with the full four-budget measurement, `window_distortion` and `vdp_test_register`
+as determinism pins on ROMs that animate and therefore have no settled frame.
+
+### "The plant did not move; the rule did": `w6` asserted the OPPOSITE since CR-W and was green the whole time (orig lines 715-721)
+
+⚑ **AND A DEFECT IN THE SUITE THIS SEAT LANDED YESTERDAY: `w6`'s second half has asserted THE OPPOSITE since CR-W — *"a run wholly outside
+appears in neither string"* — green the whole time, with its plant on the Pacing panel's `governor` row, A ROW THE PANE SHOWS.** So the fixture
+tested the defect and passed. Inverted and renamed; the genuine absence case is now its own row **with the control W6 could not have** (nothing
+shown shares its row). The agent's sentence: **"The plant did not move; the rule did."** ⚑ Two more of its findings: `narrow Screen` **docks the
+Screen tab twice**, so `Present::surface` returns the first and a harvest must pair surfaces to spans **by position**; and its own boundary row's
+byte-for-byte premise was wrong because the Pacing panel prints measured fps, so digits are masked and every join, run and letter stays under the
+comparison.
+
+### What the clip gates are blind to, the two look calls now folded into `d-54`, and a chain's failure is attributed to the command you were watching (orig lines 728-743)
+
+**What the gates are blind to, stated by the parcel rather than discovered later:** a run **ratcheted** down to fit its clip is *visible*, so it
+is in none of these populations (that is §8.7's `blanked` assertion's business), and whole-widget/table overflow remains the owner's half under
+`d-54` (67 rows, untouched).
+▶ **TWO LOOK CALLS FOR HIM, both now honestly reported and both arguably `d-54`:** in `every-tab` the Memory panel's **Go button caption is
+entirely off the pane**, and in a fifth-width Screen pane the state buttons **8 and 9** are. Whether those widgets should be there at all is his.
+⚑ **Ops, and the cause IS established as of the next landing — IT WAS MINE, AND MY FIRST NOTE MISATTRIBUTED IT.** *(Corrected in place rather
+than left standing, because the wrong attribution points a successor at git.)* The chain failed at **`git rev-parse --short HEAD origin/main`**:
+**`--short` takes a SINGLE revision and exits 128 on two**, which broke the `&&` chain, so **the worktree removal never ran at all** — the very
+thing my note said it failed at. Reproduced deliberately and in isolation the second time it happened. **Same family as *read the empty diff
+before reading the result*: a chain's failure is attributed to the command you were watching rather than the one that exited.** Original note, left
+for the shape of the error: my combined push-and-tidy chain failed at the worktree removal with *"fatal: Needed a single revision"*; both the
+removal and the branch delete succeeded on a plain retry seconds later, and the push had already landed. **Cause not established, so none is
+recorded** — the state was verified directly (origin at the merge, worktree gone, branch deleted) rather than inferred
+from the retry. ⚑ Noticed while checking: **40 stale `parcel/*` branches** are still in this repo from previous landings; the worktrees are gone
+but the refs are not. Not cleaned tonight (deleting refs is the shared-machine caution's territory and nothing depends on it), but a successor
+should know they are cruft, not live work.
+
+### HUB RULING, 2026-09-19: the two look calls FOLD INTO `d-54`; and a ruling that CHANGES a rule must name the fixtures that encode the OLD one (orig lines 746-753)
+
+⚑ **HUB RULING, 2026-09-19 (under delegation, overturnable): the two look calls above FOLD INTO `d-54`; do NOT file new cards.** The Go caption
+eaten whole and the state buttons at a fifth width are **the same question he already holds** — whether long content wraps or the panes widen —
+so separate cards would hand him two decisions his existing one already makes. Recorded here rather than on his board. ⚑ And the hub filed an
+obligation **against its own seat** from the `w6` find: **a ruling that CHANGES a rule must name the fixtures that encode the OLD one.** Its
+ruling and amendment both warned about the implementation (*build the rule, not the special case*) and neither mentioned the tests already
+asserting the previous clause — **which are exactly the artifacts that report success while contradicting the new text.** Banked at empyrean
+`f5beff1a` as the class *"the plant did not move; the rule did"*: unlike a stale golden, which disagrees with a correct run, **such a fixture
+agrees forever and is supposed to.**
+
+### The latent class the clock fix retired: a floor drawn from a body whose text changes width is machine-speed dependent (orig lines 806-809)
+
+⚑ **A LATENT CLASS WENT WITH IT, wider than the one red:** several rows put floors on populations drawn from **all** bodies including Pacing
+(`elided > 0`, `cuts.len() >= 2`, the cut sweep's floors), and a wider `fps window` changes what elides and what a clip eats — so those floors were
+machine-speed dependent too, each one a flake waiting near its floor. **Fixing the clock rather than the comparison retires that for every row at
+once**, which is the argument for the mechanism.
+
+### A flake that passes reads as fixed; an unapplied mutation and a clean baseline are the same artifact (orig lines 817-822)
+
+⚑ **Ops, and it matters for how a flake is read: the two landings AFTER the red (`30a4617`, `0186691`) came back CI GREEN carrying the same test.**
+So it was never deterministically broken — it passed or failed on the runner's speed that minute. **A flake that passes reads as fixed**, and the
+green on those two SHAs was a fact about a moment, not about the tree (the currency-gate rule, aimed at our own suite this time).
+⚑ **Ops, second, and the mutation discipline paid for itself:** my first attempt at the forced mutation **asserted out before writing**, so nothing
+was applied — and **the empty `git diff` I printed before the run is what said so.** An unapplied mutation and a clean baseline are the same
+artifact; only printing the diff separates them.
+
+### Rules trapped mid-paragraph, quoted verbatim here because they could not be moved at a line boundary
+
+*These three sentences are LIVE rules whose surrounding narrative went to `docs/OVERSEER-LOG.md` (the line break inside a
+quoted sentence is closed up; no other byte is changed). They are recorded here, and duplicated on purpose, because the
+alternative was a live rule living only in the log.*
+
+* **"A mutation's colour does not tell you which guard caught it."** *(`OVERSEER.md` orig lines 591-592, from the
+  `TESTROM-H40-HALF` landing; its second instance is orig line 649, "Naming the guard is the point: the agent's own #1
+  and #2 fired two different guards for two mutations that look alike.")* Read before accepting a red-first as proof:
+  a mutation that goes red for a reason that is **not** the property under test reads as proof of the gate while proving
+  only that the input matters. **Name the guard that fired.**
+* **"The test's own header is the artifact worth copying: it records its expectations from the independent model rather
+  than from our output, and carries a "WHAT WOULD MAKE THIS TEST WRONG" section naming BlastEm's own known blind spot in
+  this very rig."** *(`OVERSEER.md` orig lines 783-784, from `F-TH-PULLUP-UNDISCRIMINATED`.)* Read before writing a
+  differential test: the header is where the arm's own limits are stated instead of blurred.

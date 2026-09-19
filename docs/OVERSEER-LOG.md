@@ -3689,3 +3689,350 @@ the sweeps). ⚑ Per **`L-16`**, §4's line numbers and P10 charges are dead let
 `tools/land.sh` GREEN and pushed: release 90/90 legs, 2983/0/5). Go: the hub, citing his 2026-09-02 words at empyrean `b010db4a`
 (verified an ancestor of their `origin/main`) — a decision-free next item is taken, not parked. Verified here on the merged tree:
 debug 90 legs 2980/0/8 (+14 = the diff's fourteen `#[test]`s), debug clippy 0, red-first reproduced with the mutation on disk.
+
+## Moved from OVERSEER.md 2026-09-19 — closed landings, dispatch records, CI-read notes and superseded `NEXT:` clauses, verbatim (the second recut; the before/after size is DELIBERATELY NOT QUOTED HERE — measure it, `git show 0f8aa76:docs/OVERSEER.md | wc -c` against `wc -c docs/OVERSEER.md`)
+
+*Nobody boots from this file.* The live rules these narratives contained are in `docs/OVERSEER-REFERENCE.md` under the
+section of the same date; where a rule's sentence could not be lifted at a line boundary it is **quoted verbatim there**,
+naming this file as its narrative. Subsections are in the boot file's original order.
+
+### The 2026-09-17 sequence: `OVERSEER-RECUT`, `DATA-DISPLAY-AUDIT` 9+11, the CR-W arc to its ruling, and their superseded `NEXT:` clauses (orig lines 339-367)
+
+**NEXT: `OVERSEER-RECUT`** (this file grew; move review bars to the reference), then `DATA-DISPLAY-AUDIT` items 9-11 (Screen
+strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
+**OVERSEER-RECUT LANDED 2026-09-17, merge `345f385`** (docs only: 69,869 → 26,914 B; lessons and holds to `docs/OVERSEER-REFERENCE.md`, closed history to `docs/OVERSEER-LOG.md`, both under "Moved from OVERSEER.md 2026-09-17"). **NEXT: `DATA-DISPLAY-AUDIT` items 9-11** (Screen strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
+**DATA-DISPLAY-AUDIT items 9 + 11 DISPATCHED 2026-09-17** (branch `parcel/data-display-4`, worktree `../oracle-dd4`, base `b0d569e`);
+item 10 (Objects) is a look call for him, not a build. **Successor, named in the same write: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`.**
+**DATA-DISPLAY-AUDIT items 9 + 11 LANDED 2026-09-17, merge `07352f1`** (agent tip `5a572b2`; `tools/land.sh` GREEN, release 91/91 legs
+2992/0/5; debug 91/2989/0/8 and a red-first reproduced here). The slot re-read timing was the parcel's BLOCKED sub-item: **ruled `L-17`
+(re-probe on gesture)**, booked `F-SLOT-REPROBE-ON-GESTURE`. What remains of the audit is the owner's eyes (look calls 1-33) plus
+`objects.rs`'s latent raw-JSON catch-all (not covered by `L-15`). **NEXT: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`** — re-derive its premise
+from the tree first, and check whether it needs a contract change (a hub CR) before dispatching.
+**`F-PANELS-INVISIBLE-TO-SCREEN-TEXT` STARTED 2026-09-17 as a CR DRAFT, not a build** — premise re-derived: `screen_text`'s `kind` is a closed
+enum in the contract (§11.29; §11.47 rules runs inside a kind are not a CR), so panel text is a contract change. Docs-only agent on
+`parcel/cr-panel-text` (worktree `../oracle-crpanel`, base `349298d`) drafting `docs/proposed/2026-09-17-cr-*-panel-screen-text.md`; the hub
+rules it. **Successor, named in the same write: `F-SLOT-REPROBE-ON-GESTURE`** (ruled `L-17`, no decision needed).
+**`F-SLOT-REPROBE-ON-GESTURE` DISPATCHED 2026-09-17 in parallel** (branch `parcel/slot-reprobe`, worktree `../oracle-slots`, base `793b50d`; the
+CR draft beside it is docs-only, so no build contention). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.
+**CR-W FILED 2026-09-17, merge `fb1c042`** (docs only: `docs/proposed/2026-09-17-cr-w-panel-screen-text.md` + vectors). Recommends one `panel`
+kind named by its tab, harvested from egui's PAINTED output (one hook for every panel) rather than ~212 ad-hoc label sites; reverses
+`screen.rs`'s module-doc refusal and answers it (§1.1). Sent to the hub for ruling; `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` is blocked on it. Its
+Q3 (a short build spike proving each tab's text is harvestable from the paint list) is the first build step once ruled. Q6 (reading a hidden
+tab) is his only if the hub wants it pursued.
+**CR-W RULED BY THE HUB 2026-09-17, VERIFIED at empyrean `629bf21f`** (an ancestor of their `origin/main`; `docs/OVERSEER-LOG.md` entry `2026-09-17T09:59:40Z — CR-W RULED`). Hub's own work, not under delegation.
+Q1 **option (a) ADOPTED IN SHAPE** (new `panel` kind, REQUIRED `panel` key; (d1)/(d2) ruled out: the kind is where a client learns how to
+read `text`). §3's CR boundary ADOPTED (palette-as-`palette`, `F-PLAYER-SCREENTEXT-CLIP`, paint-list harvest are oracle's, no CR).
+**GATE: no contract text or schema lands until the Q3 SPIKE passes** (per-tab text contiguous in `ui.layer_id()`'s paint list read before
+`end_pass`, else the `output_hook` + clip-rect route). Pass: §11.50 + §6 + schema land IN LOCKSTEP with the implementation and re-vendor.
+**Fail in both forms: the ruling REOPENS; do not build a different seam under it.** Q7 TAB/LF fold ADOPTED; R1 DROPPED; §8 item 31 ADOPTED;
+Q4 nothing now (booked `F-PANEL-SCROLL-UNSTATED`); Q5 booked `F-SCREEN-TEXT-TRANSIENT-AREAS`; Q2 and Q6 are HIS (Q6 out of scope).
+**Reviewer: aurora** — name it when the spike result returns. **NEXT after the slot parcel: the CR-W Q3 SPIKE** (not shipping).
+
+### CR-W from the Q3 spike to merge `106b659`, the session-28 boundary, and the superseded `NEXT:` clauses between them (orig lines 371-403)
+
+**CR-W Q3 SPIKE DISPATCHED 2026-09-17** (branch `parcel/crw-spike`, worktree `../oracle-spike`, base `ef2b06d`; test code + a findings doc only,
+nothing wired to the wire or contract). Pass → implementing parcel in lockstep with the hub's contract text; name aurora as reviewer. Fail in
+both forms → back to the hub, no substitute seam. **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.
+**CR-W Q3 SPIKE LANDED 2026-09-17, merge `5a51da1`: PASS IN FORM 1** (agent tip `5b21d11`; test-only; land.sh GREEN; M5 reproduced here).
+In-pass paint-list span in `TabViewer::ui`, read after `build_ui` and before the pass ends, is exact for all eleven tabs in every arrangement
+measured. **Form 2 FAILS** (a floating window over a body leaks 28 foreign runs), so it is not a fallback. Eight corrections to CR-W §2/§5/§10
+and the W-rows are in `docs/2026-09-17-cr-w-q3-spike.md` (spans reset per PASS; read each span from its own layer; floating windows are drawn
+bodies; `Context::graphics` takes the write lock). Reported to the hub with aurora named reviewer.
+**NEXT: the CR-W implementing parcel, in lockstep with the hub's §11.50 + schema** — compose the brief from the CR §10 AND the spike doc's
+corrections, never the CR alone.
+**CR-W IMPLEMENTING PARCEL DISPATCHED 2026-09-17** (branch `parcel/crw-panel`, worktree `../oracle-crw`, base `774b4ba`), composed from CR §5/§6/§9/§10
+AND the spike's corrections. Schema re-vendor is the LAST step and BLOCKED until the hub sends the SHA carrying §11.50 + schema (vendored bytes are
+pinned by `PROVENANCE.md`, so no hand patch). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`.**
+**CR-W IMPLEMENTATION BUILT AND PARKED 2026-09-17** at `parcel/crw-panel` tip `4585bf1` (worktree `../oracle-crw`; agent's figures: debug 91/3013/0/11,
+release 91/3016/0/8; W10 ≈ +0.04-0.08 ms/present, nothing when unserved). **HOLD at re-vendor: do NOT merge before the hub's SHA carrying §11.50
++ schema** (a fresh hub session writes it, booked empyrean `CRW-CONTRACT-TEXT`). At that SHA: re-vendor per `docs/2026-09-17-cr-w-landing.md` §6,
+un-ignore `the_cr_w_vectors_validate_the_way_the_file_says_they_do`, replace vector cases 1-4 with `capture_cr_w_vector_replies` output, drop R1
+cases 12-16, move both pins; STOP if the hub's schema needs a key beyond kind/panel/text/rendered/truncated/unrenderable. Then verify firsthand
+(nothing about this parcel is verified by this seat yet), land, message aurora (reviewer) and sigil. Four Q2 look calls for him in the note.
+**BOUNDARY 2026-09-17 (session 28).** `F-BANKED-ADDR-AMBIGUITY` re-derived and NOT dispatched: it is a contract change (typed bank key /
+`romCrc32`) and its own design doc says no suite ROM banks, so nothing depends on it. A fresh session should weigh it against
+`LIVE-EFFECTS-NUDGES` and `F-Z80-ACCESSES-UNWATCHED` before taking it, not take it because it reads `next`. The live item is the CR-W re-vendor above.
+**CR-W CONTRACT TEXT LANDED at empyrean `265efaa7`, VERIFIED HERE** (ancestor of their `origin/main`; §11.50 + §6 bullets + §8 item 31 + schema).
+Three spike corrections are NORMATIVE (floating window in the drawn set; main surface then windows in draw order, never `Tab::ALL`; an empty text
+shape is not a run). **R1 dropped ⇒ vector cases 11-15 are RETIRED, not ignored**: the hub measured that their three declared-failure cases do NOT
+go red, because `initialize.capabilities` is open — a fail-vector the schema cannot refuse. Re-vendor dispatched to the parked agent (resumed with
+its context), with the hub's 11-case agreement to be re-measured here rather than taken. ⚑ **The hub CORRECTED its own morning ruling: sigil does
+NOT vendor `protocol.md`; this lane is the only vendor.**
+**CR-W LANDED 2026-09-17, merge `106b659`, `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` CLOSED** (agent tip `3bae30d`; land.sh GREEN, release 91/91
+3017/0/7; debug 91/3014/0/10 and a red-first reproduced here; vendored schema sha256-identical to empyrean `265efaa7`, checked at this seat).
+Vectors: 11 cases, 5 accepted / 6 refused, each refusal citing its own rule; R1's five retired. ⚑ **The lockstep was MEASURED, not assumed**:
+with the pre-CR-W schema bytes restored the pin test AND the vectors row go red, so the re-vendor is what admits the kind. **Owed: aurora's
+review (not a gate) and his Q2 look** (`docs/2026-09-17-cr-w-landing.md`) — the first is Registers' `aether` line cut at the pane edge with no `…`.
+
+### `POSTHOC-CARRY` DISPATCHED 2026-09-18: the dispatch record (orig lines 448-456)
+
+**POSTHOC-CARRY DISPATCHED 2026-09-18** (branch `parcel/posthoc-carry`, worktree `../oracle-posthoc`, base `5b3d551`).
+Briefed to **refute the premise if it is false** (it has stood unverified since 2026-08-15) and to settle the two
+blockers the follow-up names — the four glyph constants were themselves pinned from post-hoc pixels, i.e. the defect
+reproducing one layer down, and a live-path scrape needs a frame-aligned capture where `block_hash` needed none.
+Hard constraint: **do not change emulator behaviour to move a glyph.** Its centre of gravity is the control arm this
+house wrote down and never ran — **render a frame both ways and require them to agree** — because an artefact and a
+real failure are **identical in the output**, both a `FAIL` glyph, so *name your sources* cannot reach this class:
+only an instrument that fires on purpose can. **Successor, named in the same write: `TESTROM-H40-HALF`** (Q1;
+re-derive before dispatch — it may be an input/TH-protocol defect on our side rather than a harness gap).
+
+### `POSTHOC-CARRY` LANDED 2026-09-18, merge `9b97cd7` (orig lines 510-531)
+
+**POSTHOC-CARRY LANDED 2026-09-18, merge `9b97cd7`, `F-POSTHOC-STALE-CARRY` CLOSED** (agent tip `8af6f76`; three commits,
+**nothing under `crates/oracle-core/src/` touched** — the hard constraint held, the instrument moved and the machine did not).
+**The premise HELD and was re-derived, not taken:** `Vdp::sprite_line` seeds masking from `sprite_dot_overflow_carry()` and never
+writes it back — the write-back is `commit_scanline_sprites`, called only by the stateful renders — so `render_line` seeds **every**
+line from the settled post-run carry. Live, the walk commits the carry on line **87** and holds it through 94; lines **88-95,
+x216..247** — *exactly the 32x8 rectangle test 6 is read from* — are drawn with the mask armed live and unarmed post-hoc. **Test 6
+is the ROM's test OF that carry.** `vdp_sprite_masking` **`6=FAIL` → `6=PASS`**; every scraped ROM in the corpus now passes.
+**Blocker (a): all four glyph constants survived with ZERO re-derivation** — eight of nine glyphs are bit-identical through both
+paths and test 6's *live* hash **is** the already-pinned `PASS` literal, so the feared one-layer-down reproduction never arose.
+⚑ Its finding: `TICK_CROSS` now classifies **nothing** (the corpus's only cross became a tick on 09-16) — an unexercised classifier,
+kept deliberately and recorded. **Blocker (b): the capture is the last frame COMPLETED before the idle stop**, and the 2026-08-14
+convention *"stopping mid-frame is irrelevant to `block_hash`"* is **DELETED, not amended** — true of a re-render, false of a
+capture — replaced by three loud guards (one complete frame; a frame completed at all; the captured frame strictly later than the
+ROM's last VDP touch).
+▶ **VERIFIED FIRSTHAND BY THIS SEAT ON THE MERGED TREE**, none of it taken from the agent: fmt clean; clippy `--workspace
+--all-targets` clean; **91 legs / 3018 passed / 0 failed / 10 ignored**; `conformance_roms` 5 → 6 (the new control arm, and the leg
+count is unmoved because no test TARGET was added); currency suites `determinism_gate` 2, `export_state_v1` 3, `golden_frames` 9,
+`scanline_goldens` 5. **Red-first reproduced INDEPENDENTLY here**, mutation shown on disk by `git diff` *before* the run and restored
+from committed `9b97cd7`: `post_hoc := live.clone()` — the "someone fixes the post-hoc path until it agrees" trap — gives **4 passed
+/ 2 failed with BOTH the scorecard and the control arm firing**, which is what proves the bracket is load-bearing rather than
+decorative. Origin confirmed moved; **CI queued at push, NOT yet read.**
+
+
+### The superseded `NEXT: TESTROM-H40-HALF`, and the CI read for `9b97cd7` (orig lines 550-558)
+
+**NEXT: `TESTROM-H40-HALF`** (open question Q1) — **re-derive before dispatch**: the ROM's own text says `Start` toggles H32/H40 and
+only `C` does for us, so the first question is whether that is an input/TH-protocol defect on OUR side or the ROM's text being stale,
+and the answer decides whether this is a harness row or an emulator one. **Nine tests are currently unmeasured**, and a mode never
+scraped is not a mode this lane can claim. Then `TESTROM-UNSCRAPED-PAIR` (Q2), then the ruled `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`.
+
+**CI READ GREEN for `9b97cd7`** (and the two docs commits after it): `gh run list` shows all three `completed` /
+`success`, read to completion rather than off a status field. The "CI queued, NOT yet read" clause above is left
+standing and corrected here rather than edited, per this repo's correct-by-appending habit.
+
+
+### `TESTROM-H40-HALF` LANDED 2026-09-19, merge `821ad41`, Q1 CLOSED; the duration correction; the superseded `NEXT:`; the CI read for `821ad41` (orig lines 575-623)
+
+**`TESTROM-H40-HALF` LANDED 2026-09-19, merge `821ad41`; ledger Q1 CLOSED** (agent tip `57cc1e6`, four commits; **nothing under
+`crates/oracle-core/src/` touched** — the hard constraint held for the second parcel running). **The nine H40 verdicts are read for the
+first time and all nine PASS**, every one classifying against the four already-pinned glyph hashes with **no constant re-derived** (the L3
+trap avoided a third time). ⚑ **The half was never cosmetic and the queue row undersold it:** the VDP's sprite limits are per-mode
+(16 sprites / 256 dots / 64 per frame at H32; **20 / 320 / 80** at H40) and tests 1, 2, 3 and 9 are tests OF those limits, so this exercised
+a budget path in `Vdp::sprite_line` that no instrument had ever reached. ⚑ **And `POSTHOC-CARRY`'s artefact is NOT an H32 accident**: the
+live-vs-post-hoc split on test 6 reproduces identically in H40, so `the_glyph_scrape_reads_the_live_render_path` now requires the divergence
+in **each half** — a fix repairing one mode's carry seeding and not the other's goes red.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE, none of it taken from the agent:** `tools/land.sh --no-push` GREEN, every gate G1-G10, **91/91
+legs, 3022 passed / 0 failed / 7 ignored**, run reached its end marker (detached under `setsid nohup`, `CARGO_BUILD_JOBS=4`, polled for my
+own marker). `conformance_roms` 6 → 7 tests, explained by the new ragged-frame guard and **not** a new target, so the leg count is unmoved.
+Currency suites individually: `determinism_gate` 2, `export_state_v1` 3, `golden_frames` 9, `scanline_goldens` 5. The row printed here with
+`--nocapture` rather than read off the agent's report. **Red-first reproduced INDEPENDENTLY here, twice, each mutation shown on disk by
+`git diff` BEFORE the run and restored from committed `821ad41`:** (1) the `C` press removed fires the **idle-stop** guard, not the mode gate
+— 5 passed / 2 failed; (2) a **double toggle landing back in H32** fires `ProvenScreen::establish` with `left: 256, right: 320` — the case
+where nine plausible verdicts would otherwise print under the wrong label. ⚑ **Mutation (1) is the more instructive of the two: it is red for
+a reason that is NOT the property under test**, so it would have read as proof of the gate while proving only that the press matters. A
+mutation's colour does not tell you which guard caught it.
+
+**Q1 CLOSED: the ROM's on-screen text is stale; THIS CORE IS CORRECT.** ⚑ **Verified at this seat against the 256 KB image rather than taken
+from the agent:** `$A10009` (P1 Control) occurs **zero** times in the ROM, `$A10003` (P1 Data) exactly **three** (`$2FE`, `$30E`, `$31A`).
+The wait routine writes Data and spins on `btst #5,$A10003`; writing Data cannot drive TH, so TH is never made an output, floats high on the
+pull-up (recon IO3) and bit 5 is `C`. Corroborated **in-corpus, not cross-emulator**: `vdp_port_access` DOES write `$A10009` and is advanced
+through all 22 pages by `Start` in this same harness. So the harness presses `C` **on the evidence**, not as a workaround, and the hub's
+sharpening (a core input defect would have been stated as a CORE finding in its own right) did not need to fire — there is no core defect.
+▶ **Booked `F-TH-PULLUP-UNDISCRIMINATED`** (the one residual, stated by the agent rather than buried): the whole answer rests on IO3's
+pinned pull-up-high rule, and **no corpus ROM discriminates it** — both pad readers drive TH. A one-instruction harness ROM reading
+`$A10003` with Control untouched at `$00` settles it (`$FF` predicts pull-up-high, `$B3` pull-low). It is a **port-model** question, not this
+row's, and correctly not done inside a harness parcel.
+
+⚑ **A CORRECTION AGAINST THIS SEAT, FOUND BY THE AGENT, AND THE FIGURE WAS MINE FROM LAST NIGHT.** `conformance_roms.rs` claimed in two
+places — both written by `POSTHOC-CARRY` on 09-18 — that `6=FAIL` had stood, and goldens had read post-hoc, **"for thirteen months"**.
+**Measured at this seat: the repository's first commit is `e11ddd2`, 2026-06-24 — 86 days — and the `6=FAIL` pin is `7b46ae2`, 2026-07-25 —
+55 days.** Wrong by roughly sevenfold, in the direction that makes the finding sound weightier. Corrected in place by the agent with a
+visible note; POSTHOC-CARRY's substance is untouched and not in question. **The class: a duration written from FEEL rather than from the
+clock** — the same defect as `updatedAt` written from one's head, and the same family as *a banked pointer names its sources, never its
+figure*. ▶ Relayed to the hub, because the agent's question is the right one and only the hub can see across lanes: **does this habit appear
+in other lanes' prose?**
+
+**NEXT: `TESTROM-UNSCRAPED-PAIR`** (open question Q2) — `vcounter` and `m68k_opcode_sizes` carry a picture-pin and no verdict, so
+"all the tests pass" is still not a sentence this lane can honestly say. **Re-derive before dispatch**: `vcounter` **did NOT need a glyph table — that reason was false, see the landing below; this clause is left standing and corrected rather than edited away**, and what it really needed was menu navigation. The clause read: a glyph table for a
+proportional font, and `m68k_opcode_sizes` may need only a longer budget or an input to reach its result page — those are two different
+parcels wearing one row, and the row should be split if the re-derivation says so. Then the ruled
+`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` (brief the substituted defining CLAUSE and the pre-ruled row-placement acceptance condition, never the
+paragraph).
+
+**CI READ GREEN for `821ad41`**, read to completion with `gh run view` rather than off a list's status field: run `35409354288`, `status=completed conclusion=success`, **all three jobs named and green** — *Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*. The "CI queued, NOT yet read" clause in the landing entry above is left standing and corrected here, per this repo's correct-by-appending habit.
+⚑ **Ops, against this seat, and it would have cost a silent all-night unread: my first CI waiter polled `gh run list --limit 8` for the landing SHA, and I then pushed six docs commits.** Each queued its own run, the landing SHA fell out of the eight-row window, and **the filter's empty result is indistinguishable from `in_progress`** — the loop would have run until the session ended while the answer was green the whole time. Re-armed over 60 runs, the bad waiter killed, and the probe now prints *"empty = the SHA is outside the window, not a verdict"*. Banked in `docs/OVERSEER-REFERENCE.md` under the landing checks, beside the timeout-exits-0 warning it is a sibling of. **An absence dressed as an outcome, this time in my own instrument.**
+
+
+### `TESTROM-VCOUNTER-MENU` LANDED 2026-09-19, merge `0742cec` (orig lines 624-649)
+
+**`TESTROM-VCOUNTER-MENU` LANDED 2026-09-19, merge `0742cec`** (agent tip `707b405`, three commits; **nothing under
+`crates/oracle-core/src/` touched** — third consecutive parcel holding it). ⚑ **THE ROW'S STATED REASON WAS FALSE AND HAD STOOD 56 DAYS**
+(`7b46ae2`, dated by `git log -S`, not by feel): the ledger said this ROM *"draws its results in a proportional font that is not an
+ASCII-ordered nametable"* and Q2 said scraping it *"needs a glyph table"*. It is **ordinary ASCII nametable text at font base `$100`** — the
+base `m68k_memory_test` already used, through the same `text_rows`. **There was no glyph table to build.** The real blocker was that the ROM
+is **menu-driven** and nothing drove its menu. Q2 now names `m68k_opcode_sizes` alone. **This is the bar's own instance: a booking reads as a
+reason, and nobody re-checks a reason** — only a probe finds it, and only if someone distrusts the justification.
+▶ **The row is now a VERDICT row: nine menu modes x two scan lengths (262/312), all 18 readings from ONE 428-frame boot**, because the result
+screen's `Start` is an *exit* back to the menu with the cursor and the `A` toggle intact. Mechanism, all measured: **the mode cursor is a
+PRIORITY-BIT highlight** (cell bit 15 on the selected row), invisible in the text grid, read out of the raw cells; `Up`/`Down` move one row per
+press, edge-shaped and clamped; the ROM prints `Reg: 8Crr 81rr` naming the registers the run used, and **the nine pairs are pairwise distinct**,
+which a test asserts rather than assumes. The gate is a type — `ProvenVcMode::establish`, only constructor, only route into `vc_classify` —
+checking the printed `Reg:` pair **FIRST** (it names the mode that actually ran), then the cursor row, the printed scan length, the table length
+and `Format:0`.
+⚑ **Menu item 3 (Mode 5 320x224) is a REAL PASS** — character-for-character recon R2's NTSC V28 progression. **The other eight agree BY BEING
+UNMODELLED, and the row says so in its own text**: `Vdp::v_counter` reads no register (a pure function of mclk), `ACTIVE_LINES` is *"the only
+vertical mode this core models"*, `LINES_PER_FRAME` is *"fixed at NTSC's 262"*. **Recorded, not fixed** — non-gating by charter. The comparison
+restates recon R2 rather than calling `Vdp::v_counter`, so a model change moves the ROW instead of moving the expectation with it, and the
+312-line half measures frame **length** (the wrap lands 50 lines in ⇒ 262/frame, read off the ROM) which is exactly where a V30 model at 313
+would separate.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `tools/land.sh --no-push` GREEN G1-G10, **91/91 legs, 3024 passed / 0 failed / 7 ignored**,
+marker reached; `conformance_roms` 7 → 9 tests, no new target, leg count unmoved; currency suites 2/3/9/5; the row printed here with
+`--nocapture`. **Red-first reproduced INDEPENDENTLY, a mutation distinct from the agent's seven**: `vc_select`'s target off by one (a cursor
+that OVERSHOOTS rather than failing to move), shown on disk before the run, restored from committed `0742cec` — **7 passed / 2 failed, and the
+guard that fired is the `Reg:` pair gate** (`…1625`), naming both readings: *"says it ran with reg12=$02 reg1=$40, but item 0 (M4-256x192) is
+$00/$40"*. Naming the guard is the point: the agent's own #1 and #2 fired two different guards for two mutations that look alike.
+
+### The superseded `NEXT: TESTROM-OPCODE-SIZES-NEVER-SETTLES`, and the CI read for the vcounter landing (orig lines 657-663)
+
+**NEXT: `TESTROM-OPCODE-SIZES-NEVER-SETTLES`** — the last unscraped ROM, and the open question is whether it has a verdict page at all or our
+machine is failing to complete it. **Re-derive before dispatch, and if it is the latter it is a CORE finding stated as one**, not folded into a
+harness row.
+
+**CI READ GREEN for the vcounter landing**, read to completion with `gh run view`: run `35412782076` on **`f729d7b`**, `conclusion=success`, all three jobs green — *Determinism gate*, *Replay playthroughs (release)*, *Build, test, clippy, fmt*. ⚑ **The SHA is the pushed TIP, not the merge, and that substitution is PROVED rather than assumed**: `0742cec` (the merge) has **no CI run at all** — a multi-commit push creates one run, for the tip — and `git diff --stat 0742cec f729d7b -- crates/` is **empty**, so that run tested the landing's code byte-for-byte. Banked in the reference beside the window defect it is indistinguishable from: **both failures print nothing, and the discriminator is whether the run EXISTS, which no status poll asks.**
+
+
+
+### `TESTROM-OPCODE-SIZES-NEVER-SETTLES` LANDED 2026-09-19, merge `d145636`; `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` LANDED, merge `462e9cf` (orig lines 664-714)
+
+**`TESTROM-OPCODE-SIZES-NEVER-SETTLES` LANDED 2026-09-19, merge `d145636`; THE ROW'S NAME IS NOW WRONG IN BOTH HALVES AND THAT IS THE RESULT**
+(agent tip `78d19cd`, four commits; **nothing under `crates/oracle-core/src/` touched** — fourth consecutive parcel). **The ROM has a verdict,
+our machine reaches it, and it is `2/2 crc32 sizemap=0x5c6da501 classmap=0x20ac2324` — the strongest verdict in the corpus.** It measures the
+length of **every one of the 65536 opcode words** (each run at `$FFFF86` in front of `$F000` padding; vectors 4/10/11 land at ROM `$42C`, where
+`move.w $4(a7),d1` / `subi.w #$FF86,d1` turns the trap's stacked PC into a byte count, so illegal yields 0), plots one pixel per opcode, then
+CRC-32s its own 32768-byte map and an 8192-byte measured-vs-asserted bitmap against constants baked at ROM `$56C`/`$57E` and paints colour 6 or 9.
+⚑ **THE VERDICT IS A COLOUR, NOT A WORD**, which is exactly why my printable-ASCII sweep of the image found nothing and why I read that absence as
+evidence. ⚑ **And the pass is independently recomputed over OUR machine** (`VRAM_CRC=0,8000` → `0x5c6da501`, `RAM_CRC=8000,2000` → `0x20ac2324`),
+so it is not *the ROM printed green*: **our 68000 decoder's 65536-entry length table is byte-exact against a constant computed on hardware in 2017.**
+▶ **TWO INDEPENDENT HARNESS CAUSES HID IT, AND ONLY ONE WAS A BUDGET.** (a) `scrape_visual`'s 120 frames stops **27.8%** through the sweep
+(the ROM's own counter reads `$46AF`); (b) the channel being read is an **identity nametable** (`cell = row*40+col`, ROM `$3C6`), written once
+at boot — **constant BY CONSTRUCTION, so it could never have carried a verdict at any budget.** The "ASCII character ramp" I reported is that
+map's tile indices `$20-$7E`. **A channel that cannot vary is not evidence about the thing you are asking after**, and the corpus rule the agent
+banked with it is: check the channel CAN vary before concluding there is no verdict.
+⚑ **CORRECTION AGAINST THIS SEAT, AND IT IS A METHOD DEFECT, NOT A SLIP: my "never settles" was wrong. It settles at 685 and holds to 3600**,
+verified here at 400/600/675/685/800/1800/3600. My four samples straddled two transitions. **Four DISAGREEING samples cannot distinguish
+*never settles* from *settles later than you looked*; only two AGREEING samples in one regime prove convergence, and my sweep never took two.**
+I applied the rule's falsifier and never its confirmer. The other two rows of `F-TIMED-PIN-UNSETTLED` stand (re-checked: `window_distortion` is
+periodic, f=600 ≡ f=2400). **Also corrected: my press probe fired at frame 60, before the ROM seeds its pad state at ROM `$5E4` (~frame 680);
+at frame 700 EVERY button moves the picture.** Both errors are the same shape — **a negative result from an instrument aimed at a moment when
+the answer could not exist.**
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `land.sh --no-push` GREEN G1-G10, **91/91 legs, 3024 passed / 0 failed / 7 ignored**, marker reached,
+**and the tree untouched for the whole run** (my own G9/G10 lesson from earlier tonight, held). Currency 2/3/9/5; row printed here with
+`--nocapture`. **Red-first reproduced INDEPENDENTLY, aimed deliberately at the one precondition the agent said it could NOT isolate**: ceiling
+`2400 → 400`, i.e. give up before the ROM parks — shown on disk before the run, restored from committed `d145636`. **8 passed / 1 failed**, and
+the two layers both worked: the note names the failing condition (*"parked in the pad wait: no (pc=$000438)"* and **"This row measured NOTHING
+— it is not a pass and not a fail"**) while the **row-count bijection** at `:2412` is what turns it red. An unestablished run drops its row, and
+the count guard is what refuses to let a dropped row read as a clean scorecard.
+**EVERY SCRAPEABLE ROM IN THE CORPUS NOW REPORTS A VERDICT AND EVERY ONE PASSES.** `vcounter` and `m68k_opcode_sizes` were the last two carrying
+a picture and no verdict; Q2 is closed. **NEXT: `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`** (hub-ruled, buildable) — brief the substituted defining
+CLAUSE and the pre-ruled row-placement acceptance condition, never the paragraph.
+
+**`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` LANDED 2026-09-19, merge `462e9cf`** (agent tip `8ef2197`, code tip `cc3a312`, four commits;
+**no `contract/`, no vendored schema, no `PROVENANCE.md`, nothing under `oracle-core/src`; NO SCHEMA CHANGE NEEDED**, which is one of the three
+grounds the hub's ruling rests on). ⚑ **THE PREDICATE IS FIXED AND THERE IS NO WHOLLY-CLIPPED BRANCH** — the amendment's whole warning.
+`glass_run` returns `None` **only when the toolkit laid out no glyph at all** (the sentence the old return's own parenthetical justified), and
+the operative line is `let (top, bottom, left) = on_glass.or(laid_out)?;` — **two candidates from ONE source, not a fallback of a different
+kind**. Visibility now decides `rendered` and nothing else.
+▶ **MY PREMISE READING WAS RIGHT WITH TWO REFINEMENTS, BOTH FROM THE AGENT**: `top`/`bottom` **already** came from `row_rect`, so only `left`
+came from the glyph — which is why the fix is this small — and `left` has an honest value for an invisible run,
+`rect_without_leading_space().min.x`, equal to the old value whenever that glyph is visible. **Not the STOP case**, so no CR.
+▶ **The clause's other half — *on a reported row* — is `reported_rows`**, and the scroll boundary holds by construction: pre-change a run only
+ever had a band when a glyph was on the glass, so **every row that already existed still contains such a run** and nothing previously reported
+can be dropped. `F-PANEL-SCROLL-UNSTATED` unchanged. ⚑ **One thing the brief did not anticipate: `unrenderable` had to move with it**, or a
+scrolled-away run's hollow boxes would be named in a field describing strings it is not in — proven by the agent's own mutation M4, which
+**would have been green before it tightened that row**, so it tightened, committed, and re-ran all four mutations against the tightened set
+(clause (e), unprompted).
+▶ **THE EVIDENCE IS A 188-SURFACE DIFFERENTIAL, not an argument: 28 arrangements dumped at base and tip, digits masked, EXACTLY TWO moved and
+both are the ruling** — `every-tab`/Memory gains the run `go` (the Go button's caption, eaten whole) with `truncated` **false → true**, and
+`narrow Screen` gains the state strip's `8` and `9`. No row split or merged, no visible run moved, no `unrenderable` changed, every other
+surface byte-identical.
+
+### The `F-PANEL-CLIP` landing's firsthand verification (orig lines 722-727)
+
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `land.sh --no-push` **17 gates PASS, none FAIL**, 91/91 legs, **3027 passed / 0 failed / 7 ignored**,
+tree untouched for the whole run. **Red-first reproduced INDEPENDENTLY here by restoring the exact defect** (`on_glass.or(laid_out)?` →
+`on_glass?`), shown on disk before the run and restored from committed `462e9cf`: **four named guards fire** —
+`a_run_the_clip_ate_whole_is_in_text_with_an_empty_rendered_on_its_row`, `a_run_the_clip_ate_is_in_text_exactly_when_its_row_is_reported`, the
+corrected `w6_…`, and `screen::tests::a_clip_decides_which_glyphs_are_on_the_glass` — with the message *"a run the toolkit laid out is a run
+whatever the clip kept"*. 516/4 red, 520/0 restored.
+
+### The superseded `NEXT: F-TH-PULLUP-UNDISCRIMINATED` (orig lines 744-745)
+
+**NEXT: `F-TH-PULLUP-UNDISCRIMINATED`** — the residual last night's Q1 answer left standing: no corpus ROM discriminates the undriven-TH pull
+direction, and a one-instruction ROM reading `$A10003` with Control at `$00` settles it (`$FF` pull-up-high, `$B3` pull-low).
+
+### `F-TH-PULLUP-UNDISCRIMINATED` SETTLED 2026-09-19, merge `30a4617`; the CI red on the panel-clip landing and the fix at merge `1235148` (orig lines 754-805)
+
+
+**`F-TH-PULLUP-UNDISCRIMINATED` SETTLED 2026-09-19, merge `30a4617`: CORROBORATED — IO3 stands and Q1's answer with it** (agent tip `3e8ecdc`,
+four commits; **nothing under `crates/oracle-core/src/`**, and `testrom.rs` was never touched because the fixture is a committed `.bin` both arms
+load). An undriven, input-configured TH pin reads **HIGH**. ⚑ **Confidence is high for a better reason than "two emulators agree": the documented
+leg carries a MECHANISM — the 3-button pad has its own discrete pull-up on the select line**, so a plugged-in pad holds TH high regardless of the
+console's internal pull. **Each arm's limits are stated rather than blurred:** ours answers `$FF` **by construction** (`read_data` contains the
+rule — a consistency check, not evidence); **BlastEm 0.6.2** agrees on both ports with Control pristine at `$00`, with the premise **observed**
+rather than assumed and a driven-low control proving a low TH *would* be visible (`$33`); neither is hardware, and two models can inherit one
+documentation error.
+⚑ **IO3 CITED NOTHING FOR THE PULL DIRECTION, which is a better finding than a passing test.** Its Plutiedev quote is accurate for the read/write
+model and silent on the pull; IO2's parenthetical and IO4's bit-7 row rest on the same unattributed clause — **three statements standing on one
+uncited sentence**, in the reference every pad argument in this tree cites.
+⚑ **AND IT CORRECTED MY BRIEF: "no ROM in our corpus discriminates it" HAD ALREADY EXPIRED IN THE LANDING THAT REGISTERED THE ROW.** Pressing `C`
+to reach the H40 half made `vdp_sprite_masking` depend on the rule — measured, both its tests go red at the ROM's own `btst #5,$A10003`
+(`pc $000316`) — but *indirectly*, reporting *"never went idle within 300 frames"*, which points at a frame budget rather than a pull direction.
+So the direct differential still earns its place. **A booking's premise can expire by the hand that books it**, which is the register's own
+`(a) re-derive location as well as necessity` rule reaching one day further.
+▶ **NEW ROW IN ITS PLACE, `F-IO-DATA-BIT7`, and the instrument found it rather than the question:** we force Data **bit 7** to 1 unconditionally
+where BlastEm returns the data latch's own bit 7, so **we answer `$FF` where it answers `$7F` on every pad read a normal game performs.** Booked in
+`known_differences.py` as **the one entry that deliberately does NOT pin ours as right** — the port has seven I/O pins so no pin corresponds to bit
+7 at all, neither side has a citation, and the `315-5309` wiki contradicts itself. **Recorded so the disagreement is visible, not settled.** Q1 is
+untouched: bits 5 and 6 agree.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `land.sh --no-push` **17 gates PASS, none FAIL**, 91/91 legs, **3029 passed / 0 failed / 7 ignored**,
+tree untouched for the run; currency 2/3/9/5. **Red-first reproduced INDEPENDENTLY by flipping the rule in the core itself**
+(`true // input pin floats high` → `false`), shown on disk before the run and restored from committed `30a4617`: **`undriven_th_reads_high_in_both_models`
+fires alone**, reporting **`$B3` against BlastEm's `$7F`** — and **`$B3` is the exact value this seat predicted for a pull-low world in the dispatch
+brief, derived before the instrument existed**, which is the strongest form the (d) bar takes. Its message also names the consequence: a
+disagreement here reopens Q1 and is a core question, not a harness one. ⚑ **And the mutation showed the gap it fills: every pre-existing `io.rs`
+unit test writes `ctrl = $40`, so both pad-protocol tests stayed GREEN under it — the pull direction had no direct test at all.**
+**The test's own header is the artifact worth copying:** it records its expectations from the independent model rather than from our output, and
+carries a **"WHAT WOULD MAKE THIS TEST WRONG"** section naming BlastEm's own known blind spot in this very rig. ▶ **Real hardware is the only arm
+left**, and `th_pullup.bin` needs no screen — only a way to read work RAM back. Tagged for the owner's foreground, gating nothing.
+**NEXT: `LIVE-EFFECTS-NUDGES`** (buildable per its own row; re-derive its two stated constraints from the tree before dispatch — a runtime reader
+for only some fields, and the memory it needs being absent in a release build).
+
+**⚑ CI RED ON MY OWN PANEL-CLIP LANDING, AND THE FIX: `fix/panel-boundary-determinism` LANDED 2026-09-19, merge `1235148`.**
+CI run **`35418036061`** on `462e9cf`, job *Build, test, clippy, fmt* (**the DEBUG suite**): `a_run_on_no_reported_row_is_in_neither_string_and_changes_nothing`
+FAILED, 519 passed / 1 failed. ⚑ **My `land.sh` run was green because land.sh runs RELEASE and CI runs DEBUG — which land.sh's own header says in as
+many words, and I inferred a prediction from it anyway.** Three of the night's five landings reported release totals only. Banked as a landing-check
+bar in `docs/OVERSEER-REFERENCE.md`.
+⚑ **THE CAUSE IS THE NIGHT'S OWN THEME, IN A TEST I ACCEPTED HOURS EARLIER: TESTED AGAINST THE INSTANCE, NOT THE MECHANISM.** The row compared two
+fixture builds with **each ASCII digit masked to `#`**, and its own doc comment records why — a raw comparison had failed on `272.73` vs `243.24`.
+**Masking genuinely fixed THAT, because those are the same width.** It cannot fix a width change: `format!("{:.2}", fps_value)` varies in integer
+digits, so `9.09` masks to `#.##` and `272.73` to `###.##`. **The failure that prompted the repair became the case that validated it** — the sample
+and the test case were the same object. **Worse than a control arm written down and never run: this one RAN, and passed honestly.**
+▶ **FIXED AT THE SOURCE, NOT AT THE COMPARISON.** `fixture()` now captures its own `t0` and drives its iterations at `t0 + FRAME_PERIOD * (i + 1)`
+instead of `Instant::now()`; every `PacingFacts` figure is a **difference** from the loop's start instant, so all of them render the same string on
+any box. Production is untouched — `Loop::iterate` already takes `now` as an argument so the caller owns the clock. ⚑ **A wider mask was refused on
+the record: a length-insensitive mask is another repair aimed at one sample, because a wider number changes what FITS in a pane and therefore which
+runs exist at all.** ⚑ **And the mask is now GONE, not widened: under a forced skew the two surfaces are byte-identical, so the comparison is RAW**
+and keeping the mask would have hidden a digit-only change that really moved. It survives only inside the failure message, which says how to read
+each outcome.
+
+### The fix's firsthand verification in the DEBUG profile (orig lines 810-816)
+
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE, IN THE DEBUG PROFILE — the first landing under the new bar:** fmt 0, clippy `-D warnings` 0,
+**91/91 legs by both counts, 3026 passed / 0 failed / 10 ignored**, end marker reached (detached, `CI=1`, polled my own marker; the run passed 75
+legs, the count where a memory reap truncated an earlier run tonight, so the marker rather than a tail is what says it finished). The previously
+failing test ran and passed. **Red-first FORCED INDEPENDENTLY here** — wall clock restored **and** a 900 ms skew on every second fixture build, both
+mutations shown on disk before the run and restored from committed `1235148`: **RED**, `27.78 fps / 324 ms` against `26.39 fps / 341 ms`.
+⚑ **And that mutation proves more than the fix: those two differ at EQUAL WIDTH, so THE OLD MASKED COMPARISON WOULD HAVE PASSED ON IT.** Dropping
+the mask strictly strengthened the gate rather than merely repairing it.
