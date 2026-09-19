@@ -639,3 +639,4 @@ verification; the FLAGS are the claim.**
 ▶ **ONE SIZED, UNSTARTED FOLLOW-UP, correctly not opened inside this parcel: `F-REDS-0909-COHORT`** — seven more failures just outside my ten-run
 window, all 2026-09-09, **all logs retrievable** (1318-2116 lines), five exit 101 and two exit 100. **Log-only cost, no builds.**
 **NEXT: `F-REDS-0909-COHORT`** (same method, known-cheap, and the hit rate now stands at 6/6 by event), then `DATA-DISPLAY-AUDIT`.
+**CI READ GREEN for `c590c7d`** (the first-present landing), read to completion: `conclusion=success`, all three jobs — *Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*. ⚑ **That job is the one the 09-13 flake failed in, so this is also the first green of the suite with the defect removed.**
