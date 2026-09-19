@@ -30,8 +30,16 @@
       "title": "Aurora found that a line pushed entirely off a pane was reported as no loss at all. The hub ruled our fix in today, so it is now buildable: the lost line gets reported with nothing drawn beside it."
     },
     {
-      "id": "PANEL-CLIP-MARK",
+      "id": "F-TH-PULLUP-UNDISCRIMINATED",
       "state": "next",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Last night's answer about a confusing controller button rests on one rule no test cartridge we own actually checks. A tiny purpose-built ROM would settle it in one read."
+    },
+    {
+      "id": "PANEL-CLIP-MARK",
+      "state": "blocked",
       "size": "S",
       "blockedBy": "your card d-54",
       "project": "ORACLE-DEBUG-UI",
@@ -39,7 +47,7 @@
     },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
-      "state": "open",
+      "state": "blocked",
       "size": "S",
       "blockedBy": "a contract ruling (the hub's)",
       "project": "ORACLE-DEFAULT",
@@ -47,7 +55,7 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "open",
+      "state": "blocked",
       "size": "S",
       "blockedBy": "your ear: card d-51",
       "project": "LENS-PASS",
@@ -79,7 +87,7 @@
     },
     {
       "id": "ROM-DROP-WAYLAND",
-      "state": "open",
+      "state": "blocked",
       "size": "S",
       "blockedBy": "one more drop attempt from you",
       "project": "ORACLE-DEBUG-UI",
@@ -87,7 +95,7 @@
     },
     {
       "id": "PALETTE-SCOPE",
-      "state": "open",
+      "state": "blocked",
       "size": "M",
       "blockedBy": "your look at the write-up first",
       "project": "ORACLE-DEBUG-UI",
@@ -112,5 +120,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-19T02:29:32Z"
+  "updatedAt": "2026-09-19T02:35:26Z"
 }
