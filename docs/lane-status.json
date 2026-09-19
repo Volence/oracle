@@ -1,5 +1,5 @@
 {
-  "focus": "The two effect channels that refused everything on a real build work again.",
+  "focus": "Answered the hub's readiness pass: their option list was missing one, and one cost was unpriced.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -27,9 +27,9 @@
       "id": "F-FIRST-PRESENT-REFUSAL",
       "state": "blocked",
       "size": "S",
-      "blockedBy": "a contract ruling (the hub's)",
+      "blockedBy": "the hub's ruling, now unblocked at their end",
       "project": "ORACLE-DEFAULT",
-      "title": "Found by today's fix: in its first moment a window tells a connected program 'there is no window'. What it should say is a ruling for the hub."
+      "title": "A window that exists but has not drawn yet reports 'there is no window'. I have answered the hub's readiness pass; they rule, then we build."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -106,5 +106,5 @@
   ],
   "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; and that the raster and bands channels now select.",
   "atBoundary": true,
-  "updatedAt": "2026-09-19T09:11:55Z"
+  "updatedAt": "2026-09-19T09:37:52Z"
 }
