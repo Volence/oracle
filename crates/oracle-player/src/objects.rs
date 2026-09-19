@@ -208,11 +208,21 @@ pub const PLAYER_COLS: [Col; 7] = [
 
 impl Row {
     /// A contract key as a display string, or [`ABSENT`].
+    ///
+    /// ⚑ **The catch-all is gone, 2026-09-19.** This used to end `Some(v) => v.to_string()`, which is
+    /// the exact defect the Data Display audit closed at seven other sites: correct **by luck about the
+    /// wire**, because [`DecodedRecord::to_json`] emits only scalars for the keys a column asks for
+    /// today, and a raw `{"a":1,"b":[2,3]}` on the owner's screen the day one of them becomes a
+    /// composite. [`crate::table::render`] is the treatment the other sites got, and it is called here
+    /// rather than restated: a second spelling of a rule is how the first one stops being true.
+    ///
+    /// The `None` arm stays this function's own, because it is the one thing `render` cannot answer:
+    /// a key that is not in the record at all is [`ABSENT`], not a served `null`, and an inactive
+    /// slot's omitted keys are the reason that distinction exists.
     pub fn cell(&self, key: &str) -> String {
         match self.item.get(key) {
             None => ABSENT.into(),
-            Some(Value::String(s)) => s.clone(),
-            Some(v) => v.to_string(),
+            Some(v) => crate::table::render(v),
         }
     }
 

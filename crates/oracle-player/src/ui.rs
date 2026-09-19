@@ -54,7 +54,7 @@ use crate::pacing::{self, Governor};
 use crate::screen;
 use crate::screen_pick;
 use crate::stopping::{self, Live};
-use crate::table;
+use crate::table::{self, render};
 use oracle_core::io::Pad;
 use oracle_core::symbols::SymbolTable;
 use serde_json::{json, Value};
@@ -5307,51 +5307,6 @@ fn cell_colour(ui: &egui::Ui, c: &objects::Col, text: &str, active: bool) -> egu
     }
 }
 
-/// A served value as the panel prints it. **Exhaustive by construction, and that is the point.**
-///
-/// This used to be two arms: `String(s) => s.clone()` and `other => other.to_string()`. It was correct
-/// for every value the server actually sends today, because
-/// [`DecodedRecord::to_json`](oracle_core::decoders) emits only scalars and the one composite key
-/// (`"fields"`) is skipped by its caller before it ever gets here. It was correct **by luck about the
-/// wire**, not by anything this function does: the day a served key becomes an object or an array, that
-/// catch-all `to_string()` puts `{"a":1,"b":[2,3]}` on the owner's screen, which is exactly the raw JSON
-/// the style page's **P1** forbids, and no test in the crate would have gone red.
-///
-/// So the catch-all is gone and every `serde_json::Value` variant is spelled out. The two composite arms
-/// **state what arrived** instead of dumping it: a nested value is a fact about the served shape, and
-/// telling the reader that a shape they cannot see has appeared is useful, whereas printing its
-/// punctuation at them is not. If that ever becomes the wrong answer it will be because a real composite
-/// key is worth drawing, and drawing it is a panel decision with a layout attached, not a fallthrough.
-///
-/// `Null` is a stated absence rather than the four characters `null`, per **P6**: an absent fact is a
-/// line that says so.
-///
-/// Guarded by [`json_tests::no_served_value_can_put_raw_json_on_the_screen`], which walks every variant.
-fn render(v: &serde_json::Value) -> String {
-    match v {
-        // A string is the payload without its quotes. This is the overwhelmingly common case.
-        serde_json::Value::String(s) => s.clone(),
-        // Numbers and booleans spell identically in JSON and in prose, so there is no punctuation to leak.
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Bool(b) => b.to_string(),
-        // P6: `null` on the wire means the server had nothing, and a reader is owed that in words.
-        serde_json::Value::Null => NO_VALUE.to_owned(),
-        serde_json::Value::Array(a) => format!(
-            "{} value{} in a list. This panel draws single values, so the list itself is not shown.",
-            a.len(),
-            if a.len() == 1 { "" } else { "s" }
-        ),
-        serde_json::Value::Object(m) => format!(
-            "{} key{} in a nested record. This panel draws single values, so the record is not shown.",
-            m.len(),
-            if m.len() == 1 { "" } else { "s" }
-        ),
-    }
-}
-
-/// What [`render`] prints for a served `null`. A stated absence, never the token `null` and never a zero.
-const NO_VALUE: &str = "no value (the server sent nothing here)";
-
 /// One gesture's answer, coloured by whether it was a refusal.
 ///
 /// The colour is taken from [`memory::Line::refused`], which the [`crate::bus::Answer`] carried — never
@@ -7641,12 +7596,72 @@ mod bus_parity {
 /// two-arm [`render`] was safe only for as long as `DecodedRecord::to_json` happened to emit scalars, and
 /// a wire change would have made it wrong with the whole suite still green.
 ///
-/// Plain `#[cfg(test)]`, deliberately, unlike `transport_tests` above: this is a statement about a pure
-/// string function and there is nothing unix-shaped about it.
+/// ⚑ **AND IT COVERED ONE FUNCTION WHILE ITS NAME CLAIMED A CLASS, WHICH IS WHY IT WIDENED 2026-09-19.**
+/// Under a restored catch-all dump, four Data Display gates went red while
+/// [`json_tests::no_served_value_can_put_raw_json_on_the_screen`] printed `ok` — a lock named for exactly
+/// that defect class, standing while seven production sites committed it. It was never vacuous: it walked
+/// [`render`]'s variants and that is all it ever claimed in its body. **Its NAME is what stopped anyone
+/// checking**, and the same shape has now been found three times in this crate
+/// (`scene_no_mid_sprite_cut`, this, `the_armed_set_the_window_names_is_the_one_breakpoint_list_serves`).
+/// So the body was widened to the name rather than the name narrowed to the body: it now walks every
+/// variant through **every renderer in the crate that turns a served value into text a person reads**,
+/// which is the class the name has always described.
+///
+/// Plain `#[cfg(test)]`, deliberately, unlike `transport_tests` above: this is a statement about pure
+/// string functions and there is nothing unix-shaped about it.
 #[cfg(test)]
 mod json_tests {
     use super::*;
-    use serde_json::{json, Value};
+    use crate::table::NO_VALUE;
+    use serde_json::{json, Map, Value};
+
+    /// One of the functions in [`served_renderers`]: a served value in, the text a person reads out.
+    type Renderer = fn(&Value) -> String;
+
+    /// The key [`served_renderers`] hangs its probe value on when it drives `objects::Row::cell`, which
+    /// takes a contract key rather than a value. Any key does; naming it once keeps the `ABSENT` leg
+    /// below asking about a key this walk never sets.
+    const PROBE_KEY: &str = "probe";
+
+    /// One `objects::Row` carrying exactly one served value, for driving `Row::cell`.
+    fn probe_row(v: &Value) -> crate::objects::Row {
+        let mut item = Map::new();
+        item.insert(PROBE_KEY.to_owned(), v.clone());
+        crate::objects::Row {
+            slot: 0,
+            addr: 0x00FF_B000,
+            active: true,
+            item,
+        }
+    }
+
+    /// ⚑ **Every function in the player that turns a served value into text a person reads.**
+    ///
+    /// This roster is the difference between this gate's name and its old body. The three differ
+    /// deliberately and cannot be collapsed into one function — [`render`] draws one value in one cell so
+    /// a composite there is a shape the cell cannot hold, while `describe_reply` **is** the whole reply
+    /// line and spells an object key by key — so what they share is the rule, not the wording, and the
+    /// rule is what is checked here.
+    ///
+    /// **`palette.rs`'s `format!("ok {v}")` is the fourth site and is deliberately NOT here: `L-15`**
+    /// rules it stays raw. The command palette is a raw RPC console whose user typed a method name and
+    /// came for the wire shape, so P1 does not reach a surface whose subject is the wire. Adding it to
+    /// this walk would be re-opening a ruling, not closing a gap.
+    ///
+    /// ⚑ **What this roster does NOT do, stated rather than glossed: it is not derived.** A fifth
+    /// renderer added next week is not in it, and nothing here will notice. Deriving it would need the
+    /// static type of every expression that reaches a `format!`, which a source scan cannot supply; the
+    /// honest mitigation is that all three of these are `fn(&Value) -> String` reachable from a panel, so
+    /// **the question to ask of a new one is whether it belongs in this list**, and this comment is where
+    /// a reader is told to ask it. That residual is the reason the name is worth defending rather than
+    /// quietly narrowing: a modest name would have made nobody ask at all.
+    fn served_renderers() -> Vec<(&'static str, Renderer)> {
+        vec![
+            ("table::render", render),
+            ("bus::describe_reply", crate::bus::describe_reply),
+            ("objects::Row::cell", |v| probe_row(v).cell(PROBE_KEY)),
+        ]
+    }
 
     /// The characters JSON uses to build a composite. Derived rather than remembered: `serde_json`'s own
     /// serialisation of a nested value is asked which of them it actually emits, so this list cannot
@@ -7664,7 +7679,8 @@ mod json_tests {
     }
 
     /// Every `serde_json::Value` variant, the two composite ones included, rendered without a single
-    /// character of JSON punctuation reaching the string a panel draws.
+    /// character of JSON punctuation reaching the string a panel draws — **through every renderer in
+    /// [`served_renderers`]**, not through one of them.
     ///
     /// The composite cases are the ones that matter. Their assertion is deliberately **two-sided**: the
     /// output must carry no punctuation *and* must differ from `Value::to_string()`, because a rendering
@@ -7672,6 +7688,13 @@ mod json_tests {
     #[test]
     fn no_served_value_can_put_raw_json_on_the_screen() {
         let punctuation = structural();
+        let renderers = served_renderers();
+        assert_eq!(
+            renderers.len(),
+            3,
+            "COULD NOT MEASURE: the roster is the whole claim of this gate's name, and it is not the \
+             size it was written at"
+        );
         let cases: Vec<Value> = vec![
             Value::Null,
             json!(true),
@@ -7686,61 +7709,101 @@ mod json_tests {
             json!({"pool": {"base": "0x00FF8000"}}),
             json!({"provenance": ["symbol", "scan"], "confidence": 0.9}),
         ];
-        for v in &cases {
-            // A string is printed as the server meant it, quotes and all if it contains any: it is the
-            // payload, not a container. Every other variant is under the punctuation rule.
-            if v.is_string() {
-                continue;
+        for (name, f) in &renderers {
+            for v in &cases {
+                // A string is printed as the server meant it, quotes and all if it contains any: it is
+                // the payload, not a container. Every other variant is under the punctuation rule.
+                if v.is_string() {
+                    continue;
+                }
+                let out = f(v);
+                for c in &punctuation {
+                    assert!(
+                        !out.contains(*c),
+                        "{name}({v}) put the JSON character {c:?} on the screen: {out:?}"
+                    );
+                }
+                // A composite says what arrived rather than dumping it, and is not merely `to_string`
+                // with the braces filed off. Scalars are exempt: `0` spells `0` either way, and that is
+                // the correct answer rather than a dump.
+                if v.is_array() || v.is_object() {
+                    assert_ne!(
+                        out,
+                        v.to_string(),
+                        "{name} is dumping a composite rather than describing it"
+                    );
+                }
             }
-            let out = render(v);
-            for c in &punctuation {
-                assert!(
-                    !out.contains(*c),
-                    "render({v}) put the JSON character {c:?} on the screen: {out:?}"
-                );
-            }
+
+            // A string is still the payload with its quotes off, which is the whole reason every one of
+            // these functions has a `String` arm at all.
+            assert_eq!(
+                f(&json!("plain")),
+                "plain",
+                "{name} mangled a payload string"
+            );
         }
 
-        // A string is still the payload with its quotes off, which is the whole reason the function has a
-        // `String` arm at all.
-        assert_eq!(render(&json!("plain")), "plain");
-
-        // A composite says what arrived rather than dumping it, and is not merely `to_string` with the
-        // braces filed off.
+        // What the cell renderers say about a composite, which is their own wording and not the class
+        // rule: how many arrived. `describe_reply` is exempt here by design — it spells the keys out,
+        // because the reply line it draws is the only feedback an armed gesture has.
         let obj = json!({"provenance": ["symbol", "scan"], "confidence": 0.9});
-        let rendered = render(&obj);
-        assert_ne!(
-            rendered,
-            obj.to_string(),
-            "a nested record is being dumped rather than described"
-        );
-        assert!(
-            rendered.contains('2'),
-            "a nested record must say how many keys arrived, got {rendered:?}"
-        );
         let arr = json!([1, 2, 3]);
-        assert_ne!(render(&arr), arr.to_string());
-        assert!(render(&arr).contains('3'));
-        // ...and the singular is real, not a stray `s` on everything.
-        assert!(render(&json!([7])).contains("1 value in a list"));
-        assert!(render(&json!({"k": 1})).contains("1 key in a nested record"));
+        for (name, f) in [
+            ("table::render", render as Renderer),
+            ("objects::Row::cell", |v| probe_row(v).cell(PROBE_KEY)),
+        ] {
+            assert!(
+                f(&obj).contains('2'),
+                "{name}: a nested record must say how many keys arrived, got {:?}",
+                f(&obj)
+            );
+            assert!(f(&arr).contains('3'), "{name}: and how many values");
+            // ...and the singular is real, not a stray `s` on everything.
+            assert!(f(&json!([7])).contains("1 value in a list"), "{name}");
+            assert!(
+                f(&json!({"k": 1})).contains("1 key in a nested record"),
+                "{name}"
+            );
+        }
+
+        // `Row::cell`'s own arm, the one thing `render` cannot answer: a key the record does not carry
+        // at all is ABSENT, which is a different fact from a served `null` and must not have become one.
+        let row = probe_row(&Value::Null);
+        assert_eq!(
+            row.cell("a key this record does not have"),
+            crate::objects::ABSENT
+        );
+        assert_eq!(
+            row.cell(PROBE_KEY),
+            NO_VALUE,
+            "a key that IS there carrying null is a served absence, not a missing key"
+        );
     }
 
-    /// **P6.** A served `null` is a stated absence, never the token `null` and never a zero.
+    /// **P6.** A served `null` is a stated absence, never the token `null` and never a zero — **through
+    /// every renderer in [`served_renderers`]**, for the reason the module doc gives.
     ///
     /// Separated from the punctuation walk above because `null` carries no punctuation at all: the
     /// catch-all this gate replaced would have passed that walk on `Value::Null` while printing the four
     /// characters `null` at a person, which is not a fact anybody at this window can act on.
     #[test]
     fn a_served_null_is_a_stated_absence_and_not_the_token_null() {
-        let out = render(&Value::Null);
-        assert_eq!(out, NO_VALUE);
-        assert_ne!(out, Value::Null.to_string());
-        assert!(
-            !out.split_whitespace().any(|w| w == "null"),
-            "the absence is spelled in the wire's word rather than the reader's: {out:?}"
-        );
-        assert_ne!(out, "0", "an unknown rendered as a zero is a measurement");
+        for (name, f) in &served_renderers() {
+            let out = f(&Value::Null);
+            assert_ne!(out, Value::Null.to_string(), "{name}");
+            assert!(
+                !out.split_whitespace().any(|w| w == "null"),
+                "{name}: the absence is spelled in the wire's word rather than the reader's: {out:?}"
+            );
+            assert_ne!(
+                out, "0",
+                "{name}: an unknown rendered as a zero is a measurement"
+            );
+        }
+        // The two cell renderers share one spelling, which is the point of them sharing one function.
+        assert_eq!(render(&Value::Null), NO_VALUE);
+        assert_eq!(probe_row(&Value::Null).cell(PROBE_KEY), NO_VALUE);
     }
 }
 
