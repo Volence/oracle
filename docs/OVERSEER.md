@@ -562,3 +562,45 @@ swapping inside one symbol's extent passes every check.**
 agent seat.** Open the effects tab on `aeon/s4.debug.bin` with `s4.debug.lst` loaded and confirm the raster and bands channels now select and the
 readout carries the DRIFT line.
 **NEXT: `DATA-DISPLAY-AUDIT`** (his look calls 1-33 plus `objects.rs`'s latent raw-JSON catch-all).
+
+**`F-FIRST-PRESENT-REFUSAL` SERVER HALF LANDED 2026-09-19, merge `c590c7d`** (agent tip `661174b`, five commits). **Both embedders defer
+iteration 1's drain past its publishes**, so no drain answers a request with no publish behind it and `noDisplay` means what it says; later
+iterations are unchanged. ⚑ **The obvious fix was impossible and the parcel says why: in iteration 1 there is nothing on the glass, so publishing
+early trades a false *no window* for a false *picture*.**
+⚑ **IT WAS A LIVE CI FAILURE AND WE HAD BEEN CALLING IT A FLAKE — the biggest thing measured tonight.** The player gate's red is **byte-identical
+to CI run `34752339602` on `453aa96` (2026-09-13, a real failure)**, which I pulled and read rather than taking the resemblance:
+`loop_tests::a_client_reads_this_windows_top_bar_and_it_follows_the_run_state` panicking on `{"frame":1,"mclk":896042,"reason":"noDisplay"}` —
+**the same mclk.** ▶ **THE CROSS-REGISTER DEFECT (hub banked it at empyrean `2258736f`): a flake dismissed on 09-13 and a contract question filed
+in a doc were ONE defect, and nothing connected them because one lived in a test run and the other in prose.** A red is triaged by whoever is
+landing that week; a contract question is read by whoever drafts; **there is no artifact where both appear, so one defect gets two half-lives and
+two dispositions.** ⚑ It also retires the hub premise's *"No incident. Nobody has reported a wrong answer from this."* — **there was one, six days
+old, in our own CI, misfiled as nondeterminism. The absence of a report was evidence about our TRIAGE**, which is the same correction this lane
+made hours earlier about our corpus, arriving from the other side. **Two independent reasons that sentence was worthless, in one night.**
+▶ **THE RULE, and it is searchable rather than cautionary: a dismissed flake is a filed defect with its disposition guessed. Before citing "no
+incident" in any premise, search the reds closed without a cause.**
+▶ **I RAN THAT SWEEP IMMEDIATELY, AND ITS RESULT IS PARTLY UNMEASURED — stated as such.** Ten CI failures in recent history. **One is the confirmed
+instance** (`453aa96`). **Nine others carry NO `noDisplay` signature — and the instrument was proven first**: a positive control against the known
+run returns exactly 1 hit, so the zeros are real. **But I could not determine the CAUSE of those nine** (`c03ebea` is exit 101 with no test name
+recoverable from `--log-failed`), so the honest statement is **nine reds with no recorded cause, not nine reds that are fine.** Booked
+`F-REDS-WITHOUT-A-CAUSE`. ⚑ **My first pass at that sweep reported "log expired or not a test" for all eight and I nearly banked it — the logs
+were retrievable and my extraction was broken.** An absence produced by my own regex, which is the night's own bar landing on the instrument I
+built to apply it.
+▶ **VERIFIED FIRSTHAND, DEBUG PROFILE:** fmt 0, clippy 0, **91/91 legs both counts, 3058 passed / 0 failed / 10 ignored** (baseline 3055; +3 is
+exactly the three new rows); currency 2/3/9/5. ⚑ **The parcel corrected itself twice, and the first is the more useful: it originally deferred to
+the TOP OF ITERATION 2, reasoning that would land after the blit, and MEASURED IT WRONG-SIDE-UP** — egui re-runs the closure on a discard, so the
+next `iterate` may be another pass of the *same* displayed frame; the position bought no guarantee and only delayed the answer. Moved to the bottom
+of iteration 1. **Second: it had written that nothing can arm a pre-loop breakpoint — false, `--bench-arm` issues 16 `breakpoint_add`s before the
+loop.** They ship disabled so none can fire and the conclusion survives, but the claim did not.
+▶ **A BOUND THAT IS NOW CONTRACT-RELEVANT: neither embedder can promise *a frame that was PRESENTED*, only *a frame it finished COMPOSING*** —
+egui's multi-pass discard is why, and **the proposed clause is worded to that limit rather than past it.** The stronger promise is separate and
+larger work in both windows.
+▶ **CONTRACT TEXT DRAFTED, NOT LANDED** (`docs/2026-09-19-first-present-order.md`, marked A PROPOSAL in its first line; `contract/` is the hub's and
+was not touched). **Accepted verbatim by the hub at empyrean `2258736f`**, application as its own draft-and-apply pass per D-30:
+> A windowed embedder MUST NOT pump the bus before it has published the window state its readbacks report, and MUST NOT publish a snapshot of a
+> frame it has not composed.
+⚑ **The second half is the anti-loophole and the hub kept it for the parcel's own reason: without it the cheap way to comply is to prime an empty
+publish.** And *windowed embedder* is defined **by which readbacks a host serves**, so **a third embedder inherits the obligation by serving them
+rather than by knowing about it.**
+**Measured vs reasoned, stated: the player is measured end to end through the real `Loop::iterate`; the frontend is measured AT THE MECHANISM** —
+real `drain::Order`, real `Bus`, real socket, real snapshot, in `fn main`'s written order — **but not at `fn main`**, which needs a real window.
+**NEXT: `DATA-DISPLAY-AUDIT`**, or `F-REDS-WITHOUT-A-CAUSE` if the nine reds are worth a night's attention before it.
