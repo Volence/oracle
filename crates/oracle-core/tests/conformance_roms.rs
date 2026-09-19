@@ -828,7 +828,7 @@ fn scrape_m68k_illegal(sys: &mut System) -> String {
 fn scrape_vdp_sprite_masking(sys: &mut System) -> String {
     sprite_masking_halves(sys)
         .iter()
-        .map(|h| sprite_masking_row(h))
+        .map(sprite_masking_row)
         .collect::<Vec<_>>()
         .join(" | ")
 }
