@@ -37,6 +37,15 @@ names its SOURCES, never its FIGURE*. **Bar: an age, an interval or a "since whe
 writes comes from `git log`, quoted with the commit that dates it — never from a sense of how long the thing
 has felt true.**
 
+⚑ **SHARPENED BY THE HUB'S SWEEP, 2026-09-19 (empyrean `5e2f5a57`), AND THE SHARPENING IS THE USABLE HALF:
+a duration claim about OUR OWN code that exceeds its repo's age is wrong, and that needs no judgement — one
+command settles it.** Repo ages measured at their committed tips that night: aeon 148 days, seraph 141,
+aurora 140, empyrean 95, **oracle 87**, sigil 80. "Thirteen months" had no repository to have happened in,
+which is a stronger statement of the finding than *wrong by sevenfold* because it removes the arithmetic.
+▶ **The boundary that keeps it honest: a multi-year claim about an EXTERNAL subject can be perfectly true**
+(empyrean's wiki, and this workspace's own donor `sonic_hack`, first commit 2019-06-09). So the test is
+scoped to claims about our own trees — and a sentence that means the donor should SAY the donor.
+
 **⚑ A LABEL THAT CANNOT BE WRONG IS NOT A MEASUREMENT** *(2026-09-18, found at this seat while re-deriving
 `TESTROM-H40-HALF`'s premise from the tree; banked as a class by the hub at empyrean `9f3db535`)*. The
 `vdp_sprite_masking` scorecard row is prefixed with a hardcoded `"H32:"` string literal in
