@@ -632,6 +632,13 @@ pub fn write_rows<T>(rows: &[Vec<(GlassRun, T)>]) -> (String, String) {
 }
 
 /// [`reported_rows`] then [`write_rows`], for a caller that carries nothing alongside its runs.
+///
+/// **Test-only, and the reason is worth stating rather than hiding behind an `allow`:** the serve goes
+/// through the two functions directly because it carries each shape's index alongside its run, so
+/// `unrenderable` can be read from the runs the ROWS kept (see [`panel_surface`]). Before that it called
+/// this, and clippy's `dead_code` named the change the moment it stopped. This spelling stays because the
+/// unit rows below read the two strings and nothing else.
+#[cfg(test)]
 pub fn join(runs: Vec<GlassRun>) -> (String, String) {
     write_rows(&reported_rows(
         runs.into_iter().map(|r| (r, ())).collect::<Vec<_>>(),
