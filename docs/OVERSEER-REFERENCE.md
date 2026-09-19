@@ -44,9 +44,17 @@ was red for 34 minutes with nothing able to say so.
 `F-INFRA-HEURISTIC-UNSCOPED`)*. The first cohort ruled INFRA = 0 partly because the two sibling CI jobs were
 green while only one failed — sound there. The second cohort **checked instead of inheriting it** and found
 it **does not transfer**: `ci.yml:63` puts the `apt-get` step in `Build, test, clippy, fmt` **and nowhere
-else**, so the siblings were never exposed to the failing step and their greenness says nothing. ▶ **Before
-invoking a sibling-green argument, check the failing step's JOB DISTRIBUTION.** A heuristic is a claim about
-a topology, and the topology is what changes between investigations.
+else**, so the siblings were never exposed to the failing step and their greenness says nothing. A heuristic
+is a claim about a topology, and the topology is what changes between investigations.
+▶ **DETECTOR — `HEURISTIC:` in the ```detectors block, three fields, `checked:` load-bearing.** A borrowed
+heuristic names `from:` (the investigation it comes from), `assumes:` (the topology it assumes) and
+`checked:` — a citation of the form `<rev>:<path>:<line> "<text>"` **that is executed**: the blob is read at
+that revision and the quoted text must occur on that line. The real one is
+`35f81ca:.github/workflows/ci.yml:63 "System libraries for the frontend/player build"`. **Executable**, in
+`tools/detector-check.py`, run by `tools/land.sh` at **G2c** on every landing and by
+`tools/run_detector_check_tests.sh`. **A rotted or invented citation reddens; a `checked: not-checked`
+reddens.** ⚑ What the tool does NOT judge is whether `assumes:` names the *right* topology — that stays with
+the reader, and the field exists so the reader has something to disagree with.
 
 **⚑ "THAT CANNOT BE TESTED HERE" IS A CLAIM, AND THIS LANE HAS ASSERTED IT TWICE AND HAD IT DISPROVED**
 *(booked `F-FLOOR-LINT-ASSUMED-UNTESTABLE`)*. A floor-toolchain lint was written off as unreproducible on
@@ -55,6 +63,17 @@ had already corrected this once: `2999687` (2026-09-09) is titled *"correct my o
 toolchain skew, I skipped clippy."*** **A cheap falsification refused twice, ten days apart, with the
 correction already committed in between** — which is the booking-reads-as-a-reason bar aimed at an
 impossibility claim instead of a deferral.
+▶ **DETECTOR — `CANNOT-TEST:` in the ```detectors block: `attempted:`, `cost:`, `prior:`.** `attempted:` is
+a command and **its result** (`<cmd> -> exit 101`), not an intention — *"installing a toolchain manager was
+judged too expensive"* reddens for naming no result. `cost:` is the **measured** price of the cheapest
+attempt considered. `prior:` is where this claim was made before in this tree, **and it is resolved**: a
+revision must exist, a path must exist. **Partly executable**, in `tools/detector-check.py` at **G2c**:
+shape and resolution red; `attempted: none`, `cost: not measured` and `prior: not-searched` are legal and
+**print as notes on the landing log** — visible, never enforced. ⚑ That split is deliberate and it is the
+whole detector: the first cohort's block (`docs/2026-09-19-reds-without-a-cause.md`) is green with **three
+such notes**, and those three notes are exactly the two holes the next night had to pay for. **Nothing rules
+on them. A reader looks at the field and sees `none`, instead of reading a paragraph and assuming there was
+a reason.**
 
 **⚑ MY OWN AD-HOC QUERIES PRODUCED A FALSE ABSENCE THREE TIMES IN ONE NIGHT, ALL AFTER I BANKED THE RULE
 AGAINST IT** *(2026-09-19; the third was caught by an agent auditing my survey, the first two by me)*.
@@ -64,10 +83,25 @@ fully retrievable. (3) A survey that reported **"logs gone"** for three runs —
 1675 / 1692 lines each, all panicking at `server.rs:1339`** — because my `gh run list --limit 200` window had
 been pushed past them by the night's own commits. ⚑ **Every one was a hand-rolled query whose EMPTY RESULT I
 read as a FACT, and I had banked "an absence is never a finding" hours before the second and third.**
-▶ **Bar: an ad-hoc query's silence is not evidence until the query has been shown to fire. Run a POSITIVE
-CONTROL against a case known to contain the thing, in the same invocation, before reporting a zero.** The
-agent did exactly that on this row (`noDisplay` appears exactly once in run `34752339602`, zero in a negative
-control) and that is why its zeros could be trusted where mine could not.
+▶ **DETECTOR — `ABSENCE:` in the ```detectors block, FIVE fields, and the last two are the ones that were
+missing.** `instrument:` the exact invocation that produced the zero; `positive:`/`negative:` the **same**
+instrument on a case known to contain the thing and on one known to lack it, each ending `-> <count>`;
+`scope:` what the instrument enumerated **with its boundary**; `contains:` how the subject is shown to lie
+inside that boundary. The filled pair the auditing agent actually ran, and the reason its zeros could be
+trusted where mine could not: `grep -c 'noDisplay' 34752339602.log -> 1`, `… 35051831548.log -> 0`.
+⚑ **A control pair alone would have caught only two of the three.** Instance (1) was a WINDOW failure, not
+an extractor failure: a positive control on a case inside `--limit 8` fires happily and the zero is still
+wrong. What catches it is `scope`/`contains` — the move the 0909 cohort made under *"the window, proved
+rather than assumed"* (`--limit 500`, oldest run five days older than the subject), turned into two fields.
+**Executable**, in `tools/detector-check.py` at **G2c**: a `positive` that returned 0 reddens (*the control
+did not fire*); a `negative` that returned non-zero reddens; and **`instrument`, `positive` and `negative`
+must share their leading command token** — the check aimed at what actually happened, which is that all
+three zeros came out of `gh run list` and the only thing ever controlled was a `grep`. ⚑ **The counts
+themselves are never re-run.** `-> 1` is checked for being positive, never for being true.
+⚑ **And the gap that nothing closes, named rather than implied: the TRIGGER.** The block is required of a
+doc that says `**Kind:** investigation` — which is self-selecting, and a zero reported anywhere else is
+asked for nothing. There is no prose parser here and there is not going to be one. `detector-check.py
+--gaps` prints this on every landing.
 ⚑ **And the failure is not in the rule, it is in where the rule gets applied**: I applied it scrupulously to
 *parcels' evidence* and never once to *my own tooling*, which is the author-versus-carrier hole in a new
 costume — the discipline runs on the thing being judged, never on the instrument doing the judging.

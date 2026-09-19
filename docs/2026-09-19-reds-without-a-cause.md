@@ -6,6 +6,37 @@ or from a run in this document, never from a prior note's own verdict (RULE 1).
 
 ---
 
+## Method declarations
+
+*Added 2026-09-19 by `parcel/method-detectors`, under the three detector bars in
+`docs/OVERSEER-REFERENCE.md`. **Nothing in the document below was changed.** Every value here is
+read off this document's own evidence, including the two fields it cannot fill — which is the point
+of the block: a reader looks for the answer and finds the hole instead of guessing there wasn't one.
+Validated by `tools/detector-check.py`.*
+
+```detectors
+ABSENCE: UNDETERMINED = 0 of 8 runs; no red in this corpus resisted a first look
+  instrument: grep -n '<failing test | assertion>' <run>.log   (over `gh run view <id> --log`)
+  positive:   grep -c 'noDisplay' 34752339602.log -> 1
+  negative:   grep -c 'noDisplay' 35051831548.log -> 0
+  scope:      10 runs retrieved one at a time, `gh run view <id> --log`; all 10 exit 0, stderr captured separately, every log non-empty (1675-4939 lines)
+  contains:   the brief's enumeration was re-derived rather than trusted and found SHORT BY ONE — `462e9cf`/`35418036061` was missing and was added and dispositioned
+
+HEURISTIC: none — no heuristic was carried in from a prior investigation; the sibling-green INFRA argument was ORIGINATED in this document
+
+CANNOT-TEST: the floor-toolchain clippy lint (`nonminimal_bool`) cannot be run on this box at any price short of installing a toolchain manager
+  attempted: none — `which rustup` -> not found is the only thing run; the lint itself was never attempted here
+  cost:      not measured — "installing a toolchain manager" was priced by assertion, not by trying the cheapest attempt
+  prior:     not-searched — this lane's own record was never grepped for an earlier statement of the same claim
+```
+
+⚑ **Both holes above were paid for the next night.** The 0909 cohort reproduced a floor lint *in
+twenty seconds on a two-file scratch crate*, and the `prior` that was never searched for is
+`2999687` — *"correct my own diagnosis: there was no toolchain skew, I skipped clippy"* — which was
+already committed **ten days before this document was written**.
+
+---
+
 ## The headline number
 
 **UNDETERMINED: 0 of 8.**

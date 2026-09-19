@@ -697,6 +697,38 @@ fi
 ./tools/lane-check.py --gaps 2>/dev/null | while IFS= read -r l; do note "$l"; done
 
 # --------------------------------------------------------------------------------------------
+# G2c  the method declarations an investigation doc carries
+#
+# Three habits were measured IN THIS LANE'S OWN WORK on 2026-09-19 — a survey that trusted its own
+# empty result (three times in one night, all AFTER "an absence is never a finding" was banked), a
+# heuristic reused where its topology did not hold, and "that cannot be tested here" asserted twice
+# and disproved. All three were already banked in docs/OVERSEER-REFERENCE.md as PROSE, and prose is
+# what they were broken in. `tools/detector-check.py` turns each into a missing field: a thing a
+# reader looks for and fails to find.
+#
+# Runs on EVERY landing, fast path or full. It costs well under a second over ~220 docs, which is
+# the whole reason it is allowed on an 18.5-minute landing at all.
+#
+# ⚑ ONE RUN, ON THE WORKING TREE, AND THAT IS SUFFICIENT — unlike G2b, which runs twice. G2 refuses
+#   a dirty tree with a carve-out for the lane files only (.json/.jsonl), and those carry no
+#   declarations, so the working tree's *.md and the committed *.md are the same bytes here.
+# --------------------------------------------------------------------------------------------
+hr; echo "G2c method declarations (docs/*.md — ./tools/detector-check.py)"
+if ./tools/detector-check.py --label "working tree" > "$RUN_DIR/detector-check.log" 2>&1; then
+    pass "G2c $(command tail -1 "$RUN_DIR/detector-check.log")"
+    command grep '^note: ' "$RUN_DIR/detector-check.log" 2>/dev/null | while IFS= read -r l; do note "$l"; done
+else
+    fail "G2c an investigation doc's method declarations are missing, malformed, or cite something that does not resolve"
+    command cat "$RUN_DIR/detector-check.log"
+    finish_red
+fi
+
+# ⚑ As with G2b: this green bounds only what the tool checks, and what it does NOT check is printed
+#   rather than left to be assumed. The sharpest gap is the trigger — a doc that reports a zero and
+#   does not say `**Kind:** investigation` is never asked for a block, and nothing here detects one.
+./tools/detector-check.py --gaps 2>/dev/null | while IFS= read -r l; do note "$l"; done
+
+# --------------------------------------------------------------------------------------------
 # G3  fast-forward
 # --------------------------------------------------------------------------------------------
 hr; echo "G3  fast-forward onto $REMOTE/$BRANCH"
