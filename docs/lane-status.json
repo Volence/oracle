@@ -1,6 +1,12 @@
 {
-  "focus": "A 'random' test failure from six days ago was a real bug. Fixed, and the window no longer denies itself.",
-  "inFlight": [],
+  "focus": "Chasing the test failures we closed without ever finding a cause. Two of two so far were real bugs.",
+  "inFlight": [
+    {
+      "what": "Giving every unexplained CI failure a disposition backed by evidence, instead of the guess it was closed on",
+      "where": "branch parcel/reds-without-a-cause",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: ten landings, main green, nothing running.",
+  "nextBoundary": "When the reds parcel returns and is verified here.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -25,11 +31,11 @@
     },
     {
       "id": "F-REDS-WITHOUT-A-CAUSE",
-      "state": "open",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Nine automated test failures in recent history were never explained. One I did chase turned out to be a real bug, so the rest are unmeasured rather than harmless."
+      "title": "Nine test failures were closed without a cause. The two I have chased were both real bugs, now fixed, so the rest are unmeasured rather than harmless."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -104,7 +110,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T10:48:41Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T11:06:46Z"
 }
