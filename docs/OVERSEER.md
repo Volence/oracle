@@ -640,3 +640,33 @@ verification; the FLAGS are the claim.**
 window, all 2026-09-09, **all logs retrievable** (1318-2116 lines), five exit 101 and two exit 100. **Log-only cost, no builds.**
 **NEXT: `F-REDS-0909-COHORT`** (same method, known-cheap, and the hit rate now stands at 6/6 by event), then `DATA-DISPLAY-AUDIT`.
 **CI READ GREEN for `c590c7d`** (the first-present landing), read to completion: `conclusion=success`, all three jobs — *Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*. ⚑ **That job is the one the 09-13 flake failed in, so this is also the first green of the suite with the defect removed.**
+
+**`F-REDS-0909-COHORT` ANSWERED 2026-09-19, merge `777e4ef`** (agent tip `1e40477`; docs only, nothing fixed, nothing built at any SHA).
+⚑ **UNDETERMINED = 0 AGAIN. Seven runs are THREE events: two REAL (both already fixed, fix commits verified as ancestors of `HEAD`) and one
+INFRA.** ▶ **Running total across both cohorts: 17 runs, 15 REAL, 2 INFRA, 0 UNDETERMINED, 9 events. Not one red in this repo's recent history
+has resisted a first look.**
+⚑ **THE EXIT CODE IS NOT THE EVENT BOUNDARY, and my clustering hint was numerically exact and wrong.** I gave the agent "five exit 101, two exit
+100". True — **and the five 101s are TWO different defects** (one test failure at 14:06; four lint failures at 18:44-19:03), so splitting on exit
+code would have priced one event inside another. **The largest event in either cohort is that quadruple.**
+▶ **FIRST INFRA IN THE CORPUS, on positive evidence:** `sudo apt-get update` died on a Hash Sum mismatch against `dl.google.com`, exit 100 is
+apt's, and **neither run reached `cargo` at all** — verified at this seat, zero compile lines. Two runs 20 minutes apart got the same wrong hash
+against the same expected one: one upstream mirror state, observed twice.
+⚑ **TWO CORRECTIONS TO THE PREVIOUS COHORT'S METHOD, both made by CHECKING rather than inheriting, and this is the behaviour to keep.**
+(1) **The sibling-green INFRA heuristic does NOT transfer.** `ci.yml:63` puts the `apt-get` step in `Build, test, clippy, fmt` **and nowhere
+else**, so the siblings were never exposed to the failing step and their greenness is uninformative; the INFRA ruling rests on positive evidence
+alone. **A heuristic is a claim about a topology, and the topology is what changes between investigations.** (2) **"A floor lint cannot be run on
+this box" is wrong for this lint** — reproduced locally in **twenty seconds on a two-file scratch crate**. ⚑ **And the tree had already corrected
+this ten days ago: `2999687`, *"correct my own diagnosis: there was no toolchain skew, I skipped clippy."*** A cheap falsification refused twice
+with the correction already committed in between.
+⚑ **RULE 3 (grep our own records first) PAID WITHOUT FINDING ITS TARGET:** none of the seven run ids is banked anywhere — **but the grep surfaced
+`lane-log.jsonl:184`**, a landing that recorded a genuine full-suite green **from a command that cannot fail a clippy gate**. That is the **second**
+such line in our own verification record, and tonight's release-vs-debug red is the third instance of the shape. ⚑ **And `a003801`, which
+introduced that lint, never had a CI run of its own — `main` was red for 34 minutes with nothing able to say so.**
+▶ **THREE METHOD ROWS BOOKED, all against this lane's own practice** and banked as bars: `F-LANDING-GATE-NOT-RUN` (**the lander's check set must
+be the CI job's STEP LIST, not a subset; quote the invocation, not the tool — the flags are the claim**), `F-INFRA-HEURISTIC-UNSCOPED`, and
+`F-FLOOR-LINT-ASSUMED-UNTESTABLE`.
+**Gaps named rather than papered:** the truncate-window race in event A was read statically (one path, three parallel writers, a truncating write)
+and **not** reproduced — that needs an old-SHA build and a loaded many-trial loop; and the previous cohort's `nonminimal_bool` was **not** retested,
+so no claim is made about it.
+**NEXT: `F-LANDING-GATE-NOT-RUN`** — it is the root cause of tonight's own red and of two historical greens, it needs nobody, and it is the one row
+whose fix would have prevented three separate failures in this repo.
