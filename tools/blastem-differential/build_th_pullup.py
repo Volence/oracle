@@ -35,20 +35,29 @@ Observables (bytes at `$FF8000`, all with nothing held on the pad):
     +7  P1 Data  with Ctrl=$40, latch=$00     CONTROL: TH DRIVEN low
     +8  P1 Data  back to Ctrl=$00, latch=$00
     +9  P1 Ctrl  read back after $40 then $00
+    +10 P1 Data  with Ctrl=$40, latch=$C0      bit 7: pull-up, latch, or zero?
+    +11 P1 Data  with Ctrl=$00, latch=$80      the same, TH an input again
     $FF8010.w  done marker $C0DE  ($DEAD from any exception vector)
 
-Predictions, for an all-released 3-button pad:
+Predictions on **bits 6-0**, for an all-released 3-button pad:
 
     hypothesis                       +0    +5    +7    +8
-    pull-up HIGH (IO3 as pinned)     $FF   $FF   $B3   $FF
-    pull-down LOW                    $B3   $B3   $B3   $B3
-    input pin echoes the latch       $B3   $FF   $B3   $B3
+    pull-up HIGH (IO3 as pinned)     $7F   $7F   $33   $7F
+    pull-down LOW                    $33   $33   $33   $33
+    input pin echoes the latch       $33   $7F   $33   $33
 
 `+5` and `+8` are what separate a real pull-up from a model that simply hands an
 input pin back its own latch -- the two agree at `+0` and differ at `+5`. `+7`
 is the detector-positive control: TH is genuinely driven low there under every
-hypothesis, so a run that cannot produce `$B3` at `+7` has not demonstrated that
-`$FF` elsewhere means anything at all.
+hypothesis, so a run that cannot produce `$33` in bits 6-0 at `+7` has not
+demonstrated that a high TH elsewhere means anything at all.
+
+**Bit 7 is a separate cell, and it is why the predictions above are masked to
+seven bits.** The port has seven I/O pins (Control is bits 6-0; bit 7 of Control
+is the TH-interrupt enable), so no *pin* corresponds to Data bit 7 at all. Recon
+IO4's table says it reads `1` ("pull-up, undriven"); the first BlastEm run of
+this ROM read it `0` everywhere. `+10`/`+11` separate the candidates: bit 7 =
+constant 1, = the Data latch's own bit 7, or = constant 0.
 
     ./build_th_pullup.py            # -> th_pullup.bin, prints the listing
     ./build_th_pullup.py --check    # verify the committed image matches
@@ -182,6 +191,18 @@ def assemble():
     a.move_b_d0_abs(OBS + 8)
     a.move_b_abs_d0(P1_CTRL)
     a.move_b_d0_abs(OBS + 9)
+
+    # --- +10/+11: what is Data bit 7, which has no pin? Latch it to 1 with TH an output, then an input. ---
+    a.move_b_imm_abs(0x40, P1_CTRL)
+    a.move_b_imm_abs(0xC0, P1_DATA)
+    a.nop(4)
+    a.move_b_abs_d0(P1_DATA)
+    a.move_b_d0_abs(OBS + 10)
+    a.move_b_imm_abs(0x00, P1_CTRL)
+    a.move_b_imm_abs(0x80, P1_DATA)
+    a.nop(4)
+    a.move_b_abs_d0(P1_DATA)
+    a.move_b_d0_abs(OBS + 11)
 
     a.move_w_imm_abs(0xC0DE, DONE_MARK)
     done = a.pc
