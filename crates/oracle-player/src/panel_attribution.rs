@@ -177,6 +177,13 @@ pub(crate) mod hook {
         Straddle { text: String, inside: f32 },
         /// A painter string wholly right of the clip.
         Outside(String),
+        /// Two painter strings on ONE row at the same baseline, in the same font: `shown` ends inside the
+        /// clip, `eaten` starts fifty points past its right edge. The clip eats the second one whole while
+        /// the first one keeps their shared row on the glass — §11.50's total loss, on a reported row.
+        Beside { shown: String, eaten: String },
+        /// A painter string wholly BELOW the clip: laid out on no row the surface reports, which is the
+        /// boundary the amended clause leaves where it was (`F-PANEL-SCROLL-UNSTATED`).
+        Below(String),
     }
 
     struct Hook {
@@ -243,6 +250,27 @@ pub(crate) mod hook {
                 ui,
                 egui::pos2(clip.max.x + 50.0, clip.center().y),
                 egui::Align2::LEFT_CENTER,
+                s,
+            ),
+            Plant::Beside { shown, eaten } => {
+                let y = clip.center().y;
+                paint(
+                    ui,
+                    egui::pos2(clip.max.x - 80.0, y),
+                    egui::Align2::RIGHT_CENTER,
+                    shown,
+                );
+                paint(
+                    ui,
+                    egui::pos2(clip.max.x + 50.0, y),
+                    egui::Align2::LEFT_CENTER,
+                    eaten,
+                );
+            }
+            Plant::Below(s) => paint(
+                ui,
+                egui::pos2(clip.min.x + 20.0, clip.max.y + 50.0),
+                egui::Align2::LEFT_TOP,
                 s,
             ),
             Plant::Label { text, width } => {
@@ -1491,9 +1519,18 @@ mod tests {
     }
 
     /// ★ **W6, clipping.** A run half outside its clip appears in `text` whole and in `rendered` as the
-    /// glyphs on the glass; a run wholly outside appears in neither.
+    /// glyphs on the glass; a run wholly outside its clip, on a row the pane reports, appears in `text`
+    /// whole and in `rendered` as nothing.
+    ///
+    /// ⚑ **The second half USED TO ASSERT THE OPPOSITE** — *in neither string* — which was §11.50's text
+    /// before the 2026-09-18 amendment (`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`), and it is the defect itself:
+    /// this plant lands on the `governor / the loop's own rate limiter` row, a row the pane DOES show, and
+    /// the run the clip ate there was in neither string, the two compared equal and `truncated` derived
+    /// false. The plant did not move; the rule did. What is genuinely absent is a run on a row the surface
+    /// does not report, and that is asserted by `a_run_on_no_reported_row_is_in_neither_string_and_changes_nothing`
+    /// below — with the control this row cannot have, that nothing shown shares its row.
     #[test]
-    fn w6_a_clipped_run_is_whole_in_text_and_cut_in_rendered_and_an_unseen_run_is_absent() {
+    fn w6_a_clipped_run_is_whole_in_text_and_a_wholly_clipped_one_is_empty_in_rendered() {
         const STRADDLE: &str = "STRADDLING THE RIGHT EDGE OF THE PANE";
         const OUTSIDE: &str = "WHOLLY OUTSIDE THE PANE";
         let mut lp = fixture(crate::ui::initial_dock());
@@ -1535,15 +1572,453 @@ mod tests {
                 ..Setup::default()
             },
         );
+        let g = painted_of(&outside, Tab::Pacing)
+            .iter()
+            .find(|g| g.galley.text() == OUTSIDE)
+            .expect("control: the outside run WAS painted into the span");
         assert!(
-            painted_of(&outside, Tab::Pacing)
-                .iter()
-                .any(|g| g.galley.text() == OUTSIDE),
-            "control: the outside run WAS painted into the span, so its absence below is the rule"
+            !laid(g).touches,
+            "control: a glyph of it reaches the clip, so this is the straddle above and not total loss"
         );
+        let run = glass_run(g).expect("the toolkit laid it out, so it is a run");
+        assert_eq!((run.text.as_str(), run.rendered.as_str()), (OUTSIDE, ""));
         let s = outside.surface(Tab::Pacing);
-        assert!(!s["text"].as_str().unwrap().contains(OUTSIDE), "{s}");
-        assert!(!s["rendered"].as_str().unwrap().contains(OUTSIDE), "{s}");
+        let (text, rendered) = (s["text"].as_str().unwrap(), s["rendered"].as_str().unwrap());
+        assert!(runs_of(text).contains(&OUTSIDE), "{s}");
+        assert!(!runs_of(rendered).contains(&OUTSIDE), "{s}");
+        assert_eq!(
+            s["truncated"],
+            serde_json::json!(true),
+            "the cut a client could not see before the amendment: {s}"
+        );
+        assert_aligned("outside", &outside);
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED: a run the clip ate WHOLE is in `text` with an empty `rendered`
+    // (§11.50 as amended 2026-09-18), and the row it lands on is derived, not guessed
+    // ---------------------------------------------------------------------------------------------------
+
+    /// One painted galley's geometry, read **straight off the galley** and never through `glass_run`, so
+    /// these rows can disagree with the harvest instead of sharing a mistake with it. `row_cuts` above is
+    /// the same discipline for the right-edge gate.
+    ///
+    /// The three readings are deliberately one-sided, so a glyph that sits exactly on an edge lands in
+    /// none of them: `visible_bands` wants a glyph **wholly inside** the clip, `touches` wants any overlap
+    /// at all, and a galley that is neither is left unasserted by the sweep rather than guessed at.
+    struct Laid {
+        /// The source as both strings carry it: the run's own TAB and LF folded to a space (§11.50 Q7),
+        /// spelled out here rather than borrowed from `screen.rs`.
+        source: String,
+        /// `(top, bottom)` of the first row the toolkit laid a glyph out on, whatever the clip kept.
+        band: Option<(f32, f32)>,
+        /// `(top, bottom)` of every row with a glyph wholly inside the clip.
+        visible_bands: Vec<(f32, f32)>,
+        /// Any glyph overlaps the clip at all, however little.
+        touches: bool,
+    }
+
+    fn laid(p: &Painted) -> Laid {
+        let origin = p.pos.to_vec2();
+        let (mut band, mut visible_bands, mut touches) = (None, Vec::new(), false);
+        for row in &p.galley.rows {
+            let rr = row.rect().translate(origin);
+            if band.is_none() && !row.glyphs.is_empty() {
+                band = Some((rr.min.y, rr.max.y));
+            }
+            let mut seen = false;
+            for g in &row.glyphs {
+                let r = g.logical_rect().translate(origin + row.pos.to_vec2());
+                if r.width() > 0.0 && r.height() > 0.0 && p.clip.contains_rect(r) {
+                    seen = true;
+                }
+                if r.max.x > p.clip.min.x
+                    && r.min.x < p.clip.max.x
+                    && r.max.y > p.clip.min.y
+                    && r.min.y < p.clip.max.y
+                {
+                    touches = true;
+                }
+            }
+            if seen {
+                visible_bands.push((rr.min.y, rr.max.y));
+            }
+        }
+        Laid {
+            source: p.galley.text().replace(['\t', '\n'], " "),
+            band,
+            visible_bands,
+            touches,
+        }
+    }
+
+    /// Every run of `text`, in row-major order: the rows a client reads, split by the joins the server made.
+    fn runs_of(text: &str) -> Vec<&str> {
+        text.split('\n').flat_map(|row| row.split('\t')).collect()
+    }
+
+    /// ★ **A run the clip ate WHOLE is in `text`, with an empty run in its place in `rendered`, on the row
+    /// it shares with the run that WAS shown** (`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`, §11.50 as amended
+    /// 2026-09-18). Before the fix both strings omitted it, they compared equal, and `truncated` derived
+    /// FALSE for the cut that loses everything.
+    ///
+    /// **The row is derived, not guessed, and this row proves the derivation rather than the outcome.** The
+    /// two planted strings are painted in the same font at the same baseline, so the toolkit lays them out
+    /// on rows with the SAME band — asserted here off the galleys, independently of `screen.rs` — and one is
+    /// inside the clip while the other starts fifty points past its right edge. So the answer to *which row*
+    /// is a fact about the layout, and the assertions below are written from the plant, not from the
+    /// harvest: row *k* of `text` carries `shown` then `eaten`, and row *k* of `rendered` carries `shown`
+    /// then an EMPTY run at the same index.
+    ///
+    /// *Controls, each before the verdict it makes meaningful:* both galleys were painted into the span;
+    /// the shown one is whole on the glass (so their row is reported); not one glyph of the eaten one
+    /// touches the clip (so this is total loss and not the straddle W6 covers).
+    #[test]
+    fn a_run_the_clip_ate_whole_is_in_text_with_an_empty_rendered_on_its_row() {
+        const SHOWN: &str = "SHOWN INSIDE THE PANE";
+        const EATEN: &str = "EATEN BY THE RIGHT EDGE";
+        let mut lp = fixture(crate::ui::initial_dock());
+        let p = one(
+            &mut lp,
+            &Setup {
+                plant: Some((
+                    Some(Tab::Pacing),
+                    Plant::Beside {
+                        shown: SHOWN.into(),
+                        eaten: EATEN.into(),
+                    },
+                )),
+                ..Setup::default()
+            },
+        );
+        let find = |t: &str| -> &Painted {
+            painted_of(&p, Tab::Pacing)
+                .iter()
+                .find(|g| g.galley.text() == t)
+                .unwrap_or_else(|| panic!("control: {t:?} was not painted into the span"))
+        };
+        let (shown, eaten) = (find(SHOWN), find(EATEN));
+        let (ls, le) = (laid(shown), laid(eaten));
+        assert!(
+            !ls.visible_bands.is_empty(),
+            "control: the shown string is not on the glass, so the row is not reported and this row \
+             measures the scroll boundary instead of the clip"
+        );
+        assert!(
+            !le.touches,
+            "control: a glyph of the eaten string touches the clip, so this is a straddle (W6) and not \
+             total loss"
+        );
+        let band = le.band.expect("control: the eaten string was laid out");
+        assert!(
+            ls.visible_bands
+                .iter()
+                .any(|b| (b.0 - band.0).abs() < 0.01 && (b.1 - band.1).abs() < 0.01),
+            "control: the plant did not put the two strings on one row after all: shown {:?} vs eaten \
+             {band:?}",
+            ls.visible_bands
+        );
+
+        let run =
+            glass_run(eaten).expect("a run the toolkit laid out is a run whatever the clip kept");
+        assert_eq!(run.text, EATEN, "the source is whole in the run");
+        assert_eq!(run.rendered, "", "and nothing of it reached the glass");
+        assert_eq!(
+            glass_run(shown).expect("on the glass").rendered,
+            SHOWN,
+            "control: the shown run is whole, so a difference below is the eaten one's"
+        );
+
+        let s = p.surface(Tab::Pacing);
+        let (text, rendered) = (s["text"].as_str().unwrap(), s["rendered"].as_str().unwrap());
+        assert_eq!(s["truncated"], serde_json::json!(true), "{s}");
+        let k = text
+            .split('\n')
+            .position(|row| row.split('\t').any(|x| x == SHOWN))
+            .expect("the shown run is a run of some row of text");
+        let (trow, rrow) = (
+            text.split('\n')
+                .nth(k)
+                .unwrap()
+                .split('\t')
+                .collect::<Vec<_>>(),
+            rendered
+                .split('\n')
+                .nth(k)
+                .expect("rendered has the same rows as text")
+                .split('\t')
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            trow.len(),
+            rrow.len(),
+            "row {k} lost the alignment the whole section rests on:\n{trow:?}\n{rrow:?}"
+        );
+        let j = trow
+            .iter()
+            .position(|x| *x == EATEN)
+            .unwrap_or_else(|| panic!("the eaten run is not on the shown run's row: {trow:?}"));
+        assert_eq!(
+            rrow[j], "",
+            "row {k} run {j} of rendered is the glass rendering of row {k} run {j} of text, and the glass \
+             got none of it: {rrow:?}"
+        );
+        let i = trow
+            .iter()
+            .position(|x| *x == SHOWN)
+            .expect("the shown run is on the row this index came from");
+        assert!(
+            i < j,
+            "the plant painted the shown string left of the eaten one, so the row orders them that way: \
+             {trow:?}"
+        );
+        assert_eq!(
+            rrow[i], SHOWN,
+            "and the shown run rendered whole in its own place: {rrow:?}"
+        );
+        assert_aligned("beside", &p);
+    }
+
+    /// ★ **The boundary, and it is the load-bearing half: a run on NO reported row is in neither string**
+    /// (`F-PANEL-SCROLL-UNSTATED`, unchanged by the total-loss ruling). A string painted below the clip
+    /// changes the surface **not at all** — asserted against the same present without the plant, character
+    /// for character, which is a stronger statement than "the source does not appear": a fix that reopened
+    /// the scroll question by reporting rows the panel does not show would have to change this string.
+    ///
+    /// ⚑ **Every ASCII DIGIT is masked before the comparison, and the mask is the whole reason this row
+    /// can make that claim.** The Pacing panel prints the loop's own measured rate (`243.24 fps`, `37 ms`),
+    /// so two presents of the same fixture differ in those digits by wall clock alone — a raw byte
+    /// comparison here failed on `272.73` vs `243.24` the first time it ran, which is a defect in the
+    /// premise and not in the surface. Masking digits keeps every join, every run and every letter under
+    /// the comparison, which is what a reopened scroll question would have to disturb.
+    ///
+    /// *Controls:* the string was painted into the span; no glyph of it touches the clip; and no other
+    /// galley of that body has a band overlapping its row, so the row really is one the surface does not
+    /// report rather than one it does.
+    #[test]
+    fn a_run_on_no_reported_row_is_in_neither_string_and_changes_nothing() {
+        // U+6F22 rides along so the `unrenderable` half can be asserted too: that field describes the
+        // runs the two strings carry, so a run in neither string may not put a hollow box in it.
+        const BELOW: &str = "BELOW EVERY ROW THE PANE SHOWS \u{6F22}";
+        let plain = {
+            let mut lp = fixture(crate::ui::initial_dock());
+            one(&mut lp, &Setup::default()).surface(Tab::Pacing)
+        };
+        let mut lp = fixture(crate::ui::initial_dock());
+        let p = one(
+            &mut lp,
+            &Setup {
+                plant: Some((Some(Tab::Pacing), Plant::Below(BELOW.into()))),
+                ..Setup::default()
+            },
+        );
+        let all = painted_of(&p, Tab::Pacing);
+        let g = all
+            .iter()
+            .find(|g| g.galley.text() == BELOW)
+            .expect("control: the string below the pane WAS painted into the span");
+        let l = laid(g);
+        assert!(!l.touches, "control: it touches the clip: {:?}", g.clip);
+        let band = l.band.expect("control: it was laid out");
+        assert!(
+            all.iter()
+                .filter(|o| o.galley.text() != BELOW)
+                .map(laid)
+                .flat_map(|o| o.visible_bands)
+                .all(|b| b.1 <= band.0 || b.0 >= band.1),
+            "control: something the pane showed shares its row, so the row IS reported"
+        );
+
+        let s = p.surface(Tab::Pacing);
+        assert!(
+            !runs_of(s["text"].as_str().unwrap()).contains(&BELOW),
+            "a row the panel does not show is in neither string: {s}"
+        );
+        let masked =
+            |v: &serde_json::Value| -> (String, String, serde_json::Value, serde_json::Value) {
+                let mask = |k: &str| {
+                    v[k].as_str()
+                        .unwrap()
+                        .chars()
+                        .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                        .collect::<String>()
+                };
+                (
+                    mask("text"),
+                    mask("rendered"),
+                    v["truncated"].clone(),
+                    v["unrenderable"].clone(),
+                )
+            };
+        assert_eq!(
+            plain["unrenderable"],
+            serde_json::json!([]),
+            "control: this panel names a box of its own, so the comparison below would pass on a leak"
+        );
+        assert_eq!(
+            masked(&s),
+            masked(&plain),
+            "planting a run off every reported row moved the surface, so the scroll rule has been reopened"
+        );
+    }
+
+    /// ★ **The sweep: across every arrangement, a real run the clip ate whole is in `text` exactly when its
+    /// row is reported** — the same instrument the cut gate uses, aimed at the runs that put NOTHING on the
+    /// glass instead of the ones cut at the edge.
+    ///
+    /// **Two-sided, by multiplicity, and independent.** For every drawn body of every arrangement in
+    /// [`cut_arrangements`], each galley is read by [`laid`] rather than by `glass_run`. A galley that laid
+    /// glyphs out and touches the clip nowhere is classified by geometry alone:
+    /// * its band equals the band of a row **another galley showed** → its row is reported → its source
+    ///   must be a run of `text`, and the panel must report `truncated`;
+    /// * no band of any other galley overlaps it → its row is reported by nothing → its source must be a
+    ///   run of neither string;
+    /// * anything else (a partial overlap, where this gate's plain geometry and the harvest's centre rule
+    ///   may honestly differ) is **counted and printed, never asserted** — a bound on both sides rather
+    ///   than a copy of the implementation's own rule, which could only agree with it.
+    ///
+    /// Sources that occur twice in one body are also left unasserted: with two galleys of the same string
+    /// the count in `text` cannot say which one it came from.
+    ///
+    /// ⚑ **What this is blind to, said out loud.** A run RATCHETED down to fit its clip — the `Grid`
+    /// column collapsed to a bare `…` that `no_drawn_run_is_cut_at_a_pane_edge_without_the_mark` was
+    /// structurally blind to — is *visible*, so it is not in this population either; that defect has its
+    /// own assertion in the cut gate (`blanked`), and whole-widget overflow stays the owner's half under
+    /// `d-54`. This row sees exactly the runs the clip ate whole.
+    #[test]
+    fn a_run_the_clip_ate_is_in_text_exactly_when_its_row_is_reported() {
+        let mut arrangements_driven = 0usize;
+        let mut runs = 0usize;
+        let (mut reported, mut unreported, mut unasserted) = (0usize, 0usize, 0usize);
+        let mut examples: Vec<String> = Vec::new();
+        for (name, dock, ppp) in cut_arrangements() {
+            let mut lp = fixture(dock);
+            let p = one(
+                &mut lp,
+                &Setup {
+                    ppp,
+                    ..Setup::default()
+                },
+            );
+            arrangements_driven += 1;
+            assert!(
+                !p.spans.is_empty(),
+                "{name}: no body was drawn, so this arrangement witnesses nothing"
+            );
+            assert_aligned(&name, &p);
+            // ⚑ **By POSITION, never by name.** `narrow Screen` docks the Screen tab twice, so two spans
+            // carry the title "Screen" and `Present::surface` hands back the first of them whatever body
+            // the galleys came from. The contract's order is the window's draw order and the spans are in
+            // that order, so the k-th panel surface is the k-th span's — asserted, not assumed. (Found by
+            // running this row: a real ate-whole run in the narrow pane was checked against the wide
+            // pane's strings and read as a defect in the harvest.)
+            let surfaces = p.panel_surfaces();
+            assert_eq!(
+                surfaces.len(),
+                p.spans.len(),
+                "{name}: one panel surface per drawn body"
+            );
+            for ((span, painted), surface) in p.spans.iter().zip(&p.painted).zip(&surfaces) {
+                assert_eq!(
+                    surface.0, span.name,
+                    "{name}: the k-th surface is the k-th span's"
+                );
+                let ls: Vec<Laid> = painted.iter().map(laid).collect();
+                runs += ls.len();
+                let s = serde_json::json!({
+                    "panel": surface.0, "text": surface.1, "rendered": surface.2,
+                    "truncated": surface.3,
+                });
+                let text = surface.1.as_str();
+                let in_text = |src: &str| runs_of(text).iter().filter(|r| **r == src).count();
+                for (i, l) in ls.iter().enumerate() {
+                    let Some(band) = l.band.filter(|_| !l.touches) else {
+                        continue;
+                    };
+                    let others = || ls.iter().enumerate().filter(move |(j, _)| *j != i);
+                    if others().any(|(_, o)| o.source == l.source) {
+                        unasserted += 1;
+                        continue;
+                    }
+                    let overlaps = |b: &(f32, f32)| b.1 > band.0 && b.0 < band.1;
+                    let shares_a_shown_row = others().any(|(_, o)| {
+                        o.visible_bands
+                            .iter()
+                            .any(|b| (b.0 - band.0).abs() < 0.01 && (b.1 - band.1).abs() < 0.01)
+                    });
+                    let touched_by_anything = others().any(|(_, o)| {
+                        o.band.iter().any(overlaps) || o.visible_bands.iter().any(overlaps)
+                    });
+                    if shares_a_shown_row {
+                        reported += 1;
+                        examples.push(format!("{name} / {} :: {:?}", span.name, l.source));
+                        assert_eq!(
+                            in_text(&l.source),
+                            1,
+                            "{name} / {}: the clip ate {:?} whole on a row the pane DOES show, so it owes \
+                             a run of text with an empty rendered: {s}",
+                            span.name,
+                            l.source
+                        );
+                        assert!(
+                            surface.3,
+                            "{name} / {}: {:?} is in text and not on the glass, so the panel is \
+                             truncated: {s}",
+                            span.name, l.source
+                        );
+                    } else if !touched_by_anything {
+                        unreported += 1;
+                        assert_eq!(
+                            in_text(&l.source),
+                            0,
+                            "{name} / {}: {:?} is on a row nothing on the pane shows, which is in neither \
+                             string: {s}",
+                            span.name,
+                            l.source
+                        );
+                    } else {
+                        unasserted += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            arrangements_driven,
+            cut_arrangements().len(),
+            "the sweep did not drive every arrangement"
+        );
+        assert!(
+            arrangements_driven >= 28,
+            "only {arrangements_driven} arrangements are swept"
+        );
+        assert!(
+            runs > 2000,
+            "anti-vacuity: only {runs} galleys were laid out, so this sweep is not measuring the panels"
+        );
+        // **Floors on both populations, measured when this row was written and printed below.** The pane
+        // the state strip is cut in eats the buttons `8` and `9` whole on a row it DOES show — the real
+        // instance of the defect, found by this sweep rather than planted — and 37 runs sit on rows the
+        // pane shows nothing of. Floors, not pins: they may rise. A fall means this sweep has stopped
+        // measuring the side that matters and only the two planted rows above still do, which is a thing
+        // to be TOLD rather than to pass in silence.
+        assert!(
+            reported >= 2,
+            "only {reported} real run(s) were eaten whole on a row their pane reports, so the positive \
+             half of this sweep has gone vacuous: {examples:?}"
+        );
+        assert!(
+            unreported >= 20,
+            "only {unreported} real run(s) sit on a row their pane reports nothing of, so the boundary \
+             half of this sweep has gone vacuous"
+        );
+        println!(
+            "TOTAL LOSS: {arrangements_driven} arrangements, {runs} galleys; {reported} ate-whole runs on \
+             a reported row (asserted present), {unreported} on no reported row (asserted absent), \
+             {unasserted} unasserted (partial overlap or a repeated source)"
+        );
+        examples.sort();
+        examples.dedup();
+        println!("TOTAL LOSS on a reported row: {examples:?}");
     }
 
     /// ★ **W7, boxes.** A TextEdit holding U+6F22 names it in `unrenderable`; the same panel holding `A`

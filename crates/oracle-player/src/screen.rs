@@ -52,15 +52,23 @@
 //!   `end_pass` — each span is read **from its own recorded layer** (a floating window's body is in a
 //!   `Middle` layer of its own). `Context::graphics` takes the context's WRITE lock, so the read clones the
 //!   galleys out in one call and nothing else runs inside it: [`Glyphs`] takes the fonts lock later.
-//! * **A run** is one `Shape::Text` with at least one glyph whose logical rectangle meets its clip
-//!   rectangle. A TextEdit's empty galley, and a label scrolled wholly out of view, are not runs.
+//! * **A run** is one `Shape::Text` the toolkit laid a glyph out in, on a row the surface reports. An
+//!   empty galley (a TextEdit with nothing in it) is not a run — §11.50's own parenthetical, *an empty
+//!   text SHAPE is not a run* — and neither is a label on a row nothing on the panel showed.
 //!   `text` gets the galley's SOURCE (`Galley::text`); `rendered` gets the glyphs that meet the clip, the
 //!   elision mark included. A run's own TAB or LF is folded to a space in both.
-//! * **Rows.** Runs are grouped into visual rows by the band of their first visible glyph row, ordered
+//! * ⚑ **A run whose glyphs the clip ate ENTIRELY is still a run**, with an empty `rendered`, so
+//!   `truncated` derives TRUE and total loss is not the one cut a client cannot see (§11.50 as amended
+//!   2026-09-18, `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`; the clause *"laid out on a reported row"* replaced
+//!   *"with at least one glyph on the glass"*, and the empty run is that clause's consequence, not a case
+//!   [`glass_run`] knows about). It is placed by the galley's row geometry, which is computed whether or
+//!   not the clip kept anything.
+//! * **Rows.** Runs are grouped into visual rows by the band of the glyph row that places them, ordered
 //!   top to bottom, and left to right within a row; runs on a row are joined by TAB and rows by LF, in
 //!   both strings identically, so row *k* run *j* of `rendered` renders row *k* run *j* of `text`.
-//! * **Scrolled out is not truncation.** Rows off the view are in neither string. A panel surface is what
-//!   the panel shows, never its content.
+//! * **Scrolled out is not truncation.** A row nothing on the panel showed is in neither string
+//!   ([`reported_rows`]), so rows off the view are absent as before. A panel surface is what the panel
+//!   shows, never its content.
 //! * **A drawn panel with no text is present, with `""`.** "Not on screen" and "on screen and blank" stay
 //!   different artifacts.
 //!
@@ -470,7 +478,12 @@ fn meets(r: egui::Rect, clip: egui::Rect) -> bool {
 }
 
 /// **One run as the glass has it**: the source, the glyphs that reached the glass, and the vertical band
-/// and left edge of its first visible glyph row, which place it among the panel's visual rows.
+/// and left edge of the glyph row that places it among the panel's visual rows.
+///
+/// The band is **layout**, never visibility: it is read off the galley's own row rectangles, which the
+/// toolkit computes for every row whether or not the clip kept any of it. That is what lets a run whose
+/// glyphs the clip ate entirely still be placed on its row (§11.50 as amended 2026-09-18) instead of
+/// needing a source no invisible run has.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlassRun {
     pub text: String,
@@ -483,8 +496,28 @@ pub struct GlassRun {
     pub elided: bool,
 }
 
-/// **The run one painted galley contributes, or `None` when none of its glyphs is on the glass** (a
-/// TextEdit's empty galley, a label scrolled wholly out of view).
+/// **The run one painted galley contributes, or `None` when the toolkit laid out no glyph at all** — a
+/// TextEdit's empty galley. §11.50's own parenthetical: *an empty text SHAPE is not a run*.
+///
+/// ⚑ **Visibility decides what lands in `rendered`, and nothing else.** §11.50 as amended
+/// 2026-09-18 (`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`) substitutes the clause that decides this: `text` is
+/// every run **"that the toolkit laid out on a reported row"**, where it used to read *"with at least one
+/// glyph on the glass"*. So a run the clip ate entirely is still a run — present in `text` with an EMPTY
+/// `rendered`, from which `truncated` derives TRUE through the existing comparison — and total loss stops
+/// being the single cut a client cannot see. This predicate is the whole of that change: it does not know
+/// the wholly-clipped case as a case, it takes a run's PLACEMENT from the layout (below) and leaves
+/// visibility to `rendered`. The old `None` swallowed a run the clip ate, which is not what its own
+/// justification covered.
+///
+/// **Placement comes from the galley's rows, which survive having no visible glyph.** Two candidates are
+/// read off the same source: the first row that put a glyph on the glass, and — for a run that put none
+/// anywhere — the first row the toolkit laid glyphs out on. Both give the band the same way, so an
+/// invisible run is placed by the same rule as a visible one rather than by an approximation of it.
+/// `left` is the row's first LAID-OUT glyph (`PlacedRow::rect_without_leading_space`), which is the
+/// layout-side reading of the same edge the first visible glyph used to give.
+///
+/// The other half of the amended clause — *on a reported row* — is [`reported_rows`]'s, because whether a
+/// row is reported is a fact about the row and not about any one run. That is where the scroll rule lives.
 ///
 /// `rendered` walks the glyph rows the toolkit laid out. A `\n` in the source ends a row and is not a
 /// glyph (`PlacedRow::ends_with_newline`), so its folded space is put back between the visible glyphs on
@@ -493,11 +526,20 @@ pub struct GlassRun {
 /// label that loses nothing has `rendered == text`.
 pub fn glass_run(p: &Painted) -> Option<GlassRun> {
     let mut rendered = String::new();
-    let mut band: Option<(f32, f32, f32)> = None;
+    let mut on_glass: Option<(f32, f32, f32)> = None;
+    let mut laid_out: Option<(f32, f32, f32)> = None;
     let mut newline_pending = false;
     let origin = p.pos.to_vec2();
     for row in &p.galley.rows {
         let row_rect = row.rect().translate(origin);
+        let band = (
+            row_rect.min.y,
+            row_rect.max.y,
+            row.rect_without_leading_space().translate(origin).min.x,
+        );
+        if laid_out.is_none() && !row.glyphs.is_empty() {
+            laid_out = Some(band);
+        }
         if newline_pending && !rendered.is_empty() && meets(row_rect, p.clip) {
             rendered.push(' ');
         }
@@ -506,8 +548,8 @@ pub fn glass_run(p: &Painted) -> Option<GlassRun> {
             let r = g.logical_rect().translate(origin + row.pos.to_vec2());
             if meets(r, p.clip) {
                 rendered.push(fold(g.chr));
-                if band.is_none() {
-                    band = Some((row_rect.min.y, row_rect.max.y, r.min.x));
+                if on_glass.is_none() {
+                    on_glass = Some(band);
                 }
             }
         }
@@ -515,7 +557,7 @@ pub fn glass_run(p: &Painted) -> Option<GlassRun> {
             newline_pending = true;
         }
     }
-    let (top, bottom, left) = band?;
+    let (top, bottom, left) = on_glass.or(laid_out)?;
     Some(GlassRun {
         text: p.galley.text().chars().map(fold).collect(),
         rendered,
@@ -526,31 +568,58 @@ pub fn glass_run(p: &Painted) -> Option<GlassRun> {
     })
 }
 
-/// **Join a panel's runs into its two strings**, identically: visual rows top to bottom joined by LF,
-/// runs left to right within a row joined by TAB.
+/// **The visual rows this surface REPORTS**, top to bottom, each ordered left to right — the grouping both
+/// strings are then written from, and the other half of §11.50's clause *"laid out on a reported row"*.
 ///
-/// A run belongs to the current row when the vertical centre of its first visible glyph row lies inside
-/// the band of the row's topmost run — so a small label centred beside a large one is on its row, and a
-/// table row whose top touches the previous row's bottom is not. The joins are this function's, not text
-/// on the glass, and the same joins go into both strings, which is the whole of the alignment guarantee.
-pub fn join(mut runs: Vec<GlassRun>) -> (String, String) {
-    runs.sort_by(|a, b| a.top.total_cmp(&b.top).then(a.left.total_cmp(&b.left)));
-    let mut rows: Vec<Vec<GlassRun>> = Vec::new();
+/// A run belongs to the current row when the vertical centre of its own band lies inside the band of the
+/// row's topmost run — so a small label centred beside a large one is on its row, and a table row whose top
+/// touches the previous row's bottom is not.
+///
+/// **A row is reported when something on it reached the glass**, i.e. when one of its runs rendered a
+/// glyph. That is a fact about the row, which is why it is decided here and not in [`glass_run`]: it is
+/// what makes the empty run of a wholly-clipped cell land *beside the cells that were shown* rather than
+/// anywhere else, and it is the same sentence that keeps the scroll rule (`F-PANEL-SCROLL-UNSTATED`) exactly
+/// where it was — a row nothing on the panel showed is in neither string, so rows off the view are still
+/// not truncation. Nothing that used to be reported can be dropped by it: a run only ever had a band when
+/// a glyph of it was on the glass, so every row that existed before this rule had one.
+///
+/// `T` is whatever the caller needs carried alongside each run ([`panel_surface`] carries the shape's index,
+/// so `unrenderable` can be taken from the runs the surface reports and no others).
+pub fn reported_rows<T>(mut runs: Vec<(GlassRun, T)>) -> Vec<Vec<(GlassRun, T)>> {
+    runs.sort_by(|a, b| {
+        a.0.top
+            .total_cmp(&b.0.top)
+            .then(a.0.left.total_cmp(&b.0.left))
+    });
+    let mut rows: Vec<Vec<(GlassRun, T)>> = Vec::new();
     for run in runs {
-        let centre = (run.top + run.bottom) / 2.0;
+        let centre = (run.0.top + run.0.bottom) / 2.0;
         match rows.last_mut() {
-            Some(row) if centre >= row[0].top && centre < row[0].bottom => row.push(run),
+            Some(row) if centre >= row[0].0.top && centre < row[0].0.bottom => row.push(run),
             _ => rows.push(vec![run]),
         }
     }
+    rows.retain(|row| row.iter().any(|(run, _)| !run.rendered.is_empty()));
+    for row in &mut rows {
+        row.sort_by(|a, b| a.0.left.total_cmp(&b.0.left));
+    }
+    rows
+}
+
+/// **Write the reported rows into the two strings**, identically: rows top to bottom joined by LF, runs
+/// left to right within a row joined by TAB.
+///
+/// The joins are this function's, not text on the glass, and the same joins go into both strings from the
+/// same rows in the same order — which is the whole of the alignment guarantee, and why an empty
+/// `rendered` cannot slide row *k* run *j* of one string off row *k* run *j* of the other.
+pub fn write_rows<T>(rows: &[Vec<(GlassRun, T)>]) -> (String, String) {
     let (mut text, mut rendered) = (String::new(), String::new());
-    for (k, mut row) in rows.into_iter().enumerate() {
+    for (k, row) in rows.iter().enumerate() {
         if k > 0 {
             text.push('\n');
             rendered.push('\n');
         }
-        row.sort_by(|a, b| a.left.total_cmp(&b.left));
-        for (j, run) in row.iter().enumerate() {
+        for (j, (run, _)) in row.iter().enumerate() {
             if j > 0 {
                 text.push('\t');
                 rendered.push('\t');
@@ -560,6 +629,20 @@ pub fn join(mut runs: Vec<GlassRun>) -> (String, String) {
         }
     }
     (text, rendered)
+}
+
+/// [`reported_rows`] then [`write_rows`], for a caller that carries nothing alongside its runs.
+///
+/// **Test-only, and the reason is worth stating rather than hiding behind an `allow`:** the serve goes
+/// through the two functions directly because it carries each shape's index alongside its run, so
+/// `unrenderable` can be read from the runs the ROWS kept (see [`panel_surface`]). Before that it called
+/// this, and clippy's `dead_code` named the change the moment it stopped. This spelling stays because the
+/// unit rows below read the two strings and nothing else.
+#[cfg(test)]
+pub fn join(runs: Vec<GlassRun>) -> (String, String) {
+    write_rows(&reported_rows(
+        runs.into_iter().map(|r| (r, ())).collect::<Vec<_>>(),
+    ))
 }
 
 /// **The characters of a galley's source this window draws as a hollow box**, each asked of the family its
@@ -618,14 +701,23 @@ pub fn panel_surface(
     probe: &mut dyn FnMut(char, bool) -> Option<bool>,
 ) -> ScreenSurface {
     let mut runs = Vec::new();
-    let mut unrenderable = Vec::new();
-    for p in painted {
+    for (i, p) in painted.iter().enumerate() {
         if let Some(run) = glass_run(p) {
-            boxes(&p.galley, probe, &mut unrenderable);
-            runs.push(run);
+            runs.push((run, i));
         }
     }
-    let (text, rendered) = join(runs);
+    let rows = reported_rows(runs);
+    let (text, rendered) = write_rows(&rows);
+    // `unrenderable` names the boxes in the SOURCE of the runs this surface reports — taken from the rows
+    // rather than from `glass_run`, so a run on a row the surface does not report (a label scrolled out of
+    // view) stays out of this field exactly as it stays out of both strings. Read back in paint order, the
+    // order it was collected in before the rows existed.
+    let mut reported: Vec<usize> = rows.iter().flatten().map(|(_, i)| *i).collect();
+    reported.sort_unstable();
+    let mut unrenderable = Vec::new();
+    for i in reported {
+        boxes(&painted[i].galley, probe, &mut unrenderable);
+    }
     ScreenSurface {
         kind: ScreenSurfaceKind::Panel(
             PanelName::new(name).expect("every tab bar draws a non-empty title (Tab::title)"),
@@ -860,8 +952,15 @@ mod tests {
         }
     }
 
-    /// **A run below its clip is not a run; a run cut by its clip is whole in `text` and cut in
-    /// `rendered`.** Control: the same galley under a wide clip renders whole.
+    /// **A run cut by its clip is whole in `text` and cut in `rendered`; a run the clip ate entirely is
+    /// whole in `text` with an EMPTY `rendered`, placed by its layout; an empty SHAPE is not a run.**
+    /// Control: the same galley under a wide clip renders whole.
+    ///
+    /// The third case used to be `None` — the defect the §11.50 amendment names
+    /// (`F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`): a run the clip ate was in neither string, both compared
+    /// equal, and `truncated` derived false for the cut that loses the most. What stays `None` is a galley
+    /// the toolkit laid no glyph out in, which is the case the old return's own justification covered.
+    /// Whether such a run reaches the strings is [`reported_rows`]'s question, asserted below it.
     #[test]
     fn a_clip_decides_which_glyphs_are_on_the_glass() {
         let ctx = fonts_ctx();
@@ -880,9 +979,40 @@ mod tests {
         assert_eq!(run.text, "left right");
         assert_eq!(run.rendered, "left");
         let below = egui::Rect::from_min_max(egui::pos2(-10.0, 500.0), egui::pos2(500.0, 600.0));
+        let eaten = glass_run(&painted_job(&ctx, job(), egui::Pos2::ZERO, below))
+            .expect("the toolkit laid this run out, so it is a run whatever the clip kept");
+        assert_eq!(eaten.text, "left right", "the source is whole");
+        assert_eq!(eaten.rendered, "", "and nothing of it reached the glass");
         assert_eq!(
-            glass_run(&painted_job(&ctx, job(), egui::Pos2::ZERO, below)),
-            None
+            (eaten.top, eaten.left),
+            (whole.top, whole.left),
+            "placed by the same layout as the visible reading of the same galley, not by a fallback of \
+             its own"
+        );
+        assert_eq!(
+            join(vec![eaten.clone()]),
+            (String::new(), String::new()),
+            "alone it is on a row the surface does not report, which is the scroll rule untouched"
+        );
+        let shown = GlassRun {
+            left: whole.left - 50.0,
+            ..whole.clone()
+        };
+        assert_eq!(
+            join(vec![eaten, shown]),
+            (
+                "left right\tleft right".to_owned(),
+                "left right\t".to_owned()
+            ),
+            "beside a run that WAS shown, it is on a reported row: run 1 of row 0 is the same run in both \
+             strings, and rendered's is empty"
+        );
+
+        let empty = simple("", 14.0, f32::INFINITY);
+        assert_eq!(
+            glass_run(&painted_job(&ctx, empty, egui::Pos2::ZERO, WIDE)),
+            None,
+            "an empty text SHAPE is not a run (§11.50)"
         );
     }
 
