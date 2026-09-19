@@ -390,10 +390,9 @@ struct Loop {
     /// **The first drain, owed back** (`F-FIRST-PRESENT-REFUSAL`).
     ///
     /// Raised by iteration 1 at the drain's normal position, where it does **not** drain, and taken at the
-    /// top of iteration 2 — which is after eframe has put iteration 1's composition on the glass and after
-    /// both of iteration 1's publishes. See [`Loop::iterate`]'s two comments for the whole argument; the
-    /// field exists so the deferral is one-shot by construction rather than by a counter comparison
-    /// repeated at two sites.
+    /// bottom of that same iteration — the one position behind both of the iteration's publishes. See
+    /// [`Loop::iterate`]'s two blocks for the whole argument; the field exists so the deferral is one-shot
+    /// by construction rather than by a counter comparison repeated at two sites.
     owe_deferred_drain: bool,
     /// Frame-owning iterations by how many emulated frames the audio ring asked for: `[0, 1, 2]`.
     frames_per_iter: [u64; 3],
@@ -766,53 +765,16 @@ impl Loop {
     /// 3. Upload the picture and lay out the UI, whether or not a frame ran, so an early wake still
     ///    re-presents the retained picture instead of flashing black.
     /// 4. Drain the bus **after** that frame and **before** those publishes — except on iteration 1,
-    ///    which has nothing on the glass to publish yet and therefore owes its drain to the top of
-    ///    iteration 2 (`F-FIRST-PRESENT-REFUSAL`; the first block in the body is the argument).
+    ///    which has nothing on the glass to publish when that position comes round and therefore owes its
+    ///    drain to the bottom of the same iteration, behind both publishes
+    ///    (`F-FIRST-PRESENT-REFUSAL`; the drain's own block is the argument).
     ///
     /// Returns the governor's verdict: whether this iteration owned a frame, and how long to ask the
     /// toolkit to wait before the next repaint.
     fn iterate(&mut self, ctx: &egui::Context, root: &mut egui::Ui, now: Instant) -> pacing::Tick {
         self.iterations += 1;
 
-        // --- ⚑ Iteration 1's drain, deferred to here (`F-FIRST-PRESENT-REFUSAL`). ---
-        //
-        // **The defect this repairs: a window that exists answered "there is no window", once, at the start
-        // of every session.** Both publishes below (`set_pacing`, `publish_screen_text`) exist to answer
-        // *the frame that is on the glass*, so neither can run before iteration 1 has composed one — and
-        // one `Host::pump` answers every request it finds queued. So a request answered by iteration 1's
-        // drain, sitting where every later iteration's drain sits, was refused `-32005 noDisplay` /
-        // `noPacing`, and `emulator/status` answered `display: false`, from a live window.
-        //
-        // **Priming a publish cannot fix it and must not be tried.** In iteration 1 there is nothing on the
-        // glass yet, so a publish before the first composition would trade a false *"no window"* for a
-        // false *picture* — the worse of the two. What is wrong is the order, and only for iteration 1.
-        //
-        // **Why HERE and not at the bottom of iteration 1.** `iterate` runs inside eframe's update
-        // callback; eframe presents after it returns. A drain at the bottom of iteration 1 would therefore
-        // still precede the blit, and `Host::set_screen_text`'s promise is that a client reads the frame
-        // that is *on the glass*. At the top of iteration 2 the blit has happened, so the promise holds
-        // unconditionally — and the drain still lands **before** the adoption below, exactly as a
-        // mid-iteration drain lands before the next iteration's adoption. Nothing about the halt path or
-        // the transport bar's one-iteration latency changes.
-        //
-        // **What it costs, stated:** a request that arrives before the first frame is answered one
-        // iteration later instead of being refused, and anything that drain applies (a queued `hold`, a
-        // queued `pause`) lands one iteration later with it. At startup, before any frame has been shown,
-        // that is a strictly better answer than a refusal and is not otherwise observable.
-        //
-        // `self.paused` is deliberately read by this drain **before** the adoption rewrites it: this is
-        // iteration 1's drain, and iteration 1's pause state is the one it mirrors.
-        let deferred_bus_ms = if std::mem::take(&mut self.owe_deferred_drain) {
-            self.drain_and_react().1
-        } else {
-            0.0
-        };
-
-        // --- ⚑ Conflict 1, inbound: adopt the bus's run state, ahead of everything that reads it. ---
-        //
-        // ⚑ Exactly one thing runs before it: the deferred first drain above, on iteration 2 only — and
-        // that is the *same* relative order this adoption already has with every other drain (drain, then
-        // the next adoption). A drain after this line is the bug named two paragraphs down.
+        // --- ⚑ Conflict 1, inbound: adopt the bus's run state, and do it FIRST. ---
         //
         // **One adoption, at the top, and it is load-bearing in both directions.** Three things move the
         // engine's run flags behind this field's back, and all three land before the next iteration
@@ -882,11 +844,11 @@ impl Loop {
         // it, so the player would run one extra frame past a breakpoint it had already stopped on. The
         // *adoption* is what moved to the top; the drain stays here, behind the frame that latches into it.
         //
-        // ⚑ **The deferred first drain is at the top and does not have that problem**, because it is
-        // ahead of the adoption rather than behind it — and there is nothing for it to have missed either
-        // way: a breakpoint or watchpoint can only be armed over the bus, the bus is only read by a pump,
-        // and iteration 1's frame runs before any pump has ever happened. So iteration 1's frame cannot
-        // latch a halt, and the halt path is untouched by the deferral (checked, not assumed).
+        // ⚑ **The deferred first drain is later in the iteration and not in the next one**, so it is
+        // still ahead of the next adoption and the halt path is unchanged. There is also nothing for it to
+        // have missed: a breakpoint or watchpoint can only be armed over the bus, the bus is only read by a
+        // pump, and iteration 1's frame runs before any pump has ever happened — so iteration 1's frame
+        // cannot latch a halt at all (checked, not assumed).
         //
         // There is deliberately **no second `self.paused = ...` after this**. An earlier draft had one,
         // and both it and the one at the top were then individually removable with every test still
@@ -902,12 +864,27 @@ impl Loop {
         // whose answer the caller may decline to mention is the shape that made the omission expressible.
         // The whole of it is inside the `bus` bucket, for `Machine::step`'s reason one module over: timing
         // only the pump would make this parcel's own cost structurally invisible.
-        // ⚑ **Except on iteration 1, which owes this drain to the top of iteration 2 instead**
-        // (`F-FIRST-PRESENT-REFUSAL`). At this point in iteration 1 nothing has been published: both
-        // publishes below answer *the frame that is on the glass* and there is not one yet. A drain here
-        // would therefore answer a client's request with `-32005 noDisplay` / `noPacing` — *there is no
-        // window* — from a window that exists. The whole argument, and what the deferral costs, is at the
-        // top of this function.
+        // ⚑ **Except on iteration 1, which owes this drain to the BOTTOM of this iteration instead**
+        // (`F-FIRST-PRESENT-REFUSAL`).
+        //
+        // **The defect: a window that exists answered "there is no window", once, at the start of every
+        // session.** Both publishes below (`set_pacing`, `publish_screen_text`) answer *the frame that is
+        // on the glass*, so neither can run before this iteration has composed one — and one `Host::pump`
+        // answers every request it finds queued. So a request answered by iteration 1's drain, sitting
+        // here where every later iteration's drain sits, was refused `-32005 noDisplay` / `noPacing` and
+        // `emulator/status` answered `display: false`, from a live window that had already run frame 1.
+        //
+        // **Priming a publish cannot fix it and must not be tried.** At this point in iteration 1 there is
+        // nothing on the glass, so a publish ahead of the first composition would trade a false *"no
+        // window"* for a false *picture* — the worse of the two. What is wrong is the order, and only for
+        // iteration 1: the deferred call is immediately after `publish_screen_text` below, so it still
+        // lands before the next iteration's adoption and nothing about the halt path or the transport
+        // bar's one-iteration latency moves.
+        //
+        // **What it costs, stated:** a request that arrives before the first frame is answered a little
+        // later in iteration 1 instead of being refused, and anything that drain applies (a queued `hold`,
+        // a queued `pause`) lands with it. Before any frame has been shown that is strictly better for the
+        // caller than a refusal, and it is not otherwise observable.
         //
         // `Drained::default()` stands in for that one iteration, and it is not a lie by omission: every
         // flag `Drained` carries means *"this drain moved it"*, and this drain has not run. Its only
@@ -919,9 +896,6 @@ impl Loop {
         } else {
             self.drain_and_react()
         };
-        // The deferred first drain's own cost, charged to the iteration that ran it rather than dropped.
-        // Zero on every iteration but the second.
-        let bus_ms = bus_ms + deferred_bus_ms;
 
         // --- ⚑ The machine keys (S3): reset, ROM reload, and the save-state slots. ---
         //
@@ -974,8 +948,8 @@ impl Loop {
         // ⚑ **And it no longer has the start-of-session gap it used to share with the snapshot below.**
         // Until `F-FIRST-PRESENT-REFUSAL` the drain ran above this line's FIRST publish, so a request
         // iteration 1's drain answered was refused `noPacing` from a window that was already pacing.
-        // Iteration 1 now owes its drain to the top of iteration 2, so every drain has a publish behind
-        // it and `noPacing` means what it says.
+        // Iteration 1 now owes its drain to the bottom of the iteration, behind this line, so every drain
+        // has a publish behind it and `noPacing` means what it says.
         if self.bus.is_serving() {
             self.bus.set_pacing(self.pacing);
         }
@@ -1012,9 +986,9 @@ impl Loop {
         // run before this line had ever executed, and one `Host::pump` answers every request it finds
         // queued — so a request that drain answered was refused `noDisplay` and `status.display` was
         // `false`, from a window that exists (`frame 1`: the frame that iteration ran before its drain).
-        // Iteration 1 now owes its drain to the **top of iteration 2**, after eframe has blitted this
-        // composition, so no drain in this loop can answer a request with no publish behind it. The
-        // paragraph above is therefore true of every drain, first one included.
+        // Iteration 1 now owes its drain to the **bottom of this iteration**, immediately below this push,
+        // so no drain in this loop can answer a request with no publish behind it. The paragraph above is
+        // therefore true of every drain, first one included.
         //
         // **Gated on `is_serving`, deliberately not on `has_clients`**, which is `oracle-frontend`'s split
         // and its reason travels unchanged: with no socket bound no client can exist, so the snapshot is
@@ -1040,6 +1014,36 @@ impl Loop {
         if serving {
             self.publish_screen_text(ctx, &drew, &drawn);
         }
+
+        // --- ⚑ Iteration 1's drain, deferred to here (`F-FIRST-PRESENT-REFUSAL`). ---
+        //
+        // **The only position in this function that is behind BOTH publishes**, which is the whole of the
+        // repair: `set_pacing` and `publish_screen_text` above are the two answers that require a composed
+        // frame, so a pump ahead of them can only refuse `noPacing` / `noDisplay` from a window that
+        // exists. Iteration 1's drain therefore runs here instead of where the drain above sits, and every
+        // later iteration keeps that position exactly. The argument is written out at the drain site.
+        //
+        // **Still ahead of the next iteration's adoption**, so the halt path and the transport bar's
+        // one-iteration latency are untouched; and `Some` exactly once in the life of the loop, so the bus
+        // cannot be starved by a window that never publishes (`is_serving()` false: no publish, and a rule
+        // keyed on *"has this window published yet"* would then defer for ever).
+        //
+        // ⚑ **Deliberately NOT the top of the next iteration, which is the position that first suggests
+        // itself** — it reads as *"after eframe has blitted"*. It is not: `egui::Context::run` re-runs this
+        // whole closure when a pass requests a discard, so the next `iterate` may be another pass of the
+        // *same* displayed frame. Measured in this fixture, where one `turn` calls `iterate` twice. So that
+        // position buys no blit guarantee and only delays the answer, and the honest statement of what a
+        // client reads here is `Host::set_screen_text`'s: it is the composition this loop last published,
+        // which is what the glass shows unless egui discards the pass.
+        let deferred_bus_ms = if std::mem::take(&mut self.owe_deferred_drain) {
+            self.drain_and_react().1
+        } else {
+            0.0
+        };
+        // The deferred drain's own cost, charged to the iteration that ran it rather than dropped. Zero on
+        // every iteration but the first.
+        let bus_ms = bus_ms + deferred_bus_ms;
+
         // The transport bar inside `build_ui` routes its gestures through `Host::call`, which is
         // deliberately NOT a drain and applies neither pending change (host.rs) — so a pause or resume it
         // just issued has already moved the engine's own flags. It is adopted at the TOP of the next
@@ -1064,8 +1068,8 @@ impl Loop {
     /// milliseconds it cost, for the caller's `bus` bucket.
     ///
     /// A method only because [`Loop::iterate`] calls it from **two** positions: the normal one (after the
-    /// frame, before the present) and, for iteration 1 alone, the top of the next iteration
-    /// (`F-FIRST-PRESENT-REFUSAL`). Both positions therefore run the *same* pump and the *same* reactions;
+    /// frame, before the present) and, for iteration 1 alone, the bottom of the iteration, behind both of
+    /// its publishes (`F-FIRST-PRESENT-REFUSAL`). Both positions therefore run the *same* pump and the *same* reactions;
     /// a second inline copy at the deferred site is precisely how one of these repairs would go missing,
     /// which is the defect `crate::bus::drain`'s own header exists because of.
     ///
@@ -2227,13 +2231,12 @@ mod loop_tests {
     /// window has drawn its first frame, and drawing it is what turns the loop. It is very visible to a
     /// test that arms before the first turn, which is what the first draft of these rows did.
     ///
-    /// ⚑ **Two turns and not one since `F-FIRST-PRESENT-REFUSAL`.** Iteration 1 no longer drains — it owes
-    /// that drain to the top of iteration 2 — so the launch listing is consumed on the second turn, and a
-    /// row primed with one turn would arm in between and be retracted by the drain it primed for. Still
-    /// invisible in production for the reason above; very visible here, which is why it is written down at
-    /// the one helper both rows go through rather than at each of them.
+    /// ⚑ **Still one turn after `F-FIRST-PRESENT-REFUSAL`.** Iteration 1's drain moved *within* the
+    /// iteration — from ahead of its two publishes to behind them — not into the next one, so the launch
+    /// listing is still consumed by the first turn and this helper is unchanged. Recorded because the
+    /// alternative placement (the top of the next iteration) would have needed two, which is how this
+    /// helper is coupled to that decision.
     fn primed(lp: &mut Loop, ctx: &egui::Context) {
-        turn(ctx, lp);
         turn(ctx, lp);
     }
 
@@ -2459,18 +2462,23 @@ mod loop_tests {
     ///
     /// # The first read waits for the first present, on an observable (F-PLAYER-SCREENTEXT-FIRST-READ)
     ///
-    /// Premise (1) holds *because* nothing has been drawn, and the same fact made an unguarded first
-    /// read a race. `Loop::iterate` drains (after its frame) **before** its `set_screen_text`, so
-    /// iteration 1's drain precedes every publish, and one `Host::pump` answers every request it finds
+    /// Premise (1) holds *because* nothing has been drawn, and the same fact used to make an unguarded
+    /// first read a race. `Loop::iterate` drained (after its frame) **before** its `set_screen_text`, so
+    /// iteration 1's drain preceded every publish, and one `Host::pump` answers every request it finds
     /// queued. CI run 34752339602 read `noDisplay` with `frame: 1, mclk: 896042`: answered in iteration
     /// 1's drain. Reproduced every time by letting that one drain keep answering (3 x 50 ms, 20 x 5 ms and
     /// 4 x 1 ms: 15 of 15 red, the refusal byte-identical to CI's); a SLOW iteration 1 with no extra
-    /// answering stays green (5 of 5), so the cause is several answers in one drain, not slowness.
+    /// answering stayed green (5 of 5), so the cause was several answers in one drain, not slowness.
     ///
-    /// So the client polls `emulator/status` until `display: true` before its first read. That waits
-    /// for *a* snapshot, never for the one this test wants: the first read must still say `⏸ pause` and
-    /// the second `▶ resume`, so the out-of-step measure above is untouched, and premise (1) still runs
-    /// in-process before the client exists.
+    /// ⚑ **That ordering is now fixed** (`F-FIRST-PRESENT-REFUSAL`): iteration 1 owes its drain to the
+    /// bottom of the iteration, behind both publishes, and
+    /// `a_request_queued_before_the_first_frame_is_not_told_there_is_no_window` is the gate.
+    ///
+    /// The `display: true` barrier below **stays**, and not as a leftover. It is what makes this row's own
+    /// first read land on a snapshot rather than on whichever iteration the socket happened to reach, which
+    /// is a property of this test and not of the loop; it waits for *a* snapshot, never for the one this
+    /// test wants, so the out-of-step measure above is untouched and premise (1) still runs in-process
+    /// before the client exists.
     #[test]
     fn a_client_reads_this_windows_top_bar_and_it_follows_the_run_state() {
         use std::io::{BufRead as _, Write as _};
@@ -2764,6 +2772,256 @@ mod loop_tests {
              without the run state following it"
         );
         assert_eq!(lp.machine.frames(), ran, "…and the total is unchanged");
+        drop(lp);
+        let _ = std::fs::remove_file(&unlink);
+    }
+
+    /// A minimal NDJSON peer for the row below.
+    ///
+    /// ⚑ **It sends and polls, and it never pumps**, which is the whole reason it is not
+    /// `crate::bus::tests`'s `Client`: that one's `call` turns the crank itself while waiting, and here the
+    /// crank must be `Loop::iterate` — the thing under test. A peer that could answer itself would make the
+    /// ordering below unobservable.
+    struct Peer {
+        r: std::io::BufReader<std::os::unix::net::UnixStream>,
+        w: std::os::unix::net::UnixStream,
+        next_id: i64,
+    }
+
+    impl Peer {
+        fn connect(path: &std::path::Path) -> Self {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match std::os::unix::net::UnixStream::connect(path) {
+                    Ok(s) => {
+                        // Short, so a poll that finds nothing hands the loop its next turn promptly.
+                        s.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+                        return Self {
+                            r: std::io::BufReader::new(s.try_clone().unwrap()),
+                            w: s,
+                            next_id: 1,
+                        };
+                    }
+                    Err(e) => {
+                        assert!(Instant::now() < deadline, "connect: {e}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+        }
+
+        fn send(&mut self, v: &serde_json::Value) {
+            use std::io::Write as _;
+            writeln!(self.w, "{v}").unwrap();
+            self.w.flush().unwrap();
+        }
+
+        fn request(&mut self, method: &str, params: serde_json::Value) -> i64 {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.send(&serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": method, "params": params
+            }));
+            id
+        }
+
+        /// One non-blocking look for the reply to `id`; `None` means *not yet*.
+        fn poll(&mut self, id: i64) -> Option<serde_json::Value> {
+            use std::io::BufRead as _;
+            let mut line = String::new();
+            match self.r.read_line(&mut line) {
+                Ok(0) => panic!("the window closed the connection"),
+                Ok(_) => {
+                    let v: serde_json::Value =
+                        serde_json::from_str(&line).expect("NDJSON on the wire");
+                    (v["id"] == serde_json::json!(id)).then_some(v)
+                }
+                Err(_) => None, // the read timeout: give the loop another turn
+            }
+        }
+
+        /// `initialize` + `initialized`, turned with the drain's **own pump** rather than with a `turn`.
+        ///
+        /// ⚑ `session.rs` makes `initialize` the mandatory first message on a connection and the connection
+        /// thread blocks on its reply, so a handshake run through `Loop::iterate` would spend the very
+        /// deferral the row below measures. `Bus::mirror_pause` is the pump `crate::bus::drain` itself
+        /// calls, with the fixture's own run state, and `initialize` neither composes a frame nor reports a
+        /// `display` field — so nothing measured below rests on it.
+        fn handshake(&mut self, lp: &mut Loop, who: &str) {
+            let id = self.request(
+                "initialize",
+                serde_json::json!({
+                    "clientId": who,
+                    "clientName": "first present",
+                    "clientVersion": "0",
+                    "protocolVersion": 1,
+                    "clientCapabilities": {"events": false},
+                }),
+            );
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let _ = lp.bus.mirror_pause(lp.machine.system_mut(), false);
+                if let Some(v) = self.poll(id) {
+                    assert!(v.get("error").is_none(), "{who} initialize: {}", v["error"]);
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{who}: initialize was never answered"
+                );
+            }
+            self.send(&serde_json::json!({"jsonrpc":"2.0","method":"initialized"}));
+        }
+    }
+
+    /// ## ★ **A request that beats this window's first frame is answered by a window that EXISTS**
+    /// (`F-FIRST-PRESENT-REFUSAL`), driven through the real `Loop::iterate`.
+    ///
+    /// `Loop::iterate` drained after its frame and **before** its two publishes, and one `Host::pump`
+    /// answers every request it finds queued — so a request answered by iteration 1's drain was refused
+    /// `-32005 noDisplay` (*there is no window*) and `emulator/status` answered `display: false`, from a
+    /// window that had already run a frame and was about to put it on the glass. That is what
+    /// `F-PLAYER-SCREENTEXT-FIRST-READ` measured as a CI flake; this is the gate.
+    ///
+    /// # ⚑ Why the whole corpus was blind to it
+    ///
+    /// Every other row here drives the loop past iteration 1 before it asks the bus anything — the socket
+    /// has to be connected and `initialize` has to be answered, which costs turns. So a row that exercises
+    /// a settled loop cannot see this at all, and this one is built the other way round: the client is
+    /// **connected and initialised before the loop has iterated once**, and its request is queued before
+    /// the first turn.
+    ///
+    /// # What could make it green for the wrong reason, and what rules each out
+    ///
+    /// * *The fixture already had a snapshot, so `display: true` witnesses nothing.* Probed in-process
+    ///   before any client exists: `emulator/screen_text` refuses `noDisplay`.
+    /// * *The request was never queued in time, so it was answered by some later drain that had a publish
+    ///   behind it anyway.* That is exactly how this stayed a flake instead of a red, so the request is
+    ///   queued and then **waited for**, and iteration 1 is asserted to have answered neither peer.
+    /// * *The window did not exist when the old code said it did not.* `machine.frames() > 0` after that
+    ///   one turn: iteration 1 ran a frame before the drain that used to refuse.
+    /// * *One reply is enough.* Both refusals the defect produces are read, on two connections, because a
+    ///   connection may only have one request in flight: `noDisplay` on one and `display: false` on the
+    ///   other.
+    ///
+    /// # What it is blind to
+    ///
+    /// It pins nothing about **where** the deferred drain runs, only that the first answer this window gives
+    /// a client has a publish behind it. Any position past `publish_screen_text` — the bottom of the
+    /// iteration, or the top of the next — leaves it green, and the choice between those is held by prose at
+    /// the deferred call site rather than by this row.
+    ///
+    /// It is also blind to the *pass* structure underneath it: `egui::Context::run` re-runs the whole
+    /// closure when a pass requests a discard, so one `turn` here calls `Loop::iterate` twice and a client
+    /// can be answered from a composition egui went on to discard. That is a standing property of every
+    /// publish in this loop, not of the deferral, and it is not narrowed here.
+    #[test]
+    fn a_request_queued_before_the_first_frame_is_not_told_there_is_no_window() {
+        let tag = format!("{}-{}", std::process::id(), line!());
+        let socket = std::env::temp_dir().join(format!("pfp-{tag}.sock"));
+        let unlink = socket.clone();
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            // The governor OFF, so every turn owns its frame and this row never waits on a clock.
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: None,
+                path: None,
+                fatal: None,
+            },
+            Some(Some(socket.clone())),
+        );
+        assert!(
+            lp.bus.is_serving(),
+            "the fixture did not bind {}, so no client can reach it and nothing below is a test",
+            socket.display()
+        );
+
+        // The premise, in-process and before anyone attaches: nothing has been drawn, and the bus says so
+        // with a typed refusal rather than an empty list.
+        let probe = lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/screen_text",
+            &serde_json::json!({}),
+        );
+        assert_eq!(
+            probe.reason(),
+            Some("noDisplay"),
+            "the fixture already had a snapshot, so `display: true` below would witness nothing"
+        );
+
+        // Two clients, connected and initialised **before the loop has iterated once**.
+        let mut glass = Peer::connect(&socket);
+        glass.handshake(&mut lp, "screen-text");
+        let mut state = Peer::connect(&socket);
+        state.handshake(&mut lp, "status");
+        assert_eq!(
+            lp.iterations, 0,
+            "the handshake turned the loop, which would spend the deferral this row measures"
+        );
+
+        // The two requests, queued before the first turn. The wait is load-bearing: a request that has not
+        // reached the engine before the first drain is answered by a later one, which is how this defect
+        // read green in CI most of the time.
+        let text = glass.request("emulator/screen_text", serde_json::json!({}));
+        let status = state.request("emulator/status", serde_json::json!({}));
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            glass.poll(text).is_none() && state.poll(status).is_none(),
+            "a reply arrived before the loop ran at all, so nothing below is about the loop's order"
+        );
+
+        // --- The first turn, which is where the first drain now happens. ---
+        //
+        // ⚑ One `turn` is **not** one `Loop::iterate`: `egui::Context::run` re-runs the closure whenever a
+        // pass asks to be discarded, and this fixture's dock does. That is why nothing here counts
+        // iterations — the property under test is *"whatever the first drain was, it had a publish behind
+        // it"*, which a request queued before the first turn measures directly.
+        let ctx = egui::Context::default();
+        turn(&ctx, &mut lp);
+        assert!(
+            lp.machine.frames() > 0,
+            "control: the first turn ran no frame, so `from a window that exists` is not what is being \
+             measured here"
+        );
+
+        // …and the answers. The first turn's drain is expected to carry them; the loop is kept turning so
+        // that a slow socket is a wait rather than a failure.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut text_reply = None;
+        let mut status_reply = None;
+        while text_reply.is_none() || status_reply.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "the window never answered — the first drain was deferred and never handed back"
+            );
+            turn(&ctx, &mut lp);
+            text_reply = text_reply.or_else(|| glass.poll(text));
+            status_reply = status_reply.or_else(|| state.poll(status));
+        }
+        let text_reply = text_reply.unwrap();
+        let status_reply = status_reply.unwrap();
+
+        assert!(
+            text_reply.get("error").is_none(),
+            "`emulator/screen_text` was refused by a window that is showing a frame: {text_reply}"
+        );
+        let surfaces = text_reply["result"]["surfaces"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a reply with no surfaces array: {text_reply}"));
+        assert!(
+            !surfaces.is_empty(),
+            "an EMPTY surface list means `the screen is blank`, which is a different answer: {text_reply}"
+        );
+        assert_eq!(
+            status_reply["result"]["display"],
+            serde_json::json!(true),
+            "`emulator/status` said there is no display, from a window that has drawn a frame: \
+             {status_reply}"
+        );
+
         drop(lp);
         let _ = std::fs::remove_file(&unlink);
     }

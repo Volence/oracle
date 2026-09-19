@@ -296,7 +296,12 @@ impl Order {
     /// [`after_present`](Order::after_present) instead. The caller must be able to carry on without a
     /// [`Drained`]: every flag it holds means *"this drain moved it"*, and on that one iteration no drain
     /// has run.
-    pub fn before_present(&mut self, sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Option<Drained> {
+    pub fn before_present(
+        &mut self,
+        sys: &mut System,
+        bus: &mut Bus,
+        r: Reaction<'_>,
+    ) -> Option<Drained> {
         if self.first {
             self.first = false;
             self.owed = true;
@@ -307,7 +312,12 @@ impl Order {
 
     /// **The deferred first drain** — called after this iteration's publishes and its present, and `Some`
     /// exactly once in the life of the loop.
-    pub fn after_present(&mut self, sys: &mut System, bus: &mut Bus, r: Reaction<'_>) -> Option<Drained> {
+    pub fn after_present(
+        &mut self,
+        sys: &mut System,
+        bus: &mut Bus,
+        r: Reaction<'_>,
+    ) -> Option<Drained> {
         if !std::mem::take(&mut self.owed) {
             return None;
         }
