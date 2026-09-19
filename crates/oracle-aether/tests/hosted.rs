@@ -122,10 +122,13 @@ impl Player {
                     }
                     // **Where the real loop pushes it**: after every surface has finished drawing and
                     // before the next drain, so what a client reads is the frame that is on the glass.
-                    // ⚑ One difference, on purpose: HERE the first push precedes the first pump, while
-                    // both real loops drain once before their first present. So this fixture cannot show
-                    // the start-of-session `noDisplay` (F-PLAYER-SCREENTEXT-FIRST-READ); rows that read
-                    // text still wait on `expect_progress`, which is what they rely on.
+                    // ⚑ Here the first push precedes the first pump — and since
+                    // `F-FIRST-PRESENT-REFUSAL` that is no longer a difference from the real loops but the
+                    // same rule they now follow: both defer iteration 1's drain past that iteration's
+                    // publishes, so no pump in either answers a request with no publish behind it. This
+                    // fixture therefore cannot show the start-of-session `noDisplay`
+                    // (F-PLAYER-SCREENTEXT-FIRST-READ) for the same reason the embedders no longer do.
+                    // Rows that read text still wait on `expect_progress`, which is what they rely on.
                     if let Some(s) = &screen {
                         host.set_screen_text(s.clone());
                     }

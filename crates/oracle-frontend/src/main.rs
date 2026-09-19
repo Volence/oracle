@@ -1475,6 +1475,11 @@ fn main() {
         notify_err(&mut ov, p);
     }
 
+    // **Where in an iteration this loop is allowed to drain** (`F-FIRST-PRESENT-REFUSAL`). Every drain
+    // below goes through it, and it is what keeps the first one behind the first publish; `drain::Order`'s
+    // own doc carries the defect and the argument.
+    let mut drains = drain::Order::new();
+
     // Esc no longer quits (spec §3): it closes the palette. Quitting is the window's close button or the
     // Quit command, which clears `running`.
     while window.is_open() && running {
@@ -2414,7 +2419,14 @@ fn main() {
         // named addresses out of a table the engine had discarded. It was found by a person reading the
         // code. `drain::drain` is one call that both this loop and `drain.rs`'s tests make, so a branch
         // with no consumer is now something a test can notice.
-        let drained = drain::drain(
+        //
+        // ⚑ **`None` on the FIRST iteration, which owes its drain to the bottom of this loop body**
+        // (`F-FIRST-PRESENT-REFUSAL`). `bus.set_screen_text` below answers *the frame that is on the
+        // glass*, so it cannot run before this iteration has composed one — and one `bus.pump` answers
+        // every request it finds queued. A drain here on iteration 1 therefore answered a client with
+        // `-32005 noDisplay` ("there is no window") from a window that exists. `drain::Order` holds the
+        // rule and the whole argument; the `None` is what makes the deferral impossible to forget here.
+        let drained = drains.before_present(
             &mut sys,
             &mut bus,
             drain::Reaction {
@@ -2433,11 +2445,11 @@ fn main() {
         // and the producer half of an SPSC ring, neither of which a test may construct, so the decision
         // ("did the timeline move?") is made where it can be examined and the device work happens here.
         #[cfg(feature = "audio")]
-        if drained.resync_audio {
+        if drained.is_some_and(|d| d.resync_audio) {
             resync_audio(audio.as_mut());
         }
         #[cfg(not(feature = "audio"))]
-        let _ = drained.resync_audio; // no device to resynchronise in this build
+        let _ = drained.map(|d| d.resync_audio); // no device to resynchronise in this build
 
         // --- Configured symbol watches: sample, and say what moved. ---
         //
@@ -2630,7 +2642,11 @@ fn main() {
             // The mask that drew the frame being presented, not a fresh read — the badge is a caption
             // for the picture underneath it, and one that could describe a mask set a microsecond ago
             // by a socket client, over a frame drawn before it, would be a caption for something else.
-            layers: drained.layers,
+            //
+            // ⚑ On the one iteration that did not drain, the engine's current mask **is** the mask that
+            // painted this frame: the deferral means no client has been answered yet, so nothing can have
+            // moved it behind this composition's back.
+            layers: drained.map_or_else(|| bus.layers(), |d| d.layers),
             // **The standing spawn statement, built by the mode itself** — never re-derived here, so the
             // thing that decides what a click does and the thing that says so on the glass are one
             // derivation. `None` while disarmed, which is what keeps the badge off a window where a
@@ -2647,10 +2663,12 @@ fn main() {
         // present — see the drain's own comment above), and hosted it runs on this very thread — so a
         // client's read can never land mid-composition.
         //
-        // ⚑ **It CAN land before the first composition.** Iteration 1's drain runs before this line ever
-        // has, so a request that drain answers is refused `noDisplay` (and `status.display` is `false`)
-        // from a window that exists. Measured on `oracle-player`'s identical order
-        // (F-PLAYER-SCREENTEXT-FIRST-READ); here by reading. Booked for a contract ruling, not fixed here.
+        // ⚑ **And it can no longer land before the first composition** (`F-FIRST-PRESENT-REFUSAL`).
+        // Iteration 1's drain used to run before this line ever had, so a request that drain answered was
+        // refused `noDisplay` (and `status.display` was `false`) from a window that exists — measured on
+        // `oracle-player`'s identical order (F-PLAYER-SCREENTEXT-FIRST-READ), and reasoned about here until
+        // `drain.rs` grew a fixture that measures it. Iteration 1 now owes its drain to the bottom of this
+        // loop body, behind both this publish and the blit below, so every pump has a publish behind it.
         //
         // Gated on `is_serving`, which is the frontend's own skip of per-frame work nobody could read: with
         // no socket bound, no client can exist, so the snapshot is pure cost. The gate is deliberately NOT
@@ -2670,6 +2688,40 @@ fn main() {
             eprintln!("present failed: {e}");
             break;
         }
+
+        // --- ⚑ The first iteration's drain, deferred to here (`F-FIRST-PRESENT-REFUSAL`). ---
+        //
+        // `Some` exactly once, on iteration 1, and a no-op on every iteration after it. This is the only
+        // position in the body that is after **both** publishes and after the blit above, which is what
+        // makes `noDisplay` mean *there is no window* rather than *you asked early*. It is also, in loop
+        // terms, the top of iteration 2 — so everything the drain applies (`emulator/pause`, a held pad,
+        // a client's frame) still lands before the next iteration's own frame, exactly as a mid-iteration
+        // drain's does.
+        //
+        // Priming an earlier publish instead is not an option and must not be attempted: in iteration 1
+        // there is nothing on the glass, so publishing ahead of the first composition would answer with a
+        // false picture in place of a false refusal.
+        let deferred = drains.after_present(
+            &mut sys,
+            &mut bus,
+            drain::Reaction {
+                ov: &mut ov,
+                draws: &mut draws,
+                cap: &mut cap,
+                buf: &mut buf,
+                width: &mut width,
+                rom_fp: &mut rom_fp,
+                symbols: &mut symbols,
+                paused: &mut paused,
+                spawn: &mut spawn_mode,
+            },
+        );
+        #[cfg(feature = "audio")]
+        if deferred.is_some_and(|d| d.resync_audio) {
+            resync_audio(audio.as_mut());
+        }
+        #[cfg(not(feature = "audio"))]
+        let _ = deferred.map(|d| d.resync_audio); // no device to resynchronise in this build
     }
 
     // On quit, flush the final in-progress frame once (harmless if the ring is already draining to a closing
