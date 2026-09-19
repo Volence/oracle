@@ -34,8 +34,10 @@
 //! the complete list of glyphs the re-render disagrees about. The two differ on exactly one glyph today,
 //! because `render_line` re-seeds R10 sprite masking from the end-of-frame `sprite_dot_overflow_carry`
 //! instead of advancing it per line, and one of this ROM's nine tests is a test *of that carry*. Reading
-//! that re-render as a verdict is what made `6=FAIL` stand for thirteen months as a defect that was not
-//! there; carrying both readings is what makes the next such divergence announce itself. See
+//! that re-render as a verdict is what made `6=FAIL` stand, as a defect that was not there, for this row's
+//! entire life to that point — pinned 2026-07-25, corrected 2026-09-18, eight weeks (the "thirteen months"
+//! this line said until 2026-09-18 is not possible: the repository's first commit is 2026-06-24);
+//! carrying both readings is what makes the next such divergence announce itself. See
 //! `the_glyph_scrape_reads_the_live_render_path`.
 //!
 //! **And that ROM is scraped in BOTH its screen modes** (2026-09-18, `TESTROM-H40-HALF`). It runs its nine
@@ -786,9 +788,9 @@ fn scrape_m68k_illegal(sys: &mut System) -> String {
 /// the rendered pixels — the framebuffer is the only channel that distinguishes them.
 ///
 /// **Run in BOTH of the ROM's screen modes** (2026-09-18, `TESTROM-H40-HALF`). This ROM boots in H32 and
-/// re-runs all nine tests in H40 when the mode is toggled; for its first thirteen months here the harness
-/// measured the power-on half only, so half of what the ROM tests — the H40 per-line sprite limit (20, not
-/// 16) and dot limit (320, not 256) — was never scraped at all. The scrape is now two halves of one boot:
+/// re-runs all nine tests in H40 when the mode is toggled; from this row's first pin (2026-07-25) until
+/// 2026-09-18 the harness measured the power-on half only, so half of what the ROM tests — the H40 per-line
+/// sprite limit (20, not 16) and dot limit (320, not 256) — was never scraped at all. The scrape is now two halves of one boot:
 /// H32 to idle, the toggle, H40 to idle, each half [`ProvenScreen`]-gated and each contributing its own
 /// segment to the row.
 ///
@@ -1285,7 +1287,8 @@ fn baseline_covers_every_rom() {
 /// **The control arm: render the verdict both ways and require them to agree — and say so when they do
 /// not.** (`POSTHOC-CARRY`, 2026-09-18.)
 ///
-/// This is the one line nobody ever ran. For thirteen months every golden in this tree read the *post-hoc*
+/// This is the one line nobody ever ran. From the first golden in this tree (`golden_frames.rs`,
+/// 2026-07-16) to 2026-09-18, every golden read the *post-hoc*
 /// `Vdp::render_line`; the 2026-08-15 per-scanline survey found that six of seventeen ROMs draw a picture
 /// that re-render cannot reproduce, and for `vdp_sprite_masking` the gap was not a hash but **a recorded
 /// verdict** — `6=FAIL`, indistinguishable in the output from a real emulator defect, because an artefact
