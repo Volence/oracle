@@ -1,6 +1,12 @@
 {
-  "focus": "Panel lines pushed entirely off a pane now say so. Two real cases found in your own window.",
-  "inFlight": [],
+  "focus": "Settling the one loose end from last night: no cartridge we own tests the rule that answer rests on.",
+  "inFlight": [
+    {
+      "what": "A purpose-built tiny ROM to settle which way an unread controller line floats",
+      "where": "branch parcel/th-pullup",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,11 +19,11 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: four landings done, pushed, nothing running. Only this landing's CI is unread.",
+  "nextBoundary": "When the TH parcel returns and is verified here.",
   "queue": [
     {
       "id": "F-TH-PULLUP-UNDISCRIMINATED",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -97,14 +103,14 @@
     },
     {
       "id": "LIVE-EFFECTS-NUDGES",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "LIVE-EFFECTS",
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing blocking; next is a tiny ROM that settles last night's one loose end. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T03:16:44Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T03:18:46Z"
 }
