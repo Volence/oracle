@@ -484,6 +484,15 @@ takes 35-45 minutes** — measured, so a long one is not a stall; judging a dura
 nearly produced a false alarm about a stuck runner an hour after the false all-clear.
 ⚑ **A wait-for-CI loop that times out EXITS 0 and reads exactly like success.** Re-read the run list;
 never trust the waiter's exit code, and never trust `cmd | head; echo $?`, which hands back `head`'s.
+⚑ **AND THE SIBLING, MEASURED AT THIS SEAT 2026-09-19: A WAITER WHOSE SUBJECT CAN LEAVE ITS QUERY WINDOW
+WAITS FOREVER ON AN ABSENCE.** I armed `gh run list --limit 8` on a landing SHA, then pushed six docs
+commits; each queued its own run, the landing SHA fell out of the window, and the waiter's filter returned
+empty — indistinguishable from `in_progress`, so it would have polled until the session ended and I would
+have reported CI unread all night while it was green. **Query the SHA over a window that cannot be pushed
+out of (`--limit 60` here, or a per-commit query), and make the empty case SAY what it means** — the probe
+that found this prints *"empty = the SHA is outside the window, not a verdict"*. Same family as bar 8(d)
+(loud on unmeasurable) and as the never-settles pins above: **an absence dressed as an outcome, this time in
+my own instrument.**
 
 ⚑ **If your own landing breaks something, test the explanation that makes it YOUR FAULT first.** See the
 ops entry below; the structural story arrives first and costs the most.
