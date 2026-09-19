@@ -66,10 +66,50 @@
 //! occupies it, on a machine the person is watching.
 //!
 //! So every write goes out as `emulator/write_memory {symbol, value, width}` and **the server resolves
-//! the destination from its own listing** — the same table `emulator/load_symbols` bound. When the
-//! resolved address and the note's disagree the gesture is **refused** rather than resolved in either
-//! direction ([`Channel::drift`]): a disagreement means one of the two describes a different build and
-//! the panel cannot tell which.
+//! the destination from its own listing** — the same table `emulator/load_symbols` bound.
+//!
+//! ## ⚑ THE DISAGREEMENT IS A WITNESS, AND THE REFUSAL IS ON THE LAYOUT — THIS SECTION'S CORRECTION
+//!
+//! This module used to **refuse** the gesture whenever the resolved address and [`Channel::noted_addr`]
+//! disagreed, on the argument that *"one of the two describes a different build and this panel cannot
+//! tell which"*. **That symmetry is false and it cost two of the three channels every gesture.** The
+//! resolved address comes from the listing of the ROM *actually loaded*; the note is a document written
+//! earlier. For **access** the listing wins and there is nothing to adjudicate — and measured at this
+//! seat on 2026-09-19 against `s4.debug.lst` (built 2026-09-18 19:26), two of three notes were already
+//! stale, so the refusal was firing on every raster and every bands gesture on a **healthy** build:
+//!
+//! | channel | [`NOTE`] records | `s4.debug.lst` resolves |
+//! |---|---|---|
+//! | `Parallax_Current_Config` | `$FFFF88EC` | `$FFFF88EC` |
+//! | `Raster_Program` | `$FFFF8BD6` | **`$FFFF8BF6`** |
+//! | `BgAnim_Table_Ptr` | `$FFFFE91A` | **`$FFFFE93A`** |
+//!
+//! aeon moved them at `61918621` — the same sweep that moved the cursor — six symbols by `+$20` and one
+//! by `+$200`. **An address is precisely the thing that slides harmlessly when unrelated RAM above it
+//! grows, while the layout it was standing in for does not move at all**: not one width changed in that
+//! sweep, and the parallax scratch's 542-byte span re-derives from `End − start` exactly as it did
+//! before. So an address-equality test is a **proxy** for *is the layout still trustworthy*, and it is a
+//! proxy that fails in the direction that refuses healthy builds. That is the same defect the cursor
+//! guard was repaired for, in the section below, with the sign flipped.
+//!
+//! The real hazard the gate was reaching for is that the **struct shape** changed, which would make a
+//! transcribed field offset address the wrong bytes. That is a layout question and it has a direct
+//! instrument, the one [`hook`] already uses for the parallax scratch: **the derived span and the
+//! published equates**. So this module now does three separate things where it used to do one:
+//!
+//! 1. **Access resolves.** Every read and every write addresses the cell by name and the server resolves
+//!    it. Nothing consults [`Channel::noted_addr`] to decide where to write.
+//! 2. **The note is kept as a WITNESS and the disagreement is STATED** ([`Channel::witness`],
+//!    [`Drift`]). ⚑ This half is load-bearing and it is the half a later reader will be tempted to
+//!    delete: a fix that simply drops `noted_addr` passes every test in this file and destroys the only
+//!    thing that would catch the next sweep. Keeping the number and *saying* it disagrees is what makes
+//!    drift **visible instead of silent**. [`SCRATCH_NOTED_ADDR`] is the same pattern and is named for
+//!    it.
+//! 3. **The refusal is on a layout fact** ([`layout`]), never on an address: each cell's bytes must
+//!    still lie inside the symbol the cell names, and an array a write-set poisons whole must still be
+//!    exactly as large as the write-set poisons and must still partition by the count the listing
+//!    publishes. Both are derived from the **loaded listing** per gesture. Add `+$20` to every symbol in
+//!    the game and not one of those facts changes.
 //!
 //! # ⚑ `Debug_Lab_Index` IS NEVER WRITTEN, AND IT IS GUARDED TWICE
 //!
@@ -139,6 +179,14 @@ pub const EMPTY_TABLE_COMMIT: &str = "aeon 41c845fa";
 /// **The chord's cursor, which this panel must never write.** See the module header.
 pub const LAB_INDEX_SYMBOL: &str = "Debug_Lab_Index";
 
+/// The equate the listing publishes for how many band indices `BgAnim_LastStep` has a slot for.
+///
+/// ⚑ **The name is the only thing transcribed here; the value is resolved per gesture.** [`MAX_BANDS`]
+/// carries `4` as a literal from [`NOTE`] and is used for *decoding a table read out of ROM*, which this
+/// equate cannot replace — see that constant. This one is used for one thing: [`layout`]'s coverage
+/// gate on the poison array. Measured 2026-09-19: `s4.debug.lst` publishes `BGANIM_MAX_BANDS = $4`.
+pub const BGANIM_MAX_BANDS_EQU: &str = "BGANIM_MAX_BANDS";
+
 // ⚑ There is deliberately NO `LAB_INDEX_ADDR` constant here. [`forbidden`]'s address route is keyed on
 // [`Cursor`], which resolves [`LAB_INDEX_SYMBOL`] out of the loaded listing per gesture. See the module
 // header: the constant this file used to carry went stale and made the guard wrong in both directions.
@@ -178,6 +226,33 @@ pub struct Cell {
     pub why: &'static str,
 }
 
+/// ⚑ **A symbol whose ENTIRE extent a write-set poisons**, and the equate that counts its elements.
+///
+/// This is the second half of [`layout`] and it exists because the per-cell check below cannot see an
+/// array that **grew**. `BgAnim_LastStep` is the only one in this module: the write-set poisons eight
+/// bytes as two longwords, and *"the state array is per band index, not per band identity"*
+/// (`bg_anim.emp`'s own header), so a build that gave the array a fifth band would leave that band's
+/// stale step in place and *"the new table would never paint"* on it — silently, on a write-set whose
+/// every cell still landed inside its symbol.
+///
+/// The two facts it pins are both the loaded listing's:
+///
+/// * **The extent equals what the write-set covers**, pinned with two probes rather than believed: no
+///   symbol starts *inside* the covered bytes, and one starts *exactly* one past them.
+/// * **That extent partitions by [`Covering::count_equate`]**, so the bytes-per-element the poison
+///   assumes is derived rather than transcribed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Covering {
+    /// The array symbol. Every cell of the write-set naming it counts toward the coverage.
+    pub symbol: &'static str,
+    /// The equate the loaded listing publishes for the element count. **Never a number here.**
+    pub count_equate: &'static str,
+    /// What one element is, for the sentence. `"band index"`.
+    pub element: &'static str,
+    /// The line of [`ENGINE`] that says the whole array must be poisoned, and what goes wrong otherwise.
+    pub why: &'static str,
+}
+
 // -------------------------------------------------------------------------------------------------------
 // The three channels
 // -------------------------------------------------------------------------------------------------------
@@ -212,10 +287,20 @@ pub struct Channel {
     /// has. See [`live`].
     pub selector: &'static str,
     /// ⚑ The address [`NOTE`] records for [`Channel::selector`], **read from `s4.debug.lst`**. A witness
-    /// for [`Channel::drift`] and nothing else. Never written to, never sent.
+    /// for [`Channel::witness`] and nothing else. Never written to, never sent, and **never compared
+    /// against in order to refuse** — see the module header's correction: two of these three were
+    /// already stale on 2026-09-19 and refusing on them refused a healthy build.
+    ///
+    /// ⚑ **These are deliberately NOT re-transcribed to what the listing says today.** Updating the
+    /// number only rewinds a clock nobody winds, and a witness that agrees with the listing witnesses
+    /// nothing. The number is the note's, dated by [`NOTE`], and the *gap* is the finding.
     pub noted_addr: u32,
     /// **What a selection writes**, in order, transcribed from the engine's own installer.
     pub writes: &'static [Cell],
+    /// ⚑ **Arrays this write-set poisons WHOLE**, for [`layout`]'s second gate. Empty on a channel whose
+    /// write-set writes only scalars — which is two of the three, and that emptiness is a measured
+    /// finding rather than an omission: see each channel's own note.
+    pub covers: &'static [Covering],
     /// The installer this write-set copies, named for the panel.
     pub installer: &'static str,
     /// The symbol prefix this channel's candidates are published under, as measured today. **A starting
@@ -306,6 +391,12 @@ pub const PARALLAX: Channel = Channel {
                   PARALLAX_LERP_SHIFT frames. parallax.emp:1287",
         },
     ],
+    // ⚑ **Measured, not skipped.** Every cell above is `disp: 0` on a symbol of its own, so this
+    // write-set carries **no transcribed field offset at all** and there is no array in it to poison
+    // whole. [`layout`]'s per-cell check is the whole of the layout fact this channel depends on. (The
+    // parallax *scratch* surface does carry offsets, and they are resolved from equates already —
+    // [`hook`], which is where the instrument this gate borrows came from.)
+    covers: &[],
     prefix: "ParallaxConfig_",
     debug_only: false,
     // There is no off state for a scene, and inventing one would be this panel guessing. `NOTE` documents
@@ -361,6 +452,9 @@ pub const RASTER: Channel = Channel {
               reads, :1052) and clears Raster_Patch_Tab. Writing Raster_Program instead would name the \
               new program while the screen kept drawing the old one",
     }],
+    // ⚑ **Measured, not skipped.** One cell, `disp: 0`, one longword into a longword cell: no
+    // transcribed offset and no array. [`layout`]'s per-cell check is the whole of it here.
+    covers: &[],
     // The authored programs. Deliberately narrower than `Raster_`, which also matches `Raster_Cursor`,
     // `Raster_Pending` and a dozen other pieces of engine state that are not programs: offering those as
     // selectable would be this panel inviting a person to stage a scratch word as a program.
@@ -429,6 +523,19 @@ pub const BANDS: Channel = Channel {
             why: "bands 2 and 3, the second half of the same eight-byte state array. bg_anim.emp:186",
         },
     ],
+    // ⚑ **THE ONE TRANSCRIBED LAYOUT FACT IN ANY OF THE THREE WRITE-SETS**, and therefore the one place
+    // a layout gate has something of its own to test. The `disp: 4` above says *this array is eight
+    // bytes*, and `bg_anim.emp:185-186` is where that came from. Both halves of the claim are checked
+    // against the loaded listing per gesture: `BgAnim_LastStep`'s extent must be exactly the eight bytes
+    // poisoned, and it must divide by the count the listing publishes.
+    covers: &[Covering {
+        symbol: "BgAnim_LastStep",
+        count_equate: BGANIM_MAX_BANDS_EQU,
+        element: "band index",
+        why: "BgAnim_SetTable poisons the WHOLE array (bg_anim.emp:185-186) because the state is per \
+              band INDEX, not per band identity. A band left un-poisoned whose step matches the \
+              outgoing table's takes the .skip_band arm forever and the new table never paints on it",
+    }],
     // Two rows in the shape measured today: the act's own table, and the selector itself, which is drawn
     // and refused rather than hidden (see `Row::offered`). The debug view twins are under `BgAnim_View`,
     // which the prefix box reaches.
@@ -480,38 +587,97 @@ impl Channel {
 
     /// ⚑ **The listing disagrees with [`NOTE`] about where this channel's live cell is.**
     ///
-    /// `Some` is a **refusal**, not a caveat, and the asymmetry is deliberate. The obvious reading of a
-    /// disagreement is *the note is stale, trust the listing*, and that reading is right about half the
-    /// time. The other half is *the listing loaded does not describe the ROM running*, which is the
-    /// failure `emulator/load_symbols`' binding check exists for, and which this panel would otherwise
-    /// answer by poking a live machine at an address neither side vouches for. The panel cannot tell the
-    /// two apart, so it says so and writes nothing.
+    /// `Some` is a **witness**, never a refusal, and that is this parcel's correction. The old shape
+    /// refused, on the argument that the panel could not tell a stale note from a mismatched listing.
+    /// **The two are not symmetric.** `resolved` came from the listing of the ROM actually loaded —
+    /// the one `emulator/load_symbols` bound and reported a `binding` for — and [`NOTE`] is a document
+    /// written earlier. For deciding *where to write*, the listing wins outright and there is nothing to
+    /// adjudicate; the panel never held a choice here, only a veto it was exercising against healthy
+    /// builds. (The mismatched-listing hazard is real and is `load_symbols`' `binding` to report; a
+    /// stale transcription in this crate is not the instrument for it, and cannot be, because it is
+    /// equally consistent with an ordinary aeon commit.)
     ///
-    /// Both numbers are named: a refusal that says "they disagree" without saying what they are leaves
-    /// the reader nothing to check.
+    /// What survives is the **statement**: both numbers, named, wherever the panel reports on this
+    /// channel. That is what makes the next sweep visible instead of silent, and it is the half of this
+    /// change most likely to be dropped by the next person who finds `noted_addr` unused-looking.
     ///
     /// ⚑ **`resolved` is the listing's 32-bit `rawAddr`**, which is the spelling
     /// [`Channel::noted_addr`] is transcribed in (`$FFFF88EC`, not `$FF88EC`). Comparing the 24-bit door
-    /// form would make every channel read as drifted and refuse everything, which is the same class of
-    /// mistake as the dead guard in [`forbidden`] with the sign flipped.
-    pub fn drift(&self, resolved: u32) -> Option<Refusal> {
-        if resolved == self.noted_addr {
-            return None;
-        }
-        Some(Refusal::window(
-            "selectorMoved",
-            format!(
-                "the loaded listing puts `{}` at {resolved:#010X}, and {NOTE} records it at {:#010X}. \
-                 Nothing was written. One of the two describes a different build and this panel cannot \
-                 tell which: writing to either would poke a running machine at an address neither side \
-                 vouches for. The note's addresses were read from `s4.debug.lst`",
-                self.selector, self.noted_addr
-            ),
-            Some(format!(
-                "check that the loaded listing is the one this ROM was built with, then re-read {NOTE}"
-            )),
-        ))
+    /// form would make every channel read as drifted, which would now be a wrong *sentence* rather than
+    /// a wrong refusal — still wrong, and still the same class of mistake as the dead guard in
+    /// [`forbidden`].
+    pub fn witness(&self, resolved: u32) -> Option<Drift> {
+        (resolved != self.noted_addr).then_some(Drift {
+            selector: self.selector,
+            noted: self.noted_addr,
+            resolved,
+            now: None,
+        })
     }
+}
+
+/// ⚑ **The note and the listing disagree about where a selector is, stated rather than enforced.**
+///
+/// See [`Channel::witness`]. This type is the witness's whole visible form: it is drawn beside the live
+/// readback and appended to a gesture's readout, and nothing branches on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Drift {
+    /// [`Channel::selector`].
+    pub selector: &'static str,
+    /// [`Channel::noted_addr`] — what [`NOTE`] recorded.
+    pub noted: u32,
+    /// What the **loaded listing** resolves the same name to, and what every access uses.
+    pub resolved: u32,
+    /// ⚑ **What the note's old address is now**, resolved out of the same listing: the nearest preceding
+    /// label and how far past it. `None` when nothing filled it in — see [`witnessed`].
+    ///
+    /// This is the sentence's sharpest half and it is the lesson the cursor guard was repaired for,
+    /// restated: a stale address does not go vacant, it becomes **somebody else's cell**. `$FFFF8BD6`
+    /// is `Region_Cur_X0` in `s4.debug.lst` as built 2026-09-18, not a hole where `Raster_Program`
+    /// used to be.
+    pub now: Option<String>,
+}
+
+impl Drift {
+    /// The witness sentence, as the panel draws it.
+    ///
+    /// It states the gap and then states which side is authoritative, because a reader who is told only
+    /// that two numbers differ has been handed the panel's old confusion rather than its answer.
+    pub fn line(&self) -> String {
+        let now = match &self.now {
+            Some(what) => format!(" {:#010X} is now {what}.", self.noted),
+            None => String::new(),
+        };
+        format!(
+            "DRIFT (stated, not blocking): the loaded listing puts `{}` at {:#010X} and {NOTE} records \
+             {:#010X}.{now} Every read and write on this channel used the LISTING's address, which is \
+             the build actually loaded; the note's number is kept only so this gap is visible. If the \
+             listing is not the one this ROM was built with, the thing that reports it is \
+             `emulator/load_symbols` and its `binding`, and nothing here can.",
+            self.selector, self.resolved, self.noted
+        )
+    }
+}
+
+/// **[`Channel::witness`] with [`Drift::now`] filled in from the loaded listing.**
+///
+/// One extra `emulator/lookup_symbol` and **only on the drifted path**, so an agreeing channel costs
+/// nothing. A lookup that fails is an answer (`now` stays `None`) rather than a failure: the witness is
+/// a statement and must not be able to turn into a refusal by a side road.
+fn witnessed(c: &mut impl Caller, channel: &Channel, resolved: u32) -> Option<Drift> {
+    let mut d = channel.witness(resolved)?;
+    if let Ok(v) = c.call(
+        "emulator/lookup_symbol",
+        serde_json::json!({ "addr": format!("0x{:06X}", d.noted & 0x00FF_FFFF) }),
+    ) {
+        if let Some(name) = v["name"].as_str() {
+            d.now = Some(match v["disp"].as_u64().unwrap_or(0) {
+                0 => format!("`{name}`"),
+                n => format!("${n:X} past `{name}`"),
+            });
+        }
+    }
+    Some(d)
 }
 
 /// ⚑ **Where the START chord's cursor actually is**, resolved out of the loaded listing, or the stated
@@ -1026,9 +1192,12 @@ pub fn bands(raw: &[u8]) -> Bands {
 // * **The scratch has already MOVED.** `NOTE` §6.1 records `Parallax_Scratch_Config` at `$FFFFEA26`;
 //   `s4.debug.lst` as built on 2026-09-18 puts it at **`$FFFFEA46`**. It is at the RAM tail inside a
 //   `@shape_divergent` group, so it moves whenever any other debug-RAM group changes size — which is an
-//   ordinary aeon commit, not a mistake. A [`Channel::drift`]-style positional refusal on this symbol would
-//   refuse the whole feature on a healthy build, so the noted addresses are kept as **witnesses only**
-//   ([`SCRATCH_NOTED_ADDR`]) and nothing refuses on them.
+//   ordinary aeon commit, not a mistake. A positional refusal on this symbol would refuse the whole
+//   feature on a healthy build, so the noted addresses are kept as **witnesses only**
+//   ([`SCRATCH_NOTED_ADDR`]) and nothing refuses on them. ⚑ **That finding has since been generalised**:
+//   [`Channel::witness`] is the same decision for the three channel selectors, which used to refuse on
+//   the same comparison and were refusing two of three gestures on a healthy build by the time it was
+//   measured. This surface got there first.
 // * **The band-record stride is PER GAME.** It is 32 bytes in `s4.debug` and **10** in `demo.debug`
 //   (measured: span `$FFFFE60E - $FFFFE550` = 190 = 30 + 10 × 16). `NOTE` §6.4's *"`sizeof(band_record)`
 //   is **32** for this game"* says so, and a 32 transcribed here would have addressed demo's band 1 inside
@@ -1121,11 +1290,17 @@ pub const SCRATCH_PROC: &str = "Parallax_InstallScratch";
 
 /// [`SCRATCH`]'s address as [`NOTE`] §6.1 records it, **kept as a witness and never compared against**.
 ///
-/// The distinction from [`Channel::noted_addr`] is load-bearing rather than pedantic, and it is measured:
-/// the note says `$FFFFEA26` and `s4.debug.lst` built 2026-09-18 says `$FFFFEA46`. The symbol is at the
-/// RAM tail inside a size-varying `@shape_divergent` group, so it moves on ordinary aeon commits, and a
-/// drift refusal here would refuse a healthy build. `Parallax_Current_Config` is engine RAM at a fixed
-/// offset and is a different case, which is why *it* is still drift-checked.
+/// It is measured: the note says `$FFFFEA26` and `s4.debug.lst` built 2026-09-18 says `$FFFFEA46`. The
+/// symbol is at the RAM tail inside a size-varying `@shape_divergent` group, so it moves on ordinary
+/// aeon commits, and a refusal here would refuse a healthy build.
+///
+/// ⚑ **This used to read that `Parallax_Current_Config` is engine RAM at a fixed offset and is a
+/// different case, which is why it was still drift-checked. That sentence was wrong**, and it is
+/// corrected here rather than deleted because it is exactly the reasoning the channel refusal rested
+/// on. Engine RAM at a fixed offset inside its own block still moves whenever a block ABOVE it changes
+/// size, which is what aeon `61918621` did: `Raster_Program` slid `$20` and `BgAnim_Table_Ptr` slid
+/// `$20` while nothing about their layout changed at all. There is no "different case"; there is one
+/// case, and [`Channel::noted_addr`] is now the same kind of witness this constant always was.
 pub const SCRATCH_NOTED_ADDR: u32 = 0xFFFF_EA26;
 
 /// The equate giving `sizeof(parallax_config)` — the header's length, and band record 0's offset.
@@ -1612,10 +1787,11 @@ pub fn arm(c: &mut impl Caller) -> Result<(Hook, Installed), Refusal> {
     let h = hook(c)?;
     // The selector's own guards, unchanged and reused: this reads and depends on
     // `Parallax_Current_Config`, so the channel's drift refusal and the cursor guard both apply.
-    let sel = available(c, &PARALLAX)?;
-    if let Some(r) = PARALLAX.drift(sel) {
-        return Err(r);
-    }
+    // ⚑ Still gated on the selector being IN the listing, which is what `available` answers; no longer
+    // gated on where. The drift witness is not restated here because `arm` answers `Installed` — the
+    // scratch's own numbers — and the two places this channel IS reported on, the live readback and a
+    // selection's readout, both carry it.
+    available(c, &PARALLAX)?;
     if let Some(r) = forbidden(cursor(c)?, SCRATCH_ARM, h.scratch_raw.wrapping_add(h.span)) {
         return Err(r);
     }
@@ -1957,8 +2133,9 @@ pub fn resolve(c: &mut impl Caller, name: &str) -> Result<(u32, u32), Refusal> {
 /// in `s4.lst` and once in `s4.debug.lst`, while `Parallax_Current_Config` occurs once in both.
 pub fn available(c: &mut impl Caller, channel: &Channel) -> Result<u32, Refusal> {
     match resolve(c, channel.selector) {
-        // ⚑ The RAW spelling, because both things done with it next, `forbidden` and `Channel::drift`,
-        // compare against addresses transcribed from the note in that spelling.
+        // ⚑ The RAW spelling, because both things done with it next, `forbidden` and
+        // `Channel::witness`, compare against addresses in that spelling: `forbidden` against the
+        // cursor as the listing resolves it, and the witness against the note's transcription.
         Ok((_, raw)) => Ok(raw),
         Err(_) if channel.debug_only => Err(Refusal::window(
             "debugOnlyChannel",
@@ -1975,6 +2152,255 @@ pub fn available(c: &mut impl Caller, channel: &Channel) -> Result<u32, Refusal>
     }
 }
 
+// -------------------------------------------------------------------------------------------------------
+// ⚑ THE LAYOUT GATE: the fact a refusal is allowed to stand on
+// -------------------------------------------------------------------------------------------------------
+
+/// What the loaded listing puts at or before `addr24`: the label, and where that label **starts**.
+///
+/// ⚑ **The start is computed as `queried − disp`, not read from the reply's `addr`.** `disp` is REQUIRED
+/// on the address direction (§4) and `addr` on that branch is the *symbol's* address, so the two agree —
+/// but subtracting the displacement is the spelling that cannot be confused with the 32-bit `rawAddr`,
+/// and it keeps this probe in the same 24-bit space [`resolve`] hands back.
+///
+/// ⚑ **`None` means THE PROBE DID NOT ANSWER, and it is not *the listing names nothing there*.** The
+/// distinction is worth the sentence because the second reading is impossible: this is only ever called
+/// with an address at or past a symbol [`resolve`] just resolved, so a listing that answered the resolve
+/// always has something at or before it. What is left is a bus that failed the call or a reply with no
+/// `name` in it. [`layout`] turns that into a stated limit rather than a pass or a refusal: a transport
+/// hiccup must not refuse a healthy build, and must not read as a check that succeeded either.
+fn label_at(c: &mut impl Caller, addr24: u32) -> Option<(String, u32)> {
+    let v = c
+        .call(
+            "emulator/lookup_symbol",
+            serde_json::json!({ "addr": format!("0x{addr24:06X}") }),
+        )
+        .ok()?;
+    let name = v["name"].as_str()?.to_string();
+    let disp = u32::try_from(v["disp"].as_u64().unwrap_or(0)).ok()?;
+    Some((name, addr24.checked_sub(disp)?))
+}
+
+/// ⚑ **THE GATE. It stands on the LAYOUT the loaded listing describes, never on an address.**
+///
+/// The module header has the reasoning; this is what it checks, and both facts are re-derived from the
+/// listing on every gesture:
+///
+/// 1. **Every cell's bytes lie inside the symbol the cell names.** For each cell, the last byte it
+///    writes — `symbol + disp + width - 1` — must still have that same symbol as its nearest preceding
+///    label. Equivalently: **no other symbol starts inside the bytes this cell writes.** That is the
+///    direct test of a transcribed `disp`, and `BgAnim_LastStep+4` is the one in this module.
+/// 2. **An array a write-set poisons whole is still exactly that large, and still partitions.** See
+///    [`Covering`]. Two probes pin the extent — nothing starts inside the covered bytes (1, above), and
+///    something starts exactly one past them — and the listing's own count equate divides it.
+///
+/// ⚑ **Address-invariant by construction.** aeon's `61918621` slid six symbols by `+$20` and one by
+/// `+$200` and changed no width; every comparison here is between two addresses from the *same* listing,
+/// so a uniform slide cancels and this gate stays silent — which is the whole reason it replaced the
+/// equality test that refused every raster and bands gesture on a healthy build.
+///
+/// Returns one line per fact **established or unmeasurable**, for the gesture's readout. A fact it
+/// cannot measure is stated (the `⚠` lines), never counted as a pass: an absence is not a finding.
+///
+/// ⚑ **Run in full BEFORE the first cell is written**, not folded into [`run`]'s loop. A gate that
+/// checked cell 3's layout after cells 1 and 2 had landed would leave the channel half set on exactly
+/// the finding it exists to catch.
+pub fn layout(c: &mut impl Caller, channel: &Channel) -> Result<Vec<String>, Refusal> {
+    let mut said = Vec::new();
+    // ⚑ Cells whose probe did not answer. Counted rather than merely reported, because the account
+    // below would otherwise end "and it is" under a line saying a check did NOT run, which is the
+    // silent-pass shape this whole gate exists against.
+    let mut unmeasured = 0usize;
+
+    // 1. Every cell stays inside the symbol it names.
+    for cell in channel.writes {
+        let (addr, _) = resolve(c, cell.symbol)?;
+        let span = cell.disp + u32::from(cell.width);
+        let last = addr + span - 1;
+        match label_at(c, last) {
+            Some((_, start)) if start == addr => {}
+            Some((other, start)) => {
+                return Err(Refusal::window(
+                    "cellLeavesItsSymbol",
+                    format!(
+                        "`{}`{} is {} byte{} wide, so it writes through {last:#010X}, and the loaded \
+                         listing starts `{other}` at {start:#010X}, INSIDE those bytes. This cell's \
+                         offset is transcribed from {ENGINE} ({}), so the struct this write-set was \
+                         written against is not the struct this build has, and the write would land \
+                         partly in `{other}`. Nothing was written.\n\nThis is a LAYOUT finding, not a \
+                         moved address: every address compared here came out of the one loaded \
+                         listing, so a build that merely slid its RAM would not raise it",
+                        cell.symbol,
+                        if cell.disp > 0 {
+                            format!("+{}", cell.disp)
+                        } else {
+                            String::new()
+                        },
+                        cell.width,
+                        if cell.width == 1 { "" } else { "s" },
+                        cell.why,
+                    ),
+                    Some(format!(
+                        "re-read {ENGINE}'s installer for this channel against the build you loaded: \
+                         the cell's offset or width has to change, and re-transcribing an address will \
+                         not help"
+                    )),
+                ));
+            }
+            None => {
+                unmeasured += 1;
+                said.push(format!(
+                    "⚠ `{}` + {span}: the bus did not answer what the loaded listing puts at or before \
+                     {last:#010X}, so the gate could NOT check that this cell stays inside the symbol \
+                     it names, and did not. The write was not refused for it: a probe that failed to \
+                     answer is not evidence of a layout fault",
+                    cell.symbol
+                ));
+            }
+        }
+    }
+    if unmeasured > 0 {
+        said.push(format!(
+            "⚠ layout: {unmeasured} of {} cells could not be placed in the loaded listing, so this \
+             account is INCOMPLETE. The cells that were placed are inside the symbols they name; \
+             nothing is claimed about the rest",
+            channel.writes.len(),
+        ));
+    } else if channel.writes.iter().all(|w| w.disp == 0) {
+        said.push(format!(
+            "layout: {} cell{} checked against the loaded listing, with no transcribed field offset \
+             among them. Every one is a whole symbol at displacement 0, so the only layout fact this \
+             channel depends on is that each symbol is still at least as wide as the write, and it is",
+            channel.writes.len(),
+            if channel.writes.len() == 1 { "" } else { "s" },
+        ));
+    } else {
+        said.push(format!(
+            "layout: {} cells checked against the loaded listing; no other symbol starts inside the \
+             bytes any of them writes, so the transcribed displacements still address the struct this \
+             build has",
+            channel.writes.len(),
+        ));
+    }
+
+    // 2. An array the write-set poisons whole is still exactly that large, and still partitions.
+    for cov in channel.covers {
+        let (addr, _) = resolve(c, cov.symbol)?;
+        // Which bytes of `cov.symbol` this write-set actually covers. A set rather than a maximum,
+        // because a write-set with a HOLE in it poisons the same top byte while leaving a band alive.
+        let covered: u32 = channel
+            .writes
+            .iter()
+            .filter(|w| w.symbol == cov.symbol)
+            .map(|w| w.disp + u32::from(w.width))
+            .max()
+            .unwrap_or(0);
+        let mut hit = vec![false; covered as usize];
+        for w in channel.writes.iter().filter(|w| w.symbol == cov.symbol) {
+            for b in w.disp..w.disp + u32::from(w.width) {
+                hit[b as usize] = true;
+            }
+        }
+        if let Some(hole) = hit.iter().position(|h| !h) {
+            return Err(Refusal::window(
+                "poisonHasAHole",
+                format!(
+                    "this write-set reaches byte {} of `{}` but leaves byte {hole} unwritten. {} \
+                     Nothing was written",
+                    covered - 1,
+                    cov.symbol,
+                    cov.why
+                ),
+                Some(format!(
+                    "re-read {ENGINE}'s installer: it poisons the array whole"
+                )),
+            ));
+        }
+
+        // The extent, pinned rather than believed: (1) above proved nothing starts inside the covered
+        // bytes; this proves something starts exactly one past them, so the array is not larger.
+        // ⚑ Whether the extent was actually pinned, so the partition line below cannot assert
+        // "exactly the N bytes this write-set poisons" on the strength of a probe that did not answer.
+        let mut pinned = true;
+        match label_at(c, addr + covered) {
+            Some((_, start)) if start != addr => {}
+            Some((_, _)) => {
+                return Err(Refusal::window(
+                    "arrayOutgrewItsPoison",
+                    format!(
+                        "this write-set poisons {covered} bytes of `{}`, and the loaded listing \
+                         continues that symbol past them: nothing else starts at {:#010X}. {} So the \
+                         indices past the {covered}th byte would keep their stale state and the switch \
+                         would stop being atomic, silently, with every cell still landing inside its \
+                         own symbol. Nothing was written.\n\nThis is a LAYOUT finding: it compares two \
+                         addresses from the one loaded listing, so a build that merely slid its RAM \
+                         would not raise it. ⚑ It reads the same way for an array that is the LAST \
+                         symbol in the listing, which this gate cannot distinguish and does not guess",
+                        cov.symbol,
+                        addr + covered,
+                        cov.why,
+                    ),
+                    Some(format!(
+                        "re-read {ENGINE}'s installer for this channel: the write-set has to cover the \
+                         array this build has"
+                    )),
+                ));
+            }
+            None => {
+                pinned = false;
+                said.push(format!(
+                    "⚠ `{}`: the bus did not answer what the loaded listing puts at or before \
+                     {:#010X}, so the gate could NOT pin this array's extent and did not check that \
+                     the write-set covers all of it",
+                    cov.symbol,
+                    addr + covered
+                ));
+            }
+        }
+
+        // The published count, which turns the byte figure into the figure the engine reasons in. A
+        // missing or non-dividing equate is a STATED LIMIT and never a refusal: nothing is computed
+        // from it, so an unmeasurable partition costs the gesture nothing but silence would cost the
+        // reader the one number that says what the poison covers.
+        match equate(c, cov.count_equate).ok() {
+            Some(n) if n > 0 && covered.is_multiple_of(n) => said.push(if pinned {
+                format!(
+                    "layout: `{}` is exactly the {covered} bytes this write-set poisons, and the \
+                     listing's own `{}` = {n} partitions them into {n} {} slots of {} bytes each, so \
+                     every {} the build has is poisoned",
+                    cov.symbol,
+                    cov.count_equate,
+                    cov.element,
+                    covered / n,
+                    cov.element,
+                )
+            } else {
+                format!(
+                    "⚠ this write-set poisons {covered} bytes of `{}` and the listing's own `{}` = {n} \
+                     divides them into {n} {} slots of {} bytes, but the array's extent went unpinned \
+                     above, so it is NOT established that {covered} bytes is all of it",
+                    cov.symbol,
+                    cov.count_equate,
+                    cov.element,
+                    covered / n,
+                )
+            }),
+            Some(n) => said.push(format!(
+                "⚠ `{}` is exactly the {covered} bytes this write-set poisons, but the listing's `{}` = \
+                 {n} does not divide them. The per-{} size could not be derived, so the gate checked \
+                 the EXTENT and did NOT check that the poison reaches every {}",
+                cov.symbol, cov.count_equate, cov.element, cov.element
+            )),
+            None => said.push(format!(
+                "⚠ `{}` is exactly the {covered} bytes this write-set poisons, but the loaded listing \
+                 does not publish `{}`, so the gate could not say how many {} slots that is",
+                cov.symbol, cov.count_equate, cov.element
+            )),
+        }
+    }
+    Ok(said)
+}
+
 /// **What one gesture actually did**, cell by cell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wrote {
@@ -1984,6 +2410,13 @@ pub struct Wrote {
     pub installer: String,
     /// One line per cell, in the order they were written.
     pub cells: Vec<String>,
+    /// ⚑ **What [`layout`] established, and what it could not** — one line each, drawn under the cells.
+    /// The `⚠` lines are facts the gate did not check, stated rather than passed over.
+    pub layout: Vec<String>,
+    /// ⚑ **The note-versus-listing witness** ([`Drift`]), `Some` only when they disagree. It did not
+    /// block this gesture and says so; every cell above was addressed by name and resolved by the
+    /// server out of the loaded listing.
+    pub drift: Option<Drift>,
 }
 
 impl Wrote {
@@ -1991,12 +2424,19 @@ impl Wrote {
     /// and the engine wanted more, and a reader who sees four writes go past deserves to know that is the
     /// design rather than a bug.
     pub fn line(&self) -> String {
-        format!(
+        let head = format!(
             "pointed at {}. {} written, which is {}.",
             self.target,
             plural(self.cells.len(), "cell", "cells"),
             self.installer
-        )
+        );
+        // ⚑ The witness rides the headline rather than a separate control, because a line drawn only
+        // when it has something to say cannot become the standing caveat this tree forbids, and because
+        // the moment a person is owed the drift is the moment they made the panel write.
+        match &self.drift {
+            Some(d) => format!("{head} {}", d.line()),
+            None => head,
+        }
     }
 }
 
@@ -2008,7 +2448,10 @@ impl Wrote {
 /// 2. **[`cursor`]**, resolving the START chord's cursor out of the loaded listing ONCE for the whole
 ///    gesture, so every cell below is measured against one listing rather than re-resolved per cell.
 /// 3. **[`forbidden`]**, on the live cell's name and resolved address independently.
-/// 4. **[`Channel::drift`]**, refusing when the listing and [`NOTE`] disagree about where it lives.
+/// 4. **[`layout`]**, refusing when the loaded listing's own layout no longer matches the struct this
+///    write-set was transcribed against. ⚑ This is where step 4 used to be a `Channel::drift`
+///    refusal on an address, which refused every raster and every bands gesture on a healthy build;
+///    see the module header. The note survives as [`Wrote::drift`], stated and not blocking.
 /// 5. **Resolve the target by name**, so the value written is the listing's and not this crate's.
 /// 6. **Every cell**, each addressed `{symbol, disp, value, width}` so the server resolves the
 ///    destination from the same table it would answer a socket client from, and each passed through
@@ -2030,11 +2473,10 @@ pub fn point_at(c: &mut impl Caller, channel: &Channel, target: &str) -> Result<
     if let Some(r) = forbidden(cur, channel.selector, sel_addr) {
         return Err(r);
     }
-    if let Some(r) = channel.drift(sel_addr) {
-        return Err(r);
-    }
+    let said = layout(c, channel)?;
+    let drift = witnessed(c, channel, sel_addr);
     let (_, value) = resolve(c, target)?;
-    run(c, cur, channel, target, value)
+    run(c, cur, channel, target, value, said, drift)
 }
 
 /// **Turn `channel` off**, by the one route [`Channel::off`] names, or refuse and say why.
@@ -2059,13 +2501,12 @@ pub fn turn_off(c: &mut impl Caller, channel: &Channel) -> Result<Wrote, Refusal
     if let Some(r) = forbidden(cur, channel.selector, sel_addr) {
         return Err(r);
     }
-    if let Some(r) = channel.drift(sel_addr) {
-        return Err(r);
-    }
+    let said = layout(c, channel)?;
+    let drift = witnessed(c, channel, sel_addr);
     // The empty program or empty table, when the listing has it. **No fallback**: a panel that reached
     // for a second address when the first was missing would be choosing a target in somebody else's RAM.
     match resolve(c, symbol) {
-        Ok((_, value)) => run(c, cur, channel, symbol, value),
+        Ok((_, value)) => run(c, cur, channel, symbol, value, said, drift),
         Err(_) => Err(Refusal::window(
             "offTargetMissing",
             blocked,
@@ -2089,6 +2530,8 @@ fn run(
     channel: &Channel,
     target: &str,
     target_value: u32,
+    said: Vec<String>,
+    drift: Option<Drift>,
 ) -> Result<Wrote, Refusal> {
     let mut cells = Vec::new();
     for cell in channel.writes {
@@ -2145,6 +2588,8 @@ fn run(
         target: target.to_string(),
         installer: channel.installer.to_string(),
         cells,
+        layout: said,
+        drift,
     })
 }
 
@@ -2161,6 +2606,10 @@ pub struct Live {
     pub name: Option<String>,
     /// How far past that symbol the value sits. Non-zero means it is **not** that symbol.
     pub disp: u64,
+    /// ⚑ **The note-versus-listing witness** ([`Drift`]), `Some` only when they disagree. The readback
+    /// above came from the address the **listing** resolves, which is the cell the engine reads; the
+    /// witness says so and names the note's number so the gap is visible rather than silent.
+    pub drift: Option<Drift>,
 }
 
 impl Live {
@@ -2173,22 +2622,31 @@ impl Live {
     /// A non-zero displacement is called out rather than swallowed, because *"`X` + $12"* and *"`X`"* are
     /// different findings and the first usually means the cell holds something the listing does not name.
     pub fn line(&self, channel: &Channel) -> String {
+        // ⚑ The witness is appended to whichever finding follows, never printed instead of it: a zero
+        // selector and a drifted note are two separate facts and the reader is owed both.
+        let witness = match &self.drift {
+            Some(d) => format!(" {}", d.line()),
+            None => String::new(),
+        };
         let selector = channel.selector;
         // ⚑ A zero is a **stated per-channel finding**, never "the listing does not name it". See
         // [`Channel::zero`]: on the raster channel it is a documented off state, and on the band channel
         // it is a fault. Reporting both as an unnamed address would hide one and alarm about the other.
         if self.value == 0 {
-            return format!("{selector} holds 0. {}.", channel.zero);
+            return format!("{selector} holds 0. {}.{witness}", channel.zero);
         }
         match (&self.name, self.disp) {
-            (Some(n), 0) => format!("{selector} holds {:#010X}, which is `{n}`.", self.value),
+            (Some(n), 0) => format!(
+                "{selector} holds {:#010X}, which is `{n}`.{witness}",
+                self.value
+            ),
             (Some(n), d) => format!(
                 "{selector} holds {:#010X}, which is ${d:X} past `{n}` and so is probably not `{n}` at \
-                 all: the listing carries no sizes.",
+                 all: the listing carries no sizes.{witness}",
                 self.value
             ),
             (None, _) => format!(
-                "{selector} holds {:#010X}, which the loaded listing does not name.",
+                "{selector} holds {:#010X}, which the loaded listing does not name.{witness}",
                 self.value
             ),
         }
@@ -2206,20 +2664,22 @@ impl Live {
 /// naming the old program until a frame runs. That is true, and a panel that echoed the click instead
 /// would be asserting a swap that has not happened.
 pub fn live(c: &mut impl Caller, channel: &Channel) -> Result<Live, Refusal> {
-    // ⚑ **The drift check guards the READ as well as the write**, which is a coherence property rather
-    // than caution: a panel that refuses to write a cell it cannot place, and then prints a confident
-    // sentence about that same cell's contents, has answered the harder question and refused the easier
-    // one. Whichever of the listing and the note is wrong, this readout is about the wrong four bytes.
+    // ⚑ **The witness rides the READ as well as the write**, which is a coherence property rather than
+    // caution and it used to be a refusal on both. The refusal's old argument was that a panel which
+    // will not write a cell it cannot place should not then print a confident sentence about that same
+    // cell's contents. The premise was wrong in both halves: the read is at the address the LISTING
+    // resolves, which is the cell the engine reads, so the sentence is about the right four bytes — and
+    // refusing here blanked the raster and bands readbacks on a healthy build. What both paths share
+    // now is the statement, not the veto.
     let sel = available(c, channel)?;
-    if let Some(r) = channel.drift(sel) {
-        return Err(r);
-    }
+    let drift = witnessed(c, channel, sel);
     let value = read_u32_at_symbol(c, channel.selector)?;
     if value == 0 {
         return Ok(Live {
             value,
             name: None,
             disp: 0,
+            drift,
         });
     }
     // A lookup that finds nothing is an answer here rather than a failure: a cell holding an address the
@@ -2233,11 +2693,13 @@ pub fn live(c: &mut impl Caller, channel: &Channel) -> Result<Live, Refusal> {
             value,
             name: v["name"].as_str().map(str::to_string),
             disp: v["disp"].as_u64().unwrap_or(0),
+            drift,
         },
         Err(_) => Live {
             value,
             name: None,
             disp: 0,
+            drift,
         },
     })
 }
@@ -2246,9 +2708,7 @@ pub fn live(c: &mut impl Caller, channel: &Channel) -> Result<Live, Refusal> {
 /// address this crate carries.
 pub fn read_bands(c: &mut impl Caller) -> Result<Bands, Refusal> {
     let sel = available(c, &BANDS)?;
-    if let Some(r) = BANDS.drift(sel) {
-        return Err(r);
-    }
+    let drift = witnessed(c, &BANDS, sel);
     let ptr = read_u32_at_symbol(c, BANDS.selector)?;
     if ptr == 0 {
         // `NOTE` §1: "`BgAnim_Table_Ptr` = 0 is never valid; `BgAnim_Init` seeds it." So a zero here is
@@ -2267,7 +2727,31 @@ pub fn read_bands(c: &mut impl Caller) -> Result<Bands, Refusal> {
     }
     let len = BAND_COUNT_BYTES + MAX_BANDS * BAND_RECORD_BYTES;
     let raw = read_bytes(c, ptr & 0x00FF_FFFF, len)?;
-    Ok(bands(&raw))
+    let mut out = bands(&raw);
+    // ⚑ **The witness and the stated limit, folded into the caveat this readout already has** rather
+    // than drawn as a standing banner — §11.27 forbids the unconditional caveat, and a limit that is
+    // true of every decode would become one. `Bands::caveat` is conditional on a readback having been
+    // asked for, which is exactly when the limit is load-bearing.
+    //
+    // The limit is real and this is the channel that has it: `BAND_RECORD_BYTES` is **transcribed**
+    // from `NOTE` §2 and the loaded listing publishes no equate for it (measured 2026-09-19: the only
+    // `bg_anim` layout equate in `s4.debug.lst` is `BGANIM_MAX_BANDS`; the nine `band_entry_*` rows
+    // belong to the parallax band record, a different struct). So `layout` has nothing to check the
+    // record stride against, and saying so is the honest state — not a silent pass.
+    let notes: Vec<String> = out
+        .caveat
+        .take()
+        .into_iter()
+        .chain(drift.as_ref().map(Drift::line))
+        .chain(std::iter::once(format!(
+            "LIMIT: the {BAND_RECORD_BYTES}-byte record stride and the {BAND_COUNT_BYTES}-byte count \
+             word above are TRANSCRIBED from {NOTE} §2, and the loaded listing publishes no equate for \
+             either, so nothing checked them against this build. `{BGANIM_MAX_BANDS_EQU}` is the only \
+             bg_anim layout equate the listing carries, and it bounds the band COUNT, not the stride."
+        )))
+        .collect();
+    out.caveat = Some(notes.join(" "));
+    Ok(out)
 }
 
 /// One longword out of the location `symbol` names, through the served reader.
@@ -2355,6 +2839,9 @@ pub struct Readout {
     /// One line per cell written, in order. Empty on a refusal, which is how a reader tells "nothing
     /// happened" from "some of it did".
     pub cells: Vec<String>,
+    /// ⚑ **What [`layout`] established before the first cell, and what it could not** ([`Wrote::layout`]).
+    /// Empty on a refusal for the same reason [`Readout::cells`] is: nothing ran.
+    pub layout: Vec<String>,
     /// Colours the readout, and is never inferred from the shape of the sentence (P5).
     pub refused: bool,
 }
@@ -2438,11 +2925,12 @@ impl Nudging {
     /// **The derivation, said out loud**, because a stride nobody can see is a stride nobody can check.
     ///
     /// ⚑ **It also states when the listing has moved past [`SCRATCH_NOTED_ADDR`], and says that is fine.**
-    /// A reader who compares this panel against `NOTE` §6.1 will find the two addresses disagree and, on
-    /// every other symbol this module touches, a disagreement is a refusal ([`Channel::drift`]). So the
-    /// difference is named where it will be noticed, with the reason it is benign here: the symbol is at
-    /// the RAM tail inside a size-varying `@shape_divergent` group and moves on ordinary aeon commits. An
-    /// unexplained disagreement on a surface whose sibling refuses for it is a reader's hour.
+    /// A reader who compares this panel against `NOTE` §6.1 will find the two addresses disagree. When
+    /// this was written every other symbol in the module answered such a disagreement with a refusal,
+    /// and this line existed to say why this one did not; [`Channel::witness`] has since made *stating
+    /// it* the rule rather than the exception, and the line is kept because the reason it gives is the
+    /// specific one: the symbol is at the RAM tail inside a size-varying `@shape_divergent` group and
+    /// moves on ordinary aeon commits.
     pub fn shape_line(&self) -> String {
         let mut s = format!(
             "the scratch is {} bytes at {:#010X}: a {}-byte header and {} records of {} bytes. The stride \
@@ -2620,6 +3108,7 @@ impl Panel {
                        which is a list that looks like an answer."
                     .to_string(),
                 cells: Vec::new(),
+                layout: Vec::new(),
                 refused: true,
             });
             return;
@@ -2637,6 +3126,7 @@ impl Panel {
                         plural(self.names.len(), "name", "names")
                     ),
                     cells: Vec::new(),
+                    layout: Vec::new(),
                     refused: false,
                 });
             }
@@ -2647,6 +3137,7 @@ impl Panel {
                 self.last = Some(Readout {
                     head: refusal_line(&e, &format!("search under {prefix:?}")),
                     cells: Vec::new(),
+                    layout: Vec::new(),
                     refused: true,
                 });
             }
@@ -2703,6 +3194,7 @@ impl Panel {
                          {why}"
                     ),
                     cells: Vec::new(),
+                    layout: Vec::new(),
                     refused: true,
                 });
                 return;
@@ -2722,6 +3214,7 @@ impl Panel {
                 Readout {
                     head: w.line(),
                     cells: w.cells,
+                    layout: w.layout,
                     refused: false,
                 }
             }
@@ -2731,6 +3224,7 @@ impl Panel {
             Err(e) => Readout {
                 head: refusal_line(&e, what),
                 cells: Vec::new(),
+                layout: Vec::new(),
                 refused: true,
             },
         });
@@ -2897,6 +3391,7 @@ impl Panel {
                         "the window could not pause the machine to {what}, so nothing was written. {why}"
                     ),
                     cells: Vec::new(),
+                    layout: Vec::new(),
                     refused: true,
                 });
                 return;
@@ -2907,11 +3402,13 @@ impl Panel {
             Ok(n) => Readout {
                 head: format!("{what}: {}", n.installed.line()),
                 cells: Vec::new(),
+                layout: Vec::new(),
                 refused: false,
             },
             Err(e) => Readout {
                 head: refusal_line(e, what),
                 cells: Vec::new(),
+                layout: Vec::new(),
                 refused: true,
             },
         });
@@ -3002,6 +3499,11 @@ mod tests {
         reads: Vec<(String, String)>,
         /// A symbol whose write is refused, and the refusal.
         refuse_write: Option<(&'static str, i64, &'static str)>,
+        /// ⚑ **A bus that will not answer the ADDRESS direction of `lookup_symbol`.** It exists so
+        /// [`label_at`]'s `None` arm is reachable at all: with a working bus it cannot be, because the
+        /// gate only ever probes at or past a symbol the same listing just resolved. A branch that no
+        /// fixture can reach is a branch nobody has read.
+        refuse_addr_lookup: bool,
         /// ⚑ **The `Equate Table`'s own namespace, kept SEPARATE from `listing`** exactly as the bus keeps
         /// it (§11.36 option A): an equate is a value, never an address, and folding the two here would let
         /// a test pass on a door the real server does not have.
@@ -3017,6 +3519,7 @@ mod tests {
                 calls: Vec::new(),
                 reads: Vec::new(),
                 refuse_write: None,
+                refuse_addr_lookup: false,
                 equates: Vec::new(),
                 frames: 0,
             }
@@ -3026,38 +3529,59 @@ mod tests {
         /// the tests that are about their absence take them out rather than the other tests inventing
         /// them.
         ///
-        /// ⚑ **These rows were measured off the listings on this box, and most of them have since moved.**
-        /// Re-audited 2026-09-19 against `s4.debug.lst` (built 2026-09-18 19:26): the four `Parallax_*` RAM
-        /// cells still hold, the ROM addresses have all slid — which they do on every build and which
-        /// nothing here depends on — and two RAM rows matter more than that:
+        /// ⚑ **THE RAM ROWS AND THEIR NEIGHBOURS ARE `s4.debug.lst` AS BUILT 2026-09-18 19:26**, read at
+        /// this seat on 2026-09-19. Until this parcel two of them were the *note's* numbers instead —
+        /// `Raster_Program` at `$FFFF8BD6` and `BgAnim_Table_Ptr` at `$FFFFE91A`, exactly what
+        /// [`Channel::noted_addr`] still carries — and that is **how a real defect sat under a green
+        /// suite**: the fixture agreed with the note, the shipped `drift` refusal compared the two, and
+        /// every row over the raster and bands channels passed while both channels refused every gesture
+        /// on a real build. A fixture that shares the defect's source cannot witness the defect.
         ///
-        /// * `Raster_Program` is `$FFFF8BF6` in that listing and `$FFFF8BD6` here;
-        /// * `BgAnim_Table_Ptr` is `$FFFFE93A` there and `$FFFFE91A` here.
+        /// So the fixture now says what the listing says and the note keeps saying what the note said,
+        /// which is the shape reality has. Every green over these two channels is therefore a green
+        /// **across** a stated disagreement, which is the behaviour this parcel introduced.
         ///
-        /// Both are what [`Channel::noted_addr`] still carries, so this fixture agrees with the note and
-        /// **a green here does not mean the raster and bands channels work on a current listing** —
-        /// [`Channel::drift`] refuses on exactly that disagreement. That is a separate subject from the
-        /// cursor guard, it needs a decision rather than a fresh transcription (aeon `61918621`: *resolve,
-        /// do not transcribe*), and it is reported upward rather than quietly patched here. `Debug_Lab_Index`
-        /// is the one row that has been brought current, because [`forbidden`] resolves it and this fixture
-        /// is what it resolves from.
+        /// ⚑ **The four neighbour rows are the fixture's LAYOUT and not decoration.** `Raster_Line`,
+        /// `Parallax_Vscroll_Column_Buf`, `Waterline_Art_Row` and `Static_Pal_Line0` are the symbols that
+        /// actually follow these cells in that listing, and [`layout`] reads exactly that — where the
+        /// next symbol starts — to decide whether a cell stays inside the symbol it names. Without them
+        /// the fake listing would describe cells of unbounded width and the gate would have nothing to
+        /// measure. `Static_Pal_Line0` is the load-bearing one: it is what makes `BgAnim_LastStep`
+        /// **eight bytes**, which is the single transcribed layout fact in any of the three write-sets.
+        ///
+        /// The ROM addresses are the listing's too, and nothing here depends on them; they slide on
+        /// every build.
         fn full() -> Self {
-            Fake::new(vec![
+            let mut f = Fake::new(vec![
                 ("Parallax_Current_Config", 0xFF_88EC, 0xFFFF_88EC),
                 ("Parallax_Target_Config", 0xFF_88F0, 0xFFFF_88F0),
                 ("Parallax_Transition_Frames", 0xFF_88F4, 0xFFFF_88F4),
                 ("Parallax_Snap_Pending", 0xFF_88F5, 0xFFFF_88F5),
+                // The neighbour that bounds `Parallax_Snap_Pending`.
+                ("Parallax_Vscroll_Column_Buf", 0xFF_88F8, 0xFFFF_88F8),
                 ("ParallaxConfig_Haze", 0x01_2C6C, 0x0001_2C6C),
                 ("ParallaxConfig_OJZ_Default", 0x01_267A, 0x0001_267A),
-                ("Raster_Program", 0xFF_8BD6, 0xFFFF_8BD6),
-                ("Raster_Pending", 0xFF_8BDE, 0xFFFF_8BDE),
+                ("Raster_Program", 0xFF_8BF6, 0xFFFF_8BF6),
+                ("Raster_Pending", 0xFF_8BFE, 0xFFFF_8BFE),
+                // The neighbour that bounds `Raster_Pending` at four bytes.
+                ("Raster_Line", 0xFF_8C02, 0xFFFF_8C02),
                 ("Raster_Program_None", 0x00_881E, 0x0000_881E),
                 ("EditorRaster_OJZ_Act1_ramp_probe", 0x01_4652, 0x0001_4652),
-                ("BgAnim_Table_Ptr", 0xFF_E91A, 0xFFFF_E91A),
-                ("BgAnim_LastStep", 0xFF_8F06, 0xFFFF_8F06),
+                ("BgAnim_Table_Ptr", 0xFF_E93A, 0xFFFF_E93A),
+                // The neighbour that bounds `BgAnim_Table_Ptr` at four bytes.
+                ("Waterline_Art_Row", 0xFF_E93E, 0xFFFF_E93E),
+                ("BgAnim_LastStep", 0xFF_8F26, 0xFFFF_8F26),
+                // ⚑ The neighbour that makes `BgAnim_LastStep` eight bytes, which is what the write-set's
+                // `disp: 4` claims and what `layout`'s coverage gate pins.
+                ("Static_Pal_Line0", 0xFF_8F2E, 0xFFFF_8F2E),
                 ("BgAnim_Table", 0x02_8BD4, 0x0002_8BD4),
                 ("Debug_Lab_Index", 0xFF_F00D, S4_LAB_INDEX),
-            ])
+            ]);
+            // The one bg_anim layout equate the listing publishes, at the value it publishes.
+            // ⚑ `with_equates` REPLACES this, which is what the parallax-hook rows want; a bands row
+            // that needs it back says so.
+            f.equates = vec![(BGANIM_MAX_BANDS_EQU, 4)];
+            f
         }
 
         /// The equate rows the parallax scratch's layout is read out of. Values are the ones
@@ -3108,6 +3632,9 @@ mod tests {
             self.calls.push((method.to_string(), params.clone()));
             match method {
                 "emulator/lookup_symbol" => {
+                    if self.refuse_addr_lookup && params["addr"].is_string() {
+                        return Err(Refusal::local("the bus did not answer".to_string()));
+                    }
                     if let Some(q) = params["addr"].as_str() {
                         let want = u32::from_str_radix(q.trim_start_matches("0x"), 16).unwrap();
                         // Nearest preceding, as the bus answers the address direction.
@@ -3577,6 +4104,7 @@ mod tests {
                 put: Put::Lit(1),
                 why: "a cell that resolves onto the START chord's cursor",
             }],
+            covers: &[],
             prefix: "ParallaxConfig_",
             debug_only: false,
             off: Off::No("n/a"),
@@ -3589,7 +4117,7 @@ mod tests {
         // ⚑ The cursor comes out of the same fixture listing the cell does, resolved here exactly as the
         // shipped gesture resolves it. Nothing in this row hands the guard a number from this file.
         let cur = cursor(&mut f).expect("the full fixture carries the cursor");
-        let e = run(&mut f, cur, &TRAP, "whatever", 0)
+        let e = run(&mut f, cur, &TRAP, "whatever", 0, Vec::new(), None)
             .expect_err("a cell resolving onto the cursor must be refused");
         assert_eq!(e.reason.as_deref(), Some("labIndexIsNotASelector"));
         assert!(
@@ -3955,54 +4483,424 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // ⚑ Drift: the listing and the note disagreeing is a refusal, not a caveat
+    // ⚑ Drift: the disagreement is a WITNESS, and the refusal is on the LAYOUT
     // ---------------------------------------------------------------------------------------------
 
-    /// ⚑ **A moved selector refuses and names BOTH addresses**, and a matching one says nothing.
+    /// ⚑ **A MOVED SELECTOR DOES NOT REFUSE, AND THE MOVE IS STATED. This is the parcel's subject.**
     ///
-    /// The expectation is [`Channel::noted_addr`] itself rather than a number typed here, so the row
-    /// cannot drift from the table. What it pins is the *behaviour*: refuse rather than pick a side.
+    /// # The defect this row is the regression gate for
+    ///
+    /// `drift` refused whenever the resolved address differed from [`Channel::noted_addr`]. On
+    /// `s4.debug.lst` as built 2026-09-18 that was **two of the three channels**, so the raster and the
+    /// bands channel refused every gesture on a build with nothing wrong with it — and every test was
+    /// green because `Fake::full` carried the note's numbers too.
+    ///
+    /// ⚑ **The listing this row hands the panel is FICTIONAL and appears nowhere else in this crate.**
+    /// That is the whole design, borrowed from
+    /// `the_address_route_follows_the_listing_rather_than_any_number_in_this_file`: a row written
+    /// against `s4.debug.lst`'s real addresses would still pass if somebody "fixed" this by
+    /// re-transcribing `noted_addr` to what the listing says today, which is the explicit thing the
+    /// ruling rejects — it repairs today and reproduces the class. Keyed on a third address, the only
+    /// way to pass is to **resolve**.
     #[test]
-    fn a_selector_that_moved_refuses_and_names_both_addresses() {
+    fn a_moved_selector_is_stated_and_not_refused_whatever_the_two_numbers_are() {
         for c in CHANNELS {
+            // A number no listing on this box carries and no constant in this crate holds.
+            let elsewhere = 0xFFFF_BE00 | u32::from(c.key.len() as u8);
+            assert_ne!(elsewhere, c.noted_addr);
+
             assert_eq!(
-                c.drift(c.noted_addr),
+                c.witness(c.noted_addr),
                 None,
-                "{}: the note's own address must not read as drift",
+                "{}: agreement is not a finding and must say nothing",
                 c.key
             );
-            let moved = c.noted_addr ^ 0x10;
-            let r = c
-                .drift(moved)
-                .unwrap_or_else(|| panic!("{}: a moved selector must refuse", c.key));
-            assert_eq!(r.reason.as_deref(), Some("selectorMoved"));
+
+            let d = c
+                .witness(elsewhere)
+                .unwrap_or_else(|| panic!("{}: a disagreement must be witnessed", c.key));
+            assert_eq!(d.resolved, elsewhere, "{}: the LISTING's number", c.key);
+            assert_eq!(d.noted, c.noted_addr, "{}: the NOTE's number", c.key);
+
+            // Both numbers in the sentence, or a reader has nothing to check.
+            let line = d.line();
             assert!(
-                r.message.contains(&format!("{moved:#010X}"))
-                    && r.message.contains(&format!("{:#010X}", c.noted_addr)),
-                "both addresses must be in the refusal or there is nothing to check: {}",
-                r.message
+                line.contains(&format!("{elsewhere:#010X}"))
+                    && line.contains(&format!("{:#010X}", c.noted_addr)),
+                "{}: both addresses must be stated: {line}",
+                c.key
             );
+            // ⚑ And it must say which side won, because "two numbers differ" without that is the old
+            // panel's confusion handed to the reader instead of its answer.
             assert!(
-                r.message.contains("Nothing was written"),
-                "the refusal must say nothing happened: {}",
-                r.message
+                line.contains("not blocking") && line.contains("LISTING"),
+                "{}: the witness must say it did not block and which address was used: {line}",
+                c.key
             );
         }
     }
 
-    /// **A drifted selector stops the gesture before any cell is written.**
+    /// ⚑ **A GESTURE RUNS ACROSS A DISAGREEMENT, AND THE READOUT SAYS SO.**
+    ///
+    /// The end-to-end half of the row above, through `point_at` with a real write-set. The fixture's
+    /// listing is moved wholesale to addresses **neither** [`NOTE`] nor `s4.debug.lst` carries, so:
+    ///
+    /// * a panel keyed on the note's numbers refuses (the shipped defect);
+    /// * a panel keyed on freshly transcribed current numbers refuses too (the tempting wrong repair);
+    /// * only a panel that resolves writes anything.
+    ///
+    /// ⚑ And the **witness must survive**: this row fails if the cells are written and the disagreement
+    /// is swallowed, which is the exact shape of the fix that deletes `noted_addr` and passes
+    /// everything else.
     #[test]
-    fn a_drifted_selector_stops_the_gesture_before_the_first_cell() {
+    fn a_disagreement_lets_the_gesture_through_and_the_readout_states_it() {
         let mut f = Fake::full();
-        // Move the live cell and nothing else, which is the shape of a listing built from another ROM.
+        // Slide the whole RAM map by a displacement no build on this box has, layout untouched — which
+        // is precisely what aeon's own sweep did (six symbols `+$20`, no width changed).
+        const SLIDE: u32 = 0x0000_0700;
         for e in f.listing.iter_mut() {
-            if e.0 == PARALLAX.selector {
-                e.2 = 0xFFFF_9000;
+            if e.1 >= 0xFF_0000 {
+                e.1 += SLIDE;
+                e.2 += SLIDE;
             }
         }
-        let e = point_at(&mut f, &PARALLAX, "ParallaxConfig_Haze").expect_err("moved");
-        assert_eq!(e.reason.as_deref(), Some("selectorMoved"));
+
+        let w = point_at(&mut f, &PARALLAX, "ParallaxConfig_Haze").expect(
+            "a slid RAM map is a healthy build: every cell is addressed by NAME and the server \
+             resolves it, so the gesture must go through",
+        );
+        assert_eq!(
+            w.cells.len(),
+            PARALLAX.writes.len(),
+            "every cell of the write-set must have been written"
+        );
+
+        let d = w
+            .drift
+            .as_ref()
+            .expect("the note and this listing disagree, and the witness must survive the gesture");
+        assert_eq!(d.resolved, 0xFFFF_88EC + SLIDE);
+        assert_eq!(d.noted, PARALLAX.noted_addr);
+        // ⚑ Where a user sees it: on the readout's own headline, not in a log.
+        let head = w.line();
+        assert!(
+            head.contains("DRIFT") && head.contains(&format!("{:#010X}", PARALLAX.noted_addr)),
+            "the gesture's headline must carry the witness: {head}"
+        );
+        // And it names what the note's old address became in THIS listing, which is the lesson the
+        // cursor guard was repaired for: a stale address is somebody else's cell, not a hole.
+        assert!(
+            d.now.is_some(),
+            "the witness must say what the note's address is now: {d:?}"
+        );
+
+        // The control. Without the slide there is no disagreement and nothing is said, so the row
+        // above witnesses the statement rather than a sentence that is always printed.
+        let mut f = Fake::full();
+        let w = point_at(&mut f, &PARALLAX, "ParallaxConfig_Haze").expect("the unmoved fixture");
+        assert_eq!(
+            w.drift, None,
+            "the parallax note still agrees with the listing, so nothing is owed"
+        );
+        assert!(!w.line().contains("DRIFT"), "{}", w.line());
+    }
+
+    /// ⚑ **THE TWO CHANNELS THE SHIPPED REFUSAL BLANKED CAN BE SELECTED AND READ AGAIN.**
+    ///
+    /// Measured at this seat 2026-09-19: `Raster_Program` is `$FFFF8BF6` and `BgAnim_Table_Ptr` is
+    /// `$FFFFE93A` in `s4.debug.lst`, against `$FFFF8BD6` and `$FFFFE91A` in [`NOTE`]. `Fake::full`
+    /// now carries the listing's, so this row runs across a real, live disagreement rather than a
+    /// synthetic one — and it would have been red before this parcel.
+    ///
+    /// The expectation is derived from [`Channel::noted_addr`] and the fixture, not typed: the row
+    /// asserts *the channels whose note disagrees with the listing still work*, so it keeps its meaning
+    /// if either number changes again.
+    #[test]
+    fn the_channels_whose_note_is_stale_still_select_and_still_read() {
+        let mut disagreeing = 0;
+        for c in CHANNELS {
+            let mut f = Fake::full();
+            let (_, raw) = resolve(&mut f, c.selector).expect("the fixture carries every selector");
+            if c.witness(raw).is_none() {
+                continue;
+            }
+            disagreeing += 1;
+
+            let target = match c.key {
+                "raster" => "EditorRaster_OJZ_Act1_ramp_probe",
+                _ => "BgAnim_Table",
+            };
+            let w = point_at(&mut f, &c, target)
+                .unwrap_or_else(|e| panic!("{} refused a healthy build: {}", c.key, e.message));
+            assert_eq!(w.cells.len(), c.writes.len(), "{}", c.key);
+            assert!(w.drift.is_some(), "{}: the witness must survive", c.key);
+
+            // The read path too: it carried the identical refusal and blanked the readback.
+            let mut f = Fake::full().serving(c.selector, "00000000");
+            let l = live(&mut f, &c)
+                .unwrap_or_else(|e| panic!("{} could not be read back: {}", c.key, e.message));
+            assert!(
+                l.line(&c).contains("DRIFT"),
+                "{}: the readback must state the disagreement: {}",
+                c.key,
+                l.line(&c)
+            );
+        }
+        // ⚑ Loud on unmeasurable. If the fixture is ever brought into agreement with the note, this row
+        // stops testing anything and must say so rather than pass on an empty loop.
+        assert_eq!(
+            disagreeing, 2,
+            "this row is about the channels whose note is stale; `Fake::full` and `noted_addr` must \
+             still disagree on exactly the two measured on 2026-09-19, or the row witnesses nothing"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The layout gate: what a refusal is allowed to stand on
+    // ---------------------------------------------------------------------------------------------
+
+    /// ⚑ **THE GATE IS SILENT ON A UNIFORM SLIDE AND LOUD ON A STRUCT THAT CHANGED SHAPE.**
+    ///
+    /// The two halves are the whole argument for moving the refusal off the address. aeon's `61918621`
+    /// slid six symbols by `+$20` and changed no width; a gate that fires on that refuses healthy
+    /// builds, which is what the old one did.
+    #[test]
+    fn the_layout_gate_ignores_a_slide_and_catches_a_struct_that_changed_shape() {
+        // 1. A uniform slide. Every address differs from both the note's and the listing's, and the
+        //    gate must say nothing, because every comparison it makes is between two addresses from
+        //    the SAME listing.
+        for c in CHANNELS {
+            let mut f = Fake::full();
+            for e in f.listing.iter_mut() {
+                if e.1 >= 0xFF_0000 {
+                    e.1 += 0x0000_0700;
+                    e.2 += 0x0000_0700;
+                }
+            }
+            let said = layout(&mut f, &c)
+                .unwrap_or_else(|e| panic!("{} refused a slid RAM map: {}", c.key, e.message));
+            assert!(
+                said.iter().all(|l| !l.starts_with('⚠')),
+                "{}: a slid map is fully measurable: {said:?}",
+                c.key
+            );
+        }
+
+        // 2. The shape changed. `BgAnim_LastStep`'s neighbour moves in by four bytes, which is exactly
+        //    an array that lost half its band slots — and it is the ONLY mutation that makes the
+        //    write-set's transcribed `disp: 4` address somebody else's cell.
+        let mut f = Fake::full();
+        for e in f.listing.iter_mut() {
+            if e.0 == "Static_Pal_Line0" {
+                e.1 -= 4;
+                e.2 -= 4;
+            }
+        }
+        let e = layout(&mut f, &BANDS).expect_err("the poison's second longword now lands outside");
+        assert_eq!(e.reason.as_deref(), Some("cellLeavesItsSymbol"));
+        assert!(
+            e.message.contains("Static_Pal_Line0") && e.message.contains("`BgAnim_LastStep`+4"),
+            "the refusal must name the cell and what it would have written into: {}",
+            e.message
+        );
+        // ⚑ And it must say it is a LAYOUT finding, so a reader does not go looking for a moved ROM.
+        assert!(e.message.contains("LAYOUT finding"), "{}", e.message);
+
+        // The gesture stops before the first cell, not partway through it.
+        let mut f = Fake::full();
+        for e in f.listing.iter_mut() {
+            if e.0 == "Static_Pal_Line0" {
+                e.1 -= 4;
+                e.2 -= 4;
+            }
+        }
+        point_at(&mut f, &BANDS, "BgAnim_Table").expect_err("refused");
         assert!(f.writes().is_empty(), "wrote {:?} anyway", f.writes());
+    }
+
+    /// ⚑ **AN ARRAY THAT OUTGREW ITS POISON IS CAUGHT, AND THAT IS THE CHECK NO PER-CELL TEST CAN MAKE.**
+    ///
+    /// The per-cell check above sees a struct that **shrank**. An array that **grew** — a fifth band
+    /// index — leaves every cell inside its own symbol and is therefore invisible to it, while
+    /// `bg_anim.emp`'s own header says the consequence in the imperative: the un-poisoned index takes
+    /// the `.skip_band` arm forever and *"the new table would never paint"* on it.
+    ///
+    /// Both facts here come out of the fixture's listing and its equate table, never from a number in
+    /// this row: the extent is pinned by where the next symbol starts, and the band count by the
+    /// equate the listing publishes.
+    #[test]
+    fn an_array_that_outgrew_the_write_sets_poison_is_refused() {
+        let mut f = Fake::full();
+        // The array grows by four bytes — two more band indices at the listing's own two bytes each —
+        // and its neighbour moves out of the way. Every cell still lands inside `BgAnim_LastStep`.
+        for e in f.listing.iter_mut() {
+            if e.0 == "Static_Pal_Line0" {
+                e.1 += 4;
+                e.2 += 4;
+            }
+        }
+        f.equates = vec![(BGANIM_MAX_BANDS_EQU, 6)];
+
+        let e = layout(&mut f, &BANDS).expect_err("the write-set no longer covers the array");
+        assert_eq!(e.reason.as_deref(), Some("arrayOutgrewItsPoison"));
+        assert!(
+            e.message.contains("BgAnim_LastStep") && e.message.contains("8 bytes"),
+            "the refusal must name the array and what the write-set actually covers: {}",
+            e.message
+        );
+        // ⚑ It must state the one shape it cannot tell apart, rather than claim certainty.
+        assert!(
+            e.message.contains("LAST symbol"),
+            "the gate must say what it is blind to: {}",
+            e.message
+        );
+
+        // The control: the unmutated fixture passes the same gate and SAYS what it established, in the
+        // units the listing publishes. Without this the row above passes on a gate that refuses always.
+        let mut f = Fake::full();
+        let said = layout(&mut f, &BANDS).expect("the measured listing must pass");
+        assert!(
+            said.iter()
+                .any(|l| l.contains("BgAnim_LastStep") && l.contains("4 band index slots")),
+            "the gate must report what it established, in the listing's own count: {said:?}"
+        );
+    }
+
+    /// ⚑ **A MISSING COUNT EQUATE IS A STATED LIMIT, NEVER A SILENT PASS AND NEVER A REFUSAL.**
+    ///
+    /// Nothing is computed from the count — it turns a byte figure into the figure the engine reasons
+    /// in — so a listing that does not publish it must not cost the gesture. But a gate that quietly
+    /// checked less than it advertises leaves a reader believing the whole of it ran, which is the rule
+    /// `Cursor::routes` was written for on the other guard.
+    #[test]
+    fn an_unmeasurable_partition_is_said_rather_than_passed_over() {
+        let mut f = Fake::full();
+        f.equates.clear();
+        let said = layout(&mut f, &BANDS).expect("a missing equate must not refuse the gesture");
+        let warned: Vec<&String> = said.iter().filter(|l| l.starts_with('⚠')).collect();
+        assert_eq!(warned.len(), 1, "exactly one fact went unchecked: {said:?}");
+        assert!(
+            warned[0].contains(BGANIM_MAX_BANDS_EQU) && warned[0].contains("does not publish"),
+            "the limit must name the equate it wanted: {}",
+            warned[0]
+        );
+
+        // A count that does not divide is the same class and is also stated rather than refused.
+        let mut f = Fake::full();
+        f.equates = vec![(BGANIM_MAX_BANDS_EQU, 3)];
+        let said = layout(&mut f, &BANDS).expect("a non-dividing count must not refuse either");
+        assert!(
+            said.iter()
+                .any(|l| l.starts_with('⚠') && l.contains("does not divide")),
+            "{said:?}"
+        );
+    }
+
+    /// ⚑ **A PROBE THAT DID NOT ANSWER IS SAID, AND THE ACCOUNT STOPS CLAIMING WHAT IT DID NOT CHECK.**
+    ///
+    /// The first cut of this gate pushed its affirmative summary unconditionally, so a run in which no
+    /// cell could be placed still ended *"and it is"* under a `⚠` line saying the check had not run.
+    /// That is the silent pass the whole parcel is about, produced inside the gate written against it,
+    /// and the method was tightened partway: the row is therefore retroactive rather than original.
+    ///
+    /// It also proves the arm is reachable. With a working bus it is not — the gate only probes at or
+    /// past a symbol the same listing just resolved, so something always precedes it — which is exactly
+    /// why the fixture needs a bus that refuses the address direction. A branch no fixture can reach is
+    /// a branch nobody has read.
+    #[test]
+    fn a_probe_that_did_not_answer_is_stated_and_the_account_stops_claiming_the_check() {
+        for c in CHANNELS {
+            let mut f = Fake::full();
+            f.refuse_addr_lookup = true;
+            let said = layout(&mut f, &c).unwrap_or_else(|e| {
+                panic!(
+                    "{}: a bus that will not answer a probe is not evidence of a layout fault and \
+                     must not refuse the gesture: {}",
+                    c.key, e.message
+                )
+            });
+            assert_eq!(
+                said.iter().filter(|l| l.starts_with('⚠')).count(),
+                c.writes.len() + 1 + 2 * c.covers.len(),
+                "{}: every unplaced cell owes a line, plus the incomplete-account line, plus TWO per \
+                 array: the extent that went unpinned and the partition that cannot stand on it: \
+                 {said:?}",
+                c.key
+            );
+            assert!(
+                said.iter().any(|l| l.contains("account is INCOMPLETE")),
+                "{}: {said:?}",
+                c.key
+            );
+            // ⚑ And nothing may still assert the affirmative. This is the clause the first cut failed.
+            assert!(
+                !said.iter().any(|l| l.contains("and it is")),
+                "{}: the gate claimed the check it just said it could not run: {said:?}",
+                c.key
+            );
+        }
+        // The control: with the bus answering, the same fixture produces no warning at all, so the row
+        // above witnesses the refusing bus rather than a gate that always warns.
+        for c in CHANNELS {
+            let mut f = Fake::full();
+            assert!(
+                layout(&mut f, &c)
+                    .expect("answers")
+                    .iter()
+                    .all(|l| !l.starts_with('⚠')),
+                "{}",
+                c.key
+            );
+        }
+    }
+
+    /// ⚑ **WHAT EACH CHANNEL'S GATE ACTUALLY TESTS, STATED PER CHANNEL.**
+    ///
+    /// The three are **not alike** and the difference is a measured finding rather than an oversight:
+    ///
+    /// * **parallax** and **raster** write only whole symbols at displacement 0, so their write-sets
+    ///   carry no transcribed field offset for a layout gate to check. What is left is real but
+    ///   narrow — each symbol is still at least as wide as the write — and the readout says so in those
+    ///   words rather than implying the offsets were verified.
+    /// * **bands** carries the one transcribed offset in the module (`BgAnim_LastStep+4`) and the one
+    ///   array poisoned whole, so it is the only channel with both gates live.
+    #[test]
+    fn each_channels_gate_reports_what_it_could_check_and_the_three_differ() {
+        for c in CHANNELS {
+            let mut f = Fake::full();
+            let said = layout(&mut f, &c).unwrap_or_else(|e| panic!("{}: {}", c.key, e.message));
+            assert!(!said.is_empty(), "{}: every channel owes an account", c.key);
+
+            let scalar_only = c.writes.iter().all(|w| w.disp == 0);
+            assert_eq!(
+                scalar_only,
+                c.covers.is_empty(),
+                "{}: a channel with an array to poison is exactly a channel with a transcribed \
+                 displacement, in this module; if that stops being true this row needs rewriting \
+                 rather than relaxing",
+                c.key
+            );
+            if scalar_only {
+                assert!(
+                    said.iter()
+                        .any(|l| l.contains("no transcribed field offset")),
+                    "{}: a channel with nothing to check must say so: {said:?}",
+                    c.key
+                );
+            } else {
+                assert!(
+                    said.iter().any(|l| l.contains("transcribed displacements")),
+                    "{}: {said:?}",
+                    c.key
+                );
+            }
+        }
+        // The shape this row is about, pinned so the sentences above cannot both be vacuous.
+        assert_eq!(
+            CHANNELS.iter().filter(|c| c.covers.is_empty()).count(),
+            2,
+            "two of the three channels have no array to poison, as measured"
+        );
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -4285,6 +5183,7 @@ mod tests {
             value: 0x0000_8820,
             name: Some("Raster_Program_None".into()),
             disp: 2,
+            drift: None,
         };
         assert!(
             past.line(&RASTER).contains("probably not"),
@@ -4305,6 +5204,7 @@ mod tests {
             value: 0,
             name: None,
             disp: 0,
+            drift: None,
         };
         let raster = zero.line(&RASTER);
         let band = zero.line(&BANDS);
@@ -4331,24 +5231,48 @@ mod tests {
         }
     }
 
-    /// ⚑ **A drifted selector silences the READBACK too, not only the write.**
+    /// ⚑ **A drifted selector STATES the drift on the readback, and answers it.**
     ///
-    /// A panel that refuses to write a cell it cannot place, then prints a confident sentence about that
-    /// same cell's contents, has answered the harder question and refused the easier one.
+    /// This row is the inverse of the one it replaces. The old shape refused the readback as well as
+    /// the write, on the argument that a panel which will not write a cell it cannot place should not
+    /// print a confident sentence about that cell's contents. **The premise was wrong in both halves**:
+    /// the read goes to the address the LISTING resolves, which is the cell the engine reads, so the
+    /// sentence is about the right four bytes — and on `s4.debug.lst` the refusal blanked the raster
+    /// and bands readbacks on a build with nothing wrong with it.
+    ///
+    /// What the two paths share now is the statement. The readback answers **and** says the note
+    /// disagrees, which is the only shape in which the reader is told both true things.
     #[test]
-    fn a_drifted_selector_refuses_the_readback_as_well_as_the_write() {
+    fn a_drifted_selector_states_the_drift_on_the_readback_rather_than_blanking_it() {
         let mut f = Fake::full().serving(RASTER.selector, "0x0000881E");
         for e in f.listing.iter_mut() {
             if e.0 == RASTER.selector {
+                e.1 = 0xFF_9000;
                 e.2 = 0xFFFF_9000;
             }
         }
-        let e = live(&mut f, &RASTER).expect_err("a moved cell has nothing honest to report");
-        assert_eq!(e.reason.as_deref(), Some("selectorMoved"));
+        let l =
+            live(&mut f, &RASTER).expect("a moved cell is still readable at the resolved address");
+        assert_eq!(
+            l.value, 0x0000_881E,
+            "the readback must still be the cell's"
+        );
+        let d = l.drift.as_ref().expect("and the move must be stated");
+        assert_eq!(d.resolved, 0xFFFF_9000);
+        assert_eq!(d.noted, RASTER.noted_addr);
+        assert!(l.line(&RASTER).contains("DRIFT"), "{}", l.line(&RASTER));
 
-        // The control: undrifted, the same fake answers.
-        let mut f = Fake::full().serving(RASTER.selector, "0x0000881E");
-        assert!(live(&mut f, &RASTER).is_ok());
+        // The control, and it is not the obvious one: the UNMUTATED fixture also drifts on this
+        // channel, because `Raster_Program` really has moved. So the control that proves the witness
+        // is conditional has to be a channel whose note still agrees — parallax.
+        let mut f = Fake::full().serving(PARALLAX.selector, "0x00012C6C");
+        let l = live(&mut f, &PARALLAX).expect("undrifted");
+        assert_eq!(l.drift, None, "agreement is not a finding");
+        assert!(
+            !l.line(&PARALLAX).contains("DRIFT"),
+            "{}",
+            l.line(&PARALLAX)
+        );
     }
 
     /// ⚑ **The standing statement exists exactly while an override does, and names channel and target.**
@@ -5011,10 +5935,12 @@ mod tests {
     /// ⚑ **THE NOTE'S ADDRESS IS A WITNESS AND THE LISTING HAS ALREADY MOVED PAST IT.**
     ///
     /// This is the measurement that decides the parcel's shape, so it is a row rather than a comment.
-    /// [`Channel::drift`] REFUSES when a listing and the note disagree about a selector's address, and
+    /// The channel selectors used to REFUSE when a listing and the note disagreed about an address, and
     /// copying that discipline here would have been the obvious thing — and would refuse the whole feature
     /// on a healthy build: `Parallax_Scratch_Config` is at the RAM tail inside a size-varying
-    /// `@shape_divergent` group and has already moved $20 since `NOTE` §6.1 recorded it.
+    /// `@shape_divergent` group and has already moved $20 since `NOTE` §6.1 recorded it. ⚑ **That
+    /// refusal is gone** ([`Channel::witness`]) for the same finding, arrived at independently on the
+    /// three selectors; this row is where it was measured first.
     ///
     /// So the gate is: the note's number and the listing's differ, **and the hook still works**.
     #[test]
@@ -5139,10 +6065,9 @@ mod tests {
 
     /// ⚑ **THE MOVED ADDRESS IS SAID ON SCREEN, not only in a comment.**
     ///
-    /// A reader comparing this panel against `NOTE` §6.1 finds the two addresses disagree, and on every
-    /// other symbol this module touches a disagreement is a **refusal** ([`Channel::drift`]). So the shape
-    /// line names the difference and says why it is benign here. Left out, the most likely reading of the
-    /// discrepancy is the one the panel refuses everywhere else for, which is an hour.
+    /// A reader comparing this panel against `NOTE` §6.1 finds the two addresses disagree, so the shape
+    /// line names the difference and says why it is benign here. Left out, the most likely reading of a
+    /// discrepancy is the one this module used to refuse everywhere else for, which is an hour.
     #[test]
     fn the_shape_line_names_the_notes_address_when_the_listing_has_moved_past_it() {
         let mut f = armed(2);
@@ -5177,8 +6102,8 @@ mod tests {
         );
         assert!(
             line.contains("nothing refuses on it"),
-            "and it must say the disagreement is deliberately not a refusal, which is what a reader of \
-             `Channel::drift` will otherwise assume it should be: {line}"
+            "and it must say the disagreement is deliberately not a refusal, which is what a reader \
+             coming from this module's older shape will otherwise assume it should be: {line}"
         );
     }
 

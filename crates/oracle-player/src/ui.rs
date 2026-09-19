@@ -1355,6 +1355,22 @@ impl Panels<'_> {
                         .color(weak),
                 );
             }
+            // ⚑ What the layout gate established before the first cell, and what it could not.
+            // Drawn rather than summarised for the same argument the cells are: this is the fact the
+            // gesture's refusal would have stood on, and a `⚠` line is a check that did NOT run.
+            // Coloured on the `⚠` marker rather than on the shape of the sentence (P5).
+            for line in &last.layout {
+                let colour = if line.starts_with('⚠') {
+                    crate::theme::WARNING
+                } else {
+                    weak
+                };
+                ui.label(
+                    egui::RichText::new(line)
+                        .text_style(egui::TextStyle::Small)
+                        .color(colour),
+                );
+            }
         }
 
         // The band readback, on the one channel that has a documented record layout to read.
