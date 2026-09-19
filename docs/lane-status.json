@@ -1,12 +1,6 @@
 {
-  "focus": "Running the half of the sprite test ROM we have never run: the wide screen mode, nine unmeasured tests.",
-  "inFlight": [
-    {
-      "what": "Scraping the sprite ROM's wide-screen half, and diagnosing why the mode toggle answers the wrong button",
-      "where": "branch parcel/h40-half",
-      "agent": true
-    }
-  ],
+  "focus": "The sprite ROM's never-run wide mode now passes nine for nine, and its confusing button was the cartridge's mistake, not ours.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,23 +13,15 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the H40 parcel returns and is verified here; nothing else is running.",
+  "nextBoundary": "Here now: landed, pushed, nothing running. CI queued at push and not yet read.",
   "queue": [
-    {
-      "id": "TESTROM-H40-HALF",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The sprite test ROM has a second half in the wider screen mode, and we have never run it: its on-screen instruction says press Start, but only C switches it for us. Nine tests currently unmeasured."
-    },
     {
       "id": "TESTROM-UNSCRAPED-PAIR",
       "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Two ROMs print their results in a font we cannot read, so we only pin their picture, not their verdict. Until they are read, 'all the tests pass' is not something we can honestly say."
+      "title": "Two ROMs print their results in a font we cannot read, so we only pin their picture. Until they are read, 'all the tests pass' is not something we can honestly say. Likely two parcels wearing one row."
     },
     {
       "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
@@ -126,7 +112,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-18T23:39:33Z"
+  "awaiting": "nothing blocking; next is the pair of ROMs whose results we still cannot read. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T00:27:43Z"
 }
