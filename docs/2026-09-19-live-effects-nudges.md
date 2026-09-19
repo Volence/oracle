@@ -280,7 +280,7 @@ alongside the `band_entry_*` rows, and a client could resolve the stride instead
 
 ## 5. Gates
 
-Nineteen mutations. Each was **written to disk and read back off disk** before its run (the harness asserts
+Twenty mutations. Each was **written to disk and read back off disk** before its run (the harness asserts
 the new text is present and the old text is gone, and prints the region), the suite was run, the failing
 guards were recorded **by name**, and the file was restored with `git checkout` from the **committed**
 baseline. **A compile error is not a red** — every mutation below compiles and changes behaviour, and the
@@ -292,7 +292,7 @@ transcribed offset, a raw comparison, a collapsed state, a dropped precondition,
 wrong number, a clip instead of a refusal, a dropped guard, a swapped call order, an over-long read, a
 misfiled reason, an offered inert field, and a defaulted zero.
 
-Baseline for M1–M17: `8d8e1bb`. For M18 and M19: `01498d6`.
+Baseline for M1–M17: `8d8e1bb`. For M18 and M19: `01498d6`. For M20: `38c370d` (it read green against `01498d6`).
 
 | # | mutation, quoted from disk | the guard that fired |
 |---|---|---|
@@ -315,6 +315,7 @@ Baseline for M1–M17: `8d8e1bb`. For M18 and M19: `01498d6`.
 | M17 | the `bob` field's equate changed to `pcfg_v_factor_fg` — an offered field with no runtime reader | `no_offered_field_is_one_the_note_calls_inert_or_coupled` |
 | M18 | `resolved_offsets` defaults an unpublished equate to `0` instead of dropping the field | ⚑ **GREEN on the first run.** See §5.1 |
 | M19 | the moved-address clause dropped from `shape_line` | `the_shape_line_names_the_notes_address_when_the_listing_has_moved_past_it` |
+| M20 | `shape_line` prints the band CEILING where the stride belongs (`16 records of 16 bytes`) | ⚑ **GREEN against the row as first written.** See §5.1.1 |
 
 ### 5.1 ⚑ M18 READ GREEN, AND IT IS THE MOST USEFUL ROW HERE
 
@@ -334,6 +335,25 @@ own guard. **This is the retroactive tightening the method requires** — the ca
 *mutate the decision*, and M18 showed a decision can live in two places with only one of them measured.
 
 ---
+
+### 5.1.1 ⚑ M20 READ GREEN TOO, ON AN ASSERTION OF MY OWN THAT COULD NOT FAIL
+
+`shape_line` was mutated to print the band **ceiling** where the **stride** belongs, so the sentence read
+*"16 records of 16 bytes"*. The row asserting the derivation **passed.**
+
+It was written as `for want in ["542", "30", "16", "32"]`, and the reason it cannot fail is in the sentence
+it tests: *"…not transcribed: it is **32** on s4.debug and **10** on demo.debug."* **Every digit that
+matters also occurs as a literal in the same string.** So `contains("32")` is satisfied by the prose no
+matter what the stride actually was, and `contains("16")` by the ceiling it was wrongly printing.
+
+Replaced with the exact phrases that carry the derivation — `"542 bytes"`,
+`"30-byte header and 16 records of 32 bytes"`, `"(542 - 30) / 16"` — at `38c370d`, and M20 re-run against
+that commit: red, on its own guard.
+
+**This is the standing lesson about comparing rendered text containing numbers, arriving at this seat
+through my own work rather than through the brief:** ask what the **space of values** is, not what value you
+saw. The version that fixed the instance I had in mind (do the numbers appear?) did not fix the mechanism
+(can this assertion distinguish a right number from a wrong one?).
 
 ## 5.2 Aggregates
 
