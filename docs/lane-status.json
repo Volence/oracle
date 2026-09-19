@@ -1,12 +1,6 @@
 {
-  "focus": "Turning three habits that cost us real bugs into things a reader can check, not advice.",
-  "inFlight": [
-    {
-      "what": "Giving each of three recurring mistakes a detector -- something checkable that is missing when the mistake is made",
-      "where": "branch parcel/method-detectors",
-      "agent": true
-    }
-  ],
+  "focus": "Three habits that cost us real bugs are now checked on every landing instead of remembered.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the detectors parcel returns and is verified here.",
+  "nextBoundary": "Here now: fourteen landings, main green, nothing running, and the remaining rows mostly need you.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -28,14 +22,6 @@
       "blockedBy": "your card d-54",
       "project": "ORACLE-DEBUG-UI",
       "title": "Cut panel text now says it was cut: 91 such lines fixed across 28 window sizes. The 67 left are whole tables or controls wider than their pane, which is card d-54."
-    },
-    {
-      "id": "F-METHOD-ROWS-FROM-THE-REDS",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Three smaller habits the failure review caught: a survey that trusted its own empty result, a rule of thumb reused where it did not apply, and 'that cannot be tested here' asserted twice and disproved."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -110,7 +96,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T13:34:46Z"
+  "awaiting": "the buildable queue is nearly empty: what is left is mostly your eyes. Three looks -- d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T14:11:51Z"
 }
