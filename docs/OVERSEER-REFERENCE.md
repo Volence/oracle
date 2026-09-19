@@ -28,6 +28,27 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⛑ A SECTION REDUCED TO A POINTER IS CLOSED, AND A POINTER THAT ACQUIRES A BODY HAS ALREADY FAILED** *(banked in this
+lane's own words 2026-09-19, at the recut that gave this repo's boot file three new pointers; the rule itself is the
+suite's, in `OVERSEER-PROTOCOL.md`, and it needed a LOCAL reader at the moment it will next be violated — the next time
+somebody appends to `docs/OVERSEER.md`)*. **New material for a pointed-at section goes to the TARGET, never back under the
+pointer.**
+⚑ **The mechanism, and it is what makes this undetectable: a pointer is a sentence whose truth can be destroyed by an
+append it never sees.** It was true when written; nothing re-checks it; and the reader then meets *"this has been moved"*
+immediately above live material, which is worse than either the text or the pointer alone, because the pointer tells them
+not to look.
+⚑ **The measured instance, in the suite's own protocol: 10,676 B of live bars sat underneath a sentence saying that
+section had been moved, FOR FOUR DAYS, and nothing could detect it.** No gate can — both halves are well-formed markdown
+and the file's size, heading count and link targets are all exactly what they should be. **The only instrument is a reader
+who distrusts the pointer**, which is the same shape as *a booking reads as a reason, so nobody re-checks it*.
+▶ **The corollary the hub adopted the same night, and it makes citation-safety and this rule ONE rule: when consolidating
+a file whose headings peers have cited, leave EVERY cited heading in place with a pointer under it.** The citation still
+resolves, and the reader is told where the body went — so the pointer earns its place precisely by being the thing that
+must never grow.
+⚠ **And when you report on pointers, report a COUNT as a COUNT.** The hub's audit of its own file found 25 pointer
+paragraphs, inspected the tail directly, and reported the rest as *"counted, not audited"* rather than clean. By this
+lane's own standard an unverified population is **not measured**, never **sound**.
+
 **⚑ TESTED AGAINST THE INSTANCE, NOT THE MECHANISM — and this is WORSE than a control arm written down and
 never run** *(2026-09-19, my own accepted test, red on CI hours after I landed it; the hub banked it above the
 unrun-control rule at empyrean `24c23e78` for exactly this reason)*. A panel comparison masked **each ASCII
