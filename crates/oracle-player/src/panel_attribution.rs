@@ -1797,7 +1797,9 @@ mod tests {
     /// report rather than one it does.
     #[test]
     fn a_run_on_no_reported_row_is_in_neither_string_and_changes_nothing() {
-        const BELOW: &str = "BELOW EVERY ROW THE PANE SHOWS";
+        // U+6F22 rides along so the `unrenderable` half can be asserted too: that field describes the
+        // runs the two strings carry, so a run in neither string may not put a hollow box in it.
+        const BELOW: &str = "BELOW EVERY ROW THE PANE SHOWS \u{6F22}";
         let plain = {
             let mut lp = fixture(crate::ui::initial_dock());
             one(&mut lp, &Setup::default()).surface(Tab::Pacing)
@@ -1832,16 +1834,27 @@ mod tests {
             !runs_of(s["text"].as_str().unwrap()).contains(&BELOW),
             "a row the panel does not show is in neither string: {s}"
         );
-        let masked = |v: &serde_json::Value| -> (String, String, serde_json::Value) {
-            let mask = |k: &str| {
-                v[k].as_str()
-                    .unwrap()
-                    .chars()
-                    .map(|c| if c.is_ascii_digit() { '#' } else { c })
-                    .collect::<String>()
+        let masked =
+            |v: &serde_json::Value| -> (String, String, serde_json::Value, serde_json::Value) {
+                let mask = |k: &str| {
+                    v[k].as_str()
+                        .unwrap()
+                        .chars()
+                        .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                        .collect::<String>()
+                };
+                (
+                    mask("text"),
+                    mask("rendered"),
+                    v["truncated"].clone(),
+                    v["unrenderable"].clone(),
+                )
             };
-            (mask("text"), mask("rendered"), v["truncated"].clone())
-        };
+        assert_eq!(
+            plain["unrenderable"],
+            serde_json::json!([]),
+            "control: this panel names a box of its own, so the comparison below would pass on a leak"
+        );
         assert_eq!(
             masked(&s),
             masked(&plain),
