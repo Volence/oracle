@@ -81,6 +81,32 @@ KNOWN_DIFFERENCES = [
         "action": "EXPECT-MISMATCH on V reads landing between the mid-line anchor and the "
                   "line end; H reads and all other state agree.",
     },
+    {
+        "id": "io-data-bit7",
+        "scenario": "Bit 7 of a parallel Data register ($A10003 / $A10005 / $A10007) on any read",
+        "blastem_says": "The DATA LATCH's own bit 7: 0 until a ROM writes a 1 there, then 1, and "
+                        "independently of the Control register (which has no direction bit for it "
+                        "-- Control bit 7 is the TH-interrupt enable). Measured 2026-09-18 at "
+                        "observables +0/+5/+6/+7/+8 ($7F, bit 7 clear) and +10/+11 ($FF, after the "
+                        "ROM latches $C0/$80) of tools/blastem-differential/th_pullup.bin.",
+        "oracle_next_pins": "Constant 1, unconditionally (`pad_device_byte` ORs in $80 on both "
+                            "branches). So we answer $FF where BlastEm answers $7F on any pad read "
+                            "that has not first latched a 1 into bit 7 -- which is every pad read a "
+                            "normal game performs.",
+        "reference": "docs/2026-09-19-th-pullup.md (F-IO-DATA-BIT7); recon "
+                     "docs/2026-07-17-io-recon.md IO4 as amended 2026-09-19. Pinned in-tree by "
+                     "`bit_7_of_the_data_register_is_a_recorded_divergence` in "
+                     "crates/oracle-core/tests/io_controllers.rs.",
+        "action": "EXPECT-MISMATCH on Data-register bit 7; bits 6-0, including the whole TH "
+                  "protocol and the forced bits 3-2, AGREE between the two models. "
+                  "UNLIKE EVERY OTHER ENTRY HERE, THIS ONE DOES NOT PIN OURS AS RIGHT: the port "
+                  "has seven I/O pins so no pin corresponds to bit 7 at all, and NEITHER side is "
+                  "corroborated -- Plutiedev's I/O-ports and Controllers pages never mention the "
+                  "register's bit 7, and the MegaDrive wiki's 315-5309 page contradicts itself "
+                  "('PD7: Unused. Should be set as 0' followed by 'PD7: /TH pin'). It is recorded "
+                  "so the disagreement is visible, not settled. Real hardware, or a permitted "
+                  "source that states it, is what would close it.",
+    },
 ]
 
 
