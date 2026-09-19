@@ -1,6 +1,12 @@
 {
-  "focus": "Three habits that cost us real bugs are now checked on every landing instead of remembered.",
-  "inFlight": [],
+  "focus": "One buildable item left in the audit row -- not two. The other turned out to be a question for you.",
+  "inFlight": [
+    {
+      "what": "The last buildable item in the debug-window audit: a panel path that can still put raw data on screen",
+      "where": "branch parcel/objects-catchall",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: fourteen landings, main green, nothing running, and the remaining rows mostly need you.",
+  "nextBoundary": "When this lands the audit row is entirely your eyes, and the buildable queue is empty.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -89,14 +95,14 @@
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
-      "state": "next",
+      "state": "doing",
       "size": "L",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
+      "title": "One buildable item left: a panel path that can still put raw data on screen. CORRECTED -- the slot item I had listed as buildable is a look call, so the rest of this row is 36 questions for you."
     }
   ],
-  "awaiting": "the buildable queue is nearly empty: what is left is mostly your eyes. Three looks -- d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T14:11:51Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T14:35:43Z"
 }
