@@ -2554,7 +2554,7 @@ is offered as the thing to rule on, never as a reading of what was already ruled
 master `ff54201b`, no `emulator/screen_text` call in `src/` and no method schema vendored; re-derive with
 `grep -rn "screen_text" src/ test/`. **It changes without anything touching that sentence.**
 
-## Moved from OVERSEER.md 2026-09-19 (the second recut, 85,360 -> 37,528 B (measured at this commit's tip, not predicted)) — live rules from the 09-17/09-18/09-19 narratives, each read at the moment its pointer names
+## Moved from OVERSEER.md 2026-09-19 (the second recut; the before/after size is DELIBERATELY NOT QUOTED HERE — measure it, `git show 0f8aa76:docs/OVERSEER.md | wc -c` against `wc -c docs/OVERSEER.md`) — live rules from the 09-17/09-18/09-19 narratives, each read at the moment its pointer names
 
 *Only the rules that were NOT already bars in this file moved here; the night's other lessons were banked as bars at the
 top of this file as they were found, and their narratives went to `docs/OVERSEER-LOG.md` instead. Each block below is
